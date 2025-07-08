@@ -1,0 +1,429 @@
+<?xml version="1.0" ?>
+<Xdmf Version="3.0">
+  <Domain>
+    <Grid Name="TimeSeries" GridType="Collection" CollectionType="Temporal">
+  <Time TimeType="List" NumberOfTimes="21">
+    <DataItem Dimensions="21" NumberType="Float" Precision="8" Format="XML">0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0 1.1 1.2 1.3 1.4 1.5 1.6 1.7 1.8 1.9 2.0</DataItem>
+  </Time>
+    <Grid Name="mesh_t1" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            0 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t2" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            1 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t3" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            2 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t4" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            3 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t5" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            4 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t6" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            5 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t7" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            6 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t8" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            7 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t9" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            8 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t10" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            9 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t11" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            10 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t12" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            11 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t13" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            12 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t14" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            13 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t15" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            14 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t16" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            15 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t17" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            16 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t18" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            17 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t19" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            18 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t20" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            19 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t21" GridType="Uniform">
+      <Topology TopologyType="3DRectMesh" Dimensions="41 51 61"/>
+      <Geometry GeometryType="VXVYVZ">
+<DataItem Dimensions="61" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/x</DataItem>
+<DataItem Dimensions="51" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/y</DataItem>
+<DataItem Dimensions="41" NumberType="Float" Precision="8" Format="HDF">convection_mesh.h5:/z</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="41 51 61" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            20 0 0 0
+            1 1 1 1
+            1 41 51 61
+          </DataItem>
+          <DataItem Dimensions="21 41 51 61" NumberType="Float" Precision="8" Format="HDF">convection3d_output.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+    </Grid>
+  </Domain>
+</Xdmf>
