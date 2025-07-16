@@ -27,8 +27,7 @@ right_face = BoundaryZone(:right, (x, y, z) -> findall(xi -> xi == maximum(x), x
 
 # Define BCs
 bcs = [
-    BoundaryCondition(left_face, (u, idxs) -> u[idxs, :, :] .= 0.0),
-    BoundaryCondition(right_face, periodic_bc)
+    periodic_bc(left_face, right_face)
 ]
 
 # Create and run the 3D convection solver with RK4 time stepping

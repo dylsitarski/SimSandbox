@@ -6,7 +6,7 @@ export Convection3DSolver, run!, apply_bcs!
 function apply_bcs!(u, x, y, z, bcs)
     for bc in bcs
         idxs = bc.zone.selector(x, y, z)
-        bc.handler(u, idxs)
+        bc.handler(u, idxs, bc.options)
     end
 end
 
