@@ -1,7 +1,7 @@
 using SimSandbox.MeshData
 
 # --- Define a 3D cell-based unstructured mesh (hexahedra) ---
-Nx, Ny, Nz = 11, 21, 31
+Nx, Ny, Nz = 11, 11, 11
 x = range(0, 1, length=Nx) |> collect
 y = range(0, 1, length=Ny) |> collect
 z = range(0, 1, length=Nz) |> collect
@@ -12,18 +12,18 @@ points = reshape(points, Nx*Ny*Nz)  # flatten
 points = hcat([p[1] for p in points], [p[2] for p in points], [p[3] for p in points])
 num_points = size(points, 1)
 
-# Hexahedral connectivity (8 nodes per cell)
+# Hexahedral connectivity (VTK/Paraview node order, zero-based)
 connectivity = Int[]
 for i in 1:Nx-1, j in 1:Ny-1, k in 1:Nz-1
-    n0 = (i-1)*Ny*Nz + (j-1)*Nz + k
-    n1 = n0 + 1
-    n2 = n0 + Nz + 1
-    n3 = n0 + Nz
-    n4 = n0 + Ny*Nz
-    n5 = n4 + 1
-    n6 = n4 + Nz + 1
-    n7 = n4 + Nz
-    push!(connectivity, n0-1, n1-1, n2-1, n3-1, n4-1, n5-1, n6-1, n7-1) # zero-based
+    n0 = (i-1) + (j-1)*Nz + (k-1)*Nx*Ny
+    n1 = (i  ) + (j-1)*Nz + (k-1)*Nx*Ny
+    n2 = (i  ) + (j  )*Nz + (k-1)*Nx*Ny
+    n3 = (i-1) + (j  )*Nz + (k-1)*Nx*Ny
+    n4 = (i-1) + (j-1)*Nz + (k  )*Nx*Ny
+    n5 = (i  ) + (j-1)*Nz + (k  )*Nx*Ny
+    n6 = (i  ) + (j  )*Nz + (k  )*Nx*Ny
+    n7 = (i-1) + (j  )*Nz + (k  )*Nx*Ny
+    push!(connectivity, n0, n1, n2, n3, n4, n5, n6, n7)
 end
 num_elements = length(connectivity) ÷ 8
 connectivity = Array(reshape(connectivity, 8, num_elements)')
@@ -56,6 +56,23 @@ for (ti, t) in enumerate(times)
     end
 end
 
+# --- Print first 2 elements of connectivity and their node coordinates ---
+println("First 2 elements of connectivity (node indices, zero-based):")
+for elem in 1:min(2, num_elements)
+    inds = connectivity[elem, :]
+    println("  Element ", elem, ": ", inds)
+    println("    Node coordinates:")
+    for idx in inds
+        println("      ", points[idx+1, :])  # +1 for Julia 1-based indexing
+    end
+end
+
+# --- Print Julia types of arrays before writing ---
+println("Array types:")
+println("  points eltype: ", eltype(points))
+println("  connectivity eltype: ", eltype(connectivity))
+println("  data eltype: ", eltype(data))
+
 # --- Write mesh and data to separate HDF5 files ---
 write_mesh("mesh_unstructured.h5", mesh)
 write_data("data_unstructured.h5", data; name="solution")
@@ -63,7 +80,10 @@ write_data("data_unstructured.h5", data; name="solution")
 # --- Link mesh and data with XDMF, including time list ---
 write_xdmf("mesh_unstructured.xdmf", "data_unstructured.h5", "mesh_unstructured.h5", mesh, data_name="solution", times=times)
 
-println("Unstructured cell-based mesh written to mesh_unstructured.h5, data to data_unstructured.h5, XDMF to mesh_unstructured.xdmf")
+# --- Also write a static (single time) XDMF for debugging ---
+write_xdmf("mesh_unstructured_static.xdmf", "data_unstructured.h5", "mesh_unstructured.h5", mesh, data_name="solution")
+
+println("Unstructured cell-based mesh written to mesh_unstructured.h5, data to data_unstructured.h5, XDMF to mesh_unstructured.xdmf and mesh_unstructured_static.xdmf")
 
 # --- Mesh verification ---
 println("Mesh verification:")
