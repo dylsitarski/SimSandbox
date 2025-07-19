@@ -1,0 +1,207 @@
+<?xml version="1.0" ?>
+<Xdmf Version="3.0">
+  <Domain>
+    <Grid Name="TimeSeries" GridType="Collection" CollectionType="Temporal">
+  <Time TimeType="List" NumberOfTimes="11">
+    <DataItem Dimensions="11" NumberType="Float" Precision="8" Format="XML">0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0</DataItem>
+  </Time>
+    <Grid Name="mesh_t1" GridType="Uniform">
+      <Topology TopologyType="3DCoRectMesh" Dimensions="31 21 11"/>
+      <Geometry GeometryType="XYZ">
+<DataItem Dimensions="11 21 31 3" NumberType="Float" Precision="8" Format="HDF">mesh_structured.h5:/coords</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="31 21 11" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            0 0 0 0
+            1 1 1 1
+            1 31 21 11
+          </DataItem>
+          <DataItem Dimensions="11 31 21 11" NumberType="Float" Precision="8" Format="HDF">data_structured.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t2" GridType="Uniform">
+      <Topology TopologyType="3DCoRectMesh" Dimensions="31 21 11"/>
+      <Geometry GeometryType="XYZ">
+<DataItem Dimensions="11 21 31 3" NumberType="Float" Precision="8" Format="HDF">mesh_structured.h5:/coords</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="31 21 11" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            1 0 0 0
+            1 1 1 1
+            1 31 21 11
+          </DataItem>
+          <DataItem Dimensions="11 31 21 11" NumberType="Float" Precision="8" Format="HDF">data_structured.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t3" GridType="Uniform">
+      <Topology TopologyType="3DCoRectMesh" Dimensions="31 21 11"/>
+      <Geometry GeometryType="XYZ">
+<DataItem Dimensions="11 21 31 3" NumberType="Float" Precision="8" Format="HDF">mesh_structured.h5:/coords</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="31 21 11" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            2 0 0 0
+            1 1 1 1
+            1 31 21 11
+          </DataItem>
+          <DataItem Dimensions="11 31 21 11" NumberType="Float" Precision="8" Format="HDF">data_structured.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t4" GridType="Uniform">
+      <Topology TopologyType="3DCoRectMesh" Dimensions="31 21 11"/>
+      <Geometry GeometryType="XYZ">
+<DataItem Dimensions="11 21 31 3" NumberType="Float" Precision="8" Format="HDF">mesh_structured.h5:/coords</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="31 21 11" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            3 0 0 0
+            1 1 1 1
+            1 31 21 11
+          </DataItem>
+          <DataItem Dimensions="11 31 21 11" NumberType="Float" Precision="8" Format="HDF">data_structured.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t5" GridType="Uniform">
+      <Topology TopologyType="3DCoRectMesh" Dimensions="31 21 11"/>
+      <Geometry GeometryType="XYZ">
+<DataItem Dimensions="11 21 31 3" NumberType="Float" Precision="8" Format="HDF">mesh_structured.h5:/coords</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="31 21 11" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            4 0 0 0
+            1 1 1 1
+            1 31 21 11
+          </DataItem>
+          <DataItem Dimensions="11 31 21 11" NumberType="Float" Precision="8" Format="HDF">data_structured.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t6" GridType="Uniform">
+      <Topology TopologyType="3DCoRectMesh" Dimensions="31 21 11"/>
+      <Geometry GeometryType="XYZ">
+<DataItem Dimensions="11 21 31 3" NumberType="Float" Precision="8" Format="HDF">mesh_structured.h5:/coords</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="31 21 11" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            5 0 0 0
+            1 1 1 1
+            1 31 21 11
+          </DataItem>
+          <DataItem Dimensions="11 31 21 11" NumberType="Float" Precision="8" Format="HDF">data_structured.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t7" GridType="Uniform">
+      <Topology TopologyType="3DCoRectMesh" Dimensions="31 21 11"/>
+      <Geometry GeometryType="XYZ">
+<DataItem Dimensions="11 21 31 3" NumberType="Float" Precision="8" Format="HDF">mesh_structured.h5:/coords</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="31 21 11" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            6 0 0 0
+            1 1 1 1
+            1 31 21 11
+          </DataItem>
+          <DataItem Dimensions="11 31 21 11" NumberType="Float" Precision="8" Format="HDF">data_structured.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t8" GridType="Uniform">
+      <Topology TopologyType="3DCoRectMesh" Dimensions="31 21 11"/>
+      <Geometry GeometryType="XYZ">
+<DataItem Dimensions="11 21 31 3" NumberType="Float" Precision="8" Format="HDF">mesh_structured.h5:/coords</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="31 21 11" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            7 0 0 0
+            1 1 1 1
+            1 31 21 11
+          </DataItem>
+          <DataItem Dimensions="11 31 21 11" NumberType="Float" Precision="8" Format="HDF">data_structured.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t9" GridType="Uniform">
+      <Topology TopologyType="3DCoRectMesh" Dimensions="31 21 11"/>
+      <Geometry GeometryType="XYZ">
+<DataItem Dimensions="11 21 31 3" NumberType="Float" Precision="8" Format="HDF">mesh_structured.h5:/coords</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="31 21 11" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            8 0 0 0
+            1 1 1 1
+            1 31 21 11
+          </DataItem>
+          <DataItem Dimensions="11 31 21 11" NumberType="Float" Precision="8" Format="HDF">data_structured.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t10" GridType="Uniform">
+      <Topology TopologyType="3DCoRectMesh" Dimensions="31 21 11"/>
+      <Geometry GeometryType="XYZ">
+<DataItem Dimensions="11 21 31 3" NumberType="Float" Precision="8" Format="HDF">mesh_structured.h5:/coords</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="31 21 11" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            9 0 0 0
+            1 1 1 1
+            1 31 21 11
+          </DataItem>
+          <DataItem Dimensions="11 31 21 11" NumberType="Float" Precision="8" Format="HDF">data_structured.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+
+    <Grid Name="mesh_t11" GridType="Uniform">
+      <Topology TopologyType="3DCoRectMesh" Dimensions="31 21 11"/>
+      <Geometry GeometryType="XYZ">
+<DataItem Dimensions="11 21 31 3" NumberType="Float" Precision="8" Format="HDF">mesh_structured.h5:/coords</DataItem>
+
+      </Geometry>
+      <Attribute Name="solution" AttributeType="Scalar" Center="Node">
+        <DataItem ItemType="HyperSlab" Dimensions="31 21 11" NumberType="Float" Precision="8" Format="HDF">
+          <DataItem Dimensions="3 4" Format="XML">
+            10 0 0 0
+            1 1 1 1
+            1 31 21 11
+          </DataItem>
+          <DataItem Dimensions="11 31 21 11" NumberType="Float" Precision="8" Format="HDF">data_structured.h5:/solution</DataItem>
+        </DataItem>
+      </Attribute>
+    </Grid>
+    </Grid>
+  </Domain>
+</Xdmf>
