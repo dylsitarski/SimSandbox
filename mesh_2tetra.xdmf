@@ -1,0 +1,22 @@
+<?xml version="1.0" ?>
+<Xdmf Version="3.0">
+  <Domain>
+    <Grid Name="TetraMesh" GridType="Uniform">
+      <Topology TopologyType="Tetrahedron" NumberOfElements="2">
+        <DataItem Format="HDF" DataType="Int" Dimensions="8">
+          mesh_2tetra.h5:/Topology/Connectivity
+        </DataItem>
+      </Topology>
+      <Geometry GeometryType="XYZ">
+        <DataItem Format="HDF" DataType="Float" Dimensions="5 3">
+          mesh_2tetra.h5:/Geometry/Coordinates
+        </DataItem>
+      </Geometry>
+      <Attribute Name="Pressure" Center="Cell">
+        <DataItem Format="HDF" DataType="Float" Dimensions="2">
+          data_2tetra.h5:/Data/Pressure
+        </DataItem>
+      </Attribute>
+    </Grid>
+  </Domain>
+</Xdmf>
