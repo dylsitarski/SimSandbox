@@ -1,34 +1,38 @@
 """
-    write_xdmf(xdmf_filename, h5_filename, mesh; data_name="solution", times=nothing)
+    write_xdmf(xdmf_filename, data_filename, mesh_filename, mesh; data_name="solution", times=nothing)
 
 Automatically generate an XDMF file for a mesh and data stored in HDF5, inferring topology and geometry type.
-- mesh: Dict or struct with keys :type (Symbol), :x, :y, :z (Vectors), and optionally :connectivity (for unstructured)
-- Supported types: :rectilinear, :unstructured
+- mesh: Dict or struct with keys :type (Symbol), and depending on type: :coordinates (4D array for curvilinear) or :points, :connectivity, :topology (for unstructured)
+- Supported types: :curvilinear, :unstructured
 - times: optional list of time values to include in the XDMF file
 """
 function write_xdmf(xdmf_filename::String, data_filename::String, mesh_filename::String, mesh; data_name="solution", times=nothing)
     mesh_type = mesh[:type]
-    if mesh_type == :rectilinear
-        topology = "3DRectMesh"
-        geometry = "VXVYVZ"
-        dims = "$(length(mesh[:z])) $(length(mesh[:y])) $(length(mesh[:x]))"
+    attr_center = (mesh_type == :curvilinear ? "Node" : "Cell")
+    if mesh_type == :curvilinear
+        topology = "3DSMesh"
+        geometry = "XYZ"
+        i, j, k = size(mesh[:coordinates])[1:3]
+        dims = "$i $j $k"
+        attr_dims = "$i $j $k"
+        topology_attr = "Dimensions=\"$dims\""
         geom_xml = """
-        <DataItem Dimensions=\"$(length(mesh[:x]))\" NumberType=\"Float\" Precision=\"8\" Format=\"HDF\">$mesh_filename:/x</DataItem>
-        <DataItem Dimensions=\"$(length(mesh[:y]))\" NumberType=\"Float\" Precision=\"8\" Format=\"HDF\">$mesh_filename:/y</DataItem>
-        <DataItem Dimensions=\"$(length(mesh[:z]))\" NumberType=\"Float\" Precision=\"8\" Format=\"HDF\">$mesh_filename:/z</DataItem>
+          <DataItem Dimensions="$dims 3" NumberType="Float" Precision="8" Format="HDF">$mesh_filename:/Geometry/Coordinates</DataItem>
         """
-    elseif mesh_type == :structured
-        # Recommend: treat as unstructured from the start
-        error("Structured mesh writing is not supported. Please use rectilinear (x, y, z vectors) for regular grids or unstructured (points, connectivity) for arbitrary coordinates.")
+        conn_xml = ""
     elseif mesh_type == :unstructured
         topology = mesh[:topology]  # e.g., "Hexahedron", "Tetrahedron", etc.
         geometry = "XYZ"
-        dims = string(mesh[:num_elements], " ", mesh[:nodes_per_element])
+        num_points = size(mesh[:points], 1)
+        num_elements = size(mesh[:connectivity], 1)
+        nodes_per_element = size(mesh[:connectivity], 2)
+        attr_dims = "$num_elements"
+        topology_attr = "NumberOfElements=\"$num_elements\""
         geom_xml = """
-        <DataItem Dimensions=\"$(mesh[:num_points]) 3\" NumberType=\"Float\" Precision=\"8\" Format=\"HDF\">$mesh_filename:/points</DataItem>
+          <DataItem Dimensions="$num_points 3" NumberType="Float" Precision="8" Format="HDF">$mesh_filename:/Geometry/points</DataItem>
         """
         conn_xml = """
-        <DataItem Dimensions=\"$dims\" NumberType=\"Int" Format=\"HDF\">$mesh_filename:/connectivity</DataItem>
+          <DataItem Dimensions="$num_elements $nodes_per_element" NumberType="Int" Format="HDF">$mesh_filename:/Topology/connectivity</DataItem>
         """
     else
         error("Unknown mesh type: $mesh_type")
@@ -36,82 +40,55 @@ function write_xdmf(xdmf_filename::String, data_filename::String, mesh_filename:
 
     if times !== nothing && length(times) > 0
         ntime = length(times)
-        time_xml = "  <Time TimeType=\"List\" NumberOfTimes=\"$ntime\">\n    <DataItem Dimensions=\"$ntime\" NumberType=\"Float\" Precision=\"8\" Format=\"XML\">$(join(times, " "))</DataItem>\n  </Time>"
         grids = String[]
         for ti in 1:ntime
-            if mesh_type == :rectilinear
-                nx, ny, nz = length(mesh[:x]), length(mesh[:y]), length(mesh[:z])
-                grid = string(
-                    "    <Grid Name=\"mesh_t", ti, "\" GridType=\"Uniform\">\n",
-                    "      <Topology TopologyType=\"$topology\" Dimensions=\"$dims\"/>",
-                    "      <Geometry GeometryType=\"$geometry\">\n",
-                    geom_xml, "\n",
-                    "      </Geometry>\n",
-                    "      <Attribute Name=\"$data_name\" AttributeType=\"Scalar\" Center=\"Node\">\n",
-                    "        <DataItem ItemType=\"HyperSlab\" Dimensions=\"$dims\" NumberType=\"Float\" Precision=\"8\" Format=\"HDF\">\n",
-                    "          <DataItem Dimensions=\"3 4\" Format=\"XML\">\n",
-                    "            ", ti-1, " 0 0 0\n",
-                    "            1 1 1 1\n",
-                    "            1 ", nz, " ", ny, " ", nx, "\n",
-                    "          </DataItem>\n",
-                    "          <DataItem Dimensions=\"$ntime ", nz, " ", ny, " ", nx, "\" NumberType=\"Float\" Precision=\"8\" Format=\"HDF\">$data_filename:/$data_name</DataItem>\n",
-                    "        </DataItem>\n",
-                    "      </Attribute>\n",
-                    "    </Grid>\n"
-                )
-            elseif mesh_type == :unstructured
-                nx = mesh[:num_points]
-                grid = string(
-                    "    <Grid Name=\"mesh_t", ti, "\" GridType=\"Uniform\">\n",
-                    "      <Topology TopologyType=\"$topology\" Dimensions=\"$dims\">\n",
-                    conn_xml, "\n      </Topology>\n",
-                    "      <Geometry GeometryType=\"$geometry\">\n",
-                    geom_xml, "\n",
-                    "      </Geometry>\n",
-                    "      <Attribute Name=\"$data_name\" AttributeType=\"Scalar\" Center=\"Node\">\n",
-                    "        <DataItem ItemType=\"HyperSlab\" Dimensions=\"", nx, "\" NumberType=\"Float\" Precision=\"8\" Format=\"HDF\">\n",
-                    "          <DataItem Dimensions=\"3 2\" Format=\"XML\">\n",
-                    "            ", ti-1, " 0\n",
-                    "            1 1\n",
-                    "            1 ", nx, "\n",
-                    "          </DataItem>\n",
-                    "          <DataItem Dimensions=\"$ntime ", nx, "\" NumberType=\"Float\" Precision=\"8\" Format=\"HDF\">$data_filename:/$data_name</DataItem>\n",
-                    "        </DataItem>\n",
-                    "      </Attribute>\n",
-                    "    </Grid>\n"
-                )
-            end
+            time_val = times[ti]
+            grid = """
+      <Grid Name="mesh_t$(ti-1)" GridType="Uniform">
+        <Time Value="$time_val" />
+        <Topology TopologyType="$topology" $topology_attr>
+$conn_xml
+        </Topology>
+        <Geometry GeometryType="$geometry">
+$geom_xml
+        </Geometry>
+        <Attribute Name="$data_name" AttributeType="Scalar" Center="$attr_center">
+          <DataItem Dimensions="$attr_dims" NumberType="Float" Precision="8" Format="HDF">$data_filename:/$data_name"_"$(ti-1)</DataItem>
+        </Attribute>
+      </Grid>
+"""
             push!(grids, grid)
         end
-        xdmf = string(
-            "<?xml version=\"1.0\" ?>\n",
-            "<Xdmf Version=\"3.0\">\n",
-            "  <Domain>\n",
-            "    <Grid Name=\"TimeSeries\" GridType=\"Collection\" CollectionType=\"Temporal\">\n",
-            time_xml, "\n",
-            join(grids, "\n"),
-            "    </Grid>\n",
-            "  </Domain>\n",
-            "</Xdmf>"
-        )
+        xdmf = """
+<?xml version="1.0" ?>
+<Xdmf Version="3.0">
+  <Domain>
+    <Grid Name="TimeSeries" GridType="Collection" CollectionType="Temporal">
+$(join(grids, "\n"))
+    </Grid>
+  </Domain>
+</Xdmf>
+"""
     else
         # Static (single time) case
-        xdmf = string(
-            "<?xml version=\"1.0\" ?>\n",
-            "<Xdmf Version=\"3.0\">\n",
-            "  <Domain>\n",
-            "    <Grid Name=\"mesh\" GridType=\"Uniform\">\n",
-            "      <Topology TopologyType=\"$topology\" Dimensions=\"$dims\"/>\n",
-            "      <Geometry GeometryType=\"$geometry\">\n",
-            geom_xml, "\n",
-            "      </Geometry>\n",
-            "      <Attribute Name=\"$data_name\" AttributeType=\"Scalar\" Center=\"Node\">\n",
-            "        <DataItem Dimensions=\"$dims\" NumberType=\"Float\" Precision=\"8\" Format=\"HDF\">$data_filename:/$data_name</DataItem>\n",
-            "      </Attribute>\n",
-            "    </Grid>\n",
-            "  </Domain>\n",
-            "</Xdmf>"
-        )
+        xdmf = """
+<?xml version="1.0" ?>
+<Xdmf Version="3.0">
+  <Domain>
+    <Grid Name="mesh" GridType="Uniform">
+      <Topology TopologyType="$topology" $topology_attr>
+$conn_xml
+      </Topology>
+      <Geometry GeometryType="$geometry">
+$geom_xml
+      </Geometry>
+      <Attribute Name="$data_name" AttributeType="Scalar" Center="$attr_center">
+        <DataItem Dimensions="$attr_dims" NumberType="Float" Precision="8" Format="HDF">$data_filename:/$data_name</DataItem>
+      </Attribute>
+    </Grid>
+  </Domain>
+</Xdmf>
+"""
     end
     open(xdmf_filename, "w") do io
         write(io, xdmf)
