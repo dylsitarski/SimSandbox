@@ -1,0 +1,16 @@
+name = "SimSandbox"
+uuid = "2f2b8d46-8355-4887-a349-ce5fdd66738a"
+authors = ["dylsitarski <dylsitarski@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
+ReadVTK = "dc215faf-f008-4882-a9f7-a79a826fadc3"
+VTKBase = "4004b06d-e244-455f-a6ce-a5f9919cc534"
+WriteVTK = "64499a7a-5c06-52f2-abe2-ccb03c286192"
+
+[compat]
+CodecZlib = "0.7.8"
+ReadVTK = "0.2.5"
+VTKBase = "1.0.1"
+WriteVTK = "1.21.2"
