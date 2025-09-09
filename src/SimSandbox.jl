@@ -1,6 +1,6 @@
 module SimSandbox
 
-include("fileio/fileio.jl")
 include("environment/environment.jl")
+include("fileio/fileio.jl")
 
 end # module SimSandbox

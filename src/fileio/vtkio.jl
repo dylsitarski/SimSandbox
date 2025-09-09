@@ -1,9 +1,8 @@
 # VTK I/O utilities (included in the FileIO module)
 # TODO: add pvd writer
-# TODO: add zone support
-# TODO: writer needs to take State as input, reader needs to return State
 
 using WriteVTK
+using SimSandbox.Environment
 
 # Detect whether ReadVTK is available at module load time so we can use it as a fallback
 const HAS_READVTK = try
@@ -30,12 +29,57 @@ Arguments
 - `cell_types` (optional): Vector of VTK cell type constants matching `cells`
 - `point_data`, `cell_data`: Dict{String,AbstractVector} of datasets
 """
-function write_vtu(filename::AbstractString,
-                   points::AbstractMatrix{<:Real},
-                   cells::Vector{<:AbstractVector};
-                   cell_types=nothing,
-                   point_data::Dict{String,Any}=Dict(),
-                   cell_data::Dict{String,Any}=Dict())
+function write_vtu(state::State, filename::AbstractString; mesh_id::String = "default")
+    # Extract mesh and fields from State
+    @assert haskey(state.meshes, mesh_id) "State does not contain mesh with id='$mesh_id'"
+    mesh = state.meshes[mesh_id]
+    points = mesh.points
+    cells = mesh.cells
+    cell_types = mesh.cell_types
+
+    # Collect point and cell data dictionaries from state's fields
+    point_data = Dict{String,Any}()
+    cell_data = Dict{String,Any}()
+    for (name, fld) in state.fields
+        if fld.mesh_id == mesh_id
+            if fld.basis == :point
+                point_data[name] = fld.data
+            elseif fld.basis == :cell
+                cell_data[name] = fld.data
+            end
+        end
+    end
+
+    # Also export zone/region information as integer mask arrays
+    npoints = size(points, 2)
+    ncells = length(cells)
+
+    # Next include any State zones that refer to this mesh and provide explicit indices
+    for (zname, zdesc) in state.zones
+        try
+            if zdesc.mesh_id == mesh_id
+                if zdesc.basis == :point && zdesc.type == :static && isa(zdesc.data, AbstractVector)
+                    mask = zeros(Int, npoints)
+                    for i in zdesc.data
+                        if 1 <= i <= npoints
+                            mask[i] = 1
+                        end
+                    end
+                    point_data["point_z_" * zname] = mask
+                elseif zdesc.basis == :cell && zdesc.type == :static && isa(zdesc.data, AbstractVector)
+                    mask = zeros(Int, ncells)
+                    for i in zdesc.data
+                        if 1 <= i <= ncells
+                            mask[i] = 1
+                        end
+                    end
+                    cell_data["cell_z_" * zname] = mask
+                end
+            end
+        catch
+            # ignore malformed zone descriptors
+        end
+    end
 
     # infer a simple VTK cell type when none provided
     infer_type(conn) = begin
@@ -69,28 +113,11 @@ function write_vtu(filename::AbstractString,
         @assert length(cell_types) == length(cells) "cell_types must match number of cells"
         for (ct_raw, c) in zip(cell_types, cells)
             ct = ct_raw
-            # If the provided type is an integer code, try to convert to VTKCellTypes value
             if isa(ct_raw, Integer)
                 try
-                    # try constructing VTKCellType from integer code
                     ct = WriteVTK.VTKCellTypes.VTKCellType(ct_raw)
                 catch
-                    # fallback: try to map a few common codes to the VTK constants
-                    if ct_raw == VTKCellTypes.VTK_HEXAHEDRON
-                        ct = VTKCellTypes.VTK_HEXAHEDRON
-                    elseif ct_raw == VTKCellTypes.VTK_TETRA
-                        ct = VTKCellTypes.VTK_TETRA
-                    elseif ct_raw == VTKCellTypes.VTK_QUAD
-                        ct = VTKCellTypes.VTK_QUAD
-                    elseif ct_raw == VTKCellTypes.VTK_TRIANGLE
-                        ct = VTKCellTypes.VTK_TRIANGLE
-                    elseif ct_raw == VTKCellTypes.VTK_LINE
-                        ct = VTKCellTypes.VTK_LINE
-                    else
-                        # cannot convert; infer from connectivity
-                        @warn "Unknown integer VTK cell type $ct_raw; falling back to inference based on connectivity length"
-                        ct = infer_type(c)
-                    end
+                    ct = infer_type(c)
                 end
             end
             push!(meshcells, WriteVTK.MeshCell(ct, collect(c)))
@@ -98,7 +125,8 @@ function write_vtu(filename::AbstractString,
     end
 
     # Use WriteVTK to write the file. WriteVTK will pick extension based on dataset type.
-    WriteVTK.vtk_grid(filename, points, meshcells) do vtk
+    # Force no compression to keep files easy to parse.
+    WriteVTK.vtk_grid(filename, points, meshcells; compress=false) do vtk
         for (name, vals) in point_data
             vtk[name] = vals
         end
@@ -370,15 +398,17 @@ function read_vtk(filename::AbstractString)
                 end
             end
 
-            return Dict(
-                :points => pts,
-                :connectivity => conn,
-                :offsets => offs,
-                :cell_types => types_out,
-                :cells => cell_lists,
-                :point_data => pdm,
-                :cell_data => cdm,
-            )
+            # Build Mesh and State
+            mesh = Mesh(pts, [collect(c) for c in cell_lists], types_out, Dict{String,Vector{Int}}(), Dict{String,Vector{Int}}())
+            st = State(Dict("default" => mesh), Dict{String,Field}(), Dict{String,BC}(), Dict{String,Zone}())
+            # populate fields
+            for (k,v) in pdm
+                st.fields[k] = Field("default", :point, v, nothing)
+            end
+            for (k,v) in cdm
+                st.fields[k] = Field("default", :cell, v, nothing)
+            end
+            return st
         catch e
             @warn "ReadVTK fast-path failed, falling back to lightweight parser: $e"
         end
@@ -488,15 +518,17 @@ function read_vtk(filename::AbstractString)
         point_data = extract_data_block(s, "PointData")
         cell_data = extract_data_block(s, "CellData")
         parsed_success = true
-        return Dict(
-            :points => points,
-            :connectivity => connectivity,
-            :offsets => offsets,
-            :cell_types => types,
-            :cells => cells,
-            :point_data => point_data,
-            :cell_data => cell_data,
-        )
+        # construct Mesh and State
+        mesh = Mesh(points, cells, types, Dict{String,Vector{Int}}(), Dict{String,Vector{Int}}())
+        st = State(Dict("default" => mesh), Dict{String,Field}(), Dict{String,BC}(), Dict{String,Zone}())
+        # attach point and cell data as Fields
+        for (k,v) in point_data
+            st.fields[k] = Field("default", :point, isa(v,AbstractMatrix) ? vec(permutedims(v)) : v, nothing)
+        end
+        for (k,v) in cell_data
+            st.fields[k] = Field("default", :cell, v, nothing)
+        end
+        return st
     catch err
         @warn "read_vtk: lightweight parser failed: $err"
         if !HAS_READVTK
@@ -555,15 +587,15 @@ function read_vtk(filename::AbstractString)
                     cdm[string(k)] = val
                 end
             end
-            return Dict(
-                :points => pts,
-                :connectivity => conn,
-                :offsets => offs,
-                :cell_types => types_out,
-                :cells => [collect(mc.connectivity) for mc in meshcells],
-                :point_data => pdm,
-                :cell_data => cdm,
-            )
+            mesh = Mesh(pts, [collect(mc.connectivity) for mc in meshcells], types_out, Dict{String,Vector{Int}}(), Dict{String,Vector{Int}}())
+            st = State(Dict("default" => mesh), Dict{String,Field}(), Dict{String,BC}(), Dict{String,Zone}())
+            for (k,v) in pdm
+                st.fields[k] = Field("default", :point, v, nothing)
+            end
+            for (k,v) in cdm
+                st.fields[k] = Field("default", :cell, v, nothing)
+            end
+            return st
         catch e2
             @warn "ReadVTK fallback failed: $e2"
             rethrow(err)
