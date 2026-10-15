@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/simsandbox-core", "crates/simsandbox-eq", "crates/simsandbox-cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.86"
+license = "Apache-2.0"
+repository = "https://github.com/dylsitarski/SimSandbox"
+authors = ["Dylan Sitarski"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

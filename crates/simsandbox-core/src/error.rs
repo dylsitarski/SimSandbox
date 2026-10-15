@@ -1,0 +1,40 @@
+use std::fmt;
+
+/// Errors raised by the kernel and by Blocks.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SimError {
+    /// A unit string could not be parsed.
+    UnitParse(String),
+    /// Two ports were connected whose units have different dimensions.
+    UnitMismatch { from: String, to: String },
+    /// Two ports were connected whose shapes differ.
+    ShapeMismatch { from: String, to: String },
+    /// A connection referenced a Block or port that does not exist,
+    /// or went the wrong way (input to output).
+    BadConnection(String),
+    /// An input port was left unconnected.
+    UnconnectedInput(String),
+    /// A Block failed while initialising or stepping.
+    Block(String),
+}
+
+impl fmt::Display for SimError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SimError::UnitParse(s) => write!(f, "cannot parse unit '{s}'"),
+            SimError::UnitMismatch { from, to } => {
+                write!(f, "unit mismatch: cannot connect [{from}] to [{to}]")
+            }
+            SimError::ShapeMismatch { from, to } => {
+                write!(f, "shape mismatch: cannot connect {from} to {to}")
+            }
+            SimError::BadConnection(s) => write!(f, "bad connection: {s}"),
+            SimError::UnconnectedInput(s) => write!(f, "input '{s}' is not connected"),
+            SimError::Block(s) => write!(f, "block error: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for SimError {}
+
+pub type Result<T> = std::result::Result<T, SimError>;

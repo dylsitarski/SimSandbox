@@ -1,0 +1,20 @@
+[package]
+name = "simsandbox-cli"
+description = "Headless command-line runner for SimSandbox models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "simsandbox"
+path = "src/main.rs"
+
+[dependencies]
+simsandbox-core = { path = "../simsandbox-core" }
+simsandbox-eq = { path = "../simsandbox-eq" }
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "simsandbox-eq"
+description = "SimSandbox equation domain: ODE Blocks, integrators, and fusion of equation Blocks into one system"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+simsandbox-core = { path = "../simsandbox-core" }
+
+[lints]
+workspace = true
