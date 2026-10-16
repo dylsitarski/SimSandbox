@@ -43,18 +43,14 @@ impl Model {
         BlockId(self.blocks.len() - 1)
     }
 
-    /// Set a parameter by name. The value must be finite and within the
-    /// parameter's `[min, max]` range.
+    /// Set a parameter by name. Any finite value is accepted, including
+    /// values outside the suggested range.
     pub fn set_param(&mut self, block: BlockId, name: &str, value: f64) -> Result<()> {
-        let spec = self.block(block)?.spec();
-        let idx = param_index(spec, name)?;
-        let p = &spec.params[idx];
-        if !value.is_finite() || value < p.min || value > p.max {
-            return Err(SimError::ParamOutOfRange {
+        let idx = param_index(self.block(block)?.spec(), name)?;
+        if !value.is_finite() {
+            return Err(SimError::InvalidParam {
                 name: name.into(),
                 value,
-                min: p.min,
-                max: p.max,
             });
         }
         self.params[block.0][idx] = value;

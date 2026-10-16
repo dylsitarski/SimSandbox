@@ -26,8 +26,8 @@ impl Decay {
                     name: "k".into(),
                     unit: Unit::DIMENSIONLESS,
                     default: 1.0,
-                    min: 0.0,
-                    max: 10.0,
+                    suggested_min: 0.0,
+                    suggested_max: 10.0,
                     description: "Decay rate".into(),
                 }],
                 states: vec!["x".into()],
@@ -80,23 +80,31 @@ fn params_can_be_read_and_listed() {
 }
 
 #[test]
-fn set_param_rejects_unknown_names_and_bad_values() {
+fn set_param_accepts_values_beyond_the_suggested_range() {
+    let mut model = Model::new();
+    let id = model.add(Box::new(Decay::new()));
+    for v in [-0.1, 10.1, 1e6] {
+        model.set_param(id, "k", v).unwrap();
+        assert_eq!(model.param(id, "k").unwrap(), v);
+    }
+}
+
+#[test]
+fn set_param_rejects_unknown_names_and_non_finite_values() {
     let mut model = Model::new();
     let id = model.add(Box::new(Decay::new()));
     assert!(matches!(
         model.set_param(id, "q", 1.0),
         Err(SimError::UnknownParam { .. })
     ));
-    for bad in [-0.1, 10.1, f64::NAN, f64::INFINITY] {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert!(matches!(
             model.set_param(id, "k", bad),
-            Err(SimError::ParamOutOfRange { .. })
+            Err(SimError::InvalidParam { .. })
         ));
     }
-    // Range ends are allowed; rejected values leave the parameter unchanged.
-    model.set_param(id, "k", 10.0).unwrap();
-    assert!(model.set_param(id, "k", 11.0).is_err());
-    assert_eq!(model.param(id, "k").unwrap(), 10.0);
+    // Rejected values leave the parameter unchanged.
+    assert_eq!(model.param(id, "k").unwrap(), 1.0);
 }
 
 #[test]

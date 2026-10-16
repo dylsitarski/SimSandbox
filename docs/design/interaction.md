@@ -13,7 +13,8 @@ Because parameters, ports and state are declared metadata, most of the interface
 
 ## For learning
 
-- Control panels generated from `ParamSpec` (sliders with units and ranges).
+- Control panels generated from `ParamSpec`: a typed entry field with units for every parameter, and an opt-in slider with a user-set range (initially the suggested range), aimed at real-time models ([ADR 0011](../decisions/0011-parameter-entry.md)).
+- Playback paced by wall-clock time with a speed control; slow models run in slow motion with the achieved speed shown ([ADR 0010](../decisions/0010-live-loop-pacing.md)).
 - Linked views: change a parameter and see the time series, phase portrait and 3D view update together.
 - Equation view beside the running model, highlighting the term being changed.
 - Guided explorables: a model plus a short narrative and locked or unlocked parameters, shared as one file that opens in the app or the free player.

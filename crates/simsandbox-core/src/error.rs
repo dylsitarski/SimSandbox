@@ -18,13 +18,8 @@ pub enum SimError {
     Block(String),
     /// A Block has no parameter with this name.
     UnknownParam { block: String, name: String },
-    /// A parameter value is not finite or lies outside its `ParamSpec` range.
-    ParamOutOfRange {
-        name: String,
-        value: f64,
-        min: f64,
-        max: f64,
-    },
+    /// A parameter value is not finite (NaN or infinite).
+    InvalidParam { name: String, value: f64 },
 }
 
 impl fmt::Display for SimError {
@@ -43,15 +38,9 @@ impl fmt::Display for SimError {
             SimError::UnknownParam { block, name } => {
                 write!(f, "'{block}' has no parameter '{name}'")
             }
-            SimError::ParamOutOfRange {
-                name,
-                value,
-                min,
-                max,
-            } => write!(
-                f,
-                "parameter '{name}' = {value} is outside its range [{min}, {max}]"
-            ),
+            SimError::InvalidParam { name, value } => {
+                write!(f, "parameter '{name}' must be finite, got {value}")
+            }
         }
     }
 }

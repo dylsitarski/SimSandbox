@@ -26,7 +26,7 @@ Goal: one equation, live. Gate: the Lorenz system runs live on the desktop with 
 - [x] Headless CLI
 - [ ] Model file format (load and save)
 - [ ] Desktop app shell (egui + wgpu)
-- [ ] Auto-generated parameter sliders and live plots
+- [ ] Auto-generated parameter panel (typed entry, optional sliders) and live plots
 - [ ] Symbolic equation entry
 
 ## Phase 1 · Composition

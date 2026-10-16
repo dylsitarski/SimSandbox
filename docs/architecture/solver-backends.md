@@ -18,7 +18,7 @@ Don't write solvers you can wrap. The platform's value is in connecting and expo
 
 - Users type equations in plain or LaTeX-like notation, e.g. `dx/dt = sigma*(y - x)`; the system parses them, infers states, parameters and inputs, and generates a Block ([Q4](../open-questions.md)).
 - Symbolic processing gives Jacobians, simplification, stability analysis and code generation.
-- Every parameter becomes a slider and every state a plottable signal, covering oscillators, chaos, population models, epidemics and circuits.
+- Every parameter becomes an editable control and every state a plottable signal, covering oscillators, chaos, population models, epidemics and circuits.
 - PDEs start with structured grids and method of lines; heavier cases hand off to the CFD/FEM backend.
 
 ## ML in both directions

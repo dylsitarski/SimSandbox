@@ -130,14 +130,18 @@ impl PortSpec {
     }
 }
 
-/// A named, unit-aware parameter. These become sliders automatically.
+/// A named, unit-aware parameter. Interfaces generate an entry field for each
+/// one, plus an optional slider.
+///
+/// The suggested range is a hint for the slider's initial range, not a limit:
+/// any finite value is accepted (ADR 0011).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamSpec {
     pub name: String,
     pub unit: Unit,
     pub default: f64,
-    pub min: f64,
-    pub max: f64,
+    pub suggested_min: f64,
+    pub suggested_max: f64,
     pub description: String,
 }
 

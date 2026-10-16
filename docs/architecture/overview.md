@@ -43,7 +43,7 @@ Dependency rule: domain crates depend on `simsandbox-core`; the kernel depends o
 1. Blocks are added to a `Model` with default parameters; connections are checked for direction, shape and unit dimension, and a conversion factor is stored.
 2. `Simulator::new` checks every input is connected, lets each Block initialise its kernel-owned state, computes initial outputs and copies them to inputs.
 3. `Simulator::step(dt)` calls `do_step` on every Block with the inputs from the previous exchange (Jacobi), then exchanges outputs to inputs again.
-4. `Simulator::set_param` changes a parameter between steps; values must be finite and within the `ParamSpec` range. `Simulator::model()` exposes Block specs and current parameter values to interfaces.
+4. `Simulator::set_param` changes a parameter between steps; any finite value is accepted; the `ParamSpec` range is only a suggestion ([ADR 0011](../decisions/0011-parameter-entry.md)). `Simulator::model()` exposes Block specs and current parameter values to interfaces.
 5. Snapshots copy time, all states, outputs and parameter values; `restore` rewinds to one, so a rewind also undoes parameter changes made after the snapshot.
 
 Same-domain fusion happens before the master sees the Blocks: e.g. `EquationGroup` builds a `FusedSystem`, which is wrapped in one `OdeBlock`. See [block contract](block-contract.md).

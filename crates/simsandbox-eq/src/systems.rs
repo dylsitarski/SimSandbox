@@ -6,13 +6,14 @@ use simsandbox_core::block::{
 };
 use simsandbox_core::units::Unit;
 
+/// A parameter with a suggested `[min, max]` slider range.
 fn param(name: &str, unit: Unit, default: f64, min: f64, max: f64, description: &str) -> ParamSpec {
     ParamSpec {
         name: name.into(),
         unit,
         default,
-        min,
-        max,
+        suggested_min: min,
+        suggested_max: max,
         description: description.into(),
     }
 }
