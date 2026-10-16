@@ -7,7 +7,8 @@
 
 - Reviewed code against STATUS; found that `Simulator` exposed no specs or parameter values, `set_param` accepted any value and misreported unknown names as `BadConnection`, and snapshots did not include parameters.
 - Added parameter access (`Model::param`, `Model::params`, `Model::block_ids`, `Simulator::model`, `Simulator::param`), finiteness checks with `SimError::UnknownParam` and `SimError::InvalidParam`, and parameters in snapshots. Tests in `crates/simsandbox-core/tests/params.rs`.
-- Wrote ADRs 0007 and 0008; updated STATUS, open questions, architecture overview, block contract and interaction docs.
+- Implemented the model file format: kernel `Registry` and `MethodSettings`, `simsandbox_eq::register`, the `simsandbox-file` crate (load, save, lenient controls, JSON Schema), two example files, `simsandbox run`, and a guide for adding block types. 30 tests.
+- Wrote ADRs 0007 to 0012; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
 ## Decided
 
@@ -24,6 +25,9 @@
 - Q4 (equation parsing) and Q5 (algebraic loops) remain ([open questions](../open-questions.md)).
 
 ## Notes for the next session
+
+- Saving goes through the `ModelFile` that was loaded (`capture_params` then `to_json`); Blocks carry no type name, so a model built only in code cannot be saved. Revisit if the app needs "new model" before the node canvas.
+- A first coupled-oscillator file test used a guessed tolerance (1e-2) and failed at 1.09e-2; the file tests now check bit-identity with the model built in code, since accuracy is verified in `simsandbox-eq`.
 
 - The owner agreed to the recommendation "JSON or TOML via serde"; this session chose JSON for schema tooling and nested blocks/connections. Revisit by superseding ADR 0007 if the owner prefers TOML.
 - A Block whose maths fails for some finite parameter values must report it with `SimError::Block`; the kernel no longer filters by range.

@@ -24,7 +24,7 @@ Goal: one equation, live. Gate: the Lorenz system runs live on the desktop with 
 - [x] Equation backend: Euler, RK4, Dormand–Prince 5(4), fusion of equation Blocks
 - [x] Speed/accuracy labels on every method
 - [x] Headless CLI
-- [ ] Model file format (load and save)
+- [x] Model file format (load and save)
 - [ ] Desktop app shell (egui + wgpu)
 - [ ] Auto-generated parameter panel (typed entry, optional sliders) and live plots
 - [ ] Symbolic equation entry

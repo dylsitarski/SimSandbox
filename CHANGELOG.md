@@ -11,6 +11,11 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - `Model::param`, `Model::params`, `Model::block_ids`, `Simulator::model` and `Simulator::param` for reading parameters and Block specs.
 - ADRs 0007 (JSON model files with a block-type registry), 0008 (all-native egui + wgpu desktop UI), 0009 (hobbyists are the first audience), 0010 (wall-clock pacing of the live loop), 0011 (typed parameter entry; ranges are suggestions) and 0012 (exploration controls saved in model files).
 
+- Model files (format 1): JSON with blocks, connections and optional `controls`; `simsandbox-file` crate with `load`, `ModelFile::to_json` and `ModelFile::capture_params`; JSON Schema in `crates/simsandbox-file/model.schema.json`.
+- Block-type registry (`simsandbox_core::registry`) and `simsandbox_eq::register` with `eq.lorenz` and `eq.coupled_oscillator`; `Integrator::from_settings` and `Integrator::settings`.
+- `simsandbox run FILE [--t-end] [--dt]` writes every output of a model file as CSV.
+- Example files `examples/lorenz.ssbx.json` and `examples/coupled-oscillators.ssbx.json`.
+
 ### Changed
 
 - `ParamSpec::min`/`max` renamed to `suggested_min`/`suggested_max`; the range is a hint for sliders, not a limit. `set_param` rejects only NaN and infinite values (`SimError::InvalidParam`); unknown names return `SimError::UnknownParam` instead of `SimError::BadConnection`.

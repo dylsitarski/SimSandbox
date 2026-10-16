@@ -1,6 +1,6 @@
 # Development setup
 
-_Last updated: 2026-10-15_
+_Last updated: 2026-10-16_
 
 ## Toolchain
 
@@ -28,6 +28,7 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 python3 scripts/check_docs.py          # on Windows: py scripts/check_docs.py
 cargo run -p simsandbox-cli -- lorenz --t-end 20 --dt 0.01 --method rk4 > lorenz.csv
+cargo run -p simsandbox-cli -- run examples/lorenz.ssbx.json --t-end 20 > lorenz.csv
 ```
 
 CI (`.github/workflows/ci.yml`) runs formatting, clippy and tests on Windows, macOS and Linux, plus the docs check.

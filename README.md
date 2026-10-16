@@ -13,6 +13,7 @@ Requires stable Rust 1.86+ ([setup guide](docs/guides/development-setup.md)).
 ```sh
 cargo test --workspace
 cargo run -p simsandbox-cli -- lorenz --t-end 20 --dt 0.01 --method rk4 > lorenz.csv
+cargo run -p simsandbox-cli -- run examples/coupled-oscillators.ssbx.json > oscillators.csv
 ```
 
 ## Learn more

@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/simsandbox-core", "crates/simsandbox-eq", "crates/simsandbox-cli"]
+members = [
+    "crates/simsandbox-core",
+    "crates/simsandbox-eq",
+    "crates/simsandbox-file",
+    "crates/simsandbox-cli",
+]
 
 [workspace.package]
 version = "0.0.1"

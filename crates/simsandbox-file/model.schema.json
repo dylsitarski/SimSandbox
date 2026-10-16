@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dylsitarski/SimSandbox/blob/main/crates/simsandbox-file/model.schema.json",
+  "title": "SimSandbox model file",
+  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md.",
+  "type": "object",
+  "required": ["format", "blocks"],
+  "additionalProperties": false,
+  "properties": {
+    "format": { "const": 1 },
+    "description": { "type": "string" },
+    "blocks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/block" }
+    },
+    "connections": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/connection" }
+    },
+    "controls": { "$ref": "#/$defs/controls" }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[^.]+$",
+      "description": "Unique block name; no '.'."
+    },
+    "ref": {
+      "type": "string",
+      "pattern": "^[^.]+\\..+$",
+      "description": "'block.port' or 'block.param'."
+    },
+    "block": {
+      "type": "object",
+      "required": ["name", "type", "method"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "type": {
+          "type": "string",
+          "description": "Registered block type, namespaced by domain, e.g. 'eq.lorenz'."
+        },
+        "method": {
+          "type": "object",
+          "required": ["name"],
+          "properties": { "name": { "type": "string" } },
+          "additionalProperties": { "type": "number" },
+          "description": "Method name plus numeric options, e.g. {\"name\": \"rk4\", \"substeps\": 4}."
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": { "type": "number" },
+          "description": "Values in each parameter's declared unit; omitted parameters take their defaults."
+        }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "required": ["from", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "from": { "$ref": "#/$defs/ref" },
+        "to": { "$ref": "#/$defs/ref" }
+      }
+    },
+    "controls": {
+      "type": "object",
+      "description": "How the model is meant to be explored. Never affects results; invalid entries are ignored with a warning.",
+      "properties": {
+        "params": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/ref" },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "slider": { "type": "boolean" },
+              "range": {
+                "type": "array",
+                "items": { "type": "number" },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        },
+        "speed": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Simulated seconds per wall-clock second."
+        },
+        "plots": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ref" }
+        }
+      }
+    }
+  }
+}

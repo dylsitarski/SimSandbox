@@ -1,0 +1,51 @@
+{
+  "format": 1,
+  "description": "Two masses on springs, tied to walls and to each other, coupled through the co-simulation master. Energy sloshes from one to the other.",
+  "blocks": [
+    {
+      "name": "a",
+      "type": "eq.coupled_oscillator",
+      "method": {
+        "name": "rk4",
+        "substeps": 4.0
+      },
+      "params": {
+        "kappa": 0.5,
+        "omega0_sq": 1.0,
+        "v0": 0.0,
+        "x0": 1.0
+      }
+    },
+    {
+      "name": "b",
+      "type": "eq.coupled_oscillator",
+      "method": {
+        "name": "rk4",
+        "substeps": 4.0
+      },
+      "params": {
+        "kappa": 0.5,
+        "omega0_sq": 1.0,
+        "v0": 0.0,
+        "x0": 0.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "a.x",
+      "to": "b.neighbor_x"
+    },
+    {
+      "from": "b.x",
+      "to": "a.neighbor_x"
+    }
+  ],
+  "controls": {
+    "speed": 1.0,
+    "plots": [
+      "a.x",
+      "b.x"
+    ]
+  }
+}

@@ -1,6 +1,7 @@
 //! Methods for the equation domain, each with speed and accuracy labels.
 
 use simsandbox_core::block::{AccuracyClass, MethodLabels, MethodSpec, SpeedClass};
+use simsandbox_core::registry::MethodSettings;
 use simsandbox_core::{Result, SimError};
 
 /// Right-hand side as seen by an integrator: `f(t, x, dx)`.
@@ -50,6 +51,72 @@ impl Integrator {
     }
 
     /// Advance `x` from `t` to `t + dt` in place.
+    /// Build from file settings: `euler` or `rk4` with optional `substeps`
+    /// (default 1), or `dopri5` with optional `rtol` (default 1e-8) and
+    /// `atol` (default 1e-10).
+    pub fn from_settings(m: &MethodSettings) -> Result<Self> {
+        let allowed: &[&str] = match m.name.as_str() {
+            "euler" | "rk4" => &["substeps"],
+            "dopri5" => &["rtol", "atol"],
+            other => {
+                return Err(SimError::InvalidMethod(format!(
+                    "unknown method '{other}' (expected euler, rk4 or dopri5)"
+                )))
+            }
+        };
+        if let Some(k) = m.options.keys().find(|k| !allowed.contains(&k.as_str())) {
+            return Err(SimError::InvalidMethod(format!(
+                "'{}' has no option '{k}'",
+                m.name
+            )));
+        }
+        let substeps = || -> Result<usize> {
+            match m.options.get("substeps") {
+                None => Ok(1),
+                Some(&n) if n >= 1.0 && n.fract() == 0.0 && n <= 1e6 => Ok(n as usize),
+                Some(n) => Err(SimError::InvalidMethod(format!(
+                    "substeps must be a whole number from 1 to 1e6, got {n}"
+                ))),
+            }
+        };
+        let tol = |key: &str, default: f64| -> Result<f64> {
+            match m.options.get(key) {
+                None => Ok(default),
+                Some(&v) if v.is_finite() && v > 0.0 => Ok(v),
+                Some(v) => Err(SimError::InvalidMethod(format!(
+                    "{key} must be positive, got {v}"
+                ))),
+            }
+        };
+        Ok(match m.name.as_str() {
+            "euler" => Integrator::Euler {
+                substeps: substeps()?,
+            },
+            "rk4" => Integrator::Rk4 {
+                substeps: substeps()?,
+            },
+            _ => Integrator::Dopri5 {
+                rtol: tol("rtol", 1e-8)?,
+                atol: tol("atol", 1e-10)?,
+            },
+        })
+    }
+
+    /// Settings that rebuild this integrator with [`Integrator::from_settings`].
+    pub fn settings(&self) -> MethodSettings {
+        match *self {
+            Integrator::Euler { substeps } => {
+                MethodSettings::new("euler").with("substeps", substeps as f64)
+            }
+            Integrator::Rk4 { substeps } => {
+                MethodSettings::new("rk4").with("substeps", substeps as f64)
+            }
+            Integrator::Dopri5 { rtol, atol } => MethodSettings::new("dopri5")
+                .with("rtol", rtol)
+                .with("atol", atol),
+        }
+    }
+
     pub fn advance(&self, f: &Rhs<'_>, t: f64, dt: f64, x: &mut [f64]) -> Result<()> {
         match *self {
             Integrator::Euler { substeps } => {

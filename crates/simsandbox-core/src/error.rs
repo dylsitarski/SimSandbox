@@ -20,6 +20,12 @@ pub enum SimError {
     UnknownParam { block: String, name: String },
     /// A parameter value is not finite (NaN or infinite).
     InvalidParam { name: String, value: f64 },
+    /// No block type is registered under this name.
+    UnknownBlockType(String),
+    /// A block type was registered twice.
+    DuplicateBlockType(String),
+    /// Method settings name an unknown method or carry invalid options.
+    InvalidMethod(String),
 }
 
 impl fmt::Display for SimError {
@@ -41,6 +47,9 @@ impl fmt::Display for SimError {
             SimError::InvalidParam { name, value } => {
                 write!(f, "parameter '{name}' must be finite, got {value}")
             }
+            SimError::UnknownBlockType(s) => write!(f, "unknown block type '{s}'"),
+            SimError::DuplicateBlockType(s) => write!(f, "block type '{s}' is already registered"),
+            SimError::InvalidMethod(s) => write!(f, "invalid method: {s}"),
         }
     }
 }

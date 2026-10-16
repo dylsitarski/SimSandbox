@@ -1,0 +1,21 @@
+[package]
+name = "simsandbox-file"
+description = "SimSandbox model files: JSON reading and writing (ADR 0007, ADR 0012)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+simsandbox-core = { path = "../simsandbox-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+serde_json = "1"
+simsandbox-eq = { path = "../simsandbox-eq" }
+
+[lints]
+workspace = true

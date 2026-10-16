@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 simsandbox-core = { path = "../simsandbox-core" }
 simsandbox-eq = { path = "../simsandbox-eq" }
+simsandbox-file = { path = "../simsandbox-file" }
 
 [lints]
 workspace = true

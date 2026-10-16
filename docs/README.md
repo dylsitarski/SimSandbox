@@ -89,6 +89,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [guides/development-setup.md](guides/development-setup.md) | Guide | Toolchain on Windows, macOS, Linux and WSL; commands |
 | [guides/verification-policy.md](guides/verification-policy.md) | Guide | Rules and tests every numerical method must meet |
 | [guides/adding-an-integrator.md](guides/adding-an-integrator.md) | Guide | Worked steps for adding a method to the equation domain |
+| [guides/adding-a-block-type.md](guides/adding-a-block-type.md) | Guide | Making a model definition loadable from model files |
 
 ### Research and history
 
@@ -97,7 +98,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [research/market-landscape.md](research/market-landscape.md) | Research | Existing tools and the gap SimSandbox targets |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
-| [sessions/2026-10-16-kernel-prep-and-adrs.md](sessions/2026-10-16-kernel-prep-and-adrs.md) | Session note | Kernel prep for files and UI; ADRs 0007–0012 |
+| [sessions/2026-10-16-kernel-prep-and-adrs.md](sessions/2026-10-16-kernel-prep-and-adrs.md) | Session note | Kernel prep for files and UI; ADRs 0007–0012; model file format |
 | [sessions/2026-10-15-project-inception.md](sessions/2026-10-15-project-inception.md) | Session note | Market research through the first commit |
 
 ## Conventions
