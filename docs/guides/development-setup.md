@@ -31,6 +31,7 @@ cargo run -p simsandbox-cli -- lorenz --t-end 20 --dt 0.01 --method rk4 > lorenz
 cargo run -p simsandbox-cli -- run examples/lorenz.ssbx.json --t-end 20 > lorenz.csv
 cargo run -p simsandbox-app                                   # desktop app
 cargo run -p simsandbox-app -- examples/coupled-oscillators.ssbx.json
+cargo run -p simsandbox-app -- --view 3d                     # open in the 3D trajectory view
 ```
 
 The app can save a screenshot and exit, for documentation and for checking it renders on machines without a display:

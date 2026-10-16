@@ -10,6 +10,7 @@
 - Implemented the model file format: kernel `Registry` and `MethodSettings`, `simsandbox_eq::register`, the `simsandbox-file` crate (load, save, lenient controls, JSON Schema), two example files, `simsandbox run`, and a guide for adding block types. 30 tests.
 - Built the desktop app shell (`crates/simsandbox-app`): pacing, session with rewind history, egui window, built-in examples, `--screenshot`. Verified under Xvfb with screenshots of both examples running at 1×. 38 tests.
 - Added the `run` section (ADR 0013), `Simulator::restart`, `ParamSpec::initial_condition`, and the app's parameter panel, Restart and Save. Verified headless with screenshots of both examples. 44 tests.
+- Added phase-portrait and 3D trajectory views (`view3d.rs`: CPU projection, drag to rotate, scroll to zoom, fit from the bounding sphere so the box never clips). 49 tests.
 - Wrote ADRs 0007 to 0013; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
 ## Decided
@@ -26,10 +27,13 @@
 
 ## Left open
 
+- Q8: whether the default view is saved in `controls` ([open questions](../open-questions.md)).
 - Q4 (equation parsing) and Q5 (algebraic loops) remain ([open questions](../open-questions.md)).
 
 ## Notes for the next session
 
+- The first 3D fit used a fixed fraction of the panel and clipped near corners under perspective; the fit now uses the box's bounding sphere (test `the_box_fits_at_every_rotation`).
+- With x0 = y0 = z0 = 1, Lorenz spirals on one lobe until about t = 17 before switching; screenshots at t = 30 show the butterfly.
 - Parameter fields show at most 6 significant digits and only apply text the user changed, so the display's rounding never alters a value (e.g. beta = 8/3).
 - Phase 0 gate counted as met from headless screenshots; the owner should confirm on Windows (`cargo run -p simsandbox-app`).
 - `egui_plot` 0.37 is built against egui 0.36, so the app pins `eframe = 0.36.2`; pinning eframe 0.37 produced two egui versions and type errors. Upgrade both together.

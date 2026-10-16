@@ -10,6 +10,7 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | --- | --- | --- | --- | --- |
 | Q4 | Symbolic equation parsing | Rust-native parser and symbolic crate; SymPy via Python; Julia Symbolics service | Symbolic equation entry | Affects dependencies and startup |
 | Q5 | Algebraic loops in fused groups | Causalisation and tearing; Newton solve per RHS evaluation; forbid and warn | Phase 1 | Current v0 restriction: no direct feedthrough |
+| Q8 | Save the default view (time series, phase portrait or 3D, and its axes) in `controls`? | Yes, as a `view` entry ([ADR 0012](decisions/0012-controls-in-model-files.md) allows presentation there); no, always open on the time series | Before more examples are added | Lorenz would open straight into the 3D butterfly |
 
 ## Resolved
 

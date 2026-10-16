@@ -4,8 +4,9 @@
 use crate::examples::{registry, EXAMPLES};
 use crate::pacing::Pacer;
 use crate::session::{ParamRow, Session};
+use crate::view3d::{self, Camera};
 use eframe::egui;
-use egui_plot::{Legend, Line, Plot};
+use egui_plot::{Legend, Line, MarkerShape, Plot, Points};
 use simsandbox_core::registry::Registry;
 use simsandbox_core::SimError;
 use std::collections::HashMap;
@@ -34,13 +35,18 @@ pub struct SimApp {
     param_edits: HashMap<String, String>,
     last_frame: Option<Instant>,
     rewind_t: f64,
+    view: View,
     started: Instant,
     screenshot: Option<ScreenshotRequest>,
     screenshot_requested: bool,
 }
 
 impl SimApp {
-    pub fn new(path: Option<String>, screenshot: Option<ScreenshotRequest>) -> Self {
+    pub fn new(
+        path: Option<String>,
+        view: Option<&str>,
+        screenshot: Option<ScreenshotRequest>,
+    ) -> Self {
         let mut app = Self {
             registry: registry(),
             session: None,
@@ -53,6 +59,7 @@ impl SimApp {
             param_edits: HashMap::new(),
             last_frame: None,
             rewind_t: 0.0,
+            view: View::default(),
             started: Instant::now(),
             screenshot,
             screenshot_requested: false,
@@ -63,6 +70,13 @@ impl SimApp {
         }
         // Hobbyists first (ADR 0009): a model runs as soon as it opens.
         app.running = app.session.is_some();
+        app.view.kind = match view {
+            Some("phase") => ViewKind::Phase,
+            Some("3d") => ViewKind::Trajectory,
+            _ => ViewKind::TimeSeries,
+        };
+        let n = app.session.as_ref().map_or(0, |s| s.series.len());
+        app.view.fit(n);
         app
     }
 
@@ -87,6 +101,8 @@ impl SimApp {
                 self.error = None;
                 self.notice = None;
                 self.param_edits.clear();
+                let n = self.session.as_ref().map_or(0, |s| s.series.len());
+                self.view.fit(n);
                 self.rewind_t = 0.0;
                 self.pacer.reset();
             }
@@ -280,19 +296,74 @@ impl SimApp {
         }
     }
 
-    fn plot(&self, ui: &mut egui::Ui) {
+    fn plot(&mut self, ui: &mut egui::Ui) {
         let Some(session) = &self.session else {
             ui.centered_and_justified(|ui| ui.label("Open an example or a model file."));
             return;
         };
-        Plot::new("time_series")
-            .legend(Legend::default())
-            .x_axis_label("t [s]")
-            .show(ui, |plot| {
-                for s in &session.series {
-                    plot.line(Line::new(s.name.clone(), s.points.as_slice()));
-                }
+        let names: Vec<&str> = session.series.iter().map(|s| s.name.as_str()).collect();
+        let view = &mut self.view;
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut view.kind, ViewKind::TimeSeries, "Time series");
+            ui.add_enabled_ui(names.len() >= 2, |ui| {
+                ui.selectable_value(&mut view.kind, ViewKind::Phase, "Phase portrait")
+                    .on_hover_text("One output against another");
             });
+            ui.add_enabled_ui(names.len() >= 3, |ui| {
+                ui.selectable_value(&mut view.kind, ViewKind::Trajectory, "3D trajectory")
+                    .on_hover_text("Three outputs as a path in space");
+            });
+            ui.separator();
+            match view.kind {
+                ViewKind::TimeSeries => {}
+                ViewKind::Phase => {
+                    for (k, axis) in ["x", "y"].into_iter().enumerate() {
+                        axis_combo(ui, axis, &names, &mut view.phase[k]);
+                    }
+                }
+                ViewKind::Trajectory => {
+                    for (k, axis) in ["x", "y", "z"].into_iter().enumerate() {
+                        axis_combo(ui, axis, &names, &mut view.trajectory[k]);
+                    }
+                }
+            }
+        });
+
+        match view.kind {
+            ViewKind::TimeSeries => {
+                Plot::new("time_series")
+                    .legend(Legend::default())
+                    .x_axis_label("t [s]")
+                    .show(ui, |plot| {
+                        for s in &session.series {
+                            plot.line(Line::new(s.name.clone(), s.points.as_slice()));
+                        }
+                    });
+            }
+            ViewKind::Phase => {
+                let [a, b] = view.phase;
+                let points = session.phase_points(a, b);
+                let head = points.last().copied();
+                Plot::new("phase")
+                    .x_axis_label(names[a])
+                    .y_axis_label(names[b])
+                    .show(ui, |plot| {
+                        plot.line(Line::new(format!("{} vs {}", names[b], names[a]), points));
+                        if let Some(h) = head {
+                            plot.points(
+                                Points::new("now", vec![h])
+                                    .shape(MarkerShape::Circle)
+                                    .radius(4.0),
+                            );
+                        }
+                    });
+            }
+            ViewKind::Trajectory => {
+                let axes = view.trajectory;
+                let points = session.trajectory(axes);
+                view3d::show(ui, &mut view.camera, &points, axes.map(|i| names[i]));
+            }
+        }
     }
 
     fn save(&mut self) {
@@ -540,6 +611,62 @@ fn param_row(
         });
         ui.end_row();
     }
+}
+
+/// What the central area shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewKind {
+    TimeSeries,
+    Phase,
+    Trajectory,
+}
+
+struct View {
+    kind: ViewKind,
+    /// Series indices for the phase portrait's x and y.
+    phase: [usize; 2],
+    /// Series indices for the 3D trajectory's axes.
+    trajectory: [usize; 3],
+    camera: Camera,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self {
+            kind: ViewKind::TimeSeries,
+            phase: [0, 1],
+            trajectory: [0, 1, 2],
+            camera: Camera::default(),
+        }
+    }
+}
+
+impl View {
+    /// Pick sensible axes for a model with `n` plotted series, e.g. x–z for
+    /// Lorenz, and fall back to the time series if there are too few.
+    fn fit(&mut self, n: usize) {
+        self.phase = if n >= 3 { [0, 2] } else { [0, 1] };
+        self.trajectory = [0, 1, 2];
+        self.camera = Camera::default();
+        let enough = match self.kind {
+            ViewKind::TimeSeries => true,
+            ViewKind::Phase => n >= 2,
+            ViewKind::Trajectory => n >= 3,
+        };
+        if !enough {
+            self.kind = ViewKind::TimeSeries;
+        }
+    }
+}
+
+fn axis_combo(ui: &mut egui::Ui, axis: &str, names: &[&str], selected: &mut usize) {
+    egui::ComboBox::from_id_salt(("axis", axis))
+        .selected_text(format!("{axis}: {}", names[*selected]))
+        .show_ui(ui, |ui| {
+            for (i, name) in names.iter().enumerate() {
+                ui.selectable_value(selected, i, *name);
+            }
+        });
 }
 
 /// Why stepping stopped within a frame.

@@ -1,7 +1,7 @@
 //! `simsandbox-app` — the SimSandbox desktop app (ADR 0008).
 //!
 //! ```text
-//! simsandbox-app [FILE]
+//! simsandbox-app [FILE] [--view time|phase|3d]
 //! simsandbox-app [FILE] --screenshot OUT.ppm [--after SECONDS]
 //! ```
 //!
@@ -13,13 +13,21 @@ mod app;
 mod examples;
 mod pacing;
 mod session;
+mod view3d;
 
 use app::{ScreenshotRequest, SimApp};
 use eframe::egui;
 use std::process::ExitCode;
 
-fn parse(args: &[String]) -> Result<(Option<String>, Option<ScreenshotRequest>), String> {
+struct Args {
+    path: Option<String>,
+    view: Option<String>,
+    screenshot: Option<ScreenshotRequest>,
+}
+
+fn parse(args: &[String]) -> Result<Args, String> {
     let mut path = None;
+    let mut view = None;
     let mut shot: Option<std::path::PathBuf> = None;
     let mut after = 3.0;
     let mut it = args.iter();
@@ -27,6 +35,13 @@ fn parse(args: &[String]) -> Result<(Option<String>, Option<ScreenshotRequest>),
         match a.as_str() {
             "--screenshot" => {
                 shot = Some(it.next().ok_or("missing value for --screenshot")?.into())
+            }
+            "--view" => {
+                let v = it.next().ok_or("missing value for --view")?;
+                if !["time", "phase", "3d"].contains(&v.as_str()) {
+                    return Err(format!("unknown view '{v}' (expected time, phase or 3d)"));
+                }
+                view = Some(v.clone());
             }
             "--after" => {
                 let v = it.next().ok_or("missing value for --after")?;
@@ -42,16 +57,20 @@ fn parse(args: &[String]) -> Result<(Option<String>, Option<ScreenshotRequest>),
             file => path = Some(file.to_string()),
         }
     }
-    Ok((path, shot.map(|path| ScreenshotRequest { path, after })))
+    Ok(Args {
+        path,
+        view,
+        screenshot: shot.map(|path| ScreenshotRequest { path, after }),
+    })
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (path, screenshot) = match parse(&args) {
+    let args = match parse(&args) {
         Ok(v) => v,
         Err(e) => {
             eprintln!(
-                "error: {e}\nusage: simsandbox-app [FILE] [--screenshot OUT.ppm [--after SECONDS]]"
+                "error: {e}\nusage: simsandbox-app [FILE] [--view time|phase|3d] [--screenshot OUT.ppm [--after SECONDS]]"
             );
             return ExitCode::FAILURE;
         }
@@ -67,7 +86,13 @@ fn main() -> ExitCode {
     let result = eframe::run_native(
         "SimSandbox",
         options,
-        Box::new(move |_cc| Ok(Box::new(SimApp::new(path, screenshot)))),
+        Box::new(move |_cc| {
+            Ok(Box::new(SimApp::new(
+                args.path,
+                args.view.as_deref(),
+                args.screenshot,
+            )))
+        }),
     );
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -19,6 +19,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - App: parameter panel (typed entry with units, initial-condition markers, opt-in sliders with editable ranges), Restart from current parameters, Save, pause at the file's `t_end`.
 - Model files: optional `run` section with `dt` (default 0.01) and `t_end` (ADR 0013); `simsandbox run` uses it unless `--dt`/`--t-end` are given.
 - `Simulator::restart` and `ParamSpec::initial_condition`.
+- App: phase-portrait view (any output against another) and a rotatable, zoomable 3D trajectory view; `--view time|phase|3d` start-up flag.
 
 ### Changed
 

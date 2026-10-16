@@ -207,6 +207,23 @@ impl Session {
         Ok(self.file.to_json())
     }
 
+    /// Series `a` against series `b`, for a phase portrait. All series are
+    /// recorded, thinned and rewound together, so they pair by index.
+    pub fn phase_points(&self, a: usize, b: usize) -> Vec<[f64; 2]> {
+        let (sa, sb) = (&self.series[a].points, &self.series[b].points);
+        sa.iter().zip(sb).map(|(p, q)| [p.y, q.y]).collect()
+    }
+
+    /// Three series as a 3D trajectory.
+    pub fn trajectory(&self, axes: [usize; 3]) -> Vec<[f64; 3]> {
+        let [a, b, c] = axes.map(|i| &self.series[i].points);
+        a.iter()
+            .zip(b)
+            .zip(c)
+            .map(|((p, q), r)| [p.y, q.y, r.y])
+            .collect()
+    }
+
     /// Earliest and latest time the run can be rewound to.
     pub fn history_range(&self) -> (f64, f64) {
         let first = self.history.first().map_or(0.0, |s| s.t);
@@ -374,6 +391,25 @@ mod tests {
             s.step().unwrap();
         }
         assert!((s.time() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn phase_and_trajectory_points_pair_series_by_time() {
+        let mut s = lorenz();
+        for _ in 0..200 {
+            s.step().unwrap();
+        }
+        s.rewind_to(1.0);
+        let traj = s.trajectory([0, 1, 2]);
+        assert_eq!(traj.len(), s.series[0].points.len());
+        for (k, p) in traj.iter().enumerate() {
+            let t = s.series[0].points[k].x;
+            assert!(s.series.iter().all(|ser| ser.points[k].x == t));
+            assert_eq!(p[2], s.series[2].points[k].y);
+        }
+        let phase = s.phase_points(0, 2);
+        assert_eq!(phase[0], [1.0, 1.0]);
+        assert_eq!(phase.len(), traj.len());
     }
 
     #[test]

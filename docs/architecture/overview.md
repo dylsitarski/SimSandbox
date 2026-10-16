@@ -33,7 +33,7 @@ flowchart TB
 | `crates/simsandbox-eq` | Backend: equations | Exists | `ode.rs` (`OdeSystem`, `OdeBlock`), `integrators.rs`, `group.rs` (fusion), `systems.rs` (examples), `registry.rs` (file types) |
 | `crates/simsandbox-file` | Model graph: files | Exists | JSON model files, `controls`, JSON Schema ([ADR 0007](../decisions/0007-json-model-files.md)); depends on `serde`, `serde_json` |
 | `crates/simsandbox-cli` | Runtime: headless | Exists | `simsandbox` binary |
-| `crates/simsandbox-app` | Runtime: desktop | Exists | eframe + egui + wgpu ([ADR 0008](../decisions/0008-native-egui-ui.md)): `pacing.rs` (live loop, [ADR 0010](../decisions/0010-live-loop-pacing.md)), `session.rs` (open model, history, plotted series), `app.rs` (window), `examples.rs` (built-in examples) |
+| `crates/simsandbox-app` | Runtime: desktop | Exists | eframe + egui + wgpu ([ADR 0008](../decisions/0008-native-egui-ui.md)): `pacing.rs` (live loop, [ADR 0010](../decisions/0010-live-loop-pacing.md)), `session.rs` (open model, history, plotted series), `app.rs` (window and views), `view3d.rs` (3D trajectory: CPU projection drawn with the egui painter; wgpu paint callbacks reserved for meshes and fields), `examples.rs` (built-in examples) |
 | `crates/simsandbox-py` | Interface: Python | Planned | PyO3 bindings |
 | further domain crates | Backends | Planned | e.g. `simsandbox-rigid`, `simsandbox-agents`, `simsandbox-ml`, `simsandbox-fmi` |
 
