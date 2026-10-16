@@ -1,4 +1,4 @@
-# 2026-10-16 — Kernel prep and ADRs 0007–0013
+# 2026-10-16 — Kernel prep and ADRs 0007–0014
 
 - **Who:** Dylan Sitarski with Claude (Claude Code, cloud session)
 - **Goal:** review the repository, settle the next steps, prepare the kernel for model files and the desktop UI, and resolve Q1, Q2, Q3 and Q6
@@ -11,7 +11,8 @@
 - Built the desktop app shell (`crates/simsandbox-app`): pacing, session with rewind history, egui window, built-in examples, `--screenshot`. Verified under Xvfb with screenshots of both examples running at 1×. 38 tests.
 - Added the `run` section (ADR 0013), `Simulator::restart`, `ParamSpec::initial_condition`, and the app's parameter panel, Restart and Save. Verified headless with screenshots of both examples. 44 tests.
 - Added phase-portrait and 3D trajectory views (`view3d.rs`: CPU projection, drag to rotate, scroll to zoom, fit from the bounding sphere so the box never clips). 49 tests.
-- Wrote ADRs 0007 to 0013; updated STATUS, open questions, architecture overview, block contract and interaction docs.
+- Saved the opening view in `controls` (ADR 0014) and made the scroll wheel zoom 2D plots. 52 tests.
+- Wrote ADRs 0007 to 0014; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
 ## Decided
 
@@ -27,11 +28,12 @@
 
 ## Left open
 
-- Q8: whether the default view is saved in `controls` ([open questions](../open-questions.md)).
+- Q9 (visualization architecture) and Q10 (draw-style options), raised by the owner ([open questions](../open-questions.md)). Recommendation given: a view registry like the block registry, with views declaring named slots (x, y, z, colour, …) bound to outputs or derived signals (FFT, energy, projections, Poincaré sections); richer output shapes (grids, point sets); domain crates registering model-specific views; several views at once; style options limited to encodings that change what can be read plus readability and accessibility settings, saved in `controls`.
 - Q4 (equation parsing) and Q5 (algebraic loops) remain ([open questions](../open-questions.md)).
 
 ## Notes for the next session
 
+- GPU code can be tested here: the app already renders through wgpu on lavapipe (Mesa software Vulkan; `VK_LOADER_DEBUG=driver` shows `lvp_icd.json`). Packages needed: `libxkbcommon-x11-0 mesa-vulkan-drivers xvfb`. An earlier claim this session that GPU code could not be tested here was wrong.
 - The first 3D fit used a fixed fraction of the panel and clipped near corners under perspective; the fit now uses the box's bounding sphere (test `the_box_fits_at_every_rotation`).
 - With x0 = y0 = z0 = 1, Lorenz spirals on one lobe until about t = 17 before switching; screenshots at t = 30 show the butterfly.
 - Parameter fields show at most 6 significant digits and only apply text the user changed, so the display's rounding never alters a value (e.g. beta = 8/3).

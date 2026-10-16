@@ -38,6 +38,19 @@
     "speed": 1.0,
     "plots": [
       "lorenz.xyz"
-    ]
+    ],
+    "view": {
+      "kind": "3d",
+      "axes": [
+        "lorenz.xyz[0]",
+        "lorenz.xyz[1]",
+        "lorenz.xyz[2]"
+      ],
+      "camera": {
+        "yaw": -0.6,
+        "pitch": 0.35,
+        "zoom": 1.0
+      }
+    }
   }
 }

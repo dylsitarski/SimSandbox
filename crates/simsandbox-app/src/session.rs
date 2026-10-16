@@ -8,7 +8,7 @@ use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::{Simulator, Snapshot};
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
-use simsandbox_file::ModelFile;
+use simsandbox_file::{ModelFile, ViewControl};
 use std::collections::BTreeMap;
 
 /// Take a snapshot for rewind every this many steps.
@@ -196,14 +196,17 @@ impl Session {
         Ok(())
     }
 
-    /// The model file with the current parameters, step and default speed
-    /// (ADR 0012, ADR 0013), ready to write.
-    pub fn save_json(&mut self, speed: f64) -> Result<String, String> {
+    /// The model file with the current parameters, step, default speed and
+    /// view (ADR 0012, ADR 0013, ADR 0014), ready to write.
+    pub fn save_json(&mut self, speed: f64, view: Option<ViewControl>) -> Result<String, String> {
         self.file
             .capture_params(self.sim.model(), &self.ids)
             .map_err(|e| e.to_string())?;
         self.file.run.dt = self.dt;
         self.file.controls.speed = Some(speed);
+        if view.is_some() {
+            self.file.controls.view = view;
+        }
         Ok(self.file.to_json())
     }
 
@@ -360,7 +363,7 @@ mod tests {
             .entry("lorenz.beta".into())
             .or_default()
             .slider = true;
-        let text = s.save_json(2.5).unwrap();
+        let text = s.save_json(2.5, None).unwrap();
 
         let again = Session::load("again", &text, &registry()).unwrap();
         assert_eq!(param(&again, "lorenz.rho"), 150.0);

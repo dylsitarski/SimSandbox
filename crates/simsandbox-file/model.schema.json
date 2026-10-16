@@ -110,6 +110,32 @@
         "plots": {
           "type": "array",
           "items": { "$ref": "#/$defs/ref" }
+        },
+        "view": {
+          "type": "object",
+          "description": "The view the model opens in (ADR 0014).",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["time", "phase", "3d"] },
+            "axes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[^.]+\\..+$",
+                "description": "'block.port' for a scalar output, 'block.port[i]' for a vector element."
+              },
+              "description": "Two axes for 'phase', three for '3d', none for 'time'."
+            },
+            "camera": {
+              "type": "object",
+              "required": ["yaw", "pitch", "zoom"],
+              "properties": {
+                "yaw": { "type": "number" },
+                "pitch": { "type": "number" },
+                "zoom": { "type": "number", "exclusiveMinimum": 0 }
+              }
+            }
+          }
         }
       }
     }

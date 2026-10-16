@@ -9,6 +9,7 @@ use eframe::egui;
 use egui_plot::{Legend, Line, MarkerShape, Plot, Points};
 use simsandbox_core::registry::Registry;
 use simsandbox_core::SimError;
+use simsandbox_file::{CameraControl, ViewControl};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
@@ -70,13 +71,16 @@ impl SimApp {
         }
         // Hobbyists first (ADR 0009): a model runs as soon as it opens.
         app.running = app.session.is_some();
-        app.view.kind = match view {
-            Some("phase") => ViewKind::Phase,
-            Some("3d") => ViewKind::Trajectory,
-            _ => ViewKind::TimeSeries,
-        };
-        let n = app.session.as_ref().map_or(0, |s| s.series.len());
-        app.view.fit(n);
+        // A --view flag overrides the view saved in the file.
+        if let Some(v) = view {
+            app.view.kind = match v {
+                "phase" => ViewKind::Phase,
+                "3d" => ViewKind::Trajectory,
+                _ => ViewKind::TimeSeries,
+            };
+            let n = app.session.as_ref().map_or(0, |s| s.series.len());
+            app.view.ensure_enough(n);
+        }
         app
     }
 
@@ -101,8 +105,12 @@ impl SimApp {
                 self.error = None;
                 self.notice = None;
                 self.param_edits.clear();
-                let n = self.session.as_ref().map_or(0, |s| s.series.len());
-                self.view.fit(n);
+                if let Some(s) = self.session.as_mut() {
+                    let names: Vec<&str> = s.series.iter().map(|x| x.name.as_str()).collect();
+                    if let Some(w) = self.view.open(&names, s.file.controls.view.as_ref()) {
+                        s.warnings.push(w);
+                    }
+                }
                 self.rewind_t = 0.0;
                 self.pacer.reset();
             }
@@ -334,7 +342,9 @@ impl SimApp {
                 Plot::new("time_series")
                     .legend(Legend::default())
                     .x_axis_label("t [s]")
+                    .allow_scroll(false)
                     .show(ui, |plot| {
+                        scroll_to_zoom(plot);
                         for s in &session.series {
                             plot.line(Line::new(s.name.clone(), s.points.as_slice()));
                         }
@@ -347,7 +357,9 @@ impl SimApp {
                 Plot::new("phase")
                     .x_axis_label(names[a])
                     .y_axis_label(names[b])
+                    .allow_scroll(false)
                     .show(ui, |plot| {
+                        scroll_to_zoom(plot);
                         plot.line(Line::new(format!("{} vs {}", names[b], names[a]), points));
                         if let Some(h) = head {
                             plot.points(
@@ -371,12 +383,14 @@ impl SimApp {
         let Some(session) = self.session.as_mut() else {
             return;
         };
+        let names: Vec<String> = session.series.iter().map(|x| x.name.clone()).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
         if path.is_empty() {
             self.error = Some("type a path in the File field to save to".into());
             return;
         }
         let result = session
-            .save_json(self.speed)
+            .save_json(self.speed, Some(self.view.to_control(&names)))
             .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
         match result {
             Ok(()) => {
@@ -642,12 +656,77 @@ impl Default for View {
 }
 
 impl View {
-    /// Pick sensible axes for a model with `n` plotted series, e.g. x–z for
-    /// Lorenz, and fall back to the time series if there are too few.
-    fn fit(&mut self, n: usize) {
+    /// Open a model whose plotted series are `names`: the view saved in its
+    /// `controls` (ADR 0014), else the time series with sensible axes ready
+    /// (x–z for Lorenz). Returns a warning if the saved view cannot be used.
+    fn open(&mut self, names: &[&str], saved: Option<&ViewControl>) -> Option<String> {
+        let n = names.len();
+        self.kind = ViewKind::TimeSeries;
         self.phase = if n >= 3 { [0, 2] } else { [0, 1] };
         self.trajectory = [0, 1, 2];
         self.camera = Camera::default();
+        let saved = saved?;
+        let Some(idx) = saved
+            .axes
+            .iter()
+            .map(|a| names.iter().position(|n| n == a))
+            .collect::<Option<Vec<usize>>>()
+        else {
+            return Some(
+                "controls.view: an axis is not among the plotted outputs; opening the time series"
+                    .into(),
+            );
+        };
+        match saved.kind.as_str() {
+            "phase" => {
+                self.kind = ViewKind::Phase;
+                self.phase = [idx[0], idx[1]];
+            }
+            "3d" => {
+                self.kind = ViewKind::Trajectory;
+                self.trajectory = [idx[0], idx[1], idx[2]];
+                if let Some(c) = saved.camera {
+                    self.camera = Camera {
+                        yaw: c.yaw as f32,
+                        pitch: c.pitch as f32,
+                        zoom: c.zoom as f32,
+                    };
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// The current view as saved in `controls` (ADR 0014).
+    fn to_control(&self, names: &[&str]) -> ViewControl {
+        let axes = |idx: &[usize]| idx.iter().map(|&i| names[i].to_string()).collect();
+        match self.kind {
+            ViewKind::TimeSeries => ViewControl {
+                kind: "time".into(),
+                axes: Vec::new(),
+                camera: None,
+            },
+            ViewKind::Phase => ViewControl {
+                kind: "phase".into(),
+                axes: axes(&self.phase),
+                camera: None,
+            },
+            ViewKind::Trajectory => ViewControl {
+                kind: "3d".into(),
+                axes: axes(&self.trajectory),
+                camera: Some(CameraControl {
+                    yaw: self.camera.yaw.into(),
+                    pitch: self.camera.pitch.into(),
+                    zoom: self.camera.zoom.into(),
+                }),
+            },
+        }
+    }
+
+    /// Fall back to the time series if there are too few series for the
+    /// chosen view.
+    fn ensure_enough(&mut self, n: usize) {
         let enough = match self.kind {
             ViewKind::TimeSeries => true,
             ViewKind::Phase => n >= 2,
@@ -657,6 +736,23 @@ impl View {
             self.kind = ViewKind::TimeSeries;
         }
     }
+}
+
+/// The scroll wheel zooms around the pointer instead of panning; drag pans
+/// and double-click resets, as egui_plot does by default.
+fn scroll_to_zoom(plot: &mut egui_plot::PlotUi<'_>) {
+    if !plot.response().hovered() {
+        return;
+    }
+    let dy = plot.ctx().input(|i| i.smooth_scroll_delta.y);
+    if dy != 0.0 {
+        plot.zoom_bounds_around_hovered(egui::Vec2::splat(zoom_factor(dy)));
+    }
+}
+
+/// Zoom per scrolled point; scrolling up (positive) zooms in.
+fn zoom_factor(scroll: f32) -> f32 {
+    (scroll * 0.002).exp()
 }
 
 fn axis_combo(ui: &mut egui::Ui, axis: &str, names: &[&str], selected: &mut usize) {
@@ -705,7 +801,45 @@ fn write_ppm(path: &Path, image: &egui::ColorImage) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::format_value;
+    use super::*;
+
+    #[test]
+    fn views_open_as_saved_and_save_as_shown() {
+        let names = ["l.xyz[0]", "l.xyz[1]", "l.xyz[2]"];
+        let mut v = View::default();
+        assert!(v.open(&names, None).is_none());
+        assert_eq!(v.kind, ViewKind::TimeSeries);
+        assert_eq!(v.phase, [0, 2]);
+
+        let saved = ViewControl {
+            kind: "3d".into(),
+            axes: vec!["l.xyz[2]".into(), "l.xyz[0]".into(), "l.xyz[1]".into()],
+            camera: Some(CameraControl {
+                yaw: 1.0,
+                pitch: 0.5,
+                zoom: 2.0,
+            }),
+        };
+        assert!(v.open(&names, Some(&saved)).is_none());
+        assert_eq!(v.kind, ViewKind::Trajectory);
+        assert_eq!(v.trajectory, [2, 0, 1]);
+        assert_eq!(v.to_control(&names), saved);
+
+        let unplotted = ViewControl {
+            kind: "phase".into(),
+            axes: vec!["l.xyz[0]".into(), "other.x".into()],
+            camera: None,
+        };
+        assert!(v.open(&names, Some(&unplotted)).is_some());
+        assert_eq!(v.kind, ViewKind::TimeSeries);
+    }
+
+    #[test]
+    fn scrolling_up_zooms_in() {
+        assert!(zoom_factor(50.0) > 1.0);
+        assert!(zoom_factor(-50.0) < 1.0);
+        assert_eq!(zoom_factor(0.0), 1.0);
+    }
 
     #[test]
     fn values_display_compactly() {

@@ -32,7 +32,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use simsandbox_core::block::Causality;
+use simsandbox_core::block::{Causality, Shape};
 use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::registry::{MethodSettings, Registry};
 use std::collections::BTreeMap;
@@ -149,11 +149,51 @@ pub struct Controls {
     /// Outputs plotted by default, as `"block.port"`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plots: Vec<String>,
+    /// The view the model opens in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<ViewControl>,
 }
 
 impl Controls {
     pub fn is_empty(&self) -> bool {
-        self.params.is_empty() && self.speed.is_none() && self.plots.is_empty()
+        self.params.is_empty()
+            && self.speed.is_none()
+            && self.plots.is_empty()
+            && self.view.is_none()
+    }
+}
+
+/// Which view a model opens in, and on which outputs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ViewControl {
+    /// `"time"`, `"phase"` or `"3d"`.
+    pub kind: String,
+    /// Output elements on the view's axes, as `"block.port"` (scalar) or
+    /// `"block.port[i]"`: two for `phase`, three for `3d`, none for `time`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub axes: Vec<String>,
+    /// Orientation of the `3d` view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<CameraControl>,
+}
+
+/// Orientation of a 3D view, in radians; `zoom` 1 fits the data.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CameraControl {
+    pub yaw: f64,
+    pub pitch: f64,
+    pub zoom: f64,
+}
+
+impl ViewControl {
+    /// Number of axes a view kind takes, or `None` for an unknown kind.
+    pub fn axis_count(kind: &str) -> Option<usize> {
+        match kind {
+            "time" => Some(0),
+            "phase" => Some(2),
+            "3d" => Some(3),
+            _ => None,
+        }
     }
 }
 
@@ -433,8 +473,71 @@ impl ModelFile {
             }
             known
         });
+        if let Some(v) = &mut c.view {
+            match view_problem(v, model, ids) {
+                Some(problem) => {
+                    warnings.push(format!("controls.view: {problem}; ignored"));
+                    c.view = None;
+                }
+                None => {
+                    let bad_camera = v.camera.is_some_and(|cam| {
+                        ![cam.yaw, cam.pitch, cam.zoom].iter().all(|x| x.is_finite())
+                            || cam.zoom <= 0.0
+                    });
+                    if bad_camera {
+                        warnings.push(
+                            "controls.view.camera: needs finite angles and a positive zoom; ignored"
+                                .into(),
+                        );
+                        v.camera = None;
+                    }
+                }
+            }
+        }
         warnings
     }
+}
+
+/// Why a view cannot be used, if it cannot.
+fn view_problem(v: &ViewControl, model: &Model, ids: &BTreeMap<String, BlockId>) -> Option<String> {
+    let Some(n) = ViewControl::axis_count(&v.kind) else {
+        return Some(format!(
+            "unknown kind '{}' (expected time, phase or 3d)",
+            v.kind
+        ));
+    };
+    if v.axes.len() != n {
+        return Some(format!("'{}' takes {n} axes, got {}", v.kind, v.axes.len()));
+    }
+    v.axes
+        .iter()
+        .find(|a| !output_element_exists(a, model, ids))
+        .map(|a| format!("no output element '{a}'"))
+}
+
+/// `"block.port"` for a scalar output, `"block.port[i]"` for an element of
+/// a vector output.
+fn output_element_exists(key: &str, model: &Model, ids: &BTreeMap<String, BlockId>) -> bool {
+    let Ok((id, rest)) = port_ref(key, ids) else {
+        return false;
+    };
+    let (port, index) = match rest.strip_suffix(']').and_then(|r| r.rsplit_once('[')) {
+        Some((port, i)) => match i.parse::<usize>() {
+            Ok(i) => (port, Some(i)),
+            Err(_) => return false,
+        },
+        None => (rest, None),
+    };
+    model.block(id).is_ok_and(|b| {
+        b.spec().outputs().any(|p| {
+            p.name == port
+                && match (p.shape, index) {
+                    (Shape::Scalar, None) => true,
+                    (Shape::Vector(n), Some(i)) => i < n,
+                    _ => false,
+                }
+        })
+    })
 }
 
 impl Default for ModelFile {

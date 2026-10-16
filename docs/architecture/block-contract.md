@@ -69,7 +69,7 @@ Measured effect (test `cosimulation_adds_coupling_error`): two coupled oscillato
 ## Composition
 
 - A group of connected Blocks can be collapsed into a new Block with its own exposed ports and parameters (equation domain: `FusedSystem` exposes `<member>.<name>` ports and parameters).
-- The saved model will be a JSON file naming each Block by a registered type ([ADR 0007](../decisions/0007-json-model-files.md)), with an optional `controls` section for sliders, playback speed and default plots ([ADR 0012](../decisions/0012-controls-in-model-files.md)).
+- The saved model will be a JSON file naming each Block by a registered type ([ADR 0007](../decisions/0007-json-model-files.md)), with an optional `controls` section for sliders, playback speed, default plots and the opening view ([ADR 0012](../decisions/0012-controls-in-model-files.md), [ADR 0014](../decisions/0014-view-in-controls.md)).
 
 ## Current restrictions
 
