@@ -12,5 +12,5 @@ One note per non-trivial working session (human or agent): what was done, what w
 
 | Date | Note | Summary |
 | --- | --- | --- |
-| 2026-10-16 | [Kernel prep and ADRs](2026-10-16-kernel-prep-and-adrs.md) | Parameter access and validation, snapshots include parameters, ADRs 0007–0008 |
+| 2026-10-16 | [Kernel prep and ADRs](2026-10-16-kernel-prep-and-adrs.md) | Parameter access and validation, snapshots include parameters, ADRs 0007–0009 |
 | 2026-10-15 | [Project inception](2026-10-15-project-inception.md) | Market research, plan, core decisions, first commit, documentation system |

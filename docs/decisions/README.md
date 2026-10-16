@@ -14,6 +14,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0006](0006-apache-2-license.md) | Apache-2.0 license | Accepted | 2026-10-15 |
 | [0007](0007-json-model-files.md) | JSON model files with a block-type registry | Accepted | 2026-10-16 |
 | [0008](0008-native-egui-ui.md) | All-native desktop UI with egui and wgpu | Accepted | 2026-10-16 |
+| [0009](0009-hobbyists-first.md) | Hobbyists are the first audience | Accepted | 2026-10-16 |
 
 ## When to write one
 

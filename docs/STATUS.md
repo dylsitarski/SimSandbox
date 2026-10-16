@@ -19,7 +19,7 @@ _Last updated: 2026-10-16_
 
 ## Done recently
 
-- 2026-10-16: kernel prep for model files and the UI (parameter access and validation; snapshots include parameters); ADRs 0007 (JSON model files) and 0008 (egui + wgpu UI).
+- 2026-10-16: kernel prep for model files and the UI (parameter access and validation; snapshots include parameters); ADRs 0007 (JSON model files), 0008 (egui + wgpu UI) and 0009 (hobbyists first).
 
 ## In progress
 
@@ -30,7 +30,7 @@ _Last updated: 2026-10-16_
 In priority order. Each item should end with tests and updated docs.
 
 1. **Model file format** per [ADR 0007](decisions/0007-json-model-files.md): block-type registry in the kernel, `simsandbox_eq::register`, a JSON reader/writer crate with a JSON Schema, round-trip tests for Lorenz and the coupled oscillator, and `simsandbox run <file>` in the CLI.
-2. **Desktop app shell.** New crate `simsandbox-app` (eframe + egui + wgpu, per [ADR 0008](decisions/0008-native-egui-ui.md)): window, run/pause/rewind controls, a live time-series plot. Decide how many simulation steps run per frame.
+2. **Desktop app shell.** New crate `simsandbox-app` (eframe + egui + wgpu, per [ADR 0008](decisions/0008-native-egui-ui.md)): window, run/pause/rewind controls, a live time-series plot. Resolve [Q6](open-questions.md) (pacing of the live loop) first.
 3. **Auto-generated parameter panel.** Sliders built from `ParamSpec` (name, unit, range) via `Simulator::model()`, wired to `Simulator::set_param`.
 4. **Phase-portrait / 3D trajectory view** for the Lorenz system.
 5. **Symbolic equation entry.** Parse `dx/dt = sigma*(y - x)` into an `OdeSystem`; choose the parser approach via ADR.

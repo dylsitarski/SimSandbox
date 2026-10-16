@@ -1,10 +1,12 @@
 # Vision
 
-_Last updated: 2026-10-15_
+_Last updated: 2026-10-16_
 
 SimSandbox is a desktop environment for building, connecting and exploring simulations of all kinds — from typed equations and physical networks to rigid bodies, agent populations, CFD and ML models — for fun, for learning and for research.
 
 It is a small, solver-agnostic kernel that only knows how to connect, schedule and observe models, with every kind of physics, math and ML behind plugins. Users build models from deliberately chosen methods, and each method is labelled for speed and accuracy, so it is always clear whether a model is fit for play, exploration or research.
+
+**First audience:** hobbyists who want to build and play with simulations on their own machine ([ADR 0009](decisions/0009-hobbyists-first.md)). Students and researchers follow in later phases.
 
 ## The three pillars
 

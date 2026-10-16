@@ -8,9 +8,9 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Options | Needed by | Notes |
 | --- | --- | --- | --- | --- |
-| Q2 | First audience for the prototype | Students; hobbyists; researchers in the owner's field | Phase 0 gate | Shapes the first examples and UI defaults |
 | Q4 | Symbolic equation parsing | Rust-native parser and symbolic crate; SymPy via Python; Julia Symbolics service | Symbolic equation entry | Affects dependencies and startup |
 | Q5 | Algebraic loops in fused groups | Causalisation and tearing; Newton solve per RHS evaluation; forbid and warn | Phase 1 | Current v0 restriction: no direct feedthrough |
+| Q6 | Pacing of the live simulation loop | Fixed steps per frame; wall-clock pacing with a speed control and a per-frame budget; simulation on its own thread | Desktop app shell | How simulated time maps to screen time; recommendation in the [session note](sessions/2026-10-16-kernel-prep-and-adrs.md) |
 
 ## Resolved
 
@@ -24,3 +24,4 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | — | License | [ADR 0006](decisions/0006-apache-2-license.md) |
 | Q1 | Model file format | [ADR 0007](decisions/0007-json-model-files.md) |
 | Q3 | Desktop UI approach | [ADR 0008](decisions/0008-native-egui-ui.md) |
+| Q2 | First audience for the prototype | [ADR 0009](decisions/0009-hobbyists-first.md) |
