@@ -11,7 +11,7 @@ use simsandbox_core::registry::Registry;
 use simsandbox_core::SimError;
 use simsandbox_file::{CameraControl, ViewControl};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// A screenshot request for documentation and visual checks
@@ -31,7 +31,9 @@ pub struct SimApp {
     error: Option<String>,
     /// Success messages, e.g. "Saved to …".
     notice: Option<String>,
-    path_input: String,
+    /// The file the open model was loaded from; Save writes back to it.
+    /// `None` for built-in examples, which Save turns into Save as.
+    path: Option<PathBuf>,
     /// Text being typed into parameter fields, keyed by `"block.param"`.
     param_edits: HashMap<String, String>,
     last_frame: Option<Instant>,
@@ -56,7 +58,7 @@ impl SimApp {
             speed: 1.0,
             error: None,
             notice: None,
-            path_input: String::new(),
+            path: None,
             param_edits: HashMap::new(),
             last_frame: None,
             rewind_t: 0.0,
@@ -85,15 +87,62 @@ impl SimApp {
     }
 
     fn open_path(&mut self, path: &str) {
-        self.path_input = path.into();
         match std::fs::read_to_string(path) {
             Ok(text) => {
                 let title = Path::new(path)
                     .file_name()
                     .map_or(path.into(), |n| n.to_string_lossy().into_owned());
                 self.open_text(&title, &text);
+                if self.error.is_none() {
+                    self.path = Some(path.into());
+                }
             }
             Err(e) => self.error = Some(format!("{path}: {e}")),
+        }
+    }
+
+    /// Open a model chosen in the system file dialog.
+    fn open_dialog(&mut self) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Open model")
+            .add_filter("SimSandbox model", &["json"]);
+        if let Some(dir) = self.path.as_deref().and_then(Path::parent) {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.pick_file() {
+            self.open_path(&path.to_string_lossy());
+            self.running = self.session.is_some() && self.error.is_none();
+        }
+    }
+
+    /// Save to the file the model came from, or ask where for a built-in
+    /// example.
+    fn save(&mut self) {
+        match self.path.clone() {
+            Some(path) => self.save_to(&path),
+            None => self.save_as_dialog(),
+        }
+    }
+
+    /// Save to a file chosen in the system save dialog, which asks before
+    /// overwriting.
+    fn save_as_dialog(&mut self) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let name = self.path.as_deref().and_then(Path::file_name).map_or_else(
+            || default_file_name(&session.title),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Save model")
+            .add_filter("SimSandbox model", &["json"])
+            .set_file_name(name);
+        if let Some(dir) = self.path.as_deref().and_then(Path::parent) {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.save_file() {
+            self.save_to(&with_model_extension(path));
         }
     }
 
@@ -168,31 +217,45 @@ impl SimApp {
                 for e in EXAMPLES {
                     if ui.button(e.name).clicked() {
                         self.open_text(e.name, e.text);
+                        if self.error.is_none() {
+                            self.path = None;
+                        }
                         self.running = true;
                         ui.close();
                     }
                 }
             });
             ui.separator();
-            ui.label("File:");
-            let edit = ui.add(
-                egui::TextEdit::singleline(&mut self.path_input)
-                    .hint_text("path to a .ssbx.json file, or drop one on the window")
-                    .desired_width(320.0),
-            );
-            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button("Open").clicked() || enter {
-                let p = self.path_input.clone();
-                self.open_path(&p);
-            }
             if ui
-                .add_enabled(self.session.is_some(), egui::Button::new("Save"))
-                .on_hover_text("Write the model, its current parameters, step, sliders and speed to the path in the File field")
+                .button("Open…")
+                .on_hover_text("Open a model file (Ctrl+O); you can also drop one on the window")
+                .clicked()
+            {
+                self.open_dialog();
+            }
+            let has_model = self.session.is_some();
+            if ui
+                .add_enabled(has_model, egui::Button::new("Save"))
+                .on_hover_text("Save the model with its current parameters, step, sliders, speed and view (Ctrl+S)")
                 .clicked()
             {
                 self.save();
             }
+            if ui
+                .add_enabled(has_model, egui::Button::new("Save as…"))
+                .on_hover_text("Save to a new file (Ctrl+Shift+S)")
+                .clicked()
+            {
+                self.save_as_dialog();
+            }
+            ui.separator();
+            match &self.path {
+                Some(p) => ui.weak(p.display().to_string()),
+                None if has_model => ui.weak("built-in example: Save asks where to save it"),
+                None => ui.weak(""),
+            };
         });
+        self.shortcuts(ui);
 
         let Some(session) = self.session.as_mut() else {
             return;
@@ -378,26 +441,37 @@ impl SimApp {
         }
     }
 
-    fn save(&mut self) {
-        let path = self.path_input.trim().to_string();
+    fn save_to(&mut self, path: &Path) {
         let Some(session) = self.session.as_mut() else {
             return;
         };
         let names: Vec<String> = session.series.iter().map(|x| x.name.clone()).collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        if path.is_empty() {
-            self.error = Some("type a path in the File field to save to".into());
-            return;
-        }
         let result = session
             .save_json(self.speed, Some(self.view.to_control(&names)))
-            .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+            .and_then(|text| std::fs::write(path, text).map_err(|e| e.to_string()));
         match result {
             Ok(()) => {
                 self.error = None;
-                self.notice = Some(format!("Saved to {path}"));
+                self.notice = Some(format!("Saved to {}", path.display()));
+                self.path = Some(path.to_path_buf());
             }
-            Err(e) => self.error = Some(format!("{path}: {e}")),
+            Err(e) => self.error = Some(format!("{}: {e}", path.display())),
+        }
+    }
+
+    fn shortcuts(&mut self, ui: &mut egui::Ui) {
+        use egui::{Key, KeyboardShortcut, Modifiers};
+        let save_as = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+        let save = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
+        let open = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
+        // The more specific shortcut first, so Ctrl+Shift+S is not taken as Ctrl+S.
+        if ui.input_mut(|i| i.consume_shortcut(&save_as)) && self.session.is_some() {
+            self.save_as_dialog();
+        } else if ui.input_mut(|i| i.consume_shortcut(&save)) && self.session.is_some() {
+            self.save();
+        } else if ui.input_mut(|i| i.consume_shortcut(&open)) {
+            self.open_dialog();
         }
     }
 
@@ -627,6 +701,47 @@ fn param_row(
     }
 }
 
+/// A file name for saving a model titled `title`, e.g. "Lorenz system" →
+/// "lorenz-system.ssbx.json".
+fn default_file_name(title: &str) -> String {
+    if title.ends_with(".json") {
+        return title.into();
+    }
+    let stem: String = title
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    format!(
+        "{}{}",
+        if stem.is_empty() { "model" } else { &stem },
+        simsandbox_file::EXTENSION
+    )
+}
+
+/// Add the model extension when a chosen name has no `.json` extension.
+fn with_model_extension(path: PathBuf) -> PathBuf {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+    {
+        path
+    } else {
+        let mut s = path.into_os_string();
+        s.push(simsandbox_file::EXTENSION);
+        s.into()
+    }
+}
+
 /// What the central area shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewKind {
@@ -832,6 +947,56 @@ mod tests {
         };
         assert!(v.open(&names, Some(&unplotted)).is_some());
         assert_eq!(v.kind, ViewKind::TimeSeries);
+    }
+
+    #[test]
+    fn save_names_get_the_model_extension() {
+        assert_eq!(
+            default_file_name("Lorenz system"),
+            "lorenz-system.ssbx.json"
+        );
+        assert_eq!(
+            default_file_name("Coupled oscillators"),
+            "coupled-oscillators.ssbx.json"
+        );
+        assert_eq!(default_file_name("my.ssbx.json"), "my.ssbx.json");
+        assert_eq!(default_file_name("!!!"), "model.ssbx.json");
+        assert_eq!(
+            with_model_extension("a/b".into()),
+            PathBuf::from("a/b.ssbx.json")
+        );
+        assert_eq!(
+            with_model_extension("a/b.json".into()),
+            PathBuf::from("a/b.json")
+        );
+        assert_eq!(
+            with_model_extension("a/b.JSON".into()),
+            PathBuf::from("a/b.JSON")
+        );
+    }
+
+    #[test]
+    fn saving_an_example_then_reopening_it_keeps_the_path() {
+        let dir = std::env::temp_dir().join(format!("simsandbox-app-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lorenz.ssbx.json");
+
+        let mut app = SimApp::new(None, None, None);
+        assert!(app.path.is_none(), "built-in examples have no path");
+        app.save_to(&path);
+        assert_eq!(app.error, None);
+        assert_eq!(app.path.as_deref(), Some(path.as_path()));
+
+        let mut reopened = SimApp::new(Some(path.to_string_lossy().into_owned()), None, None);
+        assert_eq!(reopened.error, None);
+        assert_eq!(reopened.path.as_deref(), Some(path.as_path()));
+        assert_eq!(reopened.view.kind, ViewKind::Trajectory);
+
+        // A failed open keeps the previous file as the save target.
+        reopened.open_path(&dir.join("missing.ssbx.json").to_string_lossy());
+        assert!(reopened.error.is_some());
+        assert_eq!(reopened.path.as_deref(), Some(path.as_path()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

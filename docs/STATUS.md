@@ -15,12 +15,13 @@ _Last updated: 2026-10-16_
 - Equation domain: Euler, RK4, Dormand–Prince 5(4), each with speed/accuracy labels; fusion of equation Blocks into one system (`crates/simsandbox-eq`).
 - Example systems: Lorenz, coupled oscillator; example files `examples/lorenz.ssbx.json` and `examples/coupled-oscillators.ssbx.json`.
 - Model files ([ADR 0007](decisions/0007-json-model-files.md), [ADR 0012](decisions/0012-controls-in-model-files.md)): block-type registry (`crates/simsandbox-core/src/registry.rs`), equation types `eq.lorenz` and `eq.coupled_oscillator` (`simsandbox_eq::register`), JSON load/save with errors located by line/column or path, lenient `controls`, a `run` section with `dt` and optional `t_end` ([ADR 0013](decisions/0013-run-section.md)), JSON Schema (`crates/simsandbox-file/model.schema.json`).
-- Desktop app `simsandbox-app` ([ADR 0008](decisions/0008-native-egui-ui.md)): opens a model file (path field, drag and drop, command-line argument) or a built-in example; starts running at once; run/pause, Restart (re-initialise from current parameters), rewind slider that branches, pause at the file's `t_end`; parameter panel with a typed field per parameter, units, initial-condition markers and opt-in sliders with editable ranges ([ADR 0011](decisions/0011-parameter-entry.md)); Save writes parameters, step, sliders and speed to the path in the File field ([ADR 0012](decisions/0012-controls-in-model-files.md), [ADR 0013](decisions/0013-run-section.md)); speed control and editable step with wall-clock pacing, an 8 ms per-frame budget and an achieved-speed warning ([ADR 0010](decisions/0010-live-loop-pacing.md)); speed and accuracy labels; three views of the file's `controls.plots` (all outputs if none): time series, phase portrait (any output against another) and a rotatable, zoomable 3D trajectory with a fading trail; the scroll wheel zooms 2D plots around the pointer; the opening view, axes and 3D camera are read from and saved to `controls.view` ([ADR 0014](decisions/0014-view-in-controls.md)); load errors and warnings shown in the window; `--view time|phase|3d` and `--screenshot` for headless checks.
+- Desktop app `simsandbox-app` ([ADR 0008](decisions/0008-native-egui-ui.md)): opens a model file (native Open dialog, drag and drop, command-line argument) or a built-in example; starts running at once; run/pause, Restart (re-initialise from current parameters), rewind slider that branches, pause at the file's `t_end`; parameter panel with a typed field per parameter, units, initial-condition markers and opt-in sliders with editable ranges ([ADR 0011](decisions/0011-parameter-entry.md)); Save (back to the opened file) and Save as (native dialog, asks before overwriting), with Ctrl+O, Ctrl+S and Ctrl+Shift+S; saving writes parameters, step, sliders, speed and view ([ADR 0012](decisions/0012-controls-in-model-files.md), [ADR 0013](decisions/0013-run-section.md)); speed control and editable step with wall-clock pacing, an 8 ms per-frame budget and an achieved-speed warning ([ADR 0010](decisions/0010-live-loop-pacing.md)); speed and accuracy labels; three views of the file's `controls.plots` (all outputs if none): time series, phase portrait (any output against another) and a rotatable, zoomable 3D trajectory with a fading trail; the scroll wheel zooms 2D plots around the pointer; the opening view, axes and 3D camera are read from and saved to `controls.view` ([ADR 0014](decisions/0014-view-in-controls.md)); load errors and warnings shown in the window; `--view time|phase|3d` and `--screenshot` for headless checks.
 - CLI: `simsandbox run FILE` writes every output as CSV, using the file's `run` section unless `--dt`/`--t-end` override it; `simsandbox lorenz` with `--method euler|rk4|dopri5`.
-- 52 tests, including verification against analytic solutions and convergence order.
+- 54 tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-10-16: native Open, Save and Save as dialogs in the app (`rfd`).
 - 2026-10-16: ADR 0015 (pluggable views, style options) and [visualization architecture](architecture/visualization.md).
 - 2026-10-16: opening view saved in `controls` (ADR 0014); scroll-to-zoom in 2D plots; Lorenz example opens in 3D.
 - 2026-10-16: phase-portrait and 3D trajectory views in the app.
@@ -37,9 +38,8 @@ _Last updated: 2026-10-16_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Native file dialogs** for Open and Save (e.g. the `rfd` crate), replacing the path field.
-2. **Pluggable views, steps 1–2** of the [visualization migration](architecture/visualization.md#migration-steps): `simsandbox-views` crate with the view trait, registry and the three current views; `controls.views` with a colour slot (trail fading bound to `t`) and `trail_length`. Steps 3–6 follow before the agent domain.
-3. **Symbolic equation entry.** Parse `dx/dt = sigma*(y - x)` into an `OdeSystem`; choose the parser approach via ADR.
+1. **Pluggable views, steps 1–2** of the [visualization migration](architecture/visualization.md#migration-steps): `simsandbox-views` crate with the view trait, registry and the three current views; `controls.views` with a colour slot (trail fading bound to `t`) and `trail_length`. Steps 3–6 follow before the agent domain.
+2. **Symbolic equation entry.** Parse `dx/dt = sigma*(y - x)` into an `OdeSystem`; choose the parser approach via ADR.
 
 ## Known limitations
 
@@ -49,8 +49,8 @@ In priority order. Each item should end with tests and updated docs.
 - `FusedSystem::rhs` allocates per call; fine for small models, revisit before real-time use with large groups.
 - Views are a fixed set (time series, phase portrait, 3D trajectory) over scalar series, one at a time; models with many outputs or model-specific pictures need the pluggable views of [ADR 0015](decisions/0015-pluggable-views.md), not yet built, and draw styles are fixed.
 - The 3D view projects on the CPU and draws with the egui painter, at most 20 000 points per frame; it suits trajectories, not meshes or fields, which need wgpu paint callbacks ([ADR 0008](decisions/0008-native-egui-ui.md)).
-- Save writes to the path typed in the File field and overwrites without asking; built-in examples have no path until one is typed.
-- The app has no native file dialog; files open from a path field, drag and drop or the command line.
+- The app does not track unsaved changes: opening another model or closing the window discards them without asking.
+- On Linux the file dialogs need the XDG desktop portal (standard on GNOME and KDE desktops); without it Open and Save as do nothing, and drag and drop or a command-line path still work.
 - The simulation runs on the UI thread ([ADR 0010](decisions/0010-live-loop-pacing.md)); a heavy model slows the window's controls as well as the plot.
 - Plotted series and rewind history are thinned (every other point dropped) beyond 100 000 points and 10 000 snapshots, so very long runs lose resolution in the past.
 - Model files cannot describe fused equation groups yet, and a model built in code cannot be saved (Blocks do not know their type name); files are the source for saving.

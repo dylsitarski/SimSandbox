@@ -21,9 +21,11 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - `Simulator::restart` and `ParamSpec::initial_condition`.
 - App: phase-portrait view (any output against another) and a rotatable, zoomable 3D trajectory view; `--view time|phase|3d` start-up flag.
 - Model files: optional `controls.view` (kind, axes, 3D camera) saved by the app and used when a model opens (ADR 0014); the Lorenz example opens in 3D.
+- App: native Open, Save and Save as dialogs (Ctrl+O, Ctrl+S, Ctrl+Shift+S); Save writes back to the opened file, built-in examples ask where to save.
 
 ### Changed
 
+- App: the File path field is replaced by the file dialogs; the current file's path is shown in the toolbar.
 - App: the scroll wheel zooms 2D plots around the pointer instead of panning.
 - `ParamSpec::min`/`max` renamed to `suggested_min`/`suggested_max`; the range is a hint for sliders, not a limit. `set_param` rejects only NaN and infinite values (`SimError::InvalidParam`); unknown names return `SimError::UnknownParam` instead of `SimError::BadConnection`.
 - Snapshots store parameter values; `Simulator::restore` rewinds them along with state.

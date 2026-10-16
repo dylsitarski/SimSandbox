@@ -10,7 +10,7 @@ SimSandbox needs stable Rust 1.86 or newer; the desktop app (`crates/simsandbox-
 | --- | --- |
 | Windows (primary desktop target) | Install [rustup](https://rustup.rs) with the default MSVC toolchain; it prompts for the Visual Studio C++ Build Tools. Work in a normal Windows folder and build from PowerShell or your IDE. |
 | macOS | `rustup` from rustup.rs; Xcode command-line tools. |
-| Linux | `rustup` from rustup.rs; a C toolchain (`build-essential` or equivalent). The desktop app loads windowing and GPU libraries at run time: `libxkbcommon-x11-0` (X11) or the Wayland client libraries, plus a Vulkan or OpenGL driver (e.g. Mesa). |
+| Linux | `rustup` from rustup.rs; a C toolchain (`build-essential` or equivalent). The desktop app loads windowing and GPU libraries at run time: `libxkbcommon-x11-0` (X11) or the Wayland client libraries, plus a Vulkan or OpenGL driver (e.g. Mesa). Its file dialogs use the XDG desktop portal (`xdg-desktop-portal` with a GTK or KDE backend, standard on GNOME and KDE). |
 
 ### Windows and WSL
 

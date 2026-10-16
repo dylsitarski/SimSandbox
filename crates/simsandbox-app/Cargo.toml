@@ -27,6 +27,9 @@ eframe = { version = "=0.36.2", default-features = false, features = [
     "x11",
 ] }
 egui_plot = "=0.37.0"
+# Native Open/Save dialogs; on Linux through the XDG desktop portal, so no
+# GTK headers are needed to build.
+rfd = "0.17"
 
 [lints]
 workspace = true
