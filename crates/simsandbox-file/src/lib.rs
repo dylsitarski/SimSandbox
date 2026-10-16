@@ -8,6 +8,7 @@
 //! ```json
 //! {
 //!   "format": 1,
+//!   "run": { "dt": 0.01 },
 //!   "blocks": [
 //!     { "name": "lorenz", "type": "eq.lorenz", "method": { "name": "rk4" },
 //!       "params": { "rho": 28.0 } }
@@ -19,6 +20,8 @@
 //! - [`load`] parses a file and builds a runnable [`Model`] with a
 //!   [`Registry`]. Errors carry a line and column (syntax and structure) or a
 //!   path such as `blocks[0].params.rho` (meaning).
+//! - `run` holds settings that affect results, such as the step `dt`
+//!   (ADR 0013); invalid values are load errors.
 //! - Results never depend on `controls`: a malformed or dangling control is
 //!   dropped with a warning, never a load failure.
 //! - [`ModelFile::capture_params`] copies current parameter values back into
@@ -50,11 +53,40 @@ pub struct ModelFile {
     pub format: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    pub run: RunSettings,
     pub blocks: Vec<BlockEntry>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<ConnectionEntry>,
     #[serde(skip_serializing_if = "Controls::is_empty")]
     pub controls: Controls,
+}
+
+/// Default communication step when a file has no `run.dt`.
+pub const DEFAULT_DT: f64 = 0.01;
+
+fn default_dt() -> f64 {
+    DEFAULT_DT
+}
+
+/// How the model is run (ADR 0013). Unlike `controls`, these affect results.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunSettings {
+    /// Simulated seconds per communication step.
+    #[serde(default = "default_dt")]
+    pub dt: f64,
+    /// Where batch runs stop and where the app pauses; none runs on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t_end: Option<f64>,
+}
+
+impl Default for RunSettings {
+    fn default() -> Self {
+        Self {
+            dt: DEFAULT_DT,
+            t_end: None,
+        }
+    }
 }
 
 /// One Block: a unique name, a registered type, a method and parameter
@@ -209,6 +241,8 @@ struct RawFile {
     format: u32,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    run: RunSettings,
     blocks: Vec<BlockEntry>,
     #[serde(default)]
     connections: Vec<ConnectionEntry>,
@@ -222,6 +256,7 @@ impl ModelFile {
         Self {
             format: FORMAT_VERSION,
             description: None,
+            run: RunSettings::default(),
             blocks: Vec::new(),
             connections: Vec::new(),
             controls: Controls::default(),
@@ -239,6 +274,16 @@ impl ModelFile {
         if raw.format != FORMAT_VERSION {
             return Err(FileError::UnsupportedFormat(raw.format));
         }
+        let positive = |v: f64| v.is_finite() && v > 0.0;
+        if !positive(raw.run.dt) {
+            return Err(invalid(
+                "run.dt",
+                format!("must be positive, got {}", raw.run.dt),
+            ));
+        }
+        if let Some(t) = raw.run.t_end.filter(|&t| !positive(t)) {
+            return Err(invalid("run.t_end", format!("must be positive, got {t}")));
+        }
         let mut warnings = Vec::new();
         let controls = match raw.controls {
             None => Controls::default(),
@@ -251,6 +296,7 @@ impl ModelFile {
             Self {
                 format: raw.format,
                 description: raw.description,
+                run: raw.run,
                 blocks: raw.blocks,
                 connections: raw.connections,
                 controls,

@@ -2,13 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/dylsitarski/SimSandbox/blob/main/crates/simsandbox-file/model.schema.json",
   "title": "SimSandbox model file",
-  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md.",
+  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md.",
   "type": "object",
   "required": ["format", "blocks"],
   "additionalProperties": false,
   "properties": {
     "format": { "const": 1 },
     "description": { "type": "string" },
+    "run": { "$ref": "#/$defs/run" },
     "blocks": {
       "type": "array",
       "items": { "$ref": "#/$defs/block" }
@@ -20,6 +21,24 @@
     "controls": { "$ref": "#/$defs/controls" }
   },
   "$defs": {
+    "run": {
+      "type": "object",
+      "description": "Settings that affect results (ADR 0013). Invalid values are load errors.",
+      "additionalProperties": false,
+      "properties": {
+        "dt": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 0.01,
+          "description": "Simulated seconds per communication step."
+        },
+        "t_end": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Where batch runs stop and where the app pauses."
+        }
+      }
+    },
     "name": {
       "type": "string",
       "pattern": "^[^.]+$",

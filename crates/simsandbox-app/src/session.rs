@@ -1,17 +1,15 @@
 //! One open model: the running simulator, its recorded history for rewind,
-//! and the plotted series.
+//! the plotted series, and its parameters.
 
 use egui_plot::PlotPoint;
 use simsandbox_core::block::{MethodLabels, Shape};
 use simsandbox_core::graph::BlockId;
 use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::{Simulator, Snapshot};
+use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
 use simsandbox_file::ModelFile;
-
-/// Default communication step. Model files do not store one yet
-/// (open question Q7).
-pub const DEFAULT_DT: f64 = 0.01;
+use std::collections::BTreeMap;
 
 /// Take a snapshot for rewind every this many steps.
 const SNAPSHOT_EVERY: usize = 10;
@@ -29,15 +27,33 @@ pub struct Series {
     pub points: Vec<PlotPoint>,
 }
 
+/// One parameter as the panel shows it.
+#[derive(Clone)]
+pub struct ParamRow {
+    /// `"block.param"`, the key used in `controls.params`.
+    pub key: String,
+    pub block: BlockId,
+    pub name: String,
+    pub unit: String,
+    pub description: String,
+    pub suggested: [f64; 2],
+    pub initial_condition: bool,
+    pub value: f64,
+}
+
 pub struct Session {
     /// Display name, e.g. the file name.
     pub title: String,
     pub description: Option<String>,
     /// The file as loaded; the source for saving.
     pub file: ModelFile,
+    pub ids: BTreeMap<String, BlockId>,
     pub warnings: Vec<String>,
     pub dt: f64,
     pub series: Vec<Series>,
+    /// Where the app pauses (the file's `run.t_end`); cleared once reached so
+    /// Run continues past it (ADR 0013).
+    stop_at: Option<f64>,
     sim: Simulator,
     history: Vec<Snapshot>,
     steps_since_snapshot: usize,
@@ -76,9 +92,11 @@ impl Session {
         let mut session = Self {
             title: title.into(),
             description: loaded.file.description.clone(),
+            dt: loaded.file.run.dt,
+            stop_at: loaded.file.run.t_end,
             file: loaded.file,
+            ids: loaded.ids,
             warnings: loaded.warnings,
-            dt: DEFAULT_DT,
             series,
             history: vec![sim.snapshot()],
             sim,
@@ -111,6 +129,84 @@ impl Session {
         Ok(())
     }
 
+    /// The run has reached the file's `t_end`. Returns true once, then the
+    /// run may continue past it.
+    pub fn take_end_reached(&mut self) -> bool {
+        let reached = self
+            .stop_at
+            .is_some_and(|end| self.time() >= end - 1e-9 * self.dt.max(end.abs()));
+        if reached {
+            self.stop_at = None;
+        }
+        reached
+    }
+
+    /// Every parameter, in file block order.
+    pub fn params(&self) -> Vec<ParamRow> {
+        let model = self.sim.model();
+        let mut rows = Vec::new();
+        for entry in &self.file.blocks {
+            let id = self.ids[&entry.name];
+            let (Ok(block), Ok(values)) = (model.block(id), model.params(id)) else {
+                continue;
+            };
+            for (p, &value) in block.spec().params.iter().zip(values) {
+                rows.push(ParamRow {
+                    key: format!("{}.{}", entry.name, p.name),
+                    block: id,
+                    name: p.name.clone(),
+                    unit: if p.unit == Unit::DIMENSIONLESS {
+                        String::new()
+                    } else {
+                        p.unit.to_string()
+                    },
+                    description: p.description.clone(),
+                    suggested: [p.suggested_min, p.suggested_max],
+                    initial_condition: p.initial_condition,
+                    value,
+                });
+            }
+        }
+        rows
+    }
+
+    /// Change a parameter while running. Initial conditions apply on
+    /// [`Session::restart`], or at once if the run has not started.
+    pub fn set_param(&mut self, block: BlockId, name: &str, value: f64) -> Result<(), String> {
+        self.sim
+            .set_param(block, name, value)
+            .map_err(|e| e.to_string())?;
+        if self.time() == 0.0 && self.history.len() == 1 {
+            self.restart().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Start again at t = 0 from the current parameter values. History and
+    /// plots start over.
+    pub fn restart(&mut self) -> Result<(), SimError> {
+        self.sim.restart(0.0)?;
+        self.history = vec![self.sim.snapshot()];
+        self.steps_since_snapshot = 0;
+        self.stop_at = self.file.run.t_end;
+        for s in &mut self.series {
+            s.points.clear();
+        }
+        self.record();
+        Ok(())
+    }
+
+    /// The model file with the current parameters, step and default speed
+    /// (ADR 0012, ADR 0013), ready to write.
+    pub fn save_json(&mut self, speed: f64) -> Result<String, String> {
+        self.file
+            .capture_params(self.sim.model(), &self.ids)
+            .map_err(|e| e.to_string())?;
+        self.file.run.dt = self.dt;
+        self.file.controls.speed = Some(speed);
+        Ok(self.file.to_json())
+    }
+
     /// Earliest and latest time the run can be rewound to.
     pub fn history_range(&self) -> (f64, f64) {
         let first = self.history.first().map_or(0.0, |s| s.t);
@@ -126,15 +222,11 @@ impl Session {
         let snap = &self.history[keep];
         self.sim.restore(snap);
         let t0 = snap.t;
+        self.stop_at = self.file.run.t_end.filter(|&end| end > t0);
         for s in &mut self.series {
             s.points.retain(|p| p.x <= t0);
         }
         self.steps_since_snapshot = 0;
-    }
-
-    /// Back to the start of the run.
-    pub fn reset(&mut self) {
-        self.rewind_to(f64::NEG_INFINITY);
     }
 
     fn record(&mut self) {
@@ -202,10 +294,86 @@ mod tests {
         }
         assert_eq!(s.series[0].points, reference);
 
-        s.reset();
+        s.rewind_to(0.0);
         assert_eq!(s.time(), 0.0);
         assert_eq!(s.series[0].points.len(), 1);
         assert_eq!(s.history_range(), (0.0, 0.0));
+    }
+
+    fn param(s: &Session, key: &str) -> f64 {
+        s.params().iter().find(|r| r.key == key).unwrap().value
+    }
+
+    #[test]
+    fn initial_conditions_apply_on_restart_or_at_once_before_running() {
+        let mut s = lorenz();
+        let id = s.ids["lorenz"];
+        let row = s
+            .params()
+            .into_iter()
+            .find(|r| r.key == "lorenz.x0")
+            .unwrap();
+        assert!(row.initial_condition);
+
+        // Before the run starts, the plot's first point moves at once.
+        s.set_param(id, "x0", 5.0).unwrap();
+        assert_eq!(s.series[0].points[0].y, 5.0);
+
+        for _ in 0..50 {
+            s.step().unwrap();
+        }
+        s.set_param(id, "x0", -3.0).unwrap();
+        assert!(s.time() > 0.0, "a running model is not restarted");
+        s.restart().unwrap();
+        assert_eq!(s.time(), 0.0);
+        assert_eq!(s.series[0].points.len(), 1);
+        assert_eq!(s.series[0].points[0].y, -3.0);
+        assert_eq!(s.history_range(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn saving_records_params_step_controls_and_speed() {
+        let mut s = lorenz();
+        let id = s.ids["lorenz"];
+        s.set_param(id, "rho", 150.0).unwrap();
+        s.dt = 0.005;
+        s.file
+            .controls
+            .params
+            .entry("lorenz.beta".into())
+            .or_default()
+            .slider = true;
+        let text = s.save_json(2.5).unwrap();
+
+        let again = Session::load("again", &text, &registry()).unwrap();
+        assert_eq!(param(&again, "lorenz.rho"), 150.0);
+        assert_eq!(again.dt, 0.005);
+        assert_eq!(again.file.controls.speed, Some(2.5));
+        assert!(again.file.controls.params["lorenz.beta"].slider);
+        assert!(again.file.controls.params["lorenz.rho"].slider);
+    }
+
+    #[test]
+    fn the_run_pauses_once_at_t_end() {
+        let text = EXAMPLES[0]
+            .text
+            .replace(r#""dt": 0.01"#, r#""dt": 0.01, "t_end": 0.5"#);
+        let mut s = Session::load("l", &text, &registry()).unwrap();
+        let mut steps = 0;
+        while !s.take_end_reached() {
+            s.step().unwrap();
+            steps += 1;
+        }
+        assert_eq!(steps, 50);
+        s.step().unwrap();
+        assert!(!s.take_end_reached(), "Run continues past t_end");
+        // Rewinding before t_end re-arms it.
+        s.rewind_to(0.2);
+        assert!(!s.take_end_reached());
+        while !s.take_end_reached() {
+            s.step().unwrap();
+        }
+        assert!((s.time() - 0.5).abs() < 1e-9);
     }
 
     #[test]

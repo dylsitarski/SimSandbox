@@ -45,7 +45,8 @@ Dependency rule: domain crates depend on `simsandbox-core`; the kernel depends o
 2. `Simulator::new` checks every input is connected, lets each Block initialise its kernel-owned state, computes initial outputs and copies them to inputs.
 3. `Simulator::step(dt)` calls `do_step` on every Block with the inputs from the previous exchange (Jacobi), then exchanges outputs to inputs again.
 4. `Simulator::set_param` changes a parameter between steps; any finite value is accepted; the `ParamSpec` range is only a suggestion ([ADR 0011](../decisions/0011-parameter-entry.md)). `Simulator::model()` exposes Block specs and current parameter values to interfaces.
-5. Snapshots copy time, all states, outputs and parameter values; `restore` rewinds to one, so a rewind also undoes parameter changes made after the snapshot.
+5. `Simulator::restart` re-initialises every Block from the current parameter values, so changed initial conditions take effect.
+6. Snapshots copy time, all states, outputs and parameter values; `restore` rewinds to one, so a rewind also undoes parameter changes made after the snapshot.
 
 Same-domain fusion happens before the master sees the Blocks: e.g. `EquationGroup` builds a `FusedSystem`, which is wrapped in one `OdeBlock`. See [block contract](block-contract.md).
 
@@ -60,6 +61,6 @@ Same-domain fusion happens before the master sees the Blocks: e.g. `EquationGrou
 | Equation and DAE backend | Rust-native ODE path now; Julia (ModelingToolkit, DifferentialEquations.jl) as an optional out-of-process plugin | Real-time stays in Rust; heavy DAE work can use Julia |
 | Heavy solvers | OpenFOAM, FEniCSx, MuJoCo as local binaries or containers | The desktop app launches and manages them |
 | Interop | FMI 3.0, ONNX, gRPC | Standards keep the ecosystem open |
-| Model files | JSON with a block-type registry and an optional `controls` section ([ADR 0007](../decisions/0007-json-model-files.md), [ADR 0012](../decisions/0012-controls-in-model-files.md)) | Diffable, shareable, AI-generatable |
+| Model files | JSON with a block-type registry, a `run` section and an optional `controls` section ([ADR 0007](../decisions/0007-json-model-files.md), [ADR 0012](../decisions/0012-controls-in-model-files.md), [ADR 0013](../decisions/0013-run-section.md)) | Diffable, shareable, AI-generatable |
 | Distribution | Desktop installer, headless CLI, containers | Same model file everywhere |
 | Sharing | Standalone player app and recorded runs | Recovers most of the value of link-sharing |

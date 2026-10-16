@@ -41,7 +41,7 @@ pub struct Simulator {
 impl Simulator {
     /// Validate the model (every input connected), initialise all Blocks and
     /// compute outputs at `t0`.
-    pub fn new(mut model: Model, t0: f64) -> Result<Self> {
+    pub fn new(model: Model, t0: f64) -> Result<Self> {
         let mut routes = Vec::new();
         for (bi, block) in model.blocks.iter().enumerate() {
             let spec = block.spec();
@@ -73,24 +73,11 @@ impl Simulator {
         let mut states = Vec::new();
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
-        for (bi, block) in model.blocks.iter_mut().enumerate() {
-            let spec = block.spec().clone();
-            let mut x = vec![0.0; spec.states.len()];
-            block.init(&model.params[bi], &mut x)?;
-            let mut y = vec![0.0; spec.output_len()];
-            let u = vec![0.0; spec.input_len()];
-            block.compute_outputs(
-                t0,
-                StepIo {
-                    params: &model.params[bi],
-                    inputs: &u,
-                    state: &mut x,
-                    outputs: &mut y,
-                },
-            )?;
-            states.push(x);
-            inputs.push(u);
-            outputs.push(y);
+        for block in &model.blocks {
+            let spec = block.spec();
+            states.push(vec![0.0; spec.states.len()]);
+            inputs.push(vec![0.0; spec.input_len()]);
+            outputs.push(vec![0.0; spec.output_len()]);
         }
 
         let mut sim = Self {
@@ -101,8 +88,31 @@ impl Simulator {
             outputs,
             t: t0,
         };
-        sim.exchange();
+        sim.restart(t0)?;
         Ok(sim)
+    }
+
+    /// Start the run again at `t0` from the current parameter values: every
+    /// Block re-initialises its state, so changed initial conditions take
+    /// effect. Snapshots taken earlier stay valid.
+    pub fn restart(&mut self, t0: f64) -> Result<()> {
+        for (bi, block) in self.model.blocks.iter_mut().enumerate() {
+            let params = &self.model.params[bi];
+            block.init(params, &mut self.states[bi])?;
+            self.inputs[bi].fill(0.0);
+            block.compute_outputs(
+                t0,
+                StepIo {
+                    params,
+                    inputs: &self.inputs[bi],
+                    state: &mut self.states[bi],
+                    outputs: &mut self.outputs[bi],
+                },
+            )?;
+        }
+        self.t = t0;
+        self.exchange();
+        Ok(())
     }
 
     /// Copy outputs to connected inputs, applying unit conversion.

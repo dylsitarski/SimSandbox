@@ -15,6 +15,22 @@ fn param(name: &str, unit: Unit, default: f64, min: f64, max: f64, description: 
         suggested_min: min,
         suggested_max: max,
         description: description.into(),
+        initial_condition: false,
+    }
+}
+
+/// A parameter that sets initial state.
+fn initial(
+    name: &str,
+    unit: Unit,
+    default: f64,
+    min: f64,
+    max: f64,
+    description: &str,
+) -> ParamSpec {
+    ParamSpec {
+        initial_condition: true,
+        ..param(name, unit, default, min, max, description)
     }
 }
 
@@ -35,9 +51,9 @@ impl Lorenz {
                     param("sigma", one, 10.0, 0.0, 50.0, "Prandtl number"),
                     param("rho", one, 28.0, 0.0, 100.0, "Rayleigh number"),
                     param("beta", one, 8.0 / 3.0, 0.0, 10.0, "Geometric factor"),
-                    param("x0", one, 1.0, -30.0, 30.0, "Initial x"),
-                    param("y0", one, 1.0, -30.0, 30.0, "Initial y"),
-                    param("z0", one, 1.0, 0.0, 60.0, "Initial z"),
+                    initial("x0", one, 1.0, -30.0, 30.0, "Initial x"),
+                    initial("y0", one, 1.0, -30.0, 30.0, "Initial y"),
+                    initial("z0", one, 1.0, 0.0, 60.0, "Initial z"),
                 ],
                 states: vec!["x".into(), "y".into(), "z".into()],
                 time: TimeSemantics::Continuous,
@@ -108,8 +124,8 @@ impl CoupledOscillator {
                         100.0,
                         "Coupling stiffness per unit mass",
                     ),
-                    param("x0", Unit::METER, x0, -10.0, 10.0, "Initial position"),
-                    param(
+                    initial("x0", Unit::METER, x0, -10.0, 10.0, "Initial position"),
+                    initial(
                         "v0",
                         Unit::parse("m/s").expect("valid unit"),
                         0.0,

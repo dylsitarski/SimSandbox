@@ -1,6 +1,9 @@
 {
   "format": 1,
   "description": "The Lorenz system. Slide rho through about 24.74 to watch steady convection turn chaotic.",
+  "run": {
+    "dt": 0.01
+  },
   "blocks": [
     {
       "name": "lorenz",

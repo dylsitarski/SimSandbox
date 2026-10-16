@@ -6,7 +6,7 @@ How to make a model definition loadable from model files ([ADR 0007](../decision
 
 ## Steps
 
-1. **Write the definition.** In the equation domain, implement `OdeSystem` (spec, equations, initial state) in `crates/simsandbox-eq/src/systems.rs` or a new module. Give every parameter a default, a suggested range and a plain-language description ([ADR 0011](../decisions/0011-parameter-entry.md)).
+1. **Write the definition.** In the equation domain, implement `OdeSystem` (spec, equations, initial state) in `crates/simsandbox-eq/src/systems.rs` or a new module. Give every parameter a default, a suggested range and a plain-language description ([ADR 0011](../decisions/0011-parameter-entry.md)), and mark parameters that set initial state with `initial(..)` (`ParamSpec::initial_condition`) so the app shows they apply on Restart.
 2. **Pick a type name** namespaced by domain, e.g. `eq.van_der_pol`, and add it as a constant in `crates/simsandbox-eq/src/registry.rs`. Type names appear in users' files: never rename one without a format migration.
 3. **Register a factory** in `register()` in the same file. The factory receives the block name from the file and the method settings; anything that varies per model belongs in parameters, not factory arguments, so files can set it.
 4. **Test it:** a verification test for the definition per the [verification policy](verification-policy.md), and a file test in `crates/simsandbox-file/tests/files.rs` showing the type loads and runs identically to the same model built in code.

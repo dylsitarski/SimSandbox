@@ -1,7 +1,7 @@
 //! `simsandbox` — headless runner. Writes CSV to stdout.
 //!
 //! ```text
-//! simsandbox run FILE [--t-end 20] [--dt 0.01]
+//! simsandbox run FILE [--t-end SECONDS] [--dt SECONDS]   (default: the file's `run` section)
 //! simsandbox lorenz [--t-end 20] [--dt 0.01] [--method euler|rk4|dopri5] [--rho 28]
 //! simsandbox --version
 //! ```
@@ -19,17 +19,21 @@ const USAGE: &str = "usage:
   simsandbox run FILE [--t-end SECONDS] [--dt SECONDS]
   simsandbox lorenz [--t-end SECONDS] [--dt SECONDS] [--method euler|rk4|dopri5] [--rho VALUE]";
 
+/// Used when neither a flag nor the model file gives a value.
+const DEFAULT_T_END: f64 = 20.0;
+
 struct Options {
-    t_end: f64,
-    dt: f64,
+    /// Flags override the model file's `run` section (ADR 0013).
+    t_end: Option<f64>,
+    dt: Option<f64>,
     method: Integrator,
     rho: Option<f64>,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
     let mut o = Options {
-        t_end: 20.0,
-        dt: 0.01,
+        t_end: None,
+        dt: None,
         method: Integrator::Rk4 { substeps: 1 },
         rho: None,
     };
@@ -42,8 +46,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 .map_err(|_| format!("invalid number '{value}' for {flag}"))
         };
         match flag.as_str() {
-            "--t-end" => o.t_end = num()?,
-            "--dt" => o.dt = num()?,
+            "--t-end" => o.t_end = Some(num()?),
+            "--dt" => o.dt = Some(num()?),
             "--rho" => o.rho = Some(num()?),
             "--method" => {
                 o.method = match value.as_str() {
@@ -59,7 +63,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
             other => return Err(format!("unknown flag '{other}'")),
         }
     }
-    if o.dt <= 0.0 || o.t_end <= 0.0 {
+    if [o.dt, o.t_end]
+        .iter()
+        .flatten()
+        .any(|v| !(v.is_finite() && *v > 0.0))
+    {
         return Err("--dt and --t-end must be positive".into());
     }
     Ok(o)
@@ -85,6 +93,8 @@ fn run_file(args: &[String]) -> Result<(), String> {
     for w in &loaded.warnings {
         eprintln!("warning: {path}: {w}");
     }
+    let dt = o.dt.unwrap_or(loaded.file.run.dt);
+    let t_end = o.t_end.or(loaded.file.run.t_end).unwrap_or(DEFAULT_T_END);
 
     let mut columns = Vec::new();
     let mut header = vec!["t".to_string()];
@@ -120,9 +130,9 @@ fn run_file(args: &[String]) -> Result<(), String> {
     };
     writeln!(out, "{}", header.join(",")).map_err(|e| e.to_string())?;
     write(&mut out, &sim).map_err(|e| e.to_string())?;
-    let steps = (o.t_end / o.dt).round() as usize;
+    let steps = (t_end / dt).round() as usize;
     for _ in 0..steps {
-        sim.step(o.dt).map_err(|e| e.to_string())?;
+        sim.step(dt).map_err(|e| e.to_string())?;
         write(&mut out, &sim).map_err(|e| e.to_string())?;
     }
     out.flush().map_err(|e| e.to_string())
@@ -150,9 +160,10 @@ fn run_lorenz(o: &Options) -> Result<(), String> {
     };
     writeln!(out, "t,x,y,z").map_err(|e| e.to_string())?;
     write(&mut out, &sim).map_err(|e| e.to_string())?;
-    let steps = (o.t_end / o.dt).round() as usize;
+    let dt = o.dt.unwrap_or(simsandbox_file::DEFAULT_DT);
+    let steps = (o.t_end.unwrap_or(DEFAULT_T_END) / dt).round() as usize;
     for _ in 0..steps {
-        sim.step(o.dt).map_err(|e| e.to_string())?;
+        sim.step(dt).map_err(|e| e.to_string())?;
         write(&mut out, &sim).map_err(|e| e.to_string())?;
     }
     out.flush().map_err(|e| e.to_string())

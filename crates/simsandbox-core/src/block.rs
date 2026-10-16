@@ -143,6 +143,9 @@ pub struct ParamSpec {
     pub suggested_min: f64,
     pub suggested_max: f64,
     pub description: String,
+    /// The parameter sets initial state, so a change takes effect when the
+    /// run restarts (`Simulator::restart`), not while it runs.
+    pub initial_condition: bool,
 }
 
 /// How a Block advances in time. Continuous time with events is the general

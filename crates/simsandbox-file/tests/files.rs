@@ -217,7 +217,49 @@ fn schema_is_valid_json_and_lists_the_file_fields() {
     props.sort();
     assert_eq!(
         props,
-        ["blocks", "connections", "controls", "description", "format"]
+        [
+            "blocks",
+            "connections",
+            "controls",
+            "description",
+            "format",
+            "run"
+        ]
     );
     assert_eq!(schema["properties"]["format"]["const"], 1);
+}
+
+#[test]
+fn run_settings_default_validate_and_round_trip() {
+    let bare = r#"{"format": 1, "blocks": [{"name": "l", "type": "eq.lorenz", "method": {"name": "rk4"}}]}"#;
+    let (file, _) = ModelFile::from_json(bare).unwrap();
+    assert_eq!(file.run.dt, simsandbox_file::DEFAULT_DT);
+    assert_eq!(file.run.t_end, None);
+    // Saving always writes the run section.
+    assert!(file.to_json().contains("\"run\""));
+
+    let with = bare.replace(
+        r#""blocks""#,
+        r#""run": {"dt": 0.005, "t_end": 12.5}, "blocks""#,
+    );
+    let (file, _) = ModelFile::from_json(&with).unwrap();
+    assert_eq!((file.run.dt, file.run.t_end), (0.005, Some(12.5)));
+    let (again, _) = ModelFile::from_json(&file.to_json()).unwrap();
+    assert_eq!(again.run, file.run);
+
+    for (bad, path) in [
+        (r#""run": {"dt": 0}, "blocks""#, "run.dt"),
+        (r#""run": {"dt": -0.1}, "blocks""#, "run.dt"),
+        (r#""run": {"t_end": 0}, "blocks""#, "run.t_end"),
+    ] {
+        assert_eq!(invalid_path(&bare.replace(r#""blocks""#, bad)), path);
+    }
+    // Unknown run fields are errors: run settings change results.
+    assert!(matches!(
+        load(
+            &bare.replace(r#""blocks""#, r#""run": {"step": 0.1}, "blocks""#),
+            &registry()
+        ),
+        Err(FileError::Syntax { .. })
+    ));
 }

@@ -9,13 +9,16 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Documentation system: `AGENTS.md` entry point and session protocol, documentation map, status, vision, roadmap, architecture, design, guides, research, open questions, risks, glossary, session notes, ADRs 0005–0006.
 - Docs check (`scripts/check_docs.py`) in CI; pull request and issue templates.
 - `Model::param`, `Model::params`, `Model::block_ids`, `Simulator::model` and `Simulator::param` for reading parameters and Block specs.
-- ADRs 0007 (JSON model files with a block-type registry), 0008 (all-native egui + wgpu desktop UI), 0009 (hobbyists are the first audience), 0010 (wall-clock pacing of the live loop), 0011 (typed parameter entry; ranges are suggestions) and 0012 (exploration controls saved in model files).
+- ADRs 0007 (JSON model files with a block-type registry), 0008 (all-native egui + wgpu desktop UI), 0009 (hobbyists are the first audience), 0010 (wall-clock pacing of the live loop), 0011 (typed parameter entry; ranges are suggestions), 0012 (exploration controls saved in model files) and 0013 (run settings in a `run` section).
 
 - Model files (format 1): JSON with blocks, connections and optional `controls`; `simsandbox-file` crate with `load`, `ModelFile::to_json` and `ModelFile::capture_params`; JSON Schema in `crates/simsandbox-file/model.schema.json`.
 - Block-type registry (`simsandbox_core::registry`) and `simsandbox_eq::register` with `eq.lorenz` and `eq.coupled_oscillator`; `Integrator::from_settings` and `Integrator::settings`.
 - `simsandbox run FILE [--t-end] [--dt]` writes every output of a model file as CSV.
 - Example files `examples/lorenz.ssbx.json` and `examples/coupled-oscillators.ssbx.json`.
 - Desktop app `simsandbox-app`: open model files or built-in examples, run/pause/reset, rewind with branching, speed control with wall-clock pacing, editable step, speed and accuracy labels, live time-series plot.
+- App: parameter panel (typed entry with units, initial-condition markers, opt-in sliders with editable ranges), Restart from current parameters, Save, pause at the file's `t_end`.
+- Model files: optional `run` section with `dt` (default 0.01) and `t_end` (ADR 0013); `simsandbox run` uses it unless `--dt`/`--t-end` are given.
+- `Simulator::restart` and `ParamSpec::initial_condition`.
 
 ### Changed
 

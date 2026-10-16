@@ -29,6 +29,7 @@ impl Decay {
                     suggested_min: 0.0,
                     suggested_max: 10.0,
                     description: "Decay rate".into(),
+                    initial_condition: false,
                 }],
                 states: vec!["x".into()],
                 time: TimeSemantics::Continuous,
@@ -51,8 +52,9 @@ impl Block for Decay {
     fn method(&self) -> &MethodSpec {
         &self.method
     }
-    fn init(&mut self, _params: &[f64], state: &mut [f64]) -> Result<()> {
-        state[0] = 1.0;
+    fn init(&mut self, params: &[f64], state: &mut [f64]) -> Result<()> {
+        // Starts at 1/k so restart shows whether current parameters are used.
+        state[0] = 1.0 / params[0];
         Ok(())
     }
     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
@@ -126,4 +128,21 @@ fn restore_rewinds_parameters() {
     assert_eq!(sim.param(id, "k").unwrap(), 1.0);
     sim.step(0.1).unwrap();
     assert_eq!(sim.state(id), expected.as_slice());
+}
+
+#[test]
+fn restart_reinitialises_from_current_parameters() {
+    let mut model = Model::new();
+    let id = model.add(Box::new(Decay::new()));
+    let mut sim = Simulator::new(model, 0.0).unwrap();
+    let start = sim.snapshot();
+    sim.step(0.1).unwrap();
+    sim.set_param(id, "k", 4.0).unwrap();
+    sim.restart(0.0).unwrap();
+    assert_eq!(sim.time(), 0.0);
+    assert_eq!(sim.state(id), &[0.25]);
+    // Earlier snapshots still restore the earlier run.
+    sim.restore(&start);
+    assert_eq!(sim.state(id), &[1.0]);
+    assert_eq!(sim.param(id, "k").unwrap(), 1.0);
 }

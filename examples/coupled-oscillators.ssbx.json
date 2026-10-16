@@ -1,6 +1,9 @@
 {
   "format": 1,
   "description": "Two masses on springs, tied to walls and to each other, coupled through the co-simulation master. Energy sloshes from one to the other.",
+  "run": {
+    "dt": 0.01
+  },
   "blocks": [
     {
       "name": "a",
