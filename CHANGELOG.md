@@ -15,6 +15,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Block-type registry (`simsandbox_core::registry`) and `simsandbox_eq::register` with `eq.lorenz` and `eq.coupled_oscillator`; `Integrator::from_settings` and `Integrator::settings`.
 - `simsandbox run FILE [--t-end] [--dt]` writes every output of a model file as CSV.
 - Example files `examples/lorenz.ssbx.json` and `examples/coupled-oscillators.ssbx.json`.
+- Desktop app `simsandbox-app`: open model files or built-in examples, run/pause/reset, rewind with branching, speed control with wall-clock pacing, editable step, speed and accuracy labels, live time-series plot.
 
 ### Changed
 

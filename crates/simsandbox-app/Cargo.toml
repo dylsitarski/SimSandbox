@@ -1,0 +1,32 @@
+[package]
+name = "simsandbox-app"
+description = "SimSandbox desktop app (eframe + egui + wgpu, ADR 0008)"
+version.workspace = true
+edition.workspace = true
+# egui 0.36 needs Rust 1.95; the other crates keep the workspace minimum.
+rust-version = "1.95"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "simsandbox-app"
+path = "src/main.rs"
+
+[dependencies]
+simsandbox-core = { path = "../simsandbox-core" }
+simsandbox-eq = { path = "../simsandbox-eq" }
+simsandbox-file = { path = "../simsandbox-file" }
+# Pinned deliberately (ADR 0008): egui releases change APIs often.
+# egui_plot 0.37 is built against egui 0.36, so eframe stays on 0.36.
+eframe = { version = "=0.36.2", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "wgpu",
+    "wayland",
+    "x11",
+] }
+egui_plot = "=0.37.0"
+
+[lints]
+workspace = true

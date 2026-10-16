@@ -7,3 +7,4 @@ Thumbs.db
 .vscode/
 *.csv
 !examples/**/*.csv
+*.ppm

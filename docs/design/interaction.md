@@ -2,13 +2,13 @@
 
 _Last updated: 2026-10-16_
 
-Because parameters, ports and state are declared metadata, most of the interface can be generated rather than hand-built. Nothing in this document is implemented yet; the first pieces are scheduled in [STATUS.md](../STATUS.md).
+Because parameters, ports and state are declared metadata, most of the interface can be generated rather than hand-built. The desktop app implements run, pause, rewind with branching, paced playback and live time-series plots; everything else here is planned, in the order given in [STATUS.md](../STATUS.md).
 
 ## For fun
 
 - Live parameter changes while the simulation runs, with no restart (kernel support exists: `Simulator::set_param`).
 - Direct manipulation: drag bodies, paint obstacles into a flow, drop agents, inject a disturbance.
-- Pause, rewind and branch from any point (kernel support exists: snapshots, which also restore parameter values).
+- Pause, rewind and branch from any point (implemented in the app: a rewind slider; snapshots also restore parameter values, and running on from a rewound point starts a new branch).
 - Inputs from keyboard, gamepad and mouse; later sensors or MIDI.
 
 ## For learning

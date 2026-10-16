@@ -10,6 +10,7 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | --- | --- | --- | --- | --- |
 | Q4 | Symbolic equation parsing | Rust-native parser and symbolic crate; SymPy via Python; Julia Symbolics service | Symbolic equation entry | Affects dependencies and startup |
 | Q5 | Algebraic loops in fused groups | Causalisation and tearing; Newton solve per RHS evaluation; forbid and warn | Phase 1 | Current v0 restriction: no direct feedthrough |
+| Q7 | Where run settings live (communication step `dt`, end time) | In the model file (a `run` section); in `controls`; per user only | Before saving from the app | Results depend on `dt`, so `controls` (which never affects results, [ADR 0012](decisions/0012-controls-in-model-files.md)) does not fit. The app and CLI default to 0.01 s today |
 
 ## Resolved
 

@@ -8,6 +8,7 @@
 - Reviewed code against STATUS; found that `Simulator` exposed no specs or parameter values, `set_param` accepted any value and misreported unknown names as `BadConnection`, and snapshots did not include parameters.
 - Added parameter access (`Model::param`, `Model::params`, `Model::block_ids`, `Simulator::model`, `Simulator::param`), finiteness checks with `SimError::UnknownParam` and `SimError::InvalidParam`, and parameters in snapshots. Tests in `crates/simsandbox-core/tests/params.rs`.
 - Implemented the model file format: kernel `Registry` and `MethodSettings`, `simsandbox_eq::register`, the `simsandbox-file` crate (load, save, lenient controls, JSON Schema), two example files, `simsandbox run`, and a guide for adding block types. 30 tests.
+- Built the desktop app shell (`crates/simsandbox-app`): pacing, session with rewind history, egui window, built-in examples, `--screenshot`. Verified under Xvfb with screenshots of both examples running at 1×. 38 tests.
 - Wrote ADRs 0007 to 0012; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
 ## Decided
@@ -22,10 +23,15 @@
 
 ## Left open
 
+- Q7: where the communication step `dt` is saved ([open questions](../open-questions.md)).
 - Q4 (equation parsing) and Q5 (algebraic loops) remain ([open questions](../open-questions.md)).
 
 ## Notes for the next session
 
+- `egui_plot` 0.37 is built against egui 0.36, so the app pins `eframe = 0.36.2`; pinning eframe 0.37 produced two egui versions and type errors. Upgrade both together.
+- egui 0.36 changed `App::update` to `App::ui(&mut self, ui, frame)` and panels to `Panel::top(..).show(ui, ..)`; screenshots arrive as `Event::Screenshot` after `ViewportCommand::Screenshot`.
+- The cloud container lacked `libxkbcommon-x11-0`; installing it (and `mesa-vulkan-drivers`) made `xvfb-run` work for screenshots.
+- Interactive controls (buttons, rewind slider, drag and drop) were checked by reading the code and through `Session`/`Pacer` tests, not by clicking in a running window.
 - Saving goes through the `ModelFile` that was loaded (`capture_params` then `to_json`); Blocks carry no type name, so a model built only in code cannot be saved. Revisit if the app needs "new model" before the node canvas.
 - A first coupled-oscillator file test used a guessed tolerance (1e-2) and failed at 1.09e-2; the file tests now check bit-identity with the model built in code, since accuracy is verified in `simsandbox-eq`.
 

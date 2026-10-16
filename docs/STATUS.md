@@ -6,7 +6,7 @@ _Last updated: 2026-10-16_
 
 ## What works
 
-- Cargo workspace with four crates: `simsandbox-core`, `simsandbox-eq`, `simsandbox-file`, `simsandbox-cli`; CI on Windows, macOS and Linux.
+- Cargo workspace with five crates: `simsandbox-core`, `simsandbox-eq`, `simsandbox-file`, `simsandbox-cli`, `simsandbox-app`; CI on Windows, macOS and Linux.
 - Block contract: required `Block` trait plus optional `Equations`, `Rollback`, `Derivatives`, `Realtime` capability traits (`crates/simsandbox-core/src/block.rs`).
 - SI units with dimension checking and automatic conversion at connect time (`units.rs`).
 - Model graph with unit-, shape- and direction-checked signal connections (`graph.rs`).
@@ -15,11 +15,13 @@ _Last updated: 2026-10-16_
 - Equation domain: Euler, RK4, Dormand–Prince 5(4), each with speed/accuracy labels; fusion of equation Blocks into one system (`crates/simsandbox-eq`).
 - Example systems: Lorenz, coupled oscillator; example files `examples/lorenz.ssbx.json` and `examples/coupled-oscillators.ssbx.json`.
 - Model files ([ADR 0007](decisions/0007-json-model-files.md), [ADR 0012](decisions/0012-controls-in-model-files.md)): block-type registry (`crates/simsandbox-core/src/registry.rs`), equation types `eq.lorenz` and `eq.coupled_oscillator` (`simsandbox_eq::register`), JSON load/save with errors located by line/column or path, lenient `controls`, JSON Schema (`crates/simsandbox-file/model.schema.json`).
+- Desktop app `simsandbox-app` ([ADR 0008](decisions/0008-native-egui-ui.md)): opens a model file (path field, drag and drop, command-line argument) or a built-in example; starts running at once; run/pause, reset, rewind slider that branches; speed control and editable step with wall-clock pacing, an 8 ms per-frame budget and an achieved-speed warning ([ADR 0010](decisions/0010-live-loop-pacing.md)); speed and accuracy labels; live time-series plot of the file's `controls.plots` (all outputs if none); load errors and warnings shown in the window; `--screenshot` for headless checks.
 - CLI: `simsandbox run FILE` writes every output as CSV; `simsandbox lorenz` with `--method euler|rk4|dopri5`.
-- 30 tests, including verification against analytic solutions and convergence order.
+- 38 tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-10-16: desktop app shell (`crates/simsandbox-app`).
 - 2026-10-16: model file format (registry, `simsandbox-file` crate, examples, `simsandbox run`).
 - 2026-10-16: kernel prep for model files and the UI (parameter access; snapshots include parameters; suggested rather than enforced parameter ranges); ADRs 0007 (JSON model files), 0008 (egui + wgpu UI), 0009 (hobbyists first), 0010 (live loop pacing), 0011 (parameter entry) and 0012 (controls saved in model files).
 
@@ -31,10 +33,9 @@ _Last updated: 2026-10-16_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Desktop app shell.** New crate `simsandbox-app` (eframe + egui + wgpu, per [ADR 0008](decisions/0008-native-egui-ui.md)): window, open a model file (start with `examples/`), run/pause/rewind controls, a live time-series plot, paced by wall-clock time with a speed control ([ADR 0010](decisions/0010-live-loop-pacing.md)).
-2. **Auto-generated parameter panel** per [ADR 0011](decisions/0011-parameter-entry.md): a typed entry field with units for every `ParamSpec` (via `Simulator::model()`), plus opt-in sliders with user-set ranges, wired to `Simulator::set_param` and saved in the file's `controls` section.
-3. **Phase-portrait / 3D trajectory view** for the Lorenz system.
-4. **Symbolic equation entry.** Parse `dx/dt = sigma*(y - x)` into an `OdeSystem`; choose the parser approach via ADR.
+1. **Auto-generated parameter panel** per [ADR 0011](decisions/0011-parameter-entry.md): a typed entry field with units for every `ParamSpec` (via `Simulator::model()`), plus opt-in sliders with user-set ranges, wired to `Simulator::set_param` and saved in the file's `controls` section. Add "Save" to the app (`ModelFile::capture_params` + `to_json`); resolve [Q7](open-questions.md) (where `dt` is saved) first.
+2. **Phase-portrait / 3D trajectory view** for the Lorenz system.
+3. **Symbolic equation entry.** Parse `dx/dt = sigma*(y - x)` into an `OdeSystem`; choose the parser approach via ADR.
 
 ## Known limitations
 
@@ -42,7 +43,10 @@ In priority order. Each item should end with tests and updated docs.
 - Physical (acausal) ports are not implemented.
 - The master uses a fixed step with no coupling-error estimate, iteration or rollback.
 - `FusedSystem::rhs` allocates per call; fine for small models, revisit before real-time use with large groups.
-- No desktop UI yet.
+- The app has no parameter controls and no Save yet (Next up 1); the step `dt` is not stored in model files ([Q7](open-questions.md)).
+- The app has no native file dialog; files open from a path field, drag and drop or the command line.
+- The simulation runs on the UI thread ([ADR 0010](decisions/0010-live-loop-pacing.md)); a heavy model slows the window's controls as well as the plot.
+- Plotted series and rewind history are thinned (every other point dropped) beyond 100 000 points and 10 000 snapshots, so very long runs lose resolution in the past.
 - Model files cannot describe fused equation groups yet, and a model built in code cannot be saved (Blocks do not know their type name); files are the source for saving.
 - Integer method options are written as numbers with a decimal point (`"substeps": 4.0`).
 
