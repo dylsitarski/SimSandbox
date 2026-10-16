@@ -1,6 +1,6 @@
 # 0003 — Desktop-first
 
-- **Status:** accepted
+- **Status:** Accepted
 - **Date:** 2026-10-15
 
 ## Context

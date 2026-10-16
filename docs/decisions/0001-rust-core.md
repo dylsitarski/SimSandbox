@@ -1,6 +1,6 @@
 # 0001 — Rust core
 
-- **Status:** accepted
+- **Status:** Accepted
 - **Date:** 2026-10-15
 
 ## Context

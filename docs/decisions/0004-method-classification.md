@@ -1,6 +1,6 @@
 # 0004 — Method classification instead of "one model, three modes"
 
-- **Status:** accepted
+- **Status:** Accepted
 - **Date:** 2026-10-15
 
 ## Context

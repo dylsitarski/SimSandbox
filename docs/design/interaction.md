@@ -1,0 +1,40 @@
+# Interaction, parameters and visualization
+
+_Last updated: 2026-10-15_
+
+Because parameters, ports and state are declared metadata, most of the interface can be generated rather than hand-built. Nothing in this document is implemented yet; the first pieces are scheduled in [STATUS.md](../STATUS.md).
+
+## For fun
+
+- Live parameter changes while the simulation runs, with no restart (kernel support exists: `Simulator::set_param`).
+- Direct manipulation: drag bodies, paint obstacles into a flow, drop agents, inject a disturbance.
+- Pause, rewind and branch from any point (kernel support exists: snapshots).
+- Inputs from keyboard, gamepad and mouse; later sensors or MIDI.
+
+## For learning
+
+- Control panels generated from `ParamSpec` (sliders with units and ranges).
+- Linked views: change a parameter and see the time series, phase portrait and 3D view update together.
+- Equation view beside the running model, highlighting the term being changed.
+- Guided explorables: a model plus a short narrative and locked or unlocked parameters, shared as one file that opens in the app or the free player.
+
+## For research
+
+- Notebook integration (Jupyter) through the Python API.
+- Export of raw results to CSV, HDF5, Parquet and VTK for fields.
+- Batch experiment designer for sweeps and design of experiments.
+
+## Visualization layer
+
+- 2D plots and phase space with GPU-accelerated plotting; 3D scenes and fields with native GPU rendering; graph views for networks and agents.
+- Large CFD fields stream decimated data to the viewer and hand off to ParaView for heavy post-processing.
+
+## Three ways to build, one model file
+
+1. Visual canvas: drag and wire Blocks.
+2. Code: a Python (later Julia) API that produces the same graph.
+3. Natural language: an AI assistant drafts Blocks and equations; the result is ordinary, editable model code that passes the same unit and validation checks.
+
+## Labels in the UI
+
+Speed and accuracy labels appear on the model, on every plot and on every export, with the Block that sets each limit ([method classification](../architecture/method-classification.md)).

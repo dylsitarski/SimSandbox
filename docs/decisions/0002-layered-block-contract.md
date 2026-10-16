@@ -1,6 +1,6 @@
 # 0002 — Layered Block contract
 
-- **Status:** accepted
+- **Status:** Accepted
 - **Date:** 2026-10-15
 
 ## Context
