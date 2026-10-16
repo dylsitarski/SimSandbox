@@ -1,6 +1,6 @@
 //! The model graph: Blocks, their parameter values, and unit-checked connections.
 
-use crate::block::{Block, Causality, PortSpec};
+use crate::block::{Block, BlockSpec, Causality, PortSpec};
 use crate::{Result, SimError};
 
 /// Index of a Block within a [`Model`].
@@ -43,16 +43,39 @@ impl Model {
         BlockId(self.blocks.len() - 1)
     }
 
-    /// Set a parameter by name.
+    /// Set a parameter by name. The value must be finite and within the
+    /// parameter's `[min, max]` range.
     pub fn set_param(&mut self, block: BlockId, name: &str, value: f64) -> Result<()> {
         let spec = self.block(block)?.spec();
-        let idx = spec
-            .params
-            .iter()
-            .position(|p| p.name == name)
-            .ok_or_else(|| SimError::BadConnection(format!("no parameter '{name}'")))?;
+        let idx = param_index(spec, name)?;
+        let p = &spec.params[idx];
+        if !value.is_finite() || value < p.min || value > p.max {
+            return Err(SimError::ParamOutOfRange {
+                name: name.into(),
+                value,
+                min: p.min,
+                max: p.max,
+            });
+        }
         self.params[block.0][idx] = value;
         Ok(())
+    }
+
+    /// Current value of a parameter.
+    pub fn param(&self, block: BlockId, name: &str) -> Result<f64> {
+        let idx = param_index(self.block(block)?.spec(), name)?;
+        Ok(self.params[block.0][idx])
+    }
+
+    /// Current values of all parameters of a Block, in `BlockSpec::params` order.
+    pub fn params(&self, block: BlockId) -> Result<&[f64]> {
+        self.block(block)?;
+        Ok(&self.params[block.0])
+    }
+
+    /// Ids of all Blocks, in insertion order.
+    pub fn block_ids(&self) -> impl Iterator<Item = BlockId> {
+        (0..self.blocks.len()).map(BlockId)
     }
 
     /// Connect an output port to an input port, checking direction, shape and
@@ -126,6 +149,16 @@ impl Model {
             .find(|p| p.name == name)
             .ok_or_else(|| SimError::BadConnection(format!("'{}' has no port '{name}'", spec.name)))
     }
+}
+
+fn param_index(spec: &BlockSpec, name: &str) -> Result<usize> {
+    spec.params
+        .iter()
+        .position(|p| p.name == name)
+        .ok_or_else(|| SimError::UnknownParam {
+            block: spec.name.clone(),
+            name: name.into(),
+        })
 }
 
 /// Offset of a named port within a Block's flattened inputs or outputs.

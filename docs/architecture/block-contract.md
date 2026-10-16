@@ -69,7 +69,7 @@ Measured effect (test `cosimulation_adds_coupling_error`): two coupled oscillato
 ## Composition
 
 - A group of connected Blocks can be collapsed into a new Block with its own exposed ports and parameters (equation domain: `FusedSystem` exposes `<member>.<name>` ports and parameters).
-- The saved model will be a plain-text, diffable file ([Q1](../open-questions.md)).
+- The saved model will be a JSON file naming each Block by a registered type ([ADR 0007](../decisions/0007-json-model-files.md)).
 
 ## Current restrictions
 

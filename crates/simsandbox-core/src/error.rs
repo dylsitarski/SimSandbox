@@ -16,6 +16,15 @@ pub enum SimError {
     UnconnectedInput(String),
     /// A Block failed while initialising or stepping.
     Block(String),
+    /// A Block has no parameter with this name.
+    UnknownParam { block: String, name: String },
+    /// A parameter value is not finite or lies outside its `ParamSpec` range.
+    ParamOutOfRange {
+        name: String,
+        value: f64,
+        min: f64,
+        max: f64,
+    },
 }
 
 impl fmt::Display for SimError {
@@ -31,6 +40,18 @@ impl fmt::Display for SimError {
             SimError::BadConnection(s) => write!(f, "bad connection: {s}"),
             SimError::UnconnectedInput(s) => write!(f, "input '{s}' is not connected"),
             SimError::Block(s) => write!(f, "block error: {s}"),
+            SimError::UnknownParam { block, name } => {
+                write!(f, "'{block}' has no parameter '{name}'")
+            }
+            SimError::ParamOutOfRange {
+                name,
+                value,
+                min,
+                max,
+            } => write!(
+                f,
+                "parameter '{name}' = {value} is outside its range [{min}, {max}]"
+            ),
         }
     }
 }

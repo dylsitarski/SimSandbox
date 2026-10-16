@@ -8,6 +8,13 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 - Documentation system: `AGENTS.md` entry point and session protocol, documentation map, status, vision, roadmap, architecture, design, guides, research, open questions, risks, glossary, session notes, ADRs 0005–0006.
 - Docs check (`scripts/check_docs.py`) in CI; pull request and issue templates.
+- `Model::param`, `Model::params`, `Model::block_ids`, `Simulator::model` and `Simulator::param` for reading parameters and Block specs.
+- ADRs 0007 (JSON model files with a block-type registry) and 0008 (all-native egui + wgpu desktop UI).
+
+### Changed
+
+- `set_param` rejects non-finite values and values outside the parameter's range (`SimError::ParamOutOfRange`); unknown names return `SimError::UnknownParam`. `simsandbox lorenz --rho` is limited to 0–100.
+- Snapshots store parameter values; `Simulator::restore` rewinds them along with state.
 
 ## [0.0.1] — 2026-10-15
 

@@ -1,6 +1,6 @@
 # Status
 
-_Last updated: 2026-10-15_
+_Last updated: 2026-10-16_
 
 **Phase:** 0 · Foundations ([roadmap](roadmap.md#phase-0--foundations)). **Gate:** the Lorenz system runs live on the desktop with sliders. **Gate met:** no.
 
@@ -10,11 +10,16 @@ _Last updated: 2026-10-15_
 - Block contract: required `Block` trait plus optional `Equations`, `Rollback`, `Derivatives`, `Realtime` capability traits (`crates/simsandbox-core/src/block.rs`).
 - SI units with dimension checking and automatic conversion at connect time (`units.rs`).
 - Model graph with unit-, shape- and direction-checked signal connections (`graph.rs`).
-- Co-simulation master: fixed communication step, Jacobi exchange; kernel-owned state; snapshots and rewind; live parameter changes (`sim.rs`).
+- Co-simulation master: fixed communication step, Jacobi exchange; kernel-owned state; snapshots and rewind that also restore parameter values; live parameter changes (`sim.rs`).
+- Parameter access: `Model::param`, `Model::params`, `Model::block_ids`, `Simulator::model`, `Simulator::param`; `set_param` rejects unknown names (`SimError::UnknownParam`) and non-finite or out-of-range values (`SimError::ParamOutOfRange`).
 - Equation domain: Euler, RK4, Dormand–Prince 5(4), each with speed/accuracy labels; fusion of equation Blocks into one system (`crates/simsandbox-eq`).
 - Example systems: Lorenz, coupled oscillator.
 - `simsandbox lorenz` CLI writing CSV, with `--method euler|rk4|dopri5`.
-- 13 tests, including verification against analytic solutions and convergence order.
+- 16 tests, including verification against analytic solutions and convergence order.
+
+## Done recently
+
+- 2026-10-16: kernel prep for model files and the UI (parameter access and validation; snapshots include parameters); ADRs 0007 (JSON model files) and 0008 (egui + wgpu UI).
 
 ## In progress
 
@@ -24,9 +29,9 @@ _Last updated: 2026-10-15_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Model file format.** Resolve [open question Q1](open-questions.md) with an ADR, then implement load/save for the existing systems.
-2. **Desktop app shell.** New crate `simsandbox-app` (egui + wgpu, per [ADR 0003](decisions/0003-desktop-first.md)): window, run/pause/rewind controls, a live time-series plot.
-3. **Auto-generated parameter panel.** Sliders built from `ParamSpec` (name, unit, range), wired to `Simulator::set_param`.
+1. **Model file format** per [ADR 0007](decisions/0007-json-model-files.md): block-type registry in the kernel, `simsandbox_eq::register`, a JSON reader/writer crate with a JSON Schema, round-trip tests for Lorenz and the coupled oscillator, and `simsandbox run <file>` in the CLI.
+2. **Desktop app shell.** New crate `simsandbox-app` (eframe + egui + wgpu, per [ADR 0008](decisions/0008-native-egui-ui.md)): window, run/pause/rewind controls, a live time-series plot. Decide how many simulation steps run per frame.
+3. **Auto-generated parameter panel.** Sliders built from `ParamSpec` (name, unit, range) via `Simulator::model()`, wired to `Simulator::set_param`.
 4. **Phase-portrait / 3D trajectory view** for the Lorenz system.
 5. **Symbolic equation entry.** Parse `dx/dt = sigma*(y - x)` into an `OdeSystem`; choose the parser approach via ADR.
 

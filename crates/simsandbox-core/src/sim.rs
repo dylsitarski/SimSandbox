@@ -8,12 +8,14 @@ use crate::block::{Causality, MethodLabels, StepContext, StepIo};
 use crate::graph::{port_offset, BlockId, Model};
 use crate::{Result, SimError};
 
-/// A saved point in a run, used for rewind and branching.
+/// A saved point in a run, used for rewind and branching: time, every
+/// Block's state, outputs and parameter values.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub t: f64,
     states: Vec<Vec<f64>>,
     outputs: Vec<Vec<f64>>,
+    params: Vec<Vec<f64>>,
 }
 
 /// One resolved route from an output slice to an input slice.
@@ -148,9 +150,20 @@ impl Simulator {
         Some(&self.outputs[id.0][off..off + len])
     }
 
-    /// Change a parameter while running (live sliders).
+    /// The model being run: Block specs, parameter values and connections.
+    pub fn model(&self) -> &Model {
+        &self.model
+    }
+
+    /// Change a parameter while running (live sliders). Checked like
+    /// [`Model::set_param`].
     pub fn set_param(&mut self, id: BlockId, name: &str, value: f64) -> Result<()> {
         self.model.set_param(id, name, value)
+    }
+
+    /// Current value of a parameter.
+    pub fn param(&self, id: BlockId, name: &str) -> Result<f64> {
+        self.model.param(id, name)
     }
 
     /// Speed and accuracy labels of the whole model.
@@ -163,14 +176,17 @@ impl Simulator {
             t: self.t,
             states: self.states.clone(),
             outputs: self.outputs.clone(),
+            params: self.model.params.clone(),
         }
     }
 
-    /// Rewind to a snapshot taken from this simulator.
+    /// Rewind to a snapshot taken from this simulator, including the
+    /// parameter values in effect when it was taken.
     pub fn restore(&mut self, snap: &Snapshot) {
         self.t = snap.t;
         self.states.clone_from(&snap.states);
         self.outputs.clone_from(&snap.outputs);
+        self.model.params.clone_from(&snap.params);
         self.exchange();
     }
 }

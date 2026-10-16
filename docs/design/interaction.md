@@ -1,6 +1,6 @@
 # Interaction, parameters and visualization
 
-_Last updated: 2026-10-15_
+_Last updated: 2026-10-16_
 
 Because parameters, ports and state are declared metadata, most of the interface can be generated rather than hand-built. Nothing in this document is implemented yet; the first pieces are scheduled in [STATUS.md](../STATUS.md).
 
@@ -8,7 +8,7 @@ Because parameters, ports and state are declared metadata, most of the interface
 
 - Live parameter changes while the simulation runs, with no restart (kernel support exists: `Simulator::set_param`).
 - Direct manipulation: drag bodies, paint obstacles into a flow, drop agents, inject a disturbance.
-- Pause, rewind and branch from any point (kernel support exists: snapshots).
+- Pause, rewind and branch from any point (kernel support exists: snapshots, which also restore parameter values).
 - Inputs from keyboard, gamepad and mouse; later sensors or MIDI.
 
 ## For learning

@@ -1,6 +1,6 @@
 # Documentation system
 
-_Last updated: 2026-10-15_
+_Last updated: 2026-10-16_
 
 This page is the map of every document in the repository and the rules for keeping them current. The repository is the single source of truth for SimSandbox ([ADR 0005](decisions/0005-repository-as-source-of-truth.md)).
 
@@ -75,6 +75,8 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0004-method-classification.md](decisions/0004-method-classification.md) | Decision record | Method classification |
 | [decisions/0005-repository-as-source-of-truth.md](decisions/0005-repository-as-source-of-truth.md) | Decision record | Repository as single source of truth; this documentation system |
 | [decisions/0006-apache-2-license.md](decisions/0006-apache-2-license.md) | Decision record | Apache-2.0 license |
+| [decisions/0007-json-model-files.md](decisions/0007-json-model-files.md) | Decision record | JSON model files with a block-type registry |
+| [decisions/0008-native-egui-ui.md](decisions/0008-native-egui-ui.md) | Decision record | All-native desktop UI with egui and wgpu |
 
 ### Guides
 
@@ -91,6 +93,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [research/market-landscape.md](research/market-landscape.md) | Research | Existing tools and the gap SimSandbox targets |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
+| [sessions/2026-10-16-kernel-prep-and-adrs.md](sessions/2026-10-16-kernel-prep-and-adrs.md) | Session note | Kernel prep for files and UI; ADRs 0007–0008 |
 | [sessions/2026-10-15-project-inception.md](sessions/2026-10-15-project-inception.md) | Session note | Market research through the first commit |
 
 ## Conventions
