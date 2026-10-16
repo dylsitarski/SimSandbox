@@ -33,6 +33,7 @@ Goal: one equation, live. Gate: the Lorenz system runs live on the desktop with 
 
 Goal: connect and reuse. Gate: an ODE model and an agent model run in one graph.
 
+- [ ] Pluggable views with slots, derived signals and multi-view layout ([ADR 0015](decisions/0015-pluggable-views.md))
 - [ ] Visual node canvas
 - [ ] Python API (PyO3)
 - [ ] Subsystems collapsed into reusable Blocks

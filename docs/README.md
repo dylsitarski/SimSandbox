@@ -61,6 +61,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [architecture/block-contract.md](architecture/block-contract.md) | Architecture | The Block contract, coupling, connections, composition |
 | [architecture/method-classification.md](architecture/method-classification.md) | Architecture | Speed and accuracy labels, composition rules, earning Verified |
 | [architecture/solver-backends.md](architecture/solver-backends.md) | Architecture | Planned domains and the engines each wraps |
+| [architecture/visualization.md](architecture/visualization.md) | Architecture | Signals, pluggable views, slots, style layers, file representation, migration steps |
 | [design/interaction.md](design/interaction.md) | Design | Interaction, parameters, visualization, ways to build |
 
 ### Decisions
@@ -83,6 +84,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0012-controls-in-model-files.md](decisions/0012-controls-in-model-files.md) | Decision record | Exploration controls are saved in model files |
 | [decisions/0013-run-section.md](decisions/0013-run-section.md) | Decision record | Run settings are saved in a `run` section |
 | [decisions/0014-view-in-controls.md](decisions/0014-view-in-controls.md) | Decision record | The opening view is saved in `controls` |
+| [decisions/0015-pluggable-views.md](decisions/0015-pluggable-views.md) | Decision record | Pluggable views with slots; which style options to expose |
 
 ### Guides
 
@@ -100,7 +102,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [research/market-landscape.md](research/market-landscape.md) | Research | Existing tools and the gap SimSandbox targets |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
-| [sessions/2026-10-16-kernel-prep-and-adrs.md](sessions/2026-10-16-kernel-prep-and-adrs.md) | Session note | Kernel prep for files and UI; ADRs 0007–0013; model file format; desktop app shell; parameter panel; phase and 3D views; saved views |
+| [sessions/2026-10-16-kernel-prep-and-adrs.md](sessions/2026-10-16-kernel-prep-and-adrs.md) | Session note | Kernel prep for files and UI; ADRs 0007–0013; model file format; desktop app shell; parameter panel; phase and 3D views; saved views; ADR 0015 |
 | [sessions/2026-10-15-project-inception.md](sessions/2026-10-15-project-inception.md) | Session note | Market research through the first commit |
 
 ## Conventions

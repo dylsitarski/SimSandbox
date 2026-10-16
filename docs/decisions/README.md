@@ -20,6 +20,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0012](0012-controls-in-model-files.md) | Exploration controls are saved in model files | Accepted | 2026-10-16 |
 | [0013](0013-run-section.md) | Run settings are saved in a `run` section | Accepted | 2026-10-16 |
 | [0014](0014-view-in-controls.md) | The opening view is saved in `controls` | Accepted | 2026-10-16 |
+| [0015](0015-pluggable-views.md) | Pluggable views with slots; style options limited to encodings and readability | Accepted | 2026-10-16 |
 
 ## When to write one
 

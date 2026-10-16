@@ -9,7 +9,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Documentation system: `AGENTS.md` entry point and session protocol, documentation map, status, vision, roadmap, architecture, design, guides, research, open questions, risks, glossary, session notes, ADRs 0005–0006.
 - Docs check (`scripts/check_docs.py`) in CI; pull request and issue templates.
 - `Model::param`, `Model::params`, `Model::block_ids`, `Simulator::model` and `Simulator::param` for reading parameters and Block specs.
-- ADRs 0007 (JSON model files with a block-type registry), 0008 (all-native egui + wgpu desktop UI), 0009 (hobbyists are the first audience), 0010 (wall-clock pacing of the live loop), 0011 (typed parameter entry; ranges are suggestions), 0012 (exploration controls saved in model files), 0013 (run settings in a `run` section) and 0014 (opening view saved in `controls`).
+- ADRs 0007 (JSON model files with a block-type registry), 0008 (all-native egui + wgpu desktop UI), 0009 (hobbyists are the first audience), 0010 (wall-clock pacing of the live loop), 0011 (typed parameter entry; ranges are suggestions), 0012 (exploration controls saved in model files), 0013 (run settings in a `run` section), 0014 (opening view saved in `controls`) and 0015 (pluggable views; which style options to expose).
 
 - Model files (format 1): JSON with blocks, connections and optional `controls`; `simsandbox-file` crate with `load`, `ModelFile::to_json` and `ModelFile::capture_params`; JSON Schema in `crates/simsandbox-file/model.schema.json`.
 - Block-type registry (`simsandbox_core::registry`) and `simsandbox_eq::register` with `eq.lorenz` and `eq.coupled_oscillator`; `Integrator::from_settings` and `Integrator::settings`.

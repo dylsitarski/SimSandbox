@@ -21,6 +21,7 @@ _Last updated: 2026-10-16_
 
 ## Done recently
 
+- 2026-10-16: ADR 0015 (pluggable views, style options) and [visualization architecture](architecture/visualization.md).
 - 2026-10-16: opening view saved in `controls` (ADR 0014); scroll-to-zoom in 2D plots; Lorenz example opens in 3D.
 - 2026-10-16: phase-portrait and 3D trajectory views in the app.
 - 2026-10-16: parameter panel, Restart and Save in the app; `run` section in model files (ADR 0013).
@@ -37,7 +38,8 @@ _Last updated: 2026-10-16_
 In priority order. Each item should end with tests and updated docs.
 
 1. **Native file dialogs** for Open and Save (e.g. the `rfd` crate), replacing the path field.
-2. **Symbolic equation entry.** Parse `dx/dt = sigma*(y - x)` into an `OdeSystem`; choose the parser approach via ADR.
+2. **Pluggable views, steps 1–2** of the [visualization migration](architecture/visualization.md#migration-steps): `simsandbox-views` crate with the view trait, registry and the three current views; `controls.views` with a colour slot (trail fading bound to `t`) and `trail_length`. Steps 3–6 follow before the agent domain.
+3. **Symbolic equation entry.** Parse `dx/dt = sigma*(y - x)` into an `OdeSystem`; choose the parser approach via ADR.
 
 ## Known limitations
 
@@ -45,7 +47,7 @@ In priority order. Each item should end with tests and updated docs.
 - Physical (acausal) ports are not implemented.
 - The master uses a fixed step with no coupling-error estimate, iteration or rollback.
 - `FusedSystem::rhs` allocates per call; fine for small models, revisit before real-time use with large groups.
-- Views are a fixed set (time series, phase portrait, 3D trajectory) over scalar series, one at a time; models with many outputs or model-specific pictures need the architecture in [Q9](open-questions.md), and draw styles are fixed ([Q10](open-questions.md)).
+- Views are a fixed set (time series, phase portrait, 3D trajectory) over scalar series, one at a time; models with many outputs or model-specific pictures need the pluggable views of [ADR 0015](decisions/0015-pluggable-views.md), not yet built, and draw styles are fixed.
 - The 3D view projects on the CPU and draws with the egui painter, at most 20 000 points per frame; it suits trajectories, not meshes or fields, which need wgpu paint callbacks ([ADR 0008](decisions/0008-native-egui-ui.md)).
 - Save writes to the path typed in the File field and overwrites without asking; built-in examples have no path until one is typed.
 - The app has no native file dialog; files open from a path field, drag and drop or the command line.

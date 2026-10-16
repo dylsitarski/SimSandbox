@@ -1,4 +1,4 @@
-# 2026-10-16 — Kernel prep and ADRs 0007–0014
+# 2026-10-16 — Kernel prep and ADRs 0007–0015
 
 - **Who:** Dylan Sitarski with Claude (Claude Code, cloud session)
 - **Goal:** review the repository, settle the next steps, prepare the kernel for model files and the desktop UI, and resolve Q1, Q2, Q3 and Q6
@@ -12,13 +12,15 @@
 - Added the `run` section (ADR 0013), `Simulator::restart`, `ParamSpec::initial_condition`, and the app's parameter panel, Restart and Save. Verified headless with screenshots of both examples. 44 tests.
 - Added phase-portrait and 3D trajectory views (`view3d.rs`: CPU projection, drag to rotate, scroll to zoom, fit from the bounding sphere so the box never clips). 49 tests.
 - Saved the opening view in `controls` (ADR 0014) and made the scroll wheel zoom 2D plots. 52 tests.
-- Wrote ADRs 0007 to 0014; updated STATUS, open questions, architecture overview, block contract and interaction docs.
+- Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
+- Wrote ADRs 0007 to 0015; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
 ## Decided
 
 - Snapshots include parameter values, so rewinding also undoes slider changes (owner's decision, recorded in [architecture overview](../architecture/overview.md#data-flow-of-a-run)).
 - First `set_param` enforced the `ParamSpec` range; the owner reversed this the same day: ranges are suggestions, any finite value is accepted, and parameters are edited through typed fields with opt-in sliders ([ADR 0011](../decisions/0011-parameter-entry.md)).
 - Run settings (`dt`, optional `t_end`) are saved in a `run` section; invalid values are load errors; the app pauses once at `t_end` ([ADR 0013](../decisions/0013-run-section.md)).
+- Views become pluggable like Blocks: view types with slots bound to signals (outputs, `t`, derived signals), declared style properties, a registry with domain-provided views, several views at once; style options are exposed only as encodings (slots) or readability properties, and viewer needs such as palettes are app settings ([ADR 0015](../decisions/0015-pluggable-views.md)).
 - Initial-condition parameters are flagged in `ParamSpec` and apply on Restart, or at once before the run starts; Restart replaces Reset in the app.
 - Slider choices and ranges, default playback speed and default plots are saved in an optional `controls` section of the model file; per-person UI state is not ([ADR 0012](../decisions/0012-controls-in-model-files.md)).
 - Model files are JSON with a block-type registry ([ADR 0007](../decisions/0007-json-model-files.md)).
@@ -28,7 +30,6 @@
 
 ## Left open
 
-- Q9 (visualization architecture) and Q10 (draw-style options), raised by the owner ([open questions](../open-questions.md)). Recommendation given: a view registry like the block registry, with views declaring named slots (x, y, z, colour, …) bound to outputs or derived signals (FFT, energy, projections, Poincaré sections); richer output shapes (grids, point sets); domain crates registering model-specific views; several views at once; style options limited to encodings that change what can be read plus readability and accessibility settings, saved in `controls`.
 - Q4 (equation parsing) and Q5 (algebraic loops) remain ([open questions](../open-questions.md)).
 
 ## Notes for the next session

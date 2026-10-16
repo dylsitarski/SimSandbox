@@ -27,6 +27,8 @@ Because parameters, ports and state are declared metadata, most of the interface
 
 ## Visualization layer
 
+Architecture: [visualization](../architecture/visualization.md) ([ADR 0015](../decisions/0015-pluggable-views.md)).
+
 - 2D plots and phase space with GPU-accelerated plotting; 3D scenes and fields with native GPU rendering; graph views for networks and agents.
 - Large CFD fields stream decimated data to the viewer and hand off to ParaView for heavy post-processing.
 
