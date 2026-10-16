@@ -9,7 +9,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Documentation system: `AGENTS.md` entry point and session protocol, documentation map, status, vision, roadmap, architecture, design, guides, research, open questions, risks, glossary, session notes, ADRs 0005–0006.
 - Docs check (`scripts/check_docs.py`) in CI; pull request and issue templates.
 - `Model::param`, `Model::params`, `Model::block_ids`, `Simulator::model` and `Simulator::param` for reading parameters and Block specs.
-- ADRs 0007 (JSON model files with a block-type registry), 0008 (all-native egui + wgpu desktop UI), 0009 (hobbyists are the first audience), 0010 (wall-clock pacing of the live loop) and 0011 (typed parameter entry; ranges are suggestions).
+- ADRs 0007 (JSON model files with a block-type registry), 0008 (all-native egui + wgpu desktop UI), 0009 (hobbyists are the first audience), 0010 (wall-clock pacing of the live loop), 0011 (typed parameter entry; ranges are suggestions) and 0012 (exploration controls saved in model files).
 
 ### Changed
 

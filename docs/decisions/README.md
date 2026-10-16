@@ -17,6 +17,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0009](0009-hobbyists-first.md) | Hobbyists are the first audience | Accepted | 2026-10-16 |
 | [0010](0010-live-loop-pacing.md) | Pace the live loop by wall-clock time | Accepted | 2026-10-16 |
 | [0011](0011-parameter-entry.md) | Typed parameter entry; ranges are suggestions | Accepted | 2026-10-16 |
+| [0012](0012-controls-in-model-files.md) | Exploration controls are saved in model files | Accepted | 2026-10-16 |
 
 ## When to write one
 

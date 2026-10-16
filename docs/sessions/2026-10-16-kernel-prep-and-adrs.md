@@ -1,4 +1,4 @@
-# 2026-10-16 — Kernel prep and ADRs 0007–0011
+# 2026-10-16 — Kernel prep and ADRs 0007–0012
 
 - **Who:** Dylan Sitarski with Claude (Claude Code, cloud session)
 - **Goal:** review the repository, settle the next steps, prepare the kernel for model files and the desktop UI, and resolve Q1, Q2, Q3 and Q6
@@ -13,6 +13,7 @@
 
 - Snapshots include parameter values, so rewinding also undoes slider changes (owner's decision, recorded in [architecture overview](../architecture/overview.md#data-flow-of-a-run)).
 - First `set_param` enforced the `ParamSpec` range; the owner reversed this the same day: ranges are suggestions, any finite value is accepted, and parameters are edited through typed fields with opt-in sliders ([ADR 0011](../decisions/0011-parameter-entry.md)).
+- Slider choices and ranges, default playback speed and default plots are saved in an optional `controls` section of the model file; per-person UI state is not ([ADR 0012](../decisions/0012-controls-in-model-files.md)).
 - Model files are JSON with a block-type registry ([ADR 0007](../decisions/0007-json-model-files.md)).
 - The desktop UI is all-native eframe + egui + wgpu ([ADR 0008](../decisions/0008-native-egui-ui.md)).
 - Hobbyists are the first audience, matching the owner's own purposes and sitting between students and researchers ([ADR 0009](../decisions/0009-hobbyists-first.md)).
@@ -21,7 +22,6 @@
 ## Left open
 
 - Q4 (equation parsing) and Q5 (algebraic loops) remain ([open questions](../open-questions.md)).
-- Whether slider choices and ranges are saved in model files (ADR 0011 consequences).
 
 ## Notes for the next session
 

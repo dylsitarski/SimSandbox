@@ -19,7 +19,7 @@ _Last updated: 2026-10-16_
 
 ## Done recently
 
-- 2026-10-16: kernel prep for model files and the UI (parameter access; snapshots include parameters; suggested rather than enforced parameter ranges); ADRs 0007 (JSON model files), 0008 (egui + wgpu UI), 0009 (hobbyists first), 0010 (live loop pacing) and 0011 (parameter entry).
+- 2026-10-16: kernel prep for model files and the UI (parameter access; snapshots include parameters; suggested rather than enforced parameter ranges); ADRs 0007 (JSON model files), 0008 (egui + wgpu UI), 0009 (hobbyists first), 0010 (live loop pacing), 0011 (parameter entry) and 0012 (controls saved in model files).
 
 ## In progress
 
@@ -29,9 +29,9 @@ _Last updated: 2026-10-16_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Model file format** per [ADR 0007](decisions/0007-json-model-files.md): block-type registry in the kernel, `simsandbox_eq::register`, a JSON reader/writer crate with a JSON Schema, round-trip tests for Lorenz and the coupled oscillator, and `simsandbox run <file>` in the CLI.
+1. **Model file format** per [ADR 0007](decisions/0007-json-model-files.md) and [ADR 0012](decisions/0012-controls-in-model-files.md): block-type registry in the kernel, `simsandbox_eq::register`, a JSON reader/writer crate with a JSON Schema (including the optional `controls` section), round-trip tests for Lorenz and the coupled oscillator, and `simsandbox run <file>` in the CLI.
 2. **Desktop app shell.** New crate `simsandbox-app` (eframe + egui + wgpu, per [ADR 0008](decisions/0008-native-egui-ui.md)): window, run/pause/rewind controls, a live time-series plot, paced by wall-clock time with a speed control ([ADR 0010](decisions/0010-live-loop-pacing.md)).
-3. **Auto-generated parameter panel** per [ADR 0011](decisions/0011-parameter-entry.md): a typed entry field with units for every `ParamSpec` (via `Simulator::model()`), plus opt-in sliders with user-set ranges, wired to `Simulator::set_param`.
+3. **Auto-generated parameter panel** per [ADR 0011](decisions/0011-parameter-entry.md): a typed entry field with units for every `ParamSpec` (via `Simulator::model()`), plus opt-in sliders with user-set ranges, wired to `Simulator::set_param` and saved in the file's `controls` section.
 4. **Phase-portrait / 3D trajectory view** for the Lorenz system.
 5. **Symbolic equation entry.** Parse `dx/dt = sigma*(y - x)` into an `OdeSystem`; choose the parser approach via ADR.
 

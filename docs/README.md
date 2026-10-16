@@ -80,6 +80,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0009-hobbyists-first.md](decisions/0009-hobbyists-first.md) | Decision record | Hobbyists are the first audience |
 | [decisions/0010-live-loop-pacing.md](decisions/0010-live-loop-pacing.md) | Decision record | Pace the live loop by wall-clock time |
 | [decisions/0011-parameter-entry.md](decisions/0011-parameter-entry.md) | Decision record | Typed parameter entry; ranges are suggestions |
+| [decisions/0012-controls-in-model-files.md](decisions/0012-controls-in-model-files.md) | Decision record | Exploration controls are saved in model files |
 
 ### Guides
 
@@ -96,7 +97,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [research/market-landscape.md](research/market-landscape.md) | Research | Existing tools and the gap SimSandbox targets |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
-| [sessions/2026-10-16-kernel-prep-and-adrs.md](sessions/2026-10-16-kernel-prep-and-adrs.md) | Session note | Kernel prep for files and UI; ADRs 0007–0011 |
+| [sessions/2026-10-16-kernel-prep-and-adrs.md](sessions/2026-10-16-kernel-prep-and-adrs.md) | Session note | Kernel prep for files and UI; ADRs 0007–0012 |
 | [sessions/2026-10-15-project-inception.md](sessions/2026-10-15-project-inception.md) | Session note | Market research through the first commit |
 
 ## Conventions

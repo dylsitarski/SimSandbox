@@ -59,6 +59,6 @@ Same-domain fusion happens before the master sees the Blocks: e.g. `EquationGrou
 | Equation and DAE backend | Rust-native ODE path now; Julia (ModelingToolkit, DifferentialEquations.jl) as an optional out-of-process plugin | Real-time stays in Rust; heavy DAE work can use Julia |
 | Heavy solvers | OpenFOAM, FEniCSx, MuJoCo as local binaries or containers | The desktop app launches and manages them |
 | Interop | FMI 3.0, ONNX, gRPC | Standards keep the ecosystem open |
-| Model files | JSON with a block-type registry ([ADR 0007](../decisions/0007-json-model-files.md)) | Diffable, shareable, AI-generatable |
+| Model files | JSON with a block-type registry and an optional `controls` section ([ADR 0007](../decisions/0007-json-model-files.md), [ADR 0012](../decisions/0012-controls-in-model-files.md)) | Diffable, shareable, AI-generatable |
 | Distribution | Desktop installer, headless CLI, containers | Same model file everywhere |
 | Sharing | Standalone player app and recorded runs | Recovers most of the value of link-sharing |
