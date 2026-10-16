@@ -4,12 +4,11 @@
 use crate::examples::{registry, EXAMPLES};
 use crate::pacing::Pacer;
 use crate::session::{ParamRow, Session};
-use crate::view3d::{self, Camera};
+use crate::views::Views;
 use eframe::egui;
-use egui_plot::{Legend, Line, MarkerShape, Plot, Points};
 use simsandbox_core::registry::Registry;
 use simsandbox_core::SimError;
-use simsandbox_file::{CameraControl, ViewControl};
+use simsandbox_views::{ViewRegistry, ViewState, ViewType};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -38,7 +37,7 @@ pub struct SimApp {
     param_edits: HashMap<String, String>,
     last_frame: Option<Instant>,
     rewind_t: f64,
-    view: View,
+    views: Views,
     started: Instant,
     screenshot: Option<ScreenshotRequest>,
     screenshot_requested: bool,
@@ -62,7 +61,7 @@ impl SimApp {
             param_edits: HashMap::new(),
             last_frame: None,
             rewind_t: 0.0,
-            view: View::default(),
+            views: Views::new(ViewRegistry::builtin()),
             started: Instant::now(),
             screenshot,
             screenshot_requested: false,
@@ -74,14 +73,13 @@ impl SimApp {
         // Hobbyists first (ADR 0009): a model runs as soon as it opens.
         app.running = app.session.is_some();
         // A --view flag overrides the view saved in the file.
-        if let Some(v) = view {
-            app.view.kind = match v {
-                "phase" => ViewKind::Phase,
-                "3d" => ViewKind::Trajectory,
-                _ => ViewKind::TimeSeries,
+        if let (Some(v), Some(session)) = (view, &app.session) {
+            let name = match v {
+                "phase" => "plot.phase",
+                "3d" => "plot.3d",
+                _ => "plot.time",
             };
-            let n = app.session.as_ref().map_or(0, |s| s.series.len());
-            app.view.ensure_enough(n);
+            app.views.select(name, session.signals.names());
         }
         app
     }
@@ -155,10 +153,8 @@ impl SimApp {
                 self.notice = None;
                 self.param_edits.clear();
                 if let Some(s) = self.session.as_mut() {
-                    let names: Vec<&str> = s.series.iter().map(|x| x.name.as_str()).collect();
-                    if let Some(w) = self.view.open(&names, s.file.controls.view.as_ref()) {
-                        s.warnings.push(w);
-                    }
+                    let w = self.views.open(s.signals.names(), &s.file.controls.views);
+                    s.warnings.extend(w);
                 }
                 self.rewind_t = 0.0;
                 self.pacer.reset();
@@ -367,88 +363,83 @@ impl SimApp {
         }
     }
 
+    /// The view selector, the active view's slot bindings, and the view.
     fn plot(&mut self, ui: &mut egui::Ui) {
         let Some(session) = &self.session else {
             ui.centered_and_justified(|ui| ui.label("Open an example or a model file."));
             return;
         };
-        let names: Vec<&str> = session.series.iter().map(|s| s.name.as_str()).collect();
-        let view = &mut self.view;
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut view.kind, ViewKind::TimeSeries, "Time series");
-            ui.add_enabled_ui(names.len() >= 2, |ui| {
-                ui.selectable_value(&mut view.kind, ViewKind::Phase, "Phase portrait")
-                    .on_hover_text("One output against another");
-            });
-            ui.add_enabled_ui(names.len() >= 3, |ui| {
-                ui.selectable_value(&mut view.kind, ViewKind::Trajectory, "3D trajectory")
-                    .on_hover_text("Three outputs as a path in space");
-            });
+        let signals = session.signals.names().to_vec();
+        let views = &mut self.views;
+        ui.horizontal_wrapped(|ui| {
+            let active = views.active_name().map(str::to_string);
+            let types: Vec<_> = views
+                .registry
+                .types()
+                .iter()
+                .map(|t| (t.name, t.label, t.description))
+                .collect();
+            for (name, label, description) in types {
+                let on = active.as_deref() == Some(name);
+                let r = ui
+                    .add_enabled_ui(views.available(name, &signals), |ui| {
+                        ui.selectable_label(on, label)
+                    })
+                    .inner
+                    .on_hover_text(description);
+                if r.clicked() {
+                    views.select(name, &signals);
+                }
+            }
             ui.separator();
-            match view.kind {
-                ViewKind::TimeSeries => {}
-                ViewKind::Phase => {
-                    for (k, axis) in ["x", "y"].into_iter().enumerate() {
-                        axis_combo(ui, axis, &names, &mut view.phase[k]);
-                    }
-                }
-                ViewKind::Trajectory => {
-                    for (k, axis) in ["x", "y", "z"].into_iter().enumerate() {
-                        axis_combo(ui, axis, &names, &mut view.trajectory[k]);
-                    }
-                }
+            if let Some((t, state)) = views.active_mut() {
+                slot_editors(ui, t, state, &signals);
             }
         });
-
-        match view.kind {
-            ViewKind::TimeSeries => {
-                Plot::new("time_series")
-                    .legend(Legend::default())
-                    .x_axis_label("t [s]")
-                    .allow_scroll(false)
-                    .show(ui, |plot| {
-                        scroll_to_zoom(plot);
-                        for s in &session.series {
-                            plot.line(Line::new(s.name.clone(), s.points.as_slice()));
-                        }
-                    });
-            }
-            ViewKind::Phase => {
-                let [a, b] = view.phase;
-                let points = session.phase_points(a, b);
-                let head = points.last().copied();
-                Plot::new("phase")
-                    .x_axis_label(names[a])
-                    .y_axis_label(names[b])
-                    .allow_scroll(false)
-                    .show(ui, |plot| {
-                        scroll_to_zoom(plot);
-                        plot.line(Line::new(format!("{} vs {}", names[b], names[a]), points));
-                        if let Some(h) = head {
-                            plot.points(
-                                Points::new("now", vec![h])
-                                    .shape(MarkerShape::Circle)
-                                    .radius(4.0),
-                            );
-                        }
-                    });
-            }
-            ViewKind::Trajectory => {
-                let axes = view.trajectory;
-                let points = session.trajectory(axes);
-                view3d::show(ui, &mut view.camera, &points, axes.map(|i| names[i]));
-            }
+        if let Some((t, state)) = views.active_mut() {
+            state.show(ui, t, &session.signals);
         }
+    }
+
+    /// Style properties of the active view, edited like parameters
+    /// (ADR 0015).
+    fn style_panel(&mut self, ui: &mut egui::Ui) {
+        let Some((t, state)) = self.views.active_mut() else {
+            return;
+        };
+        if t.style.is_empty() {
+            return;
+        }
+        ui.add_space(10.0);
+        ui.heading(format!("View: {}", t.label));
+        egui::Grid::new(("style", t.name))
+            .num_columns(3)
+            .spacing([6.0, 4.0])
+            .show(ui, |ui| {
+                for p in t.style {
+                    ui.label(p.name).on_hover_text(format!(
+                        "{}\nSuggested range: {} to {}",
+                        p.description, p.suggested[0], p.suggested[1]
+                    ));
+                    let key = format!("style.{}.{}", t.name, p.name);
+                    let value = state.style_value(p);
+                    if let Some(v) =
+                        number_entry(ui, &key, value, &mut self.param_edits, &mut self.error)
+                    {
+                        state.style.insert(p.name.into(), v);
+                    }
+                    ui.label(p.unit);
+                    ui.end_row();
+                }
+            });
     }
 
     fn save_to(&mut self, path: &Path) {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let names: Vec<String> = session.series.iter().map(|x| x.name.clone()).collect();
-        let names: Vec<&str> = names.iter().map(String::as_str).collect();
         let result = session
-            .save_json(self.speed, Some(self.view.to_control(&names)))
+            .save_json(self.speed, Some(self.views.entries()))
             .and_then(|text| std::fs::write(path, text).map_err(|e| e.to_string()));
         match result {
             Ok(()) => {
@@ -484,7 +475,7 @@ impl SimApp {
         ui.heading("Parameters");
         let rows = session.params();
         let mut changes: Vec<(ParamRow, f64)> = Vec::new();
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        {
             let mut blocks: Vec<(String, Vec<ParamRow>)> = Vec::new();
             for row in rows {
                 let name = row.key.split_once('.').map_or("", |(b, _)| b).to_string();
@@ -512,7 +503,7 @@ impl SimApp {
                         }
                     });
             }
-        });
+        }
 
         for (row, v) in changes {
             match session.set_param(row.block, &row.name, v) {
@@ -592,7 +583,12 @@ impl eframe::App for SimApp {
             egui::Panel::left("params")
                 .resizable(true)
                 .default_size(300.0)
-                .show(ui, |ui| self.param_panel(ui));
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.param_panel(ui);
+                        self.style_panel(ui);
+                    });
+                });
         }
         egui::CentralPanel::default().show(ui, |ui| self.plot(ui));
 
@@ -629,27 +625,8 @@ fn param_row(
     }
     ui.label(&row.name).on_hover_text(hover);
 
-    // Show a compact value; apply only what the user actually typed, so
-    // the rounding of the display never changes a parameter.
-    let shown = format_value(row.value);
-    let mut text = edits
-        .get(&row.key)
-        .cloned()
-        .unwrap_or_else(|| shown.clone());
-    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0));
-    if r.has_focus() {
-        edits.insert(row.key.clone(), text.clone());
-    }
-    if r.lost_focus() {
-        edits.remove(&row.key);
-        if text.trim() != shown {
-            match text.trim().parse::<f64>() {
-                Ok(v) => changes.push((row.clone(), v)),
-                Err(_) => {
-                    *error = Some(format!("{}: '{}' is not a number", row.key, text.trim()));
-                }
-            }
-        }
+    if let Some(v) = number_entry(ui, &row.key, row.value, edits, error) {
+        changes.push((row.clone(), v));
     }
 
     ui.horizontal(|ui| {
@@ -701,6 +678,86 @@ fn param_row(
     }
 }
 
+/// A typed number field. It shows a compact value and returns a new value
+/// only when the user typed a different one, so the rounding of the display
+/// never changes anything. `key` identifies the field's edit buffer.
+fn number_entry(
+    ui: &mut egui::Ui,
+    key: &str,
+    value: f64,
+    edits: &mut HashMap<String, String>,
+    error: &mut Option<String>,
+) -> Option<f64> {
+    let shown = format_value(value);
+    let mut text = edits.get(key).cloned().unwrap_or_else(|| shown.clone());
+    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0));
+    if r.has_focus() {
+        edits.insert(key.into(), text.clone());
+    }
+    if !r.lost_focus() {
+        return None;
+    }
+    edits.remove(key);
+    let typed = text.trim();
+    if typed == shown {
+        return None;
+    }
+    match typed.parse::<f64>() {
+        Ok(v) => Some(v),
+        Err(_) => {
+            *error = Some(format!("{key}: '{typed}' is not a number"));
+            None
+        }
+    }
+}
+
+/// Pickers for the active view's slots: a menu of checkboxes for slots that
+/// take several signals, a combo box otherwise (with "none" when optional).
+fn slot_editors(ui: &mut egui::Ui, t: &ViewType, state: &mut ViewState, signals: &[String]) {
+    for slot in t.slots {
+        let current = state.bind.get(slot.name).cloned().unwrap_or_default();
+        if slot.many {
+            ui.menu_button(format!("{}: {} signals", slot.name, current.len()), |ui| {
+                for s in signals {
+                    let mut on = current.contains(s);
+                    // A required slot keeps at least one signal.
+                    let locked = on && slot.required && current.len() == 1;
+                    if ui
+                        .add_enabled(!locked, egui::Checkbox::new(&mut on, s.as_str()))
+                        .changed()
+                    {
+                        // Keep the recorded order, so colours stay stable.
+                        let next: Vec<String> = signals
+                            .iter()
+                            .filter(|x| if *x == s { on } else { current.contains(x) })
+                            .cloned()
+                            .collect();
+                        state.bind.insert(slot.name.into(), next);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(slot.description);
+        } else {
+            let shown = current.first().map_or("none", String::as_str);
+            egui::ComboBox::from_id_salt(("slot", t.name, slot.name))
+                .selected_text(format!("{}: {shown}", slot.name))
+                .show_ui(ui, |ui| {
+                    if !slot.required && ui.selectable_label(current.is_empty(), "none").clicked() {
+                        state.bind.remove(slot.name);
+                    }
+                    for s in std::iter::once("t").chain(signals.iter().map(String::as_str)) {
+                        if ui.selectable_label(shown == s, s).clicked() {
+                            state.bind.insert(slot.name.into(), vec![s.into()]);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(slot.description);
+        }
+    }
+}
+
 /// A file name for saving a model titled `title`, e.g. "Lorenz system" →
 /// "lorenz-system.ssbx.json".
 fn default_file_name(title: &str) -> String {
@@ -742,144 +799,6 @@ fn with_model_extension(path: PathBuf) -> PathBuf {
     }
 }
 
-/// What the central area shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ViewKind {
-    TimeSeries,
-    Phase,
-    Trajectory,
-}
-
-struct View {
-    kind: ViewKind,
-    /// Series indices for the phase portrait's x and y.
-    phase: [usize; 2],
-    /// Series indices for the 3D trajectory's axes.
-    trajectory: [usize; 3],
-    camera: Camera,
-}
-
-impl Default for View {
-    fn default() -> Self {
-        Self {
-            kind: ViewKind::TimeSeries,
-            phase: [0, 1],
-            trajectory: [0, 1, 2],
-            camera: Camera::default(),
-        }
-    }
-}
-
-impl View {
-    /// Open a model whose plotted series are `names`: the view saved in its
-    /// `controls` (ADR 0014), else the time series with sensible axes ready
-    /// (x–z for Lorenz). Returns a warning if the saved view cannot be used.
-    fn open(&mut self, names: &[&str], saved: Option<&ViewControl>) -> Option<String> {
-        let n = names.len();
-        self.kind = ViewKind::TimeSeries;
-        self.phase = if n >= 3 { [0, 2] } else { [0, 1] };
-        self.trajectory = [0, 1, 2];
-        self.camera = Camera::default();
-        let saved = saved?;
-        let Some(idx) = saved
-            .axes
-            .iter()
-            .map(|a| names.iter().position(|n| n == a))
-            .collect::<Option<Vec<usize>>>()
-        else {
-            return Some(
-                "controls.view: an axis is not among the plotted outputs; opening the time series"
-                    .into(),
-            );
-        };
-        match saved.kind.as_str() {
-            "phase" => {
-                self.kind = ViewKind::Phase;
-                self.phase = [idx[0], idx[1]];
-            }
-            "3d" => {
-                self.kind = ViewKind::Trajectory;
-                self.trajectory = [idx[0], idx[1], idx[2]];
-                if let Some(c) = saved.camera {
-                    self.camera = Camera {
-                        yaw: c.yaw as f32,
-                        pitch: c.pitch as f32,
-                        zoom: c.zoom as f32,
-                    };
-                }
-            }
-            _ => {}
-        }
-        None
-    }
-
-    /// The current view as saved in `controls` (ADR 0014).
-    fn to_control(&self, names: &[&str]) -> ViewControl {
-        let axes = |idx: &[usize]| idx.iter().map(|&i| names[i].to_string()).collect();
-        match self.kind {
-            ViewKind::TimeSeries => ViewControl {
-                kind: "time".into(),
-                axes: Vec::new(),
-                camera: None,
-            },
-            ViewKind::Phase => ViewControl {
-                kind: "phase".into(),
-                axes: axes(&self.phase),
-                camera: None,
-            },
-            ViewKind::Trajectory => ViewControl {
-                kind: "3d".into(),
-                axes: axes(&self.trajectory),
-                camera: Some(CameraControl {
-                    yaw: self.camera.yaw.into(),
-                    pitch: self.camera.pitch.into(),
-                    zoom: self.camera.zoom.into(),
-                }),
-            },
-        }
-    }
-
-    /// Fall back to the time series if there are too few series for the
-    /// chosen view.
-    fn ensure_enough(&mut self, n: usize) {
-        let enough = match self.kind {
-            ViewKind::TimeSeries => true,
-            ViewKind::Phase => n >= 2,
-            ViewKind::Trajectory => n >= 3,
-        };
-        if !enough {
-            self.kind = ViewKind::TimeSeries;
-        }
-    }
-}
-
-/// The scroll wheel zooms around the pointer instead of panning; drag pans
-/// and double-click resets, as egui_plot does by default.
-fn scroll_to_zoom(plot: &mut egui_plot::PlotUi<'_>) {
-    if !plot.response().hovered() {
-        return;
-    }
-    let dy = plot.ctx().input(|i| i.smooth_scroll_delta.y);
-    if dy != 0.0 {
-        plot.zoom_bounds_around_hovered(egui::Vec2::splat(zoom_factor(dy)));
-    }
-}
-
-/// Zoom per scrolled point; scrolling up (positive) zooms in.
-fn zoom_factor(scroll: f32) -> f32 {
-    (scroll * 0.002).exp()
-}
-
-fn axis_combo(ui: &mut egui::Ui, axis: &str, names: &[&str], selected: &mut usize) {
-    egui::ComboBox::from_id_salt(("axis", axis))
-        .selected_text(format!("{axis}: {}", names[*selected]))
-        .show_ui(ui, |ui| {
-            for (i, name) in names.iter().enumerate() {
-                ui.selectable_value(selected, i, *name);
-            }
-        });
-}
-
 /// Why stepping stopped within a frame.
 enum Stop {
     /// The file's `run.t_end` was reached (ADR 0013).
@@ -917,37 +836,6 @@ fn write_ppm(path: &Path, image: &egui::ColorImage) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn views_open_as_saved_and_save_as_shown() {
-        let names = ["l.xyz[0]", "l.xyz[1]", "l.xyz[2]"];
-        let mut v = View::default();
-        assert!(v.open(&names, None).is_none());
-        assert_eq!(v.kind, ViewKind::TimeSeries);
-        assert_eq!(v.phase, [0, 2]);
-
-        let saved = ViewControl {
-            kind: "3d".into(),
-            axes: vec!["l.xyz[2]".into(), "l.xyz[0]".into(), "l.xyz[1]".into()],
-            camera: Some(CameraControl {
-                yaw: 1.0,
-                pitch: 0.5,
-                zoom: 2.0,
-            }),
-        };
-        assert!(v.open(&names, Some(&saved)).is_none());
-        assert_eq!(v.kind, ViewKind::Trajectory);
-        assert_eq!(v.trajectory, [2, 0, 1]);
-        assert_eq!(v.to_control(&names), saved);
-
-        let unplotted = ViewControl {
-            kind: "phase".into(),
-            axes: vec!["l.xyz[0]".into(), "other.x".into()],
-            camera: None,
-        };
-        assert!(v.open(&names, Some(&unplotted)).is_some());
-        assert_eq!(v.kind, ViewKind::TimeSeries);
-    }
 
     #[test]
     fn save_names_get_the_model_extension() {
@@ -990,20 +878,13 @@ mod tests {
         let mut reopened = SimApp::new(Some(path.to_string_lossy().into_owned()), None, None);
         assert_eq!(reopened.error, None);
         assert_eq!(reopened.path.as_deref(), Some(path.as_path()));
-        assert_eq!(reopened.view.kind, ViewKind::Trajectory);
+        assert_eq!(reopened.views.active_name(), Some("plot.3d"));
 
         // A failed open keeps the previous file as the save target.
         reopened.open_path(&dir.join("missing.ssbx.json").to_string_lossy());
         assert!(reopened.error.is_some());
         assert_eq!(reopened.path.as_deref(), Some(path.as_path()));
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn scrolling_up_zooms_in() {
-        assert!(zoom_factor(50.0) > 1.0);
-        assert!(zoom_factor(-50.0) < 1.0);
-        assert_eq!(zoom_factor(0.0), 1.0);
     }
 
     #[test]

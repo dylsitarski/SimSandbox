@@ -4,7 +4,7 @@ _Last updated: 2026-10-16_
 
 ## Toolchain
 
-SimSandbox needs stable Rust 1.86 or newer; the desktop app (`crates/simsandbox-app`) needs 1.95 or newer because of egui. `rust-toolchain.toml` makes `rustup` select stable with `rustfmt` and `clippy`. Python 3 is needed only for `scripts/check_docs.py`.
+SimSandbox needs stable Rust 1.86 or newer; the desktop app (`crates/simsandbox-app`) and `crates/simsandbox-views` need 1.95 or newer because of egui. `rust-toolchain.toml` makes `rustup` select stable with `rustfmt` and `clippy`. Python 3 is needed only for `scripts/check_docs.py`.
 
 | Platform | Install |
 | --- | --- |

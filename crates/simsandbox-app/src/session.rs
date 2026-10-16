@@ -1,30 +1,28 @@
-//! One open model: the running simulator, its recorded history for rewind,
-//! the plotted series, and its parameters.
+//! One open model: the running simulator, its snapshots for rewind, the
+//! recorded signals the views draw from, and its parameters.
 
-use egui_plot::PlotPoint;
 use simsandbox_core::block::{MethodLabels, Shape};
 use simsandbox_core::graph::BlockId;
 use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::{Simulator, Snapshot};
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
-use simsandbox_file::{ModelFile, ViewControl};
+use simsandbox_file::{ModelFile, ViewEntry};
+use simsandbox_views::history::thin;
+use simsandbox_views::History;
 use std::collections::BTreeMap;
 
 /// Take a snapshot for rewind every this many steps.
 const SNAPSHOT_EVERY: usize = 10;
-/// When history or a series grows past these, every other entry is dropped:
-/// the whole run stays reachable, at coarser resolution.
+/// When the snapshots grow past this, every other one is dropped: the whole
+/// run stays reachable, at coarser resolution.
 const MAX_SNAPSHOTS: usize = 10_000;
-const MAX_POINTS: usize = 100_000;
 
-/// One plotted value: an element of an output port.
-pub struct Series {
-    pub name: String,
+/// Where a recorded signal comes from: an element of an output port.
+struct Source {
     block: BlockId,
     port: String,
     index: usize,
-    pub points: Vec<PlotPoint>,
 }
 
 /// One parameter as the panel shows it.
@@ -50,12 +48,14 @@ pub struct Session {
     pub ids: BTreeMap<String, BlockId>,
     pub warnings: Vec<String>,
     pub dt: f64,
-    pub series: Vec<Series>,
+    /// Recorded signals, one per plotted output element (ADR 0015).
+    pub signals: History,
+    sources: Vec<Source>,
     /// Where the app pauses (the file's `run.t_end`); cleared once reached so
     /// Run continues past it (ADR 0013).
     stop_at: Option<f64>,
     sim: Simulator,
-    history: Vec<Snapshot>,
+    snapshots: Vec<Snapshot>,
     steps_since_snapshot: usize,
 }
 
@@ -63,7 +63,8 @@ impl Session {
     /// Load a model file. Errors are formatted for display.
     pub fn load(title: &str, text: &str, registry: &Registry) -> Result<Self, String> {
         let loaded = simsandbox_file::load(text, registry).map_err(|e| e.to_string())?;
-        let mut series = Vec::new();
+        let mut names = Vec::new();
+        let mut sources = Vec::new();
         let plots = &loaded.file.controls.plots;
         for entry in &loaded.file.blocks {
             let id = loaded.ids[&entry.name];
@@ -75,15 +76,14 @@ impl Session {
                     continue;
                 }
                 for index in 0..port.shape.len() {
-                    series.push(Series {
-                        name: match port.shape {
-                            Shape::Scalar => key.clone(),
-                            Shape::Vector(_) => format!("{key}[{index}]"),
-                        },
+                    names.push(match port.shape {
+                        Shape::Scalar => key.clone(),
+                        Shape::Vector(_) => format!("{key}[{index}]"),
+                    });
+                    sources.push(Source {
                         block: id,
                         port: port.name.clone(),
                         index,
-                        points: Vec::new(),
                     });
                 }
             }
@@ -97,8 +97,9 @@ impl Session {
             file: loaded.file,
             ids: loaded.ids,
             warnings: loaded.warnings,
-            series,
-            history: vec![sim.snapshot()],
+            signals: History::new(names),
+            sources,
+            snapshots: vec![sim.snapshot()],
             sim,
             steps_since_snapshot: 0,
         };
@@ -121,9 +122,9 @@ impl Session {
         self.steps_since_snapshot += 1;
         if self.steps_since_snapshot >= SNAPSHOT_EVERY {
             self.steps_since_snapshot = 0;
-            self.history.push(self.sim.snapshot());
-            if self.history.len() > MAX_SNAPSHOTS {
-                thin(&mut self.history);
+            self.snapshots.push(self.sim.snapshot());
+            if self.snapshots.len() > MAX_SNAPSHOTS {
+                thin(&mut self.snapshots);
             }
         }
         Ok(())
@@ -176,7 +177,7 @@ impl Session {
         self.sim
             .set_param(block, name, value)
             .map_err(|e| e.to_string())?;
-        if self.time() == 0.0 && self.history.len() == 1 {
+        if self.time() == 0.0 && self.snapshots.len() == 1 {
             self.restart().map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -186,95 +187,66 @@ impl Session {
     /// plots start over.
     pub fn restart(&mut self) -> Result<(), SimError> {
         self.sim.restart(0.0)?;
-        self.history = vec![self.sim.snapshot()];
+        self.snapshots = vec![self.sim.snapshot()];
         self.steps_since_snapshot = 0;
         self.stop_at = self.file.run.t_end;
-        for s in &mut self.series {
-            s.points.clear();
-        }
+        self.signals.clear();
         self.record();
         Ok(())
     }
 
     /// The model file with the current parameters, step, default speed and
-    /// view (ADR 0012, ADR 0013, ADR 0014), ready to write.
-    pub fn save_json(&mut self, speed: f64, view: Option<ViewControl>) -> Result<String, String> {
+    /// views (ADR 0012, ADR 0013, ADR 0015), ready to write.
+    pub fn save_json(
+        &mut self,
+        speed: f64,
+        views: Option<Vec<ViewEntry>>,
+    ) -> Result<String, String> {
         self.file
             .capture_params(self.sim.model(), &self.ids)
             .map_err(|e| e.to_string())?;
         self.file.run.dt = self.dt;
         self.file.controls.speed = Some(speed);
-        if view.is_some() {
-            self.file.controls.view = view;
+        if let Some(v) = views {
+            self.file.controls.views = v;
         }
         Ok(self.file.to_json())
     }
 
-    /// Series `a` against series `b`, for a phase portrait. All series are
-    /// recorded, thinned and rewound together, so they pair by index.
-    pub fn phase_points(&self, a: usize, b: usize) -> Vec<[f64; 2]> {
-        let (sa, sb) = (&self.series[a].points, &self.series[b].points);
-        sa.iter().zip(sb).map(|(p, q)| [p.y, q.y]).collect()
-    }
-
-    /// Three series as a 3D trajectory.
-    pub fn trajectory(&self, axes: [usize; 3]) -> Vec<[f64; 3]> {
-        let [a, b, c] = axes.map(|i| &self.series[i].points);
-        a.iter()
-            .zip(b)
-            .zip(c)
-            .map(|((p, q), r)| [p.y, q.y, r.y])
-            .collect()
-    }
-
     /// Earliest and latest time the run can be rewound to.
     pub fn history_range(&self) -> (f64, f64) {
-        let first = self.history.first().map_or(0.0, |s| s.t);
-        let last = self.history.last().map_or(first, |s| s.t);
+        let first = self.snapshots.first().map_or(0.0, |s| s.t);
+        let last = self.snapshots.last().map_or(first, |s| s.t);
         (first, last)
     }
 
     /// Rewind to the latest snapshot at or before `t`. Everything recorded
     /// after it is discarded, so running on starts a new branch.
     pub fn rewind_to(&mut self, t: f64) {
-        let keep = self.history.iter().rposition(|s| s.t <= t).unwrap_or(0);
-        self.history.truncate(keep + 1);
-        let snap = &self.history[keep];
+        let keep = self.snapshots.iter().rposition(|s| s.t <= t).unwrap_or(0);
+        self.snapshots.truncate(keep + 1);
+        let snap = &self.snapshots[keep];
         self.sim.restore(snap);
         let t0 = snap.t;
         self.stop_at = self.file.run.t_end.filter(|&end| end > t0);
-        for s in &mut self.series {
-            s.points.retain(|p| p.x <= t0);
-        }
+        self.signals.truncate_after(t0);
         self.steps_since_snapshot = 0;
     }
 
     fn record(&mut self) {
-        let t = self.sim.time();
-        for s in &mut self.series {
-            if let Some(v) = self
-                .sim
-                .output(s.block, &s.port)
-                .and_then(|v| v.get(s.index))
-            {
-                s.points.push(PlotPoint::new(t, *v));
-                if s.points.len() > MAX_POINTS {
-                    thin(&mut s.points);
-                }
-            }
-        }
+        let values: Vec<f64> = self
+            .sources
+            .iter()
+            .map(|src| {
+                self.sim
+                    .output(src.block, &src.port)
+                    .and_then(|v| v.get(src.index))
+                    .copied()
+                    .unwrap_or(f64::NAN)
+            })
+            .collect();
+        self.signals.push(self.sim.time(), &values);
     }
-}
-
-/// Drop every other entry, keeping the first and the last.
-fn thin<T>(v: &mut Vec<T>) {
-    let last = v.len() - 1;
-    let mut i = 0;
-    v.retain(|_| {
-        let keep = i % 2 == 0 || i == last;
-        i += 1;
-        keep
-    });
 }
 
 #[cfg(test)]
@@ -289,8 +261,10 @@ mod tests {
     #[test]
     fn examples_load_and_plot_what_their_controls_ask_for() {
         let s = lorenz();
-        let names: Vec<_> = s.series.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["lorenz.xyz[0]", "lorenz.xyz[1]", "lorenz.xyz[2]"]);
+        assert_eq!(
+            s.signals.names(),
+            ["lorenz.xyz[0]", "lorenz.xyz[1]", "lorenz.xyz[2]"]
+        );
         assert!(s.warnings.is_empty());
         for e in EXAMPLES {
             Session::load(e.name, e.text, &registry()).unwrap();
@@ -303,20 +277,20 @@ mod tests {
         for _ in 0..300 {
             s.step().unwrap();
         }
-        let reference: Vec<_> = s.series[0].points.clone();
+        let reference: Vec<_> = s.signals.points(0).to_vec();
 
         s.rewind_to(1.234);
         // Latest snapshot at or before 1.234 (snapshots every 0.1 s).
         assert!((s.time() - 1.2).abs() < 1e-9, "{}", s.time());
-        assert!(s.series[0].points.last().unwrap().x <= s.time());
-        while s.series[0].points.len() < reference.len() {
+        assert!(s.signals.points(0).last().unwrap().x <= s.time());
+        while s.signals.points(0).len() < reference.len() {
             s.step().unwrap();
         }
-        assert_eq!(s.series[0].points, reference);
+        assert_eq!(s.signals.points(0), reference.as_slice());
 
         s.rewind_to(0.0);
         assert_eq!(s.time(), 0.0);
-        assert_eq!(s.series[0].points.len(), 1);
+        assert_eq!(s.signals.points(0).len(), 1);
         assert_eq!(s.history_range(), (0.0, 0.0));
     }
 
@@ -337,7 +311,7 @@ mod tests {
 
         // Before the run starts, the plot's first point moves at once.
         s.set_param(id, "x0", 5.0).unwrap();
-        assert_eq!(s.series[0].points[0].y, 5.0);
+        assert_eq!(s.signals.points(0)[0].y, 5.0);
 
         for _ in 0..50 {
             s.step().unwrap();
@@ -346,8 +320,8 @@ mod tests {
         assert!(s.time() > 0.0, "a running model is not restarted");
         s.restart().unwrap();
         assert_eq!(s.time(), 0.0);
-        assert_eq!(s.series[0].points.len(), 1);
-        assert_eq!(s.series[0].points[0].y, -3.0);
+        assert_eq!(s.signals.points(0).len(), 1);
+        assert_eq!(s.signals.points(0)[0].y, -3.0);
         assert_eq!(s.history_range(), (0.0, 0.0));
     }
 
@@ -394,35 +368,6 @@ mod tests {
             s.step().unwrap();
         }
         assert!((s.time() - 0.5).abs() < 1e-9);
-    }
-
-    #[test]
-    fn phase_and_trajectory_points_pair_series_by_time() {
-        let mut s = lorenz();
-        for _ in 0..200 {
-            s.step().unwrap();
-        }
-        s.rewind_to(1.0);
-        let traj = s.trajectory([0, 1, 2]);
-        assert_eq!(traj.len(), s.series[0].points.len());
-        for (k, p) in traj.iter().enumerate() {
-            let t = s.series[0].points[k].x;
-            assert!(s.series.iter().all(|ser| ser.points[k].x == t));
-            assert_eq!(p[2], s.series[2].points[k].y);
-        }
-        let phase = s.phase_points(0, 2);
-        assert_eq!(phase[0], [1.0, 1.0]);
-        assert_eq!(phase.len(), traj.len());
-    }
-
-    #[test]
-    fn long_runs_are_thinned_not_truncated() {
-        let mut v: Vec<usize> = (0..11).collect();
-        thin(&mut v);
-        assert_eq!(v, [0, 2, 4, 6, 8, 10]);
-        let mut v: Vec<usize> = (0..10).collect();
-        thin(&mut v);
-        assert_eq!(v, [0, 2, 4, 6, 8, 9]);
     }
 
     #[test]

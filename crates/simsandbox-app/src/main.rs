@@ -13,7 +13,7 @@ mod app;
 mod examples;
 mod pacing;
 mod session;
-mod view3d;
+mod views;
 
 use app::{ScreenshotRequest, SimApp};
 use eframe::egui;

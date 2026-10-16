@@ -2,15 +2,14 @@
 //! egui painter. Enough for lines; full 3D scenes will use wgpu paint
 //! callbacks (ADR 0008).
 
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Sense, Stroke, Vec2};
+use crate::colour::{Segment, HEAD};
+use egui::{Align2, FontId, Pos2, Sense, Stroke, Vec2};
 
 /// Distance of the eye from the centre, in normalised units; smaller is a
 /// stronger perspective.
 const EYE_DISTANCE: f32 = 4.0;
 /// At most this many points are drawn; longer trajectories are strided.
 const MAX_DRAWN: usize = 20_000;
-/// The trail fades from old (dim) to new (bright) in this many chunks.
-const FADE_CHUNKS: usize = 24;
 
 /// View orientation. The third axis points up on screen at zero pitch.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -111,9 +110,17 @@ fn fit_radius(norm: &Normaliser, side: f32) -> f32 {
     0.49 * side / (r * nearest)
 }
 
-/// Draw the trajectory `points` with axis names `labels`, filling the
-/// available space. Drag rotates, scroll zooms, double-click resets.
-pub fn show(ui: &mut egui::Ui, camera: &mut Camera, points: &[[f64; 3]], labels: [&str; 3]) {
+/// Draw the trajectory `points` in coloured `segments` (see
+/// [`crate::colour::segments`]) with axis names `labels`, filling the
+/// available space. The box fits the whole run, so it stays still while the
+/// trail moves. Drag rotates, scroll zooms, double-click resets.
+pub fn show(
+    ui: &mut egui::Ui,
+    camera: &mut Camera,
+    points: &[[f64; 3]],
+    segments: &[Segment],
+    labels: [&str; 3],
+) {
     let size = ui.available_size();
     let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
     if response.dragged() {
@@ -170,32 +177,19 @@ pub fn show(ui: &mut egui::Ui, camera: &mut Camera, points: &[[f64; 3]], labels:
         );
     }
 
-    // The trajectory, fading from old to new.
-    let stride = points.len().div_ceil(MAX_DRAWN).max(1);
-    let mut drawn: Vec<Pos2> = points
-        .iter()
-        .step_by(stride)
-        .map(|&p| to_screen(norm.apply(p)))
-        .collect();
-    if let Some(&last) = points.last() {
-        drawn.push(to_screen(norm.apply(last)));
+    // The trail, in coloured segments; long runs are strided.
+    let drawn = segments.last().map_or(0, |l| l.end + 1 - segments[0].start);
+    let stride = drawn.div_ceil(MAX_DRAWN).max(1);
+    for seg in segments {
+        let mut line: Vec<Pos2> = (seg.start..seg.end)
+            .step_by(stride)
+            .map(|k| to_screen(norm.apply(points[k])))
+            .collect();
+        line.push(to_screen(norm.apply(points[seg.end])));
+        painter.line(line, Stroke::new(1.5, seg.colour));
     }
-    let color = Color32::from_rgb(90, 170, 255);
-    let chunk = drawn.len().div_ceil(FADE_CHUNKS).max(2);
-    let mut start = 0;
-    let mut i = 0;
-    while start + 1 < drawn.len() {
-        let end = (start + chunk).min(drawn.len() - 1);
-        let age = (i + 1) as f32 / drawn.len().div_ceil(chunk) as f32;
-        painter.line(
-            drawn[start..=end].to_vec(),
-            Stroke::new(1.5, color.gamma_multiply(0.15 + 0.85 * age.min(1.0))),
-        );
-        start = end;
-        i += 1;
-    }
-    if let Some(&head) = drawn.last() {
-        painter.circle_filled(head, 4.0, Color32::from_rgb(255, 200, 80));
+    if let Some(&head) = points.last() {
+        painter.circle_filled(to_screen(norm.apply(head)), 4.0, HEAD);
     }
     painter.text(
         rect.right_bottom() + Vec2::new(-8.0, -6.0),

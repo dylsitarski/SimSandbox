@@ -39,18 +39,21 @@
     "plots": [
       "lorenz.xyz"
     ],
-    "view": {
-      "kind": "3d",
-      "axes": [
-        "lorenz.xyz[0]",
-        "lorenz.xyz[1]",
-        "lorenz.xyz[2]"
-      ],
-      "camera": {
-        "yaw": -0.6,
-        "pitch": 0.35,
-        "zoom": 1.0
+    "views": [
+      {
+        "type": "plot.3d",
+        "bind": {
+          "colour": "t",
+          "x": "lorenz.xyz[0]",
+          "y": "lorenz.xyz[1]",
+          "z": "lorenz.xyz[2]"
+        },
+        "camera": {
+          "yaw": -0.6,
+          "pitch": 0.35,
+          "zoom": 1.0
+        }
       }
-    }
+    ]
   }
 }

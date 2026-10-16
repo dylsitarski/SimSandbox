@@ -2,7 +2,7 @@
 
 _Last updated: 2026-10-16_
 
-How the app turns a running model into pictures. Decision and rationale: [ADR 0015](../decisions/0015-pluggable-views.md). Status: the three built-in views exist in `crates/simsandbox-app` (`app.rs`, `view3d.rs`); the registry, slots, derived signals and multi-view layout below are planned, in the order of the migration steps at the end.
+How the app turns a running model into pictures. Decision and rationale: [ADR 0015](../decisions/0015-pluggable-views.md). Status (2026-10-16): migration steps 1–2 are done. `crates/simsandbox-views` holds the history, the view contract and registry (`view.rs`), colour encodings (`colour.rs`) and the built-in views (`builtin.rs`, `view3d.rs`); the app keeps one state per visited view type (`crates/simsandbox-app/src/views.rs`) and shows one view at a time. Multi-view layout, derived signals, richer shapes, domain views and the viewer theme are planned (steps 3–6).
 
 ```mermaid
 flowchart LR
@@ -60,7 +60,7 @@ Rule for adding an option: it must change what can be read (make it a slot) or b
 
 When a file names no views, the app picks from output shapes and roles: a 3-vector or three scalars with a position role give `plot.3d`; a grid gives `plot.heatmap`; a point set gives `plot.scatter`; otherwise `plot.time`. A domain can register a preferred view for its block types.
 
-## Model file representation (planned)
+## Model file representation
 
 ```json
 "controls": {
@@ -76,20 +76,20 @@ When a file names no views, the app picks from output shapes and roles: a 3-vect
 }
 ```
 
-Like the rest of `controls`, invalid entries are dropped with a warning ([ADR 0012](../decisions/0012-controls-in-model-files.md)). The current `controls.view` maps directly: `kind` to `type`, `axes` to the `x`, `y`, `z` slots.
+`views` with `type`, `bind`, `style` and `camera` is implemented; `layout` and `signals` are planned. A slot that takes one signal is written as a string, one that takes several as a list. Like the rest of `controls`, invalid entries are dropped with a warning ([ADR 0012](../decisions/0012-controls-in-model-files.md)). The current `controls.view` maps directly: `kind` to `type`, `axes` to the `x`, `y`, `z` slots.
 
 ## Crates
 
 | Crate | Contents | Depends on |
 | --- | --- | --- |
-| `simsandbox-views` (planned) | View trait, registry, history and derived signals, built-in views, palette | `simsandbox-core`, egui, egui_plot, wgpu |
+| `simsandbox-views` | History, view trait and registry, built-in views, colour encodings; later derived signals and the palette | egui, egui_plot (wgpu when the first GPU view lands) |
 | Domain crates, feature `views` | Model-specific views, registered next to block types | `simsandbox-views` (optional) |
 | `simsandbox-app` | Layout, panels, app settings | All of the above |
 
 ## Migration steps
 
-1. Move the history (`Session` series) and the three current views into `simsandbox-views` behind the view trait and registry; no behaviour change.
-2. Replace `controls.view` with `controls.views` (one entry), keep reading `view`; add a colour slot to `plot.phase` and `plot.3d` with trail fading as its default binding to `t`, and `trail_length` as the first style property.
+1. Done 2026-10-16: move the history (`Session` series) and the three current views into `simsandbox-views` behind the view trait and registry.
+2. Done 2026-10-16: replace `controls.view` with `controls.views` (the app saves the active view as one entry), keep reading `view`; a colour slot on `plot.phase` and `plot.3d` with trail fading as its default binding to `t` (so the phase portrait now fades too), and `trail_length` as the first style property, edited under "View" in the parameter panel.
 3. Several views at once in a tiled layout.
 4. Derived signals (expressions after Q4; norms, FFT, projections, Poincaré sections).
 5. Grid and point-set shapes in the kernel, `plot.heatmap` and `plot.scatter`, with the first field or agent Block.

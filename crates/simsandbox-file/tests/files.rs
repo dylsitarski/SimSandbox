@@ -5,7 +5,7 @@ use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::Simulator;
 use simsandbox_eq::systems::{CoupledOscillator, Lorenz};
 use simsandbox_eq::{Integrator, OdeBlock};
-use simsandbox_file::{load, FileError, ModelFile, SCHEMA};
+use simsandbox_file::{load, Binding, FileError, ModelFile, SCHEMA};
 
 const LORENZ: &str = include_str!("../../../examples/lorenz.ssbx.json");
 const OSCILLATORS: &str = include_str!("../../../examples/coupled-oscillators.ssbx.json");
@@ -267,19 +267,18 @@ fn run_settings_default_validate_and_round_trip() {
 #[test]
 fn views_are_validated_leniently() {
     let loaded = load(LORENZ, &registry()).unwrap();
-    let view = loaded.file.controls.view.as_ref().unwrap();
-    assert_eq!(view.kind, "3d");
-    assert_eq!(view.axes.len(), 3);
+    let v = &loaded.file.controls.views[0];
+    assert_eq!(v.type_name, "plot.3d");
+    assert_eq!(v.bind["colour"], Binding::One("t".into()));
 
     for (from, to) in [
-        (r#""kind": "3d""#, r#""kind": "4d""#),
         (r#""lorenz.xyz[2]""#, r#""lorenz.xyz[3]""#),
         (r#""lorenz.xyz[2]""#, r#""lorenz.xyz""#),
-        (r#""kind": "3d""#, r#""kind": "phase""#),
+        (r#""colour": "t""#, r#""colour": "time""#),
     ] {
         let loaded = load(&LORENZ.replace(from, to), &registry()).unwrap();
         assert_eq!(loaded.warnings.len(), 1, "{to}: {:?}", loaded.warnings);
-        assert!(loaded.file.controls.view.is_none());
+        assert!(loaded.file.controls.views.is_empty());
         // The rest of controls survives a bad view.
         assert!(loaded.file.controls.params["lorenz.rho"].slider);
     }
@@ -287,14 +286,43 @@ fn views_are_validated_leniently() {
     let bad_camera = LORENZ.replace(r#""zoom": 1.0"#, r#""zoom": 0.0"#);
     let loaded = load(&bad_camera, &registry()).unwrap();
     assert_eq!(loaded.warnings.len(), 1);
-    assert!(loaded.file.controls.view.as_ref().unwrap().camera.is_none());
+    assert!(loaded.file.controls.views[0].camera.is_none());
 
-    // Scalar outputs are named without an index.
+    // Slots that take several signals use a list; scalar outputs have no index.
     let osc = OSCILLATORS.replace(
         r#""speed": 1.0,"#,
-        r#""speed": 1.0, "view": {"kind": "phase", "axes": ["a.x", "b.x"]},"#,
+        r#""speed": 1.0, "views": [{"type": "plot.time", "bind": {"y": ["a.x", "b.x"]}, "style": {"w": 2.0}}],"#,
     );
     let loaded = load(&osc, &registry()).unwrap();
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
-    assert_eq!(loaded.file.controls.view.unwrap().axes, ["a.x", "b.x"]);
+    let v = &loaded.file.controls.views[0];
+    assert_eq!(v.bind["y"].signals(), ["a.x", "b.x"]);
+    assert_eq!(v.style["w"], 2.0);
+}
+
+#[test]
+fn the_single_view_of_adr_0014_is_converted() {
+    let legacy = OSCILLATORS.replace(
+        r#""speed": 1.0,"#,
+        r#""speed": 1.0, "view": {"kind": "phase", "axes": ["a.x", "b.x"]},"#,
+    );
+    let loaded = load(&legacy, &registry()).unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    let c = &loaded.file.controls;
+    assert!(c.view.is_none());
+    assert_eq!(c.views.len(), 1);
+    assert_eq!(c.views[0].type_name, "plot.phase");
+    assert_eq!(c.views[0].bind["x"], Binding::One("a.x".into()));
+    assert_eq!(c.views[0].bind["colour"], Binding::One("t".into()));
+    // Saving writes the new form only.
+    let saved = loaded.file.to_json();
+    assert!(saved.contains("\"views\"") && !saved.contains("\"view\""));
+
+    let bad = OSCILLATORS.replace(
+        r#""speed": 1.0,"#,
+        r#""speed": 1.0, "view": {"kind": "4d", "axes": []},"#,
+    );
+    let loaded = load(&bad, &registry()).unwrap();
+    assert_eq!(loaded.warnings.len(), 1);
+    assert!(loaded.file.controls.views.is_empty());
 }

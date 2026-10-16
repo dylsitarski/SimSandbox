@@ -149,9 +149,60 @@ pub struct Controls {
     /// Outputs plotted by default, as `"block.port"`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plots: Vec<String>,
-    /// The view the model opens in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The views the model opens with (ADR 0015); the app shows the first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<ViewEntry>,
+    /// The single view of ADR 0014. Still read; converted into `views` on
+    /// load and never written.
+    #[serde(default, skip_serializing)]
     pub view: Option<ViewControl>,
+}
+
+/// One view: a registered view type, slot bindings and style values
+/// (ADR 0015). The file checks that bindings name real signals; the app
+/// checks types, slots and style names against its view registry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ViewEntry {
+    /// E.g. `plot.time`, `plot.phase`, `plot.3d`.
+    #[serde(rename = "type")]
+    pub type_name: String,
+    /// Slot name to signal: `"t"`, `"block.port"` (scalar) or
+    /// `"block.port[i]"`; a list for slots that take several.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bind: BTreeMap<String, Binding>,
+    /// Style property values, e.g. `trail_length`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub style: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<CameraControl>,
+}
+
+/// One signal, or a list for slots that take several.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Binding {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Binding {
+    pub fn signals(&self) -> Vec<String> {
+        match self {
+            Binding::One(s) => vec![s.clone()],
+            Binding::Many(v) => v.clone(),
+        }
+    }
+}
+
+impl From<Vec<String>> for Binding {
+    /// A single signal is written as a plain string.
+    fn from(mut v: Vec<String>) -> Self {
+        if v.len() == 1 {
+            Binding::One(v.remove(0))
+        } else {
+            Binding::Many(v)
+        }
+    }
 }
 
 impl Controls {
@@ -159,11 +210,13 @@ impl Controls {
         self.params.is_empty()
             && self.speed.is_none()
             && self.plots.is_empty()
+            && self.views.is_empty()
             && self.view.is_none()
     }
 }
 
-/// Which view a model opens in, and on which outputs.
+/// Which view a model opens in, and on which outputs (ADR 0014; superseded
+/// in files by [`ViewEntry`], still read).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewControl {
     /// `"time"`, `"phase"` or `"3d"`.
@@ -186,6 +239,31 @@ pub struct CameraControl {
 }
 
 impl ViewControl {
+    /// The equivalent `views` entry: `time`, `phase`, `3d` become
+    /// `plot.time`, `plot.phase`, `plot.3d`, the axes fill the `x`, `y`, `z`
+    /// slots, and the trail fades with time as it did.
+    pub fn into_entry(self) -> ViewEntry {
+        let type_name = match self.kind.as_str() {
+            "phase" => "plot.phase",
+            "3d" => "plot.3d",
+            _ => "plot.time",
+        };
+        let mut bind: BTreeMap<String, Binding> = ["x", "y", "z"]
+            .into_iter()
+            .zip(self.axes)
+            .map(|(slot, s)| (slot.to_string(), Binding::One(s)))
+            .collect();
+        if type_name != "plot.time" {
+            bind.insert("colour".into(), Binding::One("t".into()));
+        }
+        ViewEntry {
+            type_name: type_name.into(),
+            bind,
+            style: BTreeMap::new(),
+            camera: self.camera,
+        }
+    }
+
     /// Number of axes a view kind takes, or `None` for an unknown kind.
     pub fn axis_count(kind: &str) -> Option<usize> {
         match kind {
@@ -473,27 +551,46 @@ impl ModelFile {
             }
             known
         });
-        if let Some(v) = &mut c.view {
-            match view_problem(v, model, ids) {
-                Some(problem) => {
-                    warnings.push(format!("controls.view: {problem}; ignored"));
-                    c.view = None;
-                }
-                None => {
-                    let bad_camera = v.camera.is_some_and(|cam| {
-                        ![cam.yaw, cam.pitch, cam.zoom].iter().all(|x| x.is_finite())
-                            || cam.zoom <= 0.0
-                    });
-                    if bad_camera {
-                        warnings.push(
-                            "controls.view.camera: needs finite angles and a positive zoom; ignored"
-                                .into(),
-                        );
-                        v.camera = None;
-                    }
-                }
+        if let Some(v) = c.view.take() {
+            match view_problem(&v, model, ids) {
+                Some(problem) => warnings.push(format!("controls.view: {problem}; ignored")),
+                // ADR 0014's single view becomes the first of `views`.
+                None if c.views.is_empty() => c.views.push(v.into_entry()),
+                None => {}
             }
         }
+        let mut kept = Vec::new();
+        for (i, mut v) in std::mem::take(&mut c.views).into_iter().enumerate() {
+            let unknown = v
+                .bind
+                .values()
+                .flat_map(Binding::signals)
+                .find(|s| s != "t" && !output_element_exists(s, model, ids));
+            if let Some(s) = unknown {
+                warnings.push(format!("controls.views[{i}]: no signal '{s}'; ignored"));
+                continue;
+            }
+            v.style.retain(|name, value| {
+                let ok = value.is_finite();
+                if !ok {
+                    warnings.push(format!(
+                        "controls.views[{i}].style.{name}: not finite; ignored"
+                    ));
+                }
+                ok
+            });
+            let bad_camera = v.camera.is_some_and(|cam| {
+                ![cam.yaw, cam.pitch, cam.zoom].iter().all(|x| x.is_finite()) || cam.zoom <= 0.0
+            });
+            if bad_camera {
+                warnings.push(format!(
+                    "controls.views[{i}].camera: needs finite angles and a positive zoom; ignored"
+                ));
+                v.camera = None;
+            }
+            kept.push(v);
+        }
+        c.views = kept;
         warnings
     }
 }

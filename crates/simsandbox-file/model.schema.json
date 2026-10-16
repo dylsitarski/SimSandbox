@@ -111,9 +111,40 @@
           "type": "array",
           "items": { "$ref": "#/$defs/ref" }
         },
+        "views": {
+          "type": "array",
+          "description": "Views the model opens with; the app shows the first (ADR 0015).",
+          "items": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": { "type": "string", "description": "Registered view type, e.g. 'plot.time', 'plot.phase', 'plot.3d'." },
+              "bind": {
+                "type": "object",
+                "description": "Slot name to signal: 't', 'block.port' (scalar) or 'block.port[i]'; a list for slots that take several.",
+                "additionalProperties": {
+                  "oneOf": [
+                    { "type": "string" },
+                    { "type": "array", "items": { "type": "string" } }
+                  ]
+                }
+              },
+              "style": { "type": "object", "additionalProperties": { "type": "number" } },
+              "camera": {
+                "type": "object",
+                "required": ["yaw", "pitch", "zoom"],
+                "properties": {
+                  "yaw": { "type": "number" },
+                  "pitch": { "type": "number" },
+                  "zoom": { "type": "number", "exclusiveMinimum": 0 }
+                }
+              }
+            }
+          }
+        },
         "view": {
           "type": "object",
-          "description": "The view the model opens in (ADR 0014).",
+          "description": "Deprecated single view (ADR 0014); read and converted into 'views', never written.",
           "required": ["kind"],
           "properties": {
             "kind": { "enum": ["time", "phase", "3d"] },

@@ -22,9 +22,12 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - App: phase-portrait view (any output against another) and a rotatable, zoomable 3D trajectory view; `--view time|phase|3d` start-up flag.
 - Model files: optional `controls.view` (kind, axes, 3D camera) saved by the app and used when a model opens (ADR 0014); the Lorenz example opens in 3D.
 - App: native Open, Save and Save as dialogs (Ctrl+O, Ctrl+S, Ctrl+Shift+S); Save writes back to the opened file, built-in examples ask where to save.
+- Pluggable views (ADR 0015): new `simsandbox-views` crate with recorded-signal history, the view contract and registry, and the built-in views `plot.time`, `plot.phase`, `plot.3d`; slot pickers in the app; a colour slot (fade by time or colour by a signal) and a `trail_length` style property.
+- Model files: `controls.views`, a list of `{type, bind, style, camera}`; the older `controls.view` is still read and converted.
 
 ### Changed
 
+- App: the phase portrait fades its trail by time, like the 3D view; the axis pickers became slot pickers.
 - App: the File path field is replaced by the file dialogs; the current file's path is shown in the toolbar.
 - App: the scroll wheel zooms 2D plots around the pointer instead of panning.
 - `ParamSpec::min`/`max` renamed to `suggested_min`/`suggested_max`; the range is a hint for sliders, not a limit. `set_param` rejects only NaN and infinite values (`SimError::InvalidParam`); unknown names return `SimError::UnknownParam` instead of `SimError::BadConnection`.

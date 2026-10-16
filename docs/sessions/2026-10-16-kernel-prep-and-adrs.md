@@ -13,6 +13,7 @@
 - Added phase-portrait and 3D trajectory views (`view3d.rs`: CPU projection, drag to rotate, scroll to zoom, fit from the bounding sphere so the box never clips). 49 tests.
 - Saved the opening view in `controls` (ADR 0014) and made the scroll wheel zoom 2D plots. 52 tests.
 - Added native Open, Save and Save as dialogs (`rfd`, XDG portal backend on Linux, so no GTK build dependency) and keyboard shortcuts; the path field is gone. 54 tests.
+- Pluggable views steps 1–2: `simsandbox-views` (history, view contract and registry, colour encodings, built-in views), `controls.views` with conversion of the older `view`, slot pickers, colour slot, `trail_length`. Verified with screenshots of all three views and a 3 s trail. 63 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
 - Wrote ADRs 0007 to 0015; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
@@ -35,6 +36,8 @@
 
 ## Notes for the next session
 
+- The app keeps one `ViewState` per visited view type so switching keeps bindings, style and camera; Save writes only the active one. Multi-view (step 3) should save the whole list.
+- Old `controls.view` entries are converted in `simsandbox-file` (`ViewControl::into_entry`), adding `colour: t` so trails still fade.
 - The file dialogs were not exercised in this container (no desktop portal); `save_to`, `open_path` and the naming helpers are unit-tested, the dialog calls are thin wrappers around `rfd`.
 - GPU code can be tested here: the app already renders through wgpu on lavapipe (Mesa software Vulkan; `VK_LOADER_DEBUG=driver` shows `lvp_icd.json`). Packages needed: `libxkbcommon-x11-0 mesa-vulkan-drivers xvfb`. An earlier claim this session that GPU code could not be tested here was wrong.
 - The first 3D fit used a fixed fraction of the panel and clipped near corners under perspective; the fit now uses the box's bounding sphere (test `the_box_fits_at_every_rotation`).

@@ -5,6 +5,7 @@ members = [
     "crates/simsandbox-eq",
     "crates/simsandbox-file",
     "crates/simsandbox-cli",
+    "crates/simsandbox-views",
     "crates/simsandbox-app",
 ]
 
