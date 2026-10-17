@@ -66,6 +66,15 @@
         }
       }
     },
+    "sweepAxis": {
+      "type": "object",
+      "required": ["param"],
+      "properties": {
+        "param": { "$ref": "#/$defs/ref" },
+        "range": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "points": { "type": "integer", "minimum": 2, "maximum": 100000 }
+      }
+    },
     "name": {
       "type": "string",
       "pattern": "^[^.]+$",
@@ -149,14 +158,11 @@
           "additionalProperties": { "type": "string" }
         },
         "sweep": {
-          "type": "object",
-          "description": "The parameter swept when the model has no states (ADR 0021).",
-          "required": ["param"],
-          "properties": {
-            "param": { "$ref": "#/$defs/ref" },
-            "range": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
-            "points": { "type": "integer", "minimum": 2, "maximum": 100000 }
-          }
+          "description": "The parameters swept when the model has no states: one (ADR 0021) or a list of two, giving every output as a grid over both (ADR 0022). Points default to 400 for one parameter and 100 each for two; two may ask for at most 250000 evaluations.",
+          "oneOf": [
+            { "$ref": "#/$defs/sweepAxis" },
+            { "type": "array", "items": { "$ref": "#/$defs/sweepAxis" }, "minItems": 1, "maxItems": 2 }
+          ]
         },
         "views": {
           "type": "array",

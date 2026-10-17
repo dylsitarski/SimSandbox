@@ -46,6 +46,16 @@ fn position_of<'a>(a: &'a Available<'_>, field: &str) -> Option<&'a String> {
     a.grids.iter().find(|g| **g == name && *g != field)
 }
 
+const LOG_COLOUR: StyleProperty = StyleProperty {
+    name: "log_colour",
+    default: 0.0,
+    suggested: [0.0, 1.0],
+    unit: "",
+    description:
+        "1 colours by the logarithm of the value, for fields spanning orders of magnitude \
+                  (values that are not positive are left blank); 0 colours linearly",
+};
+
 /// The newest frame of one or more line fields against a coordinate field.
 const PROFILE_PRESET: Preset = Preset {
     label: "Profile",
@@ -176,13 +186,34 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
                     "For a line of cells: where each cell lies (evenly spaced, increasing), \
                               e.g. rod.position; without it cells are numbered",
             },
+            Slot {
+                name: "x",
+                kind: SlotKind::Grid,
+                many: false,
+                required: false,
+                description: "For a 2D grid: where each column lies (evenly spaced, increasing), \
+                              e.g. a swept parameter; without it columns are numbered",
+            },
+            Slot {
+                name: "y",
+                kind: SlotKind::Grid,
+                many: false,
+                required: false,
+                description: "For a 2D grid: where each row lies, e.g. a swept parameter; \
+                              without it rows are numbered",
+            },
         ],
-        style: &[TRAIL_LENGTH, TIME_AXIS],
+        style: &[TRAIL_LENGTH, TIME_AXIS, LOG_COLOUR],
         applies_to: &[],
         presets: &[Preset {
             label: "Heat map",
             description: "A grid field as colours",
             bindings: |a| {
+                // A two-parameter sweep: the first result over the parameters.
+                if let [x, y] = a.sweep {
+                    let field = a.grids.iter().find(|g| !a.sweep.contains(g))?;
+                    return Some(bindings(&[("field", field), ("x", x), ("y", y)]));
+                }
                 let field = a.grids.first()?;
                 let mut b = bindings(&[("field", field)]);
                 if let Some(p) = position_of(a, field) {
@@ -461,18 +492,24 @@ impl View for Trajectory {
 const MAX_COLUMNS: usize = 512;
 
 /// Colour each value on the sequential scale between the smallest and
-/// largest finite value; non-finite values are transparent.
-fn colour_image(size: [usize; 2], values: &[f64]) -> (egui::ColorImage, f64, f64) {
+/// largest finite value; non-finite values are transparent. With `log`,
+/// colours follow the logarithm, so fields spanning orders of magnitude stay
+/// readable; values that are not positive are then transparent. The range
+/// returned is in the values' own units.
+fn colour_image(size: [usize; 2], values: &[f64], log: bool) -> (egui::ColorImage, f64, f64) {
+    let scale = |v: f64| if log { v.ln() } else { v };
     let (lo, hi) = values
         .iter()
+        .map(|&v| scale(v))
         .filter(|v| v.is_finite())
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| {
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
             (a.min(v), b.max(v))
         });
     let span = (hi - lo).max(1e-300);
     let pixels = values
         .iter()
         .map(|&v| {
+            let v = scale(v);
             if v.is_finite() {
                 sequential(((v - lo) / span) as f32)
             } else {
@@ -480,6 +517,7 @@ fn colour_image(size: [usize; 2], values: &[f64]) -> (egui::ColorImage, f64, f64
             }
         })
         .collect();
+    let (lo, hi) = if log { (lo.exp(), hi.exp()) } else { (lo, hi) };
     (
         egui::ColorImage {
             size,
@@ -500,12 +538,35 @@ type HeatmapImage = ([usize; 2], Vec<f64>, [f64; 4]);
 /// last cell centres). `None` if the field does not fit.
 fn line_extent(h: &History, position: usize, nx: usize) -> Option<[f64; 2]> {
     let p = h.fields().get(position)?;
-    if p.shape.len() != nx || nx < 2 || h.is_empty() {
+    if p.shape.len() != nx || h.is_empty() {
         return None;
     }
-    let frame = p.frame(h.len() - 1);
-    let (a, b) = (frame[0], frame[nx - 1]);
-    let half = 0.5 * (b - a) / (nx - 1) as f64;
+    extent(p.frame(h.len() - 1), 0, nx.checked_sub(1)?, nx)
+}
+
+/// Where the columns (`axis` 0) or rows (`axis` 1) of an `nx` × `ny` grid
+/// lie, from a coordinate grid of the same shape that is evenly spaced and
+/// increasing along that axis (e.g. a swept parameter's values).
+fn plane_extent(h: &History, coord: usize, nx: usize, ny: usize, axis: usize) -> Option<[f64; 2]> {
+    let c = h.fields().get(coord)?;
+    if c.shape != (FieldShape::Grid { nx, ny }) || h.is_empty() || nx == 0 || ny == 0 {
+        return None;
+    }
+    let frame = c.frame(h.len() - 1);
+    match axis {
+        0 => extent(frame, 0, nx - 1, nx),
+        _ => extent(frame, 0, (ny - 1) * nx, ny),
+    }
+}
+
+/// `[start, end]` of `cells` evenly spaced cells whose first and last
+/// centres are `frame[first]` and `frame[last]`, half a cell beyond each.
+fn extent(frame: &[f64], first: usize, last: usize, cells: usize) -> Option<[f64; 2]> {
+    if cells < 2 {
+        return None;
+    }
+    let (a, b) = (*frame.get(first)?, *frame.get(last)?);
+    let half = 0.5 * (b - a) / (cells - 1) as f64;
     (a.is_finite() && b.is_finite() && b > a).then_some([a - half, b + half])
 }
 
@@ -522,6 +583,7 @@ fn heatmap_pixels(
     first: usize,
     along: Option<[f64; 2]>,
     time_vertical: bool,
+    plane: [Option<[f64; 2]>; 2],
 ) -> Option<HeatmapImage> {
     let f = &h.fields()[field];
     let n = h.len();
@@ -563,7 +625,9 @@ fn heatmap_pixels(
                 values[(ny - 1 - j) * nx + i] = frame[j * nx + i];
             }
         }
-        Some(([nx, ny], values, [0.0, nx as f64, 0.0, ny as f64]))
+        let [x0, x1] = plane[0].unwrap_or([0.0, nx as f64]);
+        let [y0, y1] = plane[1].unwrap_or([0.0, ny as f64]);
+        Some(([nx, ny], values, [x0, x1, y0, y1]))
     }
 }
 
@@ -588,12 +652,22 @@ impl View for Heatmap {
         };
         let along = position.and_then(|p| line_extent(h, p, nx));
         let time_vertical = input.style("time_axis") != 0.0;
+        let coord = |slot: &str| match input.one(slot) {
+            Some(SignalRef::Field(c)) => Some(c),
+            _ => None,
+        };
+        let (cx, cy) = (coord("x"), coord("y"));
+        let plane = [
+            cx.and_then(|c| plane_extent(h, c, nx, ny, 0)),
+            cy.and_then(|c| plane_extent(h, c, nx, ny, 1)),
+        ];
         let Some((size, values, [x0, x1, y0, y1])) =
-            heatmap_pixels(h, field, first, along, time_vertical)
+            heatmap_pixels(h, field, first, along, time_vertical, plane)
         else {
             return;
         };
-        let (image, lo, hi) = colour_image(size, &values);
+        let log = input.style("log_colour") != 0.0;
+        let (image, lo, hi) = colour_image(size, &values, log);
         let options = egui::TextureOptions::NEAREST;
         let texture = match &mut self.texture {
             Some(t) => {
@@ -608,10 +682,11 @@ impl View for Heatmap {
         };
         let over_time = ny == 1;
         ui.weak(format!(
-            "{}: {} (dark) to {} (bright)",
+            "{}: {} (dark) to {} (bright){}",
             h.name(SignalRef::Field(field)),
             fmt(lo),
-            fmt(hi)
+            fmt(hi),
+            if log { ", log scale" } else { "" }
         ));
         let time = if h.index() == TIME {
             "t [s]".to_string()
@@ -625,7 +700,17 @@ impl View for Heatmap {
         let (x_label, y_label) = match (over_time, time_vertical) {
             (true, false) => (time, space),
             (true, true) => (space, time),
-            (false, _) => ("x (cells)".to_string(), "y (cells)".to_string()),
+            (false, _) => {
+                let name =
+                    |c: Option<usize>, placed: Option<[f64; 2]>, cells: &str| match (c, placed) {
+                        (Some(c), Some(_)) => h.name(SignalRef::Field(c)).to_string(),
+                        _ => cells.to_string(),
+                    };
+                (
+                    name(cx, plane[0], "x (cells)"),
+                    name(cy, plane[1], "y (cells)"),
+                )
+            }
         };
         Plot::new("plot.heatmap")
             .x_axis_label(x_label)
@@ -772,7 +857,7 @@ mod tests {
             let t = k as f64;
             h.push_sample(t, &[], &[&[t, 10.0 + t, 20.0 + t]]);
         }
-        let (size, v, extent) = heatmap_pixels(&h, 0, 0, None, false).unwrap();
+        let (size, v, extent) = heatmap_pixels(&h, 0, 0, None, false, [None, None]).unwrap();
         assert_eq!(size, [4, 3]);
         // Top row is the last cell; columns are samples in time order.
         assert_eq!(&v[0..4], &[20.0, 21.0, 22.0, 23.0]);
@@ -794,7 +879,7 @@ mod tests {
         }
         let along = line_extent(&h, 1, 3);
         assert_eq!(along, Some([0.125, 0.875]));
-        let (size, v, extent) = heatmap_pixels(&h, 0, 0, along, true).unwrap();
+        let (size, v, extent) = heatmap_pixels(&h, 0, 0, along, true, [None, None]).unwrap();
         assert_eq!(size, [3, 2]);
         // Newest sample on top; cell 0 on the left.
         assert_eq!(v, [1.0, 11.0, 21.0, 0.0, 10.0, 20.0]);
@@ -817,6 +902,31 @@ mod tests {
     }
 
     #[test]
+    fn grids_over_two_parameters_are_placed_by_their_values() {
+        let shape = FieldShape::Grid { nx: 3, ny: 2 };
+        let mut h = History::with_fields(
+            "sweep",
+            vec![],
+            vec![
+                ("z".into(), shape),
+                ("p.a".into(), shape),
+                ("p.b".into(), shape),
+            ],
+        );
+        // a = 0, 1, 2 along x; b = 10, 20 along y.
+        let a = [0.0, 1.0, 2.0, 0.0, 1.0, 2.0];
+        let b = [10.0, 10.0, 10.0, 20.0, 20.0, 20.0];
+        h.push_sample(0.0, &[], &[&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &a, &b]);
+        let plane = [plane_extent(&h, 1, 3, 2, 0), plane_extent(&h, 2, 3, 2, 1)];
+        assert_eq!(plane, [Some([-0.5, 2.5]), Some([5.0, 25.0])]);
+        let (_, v, ext) = heatmap_pixels(&h, 0, 0, None, false, plane).unwrap();
+        assert_eq!(ext, [-0.5, 2.5, 5.0, 25.0]);
+        assert_eq!(v, [4.0, 5.0, 6.0, 1.0, 2.0, 3.0]);
+        // A coordinate that does not vary along its axis is not used.
+        assert_eq!(plane_extent(&h, 2, 3, 2, 0), None);
+    }
+
+    #[test]
     fn finite_runs_leave_gaps_at_infinities_and_nans() {
         let pts = [
             [0.0, 1.0],
@@ -836,12 +946,19 @@ mod tests {
         let shape = FieldShape::Grid { nx: 2, ny: 2 };
         let mut h = History::with_fields("t", vec![], vec![("g".into(), shape)]);
         h.push_sample(0.0, &[], &[&[1.0, 2.0, 3.0, 4.0]]);
-        let (size, v, _) = heatmap_pixels(&h, 0, 0, None, false).unwrap();
+        let (size, v, _) = heatmap_pixels(&h, 0, 0, None, false, [None, None]).unwrap();
         assert_eq!(size, [2, 2]);
         assert_eq!(v, [3.0, 4.0, 1.0, 2.0]);
-        let (img, lo, hi) = colour_image(size, &v);
+        let (img, lo, hi) = colour_image(size, &v, false);
         assert_eq!((lo, hi), (1.0, 4.0));
         assert_eq!(img.pixels[2], sequential(0.0));
+        // On a log scale the middle colour sits at the geometric mean, and
+        // the range is reported in the values' units.
+        let (img, lo, hi) = colour_image([3, 1], &[1.0, 10.0, 100.0], true);
+        assert!((lo - 1.0).abs() < 1e-12 && (hi - 100.0).abs() < 1e-9);
+        assert_eq!(img.pixels[1], sequential(0.5));
+        let (img, _, _) = colour_image([2, 1], &[-1.0, 1.0], true);
+        assert_eq!(img.pixels[0], egui::Color32::TRANSPARENT);
     }
 
     #[test]

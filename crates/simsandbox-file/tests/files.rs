@@ -17,6 +17,7 @@ const RESONANCE: &str = include_str!("../../../examples/resonance.ssbx.json");
 const HEAT_ROD: &str = include_str!("../../../examples/heat-rod.ssbx.json");
 const ORBITS: &str = include_str!("../../../examples/orbits.ssbx.json");
 const PENDULUM: &str = include_str!("../../../examples/pendulum.ssbx.json");
+const RESONANCE_MAP: &str = include_str!("../../../examples/resonance-map.ssbx.json");
 
 fn registry() -> Registry {
     let mut r = Registry::new();
@@ -43,6 +44,7 @@ fn examples_load_without_warnings() {
         HEAT_ROD,
         ORBITS,
         PENDULUM,
+        RESONANCE_MAP,
     ] {
         let loaded = load(text, &registry()).unwrap();
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
@@ -61,6 +63,7 @@ fn examples_are_written_exactly_as_saved() {
         HEAT_ROD,
         ORBITS,
         PENDULUM,
+        RESONANCE_MAP,
     ] {
         let (file, _) = ModelFile::from_json(text).unwrap();
         assert_eq!(file.to_json(), text);
@@ -523,10 +526,12 @@ fn time_and_phase_views_are_converted_to_xy_plots() {
 #[test]
 fn sweeps_are_read_and_checked_leniently() {
     let loaded = load(RESONANCE, &registry()).unwrap();
-    let sw = loaded.file.controls.sweep.as_ref().unwrap();
+    let [sw] = loaded.file.controls.sweep.as_slice() else {
+        panic!("one swept parameter");
+    };
     assert_eq!(
         (sw.param.as_str(), sw.range, sw.points),
-        ("spring.w", Some([0.0, 3.0]), 600)
+        ("spring.w", Some([0.0, 3.0]), Some(600))
     );
 
     let unknown = load(
@@ -535,11 +540,45 @@ fn sweeps_are_read_and_checked_leniently() {
     )
     .unwrap();
     assert_eq!(unknown.warnings.len(), 1);
-    assert!(unknown.file.controls.sweep.is_none());
+    assert!(unknown.file.controls.sweep.is_empty());
     let bad_range = RESONANCE.replace("0.0,\n        3.0", "3.0,\n        0.0");
     let loaded = load(&bad_range, &registry()).unwrap();
     assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
-    assert_eq!(loaded.file.controls.sweep.unwrap().range, None);
+    assert_eq!(loaded.file.controls.sweep[0].range, None);
+
+    // Two parameters are a list; a third, a repeat or too many points are
+    // dropped with warnings.
+    let one = r#""sweep": {
+      "param": "spring.w",
+      "range": [
+        0.0,
+        3.0
+      ],
+      "points": 600
+    }"#;
+    assert!(RESONANCE.contains(one));
+    let with = |sweep: &str| {
+        load(
+            &RESONANCE.replace(one, &format!("\"sweep\": {sweep}")),
+            &registry(),
+        )
+        .unwrap()
+    };
+    let two = with(
+        r#"[{"param": "spring.w", "range": [0.0, 3.0]}, {"param": "spring.c", "points": 50}]"#,
+    );
+    assert!(two.warnings.is_empty(), "{:?}", two.warnings);
+    assert_eq!(two.file.controls.sweep.len(), 2);
+    assert!(two.file.to_json().contains("\"sweep\": [\n"));
+    let extra = with(
+        r#"[{"param": "spring.w"}, {"param": "spring.w"}, {"param": "spring.c"}, {"param": "spring.k"}]"#,
+    );
+    assert_eq!(extra.warnings.len(), 2, "{:?}", extra.warnings);
+    assert_eq!(extra.file.controls.sweep.len(), 2);
+    let huge =
+        with(r#"[{"param": "spring.w", "points": 1000}, {"param": "spring.c", "points": 1000}]"#);
+    assert_eq!(huge.warnings.len(), 1, "{:?}", huge.warnings);
+    assert_eq!(huge.file.controls.sweep[0].points, None);
 
     // Maps and formulas need the matching method.
     let wrong = LOGISTIC.replace(r#""name": "iterate""#, r#""name": "rk4""#);

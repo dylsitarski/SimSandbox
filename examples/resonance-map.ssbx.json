@@ -1,0 +1,77 @@
+{
+  "format": 1,
+  "description": "The driven, damped spring of the resonance example, swept over two parameters at once: the driving frequency w (across) and the damping c (up). Each cell is the amplitude of the steady swing, coloured on a log scale: the bright ridge at w ≈ 1 is the resonance, sharpest and tallest where damping is low. Change m or k and the ridge moves.",
+  "run": {
+    "dt": 0.01
+  },
+  "blocks": [
+    {
+      "name": "spring",
+      "type": "eq.equations",
+      "method": {
+        "name": "evaluate"
+      },
+      "equations": [
+        "# steady swing of a driven, damped spring (mass m, stiffness k, damping c, force F)",
+        "amplitude = F/sqrt((k - m*w^2)^2 + (c*w)^2)",
+        "lag = atan2(c*w, k - m*w^2)"
+      ],
+      "params": {
+        "F": 1.0,
+        "c": 0.2,
+        "k": 1.0,
+        "m": 1.0,
+        "w": 1.0
+      }
+    }
+  ],
+  "controls": {
+    "params": {
+      "spring.c": {
+        "slider": true,
+        "range": [
+          0.02,
+          2.0
+        ]
+      },
+      "spring.m": {
+        "slider": true,
+        "range": [
+          0.2,
+          4.0
+        ]
+      }
+    },
+    "views": [
+      {
+        "type": "plot.heatmap",
+        "bind": {
+          "field": "spring.amplitude",
+          "x": "spring.w",
+          "y": "spring.c"
+        },
+        "style": {
+          "log_colour": 1.0
+        }
+      }
+    ],
+    "sweep": [
+      {
+        "param": "spring.w",
+        "range": [
+          0.0,
+          3.0
+        ],
+        "points": 200
+      },
+      {
+        "param": "spring.c",
+        "range": [
+          0.02,
+          1.0
+        ],
+        "points": 120
+      }
+    ]
+  }
+}

@@ -274,6 +274,33 @@ mod tests {
     }
 
     #[test]
+    fn a_two_parameter_sweep_opens_a_heat_map_over_both() {
+        use crate::examples::{registry, view_registry, EXAMPLES};
+        use crate::session::Session;
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Resonance"))
+            .unwrap();
+        let mut s = Session::load(e.name, e.text, &registry()).unwrap();
+        s.set_sweep(&[
+            ("spring.w".into(), [0.0, 3.0], 40),
+            ("spring.c".into(), [0.1, 2.0], 30),
+        ])
+        .unwrap();
+        let mut v = Views::new(view_registry());
+        // The file's x-y plots have no scalars to show, so they are dropped.
+        let w = v.open(&s.available(), &s.file.controls.views);
+        assert_eq!(w.len(), s.file.controls.views.len());
+        let b = &v.tiles[0].state.bind;
+        assert_eq!(v.tiles[0].state.type_name, "plot.heatmap");
+        assert_eq!(b["field"], ["spring.amplitude"]);
+        assert_eq!(
+            (b["x"][0].as_str(), b["y"][0].as_str()),
+            ("spring.w", "spring.c")
+        );
+    }
+
+    #[test]
     fn the_grid_stays_close_to_square() {
         assert_eq!(grid(0), (0, 0));
         assert_eq!(grid(1), (1, 1));

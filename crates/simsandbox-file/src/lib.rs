@@ -208,9 +208,11 @@ pub struct Controls {
     /// warning.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub signals: BTreeMap<String, String>,
-    /// The parameter swept when the model has no states (ADR 0019, ADR 0021).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sweep: Option<SweepControl>,
+    /// The parameters swept when the model has no states: one (ADR 0021) or
+    /// two (ADR 0022). Written as one object for one parameter, a list for
+    /// two.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "one_or_many")]
+    pub sweep: Vec<SweepControl>,
     /// The single view of ADR 0014. Still read; converted into `views` on
     /// load and never written.
     #[serde(default, skip_serializing)]
@@ -263,15 +265,45 @@ pub struct SweepControl {
     /// The parameter's slider range or suggested range if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<[f64; 2]>,
-    #[serde(default = "default_sweep_points")]
-    pub points: usize,
+    /// [`DEFAULT_SWEEP_POINTS`] for one parameter or
+    /// [`DEFAULT_GRID_POINTS`] each for two if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub points: Option<usize>,
 }
 
-/// Points in a sweep unless a file says otherwise.
+/// Points in a one-parameter sweep unless a file says otherwise.
 pub const DEFAULT_SWEEP_POINTS: usize = 400;
+/// Points along each parameter of a two-parameter sweep unless a file says
+/// otherwise (100 × 100 evaluations).
+pub const DEFAULT_GRID_POINTS: usize = 100;
+/// The most evaluations a two-parameter sweep may ask for.
+pub const MAX_GRID_EVALUATIONS: usize = 250_000;
 
-fn default_sweep_points() -> usize {
-    DEFAULT_SWEEP_POINTS
+/// `controls.sweep`: one object, or a list of them.
+mod one_or_many {
+    use super::SweepControl;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(SweepControl),
+        Many(Vec<SweepControl>),
+    }
+
+    pub fn serialize<S: Serializer>(v: &[SweepControl], s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            [one] => one.serialize(s),
+            many => many.serialize(s),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<SweepControl>, D::Error> {
+        Ok(match OneOrMany::deserialize(d)? {
+            OneOrMany::One(one) => vec![one],
+            OneOrMany::Many(many) => many,
+        })
+    }
 }
 
 /// One signal, or a list for slots that take several.
@@ -308,7 +340,7 @@ impl Controls {
             && self.speed.is_none()
             && self.plots.is_empty()
             && self.views.is_empty()
-            && self.sweep.is_none()
+            && self.sweep.is_empty()
             && self.signals.is_empty()
             && self.view.is_none()
     }
@@ -802,38 +834,69 @@ impl ModelFile {
                 None => {}
             }
         }
-        if let Some(sw) = &mut c.sweep {
+        let mut sweep = Vec::new();
+        let single = c.sweep.len() == 1;
+        for (i, mut sw) in std::mem::take(&mut c.sweep).into_iter().enumerate() {
+            let path = if single {
+                "controls.sweep".to_string()
+            } else {
+                format!("controls.sweep[{i}]")
+            };
             let known = port_ref(&sw.param, ids).ok().is_some_and(|(id, name)| {
                 model
                     .block(id)
                     .is_ok_and(|b| b.spec().params.iter().any(|p| p.name == name))
             });
             if !known {
+                warnings.push(format!("{path}: no parameter '{}'; ignored", sw.param));
+                continue;
+            }
+            if sweep.iter().any(|s: &SweepControl| s.param == sw.param) {
+                warnings.push(format!("{path}: '{}' is swept twice; ignored", sw.param));
+                continue;
+            }
+            if sweep.len() == 2 {
                 warnings.push(format!(
-                    "controls.sweep: no parameter '{}'; ignored",
+                    "{path}: at most two parameters can be swept; '{}' ignored",
                     sw.param
                 ));
-                c.sweep = None;
-            } else {
-                if let Some([lo, hi]) = sw.range {
-                    if !(lo.is_finite() && hi.is_finite() && lo < hi) {
-                        warnings.push(format!(
-                            "controls.sweep.range: [{lo}, {hi}] is not an increasing finite range; ignored"
-                        ));
-                        sw.range = None;
-                    }
-                }
-                if !(2..=100_000).contains(&sw.points) {
+                continue;
+            }
+            if let Some([lo, hi]) = sw.range {
+                if !(lo.is_finite() && hi.is_finite() && lo < hi) {
                     warnings.push(format!(
-                        "controls.sweep.points: {} is outside 2 to 100000; using {DEFAULT_SWEEP_POINTS}",
-                        sw.points
+                        "{path}.range: [{lo}, {hi}] is not an increasing finite range; ignored"
                     ));
-                    sw.points = DEFAULT_SWEEP_POINTS;
+                    sw.range = None;
                 }
             }
+            if let Some(n) = sw.points.filter(|n| !(2..=100_000).contains(n)) {
+                warnings.push(format!(
+                    "{path}.points: {n} is outside 2 to 100000; using the default"
+                ));
+                sw.points = None;
+            }
+            sweep.push(sw);
         }
-        // Views may bind derived signals as well as outputs.
-        let derived: Vec<String> = c.signals.keys().cloned().collect();
+        if let [a, b] = sweep.as_mut_slice() {
+            let n = |s: &SweepControl| s.points.unwrap_or(DEFAULT_GRID_POINTS);
+            if n(a) * n(b) > MAX_GRID_EVALUATIONS {
+                warnings.push(format!(
+                    "controls.sweep: {} × {} points is more than {MAX_GRID_EVALUATIONS}; using {DEFAULT_GRID_POINTS} × {DEFAULT_GRID_POINTS}",
+                    n(a),
+                    n(b)
+                ));
+                a.points = None;
+                b.points = None;
+            }
+        }
+        c.sweep = sweep;
+        // Views may bind derived signals as well as outputs, and in a
+        // two-parameter sweep the swept parameters (their value grids).
+        let mut derived: Vec<String> = c.signals.keys().cloned().collect();
+        if c.sweep.len() == 2 {
+            derived.extend(c.sweep.iter().map(|s| s.param.clone()));
+        }
         let mut kept = Vec::new();
         for (i, mut v) in std::mem::take(&mut c.views).into_iter().enumerate() {
             v.upgrade();

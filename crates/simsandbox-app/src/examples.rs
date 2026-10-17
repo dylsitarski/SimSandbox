@@ -30,6 +30,10 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/resonance.ssbx.json"),
     },
     Example {
+        name: "Resonance map (two parameters swept)",
+        text: include_str!("../../../examples/resonance-map.ssbx.json"),
+    },
+    Example {
         name: "Pendulum (with its own view)",
         text: include_str!("../../../examples/pendulum.ssbx.json"),
     },

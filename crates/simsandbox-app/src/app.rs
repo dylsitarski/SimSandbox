@@ -307,53 +307,64 @@ impl SimApp {
                 ui.add(egui::Label::new(d.as_str()).truncate());
             }
         });
-        ui.horizontal(|ui| {
-            // Models with no states are swept, not run (ADR 0019, ADR 0021).
-            if let Some(sw) = session.sweep().cloned() {
-                self.running = false;
-                sweep_controls(ui, session, &sw, &mut self.error);
-                return;
+        // Models with no states are swept, not run (ADR 0019, ADR 0021,
+        // ADR 0022).
+        if let Some(sw) = session.sweep().cloned() {
+            self.running = false;
+            if sweep_controls(ui, session, &sw, &mut self.error) {
+                // Grids instead of signals, or the reverse: the views start over.
+                self.views.open(&session.available(), &[]);
+                self.log
+                    .info(if session.sweep().is_some_and(|s| s.is_grid()) {
+                        "Swept over two parameters: every output is now a grid; views reset"
+                    } else {
+                        "Swept over one parameter; views reset"
+                    });
             }
-            let label = if self.running { "⏸ Pause" } else { "▶ Run" };
-            if ui.button(label).clicked() {
-                self.running = !self.running;
-                self.pacer.reset();
-            }
-            if ui
-                .button("⏮ Restart")
-                .on_hover_text("Start again from t = 0 with the current parameter values")
-                .clicked()
-            {
-                if let Err(e) = session.restart() {
-                    self.error = Some(format!("restart failed: {e}"));
+        }
+        if session.sweep().is_none() {
+            ui.horizontal(|ui| {
+                let label = if self.running { "⏸ Pause" } else { "▶ Run" };
+                if ui.button(label).clicked() {
+                    self.running = !self.running;
+                    self.pacer.reset();
                 }
-                self.rewind_t = 0.0;
-                self.pacer.reset();
-            }
-            ui.separator();
-            ui.add(
-                egui::Slider::new(&mut self.speed, 0.01..=100.0)
-                    .logarithmic(true)
-                    .clamping(egui::SliderClamping::Never)
-                    .suffix("×")
-                    .text("speed"),
-            )
-            .on_hover_text("Simulated seconds per wall-clock second");
-            if self.speed <= 0.0 || !self.speed.is_finite() {
-                self.speed = 0.01;
-            }
-            ui.separator();
-            ui.label("step");
-            ui.add(
-                egui::DragValue::new(&mut session.dt)
-                    .range(1e-6..=10.0)
-                    .speed(0.001)
-                    .suffix(" s"),
-            )
-            .on_hover_text("Communication step: simulated time per step");
-            ui.separator();
-            ui.monospace(format!("t = {:.3} s", session.time()));
-        });
+                if ui
+                    .button("⏮ Restart")
+                    .on_hover_text("Start again from t = 0 with the current parameter values")
+                    .clicked()
+                {
+                    if let Err(e) = session.restart() {
+                        self.error = Some(format!("restart failed: {e}"));
+                    }
+                    self.rewind_t = 0.0;
+                    self.pacer.reset();
+                }
+                ui.separator();
+                ui.add(
+                    egui::Slider::new(&mut self.speed, 0.01..=100.0)
+                        .logarithmic(true)
+                        .clamping(egui::SliderClamping::Never)
+                        .suffix("×")
+                        .text("speed"),
+                )
+                .on_hover_text("Simulated seconds per wall-clock second");
+                if self.speed <= 0.0 || !self.speed.is_finite() {
+                    self.speed = 0.01;
+                }
+                ui.separator();
+                ui.label("step");
+                ui.add(
+                    egui::DragValue::new(&mut session.dt)
+                        .range(1e-6..=10.0)
+                        .speed(0.001)
+                        .suffix(" s"),
+                )
+                .on_hover_text("Communication step: simulated time per step");
+                ui.separator();
+                ui.monospace(format!("t = {:.3} s", session.time()));
+            });
+        }
         ui.horizontal(|ui| {
             if let Some(l) = session.labels() {
                 ui.label(format!("Speed class: {:?}", l.speed))
@@ -1152,7 +1163,10 @@ fn param_row(
             ui.weak("↻")
                 .on_hover_text("Initial condition: applies on Restart");
         }
-        if session.sweep().is_some_and(|s| s.key == row.key) {
+        if session
+            .sweep()
+            .is_some_and(|s| s.axes.iter().any(|a| a.key == row.key))
+        {
             ui.weak("swept").on_hover_text(
                 "Swept along the horizontal axis: its own value is not used while sweeping",
             );
@@ -1238,43 +1252,96 @@ fn number_entry(
 const SLOT_WIDTH: f32 = 150.0;
 
 /// What is swept, over which range and with how many points, for models
-/// with no states.
+/// with no states: one row per parameter, and a button to sweep a second
+/// (ADR 0022). Returns true if the number of swept parameters changed.
 fn sweep_controls(
     ui: &mut egui::Ui,
     session: &mut Session,
     sw: &crate::session::Sweep,
     error: &mut Option<String>,
-) {
-    ui.label("Sweep").on_hover_text(
-        "This model has no states, so instead of running in time its outputs are \
-         evaluated across a parameter's range",
-    );
+) -> bool {
     let rows = session.params();
-    let mut key = sw.key.clone();
-    let mut range = sw.range;
-    let mut points = sw.points;
-    egui::ComboBox::from_id_salt("sweep_param")
-        .selected_text(&key)
-        .show_ui(ui, |ui| {
-            for r in &rows {
-                if ui.selectable_label(key == r.key, &r.key).clicked() && key != r.key {
-                    key = r.key.clone();
-                    // The slider's range if it has one: the author chose it.
-                    range = session.slider_range(&r.key).unwrap_or(r.suggested);
-                }
+    let current: Vec<(String, [f64; 2], usize)> = sw
+        .axes
+        .iter()
+        .map(|a| (a.key.clone(), a.range, a.points))
+        .collect();
+    let mut axes = current.clone();
+    let mut remove = None;
+    let two = axes.len() == 2;
+    for (k, (key, range, points)) in axes.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            let label = match (two, k) {
+                (false, _) => "Sweep",
+                (true, 0) => "Sweep x",
+                (true, _) => "and y",
+            };
+            ui.label(label).on_hover_text(
+                "This model has no states, so instead of running in time its outputs are \
+                 evaluated across parameter ranges: one parameter gives curves, two give \
+                 a grid of results",
+            );
+            egui::ComboBox::from_id_salt(("sweep_param", k))
+                .selected_text(key.as_str())
+                .show_ui(ui, |ui| {
+                    for r in &rows {
+                        if ui.selectable_label(*key == r.key, &r.key).clicked() && *key != r.key {
+                            *key = r.key.clone();
+                            // The slider's range if it has one: the author chose it.
+                            *range = session.slider_range(&r.key).unwrap_or(r.suggested);
+                        }
+                    }
+                });
+            ui.label("from");
+            ui.add(egui::DragValue::new(&mut range[0]).speed(0.1));
+            ui.label("to");
+            ui.add(egui::DragValue::new(&mut range[1]).speed(0.1));
+            ui.label("points");
+            ui.add(egui::DragValue::new(points).range(2..=100_000));
+            if two
+                && ui
+                    .small_button("×")
+                    .on_hover_text("Stop sweeping this parameter")
+                    .clicked()
+            {
+                remove = Some(k);
+            }
+            if !two
+                && rows.len() > 1
+                && ui
+                    .button("+ parameter")
+                    .on_hover_text(
+                        "Sweep a second parameter: every output becomes a grid over both",
+                    )
+                    .clicked()
+            {
+                remove = Some(usize::MAX);
             }
         });
-    ui.label("from");
-    ui.add(egui::DragValue::new(&mut range[0]).speed(0.1));
-    ui.label("to");
-    ui.add(egui::DragValue::new(&mut range[1]).speed(0.1));
-    ui.label("points");
-    ui.add(egui::DragValue::new(&mut points).range(2..=100_000));
-    if (key.as_str(), range, points) != (sw.key.as_str(), sw.range, sw.points) {
-        if let Err(e) = session.set_sweep(&key, range, points) {
-            *error = Some(format!("sweep: {e}"));
-        }
     }
+    match remove {
+        Some(usize::MAX) => {
+            // Add the first parameter not yet swept; 100 × 100 to start.
+            if let Some(r) = rows.iter().find(|r| r.key != axes[0].0) {
+                let range = session.slider_range(&r.key).unwrap_or(r.suggested);
+                axes[0].2 = simsandbox_file::DEFAULT_GRID_POINTS;
+                axes.push((r.key.clone(), range, simsandbox_file::DEFAULT_GRID_POINTS));
+            }
+        }
+        Some(k) => {
+            axes.remove(k);
+            axes[0].2 = simsandbox_file::DEFAULT_SWEEP_POINTS;
+        }
+        None => {}
+    }
+    if axes == current {
+        return false;
+    }
+    if let Err(e) = session.set_sweep(&axes) {
+        *error = Some(format!("sweep: {e}"));
+        return false;
+    }
+    axes.len() != current.len()
 }
 
 /// Pickers for a view's slots: a menu of checkboxes for slots that take

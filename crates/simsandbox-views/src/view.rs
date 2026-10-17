@@ -96,6 +96,9 @@ pub struct Available<'a> {
     pub grids: &'a [String],
     pub points: &'a [String],
     pub block_types: &'a [String],
+    /// In a two-parameter sweep, the swept parameters (x first); their
+    /// values are grids in `grids`, coordinates for the other grids.
+    pub sweep: &'a [String],
 }
 
 impl Available<'_> {
