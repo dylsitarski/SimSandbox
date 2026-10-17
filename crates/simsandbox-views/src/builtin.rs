@@ -1,12 +1,12 @@
-//! The built-in views: `plot.time`, `plot.phase` and `plot.3d`.
+//! The built-in views: `plot.xy` (ADR 0018) and `plot.3d`.
 
 use crate::colour::{segments, trail_start, ColourKey, HEAD};
 use crate::history::{History, SignalRef, TIME};
-use crate::view::{Bindings, Slot, StyleProperty, View, ViewInput, ViewRegistry, ViewType};
+use crate::view::{Bindings, Preset, Slot, StyleProperty, View, ViewInput, ViewRegistry, ViewType};
 use crate::view3d::{self, Camera};
 use egui_plot::{Legend, Line, MarkerShape, Plot, PlotPoints, PlotUi, Points};
 
-/// Segments a 2D or 3D trail is split into for colouring.
+/// Segments a single coloured trail is split into.
 const COLOUR_CHUNKS: usize = 48;
 
 const COLOUR: Slot = Slot {
@@ -14,7 +14,7 @@ const COLOUR: Slot = Slot {
     many: false,
     required: false,
     description:
-        "Colours the line: 't' fades it from old to new; another signal colours it by value",
+        "Colours a single curve: 't' fades it from old to new; another signal colours it by value",
 };
 
 const TRAIL_LENGTH: StyleProperty = StyleProperty {
@@ -22,50 +22,56 @@ const TRAIL_LENGTH: StyleProperty = StyleProperty {
     default: -1.0,
     suggested: [-1.0, 60.0],
     unit: "s",
-    description: "Seconds of trail shown behind the current point; 0 shows no trail, -1 (any negative value) the whole run",
+    description: "Seconds of trail shown behind the current point; 0 shows no trail, -1 (any negative value) the whole run. With time on the x axis this is a scrolling window",
 };
 
 pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
     r.register(ViewType {
-        name: "plot.time",
-        label: "Time series",
-        description: "Signals against time",
-        slots: &[Slot {
-            name: "y",
-            many: true,
-            required: true,
-            description: "Signals plotted against time",
-        }],
-        style: &[],
-        default_bindings: |s| (!s.is_empty()).then(|| [("y".to_string(), s.to_vec())].into()),
-        create: || Box::new(TimeSeries),
-    })?;
-    r.register(ViewType {
-        name: "plot.phase",
-        label: "Phase portrait",
-        description: "One signal against another",
+        name: "plot.xy",
+        label: "Plot",
+        description: "Signals against time or against each other",
         slots: &[
             Slot {
                 name: "x",
                 many: false,
                 required: true,
-                description: "Horizontal axis",
+                description: "Horizontal axis: 't' for time, or any signal",
             },
             Slot {
                 name: "y",
-                many: false,
+                many: true,
                 required: true,
-                description: "Vertical axis",
+                description: "Vertical axis: one or more signals",
             },
             COLOUR,
         ],
         style: &[TRAIL_LENGTH],
-        default_bindings: |s| {
-            // x–z for three or more signals (the Lorenz butterfly).
-            let y = if s.len() >= 3 { 2 } else { 1 };
-            (s.len() >= 2).then(|| bindings(&[("x", &s[0]), ("y", &s[y]), ("colour", TIME)]))
-        },
-        create: || Box::new(Phase),
+        presets: &[
+            Preset {
+                label: "Plot against time",
+                description: "Every signal against time",
+                bindings: |s| {
+                    (!s.is_empty()).then(|| {
+                        [
+                            ("x".to_string(), vec![TIME.to_string()]),
+                            ("y".to_string(), s.to_vec()),
+                        ]
+                        .into()
+                    })
+                },
+            },
+            Preset {
+                label: "Phase portrait",
+                description: "One signal against another, fading with time",
+                bindings: |s| {
+                    // x–z for three or more signals (the Lorenz butterfly).
+                    let y = if s.len() >= 3 { 2 } else { 1 };
+                    (s.len() >= 2)
+                        .then(|| bindings(&[("x", &s[0]), ("y", &s[y]), ("colour", TIME)]))
+                },
+            },
+        ],
+        create: || Box::new(Xy),
     })?;
     r.register(ViewType {
         name: "plot.3d",
@@ -93,10 +99,15 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             COLOUR,
         ],
         style: &[TRAIL_LENGTH],
-        default_bindings: |s| {
-            (s.len() >= 3)
-                .then(|| bindings(&[("x", &s[0]), ("y", &s[1]), ("z", &s[2]), ("colour", TIME)]))
-        },
+        presets: &[Preset {
+            label: "3D trajectory",
+            description: "Three signals as a path in space",
+            bindings: |s| {
+                (s.len() >= 3).then(|| {
+                    bindings(&[("x", &s[0]), ("y", &s[1]), ("z", &s[2]), ("colour", TIME)])
+                })
+            },
+        }],
         create: || Box::new(Trajectory::default()),
     })
 }
@@ -134,58 +145,68 @@ pub fn zoom_factor(scroll: f32) -> f32 {
     (scroll * 0.002).exp()
 }
 
-struct TimeSeries;
+/// Any signals against any signal (ADR 0018).
+struct Xy;
 
-impl View for TimeSeries {
+impl View for Xy {
     fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>) {
         let h = input.history;
-        Plot::new("plot.time")
-            .legend(Legend::default())
-            .x_axis_label("t [s]")
-            .allow_scroll(false)
-            .show(ui, |plot| {
-                scroll_to_zoom(plot);
-                for &s in input.many("y") {
-                    if let SignalRef::Signal(i) = s {
-                        plot.line(Line::new(h.name(s).to_string(), h.points(i)));
-                    }
-                }
-            });
-    }
-}
-
-struct Phase;
-
-impl View for Phase {
-    fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>) {
-        let h = input.history;
-        let (Some(x), Some(y)) = (input.one("x"), input.one("y")) else {
+        let Some(x) = input.one("x") else {
             return;
         };
+        let ys = input.many("y");
+        let n = h.len();
         let first = trail_start(h.times(), input.style("trail_length"));
-        let segs = segments(first, h.len(), &colour_key(input), COLOUR_CHUNKS);
-        let head = (!h.is_empty()).then(|| [h.value(x, h.len() - 1), h.value(y, h.len() - 1)]);
-        Plot::new("plot.phase")
-            .x_axis_label(h.name(x))
-            .y_axis_label(h.name(y))
-            .allow_scroll(false)
-            .show(ui, |plot| {
-                scroll_to_zoom(plot);
-                for seg in &segs {
-                    let pts: PlotPoints<'_> = (seg.start..=seg.end)
-                        .map(|k| [h.value(x, k), h.value(y, k)])
-                        .collect();
+        let against_time = x == SignalRef::Time;
+        let x_label = if against_time {
+            "t [s]".to_string()
+        } else {
+            h.name(x).to_string()
+        };
+        let mut plot = Plot::new("plot.xy")
+            .x_axis_label(x_label)
+            .allow_scroll(false);
+        if ys.len() == 1 {
+            plot = plot.y_axis_label(h.name(ys[0]));
+        } else {
+            plot = plot.legend(Legend::default());
+        }
+        plot.show(ui, |plot| {
+            scroll_to_zoom(plot);
+            let points = |y: SignalRef, from: usize, to: usize| -> PlotPoints<'_> {
+                (from..to).map(|k| [h.value(x, k), h.value(y, k)]).collect()
+            };
+            if let ([y], Some(_)) = (ys, input.one("colour")) {
+                // One curve with a colour encoding: coloured segments.
+                for seg in segments(first, n, &colour_key(input), COLOUR_CHUNKS) {
+                    let pts = points(*y, seg.start, seg.end + 1);
                     plot.line(Line::new("trail", pts).color(seg.colour).allow_hover(false));
                 }
-                if let Some(p) = head {
+            } else {
+                for &y in ys {
+                    let name = h.name(y).to_string();
+                    match y {
+                        // The whole run against time: plot the recorded points directly.
+                        SignalRef::Signal(i) if against_time && first == 0 => {
+                            plot.line(Line::new(name, h.points(i)));
+                        }
+                        _ if n > first + 1 => plot.line(Line::new(name, points(y, first, n))),
+                        _ => {}
+                    }
+                }
+            }
+            // Mark the current point unless time runs along x (it is the right edge).
+            if !against_time && n > 0 {
+                for &y in ys {
                     plot.points(
-                        Points::new("now", vec![p])
+                        Points::new("now", vec![[h.value(x, n - 1), h.value(y, n - 1)]])
                             .shape(MarkerShape::Circle)
                             .radius(4.0)
                             .color(HEAD),
                     );
                 }
-            });
+            }
+        });
     }
 }
 

@@ -1,6 +1,7 @@
 //! The open model's views, shown together as tiles (ADR 0015, ADR 0016):
-//! the views the model file lists, plus any the user adds from "More
-//! views…". Save writes the tiles as they are.
+//! the views the model file lists, plus any the user adds from a view
+//! type's presets under "More views…" (ADR 0018). Save writes the tiles as
+//! they are.
 
 use simsandbox_file::{Binding, CameraControl, ViewEntry};
 use simsandbox_views::{Bindings, ViewRegistry, ViewState, ViewType};
@@ -31,7 +32,8 @@ impl Views {
     }
 
     /// Start over for a model with these recorded `signals`: the saved views,
-    /// or one view chosen by fit (the time series) if none can be used.
+    /// or the first preset that fits (a plot against time) if none can be
+    /// used.
     /// Returns warnings for saved views that cannot be used.
     pub fn open(&mut self, signals: &[String], saved: &[ViewEntry]) -> Vec<String> {
         self.tiles.clear();
@@ -46,12 +48,14 @@ impl Views {
             }
         }
         if self.tiles.is_empty() {
-            let first_fit = ["plot.time"]
-                .into_iter()
-                .chain(self.registry.types().iter().map(|t| t.name))
-                .find(|&n| self.fits(n, signals));
-            if let Some(n) = first_fit {
-                self.add(n, signals);
+            let first_fit = self
+                .registry
+                .types()
+                .iter()
+                .flat_map(|t| (0..t.presets.len()).map(move |p| (t.name, p)))
+                .find(|&(n, p)| self.fits(n, p, signals));
+            if let Some((n, p)) = first_fit {
+                self.add(n, p, signals);
             }
         }
         self.selected = self.tiles.first().map(|t| t.id);
@@ -79,20 +83,21 @@ impl Views {
         id
     }
 
-    /// Whether a view type's slots can be filled from these signals.
-    pub fn fits(&self, type_name: &str, signals: &[String]) -> bool {
+    /// Whether a view type's preset can be filled from these signals.
+    pub fn fits(&self, type_name: &str, preset: usize, signals: &[String]) -> bool {
         self.registry
             .get(type_name)
-            .is_some_and(|t| (t.default_bindings)(signals).is_some())
+            .and_then(|t| t.presets.get(preset))
+            .is_some_and(|p| (p.bindings)(signals).is_some())
     }
 
-    /// Add a tile of a view type with default bindings and select it.
-    /// Returns false if the type cannot show these signals.
-    pub fn add(&mut self, type_name: &str, signals: &[String]) -> bool {
+    /// Add a tile of a view type started from one of its presets, and select
+    /// it. Returns false if the preset cannot show these signals.
+    pub fn add(&mut self, type_name: &str, preset: usize, signals: &[String]) -> bool {
         let Some(state) = self
             .registry
             .get(type_name)
-            .and_then(|t| ViewState::with_defaults(t, signals))
+            .and_then(|t| ViewState::from_preset(t, preset, signals))
         else {
             return false;
         };
@@ -101,10 +106,10 @@ impl Views {
         true
     }
 
-    /// Show only one view of this type (the `--view` flag).
-    pub fn show_only(&mut self, type_name: &str, signals: &[String]) {
+    /// Show only one view, from a preset (the `--view` flag).
+    pub fn show_only(&mut self, type_name: &str, preset: usize, signals: &[String]) {
         let before = std::mem::take(&mut self.tiles);
-        if !self.add(type_name, signals) {
+        if !self.add(type_name, preset, signals) {
             self.tiles = before;
         }
     }
@@ -194,7 +199,7 @@ mod tests {
                     ("colour", "t"),
                 ],
             ),
-            entry("plot.phase", &[("x", "l.xyz[0]"), ("y", "l.xyz[1]")]),
+            entry("plot.xy", &[("x", "l.xyz[0]"), ("y", "l.xyz[1]")]),
         ];
         let mut phase = saved[1].clone();
         phase.camera = None;
@@ -210,31 +215,32 @@ mod tests {
     fn unusable_views_are_dropped_and_an_empty_list_gets_a_time_series() {
         let mut v = Views::new(ViewRegistry::builtin());
         let unknown = entry("plot.4d", &[]);
-        let unplotted = entry("plot.phase", &[("x", "l.xyz[0]"), ("y", "other.x")]);
+        let unplotted = entry("plot.xy", &[("x", "l.xyz[0]"), ("y", "other.x")]);
         let w = v.open(&signals(), &[unknown, unplotted]);
         assert_eq!(w.len(), 2, "{w:?}");
         assert_eq!(v.tiles.len(), 1);
-        assert_eq!(v.tiles[0].state.type_name, "plot.time");
+        assert_eq!(v.tiles[0].state.type_name, "plot.xy");
+        assert_eq!(v.tiles[0].state.bind["x"], ["t"]);
     }
 
     #[test]
     fn tiles_are_added_closed_and_keep_their_ids() {
         let mut v = Views::new(ViewRegistry::builtin());
         v.open(&signals(), &[]);
-        assert!(v.add("plot.3d", &signals()));
-        assert!(v.add("plot.phase", &signals()));
+        assert!(v.add("plot.3d", 0, &signals()));
+        assert!(v.add("plot.xy", 1, &signals()));
         let ids: Vec<u64> = v.tiles.iter().map(|t| t.id).collect();
         assert_eq!(v.selected, Some(ids[2]));
         v.close(ids[2]);
         assert_eq!(v.selected, Some(ids[0]));
         assert_eq!(v.tiles.iter().map(|t| t.id).collect::<Vec<_>>(), &ids[..2]);
         // New tiles never reuse an id.
-        assert!(v.add("plot.phase", &signals()));
+        assert!(v.add("plot.xy", 1, &signals()));
         assert!(v.tiles.last().unwrap().id > ids[2]);
         // Too few signals for 3D.
-        assert!(!v.fits("plot.3d", &signals()[..2]));
-        assert!(!v.add("plot.3d", &signals()[..2]));
-        v.show_only("plot.3d", &signals());
+        assert!(!v.fits("plot.3d", 0, &signals()[..2]));
+        assert!(!v.add("plot.3d", 0, &signals()[..2]));
+        v.show_only("plot.3d", 0, &signals());
         assert_eq!(v.tiles.len(), 1);
     }
 

@@ -17,6 +17,7 @@
 - 2026-10-17: `trail_length` 0 now shows no trail and -1 the whole run (owner's request); Q11 raised (which views a model offers).
 - 2026-10-17: ADR 0016 (models choose the views shown, "More views…" for the rest) and views step 3 (tiles). 64 tests.
 - 2026-10-17: symbolic equation entry: `simsandbox-expr`, `eq.equations` (`EquationSet`), `equations` in model files, equation editor, predator–prey example; ADR 0017 written as Proposed (the parser approach was chosen by the agent and awaits the owner's confirmation).
+- 2026-10-17: owner accepted ADR 0017 and the recommendations for Q12–Q14 (ADRs 0018–0020); `plot.time` and `plot.phase` merged into `plot.xy` with view presets. 79 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
 - Wrote ADRs 0007 to 0015; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
@@ -36,8 +37,7 @@
 
 ## Left open
 
-- Q12 (equations without time or states), Q13 (merge time and phase plots), Q14 (methods for approximating operations), raised by the owner 2026-10-17 ([open questions](../open-questions.md)).
-- Owner to confirm ADR 0017 (typed equations, proposed). Q5 (algebraic loops) remains ([open questions](../open-questions.md)).
+- Q5 (algebraic loops) remains ([open questions](../open-questions.md)).
 
 ## Notes for the next session
 

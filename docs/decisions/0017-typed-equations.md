@@ -1,6 +1,6 @@
 # 0017 — A built-in expression parser for typed equations
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-17
 
 ## Context

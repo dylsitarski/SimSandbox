@@ -299,8 +299,12 @@ fn views_are_validated_leniently() {
 
     // Slots that take several signals use a list; scalar outputs have no index.
     let osc = OSCILLATORS.replace(
-        r#""type": "plot.time","#,
-        r#""type": "plot.time", "style": {"w": 2.0},"#,
+        r#""type": "plot.xy",
+        "bind": {
+          "x": "t","#,
+        r#""type": "plot.xy", "style": {"w": 2.0},
+        "bind": {
+          "x": "t","#,
     );
     let loaded = load(&osc, &registry()).unwrap();
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
@@ -330,7 +334,7 @@ fn the_single_view_of_adr_0014_is_converted() {
     let c = &loaded.file.controls;
     assert!(c.view.is_none());
     assert_eq!(c.views.len(), 1);
-    assert_eq!(c.views[0].type_name, "plot.phase");
+    assert_eq!(c.views[0].type_name, "plot.xy");
     assert_eq!(c.views[0].bind["x"], Binding::One("a.x".into()));
     assert_eq!(c.views[0].bind["colour"], Binding::One("t".into()));
     // Saving writes the new form only.
@@ -376,4 +380,23 @@ fn typed_equations_load_and_report_mistakes_at_their_line() {
         load(&fixed, &registry()),
         Err(FileError::Invalid { path, .. }) if path == "blocks[0].equations"
     ));
+}
+
+#[test]
+fn time_and_phase_views_are_converted_to_xy_plots() {
+    let old = OSCILLATORS
+        .replacen(
+            r#""type": "plot.xy",
+        "bind": {
+          "x": "t","#,
+            r#""type": "plot.time",
+        "bind": {"#,
+            1,
+        )
+        .replacen(r#""type": "plot.xy""#, r#""type": "plot.phase""#, 1);
+    assert!(old.contains("plot.time") && old.contains("plot.phase"));
+    let loaded = load(&old, &registry()).unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    // Saving writes exactly the example, which uses plot.xy.
+    assert_eq!(loaded.file.to_json(), OSCILLATORS);
 }

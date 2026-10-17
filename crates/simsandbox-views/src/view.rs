@@ -78,16 +78,16 @@ pub trait View {
 
 /// A kind of view, registered by name.
 pub struct ViewType {
-    /// Namespaced: `plot.time`, `eq.pendulum`.
+    /// Namespaced: `plot.xy`, `eq.pendulum`.
     pub name: &'static str,
     /// Shown in the view selector.
     pub label: &'static str,
     pub description: &'static str,
     pub slots: &'static [Slot],
     pub style: &'static [StyleProperty],
-    /// Bindings for a model with these signals, or `None` if the view
-    /// cannot show them (e.g. a 3D view with fewer than three signals).
-    pub default_bindings: fn(&[String]) -> Option<Bindings>,
+    /// Named starting bindings offered in "More views…" (ADR 0018); the
+    /// first is the default.
+    pub presets: &'static [Preset],
     pub create: fn() -> Box<dyn View>,
 }
 
@@ -138,6 +138,15 @@ impl ViewType {
     }
 }
 
+/// A named way to start a view, e.g. "Phase portrait" for `plot.xy`.
+pub struct Preset {
+    pub label: &'static str,
+    pub description: &'static str,
+    /// Bindings for a model with these signals, or `None` if the preset
+    /// cannot show them (e.g. a 3D view with fewer than three signals).
+    pub bindings: fn(&[String]) -> Option<Bindings>,
+}
+
 /// View types by name.
 #[derive(Default)]
 pub struct ViewRegistry {
@@ -149,7 +158,7 @@ impl ViewRegistry {
         Self::default()
     }
 
-    /// The built-in views (`plot.time`, `plot.phase`, `plot.3d`).
+    /// The built-in views (`plot.xy`, `plot.3d`).
     pub fn builtin() -> Self {
         let mut r = Self::new();
         crate::builtin::register(&mut r).expect("built-in views register once");
@@ -184,9 +193,9 @@ pub struct ViewState {
 }
 
 impl ViewState {
-    /// A view of type `t` with its default bindings for these signals.
-    pub fn with_defaults(t: &ViewType, signals: &[String]) -> Option<Self> {
-        let bind = (t.default_bindings)(signals)?;
+    /// A view of type `t` started from preset `preset` for these signals.
+    pub fn from_preset(t: &ViewType, preset: usize, signals: &[String]) -> Option<Self> {
+        let bind = (t.presets.get(preset)?.bindings)(signals)?;
         Some(Self {
             type_name: t.name.into(),
             bind,
@@ -258,23 +267,28 @@ mod tests {
     fn builtin_types_register_once_with_unique_names() {
         let mut r = ViewRegistry::builtin();
         let names: Vec<_> = r.types().iter().map(|t| t.name).collect();
-        assert_eq!(names, ["plot.time", "plot.phase", "plot.3d"]);
+        assert_eq!(names, ["plot.xy", "plot.3d"]);
         assert!(crate::builtin::register(&mut r).is_err());
     }
 
     #[test]
-    fn defaults_fit_the_signals_available() {
+    fn presets_fit_the_signals_available() {
         let r = ViewRegistry::builtin();
         let three = signals();
-        let phase = ViewState::with_defaults(r.get("plot.phase").unwrap(), &three).unwrap();
+        let xy = r.get("plot.xy").unwrap();
+        let time = ViewState::from_preset(xy, 0, &three).unwrap();
+        assert_eq!(time.bind["x"], ["t"]);
+        assert_eq!(time.bind["y"].len(), 3);
+        let phase = ViewState::from_preset(xy, 1, &three).unwrap();
         assert_eq!(phase.bind["x"], ["l.xyz[0]"]);
         assert_eq!(phase.bind["y"], ["l.xyz[2]"]);
         assert_eq!(phase.bind["colour"], ["t"]);
-        let time = ViewState::with_defaults(r.get("plot.time").unwrap(), &three).unwrap();
-        assert_eq!(time.bind["y"].len(), 3);
-        // Too few signals for 3D.
-        assert!(ViewState::with_defaults(r.get("plot.3d").unwrap(), &three[..2]).is_none());
-        assert!(ViewState::with_defaults(r.get("plot.time").unwrap(), &[]).is_none());
+        // A phase portrait needs two signals, 3D three, a time plot one.
+        assert!(ViewState::from_preset(xy, 1, &three[..1]).is_none());
+        assert!(ViewState::from_preset(xy, 0, &three[..1]).is_some());
+        assert!(ViewState::from_preset(r.get("plot.3d").unwrap(), 0, &three[..2]).is_none());
+        assert!(ViewState::from_preset(xy, 0, &[]).is_none());
+        assert!(ViewState::from_preset(xy, 9, &three).is_none());
     }
 
     #[test]

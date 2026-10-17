@@ -169,7 +169,7 @@ pub struct Controls {
 /// checks types, slots and style names against its view registry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewEntry {
-    /// E.g. `plot.time`, `plot.phase`, `plot.3d`.
+    /// E.g. `plot.xy`, `plot.3d`.
     #[serde(rename = "type")]
     pub type_name: String,
     /// Slot name to signal: `"t"`, `"block.port"` (scalar) or
@@ -181,6 +181,24 @@ pub struct ViewEntry {
     pub style: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<CameraControl>,
+}
+
+impl ViewEntry {
+    /// Convert the view types that `plot.xy` replaced (ADR 0018):
+    /// `plot.time` becomes `plot.xy` against `t`, `plot.phase` becomes
+    /// `plot.xy` with its bindings and style kept.
+    pub fn upgrade(&mut self) {
+        match self.type_name.as_str() {
+            "plot.time" => {
+                self.type_name = "plot.xy".into();
+                self.bind
+                    .entry("x".into())
+                    .or_insert_with(|| Binding::One("t".into()));
+            }
+            "plot.phase" => self.type_name = "plot.xy".into(),
+            _ => {}
+        }
+    }
 }
 
 /// One signal, or a list for slots that take several.
@@ -245,21 +263,23 @@ pub struct CameraControl {
 }
 
 impl ViewControl {
-    /// The equivalent `views` entry: `time`, `phase`, `3d` become
-    /// `plot.time`, `plot.phase`, `plot.3d`, the axes fill the `x`, `y`, `z`
-    /// slots, and the trail fades with time as it did.
+    /// The equivalent `views` entry: `phase` and `3d` become `plot.xy` and
+    /// `plot.3d` with the axes in the `x`, `y`, `z` slots and the trail
+    /// fading with time as it did; `time` becomes `plot.xy` against `t`.
     pub fn into_entry(self) -> ViewEntry {
-        let type_name = match self.kind.as_str() {
-            "phase" => "plot.phase",
-            "3d" => "plot.3d",
-            _ => "plot.time",
+        let type_name = if self.kind == "3d" {
+            "plot.3d"
+        } else {
+            "plot.xy"
         };
         let mut bind: BTreeMap<String, Binding> = ["x", "y", "z"]
             .into_iter()
             .zip(self.axes)
             .map(|(slot, s)| (slot.to_string(), Binding::One(s)))
             .collect();
-        if type_name != "plot.time" {
+        if self.kind == "time" {
+            bind.insert("x".into(), Binding::One("t".into()));
+        } else {
             bind.insert("colour".into(), Binding::One("t".into()));
         }
         ViewEntry {
@@ -574,6 +594,7 @@ impl ModelFile {
         }
         let mut kept = Vec::new();
         for (i, mut v) in std::mem::take(&mut c.views).into_iter().enumerate() {
+            v.upgrade();
             let unknown = v
                 .bind
                 .values()

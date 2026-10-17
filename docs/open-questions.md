@@ -9,9 +9,6 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | ID | Question | Options | Needed by | Notes |
 | --- | --- | --- | --- | --- |
 | Q5 | Algebraic loops in fused groups | Causalisation and tearing; Newton solve per RHS evaluation; forbid and warn | Phase 1 | Current v0 restriction: no direct feedthrough |
-| Q12 | Equations without time and without states | (a) stateless typed blocks (only `name = …` lines) explored by sweeping a parameter; (b) discrete maps `x[n+1] = …` stepped by iteration; (c) implicit equations and steady states (`f(x) = 0`) solved by Newton's method; (d) an independent variable other than `t` (`dy/dx`) | Before Phase 1 composition work on typed blocks | Raised 2026-10-17. Today typed blocks need at least one `dx/dt` line and `name = …` must be explicit. Recommendation: (a) and (b) first (cheap, hobbyist favourites such as the logistic map); (c) together with Q5 (algebraic loops); (d) later |
-| Q13 | Merge the time-series and phase-portrait views into one x–y plot | Keep `plot.time` and `plot.phase`; one `plot.xy` with an `x` slot (default `t`) and a `y` slot taking several signals | Before views step 4 | Raised by the owner 2026-10-17. Recommendation: merge; trail length on a time plot then gives a scrolling "last N seconds" window, and old files convert like ADR 0014's `view` did. `plot.3d` stays separate because it draws differently |
-| Q14 | Choosing the method for operations inside equations | Fixed implementations only; a method choice, with speed and accuracy labels ([ADR 0004](decisions/0004-method-classification.md)), for operations that approximate (derivatives for Jacobians, integrals, root finding for implicit equations, smoothing or differentiating recorded signals, spectra) | When the first approximating operation lands (Jacobians or Q12 c) | Raised by the owner 2026-10-17. Recommendation: exact operations (`+`, `sin`, `exp`) have no method; approximating ones get a method with a sensible default and labels, chosen like integrators are |
 
 ## Resolved
 
@@ -32,4 +29,7 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | Q9 | Visualization architecture for many outputs and model-specific pictures | [ADR 0015](decisions/0015-pluggable-views.md) |
 | Q10 | Which draw-style options to expose | [ADR 0015](decisions/0015-pluggable-views.md) |
 | Q11 | Which views a model offers | [ADR 0016](decisions/0016-model-curated-views.md) |
-| Q4 | Symbolic equation parsing | [ADR 0017](decisions/0017-typed-equations.md) (proposed) |
+| Q4 | Symbolic equation parsing | [ADR 0017](decisions/0017-typed-equations.md) |
+| Q12 | Equations without time or states | [ADR 0019](decisions/0019-equations-without-time.md) |
+| Q13 | Merge time-series and phase-portrait views | [ADR 0018](decisions/0018-one-xy-plot.md) |
+| Q14 | Methods for operations inside equations | [ADR 0020](decisions/0020-methods-for-approximations.md) |

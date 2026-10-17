@@ -1,7 +1,7 @@
 //! `simsandbox-app` — the SimSandbox desktop app (ADR 0008).
 //!
 //! ```text
-//! simsandbox-app [FILE] [--view time|phase|3d]
+//! simsandbox-app [FILE] [--view time|phase|3d]   (shows only that view)
 //! simsandbox-app [FILE] --screenshot OUT.ppm [--after SECONDS]
 //! ```
 //!

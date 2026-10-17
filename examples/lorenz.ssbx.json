@@ -55,8 +55,9 @@
         }
       },
       {
-        "type": "plot.time",
+        "type": "plot.xy",
         "bind": {
+          "x": "t",
           "y": [
             "lorenz.xyz[0]",
             "lorenz.xyz[1]",

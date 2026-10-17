@@ -7,7 +7,7 @@
 //! - [`view`]: the view contract: a [`view::ViewType`] declares slots and
 //!   style properties; a [`view::ViewState`] binds slots to signals and
 //!   draws.
-//! - [`builtin`]: `plot.time`, `plot.phase` and `plot.3d`.
+//! - [`builtin`]: `plot.xy` (any signals on either axis) and `plot.3d`.
 //! - [`colour`]: colour encodings shared by views (trail fading, colour by
 //!   value) and trail length.
 //! - [`view3d`]: the projection and drawing behind `plot.3d`.
@@ -19,4 +19,4 @@ pub mod view;
 pub mod view3d;
 
 pub use history::{History, SignalRef};
-pub use view::{Bindings, ViewRegistry, ViewState, ViewType};
+pub use view::{Bindings, Preset, ViewRegistry, ViewState, ViewType};

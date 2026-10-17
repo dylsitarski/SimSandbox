@@ -77,12 +77,12 @@ impl SimApp {
         app.running = app.session.is_some();
         // A --view flag overrides the view saved in the file.
         if let (Some(v), Some(session)) = (view, &app.session) {
-            let name = match v {
-                "phase" => "plot.phase",
-                "3d" => "plot.3d",
-                _ => "plot.time",
+            let (name, preset) = match v {
+                "phase" => ("plot.xy", 1),
+                "3d" => ("plot.3d", 0),
+                _ => ("plot.xy", 0),
             };
-            app.views.show_only(name, session.signals.names());
+            app.views.show_only(name, preset, session.signals.names());
         }
         app
     }
@@ -388,20 +388,25 @@ impl SimApp {
         let views = &mut self.views;
         ui.horizontal(|ui| {
             ui.menu_button("More views…", |ui| {
-                let types: Vec<_> = views
+                let presets: Vec<_> = views
                     .registry
                     .types()
                     .iter()
-                    .map(|t| (t.name, t.label, t.description))
+                    .flat_map(|t| {
+                        t.presets
+                            .iter()
+                            .enumerate()
+                            .map(move |(k, p)| (t.name, k, p.label, p.description))
+                    })
                     .collect();
-                for (name, label, description) in types {
-                    let fits = views.fits(name, &signals);
+                for (name, k, label, description) in presets {
+                    let fits = views.fits(name, k, &signals);
                     let r = ui
                         .add_enabled(fits, egui::Button::new(label))
                         .on_hover_text(description)
                         .on_disabled_hover_text("This model has too few signals for it");
                     if r.clicked() {
-                        views.add(name, &signals);
+                        views.add(name, k, &signals);
                         ui.close();
                     }
                 }
@@ -963,7 +968,11 @@ fn slot_editor(
 ) {
     let current = state.bind.get(slot.name).cloned().unwrap_or_default();
     if slot.many {
-        ui.menu_button(format!("{}: {} signals", slot.name, current.len()), |ui| {
+        let label = match current.as_slice() {
+            [one] => format!("{}: {one}", slot.name),
+            many => format!("{}: {} signals", slot.name, many.len()),
+        };
+        ui.menu_button(label, |ui| {
             for s in signals {
                 let mut on = current.contains(s);
                 // A required slot keeps at least one signal.

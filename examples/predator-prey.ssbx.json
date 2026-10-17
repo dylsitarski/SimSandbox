@@ -49,8 +49,9 @@
     "speed": 2.0,
     "views": [
       {
-        "type": "plot.time",
+        "type": "plot.xy",
         "bind": {
+          "x": "t",
           "y": [
             "ecosystem.prey",
             "ecosystem.predators"
@@ -58,7 +59,7 @@
         }
       },
       {
-        "type": "plot.phase",
+        "type": "plot.xy",
         "bind": {
           "colour": "t",
           "x": "ecosystem.prey",

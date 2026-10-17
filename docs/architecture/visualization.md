@@ -36,12 +36,13 @@ A view type declares:
 
 | Part | Meaning | Example (`plot.phase`) |
 | --- | --- | --- |
-| Name | Namespaced like block types | `plot.phase` |
-| Slots | Named inputs, each accepting some signal kinds; required or optional | `x`: scalar, `y`: scalar, `colour`: scalar (optional) |
+| Name | Namespaced like block types | `plot.xy` |
+| Slots | Named inputs, each accepting some signal kinds; required or optional | `x`: one signal (default `t`), `y`: one or more, `colour`: one (optional) |
+| Presets | Named starting bindings offered in "More views…" | "Plot against time", "Phase portrait" |
 | Style properties | Declared like parameters: name, default, suggested range, description | `trail_length` (s; 0 no trail, -1 the whole run), `line_width` |
 | Drawing | Draws from the bound signals into a region of the window | egui_plot line, or egui painter, or a wgpu paint callback |
 
-Planned built-in types: `plot.time`, `plot.phase`, `plot.3d`, `plot.heatmap` (grid over time or space), `plot.scatter` (point sets), `plot.spectrum`. Domain types: `eq.pendulum`, rigid-body scenes, field surfaces, agent maps.
+Built-in types: `plot.xy` (any signals against time or each other, [ADR 0018](../decisions/0018-one-xy-plot.md)) and `plot.3d`; planned: `plot.heatmap` (grid over time or space), `plot.scatter` (point sets), `plot.spectrum`. Domain types: `eq.pendulum`, rigid-body scenes, field surfaces, agent maps.
 
 Rendering technology follows the data size: egui_plot and the egui painter for lines up to tens of thousands of points; wgpu paint callbacks ([ADR 0008](../decisions/0008-native-egui-ui.md)) for meshes, fields and large point sets. GPU views are tested on software drivers ([development setup](../guides/development-setup.md#testing-gpu-code-without-a-gpu)).
 
@@ -58,7 +59,7 @@ Rule for adding an option: it must change what can be read (make it a slot) or b
 
 ## Default views
 
-The views a model file lists are the views shown; any other view whose slots fit is one click away under "More views…", and domain views fit only their own block types ([ADR 0016](../decisions/0016-model-curated-views.md)). When a file names no views, the app picks from output shapes and roles: a 3-vector or three scalars with a position role give `plot.3d`; a grid gives `plot.heatmap`; a point set gives `plot.scatter`; otherwise `plot.time`. A domain can register a preferred view for its block types.
+The views a model file lists are the views shown; any other view whose slots fit is one click away under "More views…", and domain views fit only their own block types ([ADR 0016](../decisions/0016-model-curated-views.md)). When a file names no views, the app opens the first preset that fits (a plot against time); with planned shapes and roles it picks from output shapes and roles: a 3-vector or three scalars with a position role give `plot.3d`; a grid gives `plot.heatmap`; a point set gives `plot.scatter`; otherwise `plot.time`. A domain can register a preferred view for its block types.
 
 ## Model file representation
 
@@ -69,14 +70,14 @@ The views a model file lists are the views shown; any other view whose slots fit
       "bind": { "x": "lorenz.xyz[0]", "y": "lorenz.xyz[1]", "z": "lorenz.xyz[2]", "colour": "t" },
       "style": { "trail_length": 20.0 },
       "camera": { "yaw": -0.6, "pitch": 0.35, "zoom": 1.0 } },
-    { "type": "plot.time", "bind": { "y": ["lorenz.xyz[0]", "lorenz.xyz[2]"] } }
+    { "type": "plot.xy", "bind": { "x": "t", "y": ["lorenz.xyz[0]", "lorenz.xyz[2]"] } }
   ],
   "layout": "columns",
   "signals": { "energy": "0.5 * (a.v^2 + b.v^2)" }
 }
 ```
 
-`views` with `type`, `bind`, `style` and `camera` is implemented, one entry per tile in order; `layout` (tiles use an automatic grid for now) and `signals` are planned. A slot that takes one signal is written as a string, one that takes several as a list. Like the rest of `controls`, invalid entries are dropped with a warning ([ADR 0012](../decisions/0012-controls-in-model-files.md)). The current `controls.view` maps directly: `kind` to `type`, `axes` to the `x`, `y`, `z` slots.
+`views` with `type`, `bind`, `style` and `camera` is implemented, one entry per tile in order; `layout` (tiles use an automatic grid for now) and `signals` are planned. A slot that takes one signal is written as a string, one that takes several as a list. Like the rest of `controls`, invalid entries are dropped with a warning ([ADR 0012](../decisions/0012-controls-in-model-files.md)). The older `controls.view` and the `plot.time` and `plot.phase` types are converted to `plot.xy` and `plot.3d` on load ([ADR 0018](../decisions/0018-one-xy-plot.md)).
 
 ## Crates
 
