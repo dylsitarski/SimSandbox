@@ -21,6 +21,7 @@
 - 2026-10-17: typed models without time: maps, formulas, sweeps (ADR 0021); logistic-map and resonance examples. 86 tests.
 - 2026-10-17: views step 4, derived signals. 88 tests.
 - 2026-10-17: owner feedback round: sweep-to-infinity crash, status line, description, Derived signals widths, heat rod length/position, `plot.profile`, heat map axes; Q15, Q16. 103 tests.
+- 2026-10-17: messages moved into a log tile beside the rewind bar (`crates/simsandbox-app/src/log.rs`) at the owner's request; duplicate description tooltip removed (egui already shows cut text on hover). 104 tests.
 - 2026-10-17: views steps 5–6: `Shape::Grid`/`Shape::Points`, fields in the history, `plot.heatmap`, `plot.scatter`, slot kinds and `Available`; `eq.heat_rod`, `eq.orbits` and `eq.pendulum` with verification tests; the `eq.pendulum` view (`applies_to`) behind `simsandbox-eq`'s `views` feature; heat-rod, orbits and pendulum examples, checked by screenshot. 100 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
 - Wrote ADRs 0007 to 0015; updated STATUS, open questions, architecture overview, block contract and interaction docs.

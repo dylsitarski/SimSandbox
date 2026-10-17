@@ -41,7 +41,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
-- App: messages appear in a one-line status bar of fixed height (errors, notices that fade after 8 s, load warnings behind a button) instead of growing the bottom panel; the model description is one line with the full text on hover; the Derived signals text boxes are wider.
+- App: messages go to a log: a tile left of the rewind bar shows the newest one (dimmed after 8 s) and opens the full list, so messages never resize the window; the model description is one line with the full text on hover (one tooltip); the Derived signals text boxes are wider.
 - App: "More views…" lists only views that apply to the model; saved 3D cameras are written in short form (0.35, not 0.3499999940395355).
 - Views: `plot.time` and `plot.phase` are merged into `plot.xy` (any signals against time or each other, several curves, trail length as a scrolling window against time); "More views…" lists presets ("Plot against time", "Phase portrait", "3D trajectory"); files with the old types are converted on load (ADR 0018).
 - Block factories receive a `BlockConfig` (method plus definition lines) instead of method settings alone.

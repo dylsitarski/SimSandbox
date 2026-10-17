@@ -2,6 +2,7 @@
 //! and watch it plot live.
 
 use crate::examples::{registry, EXAMPLES};
+use crate::log::{Kind as LogKind, Log};
 use crate::pacing::Pacer;
 use crate::session::{ParamRow, Session};
 use crate::views::Views;
@@ -29,9 +30,10 @@ pub struct SimApp {
     speed: f64,
     error: Option<String>,
     /// Success messages, e.g. "Saved to …".
-    notice: Option<String>,
-    /// The notice last shown and when it appeared.
-    notice_since: (Option<String>, Instant),
+    /// Notices, warnings and errors, shown in the status tile.
+    log: Log,
+    /// The error last written to the log, so each is logged once.
+    logged_error: Option<String>,
     /// The file the open model was loaded from; Save writes back to it.
     /// `None` for built-in examples, which Save turns into Save as.
     path: Option<PathBuf>,
@@ -49,9 +51,6 @@ pub struct SimApp {
     screenshot_requested: bool,
 }
 
-/// How long a notice stays in the status line.
-const NOTICE_LASTS: std::time::Duration = std::time::Duration::from_secs(8);
-
 impl SimApp {
     pub fn new(
         path: Option<String>,
@@ -66,8 +65,8 @@ impl SimApp {
             running: false,
             speed: 1.0,
             error: None,
-            notice: None,
-            notice_since: (None, Instant::now()),
+            log: Log::default(),
+            logged_error: None,
             path: None,
             param_edits: HashMap::new(),
             editor: None,
@@ -177,11 +176,14 @@ impl SimApp {
                 self.speed = s.file.controls.speed.unwrap_or(1.0);
                 self.session = Some(s);
                 self.error = None;
-                self.notice = None;
                 self.param_edits.clear();
+                self.log.info(format!("Opened {title}"));
                 if let Some(s) = self.session.as_mut() {
                     let w = self.views.open(&s.available(), &s.file.controls.views);
                     s.warnings.extend(w);
+                    for w in &s.warnings {
+                        self.log.warn(format!("{title}: {w}"));
+                    }
                 }
                 self.rewind_t = 0.0;
                 self.pacer.reset();
@@ -222,7 +224,7 @@ impl SimApp {
             Ok(_) => {}
             Err(Stop::EndReached) => {
                 self.running = false;
-                self.notice = Some(format!(
+                self.log.info(format!(
                     "Paused at the file's end time t = {:.3} s; Run continues",
                     session.time()
                 ));
@@ -300,13 +302,9 @@ impl SimApp {
         ui.horizontal(|ui| {
             ui.heading(&session.title);
             // One line, so a long description cannot widen the window or push
-            // the toolbar down; the whole text is in the tooltip.
+            // the toolbar down; egui shows the whole text on hover when it is cut.
             if let Some(d) = &session.description {
-                ui.add(egui::Label::new(d.as_str()).truncate())
-                    .on_hover_ui(|ui| {
-                        ui.set_max_width(500.0);
-                        ui.label(d.as_str());
-                    });
+                ui.add(egui::Label::new(d.as_str()).truncate());
             }
         });
         ui.horizontal(|ui| {
@@ -405,50 +403,70 @@ impl SimApp {
         .on_hover_text("Pause and go back; running on from here starts a new branch");
     }
 
-    /// One status line of fixed height, so messages never move the rest of
-    /// the window: the error if there is one, else the latest notice (which
-    /// fades after a few seconds); load warnings sit behind a button.
-    fn messages(&mut self, ui: &mut egui::Ui) {
-        if self.notice != self.notice_since.0 {
-            self.notice_since = (self.notice.clone(), Instant::now());
-        }
-        if self.notice.is_some() && self.notice_since.1.elapsed() > NOTICE_LASTS {
-            self.notice = None;
+    /// The log tile: the newest message on one line (bright while new or
+    /// while an error stands, dim after), and a button opening the whole
+    /// log. Its size never changes, so messages never move the window.
+    fn log_tile(&mut self, ui: &mut egui::Ui, width: f32) {
+        if self.error != self.logged_error {
+            if let Some(e) = &self.error {
+                self.log.push(LogKind::Error, e.clone());
+            }
+            self.logged_error = self.error.clone();
         }
         let height = ui.spacing().interact_size.y;
-        ui.horizontal(|ui| {
-            ui.set_min_height(height);
-            ui.set_max_height(height);
-            let warnings = self.session.as_ref().map_or(&[][..], |s| &s.warnings[..]);
-            if !warnings.is_empty() {
-                ui.menu_button(
-                    egui::RichText::new(format!("{} warning(s)", warnings.len()))
-                        .color(ui.visuals().warn_fg_color),
-                    |ui| {
+        let visuals = ui.visuals().clone();
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::symmetric(4, 1))
+            .show(ui, |ui| {
+                ui.set_width(width);
+                ui.set_height(height);
+                ui.horizontal(|ui| {
+                    let unread = self.log.unread();
+                    let label = if unread > 0 {
+                        format!("Log ({unread})")
+                    } else {
+                        "Log".to_string()
+                    };
+                    let log = &mut self.log;
+                    ui.menu_button(label, |ui| {
+                        log.mark_read();
                         ui.set_max_width(600.0);
-                        for w in warnings {
-                            ui.label(w);
+                        if log.entries().is_empty() {
+                            ui.weak("No messages");
                         }
-                    },
-                )
-                .response
-                .on_hover_text("Problems found while loading; the model runs without these parts");
-            }
-            let (text, colour) = match (&self.error, &self.notice) {
-                (Some(e), _) => (e.as_str(), ui.visuals().error_fg_color),
-                (None, Some(n)) => (n.as_str(), ui.visuals().text_color()),
-                (None, None) => return,
-            };
-            ui.add(egui::Label::new(egui::RichText::new(text).color(colour)).truncate())
-                .on_hover_ui(|ui| {
-                    ui.set_max_width(600.0);
-                    ui.label(text);
+                        egui::ScrollArea::vertical()
+                            .max_height(320.0)
+                            .show(ui, |ui| {
+                                for e in log.entries().iter().rev() {
+                                    let colour = log_colour(&visuals, e.kind, true);
+                                    let ago = e.at.elapsed().as_secs();
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.weak(format!("{ago} s ago"));
+                                        ui.colored_label(colour, &e.text);
+                                    });
+                                }
+                            });
+                        if !log.entries().is_empty() && ui.button("Clear").clicked() {
+                            log.clear();
+                            ui.close();
+                        }
+                    })
+                    .response
+                    .on_hover_text("Every notice, warning and error, newest first");
+                    if let Some(e) = self.log.latest() {
+                        let standing = e.kind == LogKind::Error && self.error.is_some();
+                        let colour = log_colour(&visuals, e.kind, standing || e.is_fresh());
+                        // egui shows the whole text on hover when it is cut.
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&e.text).color(colour)).truncate(),
+                        );
+                        if e.is_fresh() {
+                            // Wake up to dim it even when nothing is running.
+                            ui.ctx().request_repaint_after(crate::log::FRESH_FOR);
+                        }
+                    }
                 });
-        });
-        if self.notice.is_some() {
-            // Wake up to hide the notice even when nothing is running.
-            ui.ctx().request_repaint_after(NOTICE_LASTS);
-        }
+            });
     }
 
     /// The model's views as tiles, each with its slot pickers, plus a "More
@@ -611,7 +629,7 @@ impl SimApp {
         match result {
             Ok(()) => {
                 self.error = None;
-                self.notice = Some(format!("Saved to {}", path.display()));
+                self.log.info(format!("Saved to {}", path.display()));
                 self.path = Some(path.to_path_buf());
             }
             Err(e) => self.error = Some(format!("{}: {e}", path.display())),
@@ -708,8 +726,8 @@ impl SimApp {
                         }
                     }
                     if row.initial_condition && session.time() > 0.0 {
-                        self.notice =
-                            Some(format!("{} changed: press Restart to apply it", row.key));
+                        self.log
+                            .info(format!("{} changed: press Restart to apply it", row.key));
                     }
                 }
                 Err(e) => self.error = Some(format!("{}: {e}", row.key)),
@@ -827,7 +845,7 @@ impl SimApp {
                 match session.set_derived(map) {
                     Ok(()) => {
                         self.signals_editor = None;
-                        self.notice = Some("Derived signals applied".into());
+                        self.log.info("Derived signals applied");
                         return;
                     }
                     Err(p) => problems = p,
@@ -887,7 +905,7 @@ impl SimApp {
                 }
                 self.running = true;
                 self.editor = None;
-                self.notice = Some("Equations applied".into());
+                self.log.info("Equations applied");
             }
         }
     }
@@ -980,8 +998,11 @@ impl eframe::App for SimApp {
         });
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.add_space(4.0);
-            self.rewind_bar(ui);
-            self.messages(ui);
+            ui.horizontal(|ui| {
+                let width = (ui.available_width() * 0.4).clamp(220.0, 480.0);
+                self.log_tile(ui, width);
+                self.rewind_bar(ui);
+            });
             ui.add_space(4.0);
         });
         if self.session.is_some() {
@@ -1001,6 +1022,20 @@ impl eframe::App for SimApp {
             ctx.request_repaint();
         }
         self.handle_screenshot(&ctx);
+    }
+}
+
+/// A log entry's colour; dimmed once it is no longer new.
+fn log_colour(visuals: &egui::Visuals, kind: LogKind, bright: bool) -> egui::Color32 {
+    let c = match kind {
+        LogKind::Info => visuals.text_color(),
+        LogKind::Warning => visuals.warn_fg_color,
+        LogKind::Error => visuals.error_fg_color,
+    };
+    if bright {
+        c
+    } else {
+        c.gamma_multiply(0.55)
     }
 }
 
