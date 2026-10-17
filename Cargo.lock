@@ -2655,8 +2655,11 @@ version = "0.0.1"
 name = "simsandbox-eq"
 version = "0.0.1"
 dependencies = [
+ "egui",
+ "egui_plot",
  "simsandbox-core",
  "simsandbox-expr",
+ "simsandbox-views",
 ]
 
 [[package]]

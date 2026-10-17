@@ -8,10 +8,22 @@
 use crate::history::{History, SignalRef, TIME};
 use std::collections::BTreeMap;
 
+/// What a slot accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotKind {
+    /// A scalar signal or `t`.
+    Scalar,
+    /// A grid field.
+    Grid,
+    /// A point set.
+    Points,
+}
+
 /// A named input of a view.
 #[derive(Debug, Clone, Copy)]
 pub struct Slot {
     pub name: &'static str,
+    pub kind: SlotKind,
     /// Takes a list of signals (e.g. the curves of a time series) rather
     /// than exactly one.
     pub many: bool,
@@ -76,6 +88,38 @@ pub trait View {
     fn set_camera(&mut self, _camera: [f64; 3]) {}
 }
 
+/// What a model offers views: its recorded signals by kind and its block
+/// types (for views that apply to particular blocks, ADR 0016).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Available<'a> {
+    pub scalars: &'a [String],
+    pub grids: &'a [String],
+    pub points: &'a [String],
+    pub block_types: &'a [String],
+}
+
+impl Available<'_> {
+    /// Whether `name` can fill a slot of this kind.
+    pub fn accepts(&self, kind: SlotKind, name: &str) -> bool {
+        match kind {
+            SlotKind::Scalar => name == TIME || self.scalars.iter().any(|s| s == name),
+            SlotKind::Grid => self.grids.iter().any(|s| s == name),
+            SlotKind::Points => self.points.iter().any(|s| s == name),
+        }
+    }
+
+    /// The names a slot of this kind can take (`t` first for scalars).
+    pub fn choices(&self, kind: SlotKind) -> Vec<&str> {
+        match kind {
+            SlotKind::Scalar => std::iter::once(TIME)
+                .chain(self.scalars.iter().map(String::as_str))
+                .collect(),
+            SlotKind::Grid => self.grids.iter().map(String::as_str).collect(),
+            SlotKind::Points => self.points.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
 /// A kind of view, registered by name.
 pub struct ViewType {
     /// Namespaced: `plot.xy`, `eq.pendulum`.
@@ -85,6 +129,9 @@ pub struct ViewType {
     pub description: &'static str,
     pub slots: &'static [Slot],
     pub style: &'static [StyleProperty],
+    /// Block types this view applies to; empty for generic views, which fit
+    /// any model whose signals fill their slots (ADR 0016).
+    pub applies_to: &'static [&'static str],
     /// Named starting bindings offered in "More views…" (ADR 0018); the
     /// first is the default.
     pub presets: &'static [Preset],
@@ -96,15 +143,26 @@ impl ViewType {
         self.slots.iter().find(|s| s.name == name)
     }
 
+    /// Whether this view applies to a model with these block types.
+    pub fn applies(&self, available: &Available<'_>) -> bool {
+        self.applies_to.is_empty()
+            || available
+                .block_types
+                .iter()
+                .any(|b| self.applies_to.contains(&b.as_str()))
+    }
+
     /// Why these bindings and style values do not fit this type, if they
-    /// do not. `signals` are the recorded signal names; `t` is always
-    /// available.
+    /// do not.
     pub fn check(
         &self,
         bind: &Bindings,
         style: &BTreeMap<String, f64>,
-        signals: &[String],
+        available: &Available<'_>,
     ) -> Result<(), String> {
+        if !self.applies(available) {
+            return Err(format!("'{}' does not apply to this model", self.name));
+        }
         for (slot, names) in bind {
             let s = self
                 .slot(slot)
@@ -115,8 +173,8 @@ impl ViewType {
                     names.len()
                 ));
             }
-            if let Some(n) = names.iter().find(|n| *n != TIME && !signals.contains(n)) {
-                return Err(format!("slot '{slot}': no plotted signal '{n}'"));
+            if let Some(n) = names.iter().find(|n| !available.accepts(s.kind, n)) {
+                return Err(format!("slot '{slot}': no suitable signal '{n}'"));
             }
         }
         if let Some(s) = self
@@ -142,9 +200,9 @@ impl ViewType {
 pub struct Preset {
     pub label: &'static str,
     pub description: &'static str,
-    /// Bindings for a model with these signals, or `None` if the preset
-    /// cannot show them (e.g. a 3D view with fewer than three signals).
-    pub bindings: fn(&[String]) -> Option<Bindings>,
+    /// Bindings for a model offering these signals, or `None` if the
+    /// preset cannot show them (e.g. a 3D view with fewer than three).
+    pub bindings: fn(&Available<'_>) -> Option<Bindings>,
 }
 
 /// View types by name.
@@ -193,9 +251,12 @@ pub struct ViewState {
 }
 
 impl ViewState {
-    /// A view of type `t` started from preset `preset` for these signals.
-    pub fn from_preset(t: &ViewType, preset: usize, signals: &[String]) -> Option<Self> {
-        let bind = (t.presets.get(preset)?.bindings)(signals)?;
+    /// A view of type `t` started from preset `preset` for a model.
+    pub fn from_preset(t: &ViewType, preset: usize, available: &Available<'_>) -> Option<Self> {
+        if !t.applies(available) {
+            return None;
+        }
+        let bind = (t.presets.get(preset)?.bindings)(available)?;
         Some(Self {
             type_name: t.name.into(),
             bind,
@@ -210,9 +271,9 @@ impl ViewState {
         bind: Bindings,
         style: BTreeMap<String, f64>,
         camera: Option<[f64; 3]>,
-        signals: &[String],
+        available: &Available<'_>,
     ) -> Result<Self, String> {
-        t.check(&bind, &style, signals)?;
+        t.check(&bind, &style, available)?;
         let mut view = (t.create)();
         if let Some(c) = camera {
             view.set_camera(c);
@@ -263,11 +324,21 @@ mod tests {
         vec!["l.xyz[0]".into(), "l.xyz[1]".into(), "l.xyz[2]".into()]
     }
 
+    fn avail(scalars: &[String]) -> Available<'_> {
+        Available {
+            scalars,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn builtin_types_register_once_with_unique_names() {
         let mut r = ViewRegistry::builtin();
         let names: Vec<_> = r.types().iter().map(|t| t.name).collect();
-        assert_eq!(names, ["plot.xy", "plot.3d"]);
+        assert_eq!(
+            names,
+            ["plot.xy", "plot.3d", "plot.heatmap", "plot.scatter"]
+        );
         assert!(crate::builtin::register(&mut r).is_err());
     }
 
@@ -276,19 +347,21 @@ mod tests {
         let r = ViewRegistry::builtin();
         let three = signals();
         let xy = r.get("plot.xy").unwrap();
-        let time = ViewState::from_preset(xy, 0, &three).unwrap();
+        let time = ViewState::from_preset(xy, 0, &avail(&three)).unwrap();
         assert_eq!(time.bind["x"], ["t"]);
         assert_eq!(time.bind["y"].len(), 3);
-        let phase = ViewState::from_preset(xy, 1, &three).unwrap();
+        let phase = ViewState::from_preset(xy, 1, &avail(&three)).unwrap();
         assert_eq!(phase.bind["x"], ["l.xyz[0]"]);
         assert_eq!(phase.bind["y"], ["l.xyz[2]"]);
         assert_eq!(phase.bind["colour"], ["t"]);
         // A phase portrait needs two signals, 3D three, a time plot one.
-        assert!(ViewState::from_preset(xy, 1, &three[..1]).is_none());
-        assert!(ViewState::from_preset(xy, 0, &three[..1]).is_some());
-        assert!(ViewState::from_preset(r.get("plot.3d").unwrap(), 0, &three[..2]).is_none());
-        assert!(ViewState::from_preset(xy, 0, &[]).is_none());
-        assert!(ViewState::from_preset(xy, 9, &three).is_none());
+        assert!(ViewState::from_preset(xy, 1, &avail(&three[..1])).is_none());
+        assert!(ViewState::from_preset(xy, 0, &avail(&three[..1])).is_some());
+        assert!(
+            ViewState::from_preset(r.get("plot.3d").unwrap(), 0, &avail(&three[..2])).is_none()
+        );
+        assert!(ViewState::from_preset(xy, 0, &avail(&[])).is_none());
+        assert!(ViewState::from_preset(xy, 9, &avail(&three)).is_none());
     }
 
     #[test]
@@ -313,16 +386,16 @@ mod tests {
             good.clone(),
             style.clone(),
             Some([1.0, 0.5, 2.0]),
-            &signals(),
+            &avail(&signals()),
         )
         .unwrap();
         assert_eq!(v.camera(), Some([1.0, 0.5, 2.0]));
 
         let missing_z = bind(&[("x", &["l.xyz[0]"]), ("y", &["l.xyz[1]"])]);
-        assert!(t3.check(&missing_z, &style, &signals()).is_err());
+        assert!(t3.check(&missing_z, &style, &avail(&signals())).is_err());
         let unknown_slot = bind(&[("w", &["l.xyz[0]"])]);
         assert!(t3
-            .check(&unknown_slot, &style, &signals())
+            .check(&unknown_slot, &style, &avail(&signals()))
             .unwrap_err()
             .contains("no slot"));
         let two_in_one = bind(&[
@@ -330,10 +403,12 @@ mod tests {
             ("y", &["l.xyz[1]"]),
             ("z", &["l.xyz[2]"]),
         ]);
-        assert!(t3.check(&two_in_one, &style, &signals()).is_err());
+        assert!(t3.check(&two_in_one, &style, &avail(&signals())).is_err());
         let unknown_signal = bind(&[("x", &["nope"]), ("y", &["l.xyz[1]"]), ("z", &["l.xyz[2]"])]);
-        assert!(t3.check(&unknown_signal, &style, &signals()).is_err());
+        assert!(t3
+            .check(&unknown_signal, &style, &avail(&signals()))
+            .is_err());
         let bad_style: BTreeMap<String, f64> = [("glow".to_string(), 1.0)].into();
-        assert!(t3.check(&good, &bad_style, &signals()).is_err());
+        assert!(t3.check(&good, &bad_style, &avail(&signals())).is_err());
     }
 }

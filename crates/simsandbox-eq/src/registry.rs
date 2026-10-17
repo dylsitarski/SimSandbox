@@ -1,9 +1,10 @@
 //! Block types of the equation domain, registered for model files.
 
+use crate::fields::{HeatRod, Orbits};
 use crate::integrators::Integrator;
 use crate::ode::OdeBlock;
 use crate::symbolic::{EquationSet, ExplicitBlock, Kind};
-use crate::systems::{CoupledOscillator, Lorenz};
+use crate::systems::{CoupledOscillator, Lorenz, Pendulum};
 use simsandbox_core::block::Block;
 use simsandbox_core::registry::{BlockConfig, Registry};
 use simsandbox_core::{Result, SimError};
@@ -13,6 +14,12 @@ pub const LORENZ: &str = "eq.lorenz";
 /// One coupled oscillator ([`CoupledOscillator`]); its initial position is a
 /// parameter (`x0`, default 0).
 pub const COUPLED_OSCILLATOR: &str = "eq.coupled_oscillator";
+/// A damped pendulum ([`Pendulum`]); it has its own view, `eq.pendulum`.
+pub const PENDULUM: &str = "eq.pendulum";
+/// Heat along a rod, a grid output ([`HeatRod`]).
+pub const HEAT_ROD: &str = "eq.heat_rod";
+/// Test particles around a central mass, a point-set output ([`Orbits`]).
+pub const ORBITS: &str = "eq.orbits";
 /// Equations typed as text ([`EquationSet`]); the definition lines are the
 /// equations.
 pub const EQUATIONS: &str = "eq.equations";
@@ -26,6 +33,18 @@ pub fn register(registry: &mut Registry) -> Result<()> {
     registry.register(COUPLED_OSCILLATOR, |name, c| {
         fixed(COUPLED_OSCILLATOR, c)?;
         ode_block(CoupledOscillator::new(name, 0.0), c)
+    })?;
+    registry.register(PENDULUM, |name, c| {
+        fixed(PENDULUM, c)?;
+        ode_block(Pendulum::new(name), c)
+    })?;
+    registry.register(HEAT_ROD, |name, c| {
+        fixed(HEAT_ROD, c)?;
+        ode_block(HeatRod::new(name), c)
+    })?;
+    registry.register(ORBITS, |name, c| {
+        fixed(ORBITS, c)?;
+        ode_block(Orbits::new(name), c)
     })?;
     registry.register(EQUATIONS, |name, c| {
         let set = EquationSet::parse(name, &c.definition)?;

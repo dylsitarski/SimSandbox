@@ -1,0 +1,60 @@
+{
+  "format": 1,
+  "description": "A damped pendulum, shown as itself by the pendulum view that comes with the eq.pendulum block (ADR 0016), next to its angle over time. Started at 2 rad it swings well beyond the small-angle range, so its period is longer than 2π√(L/g). Raise c to damp it.",
+  "run": {
+    "dt": 0.01
+  },
+  "blocks": [
+    {
+      "name": "bob",
+      "type": "eq.pendulum",
+      "method": {
+        "name": "rk4",
+        "substeps": 1.0
+      },
+      "params": {
+        "L": 1.0,
+        "c": 0.0,
+        "g": 9.81,
+        "omega0": 0.0,
+        "theta0": 2.0
+      }
+    }
+  ],
+  "controls": {
+    "params": {
+      "bob.L": {
+        "slider": true
+      },
+      "bob.c": {
+        "slider": true
+      }
+    },
+    "speed": 1.0,
+    "plots": [
+      "bob.angle",
+      "bob.omega",
+      "bob.x",
+      "bob.y"
+    ],
+    "views": [
+      {
+        "type": "eq.pendulum",
+        "bind": {
+          "x": "bob.x",
+          "y": "bob.y"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": [
+            "bob.angle",
+            "bob.omega"
+          ]
+        }
+      }
+    ]
+  }
+}

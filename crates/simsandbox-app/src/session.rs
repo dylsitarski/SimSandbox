@@ -10,7 +10,7 @@ use simsandbox_core::SimError;
 use simsandbox_expr::Expr;
 use simsandbox_file::{ModelFile, SweepControl, ViewEntry, DEFAULT_SWEEP_POINTS};
 use simsandbox_views::history::thin;
-use simsandbox_views::{History, SignalRef};
+use simsandbox_views::{Available, FieldShape, History, SignalRef};
 use std::collections::BTreeMap;
 
 /// Take a snapshot for rewind every this many steps.
@@ -24,6 +24,13 @@ struct Source {
     block: BlockId,
     port: String,
     index: usize,
+}
+
+/// A whole output port recorded as a field (a grid or a point set).
+struct FieldSource {
+    block: BlockId,
+    port: String,
+    len: usize,
 }
 
 /// One parameter as the panel shows it.
@@ -65,6 +72,13 @@ pub struct Session {
     /// Recorded signals, one per plotted output element (ADR 0015).
     pub signals: History,
     sources: Vec<Source>,
+    /// Grid and point-set outputs, recorded whole (ADR 0016).
+    field_sources: Vec<FieldSource>,
+    /// Names of the recorded grids and point sets, and the model's block
+    /// types: what views can bind besides scalars.
+    grids: Vec<String>,
+    points: Vec<String>,
+    block_types: Vec<String>,
     /// Where the app pauses (the file's `run.t_end`); cleared once reached so
     /// Run continues past it (ADR 0013).
     stop_at: Option<f64>,
@@ -92,20 +106,41 @@ impl Session {
         let loaded = simsandbox_file::load(text, registry).map_err(|e| e.to_string())?;
         let mut names = Vec::new();
         let mut sources = Vec::new();
+        let mut fields = Vec::new();
+        let mut field_sources = Vec::new();
+        let mut block_types = Vec::new();
         let plots = &loaded.file.controls.plots;
         for entry in &loaded.file.blocks {
             let id = loaded.ids[&entry.name];
-            let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
+            let block = loaded.model.block(id).map_err(|e| e.to_string())?;
+            if !block_types.contains(&entry.type_name) {
+                block_types.push(entry.type_name.clone());
+            }
+            let spec = block.spec();
             for port in spec.outputs() {
                 let key = format!("{}.{}", entry.name, port.name);
                 // Plot what the file asks for, or every output if it says nothing.
                 if !plots.is_empty() && !plots.contains(&key) {
                     continue;
                 }
+                let field = match port.shape {
+                    Shape::Grid { nx, ny } => Some(FieldShape::Grid { nx, ny }),
+                    Shape::Points { count, dim } => Some(FieldShape::Points { count, dim }),
+                    Shape::Scalar | Shape::Vector(_) => None,
+                };
+                if let Some(shape) = field {
+                    fields.push((key, shape));
+                    field_sources.push(FieldSource {
+                        block: id,
+                        port: port.name.clone(),
+                        len: port.shape.len(),
+                    });
+                    continue;
+                }
                 for index in 0..port.shape.len() {
                     names.push(match port.shape {
-                        Shape::Scalar => key.clone(),
                         Shape::Vector(_) => format!("{key}[{index}]"),
+                        _ => key.clone(),
                     });
                     sources.push(Source {
                         block: id,
@@ -139,10 +174,17 @@ impl Session {
             .cloned()
             .chain(derived.iter().map(|d| d.name.clone()))
             .collect();
-        let signals = match &sweep {
-            Some(sw) => History::with_index(&sw.key, all_names),
-            None => History::new(all_names),
+        let field_names = |want: fn(&FieldShape) -> bool| -> Vec<String> {
+            fields
+                .iter()
+                .filter(|(_, s)| want(s))
+                .map(|(n, _)| n.clone())
+                .collect()
         };
+        let grids = field_names(|s| matches!(s, FieldShape::Grid { .. }));
+        let points = field_names(|s| matches!(s, FieldShape::Points { .. }));
+        let index = sweep.as_ref().map_or("t", |sw| sw.key.as_str());
+        let signals = History::with_fields(index, all_names, fields);
         let mut session = Self {
             title: title.into(),
             description: loaded.file.description.clone(),
@@ -153,6 +195,10 @@ impl Session {
             warnings,
             signals,
             sources,
+            field_sources,
+            grids,
+            points,
+            block_types,
             snapshots: vec![sim.snapshot()],
             sim,
             steps_since_snapshot: 0,
@@ -166,6 +212,17 @@ impl Session {
             session.record();
         }
         Ok(session)
+    }
+
+    /// What views can bind: the scalar signals, grids, point sets and the
+    /// model's block types.
+    pub fn available(&self) -> Available<'_> {
+        Available {
+            scalars: self.signals.names(),
+            grids: &self.grids,
+            points: &self.points,
+            block_types: &self.block_types,
+        }
     }
 
     pub fn time(&self) -> f64 {
@@ -319,7 +376,8 @@ impl Session {
             range,
             points: points.clamp(2, 100_000),
         };
-        self.signals = History::with_index(key, self.signals.names().to_vec());
+        self.signals =
+            History::with_fields(key, self.signals.names().to_vec(), self.field_shapes());
         self.recompute_sweep();
         Ok(())
     }
@@ -343,7 +401,8 @@ impl Session {
                 continue;
             }
             let values = self.sample(v);
-            self.signals.push(v, &values);
+            let frames = frames(&self.sim, &self.field_sources);
+            self.signals.push_sample(v, &values, &frames);
         }
         // Leave the model as the panel shows it.
         let _ = self.sim.set_param(sw.block, &sw.param, original);
@@ -373,7 +432,16 @@ impl Session {
     fn record(&mut self) {
         let t = self.sim.time();
         let values = self.sample(t);
-        self.signals.push(t, &values);
+        let frames = frames(&self.sim, &self.field_sources);
+        self.signals.push_sample(t, &values, &frames);
+    }
+
+    fn field_shapes(&self) -> Vec<(String, FieldShape)> {
+        self.signals
+            .fields()
+            .iter()
+            .map(|f| (f.name.clone(), f.shape))
+            .collect()
     }
 
     /// One sample: the output signals, then the derived signals computed
@@ -422,6 +490,7 @@ impl Session {
         if !problems.is_empty() {
             return Err(problems);
         }
+        let shapes = self.field_shapes();
         let old = std::mem::replace(&mut self.signals, History::with_index("", Vec::new()));
         self.derived = compiled;
         self.derived_text = map;
@@ -430,14 +499,15 @@ impl Session {
             .cloned()
             .chain(self.derived.iter().map(|d| d.name.clone()))
             .collect();
-        self.signals = History::with_index(old.index(), names);
+        self.signals = History::with_fields(old.index(), names, shapes);
         for k in 0..old.len() {
             let t = old.times()[k];
             let mut values: Vec<f64> = (0..outputs.len())
                 .map(|i| old.value(SignalRef::Signal(i), k))
                 .collect();
             self.append_derived(t, &mut values);
-            self.signals.push(t, &values);
+            let frames: Vec<&[f64]> = old.fields().iter().map(|f| f.frame(k)).collect();
+            self.signals.push_sample(t, &values, &frames);
         }
         Ok(())
     }
@@ -454,6 +524,19 @@ impl Session {
             })
             .collect()
     }
+}
+
+/// The current value of every recorded field (empty if missing, which the
+/// history records as NaN).
+fn frames<'a>(sim: &'a Simulator, sources: &[FieldSource]) -> Vec<&'a [f64]> {
+    sources
+        .iter()
+        .map(|f| {
+            sim.output(f.block, &f.port)
+                .filter(|v| v.len() == f.len)
+                .unwrap_or(&[])
+        })
+        .collect()
 }
 
 /// Every parameter as `"block.param"`, in the order [`Session::params`]
@@ -773,6 +856,46 @@ mod tests {
         assert!(s.signals.resolve("ax2").is_some());
         let saved = s.save_json(1.0, None).unwrap();
         assert!(saved.contains("\"ax2\": \"a.x^2 + 0*t\""));
+    }
+
+    #[test]
+    fn field_outputs_are_recorded_whole_and_offered_to_views() {
+        let mut s = example("rod");
+        let a = s.available();
+        assert!(a.scalars.is_empty());
+        assert_eq!(a.grids, ["rod.temperature"]);
+        assert_eq!(a.block_types, ["eq.heat_rod"]);
+        for _ in 0..20 {
+            s.step().unwrap();
+        }
+        assert_eq!(s.signals.len(), 21);
+        assert_eq!(s.signals.fields()[0].frame(20).len(), 50);
+        // The hot spot cools.
+        let peak = |k: usize| {
+            s.signals.fields()[0]
+                .frame(k)
+                .iter()
+                .cloned()
+                .fold(0.0, f64::max)
+        };
+        assert!(peak(20) < peak(0));
+
+        // Rewind and derived signals keep the frames in step with the times.
+        s.rewind_to(0.5);
+        let frames = |s: &Session| -> Vec<Vec<f64>> {
+            (0..s.signals.len())
+                .map(|k| s.signals.fields()[0].frame(k).to_vec())
+                .collect()
+        };
+        let before = frames(&s);
+        assert_eq!(before.len(), 11);
+        s.set_derived([("one".to_string(), "1 + 0*t".to_string())].into())
+            .unwrap();
+        assert_eq!(frames(&s), before);
+
+        let s = example("Orbiting");
+        assert_eq!(s.available().points, ["disc.positions"]);
+        assert_eq!(s.signals.fields()[0].frame(0).len(), 400);
     }
 
     #[test]

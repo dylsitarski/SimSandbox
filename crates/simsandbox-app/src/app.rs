@@ -8,7 +8,7 @@ use crate::views::Views;
 use eframe::egui;
 use simsandbox_core::registry::Registry;
 use simsandbox_core::SimError;
-use simsandbox_views::{ViewRegistry, ViewState, ViewType};
+use simsandbox_views::{Available, ViewState, ViewType};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -67,7 +67,7 @@ impl SimApp {
             signals_editor: None,
             last_frame: None,
             rewind_t: 0.0,
-            views: Views::new(ViewRegistry::builtin()),
+            views: Views::new(crate::examples::view_registry()),
             started: Instant::now(),
             screenshot,
             screenshot_requested: false,
@@ -85,7 +85,7 @@ impl SimApp {
                 "3d" => ("plot.3d", 0),
                 _ => ("plot.xy", 0),
             };
-            app.views.show_only(name, preset, session.signals.names());
+            app.views.show_only(name, preset, &session.available());
         }
         app
     }
@@ -159,7 +159,7 @@ impl SimApp {
                 self.notice = None;
                 self.param_edits.clear();
                 if let Some(s) = self.session.as_mut() {
-                    let w = self.views.open(s.signals.names(), &s.file.controls.views);
+                    let w = self.views.open(&s.available(), &s.file.controls.views);
                     s.warnings.extend(w);
                 }
                 self.rewind_t = 0.0;
@@ -399,7 +399,7 @@ impl SimApp {
             ui.centered_and_justified(|ui| ui.label("Open an example or a model file."));
             return;
         };
-        let signals = session.signals.names().to_vec();
+        let available = session.available();
         let views = &mut self.views;
         ui.horizontal(|ui| {
             ui.menu_button("More views…", |ui| {
@@ -407,6 +407,8 @@ impl SimApp {
                     .registry
                     .types()
                     .iter()
+                    // Views for other kinds of blocks are not offered at all.
+                    .filter(|t| t.applies(&available))
                     .flat_map(|t| {
                         t.presets
                             .iter()
@@ -415,13 +417,13 @@ impl SimApp {
                     })
                     .collect();
                 for (name, k, label, description) in presets {
-                    let fits = views.fits(name, k, &signals);
+                    let fits = views.fits(name, k, &available);
                     let r = ui
                         .add_enabled(fits, egui::Button::new(label))
                         .on_hover_text(description)
-                        .on_disabled_hover_text("This model has too few signals for it");
+                        .on_disabled_hover_text("This model records nothing this view can show");
                     if r.clicked() {
-                        views.add(name, k, &signals);
+                        views.add(name, k, &available);
                         ui.close();
                     }
                 }
@@ -496,7 +498,7 @@ impl SimApp {
                                 },
                             );
                         });
-                        slot_editors(ui, t, &mut tile.state, &signals, session.signals.index());
+                        slot_editors(ui, t, &mut tile.state, &available, session.signals.index());
                         tile.state.show(ui, t, &session.signals);
                     });
             });
@@ -1114,7 +1116,7 @@ fn slot_editors(
     ui: &mut egui::Ui,
     t: &ViewType,
     state: &mut ViewState,
-    signals: &[String],
+    available: &Available<'_>,
     index: &str,
 ) {
     let gap = ui.spacing().item_spacing.x;
@@ -1122,7 +1124,7 @@ fn slot_editors(
     for row in t.slots.chunks(per_row) {
         ui.horizontal(|ui| {
             for slot in row {
-                slot_editor(ui, t.name, slot, state, signals, index);
+                slot_editor(ui, t.name, slot, state, available, index);
             }
         });
     }
@@ -1133,9 +1135,10 @@ fn slot_editor(
     type_name: &str,
     slot: &simsandbox_views::view::Slot,
     state: &mut ViewState,
-    signals: &[String],
+    available: &Available<'_>,
     index: &str,
 ) {
+    let choices = available.choices(slot.kind);
     let current = state.bind.get(slot.name).cloned().unwrap_or_default();
     // "t" is stored, but shown as what it is: time, or the swept parameter.
     let display = |s: &str| {
@@ -1151,19 +1154,27 @@ fn slot_editor(
             many => format!("{}: {} signals", slot.name, many.len()),
         };
         ui.menu_button(label, |ui| {
-            for s in signals {
-                let mut on = current.contains(s);
+            // Lists take recorded signals; time is the index, not a curve.
+            let signals: Vec<&str> = choices.iter().copied().filter(|&s| s != "t").collect();
+            for &s in &signals {
+                let mut on = current.iter().any(|c| c == s);
                 // A required slot keeps at least one signal.
                 let locked = on && slot.required && current.len() == 1;
                 if ui
-                    .add_enabled(!locked, egui::Checkbox::new(&mut on, s.as_str()))
+                    .add_enabled(!locked, egui::Checkbox::new(&mut on, s))
                     .changed()
                 {
                     // Keep the recorded order, so colours stay stable.
                     let next: Vec<String> = signals
                         .iter()
-                        .filter(|x| if *x == s { on } else { current.contains(x) })
-                        .cloned()
+                        .filter(|&&x| {
+                            if x == s {
+                                on
+                            } else {
+                                current.iter().any(|c| c == x)
+                            }
+                        })
+                        .map(|x| x.to_string())
                         .collect();
                     state.bind.insert(slot.name.into(), next);
                 }
@@ -1181,7 +1192,7 @@ fn slot_editor(
                 if !slot.required && ui.selectable_label(current.is_empty(), "none").clicked() {
                     state.bind.remove(slot.name);
                 }
-                for s in std::iter::once("t").chain(signals.iter().map(String::as_str)) {
+                for &s in &choices {
                     if ui.selectable_label(shown == s, display(s)).clicked() {
                         state.bind.insert(slot.name.into(), vec![s.into()]);
                     }

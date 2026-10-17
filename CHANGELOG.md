@@ -28,9 +28,13 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Typed equations (ADR 0017): `simsandbox-expr` crate; `eq.equations` block type turning lines like `dx/dt = sigma*(y - x)` into a model with parameters, initial values and computed outputs; `equations` in model files; "New model…" and "Edit equations…" in the app; predator–prey example.
 - Typed models without time (ADR 0021): discrete maps `x[n+1] = …` (method `iterate`), formula-only blocks (method `evaluate`), and parameter sweeps for models with no states (`controls.sweep`); logistic-map and resonance examples.
 - Derived signals (`controls.signals`): expressions over plotted signals, parameters and `t`, edited in a "Signals…" window and plotted like any signal; the coupled-oscillator example plots its total energy.
+- Grid and point-set port shapes (`Shape::Grid`, `Shape::Points`), recorded whole; `plot.heatmap` (a line of cells over time, or a 2D grid) and `plot.scatter` (a point set) views.
+- Block types `eq.heat_rod` (heat along a rod, a grid), `eq.orbits` (test particles around a central mass, a point set) and `eq.pendulum` (a damped pendulum) with heat-rod, orbits and pendulum examples.
+- The first domain view, `eq.pendulum`, drawing the rod and bob; it is offered only for models with a pendulum. Domains register views with `simsandbox_eq::register_views` behind the `views` feature.
 
 ### Changed
 
+- App: "More views…" lists only views that apply to the model; saved 3D cameras are written in short form (0.35, not 0.3499999940395355).
 - Views: `plot.time` and `plot.phase` are merged into `plot.xy` (any signals against time or each other, several curves, trail length as a scrolling window against time); "More views…" lists presets ("Plot against time", "Phase portrait", "3D trajectory"); files with the old types are converted on load (ADR 0018).
 - Block factories receive a `BlockConfig` (method plus definition lines) instead of method settings alone.
 - App: the view selector buttons are replaced by tiles and "More views…"; `--view` opens only that view.

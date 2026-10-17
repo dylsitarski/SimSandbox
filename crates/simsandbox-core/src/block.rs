@@ -85,6 +85,17 @@ pub enum Causality {
 pub enum Shape {
     Scalar,
     Vector(usize),
+    /// A field on a regular grid, `nx` by `ny` values, stored row by row
+    /// (`ny` = 1 for a line of cells). Views show it as a whole (ADR 0015).
+    Grid {
+        nx: usize,
+        ny: usize,
+    },
+    /// `count` points of `dim` coordinates each, stored point by point.
+    Points {
+        count: usize,
+        dim: usize,
+    },
 }
 
 impl Shape {
@@ -92,7 +103,15 @@ impl Shape {
         match self {
             Shape::Scalar => 1,
             Shape::Vector(n) => *n,
+            Shape::Grid { nx, ny } => nx * ny,
+            Shape::Points { count, dim } => count * dim,
         }
+    }
+
+    /// Fields and point sets are recorded and shown as a whole, not as one
+    /// signal per element.
+    pub fn is_field(&self) -> bool {
+        matches!(self, Shape::Grid { .. } | Shape::Points { .. })
     }
 
     pub fn is_empty(&self) -> bool {

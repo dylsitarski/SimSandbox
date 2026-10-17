@@ -1,0 +1,43 @@
+{
+  "format": 1,
+  "description": "200 test particles orbiting a central mass (a point set). Started slower than a circular orbit, each follows an ellipse that turns at its own rate, so the disc winds into spirals. Set speed to 1 for circular orbits, which keep their radius.",
+  "run": {
+    "dt": 0.01
+  },
+  "blocks": [
+    {
+      "name": "disc",
+      "type": "eq.orbits",
+      "method": {
+        "name": "rk4",
+        "substeps": 2.0
+      },
+      "params": {
+        "GM": 1.0,
+        "eps": 0.05,
+        "r_max": 2.0,
+        "r_min": 0.5,
+        "speed": 0.8
+      }
+    }
+  ],
+  "controls": {
+    "params": {
+      "disc.GM": {
+        "slider": true
+      },
+      "disc.speed": {
+        "slider": true
+      }
+    },
+    "speed": 1.0,
+    "views": [
+      {
+        "type": "plot.scatter",
+        "bind": {
+          "points": "disc.positions"
+        }
+      }
+    ]
+  }
+}

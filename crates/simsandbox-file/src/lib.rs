@@ -726,6 +726,8 @@ fn output_element_exists(key: &str, model: &Model, ids: &BTreeMap<String, BlockI
                 && match (p.shape, index) {
                     (Shape::Scalar, None) => true,
                     (Shape::Vector(n), Some(i)) => i < n,
+                    // Fields and point sets are bound as a whole.
+                    (Shape::Grid { .. } | Shape::Points { .. }, None) => true,
                     _ => false,
                 }
         })

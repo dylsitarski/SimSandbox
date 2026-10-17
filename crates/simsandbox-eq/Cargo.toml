@@ -11,6 +11,15 @@ authors.workspace = true
 [dependencies]
 simsandbox-core = { path = "../simsandbox-core" }
 simsandbox-expr = { path = "../simsandbox-expr" }
+# The `views` feature: the domain's views (ADR 0016). They need egui, and so
+# Rust 1.95 like simsandbox-views; without the feature the domain has no GUI
+# dependency.
+simsandbox-views = { path = "../simsandbox-views", optional = true }
+egui = { version = "=0.36.2", default-features = false, optional = true }
+egui_plot = { version = "=0.37.0", optional = true }
+
+[features]
+views = ["dep:simsandbox-views", "dep:egui", "dep:egui_plot"]
 
 [lints]
 workspace = true

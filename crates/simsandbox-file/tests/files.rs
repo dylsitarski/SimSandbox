@@ -12,6 +12,9 @@ const OSCILLATORS: &str = include_str!("../../../examples/coupled-oscillators.ss
 const PREDATOR_PREY: &str = include_str!("../../../examples/predator-prey.ssbx.json");
 const LOGISTIC: &str = include_str!("../../../examples/logistic-map.ssbx.json");
 const RESONANCE: &str = include_str!("../../../examples/resonance.ssbx.json");
+const HEAT_ROD: &str = include_str!("../../../examples/heat-rod.ssbx.json");
+const ORBITS: &str = include_str!("../../../examples/orbits.ssbx.json");
+const PENDULUM: &str = include_str!("../../../examples/pendulum.ssbx.json");
 
 fn registry() -> Registry {
     let mut r = Registry::new();
@@ -29,7 +32,16 @@ fn invalid_path(text: &str) -> String {
 
 #[test]
 fn examples_load_without_warnings() {
-    for text in [LORENZ, OSCILLATORS, PREDATOR_PREY, LOGISTIC, RESONANCE] {
+    for text in [
+        LORENZ,
+        OSCILLATORS,
+        PREDATOR_PREY,
+        LOGISTIC,
+        RESONANCE,
+        HEAT_ROD,
+        ORBITS,
+        PENDULUM,
+    ] {
         let loaded = load(text, &registry()).unwrap();
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
         Simulator::new(loaded.model, 0.0).unwrap();
@@ -38,7 +50,16 @@ fn examples_load_without_warnings() {
 
 #[test]
 fn examples_are_written_exactly_as_saved() {
-    for text in [LORENZ, OSCILLATORS, PREDATOR_PREY, LOGISTIC, RESONANCE] {
+    for text in [
+        LORENZ,
+        OSCILLATORS,
+        PREDATOR_PREY,
+        LOGISTIC,
+        RESONANCE,
+        HEAT_ROD,
+        ORBITS,
+        PENDULUM,
+    ] {
         let (file, _) = ModelFile::from_json(text).unwrap();
         assert_eq!(file.to_json(), text);
     }
