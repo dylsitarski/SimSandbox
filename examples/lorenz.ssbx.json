@@ -53,6 +53,16 @@
           "pitch": 0.35,
           "zoom": 1.0
         }
+      },
+      {
+        "type": "plot.time",
+        "bind": {
+          "y": [
+            "lorenz.xyz[0]",
+            "lorenz.xyz[1]",
+            "lorenz.xyz[2]"
+          ]
+        }
       }
     ]
   }

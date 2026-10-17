@@ -271,14 +271,22 @@ fn views_are_validated_leniently() {
     assert_eq!(v.type_name, "plot.3d");
     assert_eq!(v.bind["colour"], Binding::One("t".into()));
 
-    for (from, to) in [
-        (r#""lorenz.xyz[2]""#, r#""lorenz.xyz[3]""#),
-        (r#""lorenz.xyz[2]""#, r#""lorenz.xyz""#),
-        (r#""colour": "t""#, r#""colour": "time""#),
+    let views_before = loaded.file.controls.views.len();
+    // (replacement, views dropped): both Lorenz views use xyz[2]; only the
+    // 3D view has a colour slot.
+    for (from, to, dropped) in [
+        (r#""lorenz.xyz[2]""#, r#""lorenz.xyz[3]""#, 2),
+        (r#""lorenz.xyz[2]""#, r#""lorenz.xyz""#, 2),
+        (r#""colour": "t""#, r#""colour": "time""#, 1),
     ] {
         let loaded = load(&LORENZ.replace(from, to), &registry()).unwrap();
-        assert_eq!(loaded.warnings.len(), 1, "{to}: {:?}", loaded.warnings);
-        assert!(loaded.file.controls.views.is_empty());
+        assert_eq!(
+            loaded.warnings.len(),
+            dropped,
+            "{to}: {:?}",
+            loaded.warnings
+        );
+        assert_eq!(loaded.file.controls.views.len(), views_before - dropped);
         // The rest of controls survives a bad view.
         assert!(loaded.file.controls.params["lorenz.rho"].slider);
     }
@@ -290,8 +298,8 @@ fn views_are_validated_leniently() {
 
     // Slots that take several signals use a list; scalar outputs have no index.
     let osc = OSCILLATORS.replace(
-        r#""speed": 1.0,"#,
-        r#""speed": 1.0, "views": [{"type": "plot.time", "bind": {"y": ["a.x", "b.x"]}, "style": {"w": 2.0}}],"#,
+        r#""type": "plot.time","#,
+        r#""type": "plot.time", "style": {"w": 2.0},"#,
     );
     let loaded = load(&osc, &registry()).unwrap();
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
@@ -302,11 +310,21 @@ fn views_are_validated_leniently() {
 
 #[test]
 fn the_single_view_of_adr_0014_is_converted() {
-    let legacy = OSCILLATORS.replace(
-        r#""speed": 1.0,"#,
-        r#""speed": 1.0, "view": {"kind": "phase", "axes": ["a.x", "b.x"]},"#,
-    );
-    let loaded = load(&legacy, &registry()).unwrap();
+    let with_view = |view: &str| {
+        format!(
+            r#"{{"format": 1, "blocks": [
+              {{"name": "a", "type": "eq.coupled_oscillator", "method": {{"name": "rk4"}}}},
+              {{"name": "b", "type": "eq.coupled_oscillator", "method": {{"name": "rk4"}}}}
+            ], "connections": [
+              {{"from": "a.x", "to": "b.neighbor_x"}}, {{"from": "b.x", "to": "a.neighbor_x"}}
+            ], "controls": {{"view": {view}}}}}"#
+        )
+    };
+    let loaded = load(
+        &with_view(r#"{"kind": "phase", "axes": ["a.x", "b.x"]}"#),
+        &registry(),
+    )
+    .unwrap();
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     let c = &loaded.file.controls;
     assert!(c.view.is_none());
@@ -318,11 +336,15 @@ fn the_single_view_of_adr_0014_is_converted() {
     let saved = loaded.file.to_json();
     assert!(saved.contains("\"views\"") && !saved.contains("\"view\""));
 
-    let bad = OSCILLATORS.replace(
+    let bad = load(&with_view(r#"{"kind": "4d", "axes": []}"#), &registry()).unwrap();
+    assert_eq!(bad.warnings.len(), 1);
+    assert!(bad.file.controls.views.is_empty());
+
+    // When a file has both, `views` wins.
+    let both = OSCILLATORS.replace(
         r#""speed": 1.0,"#,
-        r#""speed": 1.0, "view": {"kind": "4d", "axes": []},"#,
+        r#""speed": 1.0, "view": {"kind": "time", "axes": []},"#,
     );
-    let loaded = load(&bad, &registry()).unwrap();
-    assert_eq!(loaded.warnings.len(), 1);
-    assert!(loaded.file.controls.views.is_empty());
+    let loaded = load(&both, &registry()).unwrap();
+    assert_eq!(loaded.file.controls.views.len(), 2);
 }

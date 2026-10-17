@@ -49,6 +49,25 @@
     "plots": [
       "a.x",
       "b.x"
+    ],
+    "views": [
+      {
+        "type": "plot.time",
+        "bind": {
+          "y": [
+            "a.x",
+            "b.x"
+          ]
+        }
+      },
+      {
+        "type": "plot.phase",
+        "bind": {
+          "colour": "t",
+          "x": "a.x",
+          "y": "b.x"
+        }
+      }
     ]
   }
 }

@@ -85,6 +85,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0013-run-section.md](decisions/0013-run-section.md) | Decision record | Run settings are saved in a `run` section |
 | [decisions/0014-view-in-controls.md](decisions/0014-view-in-controls.md) | Decision record | The opening view is saved in `controls` |
 | [decisions/0015-pluggable-views.md](decisions/0015-pluggable-views.md) | Decision record | Pluggable views with slots; which style options to expose |
+| [decisions/0016-model-curated-views.md](decisions/0016-model-curated-views.md) | Decision record | Models choose the views shown; "More views…" for the rest |
 
 ### Guides
 

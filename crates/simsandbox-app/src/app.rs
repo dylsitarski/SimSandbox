@@ -79,7 +79,7 @@ impl SimApp {
                 "3d" => "plot.3d",
                 _ => "plot.time",
             };
-            app.views.select(name, session.signals.names());
+            app.views.show_only(name, session.signals.names());
         }
         app
     }
@@ -363,7 +363,8 @@ impl SimApp {
         }
     }
 
-    /// The view selector, the active view's slot bindings, and the view.
+    /// The model's views as tiles, each with its slot pickers, plus a "More
+    /// views…" menu for any other view that fits (ADR 0016).
     fn plot(&mut self, ui: &mut egui::Ui) {
         let Some(session) = &self.session else {
             ui.centered_and_justified(|ui| ui.label("Open an example or a model file."));
@@ -371,40 +372,104 @@ impl SimApp {
         };
         let signals = session.signals.names().to_vec();
         let views = &mut self.views;
-        ui.horizontal_wrapped(|ui| {
-            let active = views.active_name().map(str::to_string);
-            let types: Vec<_> = views
-                .registry
-                .types()
-                .iter()
-                .map(|t| (t.name, t.label, t.description))
-                .collect();
-            for (name, label, description) in types {
-                let on = active.as_deref() == Some(name);
-                let r = ui
-                    .add_enabled_ui(views.available(name, &signals), |ui| {
-                        ui.selectable_label(on, label)
-                    })
-                    .inner
-                    .on_hover_text(description);
-                if r.clicked() {
-                    views.select(name, &signals);
+        ui.horizontal(|ui| {
+            ui.menu_button("More views…", |ui| {
+                let types: Vec<_> = views
+                    .registry
+                    .types()
+                    .iter()
+                    .map(|t| (t.name, t.label, t.description))
+                    .collect();
+                for (name, label, description) in types {
+                    let fits = views.fits(name, &signals);
+                    let r = ui
+                        .add_enabled(fits, egui::Button::new(label))
+                        .on_hover_text(description)
+                        .on_disabled_hover_text("This model has too few signals for it");
+                    if r.clicked() {
+                        views.add(name, &signals);
+                        ui.close();
+                    }
                 }
-            }
-            ui.separator();
-            if let Some((t, state)) = views.active_mut() {
-                slot_editors(ui, t, state, &signals);
-            }
+            })
+            .response
+            .on_hover_text("Add another view of this model");
+            ui.weak("Click a view's name to edit its style in the side panel");
         });
-        if let Some((t, state)) = views.active_mut() {
-            state.show(ui, t, &session.signals);
+
+        let area = ui.available_rect_before_wrap();
+        let (cols, rows) = crate::views::grid(views.tiles.len());
+        let mut close = None;
+        let mut select = None;
+        for (k, tile) in views.tiles.iter_mut().enumerate() {
+            let Some(t) = views.registry.get(&tile.state.type_name) else {
+                continue;
+            };
+            let (c, r) = (k % cols, k / cols);
+            let w = area.width() / cols as f32;
+            let h = area.height() / rows as f32;
+            let cell = egui::Rect::from_min_size(
+                area.min + egui::vec2(c as f32 * w, r as f32 * h),
+                egui::vec2(w, h),
+            )
+            .shrink(3.0);
+            let selected = views.selected == Some(tile.id);
+            let builder = egui::UiBuilder::new()
+                .id_salt(("tile", tile.id))
+                .max_rect(cell);
+            ui.scope_builder(builder, |ui| {
+                let stroke = if selected {
+                    ui.visuals().selection.stroke
+                } else {
+                    ui.visuals().widgets.noninteractive.bg_stroke
+                };
+                egui::Frame::group(ui.style())
+                    .stroke(stroke)
+                    .show(ui, |ui| {
+                        ui.set_min_size(ui.available_size());
+                        ui.horizontal(|ui| {
+                            if ui
+                                .selectable_label(selected, egui::RichText::new(t.label).strong())
+                                .on_hover_text(t.description)
+                                .clicked()
+                            {
+                                select = Some(tile.id);
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button("×")
+                                        .on_hover_text("Close this view")
+                                        .clicked()
+                                    {
+                                        close = Some(tile.id);
+                                    }
+                                },
+                            );
+                        });
+                        slot_editors(ui, t, &mut tile.state, &signals);
+                        tile.state.show(ui, t, &session.signals);
+                    });
+            });
+        }
+        ui.allocate_rect(area, egui::Sense::hover());
+        if let Some(id) = select {
+            views.selected = Some(id);
+        }
+        if let Some(id) = close {
+            views.close(id);
+        }
+        if views.tiles.is_empty() {
+            ui.centered_and_justified(|ui| ui.label("No views: add one from \"More views…\"."));
         }
     }
 
-    /// Style properties of the active view, edited like parameters
+    /// Style properties of the selected view, edited like parameters
     /// (ADR 0015).
     fn style_panel(&mut self, ui: &mut egui::Ui) {
-        let Some((t, state)) = self.views.active_mut() else {
+        let tile = self.views.selected.unwrap_or_default();
+        let Some((t, state)) = self.views.selected_mut() else {
             return;
         };
         if t.style.is_empty() {
@@ -421,7 +486,7 @@ impl SimApp {
                         "{}\nSuggested range: {} to {}",
                         p.description, p.suggested[0], p.suggested[1]
                     ));
-                    let key = format!("style.{}.{}", t.name, p.name);
+                    let key = format!("style.{tile}.{}", p.name);
                     let value = state.style_value(p);
                     if let Some(v) =
                         number_entry(ui, &key, value, &mut self.param_edits, &mut self.error)
@@ -711,50 +776,72 @@ fn number_entry(
     }
 }
 
-/// Pickers for the active view's slots: a menu of checkboxes for slots that
-/// take several signals, a combo box otherwise (with "none" when optional).
+/// Width of one slot picker; pickers are laid out in rows of as many as
+/// fit the tile.
+const SLOT_WIDTH: f32 = 150.0;
+
+/// Pickers for a view's slots: a menu of checkboxes for slots that take
+/// several signals, a combo box otherwise (with "none" when optional).
 fn slot_editors(ui: &mut egui::Ui, t: &ViewType, state: &mut ViewState, signals: &[String]) {
-    for slot in t.slots {
-        let current = state.bind.get(slot.name).cloned().unwrap_or_default();
-        if slot.many {
-            ui.menu_button(format!("{}: {} signals", slot.name, current.len()), |ui| {
-                for s in signals {
-                    let mut on = current.contains(s);
-                    // A required slot keeps at least one signal.
-                    let locked = on && slot.required && current.len() == 1;
-                    if ui
-                        .add_enabled(!locked, egui::Checkbox::new(&mut on, s.as_str()))
-                        .changed()
-                    {
-                        // Keep the recorded order, so colours stay stable.
-                        let next: Vec<String> = signals
-                            .iter()
-                            .filter(|x| if *x == s { on } else { current.contains(x) })
-                            .cloned()
-                            .collect();
-                        state.bind.insert(slot.name.into(), next);
+    let gap = ui.spacing().item_spacing.x;
+    let per_row = (((ui.available_width() + gap) / (SLOT_WIDTH + gap)).floor() as usize).max(1);
+    for row in t.slots.chunks(per_row) {
+        ui.horizontal(|ui| {
+            for slot in row {
+                slot_editor(ui, t.name, slot, state, signals);
+            }
+        });
+    }
+}
+
+fn slot_editor(
+    ui: &mut egui::Ui,
+    type_name: &str,
+    slot: &simsandbox_views::view::Slot,
+    state: &mut ViewState,
+    signals: &[String],
+) {
+    let current = state.bind.get(slot.name).cloned().unwrap_or_default();
+    if slot.many {
+        ui.menu_button(format!("{}: {} signals", slot.name, current.len()), |ui| {
+            for s in signals {
+                let mut on = current.contains(s);
+                // A required slot keeps at least one signal.
+                let locked = on && slot.required && current.len() == 1;
+                if ui
+                    .add_enabled(!locked, egui::Checkbox::new(&mut on, s.as_str()))
+                    .changed()
+                {
+                    // Keep the recorded order, so colours stay stable.
+                    let next: Vec<String> = signals
+                        .iter()
+                        .filter(|x| if *x == s { on } else { current.contains(x) })
+                        .cloned()
+                        .collect();
+                    state.bind.insert(slot.name.into(), next);
+                }
+            }
+        })
+        .response
+        .on_hover_text(slot.description);
+    } else {
+        let shown = current.first().map_or("none", String::as_str);
+        egui::ComboBox::from_id_salt(("slot", type_name, slot.name))
+            .width(SLOT_WIDTH - 20.0)
+            .truncate()
+            .selected_text(format!("{}: {shown}", slot.name))
+            .show_ui(ui, |ui| {
+                if !slot.required && ui.selectable_label(current.is_empty(), "none").clicked() {
+                    state.bind.remove(slot.name);
+                }
+                for s in std::iter::once("t").chain(signals.iter().map(String::as_str)) {
+                    if ui.selectable_label(shown == s, s).clicked() {
+                        state.bind.insert(slot.name.into(), vec![s.into()]);
                     }
                 }
             })
             .response
             .on_hover_text(slot.description);
-        } else {
-            let shown = current.first().map_or("none", String::as_str);
-            egui::ComboBox::from_id_salt(("slot", t.name, slot.name))
-                .selected_text(format!("{}: {shown}", slot.name))
-                .show_ui(ui, |ui| {
-                    if !slot.required && ui.selectable_label(current.is_empty(), "none").clicked() {
-                        state.bind.remove(slot.name);
-                    }
-                    for s in std::iter::once("t").chain(signals.iter().map(String::as_str)) {
-                        if ui.selectable_label(shown == s, s).clicked() {
-                            state.bind.insert(slot.name.into(), vec![s.into()]);
-                        }
-                    }
-                })
-                .response
-                .on_hover_text(slot.description);
-        }
     }
 }
 
@@ -878,7 +965,7 @@ mod tests {
         let mut reopened = SimApp::new(Some(path.to_string_lossy().into_owned()), None, None);
         assert_eq!(reopened.error, None);
         assert_eq!(reopened.path.as_deref(), Some(path.as_path()));
-        assert_eq!(reopened.views.active_name(), Some("plot.3d"));
+        assert_eq!(reopened.views.tiles[0].state.type_name, "plot.3d");
 
         // A failed open keeps the previous file as the save target.
         reopened.open_path(&dir.join("missing.ssbx.json").to_string_lossy());

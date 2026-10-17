@@ -15,6 +15,7 @@
 - Added native Open, Save and Save as dialogs (`rfd`, XDG portal backend on Linux, so no GTK build dependency) and keyboard shortcuts; the path field is gone. 54 tests.
 - Pluggable views steps 1–2: `simsandbox-views` (history, view contract and registry, colour encodings, built-in views), `controls.views` with conversion of the older `view`, slot pickers, colour slot, `trail_length`. Verified with screenshots of all three views and a 3 s trail. 63 tests.
 - 2026-10-17: `trail_length` 0 now shows no trail and -1 the whole run (owner's request); Q11 raised (which views a model offers).
+- 2026-10-17: ADR 0016 (models choose the views shown, "More views…" for the rest) and views step 3 (tiles). 64 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
 - Wrote ADRs 0007 to 0015; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
@@ -23,6 +24,7 @@
 - Snapshots include parameter values, so rewinding also undoes slider changes (owner's decision, recorded in [architecture overview](../architecture/overview.md#data-flow-of-a-run)).
 - First `set_param` enforced the `ParamSpec` range; the owner reversed this the same day: ranges are suggestions, any finite value is accepted, and parameters are edited through typed fields with opt-in sliders ([ADR 0011](../decisions/0011-parameter-entry.md)).
 - Run settings (`dt`, optional `t_end`) are saved in a `run` section; invalid values are load errors; the app pauses once at `t_end` ([ADR 0013](../decisions/0013-run-section.md)).
+- Models choose the views shown as tiles; other fitting views are added from "More views…"; domain views fit only their own block types ([ADR 0016](../decisions/0016-model-curated-views.md)).
 - Views become pluggable like Blocks: view types with slots bound to signals (outputs, `t`, derived signals), declared style properties, a registry with domain-provided views, several views at once; style options are exposed only as encodings (slots) or readability properties, and viewer needs such as palettes are app settings ([ADR 0015](../decisions/0015-pluggable-views.md)).
 - Initial-condition parameters are flagged in `ParamSpec` and apply on Restart, or at once before the run starts; Restart replaces Reset in the app.
 - Slider choices and ranges, default playback speed and default plots are saved in an optional `controls` section of the model file; per-person UI state is not ([ADR 0012](../decisions/0012-controls-in-model-files.md)).
@@ -33,11 +35,11 @@
 
 ## Left open
 
-- Q11: which views a model offers ([open questions](../open-questions.md)).
 - Q4 (equation parsing) and Q5 (algebraic loops) remain ([open questions](../open-questions.md)).
 
 ## Notes for the next session
 
+- egui's `horizontal_wrapped` did not wrap the slot combo boxes, so a 3D tile's header spilled into the next tile; slot pickers are now laid out in fixed-width rows sized to the tile. The default font lacks "✕"; the close button uses "×".
 - The app keeps one `ViewState` per visited view type so switching keeps bindings, style and camera; Save writes only the active one. Multi-view (step 3) should save the whole list.
 - Old `controls.view` entries are converted in `simsandbox-file` (`ViewControl::into_entry`), adding `colour: t` so trails still fade.
 - The file dialogs were not exercised in this container (no desktop portal); `save_to`, `open_path` and the naming helpers are unit-tested, the dialog calls are thin wrappers around `rfd`.
