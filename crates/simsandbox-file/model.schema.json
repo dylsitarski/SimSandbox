@@ -66,6 +66,11 @@
           "additionalProperties": { "type": "number" },
           "description": "Method name plus numeric options, e.g. {\"name\": \"rk4\", \"substeps\": 4}."
         },
+        "equations": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Equations of an 'eq.equations' block, one per line: 'dx/dt = ...' (or \"x' = ...\") for a state, 'name = ...' for a defined quantity (ADR 0017)."
+        },
         "params": {
           "type": "object",
           "additionalProperties": { "type": "number" },

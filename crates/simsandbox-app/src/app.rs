@@ -35,6 +35,8 @@ pub struct SimApp {
     path: Option<PathBuf>,
     /// Text being typed into parameter fields, keyed by `"block.param"`.
     param_edits: HashMap<String, String>,
+    /// The equation editor window, when open.
+    editor: Option<Editor>,
     last_frame: Option<Instant>,
     rewind_t: f64,
     views: Views,
@@ -59,6 +61,7 @@ impl SimApp {
             notice: None,
             path: None,
             param_edits: HashMap::new(),
+            editor: None,
             last_frame: None,
             rewind_t: 0.0,
             views: Views::new(ViewRegistry::builtin()),
@@ -221,6 +224,17 @@ impl SimApp {
                     }
                 }
             });
+            if ui
+                .button("New model…")
+                .on_hover_text("Type equations and run them")
+                .clicked()
+            {
+                self.editor = Some(Editor {
+                    block: None,
+                    text: NEW_MODEL.into(),
+                    error: None,
+                });
+            }
             ui.separator();
             if ui
                 .button("Open…")
@@ -551,7 +565,29 @@ impl SimApp {
             }
             for (block_name, rows) in blocks {
                 ui.add_space(6.0);
-                ui.strong(&block_name);
+                let typed = session
+                    .file
+                    .blocks
+                    .iter()
+                    .find(|b| b.name == block_name)
+                    .filter(|b| b.type_name == simsandbox_eq::registry::EQUATIONS)
+                    .map(|b| b.equations.join("\n"));
+                ui.horizontal(|ui| {
+                    ui.strong(&block_name);
+                    if let Some(text) = typed {
+                        if ui
+                            .small_button("Edit equations…")
+                            .on_hover_text("Change this block's equations")
+                            .clicked()
+                        {
+                            self.editor = Some(Editor {
+                                block: Some(block_name.clone()),
+                                text,
+                                error: None,
+                            });
+                        }
+                    }
+                });
                 egui::Grid::new(("params", &block_name))
                     .num_columns(4)
                     .spacing([6.0, 4.0])
@@ -593,6 +629,129 @@ impl SimApp {
         }
     }
 
+    /// The equation editor window (ADR 0017).
+    fn equation_editor(&mut self, ctx: &egui::Context) {
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        let title = match &editor.block {
+            Some(b) => format!("Equations of '{b}'"),
+            None => "New model".into(),
+        };
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        egui::Window::new(title)
+            .open(&mut open)
+            .default_width(520.0)
+            .show(ctx, |ui| {
+                egui::CollapsingHeader::new("How to write equations").show(ui, |ui| {
+                    ui.label(SYNTAX_HELP);
+                });
+                ui.add(
+                    egui::TextEdit::multiline(&mut editor.text)
+                        .code_editor()
+                        .desired_rows(12)
+                        .desired_width(f32::INFINITY),
+                );
+                if let Some(e) = &editor.error {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                }
+                ui.horizontal(|ui| {
+                    apply = ui.button("Apply").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        if cancel || !open {
+            self.editor = None;
+        } else if apply {
+            self.apply_equations();
+        }
+    }
+
+    /// Run the editor's equations: as a new model, or as the new equations
+    /// of a block of the open model, keeping the values of parameters that
+    /// still exist.
+    fn apply_equations(&mut self) {
+        let Some(editor) = self.editor.as_ref() else {
+            return;
+        };
+        let lines: Vec<String> = editor.text.lines().map(str::to_string).collect();
+        let block = editor.block.clone();
+        let result = match &block {
+            None => {
+                let mut file = simsandbox_file::ModelFile::new();
+                file.blocks.push(simsandbox_file::BlockEntry {
+                    name: "model".into(),
+                    type_name: simsandbox_eq::registry::EQUATIONS.into(),
+                    method: simsandbox_eq::Integrator::Rk4 { substeps: 1 }
+                        .settings()
+                        .into(),
+                    equations: lines,
+                    params: Default::default(),
+                });
+                Ok(("Untitled".to_string(), file.to_json()))
+            }
+            Some(name) => self.edited_model(name, lines),
+        };
+        let (title, text) = match result {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(ed) = self.editor.as_mut() {
+                    ed.error = Some(e);
+                }
+                return;
+            }
+        };
+        let previous_error = self.error.take();
+        self.open_text(&title, &text);
+        match self.error.take() {
+            Some(e) => {
+                self.error = previous_error;
+                if let Some(ed) = self.editor.as_mut() {
+                    ed.error = Some(e);
+                }
+            }
+            None => {
+                if block.is_none() {
+                    self.path = None;
+                }
+                self.running = true;
+                self.editor = None;
+                self.notice = Some("Equations applied".into());
+            }
+        }
+    }
+
+    /// The open model as a file, with the equations of `block` replaced and
+    /// parameters that no longer exist dropped.
+    fn edited_model(
+        &mut self,
+        block: &str,
+        lines: Vec<String>,
+    ) -> Result<(String, String), String> {
+        let Some(session) = self.session.as_mut() else {
+            return Err("no model is open".into());
+        };
+        let set = simsandbox_eq::EquationSet::parse(block, &lines).map_err(|e| e.to_string())?;
+        let keep: Vec<String> = simsandbox_eq::OdeSystem::spec(&set)
+            .params
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        let text = session.save_json(self.speed, Some(self.views.entries()))?;
+        let (mut file, _) =
+            simsandbox_file::ModelFile::from_json(&text).map_err(|e| e.to_string())?;
+        let entry = file
+            .blocks
+            .iter_mut()
+            .find(|b| b.name == block)
+            .ok_or_else(|| format!("no block '{block}'"))?;
+        entry.equations = lines;
+        entry.params.retain(|name, _| keep.contains(name));
+        Ok((session.title.clone(), file.to_json()))
+    }
+
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(f) = dropped.first() {
@@ -632,6 +791,7 @@ impl eframe::App for SimApp {
         let ctx = ui.ctx().clone();
         self.handle_dropped_files(&ctx);
         self.advance();
+        self.equation_editor(&ctx);
 
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.add_space(4.0);
@@ -886,6 +1046,34 @@ fn with_model_extension(path: PathBuf) -> PathBuf {
     }
 }
 
+/// The equation editor: for a new model (`block` is `None`) or for a block
+/// of the open model.
+struct Editor {
+    block: Option<String>,
+    text: String,
+    error: Option<String>,
+}
+
+/// What "New model…" starts with: a damped oscillator that moves at once.
+const NEW_MODEL: &str = "\
+# A spring with friction. Change anything, then press Apply.
+dx/dt = v
+dv/dt = -k*x - c*v
+# a quantity computed from the states, plotted like them
+energy = 0.5*v^2 + 0.5*k*x^2
+";
+
+const SYNTAX_HELP: &str = "\
+One equation per line:
+  dx/dt = ...    (or x' = ...)   x is a state that changes over time
+  E = ...                         a quantity computed from the states
+Every other name is a parameter (default 1) you can change in the side panel.
+Each state x also gets an initial value x0 (default 1).
+t is time. Operators: + - * / ^ and parentheses; write 2*x, not 2x.
+Functions: sin cos tan asin acos atan atan2 sinh cosh tanh exp ln log10
+sqrt abs sign floor ceil min max pow. pi is 3.14159…
+Lines starting with # are comments.";
+
 /// Why stepping stopped within a frame.
 enum Stop {
     /// The file's `run.t_end` was reached (ADR 0013).
@@ -972,6 +1160,66 @@ mod tests {
         assert!(reopened.error.is_some());
         assert_eq!(reopened.path.as_deref(), Some(path.as_path()));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn editor(block: Option<&str>, text: &str) -> Option<Editor> {
+        Some(Editor {
+            block: block.map(str::to_string),
+            text: text.into(),
+            error: None,
+        })
+    }
+
+    #[test]
+    fn new_models_run_from_typed_equations() {
+        let mut app = SimApp::new(None, None, None);
+        app.editor = editor(None, NEW_MODEL);
+        app.apply_equations();
+        assert!(app.editor.is_none(), "applied editors close");
+        let s = app.session.as_ref().unwrap();
+        assert_eq!(s.title, "Untitled");
+        assert_eq!(s.signals.names(), ["model.x", "model.v", "model.energy"]);
+        assert!(app.path.is_none());
+    }
+
+    #[test]
+    fn mistakes_keep_the_editor_open_and_the_model_running() {
+        let mut app = SimApp::new(None, None, None);
+        app.editor = editor(None, "dx/dt = -k*");
+        app.apply_equations();
+        let e = app.editor.as_ref().unwrap().error.as_deref().unwrap();
+        assert!(e.contains("line 1, column 12"), "{e}");
+        assert_eq!(app.session.as_ref().unwrap().title, "Lorenz system");
+        assert_eq!(app.error, None);
+    }
+
+    #[test]
+    fn editing_a_block_keeps_parameter_values_that_still_exist() {
+        let mut app = SimApp::new(None, None, None);
+        let (name, text) = (EXAMPLES[2].name, EXAMPLES[2].text);
+        app.open_text(name, text);
+        let s = app.session.as_mut().unwrap();
+        let id = s.ids["ecosystem"];
+        s.set_param(id, "alpha", 2.0).unwrap();
+
+        let edited = "dprey/dt = alpha*prey - beta*prey*predators\n\
+                      dpredators/dt = delta*prey*predators - gamma*predators";
+        app.editor = editor(Some("ecosystem"), edited);
+        app.apply_equations();
+        assert!(
+            app.editor.is_none(),
+            "{:?}",
+            app.editor.as_ref().map(|e| &e.error)
+        );
+        let s = app.session.as_ref().unwrap();
+        assert_eq!(s.title, name);
+        assert_eq!(
+            s.params().iter().find(|r| r.name == "alpha").unwrap().value,
+            2.0
+        );
+        assert_eq!(s.signals.names(), ["ecosystem.prey", "ecosystem.predators"]);
+        // Both saved views still fit.
+        assert_eq!(app.views.tiles.len(), 2);
     }
 
     #[test]

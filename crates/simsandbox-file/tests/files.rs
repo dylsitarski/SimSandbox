@@ -9,6 +9,7 @@ use simsandbox_file::{load, Binding, FileError, ModelFile, SCHEMA};
 
 const LORENZ: &str = include_str!("../../../examples/lorenz.ssbx.json");
 const OSCILLATORS: &str = include_str!("../../../examples/coupled-oscillators.ssbx.json");
+const PREDATOR_PREY: &str = include_str!("../../../examples/predator-prey.ssbx.json");
 
 fn registry() -> Registry {
     let mut r = Registry::new();
@@ -26,7 +27,7 @@ fn invalid_path(text: &str) -> String {
 
 #[test]
 fn examples_load_without_warnings() {
-    for text in [LORENZ, OSCILLATORS] {
+    for text in [LORENZ, OSCILLATORS, PREDATOR_PREY] {
         let loaded = load(text, &registry()).unwrap();
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
         Simulator::new(loaded.model, 0.0).unwrap();
@@ -35,7 +36,7 @@ fn examples_load_without_warnings() {
 
 #[test]
 fn examples_are_written_exactly_as_saved() {
-    for text in [LORENZ, OSCILLATORS] {
+    for text in [LORENZ, OSCILLATORS, PREDATOR_PREY] {
         let (file, _) = ModelFile::from_json(text).unwrap();
         assert_eq!(file.to_json(), text);
     }
@@ -347,4 +348,32 @@ fn the_single_view_of_adr_0014_is_converted() {
     );
     let loaded = load(&both, &registry()).unwrap();
     assert_eq!(loaded.file.controls.views.len(), 2);
+}
+
+#[test]
+fn typed_equations_load_and_report_mistakes_at_their_line() {
+    let loaded = load(PREDATOR_PREY, &registry()).unwrap();
+    let id = loaded.ids["ecosystem"];
+    assert_eq!(loaded.model.param(id, "alpha").unwrap(), 1.1);
+    let spec = loaded.model.block(id).unwrap().spec();
+    let outs: Vec<_> = spec.outputs().map(|p| p.name.as_str()).collect();
+    assert_eq!(outs, ["prey", "predators", "total"]);
+
+    let broken = PREDATOR_PREY.replace("alpha*prey - beta", "alpha*prey -- beta *");
+    match load(&broken, &registry()) {
+        Err(FileError::Invalid { path, message }) => {
+            assert_eq!(path, "blocks[0].equations");
+            assert!(message.starts_with("line 2, column"), "{message}");
+        }
+        other => panic!("unexpected {:?}", other.err()),
+    }
+    // Built-in types take no equations.
+    let fixed = LORENZ.replace(
+        r#""type": "eq.lorenz","#,
+        r#""type": "eq.lorenz", "equations": ["dx/dt = 1"],"#,
+    );
+    assert!(matches!(
+        load(&fixed, &registry()),
+        Err(FileError::Invalid { path, .. }) if path == "blocks[0].equations"
+    ));
 }

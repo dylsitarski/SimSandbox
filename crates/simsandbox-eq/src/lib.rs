@@ -15,9 +15,11 @@ pub mod group;
 pub mod integrators;
 pub mod ode;
 pub mod registry;
+pub mod symbolic;
 pub mod systems;
 
 pub use group::EquationGroup;
 pub use integrators::Integrator;
 pub use ode::{OdeBlock, OdeSystem};
 pub use registry::register;
+pub use symbolic::EquationSet;

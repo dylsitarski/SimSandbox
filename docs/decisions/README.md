@@ -22,6 +22,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0014](0014-view-in-controls.md) | The opening view is saved in `controls` | Accepted | 2026-10-16 |
 | [0015](0015-pluggable-views.md) | Pluggable views with slots; style options limited to encodings and readability | Accepted | 2026-10-16 |
 | [0016](0016-model-curated-views.md) | Models choose the views shown; other fitting views stay one click away | Accepted | 2026-10-17 |
+| [0017](0017-typed-equations.md) | A built-in expression parser for typed equations | Proposed | 2026-10-17 |
 
 ## When to write one
 

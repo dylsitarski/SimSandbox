@@ -16,6 +16,10 @@ pub const EXAMPLES: &[Example] = &[
         name: "Coupled oscillators",
         text: include_str!("../../../examples/coupled-oscillators.ssbx.json"),
     },
+    Example {
+        name: "Predator and prey (typed equations)",
+        text: include_str!("../../../examples/predator-prey.ssbx.json"),
+    },
 ];
 
 /// Every block type the app can load.

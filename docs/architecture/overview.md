@@ -30,7 +30,8 @@ flowchart TB
 | Crate | Layer | Status | Contents |
 | --- | --- | --- | --- |
 | `crates/simsandbox-core` | Kernel | Exists | `block.rs` (contract, labels), `units.rs`, `graph.rs` (model graph), `sim.rs` (master, snapshots), `registry.rs` (block types by name), `error.rs` |
-| `crates/simsandbox-eq` | Backend: equations | Exists | `ode.rs` (`OdeSystem`, `OdeBlock`), `integrators.rs`, `group.rs` (fusion), `systems.rs` (examples), `registry.rs` (file types) |
+| `crates/simsandbox-expr` | Backend support: expressions | Exists | Parser and evaluator for typed equations and, later, derived signals ([ADR 0017](../decisions/0017-typed-equations.md)) |
+| `crates/simsandbox-eq` | Backend: equations | Exists | `ode.rs` (`OdeSystem`, `OdeBlock`), `integrators.rs`, `group.rs` (fusion), `systems.rs` (examples), `symbolic.rs` (typed equations, `eq.equations`), `registry.rs` (file types) |
 | `crates/simsandbox-file` | Model graph: files | Exists | JSON model files, `controls`, JSON Schema ([ADR 0007](../decisions/0007-json-model-files.md)); depends on `serde`, `serde_json` |
 | `crates/simsandbox-cli` | Runtime: headless | Exists | `simsandbox` binary |
 | `crates/simsandbox-app` | Runtime: desktop | Exists | eframe + egui + wgpu ([ADR 0008](../decisions/0008-native-egui-ui.md)): `pacing.rs` (live loop, [ADR 0010](../decisions/0010-live-loop-pacing.md)), `session.rs` (open model, history, plotted series), `app.rs` (window and views), `views.rs` (the open model's view tiles), `examples.rs` (built-in examples) |

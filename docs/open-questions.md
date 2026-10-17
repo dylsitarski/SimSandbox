@@ -8,7 +8,6 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Options | Needed by | Notes |
 | --- | --- | --- | --- | --- |
-| Q4 | Symbolic equation parsing | Rust-native parser and symbolic crate; SymPy via Python; Julia Symbolics service | Symbolic equation entry | Affects dependencies and startup |
 | Q5 | Algebraic loops in fused groups | Causalisation and tearing; Newton solve per RHS evaluation; forbid and warn | Phase 1 | Current v0 restriction: no direct feedthrough |
 
 ## Resolved
@@ -30,3 +29,4 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | Q9 | Visualization architecture for many outputs and model-specific pictures | [ADR 0015](decisions/0015-pluggable-views.md) |
 | Q10 | Which draw-style options to expose | [ADR 0015](decisions/0015-pluggable-views.md) |
 | Q11 | Which views a model offers | [ADR 0016](decisions/0016-model-curated-views.md) |
+| Q4 | Symbolic equation parsing | [ADR 0017](decisions/0017-typed-equations.md) (proposed) |

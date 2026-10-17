@@ -16,6 +16,7 @@
 - Pluggable views steps 1–2: `simsandbox-views` (history, view contract and registry, colour encodings, built-in views), `controls.views` with conversion of the older `view`, slot pickers, colour slot, `trail_length`. Verified with screenshots of all three views and a 3 s trail. 63 tests.
 - 2026-10-17: `trail_length` 0 now shows no trail and -1 the whole run (owner's request); Q11 raised (which views a model offers).
 - 2026-10-17: ADR 0016 (models choose the views shown, "More views…" for the rest) and views step 3 (tiles). 64 tests.
+- 2026-10-17: symbolic equation entry: `simsandbox-expr`, `eq.equations` (`EquationSet`), `equations` in model files, equation editor, predator–prey example; ADR 0017 written as Proposed (the parser approach was chosen by the agent and awaits the owner's confirmation).
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
 - Wrote ADRs 0007 to 0015; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
@@ -35,10 +36,11 @@
 
 ## Left open
 
-- Q4 (equation parsing) and Q5 (algebraic loops) remain ([open questions](../open-questions.md)).
+- Owner to confirm ADR 0017 (typed equations, proposed). Q5 (algebraic loops) remains ([open questions](../open-questions.md)).
 
 ## Notes for the next session
 
+- The equation editor was checked through `apply_equations` tests and a screenshot of the typed predator–prey example, not by typing into the window.
 - egui's `horizontal_wrapped` did not wrap the slot combo boxes, so a 3D tile's header spilled into the next tile; slot pickers are now laid out in fixed-width rows sized to the tile. The default font lacks "✕"; the close button uses "×".
 - The app keeps one `ViewState` per visited view type so switching keeps bindings, style and camera; Save writes only the active one. Multi-view (step 3) should save the whole list.
 - Old `controls.view` entries are converted in `simsandbox-file` (`ViewControl::into_entry`), adding `colour: t` so trails still fade.

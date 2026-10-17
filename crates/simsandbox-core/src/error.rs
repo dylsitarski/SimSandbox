@@ -26,6 +26,8 @@ pub enum SimError {
     DuplicateBlockType(String),
     /// Method settings name an unknown method or carry invalid options.
     InvalidMethod(String),
+    /// A Block's definition (e.g. its equations) is invalid.
+    InvalidDefinition(String),
 }
 
 impl fmt::Display for SimError {
@@ -50,6 +52,7 @@ impl fmt::Display for SimError {
             SimError::UnknownBlockType(s) => write!(f, "unknown block type '{s}'"),
             SimError::DuplicateBlockType(s) => write!(f, "block type '{s}' is already registered"),
             SimError::InvalidMethod(s) => write!(f, "invalid method: {s}"),
+            SimError::InvalidDefinition(s) => write!(f, "{s}"),
         }
     }
 }

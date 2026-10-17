@@ -34,7 +34,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use simsandbox_core::block::{Causality, Shape};
 use simsandbox_core::graph::{BlockId, Model};
-use simsandbox_core::registry::{MethodSettings, Registry};
+use simsandbox_core::registry::{BlockConfig, MethodSettings, Registry};
+use simsandbox_core::SimError;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -99,6 +100,11 @@ pub struct BlockEntry {
     #[serde(rename = "type")]
     pub type_name: String,
     pub method: MethodEntry,
+    /// The equations of an `eq.equations` block, one per line (ADR 0017),
+    /// e.g. `"dx/dt = sigma*(y - x)"`. Absent for types with built-in
+    /// equations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub equations: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, f64>,
 }
@@ -486,9 +492,16 @@ impl ModelFile {
                     ),
                 ));
             }
+            let config = BlockConfig {
+                method: (&entry.method).into(),
+                definition: entry.equations.clone(),
+            };
             let block = registry
-                .build(&entry.type_name, &entry.name, &(&entry.method).into())
-                .map_err(|e| invalid(format!("{path}.method"), e))?;
+                .build(&entry.type_name, &entry.name, &config)
+                .map_err(|e| match e {
+                    SimError::InvalidDefinition(_) => invalid(format!("{path}.equations"), e),
+                    _ => invalid(format!("{path}.method"), e),
+                })?;
             let id = model.add(block);
             for (name, &value) in &entry.params {
                 model

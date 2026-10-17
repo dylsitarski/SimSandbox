@@ -86,6 +86,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0014-view-in-controls.md](decisions/0014-view-in-controls.md) | Decision record | The opening view is saved in `controls` |
 | [decisions/0015-pluggable-views.md](decisions/0015-pluggable-views.md) | Decision record | Pluggable views with slots; which style options to expose |
 | [decisions/0016-model-curated-views.md](decisions/0016-model-curated-views.md) | Decision record | Models choose the views shown; "More views…" for the rest |
+| [decisions/0017-typed-equations.md](decisions/0017-typed-equations.md) | Decision record | Built-in expression parser; typed equation blocks |
 
 ### Guides
 

@@ -2,12 +2,13 @@
 //! the benchmark suite that every method must pass.
 
 use simsandbox_core::block::{AccuracyClass, SpeedClass};
+use simsandbox_core::graph::BlockId;
 use simsandbox_core::graph::Model;
 use simsandbox_core::sim::Simulator;
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
 use simsandbox_eq::systems::{CoupledOscillator, Lorenz};
-use simsandbox_eq::{EquationGroup, Integrator, OdeBlock};
+use simsandbox_eq::{EquationGroup, EquationSet, Integrator, OdeBlock};
 
 const T_END: f64 = 10.0;
 const DT: f64 = 0.01;
@@ -162,4 +163,82 @@ fn snapshot_and_rewind_reproduce_the_run() {
         sim.step(DT).unwrap();
     }
     assert_eq!(first, sim.state(id));
+}
+
+fn typed(lines: &[&str], integrator: Integrator) -> (Simulator, BlockId) {
+    let lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    let mut model = Model::new();
+    let id = model.add(Box::new(OdeBlock::new(
+        EquationSet::parse("m", &lines).unwrap(),
+        integrator,
+    )));
+    (Simulator::new(model, 0.0).unwrap(), id)
+}
+
+#[test]
+fn typed_lorenz_matches_the_built_in_lorenz_exactly() {
+    let rk4 = Integrator::Rk4 { substeps: 1 };
+    let lines = [
+        "dx/dt = sigma*(y - x)",
+        "dy/dt = x*(rho - z) - y",
+        "dz/dt = x*y - beta*z",
+    ];
+    let (mut typed_sim, tid) = typed(&lines, rk4);
+    for (name, v) in [("sigma", 10.0), ("rho", 28.0), ("beta", 8.0 / 3.0)] {
+        typed_sim.set_param(tid, name, v).unwrap();
+    }
+    typed_sim.restart(0.0).unwrap();
+
+    let mut model = Model::new();
+    let bid = model.add(Box::new(OdeBlock::new(Lorenz::new("l"), rk4)));
+    let mut built_in = Simulator::new(model, 0.0).unwrap();
+
+    for _ in 0..2000 {
+        typed_sim.step(DT).unwrap();
+        built_in.step(DT).unwrap();
+    }
+    assert_eq!(typed_sim.state(tid), built_in.state(bid));
+}
+
+#[test]
+fn typed_decay_matches_the_exact_solution() {
+    let (mut sim, id) = typed(&["dx/dt = -k*x"], Integrator::Rk4 { substeps: 1 });
+    sim.set_param(id, "k", 0.7).unwrap();
+    sim.set_param(id, "x0", 2.0).unwrap();
+    sim.restart(0.0).unwrap();
+    for _ in 0..100 {
+        sim.step(DT).unwrap();
+    }
+    let exact = 2.0 * (-0.7f64 * sim.time()).exp();
+    let err = (sim.state(id)[0] - exact).abs();
+    assert!(err < 1e-10, "error {err}");
+}
+
+#[test]
+fn typed_predator_prey_conserves_its_invariant() {
+    // Lotka–Volterra conserves V = delta*x - gamma*ln(x) + beta*y - alpha*ln(y).
+    let lines = [
+        "dx/dt = alpha*x - beta*x*y",
+        "dy/dt = delta*x*y - gamma*y",
+        "V = delta*x - gamma*ln(x) + beta*y - alpha*ln(y)",
+    ];
+    let (mut sim, id) = typed(&lines, Integrator::Rk4 { substeps: 1 });
+    for (name, v) in [
+        ("alpha", 1.1),
+        ("beta", 0.4),
+        ("delta", 0.1),
+        ("gamma", 0.4),
+        ("x0", 10.0),
+        ("y0", 10.0),
+    ] {
+        sim.set_param(id, name, v).unwrap();
+    }
+    sim.restart(0.0).unwrap();
+    let v0 = sim.output(id, "V").unwrap()[0];
+    let mut drift = 0.0f64;
+    for _ in 0..3000 {
+        sim.step(DT).unwrap();
+        drift = drift.max((sim.output(id, "V").unwrap()[0] - v0).abs());
+    }
+    assert!(drift < 1e-6, "invariant drifted by {drift}");
 }

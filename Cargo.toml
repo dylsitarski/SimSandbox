@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/simsandbox-core",
+    "crates/simsandbox-expr",
     "crates/simsandbox-eq",
     "crates/simsandbox-file",
     "crates/simsandbox-cli",

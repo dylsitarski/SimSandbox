@@ -30,8 +30,18 @@ impl MethodSettings {
     }
 }
 
-/// Builds a Block named `name` running the given method.
-pub type BlockFactory = fn(name: &str, method: &MethodSettings) -> Result<Box<dyn Block>>;
+/// What a model file says about one Block besides its name and type.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BlockConfig {
+    pub method: MethodSettings,
+    /// Domain-specific lines that define the Block, e.g. the equations of an
+    /// `eq.equations` block (ADR 0017). Empty for fixed types such as
+    /// `eq.lorenz`.
+    pub definition: Vec<String>,
+}
+
+/// Builds a Block named `name` from its configuration.
+pub type BlockFactory = fn(name: &str, config: &BlockConfig) -> Result<Box<dyn Block>>;
 
 /// Maps type names (namespaced by domain, e.g. `eq.lorenz`) to factories.
 #[derive(Default)]
@@ -58,13 +68,13 @@ impl Registry {
         &self,
         type_name: &str,
         name: &str,
-        method: &MethodSettings,
+        config: &BlockConfig,
     ) -> Result<Box<dyn Block>> {
         let factory = self
             .factories
             .get(type_name)
             .ok_or_else(|| SimError::UnknownBlockType(type_name.into()))?;
-        factory(name, method)
+        factory(name, config)
     }
 
     pub fn contains(&self, type_name: &str) -> bool {
