@@ -50,7 +50,7 @@
 ## Notes for the next session
 
 - Fusion was built in the master rather than as ADR 0023's consequences sketched (the loader building an `EquationGroup` and renaming ports): members stay separate Blocks and only their stepping changes, so names, ids, snapshots and `set_param` needed no mapping. The master's group right-hand side is bit-identical to `FusedSystem`'s (test `master_fusion_matches_the_fused_system_bit_for_bit`).
-- With fusion the oscillator energy plot autoscales to rounding noise (10⁻¹⁴), which looks like drift; plots have no minimum span yet.
+- With fusion the oscillator energy plot autoscaled to rounding noise (10⁻¹⁴), which looked like drift; plots now keep a minimum span of 10⁻⁶ of the largest magnitude (owner's request).
 - egui panics in debug builds when asked to draw a NaN or infinite point ("Comparing NaN vectors"); `crates/simsandbox-views/tests/render.rs` renders every built-in view headlessly with such values. New views should be added to it.
 - The coupled-oscillator energy drift was measured with `simsandbox run` at dt = 0.01, 0.005, 0.0025: +11.5 %, +4.9 %, +2.3 % at t = 100, first order in dt, matching a coupling delay of dt/2 acting as negative damping on the antisymmetric mode (Q16).
 - egui `TextEdit`s inside a `Grid` collapsed to a few characters in the Derived signals window; fixed sizes (`add_sized`) work.

@@ -275,6 +275,30 @@ pub fn zoom_factor(scroll: f32) -> f32 {
     (scroll * 0.002).exp()
 }
 
+/// Plots span at least this fraction of the largest magnitude shown, so a
+/// signal constant to rounding error draws as a flat line instead of being
+/// magnified until its noise looks like drift. Zooming in still works.
+pub const MIN_RELATIVE_SPAN: f64 = 1e-6;
+
+/// Smallest and largest finite value, if any.
+pub fn value_range(values: impl Iterator<Item = f64>) -> Option<[f64; 2]> {
+    values.filter(|v| v.is_finite()).fold(None, |r, v| match r {
+        None => Some([v, v]),
+        Some([lo, hi]) => Some([lo.min(v), hi.max(v)]),
+    })
+}
+
+/// A range widened about its middle to the minimum span, or `None` if it is
+/// already wide enough (or zero, which plots handle themselves).
+pub fn widened([lo, hi]: [f64; 2]) -> Option<[f64; 2]> {
+    let span = MIN_RELATIVE_SPAN * lo.abs().max(hi.abs());
+    if hi - lo >= span || span == 0.0 {
+        return None;
+    }
+    let mid = 0.5 * (lo + hi);
+    Some([mid - 0.5 * span, mid + 0.5 * span])
+}
+
 /// Split points into runs of finite points: plots cannot draw infinities
 /// or NaN (egui panics on them in debug builds), so a curve that passes
 /// through one is drawn with a gap there.
@@ -321,6 +345,19 @@ impl View for Xy {
         let mut plot = Plot::new("plot.xy")
             .x_axis_label(x_label)
             .allow_scroll(false);
+        // Keep near-constant signals (e.g. a conserved energy) from being
+        // magnified until rounding noise looks like drift.
+        let range = |s: SignalRef| value_range((first..n).map(|k| h.value(s, k)));
+        if let Some([lo, hi]) = range(x).and_then(widened) {
+            plot = plot.include_x(lo).include_x(hi);
+        }
+        let y_range = ys
+            .iter()
+            .filter_map(|&y| range(y))
+            .reduce(|a, b| [a[0].min(b[0]), a[1].max(b[1])]);
+        if let Some([lo, hi]) = y_range.and_then(widened) {
+            plot = plot.include_y(lo).include_y(hi);
+        }
         if ys.len() == 1 {
             plot = plot.y_axis_label(h.name(ys[0]));
         } else {
@@ -662,7 +699,7 @@ impl View for Profile {
         let mut plot = Plot::new("plot.profile")
             .x_axis_label(x_label)
             .allow_scroll(false);
-        if let Some([lo, hi]) = self.range {
+        if let Some([lo, hi]) = self.range.map(|r| widened(r).unwrap_or(r)) {
             plot = plot.include_y(lo).include_y(hi);
         }
         if ys.len() == 1 {
@@ -764,6 +801,19 @@ mod tests {
         assert_eq!(extent, [0.125, 0.875, 0.0, 1.0]);
         // A coordinate that is not increasing or not one per cell is ignored.
         assert_eq!(line_extent(&h, 0, 2), None);
+    }
+
+    #[test]
+    fn near_constant_ranges_are_widened_to_the_minimum_span() {
+        // A conserved energy wobbling by rounding error.
+        let r = value_range([0.75, 0.75 - 4e-14, f64::NAN, 0.75 + 1e-15].into_iter()).unwrap();
+        let [lo, hi] = widened(r).unwrap();
+        assert!((hi - lo - 0.75e-6).abs() < 1e-15, "{}", hi - lo);
+        assert!(lo < r[0] && hi > r[1]);
+        // Real variation is left alone, and so is an all-zero signal.
+        assert_eq!(widened([0.5, 1.0]), None);
+        assert_eq!(widened([0.0, 0.0]), None);
+        assert_eq!(value_range([f64::NAN].into_iter()), None);
     }
 
     #[test]

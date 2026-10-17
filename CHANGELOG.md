@@ -42,6 +42,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Plots span at least a millionth of the largest value shown, so a conserved quantity draws flat instead of magnifying rounding noise into apparent drift (zooming in still works).
 - App: messages go to a log: a tile left of the rewind bar shows the newest one (dimmed after 8 s) and opens the full list, so messages never resize the window; the model description is one line with the full text on hover (one tooltip); the Derived signals text boxes are wider.
 - App: "More views…" lists only views that apply to the model; saved 3D cameras are written in short form (0.35, not 0.3499999940395355).
 - Views: `plot.time` and `plot.phase` are merged into `plot.xy` (any signals against time or each other, several curves, trail length as a scrolling window against time); "More views…" lists presets ("Plot against time", "Phase portrait", "3D trajectory"); files with the old types are converted on load (ADR 0018).
