@@ -20,7 +20,7 @@ A **signal** is a named quantity recorded over time.
 
 | Kind | Example name | Source |
 | --- | --- | --- |
-| Scalar | `a.x`, `lorenz.xyz[0]`, `t` | An element of an output port, or time |
+| Scalar | `a.x`, `lorenz.xyz[0]`, `t` | An element of an output port, or the index: time, or the swept parameter in a sweep ([ADR 0021](../decisions/0021-maps-formulas-and-sweeps.md)) |
 | Vector | `lorenz.xyz` | A whole vector output |
 | Grid | `heat.temperature` | A grid output (planned kernel shape) |
 | Point set | `flock.positions` | N points of dimension d (planned kernel shape) |

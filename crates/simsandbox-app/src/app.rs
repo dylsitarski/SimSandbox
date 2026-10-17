@@ -176,6 +176,9 @@ impl SimApp {
         let Some(session) = self.session.as_mut() else {
             return;
         };
+        if session.sweep().is_some() {
+            return;
+        }
         self.pacer.speed = if self.running { self.speed } else { 0.0 };
         let dt = session.dt;
         let work_start = Instant::now();
@@ -277,6 +280,12 @@ impl SimApp {
             }
         });
         ui.horizontal(|ui| {
+            // Models with no states are swept, not run (ADR 0019, ADR 0021).
+            if let Some(sw) = session.sweep().cloned() {
+                self.running = false;
+                sweep_controls(ui, session, &sw, &mut self.error);
+                return;
+            }
             let label = if self.running { "⏸ Pause" } else { "▶ Run" };
             if ui.button(label).clicked() {
                 self.running = !self.running;
@@ -342,6 +351,9 @@ impl SimApp {
         let Some(session) = self.session.as_mut() else {
             return;
         };
+        if session.sweep().is_some() {
+            return;
+        }
         let (first, last) = session.history_range();
         ui.horizontal(|ui| {
             ui.label("Rewind");
@@ -467,7 +479,7 @@ impl SimApp {
                                 },
                             );
                         });
-                        slot_editors(ui, t, &mut tile.state, &signals);
+                        slot_editors(ui, t, &mut tile.state, &signals, session.signals.index());
                         tile.state.show(ui, t, &session.signals);
                     });
             });
@@ -689,8 +701,9 @@ impl SimApp {
                 file.blocks.push(simsandbox_file::BlockEntry {
                     name: "model".into(),
                     type_name: simsandbox_eq::registry::EQUATIONS.into(),
-                    method: simsandbox_eq::Integrator::Rk4 { substeps: 1 }
-                        .settings()
+                    method: simsandbox_eq::EquationSet::parse("model", &lines)
+                        .map_or(simsandbox_eq::Kind::Continuous, |s| s.kind())
+                        .default_method()
                         .into(),
                     equations: lines,
                     params: Default::default(),
@@ -754,6 +767,16 @@ impl SimApp {
             .ok_or_else(|| format!("no block '{block}'"))?;
         entry.equations = lines;
         entry.params.retain(|name, _| keep.contains(name));
+        // Switching between continuous equations, a map and formulas changes the method.
+        let method = entry.method.name.as_str();
+        let compatible = match set.kind() {
+            simsandbox_eq::Kind::Continuous => !matches!(method, "iterate" | "evaluate"),
+            simsandbox_eq::Kind::Map => method == "iterate",
+            simsandbox_eq::Kind::Formulas => method == "evaluate",
+        };
+        if !compatible {
+            entry.method = set.kind().default_method().into();
+        }
         Ok((session.title.clone(), file.to_json()))
     }
 
@@ -865,6 +888,11 @@ fn param_row(
             ui.weak("↻")
                 .on_hover_text("Initial condition: applies on Restart");
         }
+        if session.sweep().is_some_and(|s| s.key == row.key) {
+            ui.weak("swept").on_hover_text(
+                "Swept along the horizontal axis: its own value is not used while sweeping",
+            );
+        }
     });
     let mut slider = control.slider;
     ui.checkbox(&mut slider, "slider");
@@ -945,15 +973,61 @@ fn number_entry(
 /// fit the tile.
 const SLOT_WIDTH: f32 = 150.0;
 
+/// What is swept, over which range and with how many points, for models
+/// with no states.
+fn sweep_controls(
+    ui: &mut egui::Ui,
+    session: &mut Session,
+    sw: &crate::session::Sweep,
+    error: &mut Option<String>,
+) {
+    ui.label("Sweep").on_hover_text(
+        "This model has no states, so instead of running in time its outputs are \
+         evaluated across a parameter's range",
+    );
+    let rows = session.params();
+    let mut key = sw.key.clone();
+    let mut range = sw.range;
+    let mut points = sw.points;
+    egui::ComboBox::from_id_salt("sweep_param")
+        .selected_text(&key)
+        .show_ui(ui, |ui| {
+            for r in &rows {
+                if ui.selectable_label(key == r.key, &r.key).clicked() && key != r.key {
+                    key = r.key.clone();
+                    range = r.suggested;
+                }
+            }
+        });
+    ui.label("from");
+    ui.add(egui::DragValue::new(&mut range[0]).speed(0.1));
+    ui.label("to");
+    ui.add(egui::DragValue::new(&mut range[1]).speed(0.1));
+    ui.label("points");
+    ui.add(egui::DragValue::new(&mut points).range(2..=100_000));
+    if (key.as_str(), range, points) != (sw.key.as_str(), sw.range, sw.points) {
+        if let Err(e) = session.set_sweep(&key, range, points) {
+            *error = Some(format!("sweep: {e}"));
+        }
+    }
+}
+
 /// Pickers for a view's slots: a menu of checkboxes for slots that take
 /// several signals, a combo box otherwise (with "none" when optional).
-fn slot_editors(ui: &mut egui::Ui, t: &ViewType, state: &mut ViewState, signals: &[String]) {
+/// `index` is what `t` means: time, or the swept parameter (ADR 0021).
+fn slot_editors(
+    ui: &mut egui::Ui,
+    t: &ViewType,
+    state: &mut ViewState,
+    signals: &[String],
+    index: &str,
+) {
     let gap = ui.spacing().item_spacing.x;
     let per_row = (((ui.available_width() + gap) / (SLOT_WIDTH + gap)).floor() as usize).max(1);
     for row in t.slots.chunks(per_row) {
         ui.horizontal(|ui| {
             for slot in row {
-                slot_editor(ui, t.name, slot, state, signals);
+                slot_editor(ui, t.name, slot, state, signals, index);
             }
         });
     }
@@ -965,8 +1039,17 @@ fn slot_editor(
     slot: &simsandbox_views::view::Slot,
     state: &mut ViewState,
     signals: &[String],
+    index: &str,
 ) {
     let current = state.bind.get(slot.name).cloned().unwrap_or_default();
+    // "t" is stored, but shown as what it is: time, or the swept parameter.
+    let display = |s: &str| {
+        if s == "t" {
+            index.to_string()
+        } else {
+            s.to_string()
+        }
+    };
     if slot.many {
         let label = match current.as_slice() {
             [one] => format!("{}: {one}", slot.name),
@@ -998,13 +1081,13 @@ fn slot_editor(
         egui::ComboBox::from_id_salt(("slot", type_name, slot.name))
             .width(SLOT_WIDTH - 20.0)
             .truncate()
-            .selected_text(format!("{}: {shown}", slot.name))
+            .selected_text(format!("{}: {}", slot.name, display(shown)))
             .show_ui(ui, |ui| {
                 if !slot.required && ui.selectable_label(current.is_empty(), "none").clicked() {
                     state.bind.remove(slot.name);
                 }
                 for s in std::iter::once("t").chain(signals.iter().map(String::as_str)) {
-                    if ui.selectable_label(shown == s, s).clicked() {
+                    if ui.selectable_label(shown == s, display(s)).clicked() {
                         state.bind.insert(slot.name.into(), vec![s.into()]);
                     }
                 }
@@ -1189,6 +1272,31 @@ mod tests {
         assert_eq!(s.title, "Untitled");
         assert_eq!(s.signals.names(), ["model.x", "model.v", "model.energy"]);
         assert!(app.path.is_none());
+    }
+
+    #[test]
+    fn new_maps_and_formulas_get_the_right_method() {
+        let mut app = SimApp::new(None, None, None);
+        app.editor = editor(None, "x[n+1] = r*x*(1 - x)");
+        app.apply_equations();
+        assert!(app.editor.is_none());
+        assert_eq!(
+            app.session.as_ref().unwrap().file.blocks[0].method.name,
+            "iterate"
+        );
+
+        app.editor = editor(None, "y = a*x^2");
+        app.apply_equations();
+        let s = app.session.as_ref().unwrap();
+        assert_eq!(s.file.blocks[0].method.name, "evaluate");
+        assert!(s.sweep().is_some());
+
+        // Editing a formula block into a continuous one switches the method.
+        app.editor = editor(Some("model"), "dy/dt = -a*y");
+        app.apply_equations();
+        let s = app.session.as_ref().unwrap();
+        assert_eq!(s.file.blocks[0].method.name, "rk4");
+        assert!(s.sweep().is_none());
     }
 
     #[test]

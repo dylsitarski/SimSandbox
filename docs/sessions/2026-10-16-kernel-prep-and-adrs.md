@@ -18,6 +18,7 @@
 - 2026-10-17: ADR 0016 (models choose the views shown, "More views…" for the rest) and views step 3 (tiles). 64 tests.
 - 2026-10-17: symbolic equation entry: `simsandbox-expr`, `eq.equations` (`EquationSet`), `equations` in model files, equation editor, predator–prey example; ADR 0017 written as Proposed (the parser approach was chosen by the agent and awaits the owner's confirmation).
 - 2026-10-17: owner accepted ADR 0017 and the recommendations for Q12–Q14 (ADRs 0018–0020); `plot.time` and `plot.phase` merged into `plot.xy` with view presets. 79 tests.
+- 2026-10-17: typed models without time: maps, formulas, sweeps (ADR 0021); logistic-map and resonance examples. 86 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
 - Wrote ADRs 0007 to 0015; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
@@ -41,6 +42,7 @@
 
 ## Notes for the next session
 
+- Sweep points use `lo*(1 - f) + hi*f`, so both ends are hit exactly (`lo + (hi - lo)*f` gave 0.9999999999999999 for 1.0).
 - The equation editor was checked through `apply_equations` tests and a screenshot of the typed predator–prey example, not by typing into the window.
 - egui's `horizontal_wrapped` did not wrap the slot combo boxes, so a 3D tile's header spilled into the next tile; slot pickers are now laid out in fixed-width rows sized to the tile. The default font lacks "✕"; the close button uses "×".
 - The app keeps one `ViewState` per visited view type so switching keeps bindings, style and camera; Save writes only the active one. Multi-view (step 3) should save the whole list.

@@ -242,3 +242,29 @@ fn typed_predator_prey_conserves_its_invariant() {
     }
     assert!(drift < 1e-6, "invariant drifted by {drift}");
 }
+
+#[test]
+fn typed_logistic_map_matches_its_exact_solution_at_r_4() {
+    // For r = 4, x[n] = sin²(2ⁿ·θ·π) when x[0] = sin²(θ·π).
+    use simsandbox_eq::{ExplicitBlock, Kind};
+    let lines = vec!["x[n+1] = r*x[n]*(1 - x[n])".to_string()];
+    let set = EquationSet::parse("m", &lines).unwrap();
+    let mut model = Model::new();
+    let id = model.add(Box::new(
+        ExplicitBlock::new(set, &Kind::Map.default_method()).unwrap(),
+    ));
+    let theta = 0.1234_f64;
+    let pi = std::f64::consts::PI;
+    model.set_param(id, "r", 4.0).unwrap();
+    model
+        .set_param(id, "x0", (theta * pi).sin().powi(2))
+        .unwrap();
+    let mut sim = Simulator::new(model, 0.0).unwrap();
+    // Chaos doubles rounding errors each step, so compare the first steps only.
+    for n in 1..=20 {
+        sim.step(1.0).unwrap();
+        let exact = (2f64.powi(n) * theta * pi).sin().powi(2);
+        let err = (sim.state(id)[0] - exact).abs();
+        assert!(err < 1e-8, "step {n}: error {err}");
+    }
+}

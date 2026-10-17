@@ -2,7 +2,7 @@
 
 _Last updated: 2026-10-17_
 
-Because parameters, ports and state are declared metadata, most of the interface can be generated rather than hand-built. The desktop app implements run, pause, restart, rewind with branching, paced playback, live time-series, phase-portrait and 3D trajectory views, and the parameter panel and typed equations (an editor opened from "New model…" or "Edit equations…", [ADR 0017](../decisions/0017-typed-equations.md)); everything else here is planned, in the order given in [STATUS.md](../STATUS.md).
+Because parameters, ports and state are declared metadata, most of the interface can be generated rather than hand-built. The desktop app implements run, pause, restart, rewind with branching, paced playback, live time-series, phase-portrait and 3D trajectory views, and the parameter panel and typed equations (an editor opened from "New model…" or "Edit equations…", [ADR 0017](../decisions/0017-typed-equations.md)), including discrete maps and formulas explored by sweeping a parameter ([ADR 0021](../decisions/0021-maps-formulas-and-sweeps.md)); everything else here is planned, in the order given in [STATUS.md](../STATUS.md).
 
 ## For fun
 

@@ -116,6 +116,16 @@
           "type": "array",
           "items": { "$ref": "#/$defs/ref" }
         },
+        "sweep": {
+          "type": "object",
+          "description": "The parameter swept when the model has no states (ADR 0021).",
+          "required": ["param"],
+          "properties": {
+            "param": { "$ref": "#/$defs/ref" },
+            "range": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+            "points": { "type": "integer", "minimum": 2, "maximum": 100000 }
+          }
+        },
         "views": {
           "type": "array",
           "description": "Views the model opens with; the app shows the first (ADR 0015).",

@@ -10,6 +10,8 @@ use simsandbox_file::{load, Binding, FileError, ModelFile, SCHEMA};
 const LORENZ: &str = include_str!("../../../examples/lorenz.ssbx.json");
 const OSCILLATORS: &str = include_str!("../../../examples/coupled-oscillators.ssbx.json");
 const PREDATOR_PREY: &str = include_str!("../../../examples/predator-prey.ssbx.json");
+const LOGISTIC: &str = include_str!("../../../examples/logistic-map.ssbx.json");
+const RESONANCE: &str = include_str!("../../../examples/resonance.ssbx.json");
 
 fn registry() -> Registry {
     let mut r = Registry::new();
@@ -27,7 +29,7 @@ fn invalid_path(text: &str) -> String {
 
 #[test]
 fn examples_load_without_warnings() {
-    for text in [LORENZ, OSCILLATORS, PREDATOR_PREY] {
+    for text in [LORENZ, OSCILLATORS, PREDATOR_PREY, LOGISTIC, RESONANCE] {
         let loaded = load(text, &registry()).unwrap();
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
         Simulator::new(loaded.model, 0.0).unwrap();
@@ -36,7 +38,7 @@ fn examples_load_without_warnings() {
 
 #[test]
 fn examples_are_written_exactly_as_saved() {
-    for text in [LORENZ, OSCILLATORS, PREDATOR_PREY] {
+    for text in [LORENZ, OSCILLATORS, PREDATOR_PREY, LOGISTIC, RESONANCE] {
         let (file, _) = ModelFile::from_json(text).unwrap();
         assert_eq!(file.to_json(), text);
     }
@@ -399,4 +401,33 @@ fn time_and_phase_views_are_converted_to_xy_plots() {
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     // Saving writes exactly the example, which uses plot.xy.
     assert_eq!(loaded.file.to_json(), OSCILLATORS);
+}
+
+#[test]
+fn sweeps_are_read_and_checked_leniently() {
+    let loaded = load(RESONANCE, &registry()).unwrap();
+    let sw = loaded.file.controls.sweep.as_ref().unwrap();
+    assert_eq!(
+        (sw.param.as_str(), sw.range, sw.points),
+        ("spring.w", Some([0.0, 3.0]), 600)
+    );
+
+    let unknown = load(
+        &RESONANCE.replace(r#""param": "spring.w""#, r#""param": "spring.q""#),
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(unknown.warnings.len(), 1);
+    assert!(unknown.file.controls.sweep.is_none());
+    let bad_range = RESONANCE.replace("0.0,\n        3.0", "3.0,\n        0.0");
+    let loaded = load(&bad_range, &registry()).unwrap();
+    assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
+    assert_eq!(loaded.file.controls.sweep.unwrap().range, None);
+
+    // Maps and formulas need the matching method.
+    let wrong = LOGISTIC.replace(r#""name": "iterate""#, r#""name": "rk4""#);
+    assert!(matches!(
+        load(&wrong, &registry()),
+        Err(FileError::Invalid { path, .. }) if path == "blocks[0].method"
+    ));
 }

@@ -90,6 +90,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0018-one-xy-plot.md](decisions/0018-one-xy-plot.md) | Decision record | One x–y plot replaces time-series and phase views; view presets |
 | [decisions/0019-equations-without-time.md](decisions/0019-equations-without-time.md) | Decision record | Typed models without time: formulas and discrete maps first |
 | [decisions/0020-methods-for-approximations.md](decisions/0020-methods-for-approximations.md) | Decision record | Only approximating operations have a method choice |
+| [decisions/0021-maps-formulas-and-sweeps.md](decisions/0021-maps-formulas-and-sweeps.md) | Decision record | Maps, formula blocks, parameter sweeps, the index axis |
 
 ### Guides
 

@@ -26,6 +26,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0018](0018-one-xy-plot.md) | One x–y plot replaces the time-series and phase-portrait views | Accepted | 2026-10-17 |
 | [0019](0019-equations-without-time.md) | Typed models without time: formulas and discrete maps first | Accepted | 2026-10-17 |
 | [0020](0020-methods-for-approximations.md) | Only approximating operations have a method choice | Accepted | 2026-10-17 |
+| [0021](0021-maps-formulas-and-sweeps.md) | Maps, formula blocks and parameter sweeps | Accepted | 2026-10-17 |
 
 ## When to write one
 

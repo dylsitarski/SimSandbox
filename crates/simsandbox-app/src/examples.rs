@@ -20,6 +20,14 @@ pub const EXAMPLES: &[Example] = &[
         name: "Predator and prey (typed equations)",
         text: include_str!("../../../examples/predator-prey.ssbx.json"),
     },
+    Example {
+        name: "Logistic map (a discrete map)",
+        text: include_str!("../../../examples/logistic-map.ssbx.json"),
+    },
+    Example {
+        name: "Resonance curve (formulas, swept)",
+        text: include_str!("../../../examples/resonance.ssbx.json"),
+    },
 ];
 
 /// Every block type the app can load.

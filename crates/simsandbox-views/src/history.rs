@@ -5,7 +5,8 @@
 
 use egui_plot::PlotPoint;
 
-/// The name that binds a slot to simulated time.
+/// The name that binds a slot to the index: simulated time, or the swept
+/// parameter when a model is swept (ADR 0021).
 pub const TIME: &str = "t";
 
 /// When a run grows past this many samples, every other sample is dropped:
@@ -22,6 +23,8 @@ pub enum SignalRef {
 }
 
 pub struct History {
+    /// What the index is: `t`, or a swept parameter such as `spring.w`.
+    index: String,
     names: Vec<String>,
     times: Vec<f64>,
     /// Per signal, `(t, value)` points, ready to plot against time.
@@ -29,10 +32,18 @@ pub struct History {
 }
 
 impl History {
-    /// An empty history of the named signals, e.g. `lorenz.xyz[0]`, `a.x`.
+    /// An empty history of the named signals, e.g. `lorenz.xyz[0]`, `a.x`,
+    /// indexed by time.
     pub fn new(names: Vec<String>) -> Self {
+        Self::with_index(TIME, names)
+    }
+
+    /// An empty history indexed by something other than time, e.g. a swept
+    /// parameter. `t` still binds to the index.
+    pub fn with_index(index: &str, names: Vec<String>) -> Self {
         let points = names.iter().map(|_| Vec::new()).collect();
         Self {
+            index: index.into(),
             names,
             times: Vec::new(),
             points,
@@ -41,6 +52,11 @@ impl History {
 
     pub fn names(&self) -> &[String] {
         &self.names
+    }
+
+    /// The name of the index: `t`, or the swept parameter.
+    pub fn index(&self) -> &str {
+        &self.index
     }
 
     /// Number of samples.
@@ -94,7 +110,7 @@ impl History {
 
     /// Find a signal by name; `t` is time.
     pub fn resolve(&self, name: &str) -> Option<SignalRef> {
-        if name == TIME {
+        if name == TIME || name == self.index {
             return Some(SignalRef::Time);
         }
         self.names
@@ -105,7 +121,7 @@ impl History {
 
     pub fn name(&self, s: SignalRef) -> &str {
         match s {
-            SignalRef::Time => TIME,
+            SignalRef::Time => &self.index,
             SignalRef::Signal(i) => &self.names[i],
         }
     }
@@ -158,6 +174,11 @@ mod tests {
         assert_eq!(h.values(SignalRef::Time), h.times());
         h.clear();
         assert!(h.is_empty());
+
+        let swept = History::with_index("s.w", vec!["s.a".into()]);
+        assert_eq!(swept.resolve("t"), Some(SignalRef::Time));
+        assert_eq!(swept.resolve("s.w"), Some(SignalRef::Time));
+        assert_eq!(swept.name(SignalRef::Time), "s.w");
     }
 
     #[test]

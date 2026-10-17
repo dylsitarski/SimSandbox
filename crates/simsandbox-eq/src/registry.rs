@@ -2,7 +2,7 @@
 
 use crate::integrators::Integrator;
 use crate::ode::OdeBlock;
-use crate::symbolic::EquationSet;
+use crate::symbolic::{EquationSet, ExplicitBlock, Kind};
 use crate::systems::{CoupledOscillator, Lorenz};
 use simsandbox_core::block::Block;
 use simsandbox_core::registry::{BlockConfig, Registry};
@@ -28,7 +28,11 @@ pub fn register(registry: &mut Registry) -> Result<()> {
         ode_block(CoupledOscillator::new(name, 0.0), c)
     })?;
     registry.register(EQUATIONS, |name, c| {
-        ode_block(EquationSet::parse(name, &c.definition)?, c)
+        let set = EquationSet::parse(name, &c.definition)?;
+        match set.kind() {
+            Kind::Continuous => ode_block(set, c),
+            Kind::Map | Kind::Formulas => Ok(Box::new(ExplicitBlock::new(set, &c.method)?)),
+        }
     })?;
     Ok(())
 }

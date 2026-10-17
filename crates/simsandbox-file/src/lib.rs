@@ -158,6 +158,9 @@ pub struct Controls {
     /// The views the model opens with (ADR 0015); the app shows the first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<ViewEntry>,
+    /// The parameter swept when the model has no states (ADR 0019, ADR 0021).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweep: Option<SweepControl>,
     /// The single view of ADR 0014. Still read; converted into `views` on
     /// load and never written.
     #[serde(default, skip_serializing)]
@@ -201,6 +204,26 @@ impl ViewEntry {
     }
 }
 
+/// A parameter swept across a range when a model has no states: outputs
+/// are evaluated at `points` values from `range[0]` to `range[1]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SweepControl {
+    /// `"block.param"`.
+    pub param: String,
+    /// The parameter's slider range or suggested range if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<[f64; 2]>,
+    #[serde(default = "default_sweep_points")]
+    pub points: usize,
+}
+
+/// Points in a sweep unless a file says otherwise.
+pub const DEFAULT_SWEEP_POINTS: usize = 400;
+
+fn default_sweep_points() -> usize {
+    DEFAULT_SWEEP_POINTS
+}
+
 /// One signal, or a list for slots that take several.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -235,6 +258,7 @@ impl Controls {
             && self.speed.is_none()
             && self.plots.is_empty()
             && self.views.is_empty()
+            && self.sweep.is_none()
             && self.view.is_none()
     }
 }
@@ -590,6 +614,36 @@ impl ModelFile {
                 // ADR 0014's single view becomes the first of `views`.
                 None if c.views.is_empty() => c.views.push(v.into_entry()),
                 None => {}
+            }
+        }
+        if let Some(sw) = &mut c.sweep {
+            let known = port_ref(&sw.param, ids).ok().is_some_and(|(id, name)| {
+                model
+                    .block(id)
+                    .is_ok_and(|b| b.spec().params.iter().any(|p| p.name == name))
+            });
+            if !known {
+                warnings.push(format!(
+                    "controls.sweep: no parameter '{}'; ignored",
+                    sw.param
+                ));
+                c.sweep = None;
+            } else {
+                if let Some([lo, hi]) = sw.range {
+                    if !(lo.is_finite() && hi.is_finite() && lo < hi) {
+                        warnings.push(format!(
+                            "controls.sweep.range: [{lo}, {hi}] is not an increasing finite range; ignored"
+                        ));
+                        sw.range = None;
+                    }
+                }
+                if !(2..=100_000).contains(&sw.points) {
+                    warnings.push(format!(
+                        "controls.sweep.points: {} is outside 2 to 100000; using {DEFAULT_SWEEP_POINTS}",
+                        sw.points
+                    ));
+                    sw.points = DEFAULT_SWEEP_POINTS;
+                }
             }
         }
         let mut kept = Vec::new();

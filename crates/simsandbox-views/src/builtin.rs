@@ -158,7 +158,7 @@ impl View for Xy {
         let n = h.len();
         let first = trail_start(h.times(), input.style("trail_length"));
         let against_time = x == SignalRef::Time;
-        let x_label = if against_time {
+        let x_label = if against_time && h.index() == TIME {
             "t [s]".to_string()
         } else {
             h.name(x).to_string()

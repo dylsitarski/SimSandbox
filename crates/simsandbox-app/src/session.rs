@@ -2,12 +2,12 @@
 //! recorded signals the views draw from, and its parameters.
 
 use simsandbox_core::block::{MethodLabels, Shape};
-use simsandbox_core::graph::BlockId;
+use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::{Simulator, Snapshot};
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
-use simsandbox_file::{ModelFile, ViewEntry};
+use simsandbox_file::{ModelFile, SweepControl, ViewEntry, DEFAULT_SWEEP_POINTS};
 use simsandbox_views::history::thin;
 use simsandbox_views::History;
 use std::collections::BTreeMap;
@@ -39,6 +39,19 @@ pub struct ParamRow {
     pub value: f64,
 }
 
+/// A parameter swept across a range, for models with no states
+/// (ADR 0019, ADR 0021): the outputs are evaluated at each value instead of
+/// running in time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sweep {
+    /// `"block.param"`.
+    pub key: String,
+    pub block: BlockId,
+    pub param: String,
+    pub range: [f64; 2],
+    pub points: usize,
+}
+
 pub struct Session {
     /// Display name, e.g. the file name.
     pub title: String,
@@ -57,6 +70,8 @@ pub struct Session {
     sim: Simulator,
     snapshots: Vec<Snapshot>,
     steps_since_snapshot: usize,
+    /// Set when the model has no states: it is swept, not run.
+    sweep: Option<Sweep>,
 }
 
 impl Session {
@@ -89,6 +104,11 @@ impl Session {
             }
         }
         let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
+        let sweep = default_sweep(&loaded.file, &loaded.ids, sim.model());
+        let signals = match &sweep {
+            Some(sw) => History::with_index(&sw.key, names),
+            None => History::new(names),
+        };
         let mut session = Self {
             title: title.into(),
             description: loaded.file.description.clone(),
@@ -97,13 +117,18 @@ impl Session {
             file: loaded.file,
             ids: loaded.ids,
             warnings: loaded.warnings,
-            signals: History::new(names),
+            signals,
             sources,
             snapshots: vec![sim.snapshot()],
             sim,
             steps_since_snapshot: 0,
+            sweep,
         };
-        session.record();
+        if session.sweep.is_some() {
+            session.recompute_sweep();
+        } else {
+            session.record();
+        }
         Ok(session)
     }
 
@@ -177,7 +202,9 @@ impl Session {
         self.sim
             .set_param(block, name, value)
             .map_err(|e| e.to_string())?;
-        if self.time() == 0.0 && self.snapshots.len() == 1 {
+        if self.sweep.is_some() {
+            self.recompute_sweep();
+        } else if self.time() == 0.0 && self.snapshots.len() == 1 {
             self.restart().map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -186,6 +213,10 @@ impl Session {
     /// Start again at t = 0 from the current parameter values. History and
     /// plots start over.
     pub fn restart(&mut self) -> Result<(), SimError> {
+        if self.sweep.is_some() {
+            self.recompute_sweep();
+            return Ok(());
+        }
         self.sim.restart(0.0)?;
         self.snapshots = vec![self.sim.snapshot()];
         self.steps_since_snapshot = 0;
@@ -210,7 +241,76 @@ impl Session {
         if let Some(v) = views {
             self.file.controls.views = v;
         }
+        if let Some(sw) = &self.sweep {
+            self.file.controls.sweep = Some(SweepControl {
+                param: sw.key.clone(),
+                range: Some(sw.range),
+                points: sw.points,
+            });
+        }
         Ok(self.file.to_json())
+    }
+
+    /// The sweep, if the model is swept instead of run.
+    pub fn sweep(&self) -> Option<&Sweep> {
+        self.sweep.as_ref()
+    }
+
+    /// Change what is swept; `key` is `"block.param"`. Recomputes at once.
+    pub fn set_sweep(&mut self, key: &str, range: [f64; 2], points: usize) -> Result<(), String> {
+        if self.sweep.is_none() {
+            return Err("this model has states, so it runs in time instead".into());
+        }
+        let (block, param) = key
+            .split_once('.')
+            .and_then(|(b, p)| Some((*self.ids.get(b)?, p.to_string())))
+            .ok_or_else(|| format!("no parameter '{key}'"))?;
+        if self.sim.param(block, &param).is_err() {
+            return Err(format!("no parameter '{key}'"));
+        }
+        if !(range[0].is_finite() && range[1].is_finite() && range[0] < range[1]) {
+            return Err(format!(
+                "[{}, {}] is not an increasing range",
+                range[0], range[1]
+            ));
+        }
+        let sw = self.sweep.as_mut().expect("checked above");
+        *sw = Sweep {
+            key: key.into(),
+            block,
+            param,
+            range,
+            points: points.clamp(2, 100_000),
+        };
+        self.signals = History::with_index(key, self.signals.names().to_vec());
+        self.recompute_sweep();
+        Ok(())
+    }
+
+    /// Evaluate the outputs at every value of the swept parameter.
+    fn recompute_sweep(&mut self) {
+        let Some(sw) = self.sweep.clone() else {
+            return;
+        };
+        self.signals.clear();
+        let Ok(original) = self.sim.param(sw.block, &sw.param) else {
+            return;
+        };
+        let [lo, hi] = sw.range;
+        for k in 0..sw.points {
+            // Weighted this way, the first and last points hit the range ends exactly.
+            let f = k as f64 / (sw.points - 1) as f64;
+            let v = lo * (1.0 - f) + hi * f;
+            if self.sim.set_param(sw.block, &sw.param, v).is_err() || self.sim.restart(0.0).is_err()
+            {
+                continue;
+            }
+            let values = self.output_values();
+            self.signals.push(v, &values);
+        }
+        // Leave the model as the panel shows it.
+        let _ = self.sim.set_param(sw.block, &sw.param, original);
+        let _ = self.sim.restart(0.0);
     }
 
     /// Earliest and latest time the run can be rewound to.
@@ -234,8 +334,12 @@ impl Session {
     }
 
     fn record(&mut self) {
-        let values: Vec<f64> = self
-            .sources
+        let values = self.output_values();
+        self.signals.push(self.sim.time(), &values);
+    }
+
+    fn output_values(&self) -> Vec<f64> {
+        self.sources
             .iter()
             .map(|src| {
                 self.sim
@@ -244,9 +348,53 @@ impl Session {
                     .copied()
                     .unwrap_or(f64::NAN)
             })
-            .collect();
-        self.signals.push(self.sim.time(), &values);
+            .collect()
     }
+}
+
+/// The sweep for a model with no states: the file's `controls.sweep`, or
+/// the first parameter over its slider or suggested range. `None` if any
+/// block has states.
+fn default_sweep(
+    file: &ModelFile,
+    ids: &BTreeMap<String, BlockId>,
+    model: &Model,
+) -> Option<Sweep> {
+    let mut first = None;
+    for entry in &file.blocks {
+        let spec = model.block(ids[&entry.name]).ok()?.spec();
+        if !spec.states.is_empty() {
+            return None;
+        }
+        if first.is_none() {
+            if let Some(p) = spec.params.first() {
+                first = Some(format!("{}.{}", entry.name, p.name));
+            }
+        }
+    }
+    let saved = file.controls.sweep.as_ref();
+    let key = saved.map(|s| s.param.clone()).or(first)?;
+    let (block_name, param) = key.split_once('.')?;
+    let block = *ids.get(block_name)?;
+    let spec = model
+        .block(block)
+        .ok()?
+        .spec()
+        .params
+        .iter()
+        .find(|p| p.name == param)?
+        .clone();
+    let range = saved
+        .and_then(|s| s.range)
+        .or_else(|| file.controls.params.get(&key).and_then(|c| c.range))
+        .unwrap_or([spec.suggested_min, spec.suggested_max]);
+    Some(Sweep {
+        key: key.clone(),
+        block,
+        param: param.into(),
+        range,
+        points: saved.map_or(DEFAULT_SWEEP_POINTS, |s| s.points),
+    })
 }
 
 #[cfg(test)]
@@ -368,6 +516,68 @@ mod tests {
             s.step().unwrap();
         }
         assert!((s.time() - 0.5).abs() < 1e-9);
+    }
+
+    fn example(name_part: &str) -> Session {
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains(name_part))
+            .unwrap();
+        Session::load(e.name, e.text, &registry()).unwrap()
+    }
+
+    fn values(s: &Session, signal: &str) -> Vec<f64> {
+        let r = s.signals.resolve(signal).unwrap();
+        s.signals.values(r)
+    }
+
+    #[test]
+    fn formula_models_are_swept_not_run() {
+        let mut s = example("Resonance");
+        let sw = s.sweep().unwrap().clone();
+        assert_eq!(
+            (sw.key.as_str(), sw.range, sw.points),
+            ("spring.w", [0.0, 3.0], 600)
+        );
+        assert_eq!(s.signals.index(), "spring.w");
+        assert_eq!(s.signals.len(), 600);
+        let amp = values(&s, "spring.amplitude");
+        // At w = 0 the swing is F/k; near w = 1 it peaks at about F/c.
+        assert!((amp[0] - 1.0).abs() < 1e-12);
+        let peak = amp.iter().cloned().fold(0.0, f64::max);
+        assert!((peak - 5.0).abs() < 0.1, "peak {peak}");
+
+        // Moving a slider recomputes at once; the swept value is left alone.
+        let id = s.ids["spring"];
+        s.set_param(id, "c", 0.1).unwrap();
+        let peak = values(&s, "spring.amplitude")
+            .into_iter()
+            .fold(0.0, f64::max);
+        assert!((peak - 10.0).abs() < 0.3, "peak {peak}");
+        assert_eq!(
+            s.params().iter().find(|r| r.name == "w").unwrap().value,
+            1.0
+        );
+
+        // Sweep something else.
+        s.set_sweep("spring.c", [0.1, 1.0], 10).unwrap();
+        assert_eq!(s.signals.index(), "spring.c");
+        assert_eq!(s.signals.times()[9], 1.0);
+        assert!(s.set_sweep("spring.c", [1.0, 0.1], 10).is_err());
+        assert!(s.set_sweep("spring.q", [0.0, 1.0], 10).is_err());
+        let saved = s.save_json(1.0, None).unwrap();
+        assert!(saved.contains("\"param\": \"spring.c\""));
+    }
+
+    #[test]
+    fn maps_step_once_per_communication_step() {
+        let mut s = example("Logistic");
+        assert!(s.sweep().is_none());
+        s.step().unwrap();
+        let x = values(&s, "population.x");
+        assert_eq!(x[0], 0.2);
+        assert!((x[1] - 3.7 * 0.2 * 0.8).abs() < 1e-15);
+        assert_eq!(s.time(), 1.0);
     }
 
     #[test]

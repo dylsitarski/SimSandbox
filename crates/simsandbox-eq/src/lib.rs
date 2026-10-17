@@ -22,4 +22,4 @@ pub use group::EquationGroup;
 pub use integrators::Integrator;
 pub use ode::{OdeBlock, OdeSystem};
 pub use registry::register;
-pub use symbolic::EquationSet;
+pub use symbolic::{EquationSet, ExplicitBlock, Kind};

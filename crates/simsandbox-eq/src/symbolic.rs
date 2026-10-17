@@ -8,7 +8,12 @@
 //! r = sqrt(x^2 + y^2 + z^2)
 //! ```
 //!
-//! - `dx/dt = …` (or `x' = …`) makes `x` a state.
+//! - `dx/dt = …` (or `x' = …`) makes `x` a state that changes continuously.
+//! - `x[n+1] = …` makes `x` a state of a discrete map, updated once per step
+//!   (ADR 0019); on the right, `x[n]` and `x` both mean the current value.
+//!   A block is either continuous or a map. `n` is reserved in maps.
+//! - A block with only `name = …` lines is a set of formulas with no state
+//!   (ADR 0019), evaluated from its parameters (and `t`).
 //! - `name = …` defines a quantity computed from the states, e.g. an
 //!   energy; it may use quantities defined above it.
 //! - Every other name is a parameter (default 1). Each state `x` also gets
@@ -20,15 +25,45 @@
 
 use crate::ode::OdeSystem;
 use simsandbox_core::block::{
-    BlockSpec, Domain, Equations, ParamSpec, PortSpec, Shape, TimeSemantics,
+    AccuracyClass, Block, BlockSpec, Domain, Equations, MethodLabels, MethodSpec, ParamSpec,
+    PortSpec, Shape, SpeedClass, StepContext, StepIo, TimeSemantics,
 };
+use simsandbox_core::registry::MethodSettings;
 use simsandbox_core::units::Unit;
 use simsandbox_core::{Result, SimError};
 use simsandbox_expr::{is_reserved, parse, Ast, Expr};
 use std::cell::RefCell;
 
+/// What a set of typed equations describes (ADR 0019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// `dx/dt = …`: integrated by an ODE method.
+    Continuous,
+    /// `x[n+1] = …`: iterated once per step (method `iterate`).
+    Map,
+    /// Only `name = …`: evaluated, no state (method `evaluate`).
+    Formulas,
+}
+
+impl Kind {
+    /// The method a block of this kind uses by default.
+    pub fn default_method(self) -> MethodSettings {
+        match self {
+            Kind::Continuous => MethodSettings::new("rk4").with("substeps", 1.0),
+            Kind::Map => MethodSettings::new(ITERATE),
+            Kind::Formulas => MethodSettings::new(EVALUATE),
+        }
+    }
+}
+
+/// Method name of map blocks.
+pub const ITERATE: &str = "iterate";
+/// Method name of formula blocks.
+pub const EVALUATE: &str = "evaluate";
+
 /// A system of typed equations.
 pub struct EquationSet {
+    kind: Kind,
     spec: BlockSpec,
     states: usize,
     params: usize,
@@ -52,6 +87,7 @@ struct Line {
 
 enum Lhs {
     State(String),
+    Map(String),
     Defined(String),
 }
 
@@ -65,9 +101,13 @@ fn is_name(s: &str) -> bool {
         && chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// Read the left-hand side: `dx/dt` or `x'` for a state, a name otherwise.
+/// Read the left-hand side: `dx/dt` or `x'` for a continuous state,
+/// `x[n+1]` for a map state, a name otherwise.
 fn read_lhs(lhs: &str) -> Option<Lhs> {
     let compact: String = lhs.chars().filter(|c| !c.is_whitespace()).collect();
+    if let Some(name) = compact.strip_suffix("[n+1]") {
+        return is_name(name).then(|| Lhs::Map(name.into()));
+    }
     if let Some(name) = compact.strip_suffix('\'') {
         return is_name(name).then(|| Lhs::State(name.into()));
     }
@@ -85,7 +125,8 @@ fn read_lhs(lhs: &str) -> Option<Lhs> {
 impl EquationSet {
     /// Build from the lines of a definition, as a Block named `name`.
     pub fn parse(name: &str, lines: &[String]) -> Result<Self> {
-        let mut parsed = Vec::new();
+        // First the left-hand sides, which decide the kind of block.
+        let mut sides = Vec::new();
         for (k, text) in lines.iter().enumerate() {
             let number = k + 1;
             let trimmed = text.trim();
@@ -103,16 +144,45 @@ impl EquationSet {
                 definition_error(
                     number,
                     1,
-                    format!("'{}' is not 'dx/dt', 'x'' or a name", lhs.trim()),
+                    format!("'{}' is not 'dx/dt', 'x'', 'x[n+1]' or a name", lhs.trim()),
                 )
             })?;
-            let offset = lhs.chars().count() + 1;
+            sides.push((number, lhs.chars().count() + 1, lhs_kind, rhs));
+        }
+        if sides.is_empty() {
+            return Err(SimError::InvalidDefinition(
+                "no equations: write lines like 'dx/dt = -k*x', 'x[n+1] = r*x*(1 - x)' or 'y = a*x^2'"
+                    .into(),
+            ));
+        }
+        let continuous = sides.iter().find(|s| matches!(s.2, Lhs::State(_)));
+        let map = sides.iter().find(|s| matches!(s.2, Lhs::Map(_)));
+        let kind = match (continuous, map) {
+            (Some(_), Some(m)) => {
+                return Err(definition_error(
+                    m.0,
+                    1,
+                    "a block is either continuous (dx/dt) or a map (x[n+1]), not both",
+                ))
+            }
+            (Some(_), None) => Kind::Continuous,
+            (None, Some(_)) => Kind::Map,
+            (None, None) => Kind::Formulas,
+        };
+        let mut parsed = Vec::new();
+        for (number, offset, lhs, rhs) in sides {
+            // In maps, x[n] is the current value: blank out "[n]" so columns stay put.
+            let rhs = if kind == Kind::Map {
+                rhs.replace("[n]", "   ")
+            } else {
+                rhs.to_string()
+            };
             let ast =
-                parse(rhs).map_err(|e| definition_error(number, offset + e.column, e.message))?;
+                parse(&rhs).map_err(|e| definition_error(number, offset + e.column, e.message))?;
             parsed.push(Line {
                 number,
                 offset,
-                lhs: lhs_kind,
+                lhs,
                 ast,
             });
         }
@@ -122,7 +192,7 @@ impl EquationSet {
         let mut defined: Vec<String> = Vec::new();
         for line in &parsed {
             let n = match &line.lhs {
-                Lhs::State(n) | Lhs::Defined(n) => n,
+                Lhs::State(n) | Lhs::Map(n) | Lhs::Defined(n) => n,
             };
             if n == "t" || is_reserved(n) {
                 return Err(definition_error(
@@ -139,16 +209,10 @@ impl EquationSet {
                 ));
             }
             match &line.lhs {
-                Lhs::State(_) => states.push(n.clone()),
+                Lhs::State(_) | Lhs::Map(_) => states.push(n.clone()),
                 Lhs::Defined(_) => defined.push(n.clone()),
             }
         }
-        if states.is_empty() {
-            return Err(SimError::InvalidDefinition(
-                "no state equations: write at least one line like 'dx/dt = -k*x'".into(),
-            ));
-        }
-
         // Every other name is a parameter, in order of first use.
         let mut params: Vec<String> = Vec::new();
         for line in &parsed {
@@ -157,6 +221,18 @@ impl EquationSet {
                 if !known && !params.contains(&n) {
                     params.push(n);
                 }
+            }
+        }
+        if kind == Kind::Map {
+            if let Some(line) = parsed
+                .iter()
+                .find(|l| l.ast.names().iter().any(|(n, _)| n == "n"))
+            {
+                return Err(definition_error(
+                    line.number,
+                    1,
+                    "'n' is the step number in maps and cannot be used in equations yet",
+                ));
             }
         }
         let mut initial = Vec::new();
@@ -210,7 +286,7 @@ impl EquationSet {
                 })
             };
             match &line.lhs {
-                Lhs::State(n) => {
+                Lhs::State(n) | Lhs::Map(n) => {
                     let i = states.iter().position(|s| s == n).expect("state listed");
                     rhs[i] = Some(resolve(defined.len())?);
                 }
@@ -247,13 +323,18 @@ impl EquationSet {
             .collect();
         let slots = 1 + ns + np + defined.len();
         Ok(Self {
+            kind,
             spec: BlockSpec {
                 name: name.into(),
                 domain: Domain::Equations,
                 ports,
                 params: param_specs,
                 states: states.clone(),
-                time: TimeSemantics::Continuous,
+                time: match kind {
+                    Kind::Continuous => TimeSemantics::Continuous,
+                    Kind::Map => TimeSemantics::DiscreteEvent,
+                    Kind::Formulas => TimeSemantics::Stateless,
+                },
             },
             states: ns,
             params: np,
@@ -265,6 +346,10 @@ impl EquationSet {
             initial,
             scratch: RefCell::new(vec![0.0; slots]),
         })
+    }
+
+    pub fn kind(&self) -> Kind {
+        self.kind
     }
 
     /// Fill the value buffer for time `t`, states `x` and parameters `p`,
@@ -308,6 +393,86 @@ impl OdeSystem for EquationSet {
         for (x, &i) in x0.iter_mut().zip(&self.initial) {
             *x = p[i];
         }
+    }
+}
+
+/// A map or a set of formulas as a kernel Block (ADR 0019): maps are
+/// iterated once per communication step, formulas are evaluated. Neither
+/// approximates anything, so there is no method to choose (ADR 0020).
+pub struct ExplicitBlock {
+    set: EquationSet,
+    method: MethodSpec,
+    next: Vec<f64>,
+}
+
+impl ExplicitBlock {
+    /// Wrap a map or formula set; `method` must be `iterate` for maps and
+    /// `evaluate` for formulas.
+    pub fn new(set: EquationSet, method: &MethodSettings) -> Result<Self> {
+        let (expected, label) = match set.kind {
+            Kind::Map => (ITERATE, "Iterate the map once per step"),
+            Kind::Formulas => (EVALUATE, "Evaluate the formulas"),
+            Kind::Continuous => {
+                return Err(SimError::InvalidMethod(
+                    "continuous equations need an ODE method such as rk4".into(),
+                ))
+            }
+        };
+        if method.name != expected || !method.options.is_empty() {
+            let what = if set.kind == Kind::Map {
+                "maps are iterated"
+            } else {
+                "formulas are evaluated"
+            };
+            return Err(SimError::InvalidMethod(format!(
+                "{what}: use method '{expected}' with no options"
+            )));
+        }
+        let states = set.spec.states.len();
+        Ok(Self {
+            set,
+            method: MethodSpec {
+                name: label.into(),
+                // No discretisation error, but not benchmarked case by case.
+                labels: MethodLabels {
+                    speed: SpeedClass::RealTime,
+                    accuracy: AccuracyClass::Quantitative,
+                },
+            },
+            next: vec![0.0; states],
+        })
+    }
+}
+
+impl Block for ExplicitBlock {
+    fn spec(&self) -> &BlockSpec {
+        &self.set.spec
+    }
+
+    fn method(&self) -> &MethodSpec {
+        &self.method
+    }
+
+    fn init(&mut self, params: &[f64], state: &mut [f64]) -> Result<()> {
+        self.set.initial_state(params, state);
+        Ok(())
+    }
+
+    fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
+        if self.set.kind == Kind::Map {
+            // All states update together from the current values.
+            self.set
+                .rhs(ctx.t, io.state, io.inputs, io.params, &mut self.next);
+            io.state.copy_from_slice(&self.next);
+        }
+        self.set
+            .outputs(ctx.t + ctx.dt, io.state, io.params, io.outputs);
+        Ok(())
+    }
+
+    fn compute_outputs(&self, t: f64, io: StepIo<'_>) -> Result<()> {
+        self.set.outputs(t, io.state, io.params, io.outputs);
+        Ok(())
     }
 }
 
@@ -360,6 +525,60 @@ mod tests {
     }
 
     #[test]
+    fn maps_iterate_all_states_together() {
+        // A rotation by 90 degrees: needs the old x to compute the new y.
+        let s = set(&["x[n+1] = -y[n]", "y[n+1] = x"]).unwrap();
+        assert_eq!(s.kind(), Kind::Map);
+        let mut b = ExplicitBlock::new(s, &Kind::Map.default_method()).unwrap();
+        let (p, mut x, mut y) = ([1.0, 0.0], [0.0; 2], [0.0; 2]);
+        b.init(&p, &mut x).unwrap();
+        let ctx = StepContext { t: 0.0, dt: 1.0 };
+        let mut step = |x: &mut [f64], y: &mut [f64]| {
+            b.do_step(
+                ctx,
+                StepIo {
+                    params: &p,
+                    inputs: &[],
+                    state: x,
+                    outputs: y,
+                },
+            )
+            .unwrap();
+        };
+        step(&mut x, &mut y);
+        assert_eq!(x, [0.0, 1.0]);
+        step(&mut x, &mut y);
+        assert_eq!(x, [-1.0, 0.0]);
+        assert_eq!(y, x);
+    }
+
+    #[test]
+    fn formulas_have_no_state_and_need_the_evaluate_method() {
+        let s = set(&["y = a*x^2 + b"]).unwrap();
+        assert_eq!(s.kind(), Kind::Formulas);
+        assert!(s.spec().states.is_empty());
+        let names: Vec<_> = s.spec().params.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["a", "x", "b"]);
+        assert!(ExplicitBlock::new(set(&["y = 1"]).unwrap(), &Kind::Map.default_method()).is_err());
+        assert!(
+            ExplicitBlock::new(set(&["dx/dt = 1"]).unwrap(), &Kind::Map.default_method()).is_err()
+        );
+        let b = ExplicitBlock::new(s, &Kind::Formulas.default_method()).unwrap();
+        let mut y = [0.0];
+        b.compute_outputs(
+            0.0,
+            StepIo {
+                params: &[2.0, 3.0, 1.0],
+                inputs: &[],
+                state: &mut [],
+                outputs: &mut y,
+            },
+        )
+        .unwrap();
+        assert_eq!(y, [19.0]);
+    }
+
+    #[test]
     fn time_and_defined_quantities_can_be_used() {
         let s = set(&["a = sin(t)", "b = 2*a", "dx/dt = b"]).unwrap();
         let mut dx = [0.0];
@@ -380,6 +599,8 @@ mod tests {
         assert!(error(&["a = b", "b = 1", "dx/dt = a"]).contains("defined further down"));
         assert!(error(&["x + 1"]).contains("expected an equation"));
         assert!(error(&["2x = 1"]).contains("is not"));
-        assert!(error(&["E = 1"]).contains("no state equations"));
+        assert!(error(&["# only a comment"]).contains("no equations"));
+        assert!(error(&["dx/dt = 1", "y[n+1] = y"]).contains("not both"));
+        assert!(error(&["x[n+1] = x + n"]).contains("step number"));
     }
 }
