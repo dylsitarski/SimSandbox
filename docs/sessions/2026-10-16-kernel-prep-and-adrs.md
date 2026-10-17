@@ -36,6 +36,7 @@
 
 ## Left open
 
+- Q12 (equations without time or states), Q13 (merge time and phase plots), Q14 (methods for approximating operations), raised by the owner 2026-10-17 ([open questions](../open-questions.md)).
 - Owner to confirm ADR 0017 (typed equations, proposed). Q5 (algebraic loops) remains ([open questions](../open-questions.md)).
 
 ## Notes for the next session

@@ -25,6 +25,9 @@ Hobbyists should be able to type `dx/dt = sigma*(y - x)` and get a running model
 
 ## Consequences
 
+- **Scope:** the language stays deliberately small: expressions, ODEs, computed quantities and, if [Q12](../open-questions.md) is accepted, discrete maps and simple implicit equations. It does not grow into a general modelling language; acausal models, index reduction of DAEs and heavy simplification go to an external backend (Julia ModelingToolkit or a Modelica tool, [solver backends](../architecture/solver-backends.md)), which can read the same `equations` text.
+- **Costs we take on:** units in expressions, symbolic derivatives and conditionals are ours to write (small for this grammar); arrays and indexed equations for large models are real language-design work; the tree-walking evaluator is several times slower than compiled code, so large real-time models will need bytecode or JIT compilation.
+
 - No new runtime dependency; typed models start instantly and run at the same speed class as built-in ones (a typed Lorenz system matches the built-in one bit for bit).
 - Equations are dimensionless until units are added; typed blocks have no inputs yet, so they cannot be wired to other blocks.
 - Derived signals (views step 4) can reuse the parser directly.
