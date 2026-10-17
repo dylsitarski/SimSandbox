@@ -14,6 +14,7 @@
 - Saved the opening view in `controls` (ADR 0014) and made the scroll wheel zoom 2D plots. 52 tests.
 - Added native Open, Save and Save as dialogs (`rfd`, XDG portal backend on Linux, so no GTK build dependency) and keyboard shortcuts; the path field is gone. 54 tests.
 - Pluggable views steps 1–2: `simsandbox-views` (history, view contract and registry, colour encodings, built-in views), `controls.views` with conversion of the older `view`, slot pickers, colour slot, `trail_length`. Verified with screenshots of all three views and a 3 s trail. 63 tests.
+- 2026-10-17: `trail_length` 0 now shows no trail and -1 the whole run (owner's request); Q11 raised (which views a model offers).
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
 - Wrote ADRs 0007 to 0015; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
@@ -32,6 +33,7 @@
 
 ## Left open
 
+- Q11: which views a model offers ([open questions](../open-questions.md)).
 - Q4 (equation parsing) and Q5 (algebraic loops) remain ([open questions](../open-questions.md)).
 
 ## Notes for the next session

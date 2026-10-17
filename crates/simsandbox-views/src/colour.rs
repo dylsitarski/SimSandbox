@@ -87,11 +87,12 @@ pub fn sequential(x: f32) -> Color32 {
     Color32::from_rgb(mix(a[0], b[0]), mix(a[1], b[1]), mix(a[2], b[2]))
 }
 
-/// First sample to draw when only the last `length` seconds of trail are
-/// shown; a length of 0 (or less) shows the whole run.
+/// First sample to draw when the last `length` seconds of trail are shown:
+/// a negative length shows the whole run, 0 no trail (the first sample
+/// returned is then the newest, so no segment is drawn).
 pub fn trail_start(times: &[f64], length: f64) -> usize {
     match times.last() {
-        Some(&last) if length > 0.0 => times.partition_point(|&t| t < last - length),
+        Some(&last) if length >= 0.0 => times.partition_point(|&t| t < last - length),
         _ => 0,
     }
 }
@@ -128,10 +129,15 @@ mod tests {
     #[test]
     fn trail_length_selects_the_recent_samples() {
         let t: Vec<f64> = (0..=100).map(|k| k as f64 * 0.1).collect();
-        assert_eq!(trail_start(&t, 0.0), 0);
+        // Negative: the whole run.
+        assert_eq!(trail_start(&t, -1.0), 0);
         assert_eq!(trail_start(&t, 100.0), 0);
         let s = trail_start(&t, 2.0);
         assert!((t[s] - 8.0).abs() < 1e-9, "{}", t[s]);
+        // Zero: no trail, so no segments, only the current point.
+        let none = trail_start(&t, 0.0);
+        assert_eq!(none, 100);
+        assert!(segments(none, t.len(), &ColourKey::Time(t.clone()), 8).is_empty());
         assert_eq!(trail_start(&[], 2.0), 0);
     }
 }

@@ -19,10 +19,10 @@ const COLOUR: Slot = Slot {
 
 const TRAIL_LENGTH: StyleProperty = StyleProperty {
     name: "trail_length",
-    default: 0.0,
-    suggested: [0.0, 60.0],
+    default: -1.0,
+    suggested: [-1.0, 60.0],
     unit: "s",
-    description: "Seconds of trail shown; 0 shows the whole run",
+    description: "Seconds of trail shown behind the current point; 0 shows no trail, -1 (any negative value) the whole run",
 };
 
 pub fn register(r: &mut ViewRegistry) -> Result<(), String> {

@@ -22,7 +22,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - App: phase-portrait view (any output against another) and a rotatable, zoomable 3D trajectory view; `--view time|phase|3d` start-up flag.
 - Model files: optional `controls.view` (kind, axes, 3D camera) saved by the app and used when a model opens (ADR 0014); the Lorenz example opens in 3D.
 - App: native Open, Save and Save as dialogs (Ctrl+O, Ctrl+S, Ctrl+Shift+S); Save writes back to the opened file, built-in examples ask where to save.
-- Pluggable views (ADR 0015): new `simsandbox-views` crate with recorded-signal history, the view contract and registry, and the built-in views `plot.time`, `plot.phase`, `plot.3d`; slot pickers in the app; a colour slot (fade by time or colour by a signal) and a `trail_length` style property.
+- Pluggable views (ADR 0015): new `simsandbox-views` crate with recorded-signal history, the view contract and registry, and the built-in views `plot.time`, `plot.phase`, `plot.3d`; slot pickers in the app; a colour slot (fade by time or colour by a signal) and a `trail_length` style property (seconds of trail; 0 shows none, -1 the whole run, the default).
 - Model files: `controls.views`, a list of `{type, bind, style, camera}`; the older `controls.view` is still read and converted.
 
 ### Changed

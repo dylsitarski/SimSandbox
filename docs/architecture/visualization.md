@@ -38,7 +38,7 @@ A view type declares:
 | --- | --- | --- |
 | Name | Namespaced like block types | `plot.phase` |
 | Slots | Named inputs, each accepting some signal kinds; required or optional | `x`: scalar, `y`: scalar, `colour`: scalar (optional) |
-| Style properties | Declared like parameters: name, default, suggested range, description | `trail_length` (s), `line_width` |
+| Style properties | Declared like parameters: name, default, suggested range, description | `trail_length` (s; 0 no trail, -1 the whole run), `line_width` |
 | Drawing | Draws from the bound signals into a region of the window | egui_plot line, or egui painter, or a wgpu paint callback |
 
 Planned built-in types: `plot.time`, `plot.phase`, `plot.3d`, `plot.heatmap` (grid over time or space), `plot.scatter` (point sets), `plot.spectrum`. Domain types: `eq.pendulum`, rigid-body scenes, field surfaces, agent maps.
