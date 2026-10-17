@@ -25,6 +25,7 @@ _Last updated: 2026-10-17_
 ## Done recently
 
 - 2026-10-17: owner feedback: crash when a sweep reaches infinity fixed (all views skip non-finite values; picking a sweep parameter uses its slider range); wider Derived signals text boxes; messages in a log tile beside the rewind bar (2026-10-17, replacing a fixed-height status line); description on one line; heat rod length and `position` output, `plot.profile`, heat map `position` slot and `time_axis`. Q15 (multi-parameter sweeps) and Q16 (coupling error) raised.
+- 2026-10-17: ADR 0022 (sweeps over two parameters) and ADR 0023 (automatic fusion with opt-out and explicit groups) accepted, resolving Q15 and Q16.
 - 2026-10-17: views steps 5–6: grid and point-set shapes, `plot.heatmap`, `plot.scatter`, the `eq.pendulum` domain view; heat-rod, orbits and pendulum examples. The pluggable-views migration is complete.
 - 2026-10-17: views step 4: derived signals (`controls.signals`, "Signals…" window); the oscillator example plots its total energy.
 - 2026-10-17: typed models without time (ADR 0021): discrete maps, formula blocks, parameter sweeps; logistic-map and resonance examples.
@@ -50,8 +51,9 @@ _Last updated: 2026-10-17_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Owner decisions on Q15 and Q16** ([open questions](open-questions.md)): sweeps over several parameters; how to reduce coupling error.
-2. **Plan Phase 1 with the owner:** order the [Phase 1 roadmap](roadmap.md#phase-1--composition) items (node canvas, Python API, subsystems, agent domain, direct feedthrough).
+1. **Automatic fusion** ([ADR 0023](decisions/0023-automatic-fusion.md)): the loader fuses connected equation blocks with identical methods; `fusion: off` and explicit `groups` in model files; member names kept; shown in the app. Fixes the oscillator example's energy drift.
+2. **Two-parameter sweeps** ([ADR 0022](decisions/0022-two-parameter-sweeps.md)): `controls.sweep` with two parameters, results as grid fields with parameter coordinates, heat map first, then a surface view, then contours.
+3. **Plan Phase 1 with the owner:** order the [Phase 1 roadmap](roadmap.md#phase-1--composition) items (node canvas, Python API, subsystems, agent domain, direct feedthrough).
 
 ## Known limitations
 

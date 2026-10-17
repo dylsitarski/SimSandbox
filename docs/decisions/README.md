@@ -27,6 +27,8 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0019](0019-equations-without-time.md) | Typed models without time: formulas and discrete maps first | Accepted | 2026-10-17 |
 | [0020](0020-methods-for-approximations.md) | Only approximating operations have a method choice | Accepted | 2026-10-17 |
 | [0021](0021-maps-formulas-and-sweeps.md) | Maps, formula blocks and parameter sweeps | Accepted | 2026-10-17 |
+| [0022](0022-two-parameter-sweeps.md) | Sweeps over two parameters | Accepted | 2026-10-17 |
+| [0023](0023-automatic-fusion.md) | Automatic fusion of equation blocks, with opt-out and explicit groups | Accepted | 2026-10-17 |
 
 ## When to write one
 

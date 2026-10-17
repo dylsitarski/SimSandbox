@@ -28,6 +28,8 @@
 
 ## Decided
 
+- Sweeps cover one or two parameters; two give grid fields shown by heat map, then surface and contour views; sweeping models with states waits for bifurcation diagrams ([ADR 0022](../decisions/0022-two-parameter-sweeps.md)).
+- Equation blocks are fused automatically when connected and using identical methods; the owner asked that fusion can be turned off (`fusion: off`) and that explicit groups stay optional, so different methods remain possible across groups ([ADR 0023](../decisions/0023-automatic-fusion.md)).
 - Snapshots include parameter values, so rewinding also undoes slider changes (owner's decision, recorded in [architecture overview](../architecture/overview.md#data-flow-of-a-run)).
 - First `set_param` enforced the `ParamSpec` range; the owner reversed this the same day: ranges are suggestions, any finite value is accepted, and parameters are edited through typed fields with opt-in sliders ([ADR 0011](../decisions/0011-parameter-entry.md)).
 - Run settings (`dt`, optional `t_end`) are saved in a `run` section; invalid values are load errors; the app pauses once at `t_end` ([ADR 0013](../decisions/0013-run-section.md)).
