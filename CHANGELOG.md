@@ -30,10 +30,18 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Derived signals (`controls.signals`): expressions over plotted signals, parameters and `t`, edited in a "Signals…" window and plotted like any signal; the coupled-oscillator example plots its total energy.
 - Grid and point-set port shapes (`Shape::Grid`, `Shape::Points`), recorded whole; `plot.heatmap` (a line of cells over time, or a 2D grid) and `plot.scatter` (a point set) views.
 - Block types `eq.heat_rod` (heat along a rod, a grid), `eq.orbits` (test particles around a central mass, a point set) and `eq.pendulum` (a damped pendulum) with heat-rod, orbits and pendulum examples.
+- `plot.profile`: line fields as they are now, against a coordinate field (e.g. temperature against position along the rod).
+- `eq.heat_rod` has a `length` parameter and a `position` output; `plot.heatmap` has a `position` slot (cells placed along the line) and a `time_axis` style property (time across or upwards).
+- App: `--window signals|equations` opens that window at start (for headless checks).
 - The first domain view, `eq.pendulum`, drawing the rod and bob; it is offered only for models with a pendulum. Domains register views with `simsandbox_eq::register_views` behind the `views` feature.
+
+### Fixed
+
+- App: a sweep that reaches an infinite value (the resonance example swept over `spring.c` from 0) no longer crashes; plots leave a gap at infinite or NaN values. Choosing a sweep parameter uses its slider range when it has one.
 
 ### Changed
 
+- App: messages appear in a one-line status bar of fixed height (errors, notices that fade after 8 s, load warnings behind a button) instead of growing the bottom panel; the model description is one line with the full text on hover; the Derived signals text boxes are wider.
 - App: "More views…" lists only views that apply to the model; saved 3D cameras are written in short form (0.35, not 0.3499999940395355).
 - Views: `plot.time` and `plot.phase` are merged into `plot.xy` (any signals against time or each other, several curves, trail length as a scrolling window against time); "More views…" lists presets ("Plot against time", "Phase portrait", "3D trajectory"); files with the old types are converted on load (ADR 0018).
 - Block factories receive a `BlockConfig` (method plus definition lines) instead of method settings alone.

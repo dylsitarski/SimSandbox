@@ -4,12 +4,11 @@
 use crate::colour::{segments, sequential, trail_start, ColourKey, HEAD};
 use crate::history::{FieldShape, History, SignalRef, TIME};
 use crate::view::{
-    Bindings, Preset, Slot, SlotKind, StyleProperty, View, ViewInput, ViewRegistry, ViewType,
+    Available, Bindings, Preset, Slot, SlotKind, StyleProperty, View, ViewInput, ViewRegistry,
+    ViewType,
 };
 use crate::view3d::{self, Camera};
-use egui_plot::{
-    Legend, Line, MarkerShape, Plot, PlotImage, PlotPoint, PlotPoints, PlotUi, Points,
-};
+use egui_plot::{Legend, Line, MarkerShape, Plot, PlotImage, PlotPoint, PlotUi, Points};
 
 /// Segments a single coloured trail is split into.
 const COLOUR_CHUNKS: usize = 48;
@@ -29,6 +28,36 @@ const TRAIL_LENGTH: StyleProperty = StyleProperty {
     suggested: [-1.0, 60.0],
     unit: "s",
     description: "Seconds of trail shown behind the current point; 0 shows no trail, -1 (any negative value) the whole run. With time on the x axis this is a scrolling window",
+};
+
+const TIME_AXIS: StyleProperty = StyleProperty {
+    name: "time_axis",
+    default: 0.0,
+    suggested: [0.0, 1.0],
+    unit: "",
+    description: "For a line of cells over time: 0 runs time left to right, 1 runs it upwards",
+};
+
+/// A coordinate field for `field`: a grid output named `position` on the
+/// same block (e.g. `rod.position` for `rod.temperature`).
+fn position_of<'a>(a: &'a Available<'_>, field: &str) -> Option<&'a String> {
+    let (block, _) = field.split_once('.')?;
+    let name = format!("{block}.position");
+    a.grids.iter().find(|g| **g == name && *g != field)
+}
+
+/// The newest frame of one or more line fields against a coordinate field.
+const PROFILE_PRESET: Preset = Preset {
+    label: "Profile",
+    description: "A line field now, against position",
+    bindings: |a| {
+        let y = a.grids.first()?;
+        let mut b = bindings(&[("y", y)]);
+        if let Some(x) = position_of(a, y) {
+            b.insert("x".into(), vec![x.clone()]);
+        }
+        Some(b)
+    },
 };
 
 pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
@@ -130,21 +159,66 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
         name: "plot.heatmap",
         label: "Heat map",
         description: "A grid field as colours: a line of cells over time, or a 2D grid now",
-        slots: &[Slot {
-            name: "field",
-            kind: SlotKind::Grid,
-            many: false,
-            required: true,
-            description: "The grid field shown",
-        }],
-        style: &[TRAIL_LENGTH],
+        slots: &[
+            Slot {
+                name: "field",
+                kind: SlotKind::Grid,
+                many: false,
+                required: true,
+                description: "The grid field shown",
+            },
+            Slot {
+                name: "position",
+                kind: SlotKind::Grid,
+                many: false,
+                required: false,
+                description:
+                    "For a line of cells: where each cell lies (evenly spaced, increasing), \
+                              e.g. rod.position; without it cells are numbered",
+            },
+        ],
+        style: &[TRAIL_LENGTH, TIME_AXIS],
         applies_to: &[],
         presets: &[Preset {
             label: "Heat map",
             description: "A grid field as colours",
-            bindings: |a| a.grids.first().map(|g| bindings(&[("field", g)])),
+            bindings: |a| {
+                let field = a.grids.first()?;
+                let mut b = bindings(&[("field", field)]);
+                if let Some(p) = position_of(a, field) {
+                    b.insert("position".into(), vec![p.clone()]);
+                }
+                Some(b)
+            },
         }],
         create: || Box::new(Heatmap::default()),
+    })?;
+    r.register(ViewType {
+        name: "plot.profile",
+        label: "Profile",
+        description:
+            "Line fields as they are now, against position: the curve moves as the run goes on",
+        slots: &[
+            Slot {
+                name: "x",
+                kind: SlotKind::Grid,
+                many: false,
+                required: false,
+                description:
+                    "Where each cell lies, e.g. rod.position; without it cells are numbered",
+            },
+            Slot {
+                name: "y",
+                kind: SlotKind::Grid,
+                many: true,
+                required: true,
+                description: "The fields drawn, one curve each",
+            },
+        ],
+        style: &[],
+        applies_to: &[],
+        presets: &[PROFILE_PRESET],
+        create: || Box::new(Profile::default()),
     })?;
     r.register(ViewType {
         name: "plot.scatter",
@@ -201,6 +275,31 @@ pub fn zoom_factor(scroll: f32) -> f32 {
     (scroll * 0.002).exp()
 }
 
+/// Split points into runs of finite points: plots cannot draw infinities
+/// or NaN (egui panics on them in debug builds), so a curve that passes
+/// through one is drawn with a gap there.
+pub fn finite_runs(points: impl Iterator<Item = [f64; 2]>) -> Vec<Vec<[f64; 2]>> {
+    let mut runs = vec![Vec::new()];
+    for p in points {
+        if p.iter().all(|v| v.is_finite()) {
+            runs.last_mut().expect("never empty").push(p);
+        } else if !runs.last().expect("never empty").is_empty() {
+            runs.push(Vec::new());
+        }
+    }
+    runs.retain(|r| !r.is_empty());
+    runs
+}
+
+/// The colour of the `k`th curve in a plot, as egui_plot would pick it, so
+/// a curve split into pieces keeps one colour.
+fn series_colour(k: usize) -> egui::Color32 {
+    // egui_plot's automatic colours: golden-ratio hues.
+    let golden_ratio = (5.0_f32.sqrt() - 1.0) / 2.0;
+    let h = k as f32 * golden_ratio;
+    egui::epaint::Hsva::new(h, 0.85, 0.5, 1.0).into()
+}
+
 /// Any signals against any signal (ADR 0018).
 struct Xy;
 
@@ -229,24 +328,37 @@ impl View for Xy {
         }
         plot.show(ui, |plot| {
             scroll_to_zoom(plot);
-            let points = |y: SignalRef, from: usize, to: usize| -> PlotPoints<'_> {
-                (from..to).map(|k| [h.value(x, k), h.value(y, k)]).collect()
+            let points = |y: SignalRef, from: usize, to: usize| {
+                finite_runs((from..to).map(|k| [h.value(x, k), h.value(y, k)]))
             };
             if let ([y], Some(_)) = (ys, input.one("colour")) {
                 // One curve with a colour encoding: coloured segments.
                 for seg in segments(first, n, &colour_key(input), COLOUR_CHUNKS) {
-                    let pts = points(*y, seg.start, seg.end + 1);
-                    plot.line(Line::new("trail", pts).color(seg.colour).allow_hover(false));
+                    for run in points(*y, seg.start, seg.end + 1) {
+                        plot.line(Line::new("trail", run).color(seg.colour).allow_hover(false));
+                    }
                 }
             } else {
-                for &y in ys {
+                for (k, &y) in ys.iter().enumerate() {
                     let name = h.name(y).to_string();
+                    // Pieces of one curve (split where it is not finite)
+                    // share its name and colour.
+                    let colour = series_colour(k);
                     match y {
-                        // The whole run against time: plot the recorded points directly.
-                        SignalRef::Signal(i) if against_time && first == 0 => {
-                            plot.line(Line::new(name, h.points(i)));
+                        // The whole run against time: plot the recorded points
+                        // directly when they are all finite.
+                        SignalRef::Signal(i)
+                            if against_time
+                                && first == 0
+                                && h.points(i).iter().all(|p| p.y.is_finite()) =>
+                        {
+                            plot.line(Line::new(name, h.points(i)).color(colour));
                         }
-                        _ if n > first + 1 => plot.line(Line::new(name, points(y, first, n))),
+                        _ if n > first + 1 => {
+                            for run in points(y, first, n) {
+                                plot.line(Line::new(name.clone(), run).color(colour));
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -254,12 +366,15 @@ impl View for Xy {
             // Mark the current point unless time runs along x (it is the right edge).
             if !against_time && n > 0 {
                 for &y in ys {
-                    plot.points(
-                        Points::new("now", vec![[h.value(x, n - 1), h.value(y, n - 1)]])
-                            .shape(MarkerShape::Circle)
-                            .radius(4.0)
-                            .color(HEAD),
-                    );
+                    let now = [h.value(x, n - 1), h.value(y, n - 1)];
+                    if now.iter().all(|v| v.is_finite()) {
+                        plot.points(
+                            Points::new("now", vec![now])
+                                .shape(MarkerShape::Circle)
+                                .radius(4.0)
+                                .color(HEAD),
+                        );
+                    }
                 }
             }
         });
@@ -342,11 +457,35 @@ fn colour_image(size: [usize; 2], values: &[f64]) -> (egui::ColorImage, f64, f64
 /// Pixels and extent of a heat map.
 type HeatmapImage = ([usize; 2], Vec<f64>, [f64; 4]);
 
+/// Where the cells of a line lie along it: from the newest frame of a
+/// coordinate field with one value per cell, evenly spaced and increasing,
+/// as `[start, end]` of the whole line (half a cell beyond the first and
+/// last cell centres). `None` if the field does not fit.
+fn line_extent(h: &History, position: usize, nx: usize) -> Option<[f64; 2]> {
+    let p = h.fields().get(position)?;
+    if p.shape.len() != nx || nx < 2 || h.is_empty() {
+        return None;
+    }
+    let frame = p.frame(h.len() - 1);
+    let (a, b) = (frame[0], frame[nx - 1]);
+    let half = 0.5 * (b - a) / (nx - 1) as f64;
+    (a.is_finite() && b.is_finite() && b > a).then_some([a - half, b + half])
+}
+
 /// The values of a heat map image, row by row from the top, and its extent
 /// in plot coordinates `[x0, x1, y0, y1]`. A line of cells (`ny` = 1) is
-/// shown over time, cell 0 at the bottom; a 2D grid is shown at the
-/// newest sample, row 0 at the bottom.
-fn heatmap_pixels(h: &History, field: usize, first: usize) -> Option<HeatmapImage> {
+/// shown over time: by default time runs left to right and cell 0 is at the
+/// bottom; with `time_vertical` time runs upwards and cell 0 is on the left.
+/// `along` places the line's cells (see [`line_extent`]); without it they
+/// are numbered 0 to `nx`. A 2D grid is shown at the newest sample, row 0
+/// at the bottom.
+fn heatmap_pixels(
+    h: &History,
+    field: usize,
+    first: usize,
+    along: Option<[f64; 2]>,
+    time_vertical: bool,
+) -> Option<HeatmapImage> {
     let f = &h.fields()[field];
     let n = h.len();
     let FieldShape::Grid { nx, ny } = f.shape else {
@@ -363,12 +502,22 @@ fn heatmap_pixels(h: &History, field: usize, first: usize) -> Option<HeatmapImag
         let mut values = vec![0.0; cols * nx];
         for (c, &k) in samples.iter().enumerate() {
             for (cell, &v) in f.frame(k).iter().enumerate() {
-                values[(nx - 1 - cell) * cols + c] = v;
+                if time_vertical {
+                    // Newest sample in the top row.
+                    values[(cols - 1 - c) * nx + cell] = v;
+                } else {
+                    values[(nx - 1 - cell) * cols + c] = v;
+                }
             }
         }
         let (t0, t1) = (h.times()[first], h.times()[n - 1]);
         let t1 = if t1 > t0 { t1 } else { t0 + 1.0 };
-        Some(([cols, nx], values, [t0, t1, 0.0, nx as f64]))
+        let [s0, s1] = along.unwrap_or([0.0, nx as f64]);
+        if time_vertical {
+            Some(([nx, cols], values, [s0, s1, t0, t1]))
+        } else {
+            Some(([cols, nx], values, [t0, t1, s0, s1]))
+        }
     } else {
         let frame = f.frame(n - 1);
         let mut values = vec![0.0; nx * ny];
@@ -393,7 +542,18 @@ impl View for Heatmap {
             return;
         };
         let first = trail_start(h.times(), input.style("trail_length"));
-        let Some((size, values, [x0, x1, y0, y1])) = heatmap_pixels(h, field, first) else {
+        let FieldShape::Grid { nx, ny } = h.fields()[field].shape else {
+            return;
+        };
+        let position = match input.one("position") {
+            Some(SignalRef::Field(p)) => Some(p),
+            _ => None,
+        };
+        let along = position.and_then(|p| line_extent(h, p, nx));
+        let time_vertical = input.style("time_axis") != 0.0;
+        let Some((size, values, [x0, x1, y0, y1])) =
+            heatmap_pixels(h, field, first, along, time_vertical)
+        else {
             return;
         };
         let (image, lo, hi) = colour_image(size, &values);
@@ -409,16 +569,30 @@ impl View for Heatmap {
                 t
             }
         };
-        let over_time = matches!(h.fields()[field].shape, FieldShape::Grid { ny: 1, .. });
+        let over_time = ny == 1;
         ui.weak(format!(
             "{}: {} (dark) to {} (bright)",
             h.name(SignalRef::Field(field)),
             fmt(lo),
             fmt(hi)
         ));
+        let time = if h.index() == TIME {
+            "t [s]".to_string()
+        } else {
+            h.index().to_string()
+        };
+        let space = match (along, position) {
+            (Some(_), Some(p)) => h.name(SignalRef::Field(p)).to_string(),
+            _ => "cell".to_string(),
+        };
+        let (x_label, y_label) = match (over_time, time_vertical) {
+            (true, false) => (time, space),
+            (true, true) => (space, time),
+            (false, _) => ("x (cells)".to_string(), "y (cells)".to_string()),
+        };
         Plot::new("plot.heatmap")
-            .x_axis_label(if over_time { "t [s]" } else { "x (cells)" })
-            .y_axis_label(if over_time { "cell" } else { "y (cells)" })
+            .x_axis_label(x_label)
+            .y_axis_label(y_label)
             .allow_scroll(false)
             .show(ui, |plot| {
                 scroll_to_zoom(plot);
@@ -437,6 +611,80 @@ fn fmt(v: f64) -> String {
         format!("{v:.4}")
     } else {
         "–".into()
+    }
+}
+
+/// Newest frames of line fields against a coordinate field. The value axis
+/// spans every value seen so far, so the curve moves instead of the axis.
+#[derive(Default)]
+struct Profile {
+    /// Samples already folded into `range`.
+    seen: usize,
+    range: Option<[f64; 2]>,
+    /// The bindings `range` was computed for.
+    key: Vec<SignalRef>,
+}
+
+impl View for Profile {
+    fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>) {
+        let h = input.history;
+        let ys = input.many("y");
+        let n = h.len();
+        if n == 0 || ys.is_empty() {
+            return;
+        }
+        // Rewind, restart or new bindings: start the range again.
+        if n < self.seen || self.key != ys {
+            *self = Self {
+                key: ys.to_vec(),
+                ..Self::default()
+            };
+        }
+        for &y in ys {
+            let SignalRef::Field(f) = y else { continue };
+            for k in self.seen..n {
+                for &v in h.fields()[f].frame(k).iter().filter(|v| v.is_finite()) {
+                    let [lo, hi] = self.range.get_or_insert([v, v]);
+                    *lo = lo.min(v);
+                    *hi = hi.max(v);
+                }
+            }
+        }
+        self.seen = n;
+        let coords = match input.one("x") {
+            Some(SignalRef::Field(x)) => Some(h.fields()[x].frame(n - 1)),
+            _ => None,
+        };
+        let x_label = match input.one("x") {
+            Some(x) => h.name(x).to_string(),
+            None => "cell".to_string(),
+        };
+        let mut plot = Plot::new("plot.profile")
+            .x_axis_label(x_label)
+            .allow_scroll(false);
+        if let Some([lo, hi]) = self.range {
+            plot = plot.include_y(lo).include_y(hi);
+        }
+        if ys.len() == 1 {
+            plot = plot.y_axis_label(h.name(ys[0]));
+        } else {
+            plot = plot.legend(Legend::default());
+        }
+        plot.show(ui, |plot| {
+            scroll_to_zoom(plot);
+            for (k, &y) in ys.iter().enumerate() {
+                let SignalRef::Field(f) = y else { continue };
+                let values = h.fields()[f].frame(n - 1);
+                let x_of = |i: usize| match coords {
+                    Some(c) if c.len() == values.len() => c[i],
+                    _ => i as f64,
+                };
+                let colour = series_colour(k);
+                for run in finite_runs((0..values.len()).map(|i| [x_of(i), values[i]])) {
+                    plot.line(Line::new(h.name(y).to_string(), run).color(colour));
+                }
+            }
+        });
     }
 }
 
@@ -459,6 +707,7 @@ impl View for Scatter {
             .frame(h.len() - 1)
             .chunks(dim)
             .map(|c| [c[0], c[1]])
+            .filter(|p| p.iter().all(|v| v.is_finite()))
             .collect();
         Plot::new("plot.scatter")
             .data_aspect(1.0)
@@ -486,7 +735,7 @@ mod tests {
             let t = k as f64;
             h.push_sample(t, &[], &[&[t, 10.0 + t, 20.0 + t]]);
         }
-        let (size, v, extent) = heatmap_pixels(&h, 0, 0).unwrap();
+        let (size, v, extent) = heatmap_pixels(&h, 0, 0, None, false).unwrap();
         assert_eq!(size, [4, 3]);
         // Top row is the last cell; columns are samples in time order.
         assert_eq!(&v[0..4], &[20.0, 21.0, 22.0, 23.0]);
@@ -495,11 +744,49 @@ mod tests {
     }
 
     #[test]
+    fn line_fields_can_run_time_upwards_and_be_placed_by_position() {
+        let line = FieldShape::Grid { nx: 3, ny: 1 };
+        let mut h = History::with_fields(
+            "t",
+            vec![],
+            vec![("rod.T".into(), line), ("rod.position".into(), line)],
+        );
+        for k in 0..2 {
+            let t = k as f64;
+            h.push_sample(t, &[], &[&[t, 10.0 + t, 20.0 + t], &[0.25, 0.5, 0.75]]);
+        }
+        let along = line_extent(&h, 1, 3);
+        assert_eq!(along, Some([0.125, 0.875]));
+        let (size, v, extent) = heatmap_pixels(&h, 0, 0, along, true).unwrap();
+        assert_eq!(size, [3, 2]);
+        // Newest sample on top; cell 0 on the left.
+        assert_eq!(v, [1.0, 11.0, 21.0, 0.0, 10.0, 20.0]);
+        assert_eq!(extent, [0.125, 0.875, 0.0, 1.0]);
+        // A coordinate that is not increasing or not one per cell is ignored.
+        assert_eq!(line_extent(&h, 0, 2), None);
+    }
+
+    #[test]
+    fn finite_runs_leave_gaps_at_infinities_and_nans() {
+        let pts = [
+            [0.0, 1.0],
+            [1.0, f64::INFINITY],
+            [2.0, 2.0],
+            [3.0, 3.0],
+            [f64::NAN, 0.0],
+        ];
+        assert_eq!(
+            finite_runs(pts.into_iter()),
+            [vec![[0.0, 1.0]], vec![[2.0, 2.0], [3.0, 3.0]]]
+        );
+    }
+
+    #[test]
     fn grids_show_the_newest_frame_with_row_zero_at_the_bottom() {
         let shape = FieldShape::Grid { nx: 2, ny: 2 };
         let mut h = History::with_fields("t", vec![], vec![("g".into(), shape)]);
         h.push_sample(0.0, &[], &[&[1.0, 2.0, 3.0, 4.0]]);
-        let (size, v, _) = heatmap_pixels(&h, 0, 0).unwrap();
+        let (size, v, _) = heatmap_pixels(&h, 0, 0, None, false).unwrap();
         assert_eq!(size, [2, 2]);
         assert_eq!(v, [3.0, 4.0, 1.0, 2.0]);
         let (img, lo, hi) = colour_image(size, &v);

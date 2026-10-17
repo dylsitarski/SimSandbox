@@ -3,7 +3,7 @@
 
 use crate::registry::PENDULUM;
 use egui_plot::{Line, Plot, Points};
-use simsandbox_views::builtin::scroll_to_zoom;
+use simsandbox_views::builtin::{finite_runs, scroll_to_zoom};
 use simsandbox_views::colour::{trail_start, HEAD, LINE};
 use simsandbox_views::view::{Slot, StyleProperty, View, ViewInput};
 use simsandbox_views::{Available, Bindings, Preset, SlotKind, ViewRegistry, ViewType};
@@ -75,10 +75,13 @@ impl View for PendulumView {
             return;
         }
         let bob = [h.value(x, n - 1), h.value(y, n - 1)];
+        if !bob.iter().all(|v| v.is_finite()) {
+            return;
+        }
         // Frame the whole swing: the rod's length, with a margin.
         let reach = 1.15 * bob[0].hypot(bob[1]).max(1e-9);
         let first = trail_start(h.times(), input.style("trail_length"));
-        let trail: Vec<[f64; 2]> = (first..n).map(|k| [h.value(x, k), h.value(y, k)]).collect();
+        let trail = finite_runs((first..n).map(|k| [h.value(x, k), h.value(y, k)]));
         Plot::new("eq.pendulum")
             .data_aspect(1.0)
             .allow_scroll(false)
@@ -88,9 +91,9 @@ impl View for PendulumView {
             .include_y(reach)
             .show(ui, |plot| {
                 scroll_to_zoom(plot);
-                if trail.len() > 1 {
+                for run in trail.into_iter().filter(|r| r.len() > 1) {
                     plot.line(
-                        Line::new("path", trail)
+                        Line::new("path", run)
                             .color(LINE.gamma_multiply(0.6))
                             .allow_hover(false),
                     );

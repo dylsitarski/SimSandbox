@@ -180,16 +180,24 @@ pub fn show(
     // The trail, in coloured segments; long runs are strided.
     let drawn = segments.last().map_or(0, |l| l.end + 1 - segments[0].start);
     let stride = drawn.div_ceil(MAX_DRAWN).max(1);
+    let finite = |p: &[f64; 3]| p.iter().all(|v| v.is_finite());
     for seg in segments {
-        let mut line: Vec<Pos2> = (seg.start..seg.end)
-            .step_by(stride)
-            .map(|k| to_screen(norm.apply(points[k])))
-            .collect();
-        line.push(to_screen(norm.apply(points[seg.end])));
-        painter.line(line, Stroke::new(1.5, seg.colour));
+        let samples = (seg.start..seg.end).step_by(stride).chain([seg.end]);
+        // Non-finite points leave a gap: the painter cannot draw them.
+        let mut line: Vec<Pos2> = Vec::new();
+        for k in samples {
+            if finite(&points[k]) {
+                line.push(to_screen(norm.apply(points[k])));
+            } else if !line.is_empty() {
+                painter.line(std::mem::take(&mut line), Stroke::new(1.5, seg.colour));
+            }
+        }
+        if !line.is_empty() {
+            painter.line(line, Stroke::new(1.5, seg.colour));
+        }
     }
-    if let Some(&head) = points.last() {
-        painter.circle_filled(to_screen(norm.apply(head)), 4.0, HEAD);
+    if let Some(head) = points.last().filter(|p| finite(p)) {
+        painter.circle_filled(to_screen(norm.apply(*head)), 4.0, HEAD);
     }
     painter.text(
         rect.right_bottom() + Vec2::new(-8.0, -6.0),

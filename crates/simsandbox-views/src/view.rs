@@ -337,7 +337,13 @@ mod tests {
         let names: Vec<_> = r.types().iter().map(|t| t.name).collect();
         assert_eq!(
             names,
-            ["plot.xy", "plot.3d", "plot.heatmap", "plot.scatter"]
+            [
+                "plot.xy",
+                "plot.3d",
+                "plot.heatmap",
+                "plot.profile",
+                "plot.scatter"
+            ]
         );
         assert!(crate::builtin::register(&mut r).is_err());
     }

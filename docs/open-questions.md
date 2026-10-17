@@ -9,6 +9,8 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | ID | Question | Options | Needed by | Notes |
 | --- | --- | --- | --- | --- |
 | Q5 | Algebraic loops in fused groups | Causalisation and tearing; Newton solve per RHS evaluation; forbid and warn | Phase 1 | Current v0 restriction: no direct feedthrough |
+| Q15 | Sweeps over several parameters | (a) `controls.sweep` takes a list of parameters; two give a grid field over (p1, p2) shown by `plot.heatmap`, contours or a surface; (b) also allow sweeping models with states (each grid point a run to `t_end`, then a reduction such as final value or amplitude); (c) keep one parameter | Before bifurcation diagrams | Raised by the owner 2026-10-17. Cost grows as points^dims (100 × 100 = 10 000 evaluations, instant for formulas; runs with states need a background thread). Needs a contour/surface view and a 2D coordinate pair for grids |
+| Q16 | Reducing coupling error between co-simulated Blocks | (a) Model files describe fused groups (one integrator, no coupling error); (b) the master extrapolates inputs over each step (first-order hold), error O(dt²) instead of O(dt); (c) iterate each step until the exchanged values settle (needs `Rollback`); (d) smaller communication step only | Phase 1 (with subsystems) | Raised by the owner 2026-10-17 about the oscillator example's energy rising: holding the neighbour's position fixed over a step delays the coupling force by about dt/2, which acts as negative damping on the mode where the masses move in opposite directions (energy grows at about κ·dt/2 per second there); measured +11.5 % at t = 100 with dt = 0.01, halving with dt |
 
 ## Resolved
 

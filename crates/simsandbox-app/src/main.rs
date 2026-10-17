@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! simsandbox-app [FILE] [--view time|phase|3d]   (shows only that view)
+//! simsandbox-app [FILE] --window signals|equations (opens that window)
 //! simsandbox-app [FILE] --screenshot OUT.ppm [--after SECONDS]
 //! ```
 //!
@@ -22,12 +23,14 @@ use std::process::ExitCode;
 struct Args {
     path: Option<String>,
     view: Option<String>,
+    window: Option<String>,
     screenshot: Option<ScreenshotRequest>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
     let mut path = None;
     let mut view = None;
+    let mut window = None;
     let mut shot: Option<std::path::PathBuf> = None;
     let mut after = 3.0;
     let mut it = args.iter();
@@ -42,6 +45,15 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     return Err(format!("unknown view '{v}' (expected time, phase or 3d)"));
                 }
                 view = Some(v.clone());
+            }
+            "--window" => {
+                let v = it.next().ok_or("missing value for --window")?;
+                if !["signals", "equations"].contains(&v.as_str()) {
+                    return Err(format!(
+                        "unknown window '{v}' (expected signals or equations)"
+                    ));
+                }
+                window = Some(v.clone());
             }
             "--after" => {
                 let v = it.next().ok_or("missing value for --after")?;
@@ -60,6 +72,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
     Ok(Args {
         path,
         view,
+        window,
         screenshot: shot.map(|path| ScreenshotRequest { path, after }),
     })
 }
@@ -70,7 +83,7 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => {
             eprintln!(
-                "error: {e}\nusage: simsandbox-app [FILE] [--view time|phase|3d] [--screenshot OUT.ppm [--after SECONDS]]"
+                "error: {e}\nusage: simsandbox-app [FILE] [--view time|phase|3d] [--window signals|equations] [--screenshot OUT.ppm [--after SECONDS]]"
             );
             return ExitCode::FAILURE;
         }
@@ -90,6 +103,7 @@ fn main() -> ExitCode {
             Ok(Box::new(SimApp::new(
                 args.path,
                 args.view.as_deref(),
+                args.window.as_deref(),
                 args.screenshot,
             )))
         }),

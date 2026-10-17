@@ -30,6 +30,8 @@ pub struct SimApp {
     error: Option<String>,
     /// Success messages, e.g. "Saved to …".
     notice: Option<String>,
+    /// The notice last shown and when it appeared.
+    notice_since: (Option<String>, Instant),
     /// The file the open model was loaded from; Save writes back to it.
     /// `None` for built-in examples, which Save turns into Save as.
     path: Option<PathBuf>,
@@ -47,10 +49,14 @@ pub struct SimApp {
     screenshot_requested: bool,
 }
 
+/// How long a notice stays in the status line.
+const NOTICE_LASTS: std::time::Duration = std::time::Duration::from_secs(8);
+
 impl SimApp {
     pub fn new(
         path: Option<String>,
         view: Option<&str>,
+        window: Option<&str>,
         screenshot: Option<ScreenshotRequest>,
     ) -> Self {
         let mut app = Self {
@@ -61,6 +67,7 @@ impl SimApp {
             speed: 1.0,
             error: None,
             notice: None,
+            notice_since: (None, Instant::now()),
             path: None,
             param_edits: HashMap::new(),
             editor: None,
@@ -86,6 +93,20 @@ impl SimApp {
                 _ => ("plot.xy", 0),
             };
             app.views.show_only(name, preset, &session.available());
+        }
+        // A --window flag opens a window at once (for headless checks).
+        match (window, &app.session) {
+            (Some("signals"), Some(session)) => {
+                app.signals_editor = Some(SignalsEditor::new(session));
+            }
+            (Some("equations"), _) => {
+                app.editor = Some(Editor {
+                    block: None,
+                    text: NEW_MODEL.into(),
+                    error: None,
+                });
+            }
+            _ => {}
         }
         app
     }
@@ -278,8 +299,14 @@ impl SimApp {
         };
         ui.horizontal(|ui| {
             ui.heading(&session.title);
+            // One line, so a long description cannot widen the window or push
+            // the toolbar down; the whole text is in the tooltip.
             if let Some(d) = &session.description {
-                ui.label(d);
+                ui.add(egui::Label::new(d.as_str()).truncate())
+                    .on_hover_ui(|ui| {
+                        ui.set_max_width(500.0);
+                        ui.label(d.as_str());
+                    });
             }
         });
         ui.horizontal(|ui| {
@@ -378,17 +405,49 @@ impl SimApp {
         .on_hover_text("Pause and go back; running on from here starts a new branch");
     }
 
-    fn messages(&self, ui: &mut egui::Ui) {
-        if let Some(e) = &self.error {
-            ui.colored_label(ui.visuals().error_fg_color, e);
+    /// One status line of fixed height, so messages never move the rest of
+    /// the window: the error if there is one, else the latest notice (which
+    /// fades after a few seconds); load warnings sit behind a button.
+    fn messages(&mut self, ui: &mut egui::Ui) {
+        if self.notice != self.notice_since.0 {
+            self.notice_since = (self.notice.clone(), Instant::now());
         }
-        if let Some(n) = &self.notice {
-            ui.label(n);
+        if self.notice.is_some() && self.notice_since.1.elapsed() > NOTICE_LASTS {
+            self.notice = None;
         }
-        if let Some(s) = &self.session {
-            for w in &s.warnings {
-                ui.colored_label(ui.visuals().warn_fg_color, format!("warning: {w}"));
+        let height = ui.spacing().interact_size.y;
+        ui.horizontal(|ui| {
+            ui.set_min_height(height);
+            ui.set_max_height(height);
+            let warnings = self.session.as_ref().map_or(&[][..], |s| &s.warnings[..]);
+            if !warnings.is_empty() {
+                ui.menu_button(
+                    egui::RichText::new(format!("{} warning(s)", warnings.len()))
+                        .color(ui.visuals().warn_fg_color),
+                    |ui| {
+                        ui.set_max_width(600.0);
+                        for w in warnings {
+                            ui.label(w);
+                        }
+                    },
+                )
+                .response
+                .on_hover_text("Problems found while loading; the model runs without these parts");
             }
+            let (text, colour) = match (&self.error, &self.notice) {
+                (Some(e), _) => (e.as_str(), ui.visuals().error_fg_color),
+                (None, Some(n)) => (n.as_str(), ui.visuals().text_color()),
+                (None, None) => return,
+            };
+            ui.add(egui::Label::new(egui::RichText::new(text).color(colour)).truncate())
+                .on_hover_ui(|ui| {
+                    ui.set_max_width(600.0);
+                    ui.label(text);
+                });
+        });
+        if self.notice.is_some() {
+            // Wake up to hide the notice even when nothing is running.
+            ui.ctx().request_repaint_after(NOTICE_LASTS);
         }
     }
 
@@ -435,14 +494,7 @@ impl SimApp {
                 .on_hover_text("Define signals computed from others, such as an energy")
                 .clicked()
             {
-                self.signals_editor = Some(SignalsEditor {
-                    rows: session
-                        .derived()
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                    problems: Vec::new(),
-                });
+                self.signals_editor = Some(SignalsEditor::new(session));
             }
             ui.weak("Click a view's name to edit its style in the side panel");
         });
@@ -715,7 +767,8 @@ impl SimApp {
         let (mut apply, mut cancel) = (false, false);
         egui::Window::new("Derived signals")
             .open(&mut open)
-            .default_width(560.0)
+            .default_width(620.0)
+            .min_width(480.0)
             .show(ctx, |ui| {
                 ui.label(
                     "Each signal is computed from plotted signals (a.x, lorenz.xyz[0]), \
@@ -723,21 +776,23 @@ impl SimApp {
                      equations. It can then be plotted like any other signal.",
                 );
                 let mut remove = None;
-                egui::Grid::new("derived").num_columns(4).show(ui, |ui| {
-                    for (k, (name, text)) in ed.rows.iter_mut().enumerate() {
-                        ui.add(egui::TextEdit::singleline(name).desired_width(100.0));
+                // Fixed sizes: inside a grid the text boxes collapsed to a
+                // few characters.
+                let height = ui.spacing().interact_size.y;
+                for (k, (name, text)) in ed.rows.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add_sized([120.0, height], egui::TextEdit::singleline(name));
                         ui.label("=");
-                        ui.add(
-                            egui::TextEdit::singleline(text)
-                                .code_editor()
-                                .desired_width(360.0),
+                        let width = (ui.available_width() - 30.0).max(200.0);
+                        ui.add_sized(
+                            [width, height],
+                            egui::TextEdit::singleline(text).code_editor(),
                         );
                         if ui.small_button("×").on_hover_text("Remove").clicked() {
                             remove = Some(k);
                         }
-                        ui.end_row();
-                    }
-                });
+                    });
+                }
                 if let Some(k) = remove {
                     ed.rows.remove(k);
                 }
@@ -1092,7 +1147,8 @@ fn sweep_controls(
             for r in &rows {
                 if ui.selectable_label(key == r.key, &r.key).clicked() && key != r.key {
                     key = r.key.clone();
-                    range = r.suggested;
+                    // The slider's range if it has one: the author chose it.
+                    range = session.slider_range(&r.key).unwrap_or(r.suggested);
                 }
             }
         });
@@ -1252,6 +1308,20 @@ struct SignalsEditor {
     problems: Vec<String>,
 }
 
+impl SignalsEditor {
+    /// The session's derived signals, ready to edit.
+    fn new(session: &Session) -> Self {
+        Self {
+            rows: session
+                .derived()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            problems: Vec::new(),
+        }
+    }
+}
+
 struct Editor {
     block: Option<String>,
     text: String,
@@ -1348,13 +1418,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("lorenz.ssbx.json");
 
-        let mut app = SimApp::new(None, None, None);
+        let mut app = SimApp::new(None, None, None, None);
         assert!(app.path.is_none(), "built-in examples have no path");
         app.save_to(&path);
         assert_eq!(app.error, None);
         assert_eq!(app.path.as_deref(), Some(path.as_path()));
 
-        let mut reopened = SimApp::new(Some(path.to_string_lossy().into_owned()), None, None);
+        let mut reopened = SimApp::new(Some(path.to_string_lossy().into_owned()), None, None, None);
         assert_eq!(reopened.error, None);
         assert_eq!(reopened.path.as_deref(), Some(path.as_path()));
         assert_eq!(reopened.views.tiles[0].state.type_name, "plot.3d");
@@ -1376,7 +1446,7 @@ mod tests {
 
     #[test]
     fn new_models_run_from_typed_equations() {
-        let mut app = SimApp::new(None, None, None);
+        let mut app = SimApp::new(None, None, None, None);
         app.editor = editor(None, NEW_MODEL);
         app.apply_equations();
         assert!(app.editor.is_none(), "applied editors close");
@@ -1388,7 +1458,7 @@ mod tests {
 
     #[test]
     fn new_maps_and_formulas_get_the_right_method() {
-        let mut app = SimApp::new(None, None, None);
+        let mut app = SimApp::new(None, None, None, None);
         app.editor = editor(None, "x[n+1] = r*x*(1 - x)");
         app.apply_equations();
         assert!(app.editor.is_none());
@@ -1413,7 +1483,7 @@ mod tests {
 
     #[test]
     fn mistakes_keep_the_editor_open_and_the_model_running() {
-        let mut app = SimApp::new(None, None, None);
+        let mut app = SimApp::new(None, None, None, None);
         app.editor = editor(None, "dx/dt = -k*");
         app.apply_equations();
         let e = app.editor.as_ref().unwrap().error.as_deref().unwrap();
@@ -1424,7 +1494,7 @@ mod tests {
 
     #[test]
     fn editing_a_block_keeps_parameter_values_that_still_exist() {
-        let mut app = SimApp::new(None, None, None);
+        let mut app = SimApp::new(None, None, None, None);
         let (name, text) = (EXAMPLES[2].name, EXAMPLES[2].text);
         app.open_text(name, text);
         let s = app.session.as_mut().unwrap();

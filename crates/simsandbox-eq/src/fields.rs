@@ -6,14 +6,18 @@ use crate::systems::{initial, param};
 use simsandbox_core::block::{BlockSpec, Domain, Equations, PortSpec, Shape, TimeSemantics};
 use simsandbox_core::units::Unit;
 
-/// Heat flowing along a 1 m rod, ∂T/∂t = α ∂²T/∂x², with the ends held at
-/// fixed temperatures. The rod is cut into [`HeatRod::CELLS`] equal cells
-/// (second-order central differences, the method of lines); the output is
-/// the cell temperatures as a one-row grid.
+/// Heat flowing along a rod of length L, ∂T/∂t = α ∂²T/∂x², with the ends
+/// (x = 0 and x = L) held at fixed temperatures. The temperature is tracked
+/// at [`HeatRod::CELLS`] evenly spaced points inside the rod, h = L/(n + 1)
+/// apart (second-order central differences, the method of lines).
+///
+/// Outputs, both one-row grids: `temperature` at each point, and `position`,
+/// where each point lies along the rod, so views can plot temperature
+/// against position.
 ///
 /// Explicit methods are only stable while the step stays below about
-/// h²/(2α) (Euler) or 0.7 h²/α (RK4), where h is the cell width; use
-/// substeps for larger α.
+/// h²/(2α) (Euler) or 0.7 h²/α (RK4); use substeps for larger α or a
+/// shorter rod.
 pub struct HeatRod {
     spec: BlockSpec,
 }
@@ -28,11 +32,10 @@ impl HeatRod {
             spec: BlockSpec {
                 name: name.into(),
                 domain: Domain::Equations,
-                ports: vec![PortSpec::output(
-                    "temperature",
-                    k,
-                    Shape::Grid { nx: n, ny: 1 },
-                )],
+                ports: vec![
+                    PortSpec::output("temperature", k, Shape::Grid { nx: n, ny: 1 }),
+                    PortSpec::output("position", Unit::METER, Shape::Grid { nx: n, ny: 1 }),
+                ],
                 params: vec![
                     param(
                         "alpha",
@@ -42,6 +45,7 @@ impl HeatRod {
                         0.05,
                         "Thermal diffusivity",
                     ),
+                    param("length", Unit::METER, 1.0, 0.1, 10.0, "Length of the rod"),
                     param(
                         "left",
                         k,
@@ -81,17 +85,18 @@ impl HeatRod {
         }
     }
 
-    /// Cell width: the cells are the interior points of n + 1 equal
-    /// intervals, with the held ends at x = 0 and x = 1.
-    fn h() -> f64 {
-        1.0 / (Self::CELLS + 1) as f64
+    /// Spacing of the points: they are the interior points of n + 1 equal
+    /// intervals, with the held ends at x = 0 and x = `length`.
+    fn h(length: f64) -> f64 {
+        length / (Self::CELLS + 1) as f64
     }
 }
 
 impl Equations for HeatRod {
     fn rhs(&self, _t: f64, x: &[f64], _u: &[f64], p: &[f64], dx: &mut [f64]) {
-        let (alpha, left, right) = (p[0], p[1], p[2]);
-        let c = alpha / (Self::h() * Self::h());
+        let (alpha, left, right) = (p[0], p[2], p[3]);
+        let h = Self::h(p[1]);
+        let c = alpha / (h * h);
         let n = x.len();
         for i in 0..n {
             let l = if i == 0 { left } else { x[i - 1] };
@@ -100,8 +105,13 @@ impl Equations for HeatRod {
         }
     }
 
-    fn outputs(&self, _t: f64, x: &[f64], _p: &[f64], y: &mut [f64]) {
-        y.copy_from_slice(x);
+    fn outputs(&self, _t: f64, x: &[f64], p: &[f64], y: &mut [f64]) {
+        let (temperature, position) = y.split_at_mut(x.len());
+        temperature.copy_from_slice(x);
+        let h = Self::h(p[1]);
+        for (i, v) in position.iter_mut().enumerate() {
+            *v = (i + 1) as f64 * h;
+        }
     }
 }
 
@@ -111,11 +121,12 @@ impl OdeSystem for HeatRod {
     }
 
     fn initial_state(&self, p: &[f64], x0: &mut [f64]) {
-        let (left, right, peak, width) = (p[1], p[2], p[3], p[4]);
+        let (length, left, right, peak, width) = (p[1], p[2], p[3], p[4], p[5]);
+        let h = Self::h(length);
         for (i, v) in x0.iter_mut().enumerate() {
-            let x = (i + 1) as f64 * Self::h();
-            let bump = ((x - 0.5) / width).powi(2);
-            *v = left + (right - left) * x + peak * (-bump).exp();
+            let x = (i + 1) as f64 * h;
+            let bump = ((x - 0.5 * length) / width).powi(2);
+            *v = left + (right - left) * x / length + peak * (-bump).exp();
         }
     }
 }
@@ -264,9 +275,9 @@ mod tests {
         // With both ends at 0, T_i = sin(π x_i) is an eigenvector of the
         // differenced equation, with rate α (4/h²) sin²(π h / 2).
         let rod = HeatRod::new("rod");
-        let h = HeatRod::h();
+        let h = HeatRod::h(1.0);
         let alpha = 0.01;
-        let p = [alpha, 0.0, 0.0, 0.0, 0.1];
+        let p = [alpha, 1.0, 0.0, 0.0, 0.0, 0.1];
         let x: Vec<f64> = (0..HeatRod::CELLS)
             .map(|i| (std::f64::consts::PI * (i + 1) as f64 * h).sin())
             .collect();
@@ -284,14 +295,23 @@ mod tests {
     fn the_rod_settles_to_a_straight_line_between_its_ends() {
         let (sim, id) = run(
             HeatRod::new("rod"),
-            &[("alpha", 0.05), ("left", 20.0), ("right", 80.0)],
+            &[
+                ("alpha", 0.2),
+                ("length", 2.0),
+                ("left", 20.0),
+                ("right", 80.0),
+            ],
             0.002,
             50_000,
         );
         let t = sim.output(id, "temperature").unwrap();
-        for (i, v) in t.iter().enumerate() {
-            let x = (i + 1) as f64 * HeatRod::h();
-            assert!((v - (20.0 + 60.0 * x)).abs() < 1e-6, "cell {i}: {v}");
+        let x = sim.output(id, "position").unwrap();
+        assert_eq!(x.len(), t.len());
+        // The points lie evenly inside the 2 m rod, short of both ends.
+        assert!((x[0] - 2.0 / 51.0).abs() < 1e-15);
+        assert!((x[49] - 100.0 / 51.0).abs() < 1e-14);
+        for (i, (v, x)) in t.iter().zip(x).enumerate() {
+            assert!((v - (20.0 + 30.0 * x)).abs() < 1e-6, "point {i}: {v}");
         }
     }
 

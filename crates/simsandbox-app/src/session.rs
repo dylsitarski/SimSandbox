@@ -345,6 +345,11 @@ impl Session {
         Ok(self.file.to_json())
     }
 
+    /// The slider range the file sets for a parameter, if any.
+    pub fn slider_range(&self, key: &str) -> Option<[f64; 2]> {
+        self.file.controls.params.get(key).and_then(|c| c.range)
+    }
+
     /// The sweep, if the model is swept instead of run.
     pub fn sweep(&self) -> Option<&Sweep> {
         self.sweep.as_ref()
@@ -863,7 +868,7 @@ mod tests {
         let mut s = example("rod");
         let a = s.available();
         assert!(a.scalars.is_empty());
-        assert_eq!(a.grids, ["rod.temperature"]);
+        assert_eq!(a.grids, ["rod.temperature", "rod.position"]);
         assert_eq!(a.block_types, ["eq.heat_rod"]);
         for _ in 0..20 {
             s.step().unwrap();

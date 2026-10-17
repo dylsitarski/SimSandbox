@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "description": "Heat spreading along a rod whose ends are held at fixed temperatures (a grid field). The heat map shows the rod over time, its left end at the bottom: the hot spot spreads and fades towards the straight line between the ends. Change the end temperatures while it runs. The rod is 50 cells solved with RK4; very large diffusivities need more substeps to stay stable.",
+  "description": "Heat spreading along a 1 m rod whose ends are held at fixed temperatures (a grid field). Left: the rod over time, temperature as colour against position. Right: the temperature along the rod now. The hot spot spreads and fades towards the straight line between the end temperatures; change them while it runs. The rod is tracked at 50 points with RK4; a much larger diffusivity or a shorter rod needs more substeps to stay stable.",
   "run": {
     "dt": 0.05
   },
@@ -15,6 +15,7 @@
       "params": {
         "alpha": 0.01,
         "left": 0.0,
+        "length": 1.0,
         "peak": 100.0,
         "right": 0.0,
         "width": 0.1
@@ -38,7 +39,15 @@
       {
         "type": "plot.heatmap",
         "bind": {
-          "field": "rod.temperature"
+          "field": "rod.temperature",
+          "position": "rod.position"
+        }
+      },
+      {
+        "type": "plot.profile",
+        "bind": {
+          "x": "rod.position",
+          "y": "rod.temperature"
         }
       }
     ]

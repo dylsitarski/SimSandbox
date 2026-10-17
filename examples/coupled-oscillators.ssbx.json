@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "description": "Two masses on springs, tied to walls and to each other, coupled through the co-simulation master. Energy sloshes from one to the other. The total energy (a derived signal) should stay constant; it creeps up slightly because the two blocks exchange positions only once per step, which is coupling error.",
+  "description": "Two masses on springs, tied to walls and to each other, coupled through the co-simulation master. Energy sloshes from one to the other. The total energy (a derived signal) should stay constant; it creeps up because each block sees the other's position only at the start of each step, so the coupling spring acts half a step late and pushes energy in (coupling error, not the RK4 method). Halving the step halves the drift.",
   "run": {
     "dt": 0.01
   },
