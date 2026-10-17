@@ -7,9 +7,10 @@ use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::{Simulator, Snapshot};
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
+use simsandbox_expr::Expr;
 use simsandbox_file::{ModelFile, SweepControl, ViewEntry, DEFAULT_SWEEP_POINTS};
 use simsandbox_views::history::thin;
-use simsandbox_views::History;
+use simsandbox_views::{History, SignalRef};
 use std::collections::BTreeMap;
 
 /// Take a snapshot for rewind every this many steps.
@@ -72,6 +73,17 @@ pub struct Session {
     steps_since_snapshot: usize,
     /// Set when the model has no states: it is swept, not run.
     sweep: Option<Sweep>,
+    /// Derived signals as written (name to expression), for saving.
+    derived_text: BTreeMap<String, String>,
+    /// Derived signals compiled, recorded after the output signals.
+    derived: Vec<Derived>,
+}
+
+/// A derived signal (ADR 0015): an expression over the recorded output
+/// signals, parameters and `t`, evaluated as each sample is recorded.
+struct Derived {
+    name: String,
+    expr: Expr,
 }
 
 impl Session {
@@ -105,9 +117,31 @@ impl Session {
         }
         let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
         let sweep = default_sweep(&loaded.file, &loaded.ids, sim.model());
+        let mut warnings = loaded.warnings;
+        let mut derived = Vec::new();
+        let mut derived_text = BTreeMap::new();
+        for (name, text) in &loaded.file.controls.signals {
+            match compile_derived(
+                name,
+                text,
+                &names,
+                &param_keys(&loaded.file, &loaded.ids, sim.model()),
+            ) {
+                Ok(d) => {
+                    derived.push(d);
+                    derived_text.insert(name.clone(), text.clone());
+                }
+                Err(e) => warnings.push(format!("controls.signals.{name}: {e}; ignored")),
+            }
+        }
+        let all_names: Vec<String> = names
+            .iter()
+            .cloned()
+            .chain(derived.iter().map(|d| d.name.clone()))
+            .collect();
         let signals = match &sweep {
-            Some(sw) => History::with_index(&sw.key, names),
-            None => History::new(names),
+            Some(sw) => History::with_index(&sw.key, all_names),
+            None => History::new(all_names),
         };
         let mut session = Self {
             title: title.into(),
@@ -116,13 +150,15 @@ impl Session {
             stop_at: loaded.file.run.t_end,
             file: loaded.file,
             ids: loaded.ids,
-            warnings: loaded.warnings,
+            warnings,
             signals,
             sources,
             snapshots: vec![sim.snapshot()],
             sim,
             steps_since_snapshot: 0,
             sweep,
+            derived_text,
+            derived,
         };
         if session.sweep.is_some() {
             session.recompute_sweep();
@@ -241,6 +277,7 @@ impl Session {
         if let Some(v) = views {
             self.file.controls.views = v;
         }
+        self.file.controls.signals = self.derived_text.clone();
         if let Some(sw) = &self.sweep {
             self.file.controls.sweep = Some(SweepControl {
                 param: sw.key.clone(),
@@ -305,7 +342,7 @@ impl Session {
             {
                 continue;
             }
-            let values = self.output_values();
+            let values = self.sample(v);
             self.signals.push(v, &values);
         }
         // Leave the model as the panel shows it.
@@ -334,8 +371,75 @@ impl Session {
     }
 
     fn record(&mut self) {
-        let values = self.output_values();
-        self.signals.push(self.sim.time(), &values);
+        let t = self.sim.time();
+        let values = self.sample(t);
+        self.signals.push(t, &values);
+    }
+
+    /// One sample: the output signals, then the derived signals computed
+    /// from them, the current parameter values and `t`.
+    fn sample(&self, t: f64) -> Vec<f64> {
+        let mut values = self.output_values();
+        self.append_derived(t, &mut values);
+        values
+    }
+
+    fn append_derived(&self, t: f64, values: &mut Vec<f64>) {
+        if self.derived.is_empty() {
+            return;
+        }
+        // Slots: t, the output signals, then every parameter.
+        let mut vars = Vec::with_capacity(1 + values.len() + 16);
+        vars.push(t);
+        vars.extend_from_slice(&values[..self.sources.len()]);
+        for row in self.params() {
+            vars.push(row.value);
+        }
+        for d in &self.derived {
+            values.push(d.expr.eval(&vars));
+        }
+    }
+
+    /// The derived signals as written: name to expression.
+    pub fn derived(&self) -> &BTreeMap<String, String> {
+        &self.derived_text
+    }
+
+    /// Replace the derived signals. All must be valid, or nothing changes
+    /// and the problems are returned. The recorded history is kept and the
+    /// derived signals are recomputed for it, using current parameter values.
+    pub fn set_derived(&mut self, map: BTreeMap<String, String>) -> Result<(), Vec<String>> {
+        let outputs: Vec<String> = self.signals.names()[..self.sources.len()].to_vec();
+        let params = param_keys(&self.file, &self.ids, self.sim.model());
+        let mut compiled = Vec::new();
+        let mut problems = Vec::new();
+        for (name, text) in &map {
+            match compile_derived(name, text, &outputs, &params) {
+                Ok(d) => compiled.push(d),
+                Err(e) => problems.push(format!("{name}: {e}")),
+            }
+        }
+        if !problems.is_empty() {
+            return Err(problems);
+        }
+        let old = std::mem::replace(&mut self.signals, History::with_index("", Vec::new()));
+        self.derived = compiled;
+        self.derived_text = map;
+        let names: Vec<String> = outputs
+            .iter()
+            .cloned()
+            .chain(self.derived.iter().map(|d| d.name.clone()))
+            .collect();
+        self.signals = History::with_index(old.index(), names);
+        for k in 0..old.len() {
+            let t = old.times()[k];
+            let mut values: Vec<f64> = (0..outputs.len())
+                .map(|i| old.value(SignalRef::Signal(i), k))
+                .collect();
+            self.append_derived(t, &mut values);
+            self.signals.push(t, &values);
+        }
+        Ok(())
     }
 
     fn output_values(&self) -> Vec<f64> {
@@ -350,6 +454,61 @@ impl Session {
             })
             .collect()
     }
+}
+
+/// Every parameter as `"block.param"`, in the order [`Session::params`]
+/// lists them (file block order, then each block's parameters).
+fn param_keys(file: &ModelFile, ids: &BTreeMap<String, BlockId>, model: &Model) -> Vec<String> {
+    let mut keys = Vec::new();
+    for entry in &file.blocks {
+        if let Ok(b) = model.block(ids[&entry.name]) {
+            for p in &b.spec().params {
+                keys.push(format!("{}.{}", entry.name, p.name));
+            }
+        }
+    }
+    keys
+}
+
+/// Compile one derived signal. Slots: `t`, then the output signals, then
+/// the parameters.
+fn compile_derived(
+    name: &str,
+    text: &str,
+    outputs: &[String],
+    params: &[String],
+) -> Result<Derived, String> {
+    let simple = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+    if !simple || name == "t" || simsandbox_expr::is_reserved(name) {
+        return Err(format!(
+            "'{name}' must be a plain name (letters, digits, _) other than t, pi or a function"
+        ));
+    }
+    let ast = simsandbox_expr::parse_signals(text).map_err(|e| e.to_string())?;
+    let expr = ast
+        .resolve(&|n| {
+            if n == "t" {
+                return Some(0);
+            }
+            if let Some(i) = outputs.iter().position(|o| o == n) {
+                return Some(1 + i);
+            }
+            params
+                .iter()
+                .position(|p| p == n)
+                .map(|i| 1 + outputs.len() + i)
+        })
+        .map_err(|e| {
+            format!("{e} (use plotted signals such as a.x, parameters such as a.k, or t)")
+        })?;
+    Ok(Derived {
+        name: name.into(),
+        expr,
+    })
 }
 
 /// The sweep for a model with no states: the file's `controls.sweep`, or
@@ -578,6 +737,42 @@ mod tests {
         assert_eq!(x[0], 0.2);
         assert!((x[1] - 3.7 * 0.2 * 0.8).abs() < 1e-15);
         assert_eq!(s.time(), 1.0);
+    }
+
+    #[test]
+    fn derived_signals_are_recorded_and_can_be_redefined() {
+        let mut s = example("Coupled");
+        // The example defines the total energy, which the coupling keeps
+        // nearly constant.
+        assert!(s.derived().contains_key("energy"), "{:?}", s.derived());
+        for _ in 0..500 {
+            s.step().unwrap();
+        }
+        let e = values(&s, "energy");
+        assert_eq!(e.len(), s.signals.len());
+        let drift = e.iter().map(|v| (v - e[0]).abs()).fold(0.0, f64::max);
+        assert!(drift < 0.01 * e[0], "energy drifted by {drift} of {}", e[0]);
+
+        // Redefining recomputes the whole history.
+        let map = [("ax2".to_string(), "a.x^2 + 0*t".to_string())].into();
+        s.set_derived(map).unwrap();
+        let ax = values(&s, "a.x");
+        let ax2 = values(&s, "ax2");
+        assert_eq!(ax2.len(), ax.len());
+        assert!(ax.iter().zip(&ax2).all(|(x, y)| (x * x - y).abs() < 1e-15));
+        assert!(s.signals.resolve("energy").is_none());
+
+        // Problems leave everything as it was.
+        let bad = [
+            ("b".to_string(), "nope + 1".to_string()),
+            ("a.x".to_string(), "1".to_string()),
+        ]
+        .into();
+        let problems = s.set_derived(bad).unwrap_err();
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(s.signals.resolve("ax2").is_some());
+        let saved = s.save_json(1.0, None).unwrap();
+        assert!(saved.contains("\"ax2\": \"a.x^2 + 0*t\""));
     }
 
     #[test]

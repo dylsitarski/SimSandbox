@@ -257,7 +257,9 @@ enum Tok {
     End,
 }
 
-fn lex(src: &str) -> Result<Vec<(Tok, usize)>, Error> {
+/// `dotted`: names may continue with `.name` segments and end with `[i]`,
+/// as signal and parameter names do (`a.v`, `lorenz.xyz[0]`).
+fn lex(src: &str, dotted: bool) -> Result<Vec<(Tok, usize)>, Error> {
     let chars: Vec<char> = src.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -295,6 +297,26 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, Error> {
             let start = i;
             while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
                 i += 1;
+            }
+            if dotted {
+                let starts_name =
+                    |j: usize| chars.get(j).is_some_and(|c| c.is_alphabetic() || *c == '_');
+                while chars.get(i) == Some(&'.') && starts_name(i + 1) {
+                    i += 1;
+                    while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                        i += 1;
+                    }
+                }
+                // An element index such as [0].
+                if chars.get(i) == Some(&'[') {
+                    let mut j = i + 1;
+                    while chars.get(j).is_some_and(|c| c.is_ascii_digit()) {
+                        j += 1;
+                    }
+                    if j > i + 1 && chars.get(j) == Some(&']') {
+                        i = j + 1;
+                    }
+                }
             }
             out.push((Tok::Name(chars[start..i].iter().collect()), col));
         } else if "+-*/^(),".contains(c) {
@@ -449,8 +471,19 @@ fn describe(t: &Tok) -> String {
 
 /// Parse one expression.
 pub fn parse(src: &str) -> Result<Ast, Error> {
+    parse_with(src, false)
+}
+
+/// Parse an expression over signal names, which may be dotted and indexed:
+/// `0.5*(a.v^2 + b.v^2)`, `lorenz.xyz[0] - lorenz.xyz[1]`. Used for derived
+/// signals (ADR 0015).
+pub fn parse_signals(src: &str) -> Result<Ast, Error> {
+    parse_with(src, true)
+}
+
+fn parse_with(src: &str, dotted: bool) -> Result<Ast, Error> {
     let mut p = Parser {
-        toks: lex(src)?,
+        toks: lex(src, dotted)?,
         pos: 0,
     };
     if p.peek() == &Tok::End {
@@ -525,6 +558,16 @@ mod tests {
             .unwrap()
             .resolve(&|n| (n == "x").then_some(0));
         assert_eq!(unknown.unwrap_err().column, 5);
+    }
+
+    #[test]
+    fn signal_expressions_take_dotted_and_indexed_names() {
+        let ast = parse_signals("0.5*a.v^2 + lorenz.xyz[2] - t").unwrap();
+        let names: Vec<_> = ast.names().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["a.v", "lorenz.xyz[2]", "t"]);
+        // Numbers with decimals are not names; plain parsing rejects dots.
+        assert_eq!(parse_signals("x.y*1.5").unwrap().names()[0].0, "x.y");
+        assert!(parse("a.v").is_err());
     }
 
     #[test]

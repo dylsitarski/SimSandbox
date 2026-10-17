@@ -37,6 +37,8 @@ pub struct SimApp {
     param_edits: HashMap<String, String>,
     /// The equation editor window, when open.
     editor: Option<Editor>,
+    /// The derived-signals window, when open.
+    signals_editor: Option<SignalsEditor>,
     last_frame: Option<Instant>,
     rewind_t: f64,
     views: Views,
@@ -62,6 +64,7 @@ impl SimApp {
             path: None,
             param_edits: HashMap::new(),
             editor: None,
+            signals_editor: None,
             last_frame: None,
             rewind_t: 0.0,
             views: Views::new(ViewRegistry::builtin()),
@@ -425,6 +428,20 @@ impl SimApp {
             })
             .response
             .on_hover_text("Add another view of this model");
+            if ui
+                .button("Signals…")
+                .on_hover_text("Define signals computed from others, such as an energy")
+                .clicked()
+            {
+                self.signals_editor = Some(SignalsEditor {
+                    rows: session
+                        .derived()
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                    problems: Vec::new(),
+                });
+            }
             ui.weak("Click a view's name to edit its style in the side panel");
         });
 
@@ -686,6 +703,83 @@ impl SimApp {
         }
     }
 
+    /// The derived-signals window (ADR 0015).
+    fn signals_window(&mut self, ctx: &egui::Context) {
+        let (Some(ed), Some(session)) = (self.signals_editor.as_mut(), self.session.as_mut())
+        else {
+            return;
+        };
+        let mut open = true;
+        let (mut apply, mut cancel) = (false, false);
+        egui::Window::new("Derived signals")
+            .open(&mut open)
+            .default_width(560.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Each signal is computed from plotted signals (a.x, lorenz.xyz[0]), \
+                     parameters (a.k) and t, using the same operators and functions as \
+                     equations. It can then be plotted like any other signal.",
+                );
+                let mut remove = None;
+                egui::Grid::new("derived").num_columns(4).show(ui, |ui| {
+                    for (k, (name, text)) in ed.rows.iter_mut().enumerate() {
+                        ui.add(egui::TextEdit::singleline(name).desired_width(100.0));
+                        ui.label("=");
+                        ui.add(
+                            egui::TextEdit::singleline(text)
+                                .code_editor()
+                                .desired_width(360.0),
+                        );
+                        if ui.small_button("×").on_hover_text("Remove").clicked() {
+                            remove = Some(k);
+                        }
+                        ui.end_row();
+                    }
+                });
+                if let Some(k) = remove {
+                    ed.rows.remove(k);
+                }
+                if ui.button("Add signal").clicked() {
+                    ed.rows
+                        .push((format!("signal{}", ed.rows.len() + 1), String::new()));
+                }
+                ui.weak(format!(
+                    "Plotted signals: {}",
+                    session.signals.names().join(", ")
+                ));
+                for p in &ed.problems {
+                    ui.colored_label(ui.visuals().error_fg_color, p);
+                }
+                ui.horizontal(|ui| {
+                    apply = ui.button("Apply").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        if cancel || !open {
+            self.signals_editor = None;
+        } else if apply {
+            let mut map = std::collections::BTreeMap::new();
+            let mut problems = Vec::new();
+            for (name, text) in &ed.rows {
+                let name = name.trim().to_string();
+                if map.insert(name.clone(), text.trim().to_string()).is_some() {
+                    problems.push(format!("'{name}' is defined twice"));
+                }
+            }
+            if problems.is_empty() {
+                match session.set_derived(map) {
+                    Ok(()) => {
+                        self.signals_editor = None;
+                        self.notice = Some("Derived signals applied".into());
+                        return;
+                    }
+                    Err(p) => problems = p,
+                }
+            }
+            ed.problems = problems;
+        }
+    }
+
     /// Run the editor's equations: as a new model, or as the new equations
     /// of a block of the open model, keeping the values of parameters that
     /// still exist.
@@ -820,6 +914,7 @@ impl eframe::App for SimApp {
         self.handle_dropped_files(&ctx);
         self.advance();
         self.equation_editor(&ctx);
+        self.signals_window(&ctx);
 
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.add_space(4.0);
@@ -1140,6 +1235,12 @@ fn with_model_extension(path: PathBuf) -> PathBuf {
 
 /// The equation editor: for a new model (`block` is `None`) or for a block
 /// of the open model.
+/// Rows of the derived-signals window: name and expression.
+struct SignalsEditor {
+    rows: Vec<(String, String)>,
+    problems: Vec<String>,
+}
+
 struct Editor {
     block: Option<String>,
     text: String,

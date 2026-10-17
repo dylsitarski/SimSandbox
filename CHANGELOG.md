@@ -27,6 +27,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - App: several views at once as tiles; "More views…" adds any view that fits; tiles close individually and Save writes them all (ADR 0016). The examples open with curated views.
 - Typed equations (ADR 0017): `simsandbox-expr` crate; `eq.equations` block type turning lines like `dx/dt = sigma*(y - x)` into a model with parameters, initial values and computed outputs; `equations` in model files; "New model…" and "Edit equations…" in the app; predator–prey example.
 - Typed models without time (ADR 0021): discrete maps `x[n+1] = …` (method `iterate`), formula-only blocks (method `evaluate`), and parameter sweeps for models with no states (`controls.sweep`); logistic-map and resonance examples.
+- Derived signals (`controls.signals`): expressions over plotted signals, parameters and `t`, edited in a "Signals…" window and plotted like any signal; the coupled-oscillator example plots its total energy.
 
 ### Changed
 

@@ -19,6 +19,7 @@
 - 2026-10-17: symbolic equation entry: `simsandbox-expr`, `eq.equations` (`EquationSet`), `equations` in model files, equation editor, predator–prey example; ADR 0017 written as Proposed (the parser approach was chosen by the agent and awaits the owner's confirmation).
 - 2026-10-17: owner accepted ADR 0017 and the recommendations for Q12–Q14 (ADRs 0018–0020); `plot.time` and `plot.phase` merged into `plot.xy` with view presets. 79 tests.
 - 2026-10-17: typed models without time: maps, formulas, sweeps (ADR 0021); logistic-map and resonance examples. 86 tests.
+- 2026-10-17: views step 4, derived signals. 88 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
 - Wrote ADRs 0007 to 0015; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 

@@ -353,7 +353,7 @@ fn the_single_view_of_adr_0014_is_converted() {
         r#""speed": 1.0, "view": {"kind": "time", "axes": []},"#,
     );
     let loaded = load(&both, &registry()).unwrap();
-    assert_eq!(loaded.file.controls.views.len(), 2);
+    assert_eq!(loaded.file.controls.views.len(), 3);
 }
 
 #[test]

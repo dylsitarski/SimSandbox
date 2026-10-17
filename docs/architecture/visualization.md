@@ -2,7 +2,7 @@
 
 _Last updated: 2026-10-17_
 
-How the app turns a running model into pictures. Decision and rationale: [ADR 0015](../decisions/0015-pluggable-views.md). Status (2026-10-17): migration steps 1–3 are done. `crates/simsandbox-views` holds the history, the view contract and registry (`view.rs`), colour encodings (`colour.rs`) and the built-in views (`builtin.rs`, `view3d.rs`); the app shows the model's views as tiles in an automatic grid, with "More views…" for any other view that fits ([ADR 0016](../decisions/0016-model-curated-views.md); `crates/simsandbox-app/src/views.rs`). Derived signals, richer shapes, domain views and the viewer theme are planned (steps 4–6).
+How the app turns a running model into pictures. Decision and rationale: [ADR 0015](../decisions/0015-pluggable-views.md). Status (2026-10-17): migration steps 1–4 are done. `crates/simsandbox-views` holds the history, the view contract and registry (`view.rs`), colour encodings (`colour.rs`) and the built-in views (`builtin.rs`, `view3d.rs`); the app shows the model's views as tiles in an automatic grid, with "More views…" for any other view that fits ([ADR 0016](../decisions/0016-model-curated-views.md); `crates/simsandbox-app/src/views.rs`). Derived signals are computed in `crates/simsandbox-app/src/session.rs`. Richer shapes, domain views and the viewer theme are planned (steps 5–6).
 
 ```mermaid
 flowchart LR
@@ -28,7 +28,7 @@ A **signal** is a named quantity recorded over time.
 
 Names follow the model file conventions: `block.port` for a whole output, `block.port[i]` for one element ([ADR 0014](../decisions/0014-view-in-controls.md)). The history records every signal at every communication step and is thinned, rewound and branched as a whole, so signals always pair by index.
 
-Derived signals are defined in `controls` because they change only what is shown, never results. Expressions use the parser chosen for symbolic equation entry ([Q4](../open-questions.md)).
+Derived signals are defined in `controls.signals` because they change only what is shown, never results. Expressions use the typed-equation parser ([ADR 0017](../decisions/0017-typed-equations.md)) with dotted names: plotted signals (`a.v`, `lorenz.xyz[0]`), parameters (`a.kappa`) and `t`. They are evaluated with the parameter values current when each sample is recorded; redefining them recomputes the history with current values.
 
 ## Views
 
@@ -92,6 +92,6 @@ The views a model file lists are the views shown; any other view whose slots fit
 1. Done 2026-10-16: move the history (`Session` series) and the three current views into `simsandbox-views` behind the view trait and registry.
 2. Done 2026-10-16: replace `controls.view` with `controls.views` (the app saves the active view as one entry), keep reading `view`; a colour slot on `plot.phase` and `plot.3d` with trail fading as its default binding to `t` (so the phase portrait now fades too), and `trail_length` as the first style property, edited under "View" in the parameter panel.
 3. Done 2026-10-17: several views at once in tiles (automatic grid, each tile with its own plot memory, slot pickers and close button), "More views…" for other fitting views, and Save writing all tiles ([ADR 0016](../decisions/0016-model-curated-views.md)).
-4. Derived signals (expressions after Q4; norms, FFT, projections, Poincaré sections).
+4. Done 2026-10-17: derived signals as expressions (`controls.signals`, edited in the "Signals…" window) over plotted signals, parameters and `t`, recorded with every sample and recomputed for the whole history when redefined. Still to come: operations over history (FFT, smoothing, Poincaré sections), which approximate and so get methods ([ADR 0020](../decisions/0020-methods-for-approximations.md)).
 5. Grid and point-set shapes in the kernel, `plot.heatmap` and `plot.scatter`, with the first field or agent Block.
 6. First domain view (`eq.pendulum`) with a pendulum example, proving the registration path.

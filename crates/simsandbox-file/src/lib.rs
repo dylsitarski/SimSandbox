@@ -158,6 +158,12 @@ pub struct Controls {
     /// The views the model opens with (ADR 0015); the app shows the first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<ViewEntry>,
+    /// Derived signals: name to expression over recorded signals,
+    /// parameters (`block.param`) and `t`, e.g. `"energy": "0.5*a.v^2"`
+    /// (ADR 0015). Checked by the app; invalid ones are dropped with a
+    /// warning.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub signals: BTreeMap<String, String>,
     /// The parameter swept when the model has no states (ADR 0019, ADR 0021).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sweep: Option<SweepControl>,
@@ -259,6 +265,7 @@ impl Controls {
             && self.plots.is_empty()
             && self.views.is_empty()
             && self.sweep.is_none()
+            && self.signals.is_empty()
             && self.view.is_none()
     }
 }
@@ -646,14 +653,14 @@ impl ModelFile {
                 }
             }
         }
+        // Views may bind derived signals as well as outputs.
+        let derived: Vec<String> = c.signals.keys().cloned().collect();
         let mut kept = Vec::new();
         for (i, mut v) in std::mem::take(&mut c.views).into_iter().enumerate() {
             v.upgrade();
-            let unknown = v
-                .bind
-                .values()
-                .flat_map(Binding::signals)
-                .find(|s| s != "t" && !output_element_exists(s, model, ids));
+            let unknown = v.bind.values().flat_map(Binding::signals).find(|s| {
+                s != "t" && !derived.contains(s) && !output_element_exists(s, model, ids)
+            });
             if let Some(s) = unknown {
                 warnings.push(format!("controls.views[{i}]: no signal '{s}'; ignored"));
                 continue;

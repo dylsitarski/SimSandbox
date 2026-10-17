@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "description": "Two masses on springs, tied to walls and to each other, coupled through the co-simulation master. Energy sloshes from one to the other.",
+  "description": "Two masses on springs, tied to walls and to each other, coupled through the co-simulation master. Energy sloshes from one to the other. The total energy (a derived signal) should stay constant; it creeps up slightly because the two blocks exchange positions only once per step, which is coupling error.",
   "run": {
     "dt": 0.01
   },
@@ -48,7 +48,9 @@
     "speed": 1.0,
     "plots": [
       "a.x",
-      "b.x"
+      "a.v",
+      "b.x",
+      "b.v"
     ],
     "views": [
       {
@@ -68,7 +70,17 @@
           "x": "a.x",
           "y": "b.x"
         }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "energy"
+        }
       }
-    ]
+    ],
+    "signals": {
+      "energy": "0.5*(a.v^2 + b.v^2) + 0.5*a.omega0_sq*(a.x^2 + b.x^2) + 0.5*a.kappa*(a.x - b.x)^2"
+    }
   }
 }

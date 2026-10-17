@@ -116,6 +116,11 @@
           "type": "array",
           "items": { "$ref": "#/$defs/ref" }
         },
+        "signals": {
+          "type": "object",
+          "description": "Derived signals: name to expression over recorded signals, parameters ('block.param') and 't' (ADR 0015).",
+          "additionalProperties": { "type": "string" }
+        },
         "sweep": {
           "type": "object",
           "description": "The parameter swept when the model has no states (ADR 0021).",

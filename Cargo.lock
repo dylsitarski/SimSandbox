@@ -2633,6 +2633,7 @@ dependencies = [
  "rfd",
  "simsandbox-core",
  "simsandbox-eq",
+ "simsandbox-expr",
  "simsandbox-file",
  "simsandbox-views",
 ]
