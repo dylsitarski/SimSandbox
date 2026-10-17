@@ -1,11 +1,13 @@
 //! Loading, saving and validating model files.
 
+use simsandbox_core::graph::BlockId;
 use simsandbox_core::graph::Model;
 use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::Simulator;
+use simsandbox_eq::integrators::GroupIntegrator;
 use simsandbox_eq::systems::{CoupledOscillator, Lorenz};
 use simsandbox_eq::{Integrator, OdeBlock};
-use simsandbox_file::{load, Binding, FileError, ModelFile, SCHEMA};
+use simsandbox_file::{load, Binding, FileError, FusedGroup, ModelFile, SCHEMA};
 
 const LORENZ: &str = include_str!("../../../examples/lorenz.ssbx.json");
 const OSCILLATORS: &str = include_str!("../../../examples/coupled-oscillators.ssbx.json");
@@ -85,32 +87,124 @@ fn lorenz_from_file_matches_lorenz_from_code() {
     assert_eq!(from_file.state(id), from_code.state(code_id));
 }
 
-#[test]
-fn coupled_oscillators_from_file_match_the_model_from_code() {
-    let loaded = load(OSCILLATORS, &registry()).unwrap();
-    let a = loaded.ids["a"];
-    let mut from_file = Simulator::new(loaded.model, 0.0).unwrap();
-
-    // The co-simulated pair as built in simsandbox-eq's verification tests.
+/// The oscillator pair built in code, fused by the master or not.
+fn oscillators_from_code(fused: bool) -> (Simulator, BlockId) {
     let rk4 = Integrator::Rk4 { substeps: 4 };
     let mut model = Model::new();
-    let ca = model.add(Box::new(OdeBlock::new(
+    let a = model.add(Box::new(OdeBlock::new(
         CoupledOscillator::new("a", 1.0),
         rk4,
     )));
-    let cb = model.add(Box::new(OdeBlock::new(
+    let b = model.add(Box::new(OdeBlock::new(
         CoupledOscillator::new("b", 0.0),
         rk4,
     )));
-    model.connect((ca, "x"), (cb, "neighbor_x")).unwrap();
-    model.connect((cb, "x"), (ca, "neighbor_x")).unwrap();
-    let mut from_code = Simulator::new(model, 0.0).unwrap();
+    model.connect((a, "x"), (b, "neighbor_x")).unwrap();
+    model.connect((b, "x"), (a, "neighbor_x")).unwrap();
+    if fused {
+        model
+            .fuse(&[a, b], Box::new(GroupIntegrator::new(rk4)))
+            .unwrap();
+    }
+    (Simulator::new(model, 0.0).unwrap(), a)
+}
 
+fn run_both(text: &str, fused: bool) -> (Option<Vec<f64>>, Option<Vec<f64>>) {
+    let loaded = load(text, &registry()).unwrap();
+    let a = loaded.ids["a"];
+    let mut from_file = Simulator::new(loaded.model, 0.0).unwrap();
+    let (mut from_code, ca) = oscillators_from_code(fused);
     for _ in 0..1000 {
         from_file.step(0.01).unwrap();
         from_code.step(0.01).unwrap();
     }
-    assert_eq!(from_file.output(a, "x"), from_code.output(ca, "x"));
+    (
+        from_file.output(a, "x").map(<[f64]>::to_vec),
+        from_code.output(ca, "x").map(<[f64]>::to_vec),
+    )
+}
+
+#[test]
+fn connected_equation_blocks_with_one_method_are_fused_automatically() {
+    let loaded = load(OSCILLATORS, &registry()).unwrap();
+    assert_eq!(
+        loaded.groups,
+        [FusedGroup {
+            blocks: vec!["a".into(), "b".into()],
+            method: "RK4 (4 substeps)".into(),
+            explicit: false,
+        }]
+    );
+    let (file, code) = run_both(OSCILLATORS, true);
+    assert_eq!(file, code);
+}
+
+#[test]
+fn fusion_off_co_simulates_and_explicit_groups_choose_the_method() {
+    let off = OSCILLATORS.replacen(
+        "\"connections\"",
+        "\"fusion\": \"off\",\n  \"connections\"",
+        1,
+    );
+    assert!(load(&off, &registry()).unwrap().groups.is_empty());
+    let (file, code) = run_both(&off, false);
+    assert_eq!(file, code);
+
+    // An explicit group overrides the blocks' own methods.
+    let grouped = off.replacen(
+        "\"connections\"",
+        "\"groups\": [{\"blocks\": [\"b\", \"a\"], \"method\": {\"name\": \"dopri5\"}}],\n  \"connections\"",
+        1,
+    );
+    let loaded = load(&grouped, &registry()).unwrap();
+    assert_eq!(loaded.groups.len(), 1);
+    assert!(loaded.groups[0].explicit);
+    assert!(
+        loaded.groups[0].method.starts_with("Dormand"),
+        "{}",
+        loaded.groups[0].method
+    );
+    // Saving keeps both settings.
+    let saved = loaded.file.to_json();
+    assert!(saved.contains("\"fusion\": \"off\""), "{saved}");
+    assert!(saved.contains("\"groups\""), "{saved}");
+}
+
+#[test]
+fn blocks_with_different_methods_stay_separate() {
+    let mixed = OSCILLATORS.replacen("\"substeps\": 4.0", "\"substeps\": 2.0", 1);
+    assert!(load(&mixed, &registry()).unwrap().groups.is_empty());
+}
+
+#[test]
+fn bad_groups_are_load_errors() {
+    let with = |groups: &str| {
+        OSCILLATORS.replacen(
+            "\"connections\"",
+            &format!("\"groups\": {groups},\n  \"connections\""),
+            1,
+        )
+    };
+    assert_eq!(
+        invalid_path(&with(
+            r#"[{"blocks": ["a", "z"], "method": {"name": "rk4"}}]"#
+        )),
+        "groups[0].blocks[1]"
+    );
+    assert_eq!(
+        invalid_path(&with(
+            r#"[{"blocks": ["a"], "method": {"name": "rk4"}}, {"blocks": ["a"], "method": {"name": "rk4"}}]"#
+        )),
+        "groups[1].blocks[0]"
+    );
+    assert_eq!(
+        invalid_path(&with(r#"[{"blocks": ["a"], "method": {"name": "rk5"}}]"#)),
+        "groups[0].method"
+    );
+    assert_eq!(
+        invalid_path(&with(r#"[{"blocks": [], "method": {"name": "rk4"}}]"#)),
+        "groups[0].blocks"
+    );
 }
 
 #[test]
@@ -247,6 +341,8 @@ fn schema_is_valid_json_and_lists_the_file_fields() {
             "controls",
             "description",
             "format",
+            "fusion",
+            "groups",
             "run"
         ]
     );

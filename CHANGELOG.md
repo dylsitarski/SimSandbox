@@ -30,6 +30,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Derived signals (`controls.signals`): expressions over plotted signals, parameters and `t`, edited in a "Signals…" window and plotted like any signal; the coupled-oscillator example plots its total energy.
 - Grid and point-set port shapes (`Shape::Grid`, `Shape::Points`), recorded whole; `plot.heatmap` (a line of cells over time, or a 2D grid) and `plot.scatter` (a point set) views.
 - Block types `eq.heat_rod` (heat along a rod, a grid), `eq.orbits` (test particles around a central mass, a point set) and `eq.pendulum` (a damped pendulum) with heat-rod, orbits and pendulum examples.
+- Automatic fusion (ADR 0023): connected equation blocks with identical methods are solved together as one system, so their connections add no coupling error; `"fusion": "off"` and explicit `"groups"` (blocks plus a method) in model files; `Model::fuse`, `GroupSolver` and `Registry::register_group_solver` in the kernel; a "Solving" section in the app shows the groups and switches fusion on or off. The coupled-oscillator example now keeps its energy.
 - `plot.profile`: line fields as they are now, against a coordinate field (e.g. temperature against position along the rod).
 - `eq.heat_rod` has a `length` parameter and a `position` output; `plot.heatmap` has a `position` slot (cells placed along the line) and a `time_axis` style property (time across or upwards).
 - App: `--window signals|equations` opens that window at start (for headless checks).

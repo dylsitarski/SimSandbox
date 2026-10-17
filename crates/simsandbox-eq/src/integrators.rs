@@ -258,6 +258,37 @@ fn dopri5(f: &Rhs<'_>, t0: f64, dt: f64, x: &mut [f64], rtol: f64, atol: f64) ->
     Ok(())
 }
 
+/// An [`Integrator`] advancing a fused group (ADR 0023).
+pub struct GroupIntegrator {
+    integrator: Integrator,
+    method: MethodSpec,
+}
+
+impl GroupIntegrator {
+    pub fn new(integrator: Integrator) -> Self {
+        Self {
+            method: integrator.method_spec(),
+            integrator,
+        }
+    }
+}
+
+impl simsandbox_core::fusion::GroupSolver for GroupIntegrator {
+    fn method(&self) -> &MethodSpec {
+        &self.method
+    }
+
+    fn advance(
+        &mut self,
+        rhs: &simsandbox_core::fusion::GroupRhs<'_>,
+        t: f64,
+        dt: f64,
+        x: &mut [f64],
+    ) -> Result<()> {
+        self.integrator.advance(rhs, t, dt, x)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

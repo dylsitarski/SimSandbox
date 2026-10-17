@@ -8,7 +8,7 @@ use simsandbox_core::sim::{Simulator, Snapshot};
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
 use simsandbox_expr::Expr;
-use simsandbox_file::{ModelFile, SweepControl, ViewEntry, DEFAULT_SWEEP_POINTS};
+use simsandbox_file::{FusedGroup, ModelFile, SweepControl, ViewEntry, DEFAULT_SWEEP_POINTS};
 use simsandbox_views::history::thin;
 use simsandbox_views::{Available, FieldShape, History, SignalRef};
 use std::collections::BTreeMap;
@@ -68,6 +68,8 @@ pub struct Session {
     pub file: ModelFile,
     pub ids: BTreeMap<String, BlockId>,
     pub warnings: Vec<String>,
+    /// Blocks solved together as one system (ADR 0023).
+    pub groups: Vec<FusedGroup>,
     pub dt: f64,
     /// Recorded signals, one per plotted output element (ADR 0015).
     pub signals: History,
@@ -192,6 +194,7 @@ impl Session {
             stop_at: loaded.file.run.t_end,
             file: loaded.file,
             ids: loaded.ids,
+            groups: loaded.groups,
             warnings,
             signals,
             sources,
@@ -830,8 +833,8 @@ mod tests {
     #[test]
     fn derived_signals_are_recorded_and_can_be_redefined() {
         let mut s = example("Coupled");
-        // The example defines the total energy, which the coupling keeps
-        // nearly constant.
+        // The example defines the total energy, which stays constant: the
+        // two blocks are fused, so there is no coupling error (ADR 0023).
         assert!(s.derived().contains_key("energy"), "{:?}", s.derived());
         for _ in 0..500 {
             s.step().unwrap();
@@ -839,7 +842,7 @@ mod tests {
         let e = values(&s, "energy");
         assert_eq!(e.len(), s.signals.len());
         let drift = e.iter().map(|v| (v - e[0]).abs()).fold(0.0, f64::max);
-        assert!(drift < 0.01 * e[0], "energy drifted by {drift} of {}", e[0]);
+        assert!(drift < 1e-9 * e[0], "energy drifted by {drift} of {}", e[0]);
 
         // Redefining recomputes the whole history.
         let map = [("ax2".to_string(), "a.x^2 + 0*t".to_string())].into();

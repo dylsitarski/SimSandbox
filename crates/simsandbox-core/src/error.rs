@@ -28,6 +28,8 @@ pub enum SimError {
     InvalidMethod(String),
     /// A Block's definition (e.g. its equations) is invalid.
     InvalidDefinition(String),
+    /// Blocks cannot be fused into one group (ADR 0023).
+    CannotFuse(String),
 }
 
 impl fmt::Display for SimError {
@@ -53,6 +55,7 @@ impl fmt::Display for SimError {
             SimError::DuplicateBlockType(s) => write!(f, "block type '{s}' is already registered"),
             SimError::InvalidMethod(s) => write!(f, "invalid method: {s}"),
             SimError::InvalidDefinition(s) => write!(f, "{s}"),
+            SimError::CannotFuse(s) => write!(f, "cannot fuse: {s}"),
         }
     }
 }

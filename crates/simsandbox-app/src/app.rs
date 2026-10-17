@@ -657,6 +657,10 @@ impl SimApp {
         let Some(session) = self.session.as_mut() else {
             return;
         };
+        let mut fusion = None;
+        if session.file.blocks.len() > 1 {
+            fusion = solving_section(ui, session);
+        }
         ui.heading("Parameters");
         let rows = session.params();
         let mut changes: Vec<(ParamRow, f64)> = Vec::new();
@@ -732,6 +736,9 @@ impl SimApp {
                 }
                 Err(e) => self.error = Some(format!("{}: {e}", row.key)),
             }
+        }
+        if let Some(on) = fusion {
+            self.set_fusion(on);
         }
     }
 
@@ -912,6 +919,42 @@ impl SimApp {
 
     /// The open model as a file, with the equations of `block` replaced and
     /// parameters that no longer exist dropped.
+    /// Turn automatic fusion on or off (ADR 0023). The model is rebuilt from
+    /// its saved form, so the run starts again at t = 0.
+    fn set_fusion(&mut self, on: bool) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let result = session
+            .save_json(self.speed, Some(self.views.entries()))
+            .and_then(|text| {
+                simsandbox_file::ModelFile::from_json(&text).map_err(|e| e.to_string())
+            });
+        let mut file = match result {
+            Ok((file, _)) => file,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        file.fusion = if on {
+            simsandbox_file::Fusion::Auto
+        } else {
+            simsandbox_file::Fusion::Off
+        };
+        let title = session.title.clone();
+        let path = self.path.clone();
+        let running = self.running;
+        self.open_text(&title, &file.to_json());
+        self.path = path;
+        self.running = running;
+        self.log.info(if on {
+            "Connected equation blocks are solved together; the run restarted"
+        } else {
+            "Each block is solved on its own (co-simulated); the run restarted"
+        });
+    }
+
     fn edited_model(
         &mut self,
         block: &str,
@@ -1023,6 +1066,40 @@ impl eframe::App for SimApp {
         }
         self.handle_screenshot(&ctx);
     }
+}
+
+/// How the model's blocks are solved (ADR 0023): the automatic-fusion switch
+/// and the groups solved together. Returns the switch's new value if the
+/// user changed it.
+fn solving_section(ui: &mut egui::Ui, session: &Session) -> Option<bool> {
+    ui.heading("Solving");
+    let mut auto = session.file.fusion == simsandbox_file::Fusion::Auto;
+    let changed = ui
+        .checkbox(&mut auto, "Solve connected blocks together")
+        .on_hover_text(
+            "Connected equation blocks with the same method are solved as one system, \
+             so their connections add no coupling error. Off: each block steps on its \
+             own and they exchange values once per step (co-simulation). Changing this \
+             restarts the run.",
+        )
+        .changed();
+    for g in &session.groups {
+        let source = if g.explicit {
+            " (group set in the file)"
+        } else {
+            ""
+        };
+        ui.weak(format!(
+            "{} together · {}{source}",
+            g.blocks.join(", "),
+            g.method
+        ));
+    }
+    if session.groups.is_empty() {
+        ui.weak("Every block steps on its own");
+    }
+    ui.add_space(6.0);
+    changed.then_some(auto)
 }
 
 /// A log entry's colour; dimmed once it is no longer new.
@@ -1489,6 +1566,35 @@ mod tests {
         assert_eq!(s.title, "Untitled");
         assert_eq!(s.signals.names(), ["model.x", "model.v", "model.energy"]);
         assert!(app.path.is_none());
+    }
+
+    #[test]
+    fn fusion_can_be_switched_off_and_on_keeping_parameters() {
+        let mut app = SimApp::new(None, None, None, None);
+        let e = &EXAMPLES[1];
+        assert!(e.name.contains("oscillators"));
+        app.open_text(e.name, e.text);
+        let s = app.session.as_mut().unwrap();
+        assert_eq!(s.groups.len(), 1, "the example is fused by default");
+        let id = s.ids["a"];
+        s.set_param(id, "kappa", 0.8).unwrap();
+
+        app.set_fusion(false);
+        let s = app.session.as_ref().unwrap();
+        assert!(s.groups.is_empty());
+        assert_eq!(s.file.fusion, simsandbox_file::Fusion::Off);
+        assert_eq!(
+            s.params()
+                .iter()
+                .find(|r| r.key == "a.kappa")
+                .unwrap()
+                .value,
+            0.8
+        );
+        assert!(app.error.is_none());
+
+        app.set_fusion(true);
+        assert_eq!(app.session.as_ref().unwrap().groups.len(), 1);
     }
 
     #[test]

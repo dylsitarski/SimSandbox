@@ -1,6 +1,7 @@
 //! The model graph: Blocks, their parameter values, and unit-checked connections.
 
-use crate::block::{Block, BlockSpec, Causality, PortSpec};
+use crate::block::{Block, BlockSpec, Causality, PortSpec, TimeSemantics};
+use crate::fusion::{Group, GroupSolver};
 use crate::{Result, SimError};
 
 /// Index of a Block within a [`Model`].
@@ -29,6 +30,7 @@ pub struct Model {
     pub(crate) blocks: Vec<Box<dyn Block>>,
     pub(crate) params: Vec<Vec<f64>>,
     pub(crate) connections: Vec<Connection>,
+    pub(crate) groups: Vec<Group>,
 }
 
 impl Model {
@@ -117,6 +119,56 @@ impl Model {
             factor,
         });
         Ok(())
+    }
+
+    /// Solve these Blocks together as one system with `solver` (ADR 0023).
+    /// Each must be a continuous equation Block (it implements `Equations`)
+    /// in no other group; connections between members are then resolved
+    /// inside every right-hand-side evaluation instead of once per step.
+    pub fn fuse(&mut self, members: &[BlockId], solver: Box<dyn GroupSolver>) -> Result<()> {
+        if members.is_empty() {
+            return Err(SimError::CannotFuse(
+                "a group needs at least one block".into(),
+            ));
+        }
+        for (k, &id) in members.iter().enumerate() {
+            let block = self.block(id)?;
+            let name = &block.spec().name;
+            if members[..k].contains(&id) {
+                return Err(SimError::CannotFuse(format!("'{name}' is listed twice")));
+            }
+            if self.group_of(id).is_some() {
+                return Err(SimError::CannotFuse(format!(
+                    "'{name}' is already in a group"
+                )));
+            }
+            if !self.is_fusable(id) {
+                return Err(SimError::CannotFuse(format!(
+                    "'{name}' is not a continuous equation block"
+                )));
+            }
+        }
+        self.groups.push(Group {
+            members: members.to_vec(),
+            solver,
+        });
+        Ok(())
+    }
+
+    /// Whether a Block can join a fused group: a continuous equation Block.
+    pub fn is_fusable(&self, id: BlockId) -> bool {
+        self.block(id)
+            .is_ok_and(|b| b.as_equations().is_some() && b.spec().time == TimeSemantics::Continuous)
+    }
+
+    /// The fused groups, in the order they were made.
+    pub fn groups(&self) -> &[Group] {
+        &self.groups
+    }
+
+    /// The index of the group a Block belongs to, if any.
+    pub fn group_of(&self, id: BlockId) -> Option<usize> {
+        self.groups.iter().position(|g| g.members.contains(&id))
     }
 
     pub fn block(&self, id: BlockId) -> Result<&dyn Block> {

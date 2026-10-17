@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/dylsitarski/SimSandbox/blob/main/crates/simsandbox-file/model.schema.json",
   "title": "SimSandbox model file",
-  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md.",
+  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md and docs/decisions/0023-automatic-fusion.md.",
   "type": "object",
   "required": ["format", "blocks"],
   "additionalProperties": false,
@@ -17,6 +17,33 @@
     "connections": {
       "type": "array",
       "items": { "$ref": "#/$defs/connection" }
+    },
+    "fusion": {
+      "enum": ["auto", "off"],
+      "default": "auto",
+      "description": "auto: connected continuous equation blocks with identical methods are solved together as one system; off: only 'groups' are (ADR 0023)."
+    },
+    "groups": {
+      "type": "array",
+      "description": "Blocks solved together as one system with the given method, overriding their own (ADR 0023).",
+      "items": {
+        "type": "object",
+        "required": ["blocks", "method"],
+        "additionalProperties": false,
+        "properties": {
+          "blocks": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/name" }
+          },
+          "method": {
+            "type": "object",
+            "required": ["name"],
+            "properties": { "name": { "type": "string" } },
+            "additionalProperties": { "type": "number" }
+          }
+        }
+      }
     },
     "controls": { "$ref": "#/$defs/controls" }
   },

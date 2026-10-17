@@ -50,7 +50,9 @@ flowchart TB
   MLD <--> master
 ```
 
-- **Within a domain**, Blocks are merged into one problem, so tightly coupled equations have no coupling error. Implemented for equations: `EquationGroup` → `FusedSystem`.
+- **Within a domain**, Blocks are merged into one problem, so tightly coupled equations have no coupling error. Implemented for equations in two ways:
+  - **Fused groups in the master** ([ADR 0023](../decisions/0023-automatic-fusion.md), `crates/simsandbox-core/src/fusion.rs`): `Model::fuse(members, solver)` marks continuous equation Blocks to be advanced together. The members stay ordinary Blocks (ids, ports, parameters, states, snapshots unchanged); each step the kernel concatenates their states, builds one right-hand side from their `Equations` with connections inside the group resolved at every evaluation (inputs from outside are held over the step), and hands it to the group's `GroupSolver`, which the domain registers (`Registry::register_group_solver`; for equations, `GroupIntegrator`). Model files fuse automatically: connected continuous equation blocks with identical method settings form a group; `"fusion": "off"` turns this off and `"groups"` fuses chosen blocks with a chosen method.
+  - **`EquationGroup` → `FusedSystem`** in code: a composite system wrapped in one `OdeBlock`, exposing `<member>.<name>` ports and parameters (used for subsystems).
 - **Across domains**, each Block or fused group presents the step interface (set inputs, `do_step(dt)`, get outputs, save and restore state). Implemented: fixed step, Jacobi exchange. Planned: adaptive steps, events, iteration, rollback, coupling-error estimates.
 - **The UI marks cross-domain connections** with their estimated coupling error (planned).
 - **FMI 3.0 at the edges**: fused groups exportable as FMUs; FMUs importable as external Blocks (planned, Phase 2).

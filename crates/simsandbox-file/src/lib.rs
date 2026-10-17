@@ -58,8 +58,52 @@ pub struct ModelFile {
     pub blocks: Vec<BlockEntry>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<ConnectionEntry>,
+    /// Whether connected equation blocks are solved together
+    /// automatically (ADR 0023).
+    #[serde(skip_serializing_if = "Fusion::is_auto")]
+    pub fusion: Fusion,
+    /// Blocks to solve together with a chosen method, whatever `fusion` says.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<GroupEntry>,
     #[serde(skip_serializing_if = "Controls::is_empty")]
     pub controls: Controls,
+}
+
+/// Automatic fusion of equation blocks (ADR 0023).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Fusion {
+    /// Connected continuous equation blocks with identical methods are
+    /// solved together as one system.
+    #[default]
+    Auto,
+    /// Only explicit `groups` are solved together.
+    Off,
+}
+
+impl Fusion {
+    fn is_auto(&self) -> bool {
+        *self == Fusion::Auto
+    }
+}
+
+/// Blocks solved together as one system with one method (ADR 0023).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupEntry {
+    pub blocks: Vec<String>,
+    pub method: MethodEntry,
+}
+
+/// Blocks the loader fused, for display.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FusedGroup {
+    /// Block names, in file order for automatic groups.
+    pub blocks: Vec<String>,
+    /// The method's display name, e.g. "RK4 (4 substeps)".
+    pub method: String,
+    /// From `groups` rather than automatic fusion.
+    pub explicit: bool,
 }
 
 /// Default communication step when a file has no `run.dt`.
@@ -393,18 +437,22 @@ pub struct Loaded {
     pub ids: BTreeMap<String, BlockId>,
     /// Problems that did not stop loading, e.g. dropped controls.
     pub warnings: Vec<String>,
+    /// Blocks solved together (ADR 0023).
+    pub groups: Vec<FusedGroup>,
 }
 
 /// Parse a model file and build its model.
 pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
     let (mut file, mut warnings) = ModelFile::from_json(text)?;
-    let (model, ids) = file.build(registry)?;
+    let (mut model, ids) = file.build(registry)?;
+    let groups = file.fuse(&mut model, &ids, registry)?;
     warnings.extend(file.check_controls(&model, &ids));
     Ok(Loaded {
         file,
         model,
         ids,
         warnings,
+        groups,
     })
 }
 
@@ -422,6 +470,10 @@ struct RawFile {
     #[serde(default)]
     connections: Vec<ConnectionEntry>,
     #[serde(default)]
+    fusion: Fusion,
+    #[serde(default)]
+    groups: Vec<GroupEntry>,
+    #[serde(default)]
     controls: Option<Value>,
 }
 
@@ -434,6 +486,8 @@ impl ModelFile {
             run: RunSettings::default(),
             blocks: Vec::new(),
             connections: Vec::new(),
+            fusion: Fusion::Auto,
+            groups: Vec::new(),
             controls: Controls::default(),
         }
     }
@@ -474,6 +528,8 @@ impl ModelFile {
                 run: raw.run,
                 blocks: raw.blocks,
                 connections: raw.connections,
+                fusion: raw.fusion,
+                groups: raw.groups,
                 controls,
             },
             warnings,
@@ -568,6 +624,129 @@ impl ModelFile {
             model.connect(from, to).map_err(|e| invalid(&path, e))?;
         }
         Ok((model, ids))
+    }
+
+    /// Fuse the explicit groups, then (unless `fusion` is off) every set of
+    /// connected continuous equation blocks with identical methods
+    /// (ADR 0023).
+    fn fuse(
+        &self,
+        model: &mut Model,
+        ids: &BTreeMap<String, BlockId>,
+        registry: &Registry,
+    ) -> Result<Vec<FusedGroup>, FileError> {
+        let mut fused = Vec::new();
+        let mut taken: Vec<&str> = Vec::new();
+        let make = |model: &mut Model,
+                    members: Vec<BlockId>,
+                    method: &MethodEntry,
+                    path: &str|
+         -> Result<String, FileError> {
+            let domain = model
+                .block(members[0])
+                .map_err(|e| invalid(path, e))?
+                .spec()
+                .domain;
+            let solver = registry
+                .group_solver(domain, &method.into())
+                .ok_or_else(|| invalid(path, format!("{domain:?} blocks cannot be fused")))?
+                .map_err(|e| invalid(format!("{path}.method"), e))?;
+            let name = solver.method().name.clone();
+            model
+                .fuse(&members, solver)
+                .map_err(|e| invalid(format!("{path}.blocks"), e))?;
+            Ok(name)
+        };
+        for (gi, g) in self.groups.iter().enumerate() {
+            let path = format!("groups[{gi}]");
+            if g.blocks.is_empty() {
+                return Err(invalid(
+                    format!("{path}.blocks"),
+                    "a group needs at least one block",
+                ));
+            }
+            let mut members = Vec::new();
+            for (k, name) in g.blocks.iter().enumerate() {
+                let id = *ids.get(name).ok_or_else(|| {
+                    invalid(format!("{path}.blocks[{k}]"), format!("no block '{name}'"))
+                })?;
+                if taken.contains(&name.as_str()) {
+                    return Err(invalid(
+                        format!("{path}.blocks[{k}]"),
+                        format!("'{name}' is already in a group"),
+                    ));
+                }
+                let domain = |id| model.block(id).map(|b| b.spec().domain).ok();
+                if domain(id) != domain(members.first().copied().unwrap_or(id)) {
+                    return Err(invalid(
+                        format!("{path}.blocks[{k}]"),
+                        "all blocks in a group must belong to one domain",
+                    ));
+                }
+                taken.push(name);
+                members.push(id);
+            }
+            let method = make(model, members, &g.method, &path)?;
+            fused.push(FusedGroup {
+                blocks: g.blocks.clone(),
+                method,
+                explicit: true,
+            });
+        }
+        if self.fusion == Fusion::Off {
+            return Ok(fused);
+        }
+        // Automatic: union connected candidates, then fuse each set of two
+        // or more.
+        let candidate = |i: usize| {
+            let e = &self.blocks[i];
+            !taken.contains(&e.name.as_str()) && model.is_fusable(ids[&e.name])
+        };
+        let index = |name: &str| self.blocks.iter().position(|b| b.name == name);
+        let mut parent: Vec<usize> = (0..self.blocks.len()).collect();
+        fn root(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        }
+        for c in &self.connections {
+            let block_of = |s: &str| s.split_once('.').and_then(|(b, _)| index(b));
+            let (Some(a), Some(b)) = (block_of(&c.from), block_of(&c.to)) else {
+                continue;
+            };
+            let same = |i: usize, j: usize| {
+                let domain = |k: usize| {
+                    model
+                        .block(ids[&self.blocks[k].name])
+                        .map(|x| x.spec().domain)
+                        .ok()
+                };
+                self.blocks[i].method == self.blocks[j].method && domain(i) == domain(j)
+            };
+            if a != b && candidate(a) && candidate(b) && same(a, b) {
+                let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+                parent[ra.max(rb)] = ra.min(rb);
+            }
+        }
+        let mut sets: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for i in (0..self.blocks.len()).filter(|&i| candidate(i)) {
+            let r = root(&mut parent, i);
+            sets.entry(r).or_default().push(i);
+        }
+        for set in sets.into_values().filter(|s| s.len() > 1) {
+            let first = &self.blocks[set[0]];
+            let members = set.iter().map(|&i| ids[&self.blocks[i].name]).collect();
+            let path = format!("blocks[{}]", set[0]);
+            let method = make(model, members, &first.method, &path)?;
+            fused.push(FusedGroup {
+                blocks: set.iter().map(|&i| self.blocks[i].name.clone()).collect(),
+                method,
+                explicit: false,
+            });
+        }
+        Ok(fused)
     }
 
     /// Drop controls that refer to nothing or carry bad values; return a

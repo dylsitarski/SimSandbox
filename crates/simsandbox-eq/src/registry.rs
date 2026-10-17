@@ -1,11 +1,11 @@
 //! Block types of the equation domain, registered for model files.
 
 use crate::fields::{HeatRod, Orbits};
-use crate::integrators::Integrator;
+use crate::integrators::{GroupIntegrator, Integrator};
 use crate::ode::OdeBlock;
 use crate::symbolic::{EquationSet, ExplicitBlock, Kind};
 use crate::systems::{CoupledOscillator, Lorenz, Pendulum};
-use simsandbox_core::block::Block;
+use simsandbox_core::block::{Block, Domain};
 use simsandbox_core::registry::{BlockConfig, Registry};
 use simsandbox_core::{Result, SimError};
 
@@ -45,6 +45,11 @@ pub fn register(registry: &mut Registry) -> Result<()> {
     registry.register(ORBITS, |name, c| {
         fixed(ORBITS, c)?;
         ode_block(Orbits::new(name), c)
+    })?;
+    registry.register_group_solver(Domain::Equations, |m| {
+        Ok(Box::new(GroupIntegrator::new(Integrator::from_settings(
+            m,
+        )?)))
     })?;
     registry.register(EQUATIONS, |name, c| {
         let set = EquationSet::parse(name, &c.definition)?;

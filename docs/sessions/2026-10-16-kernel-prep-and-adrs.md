@@ -21,6 +21,7 @@
 - 2026-10-17: typed models without time: maps, formulas, sweeps (ADR 0021); logistic-map and resonance examples. 86 tests.
 - 2026-10-17: views step 4, derived signals. 88 tests.
 - 2026-10-17: owner feedback round: sweep-to-infinity crash, status line, description, Derived signals widths, heat rod length/position, `plot.profile`, heat map axes; Q15, Q16. 103 tests.
+- 2026-10-17: Q17 (implicit and IMEX methods) raised; automatic fusion built (ADR 0023). 111 tests.
 - 2026-10-17: messages moved into a log tile beside the rewind bar (`crates/simsandbox-app/src/log.rs`) at the owner's request; duplicate description tooltip removed (egui already shows cut text on hover). 104 tests.
 - 2026-10-17: views steps 5–6: `Shape::Grid`/`Shape::Points`, fields in the history, `plot.heatmap`, `plot.scatter`, slot kinds and `Available`; `eq.heat_rod`, `eq.orbits` and `eq.pendulum` with verification tests; the `eq.pendulum` view (`applies_to`) behind `simsandbox-eq`'s `views` feature; heat-rod, orbits and pendulum examples, checked by screenshot. 100 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
@@ -48,6 +49,8 @@
 
 ## Notes for the next session
 
+- Fusion was built in the master rather than as ADR 0023's consequences sketched (the loader building an `EquationGroup` and renaming ports): members stay separate Blocks and only their stepping changes, so names, ids, snapshots and `set_param` needed no mapping. The master's group right-hand side is bit-identical to `FusedSystem`'s (test `master_fusion_matches_the_fused_system_bit_for_bit`).
+- With fusion the oscillator energy plot autoscales to rounding noise (10⁻¹⁴), which looks like drift; plots have no minimum span yet.
 - egui panics in debug builds when asked to draw a NaN or infinite point ("Comparing NaN vectors"); `crates/simsandbox-views/tests/render.rs` renders every built-in view headlessly with such values. New views should be added to it.
 - The coupled-oscillator energy drift was measured with `simsandbox run` at dt = 0.01, 0.005, 0.0025: +11.5 %, +4.9 %, +2.3 % at t = 100, first order in dt, matching a coupling delay of dt/2 acting as negative damping on the antisymmetric mode (Q16).
 - egui `TextEdit`s inside a `Grid` collapsed to a few characters in the Derived signals window; fixed sizes (`add_sized`) work.

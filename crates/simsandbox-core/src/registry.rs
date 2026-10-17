@@ -4,7 +4,8 @@
 //! Domain crates register their types; the kernel only stores factories and
 //! knows nothing about file formats.
 
-use crate::block::Block;
+use crate::block::{Block, Domain};
+use crate::fusion::GroupSolver;
 use crate::{Result, SimError};
 use std::collections::BTreeMap;
 
@@ -43,10 +44,15 @@ pub struct BlockConfig {
 /// Builds a Block named `name` from its configuration.
 pub type BlockFactory = fn(name: &str, config: &BlockConfig) -> Result<Box<dyn Block>>;
 
-/// Maps type names (namespaced by domain, e.g. `eq.lorenz`) to factories.
+/// Builds the method that advances a fused group (ADR 0023).
+pub type GroupSolverFactory = fn(method: &MethodSettings) -> Result<Box<dyn GroupSolver>>;
+
+/// Maps type names (namespaced by domain, e.g. `eq.lorenz`) to factories,
+/// and domains to the methods that solve their fused groups.
 #[derive(Default)]
 pub struct Registry {
     factories: BTreeMap<String, BlockFactory>,
+    group_solvers: Vec<(Domain, GroupSolverFactory)>,
 }
 
 impl Registry {
@@ -75,6 +81,34 @@ impl Registry {
             .get(type_name)
             .ok_or_else(|| SimError::UnknownBlockType(type_name.into()))?;
         factory(name, config)
+    }
+
+    /// Register how a domain solves fused groups. Once per domain.
+    pub fn register_group_solver(
+        &mut self,
+        domain: Domain,
+        factory: GroupSolverFactory,
+    ) -> Result<()> {
+        if self.group_solvers.iter().any(|(d, _)| *d == domain) {
+            return Err(SimError::DuplicateBlockType(format!(
+                "group solver for {domain:?}"
+            )));
+        }
+        self.group_solvers.push((domain, factory));
+        Ok(())
+    }
+
+    /// The method for a fused group of this domain, or `None` if the
+    /// domain cannot fuse.
+    pub fn group_solver(
+        &self,
+        domain: Domain,
+        method: &MethodSettings,
+    ) -> Option<Result<Box<dyn GroupSolver>>> {
+        self.group_solvers
+            .iter()
+            .find(|(d, _)| *d == domain)
+            .map(|(_, f)| f(method))
     }
 
     pub fn contains(&self, type_name: &str) -> bool {

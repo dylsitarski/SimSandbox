@@ -50,7 +50,7 @@ Dependency rule: domain crates depend on `simsandbox-core`; the kernel depends o
 5. `Simulator::restart` re-initialises every Block from the current parameter values, so changed initial conditions take effect.
 6. Snapshots copy time, all states, outputs and parameter values; `restore` rewinds to one, so a rewind also undoes parameter changes made after the snapshot.
 
-Same-domain fusion happens before the master sees the Blocks: e.g. `EquationGroup` builds a `FusedSystem`, which is wrapped in one `OdeBlock`. See [block contract](block-contract.md).
+Same-domain fusion: the master advances fused groups of equation Blocks as one system with one method; model files form them automatically ([ADR 0023](../decisions/0023-automatic-fusion.md)). In code, `EquationGroup` can also build a composite `FusedSystem` wrapped in one `OdeBlock`. See [block contract](block-contract.md).
 
 ## Tech stack
 

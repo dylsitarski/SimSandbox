@@ -7,6 +7,7 @@ use simsandbox_core::graph::Model;
 use simsandbox_core::sim::Simulator;
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
+use simsandbox_eq::integrators::GroupIntegrator;
 use simsandbox_eq::systems::{CoupledOscillator, Lorenz};
 use simsandbox_eq::{EquationGroup, EquationSet, Integrator, OdeBlock};
 
@@ -73,6 +74,99 @@ fn fused_dopri5_matches_exact_solution() {
         atol: 1e-12,
     });
     assert!(e < 1e-8, "fused Dopri5 error {e}");
+}
+
+/// The two oscillators as separate Blocks, fused by the master (ADR 0023).
+fn master_fused(integrator: Integrator) -> (Simulator, BlockId, BlockId) {
+    let mut model = Model::new();
+    // The Blocks' own methods are ignored once fused.
+    let euler = Integrator::Euler { substeps: 1 };
+    let a = model.add(Box::new(OdeBlock::new(
+        CoupledOscillator::new("a", 1.0),
+        euler,
+    )));
+    let b = model.add(Box::new(OdeBlock::new(
+        CoupledOscillator::new("b", 0.0),
+        euler,
+    )));
+    model.connect((a, "x"), (b, "neighbor_x")).unwrap();
+    model.connect((b, "x"), (a, "neighbor_x")).unwrap();
+    model
+        .fuse(&[a, b], Box::new(GroupIntegrator::new(integrator)))
+        .unwrap();
+    (Simulator::new(model, 0.0).unwrap(), a, b)
+}
+
+#[test]
+fn master_fusion_matches_the_fused_system_bit_for_bit() {
+    let rk4 = Integrator::Rk4 { substeps: 1 };
+    let (mut sim, a, b) = master_fused(rk4);
+    let e = run(&mut sim, a, "x");
+    assert_eq!(e, fused_error(rk4));
+    assert!(e < 1e-7, "{e}");
+    // Members keep their own outputs, states and parameters.
+    assert_eq!(sim.state(b).len(), 2);
+    assert!(sim.output(b, "v").is_some());
+    assert_eq!(sim.param(a, "kappa").unwrap(), 0.5);
+    // The group's method sets the labels, not the members' Euler.
+    assert_eq!(sim.labels().unwrap().accuracy, AccuracyClass::Quantitative);
+}
+
+#[test]
+fn fused_runs_rewind_and_restart_like_any_other() {
+    let (mut sim, a, _) = master_fused(Integrator::Rk4 { substeps: 1 });
+    for _ in 0..100 {
+        sim.step(DT).unwrap();
+    }
+    let snap = sim.snapshot();
+    let x = |s: &Simulator| s.output(a, "x").unwrap()[0];
+    let reference: Vec<f64> = (0..50)
+        .map(|_| {
+            sim.step(DT).unwrap();
+            x(&sim)
+        })
+        .collect();
+    sim.restore(&snap);
+    let again: Vec<f64> = (0..50)
+        .map(|_| {
+            sim.step(DT).unwrap();
+            x(&sim)
+        })
+        .collect();
+    assert_eq!(reference, again);
+    sim.set_param(a, "x0", 0.5).unwrap();
+    sim.restart(0.0).unwrap();
+    assert_eq!(x(&sim), 0.5);
+}
+
+#[test]
+fn only_continuous_equation_blocks_fuse_once() {
+    let mut model = Model::new();
+    let rk4 = Integrator::Rk4 { substeps: 1 };
+    let a = model.add(Box::new(OdeBlock::new(Lorenz::new("a"), rk4)));
+    let map = model.add(Box::new(
+        simsandbox_eq::ExplicitBlock::new(
+            EquationSet::parse("m", &["x[n+1] = 0.5*x".to_string()]).unwrap(),
+            &simsandbox_core::registry::MethodSettings::new("iterate"),
+        )
+        .unwrap(),
+    ));
+    let solver = || Box::new(GroupIntegrator::new(rk4));
+    assert!(matches!(
+        model.fuse(&[a, map], solver()),
+        Err(SimError::CannotFuse(_))
+    ));
+    assert!(matches!(
+        model.fuse(&[a, a], solver()),
+        Err(SimError::CannotFuse(_))
+    ));
+    model.fuse(&[a], solver()).unwrap();
+    assert!(matches!(
+        model.fuse(&[a], solver()),
+        Err(SimError::CannotFuse(_))
+    ));
+    assert_eq!(model.group_of(a), Some(0));
+    assert_eq!(model.group_of(map), None);
 }
 
 /// The reason for the layered contract: the same equations split across two

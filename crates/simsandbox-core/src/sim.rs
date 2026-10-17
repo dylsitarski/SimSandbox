@@ -1,10 +1,12 @@
 //! The co-simulation master and the kernel-owned state store.
 //!
 //! v0 master: fixed communication step, Jacobi-style exchange (every Block
-//! sees the outputs from the end of the previous step). Adaptive steps,
-//! iteration and rollback build on this; see the roadmap.
+//! sees the outputs from the end of the previous step). Fused groups
+//! (ADR 0023) are advanced as one system, with connections inside the group
+//! resolved at every evaluation. Adaptive steps, iteration and rollback
+//! build on this; see the roadmap.
 
-use crate::block::{Causality, MethodLabels, StepContext, StepIo};
+use crate::block::{Block, Causality, MethodLabels, StepContext, StepIo};
 use crate::graph::{port_offset, BlockId, Model};
 use crate::{Result, SimError};
 
@@ -28,10 +30,90 @@ struct Route {
     factor: f64,
 }
 
+/// How one fused group is wired: where each member's state sits in the
+/// combined state, and the connections between members.
+struct GroupPlan {
+    /// Block index and state offset of each member.
+    members: Vec<(usize, usize)>,
+    len: usize,
+    /// Routes between members, with `from_block`/`to_block` as member
+    /// positions in `members`.
+    internal: Vec<Route>,
+}
+
+impl GroupPlan {
+    fn new(model: &Model, group: usize, routes: &[Route]) -> Self {
+        let ids: Vec<usize> = model.groups[group].members.iter().map(|b| b.0).collect();
+        let mut members = Vec::new();
+        let mut len = 0;
+        for &b in &ids {
+            members.push((b, len));
+            len += model.blocks[b].spec().states.len();
+        }
+        let position = |b: usize| ids.iter().position(|&m| m == b);
+        let internal = routes
+            .iter()
+            .filter_map(|r| {
+                Some(Route {
+                    from_block: position(r.from_block)?,
+                    to_block: position(r.to_block)?,
+                    ..*r
+                })
+            })
+            .collect();
+        Self {
+            members,
+            len,
+            internal,
+        }
+    }
+
+    /// The combined `dx/dt`: member outputs first (they depend on state and
+    /// parameters only), then member inputs from inside the group or, for
+    /// inputs from outside, the values held since the last exchange.
+    fn rhs(
+        &self,
+        blocks: &[Box<dyn Block>],
+        params: &[Vec<f64>],
+        held: &[Vec<f64>],
+        t: f64,
+        x: &[f64],
+        dx: &mut [f64],
+    ) {
+        let state = |k: usize| {
+            let (b, off) = self.members[k];
+            &x[off..off + blocks[b].spec().states.len()]
+        };
+        let ys: Vec<Vec<f64>> = (0..self.members.len())
+            .map(|k| {
+                let b = self.members[k].0;
+                let mut y = vec![0.0; blocks[b].spec().output_len()];
+                if let Some(eq) = blocks[b].as_equations() {
+                    eq.outputs(t, state(k), &params[b], &mut y);
+                }
+                y
+            })
+            .collect();
+        let mut us: Vec<Vec<f64>> = self.members.iter().map(|&(b, _)| held[b].clone()).collect();
+        for r in &self.internal {
+            for i in 0..r.len {
+                us[r.to_block][r.to_offset + i] = r.factor * ys[r.from_block][r.from_offset + i];
+            }
+        }
+        for (k, &(b, off)) in self.members.iter().enumerate() {
+            let n = blocks[b].spec().states.len();
+            if let Some(eq) = blocks[b].as_equations() {
+                eq.rhs(t, state(k), &us[k], &params[b], &mut dx[off..off + n]);
+            }
+        }
+    }
+}
+
 /// Runs a [`Model`].
 pub struct Simulator {
     model: Model,
     routes: Vec<Route>,
+    plans: Vec<GroupPlan>,
     states: Vec<Vec<f64>>,
     inputs: Vec<Vec<f64>>,
     outputs: Vec<Vec<f64>>,
@@ -80,9 +162,13 @@ impl Simulator {
             outputs.push(vec![0.0; spec.output_len()]);
         }
 
+        let plans = (0..model.groups.len())
+            .map(|g| GroupPlan::new(&model, g, &routes))
+            .collect();
         let mut sim = Self {
             model,
             routes,
+            plans,
             states,
             inputs,
             outputs,
@@ -129,6 +215,14 @@ impl Simulator {
     pub fn step(&mut self, dt: f64) -> Result<()> {
         let ctx = StepContext { t: self.t, dt };
         for (bi, block) in self.model.blocks.iter_mut().enumerate() {
+            if self
+                .model
+                .groups
+                .iter()
+                .any(|g| g.members.contains(&BlockId(bi)))
+            {
+                continue;
+            }
             block.do_step(
                 ctx,
                 StepIo {
@@ -138,6 +232,28 @@ impl Simulator {
                     outputs: &mut self.outputs[bi],
                 },
             )?;
+        }
+        for (plan, group) in self.plans.iter().zip(&mut self.model.groups) {
+            let mut x = Vec::with_capacity(plan.len);
+            for &(b, _) in &plan.members {
+                x.extend_from_slice(&self.states[b]);
+            }
+            let (blocks, params, held) = (&self.model.blocks, &self.model.params, &self.inputs);
+            let rhs = |t: f64, x: &[f64], dx: &mut [f64]| plan.rhs(blocks, params, held, t, x, dx);
+            group.solver.advance(&rhs, ctx.t, dt, &mut x)?;
+            for &(b, off) in &plan.members {
+                let n = self.states[b].len();
+                self.states[b].copy_from_slice(&x[off..off + n]);
+                self.model.blocks[b].compute_outputs(
+                    ctx.t + dt,
+                    StepIo {
+                        params: &self.model.params[b],
+                        inputs: &self.inputs[b],
+                        state: &mut self.states[b],
+                        outputs: &mut self.outputs[b],
+                    },
+                )?;
+            }
         }
         self.t += dt;
         self.exchange();
@@ -177,8 +293,15 @@ impl Simulator {
     }
 
     /// Speed and accuracy labels of the whole model.
+    /// Fused groups count with their group's method instead of their own.
     pub fn labels(&self) -> Option<MethodLabels> {
-        MethodLabels::combine(self.model.blocks.iter().map(|b| b.method().labels))
+        let m = &self.model;
+        let single = m
+            .block_ids()
+            .filter(|&id| m.group_of(id).is_none())
+            .map(|id| m.blocks[id.0].method().labels);
+        let groups = m.groups.iter().map(|g| g.method().labels);
+        MethodLabels::combine(single.chain(groups))
     }
 
     pub fn snapshot(&self) -> Snapshot {
