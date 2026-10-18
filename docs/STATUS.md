@@ -1,6 +1,6 @@
 # Status
 
-_Last updated: 2026-10-17_
+_Last updated: 2026-10-18_
 
 **Phase:** 0 · Foundations ([roadmap](roadmap.md#phase-0--foundations)). **Gate:** the Lorenz system runs live on the desktop with sliders. **Gate met:** yes, 2026-10-16: Lorenz runs live in the desktop app with rho and sigma sliders (checked headless in the cloud; to confirm on the owner's Windows machine). Phase 0 continues with the remaining roadmap items before Phase 1.
 
@@ -53,8 +53,9 @@ _Last updated: 2026-10-17_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Surface and contour views for two-parameter sweeps** ([ADR 0022](decisions/0022-two-parameter-sweeps.md)): a coloured 3D surface (CPU projection like `plot.3d`), then contour lines.
-2. **Plan Phase 1 with the owner:** order the [Phase 1 roadmap](roadmap.md#phase-1--composition) items (node canvas, Python API, subsystems, agent domain, direct feedthrough).
+1. **Owner decisions on Q18–Q22** ([open questions](open-questions.md)): heat map axes and coordinates, index-dependent settings, profile slices, explicit experiments, unstructured sweeps. They shape the surface and contour views.
+2. **Surface and contour views for two-parameter sweeps** ([ADR 0022](decisions/0022-two-parameter-sweeps.md)): a coloured 3D surface (CPU projection like `plot.3d`), then contour lines.
+3. **Plan Phase 1 with the owner:** order the [Phase 1 roadmap](roadmap.md#phase-1--composition) items (node canvas, Python API, subsystems, agent domain, direct feedthrough).
 
 ## Known limitations
 
@@ -63,6 +64,7 @@ In priority order. Each item should end with tests and updated docs.
 - The master uses a fixed step with no coupling-error estimate, iteration or rollback.
 - `FusedSystem::rhs` and the master's fused-group right-hand side allocate per call; fine for small models, revisit before real-time use with large groups.
 - Inside a fused group, inputs from blocks outside the group are held over each step (no extrapolation yet, ADR 0023). Changing the fusion switch in the app rebuilds the model and restarts the run.
+- Heat map coordinates are assumed evenly spaced: a coordinate that only increases (e.g. `spring.lag`) is accepted and drawn as if even, and one that does not is silently replaced by cell numbers (Q18). `plot.profile` draws a 2D grid as one zigzag line (Q20).
 - Views beyond `plot.xy`, `plot.3d`, `plot.heatmap`, `plot.profile`, `plot.scatter` and `eq.pendulum` are not built; heat maps place cells only along evenly spaced lines (2D grids are numbered by cell); derived signals cannot use grids or point sets; `plot.scatter` shows only the newest frame, without trails. Tiles are laid out in an automatic grid; they cannot be resized or reordered. The colour-blind-safe palette is fixed; viewer theme settings are not built ([ADR 0015](decisions/0015-pluggable-views.md)).
 - The 3D view projects on the CPU and draws with the egui painter, at most 20 000 points per frame; it suits trajectories, not meshes or fields, which need wgpu paint callbacks ([ADR 0008](decisions/0008-native-egui-ui.md)).
 - The app does not track unsaved changes: opening another model or closing the window discards them without asking.
