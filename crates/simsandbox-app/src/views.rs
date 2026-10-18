@@ -114,6 +114,26 @@ impl Views {
         true
     }
 
+    /// Add a tile with these bindings, and select it. Returns false if
+    /// they do not fit the type.
+    pub fn add_bound(
+        &mut self,
+        type_name: &str,
+        bind: Bindings,
+        available: &Available<'_>,
+    ) -> bool {
+        let Some(state) = self
+            .registry
+            .get(type_name)
+            .and_then(|t| ViewState::restore(t, bind, Default::default(), None, available).ok())
+        else {
+            return false;
+        };
+        let id = self.push(state);
+        self.selected = Some(id);
+        true
+    }
+
     /// Show only one view, from a preset (the `--view` flag).
     pub fn show_only(&mut self, type_name: &str, preset: usize, available: &Available<'_>) {
         let before = std::mem::take(&mut self.tiles);

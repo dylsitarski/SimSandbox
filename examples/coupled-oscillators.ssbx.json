@@ -79,8 +79,18 @@
         }
       }
     ],
-    "signals": {
-      "energy": "0.5*(a.v^2 + b.v^2) + 0.5*a.omega0_sq*(a.x^2 + b.x^2) + 0.5*a.kappa*(a.x - b.x)^2"
-    }
+    "filters": [
+      {
+        "name": "energy",
+        "type": "expression",
+        "inputs": [
+          "a.v",
+          "b.v",
+          "a.x",
+          "b.x"
+        ],
+        "expr": "0.5*(a.v^2 + b.v^2) + 0.5*a.omega0_sq*(a.x^2 + b.x^2) + 0.5*a.kappa*(a.x - b.x)^2"
+      }
+    ]
   }
 }

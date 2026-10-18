@@ -2631,6 +2631,7 @@ dependencies = [
  "eframe",
  "egui_plot",
  "rfd",
+ "serde_json",
  "simsandbox-core",
  "simsandbox-eq",
  "simsandbox-expr",

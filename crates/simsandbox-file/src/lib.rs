@@ -202,11 +202,15 @@ pub struct Controls {
     /// The views the model opens with (ADR 0015); the app shows the first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<ViewEntry>,
-    /// Derived signals: name to expression over recorded signals,
-    /// parameters (`block.param`) and `t`, e.g. `"energy": "0.5*a.v^2"`
-    /// (ADR 0015). Checked by the app; invalid ones are dropped with a
-    /// warning.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Filters turning recorded data into new signals and fields
+    /// (ADR 0030, ADR 0032): derived expressions, cuts. Checked by the app;
+    /// invalid ones are dropped with a warning.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<FilterEntry>,
+    /// Derived signals as written before filters (name to expression).
+    /// Still read; converted into `expression` filters on load and never
+    /// written.
+    #[serde(default, skip_serializing)]
     pub signals: BTreeMap<String, String>,
     /// The parameters swept when the model has no states: one (ADR 0021) or
     /// two (ADR 0022). Written as one object for one parameter, a list for
@@ -217,6 +221,115 @@ pub struct Controls {
     /// load and never written.
     #[serde(default, skip_serializing)]
     pub view: Option<ViewControl>,
+}
+
+/// A filter (ADR 0030, ADR 0032): a named transformation of recorded data
+/// into new signals or fields. It names its inputs; its type decides its
+/// settings:
+///
+/// - `expression`: `{"expr": "0.5*a.v^2"}`, one signal named after the
+///   filter, from recorded signals, other expressions, parameters and `t`;
+/// - `cut` (ADR 0031): through the 2D grid named in `inputs`, `{"mode":
+///   "along_x" | "along_y" | "free", "at": [...] | "lines": [...], "whole":
+///   bool, "range": [a, b], "interpolation": "bilinear" | "nearest"}`, one
+///   line field per cut (`name[k]`) and their coordinate (`name.x`,
+///   `name.y` or `name.fraction`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FilterEntry {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
+    /// Settings of the filter's type.
+    #[serde(flatten)]
+    pub settings: BTreeMap<String, Value>,
+}
+
+impl FilterEntry {
+    pub fn expression(name: &str, expr: &str, inputs: Vec<String>) -> Self {
+        Self {
+            name: name.into(),
+            type_name: "expression".into(),
+            inputs,
+            settings: [("expr".to_string(), Value::String(expr.into()))].into(),
+        }
+    }
+
+    /// An expression filter's text.
+    pub fn expr(&self) -> Option<&str> {
+        self.settings.get("expr").and_then(Value::as_str)
+    }
+
+    /// The names of what this filter makes, as views and other filters
+    /// refer to them.
+    pub fn outputs(&self) -> Vec<String> {
+        match self.type_name.as_str() {
+            "expression" => vec![self.name.clone()],
+            "cut" => {
+                let mode = self.settings.get("mode").and_then(Value::as_str);
+                let list = if mode == Some("free") { "lines" } else { "at" };
+                let count = self
+                    .settings
+                    .get(list)
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                let coordinate = match mode {
+                    Some("along_y") => "y",
+                    Some("free") => "fraction",
+                    _ => "x",
+                };
+                (0..count)
+                    .map(|k| format!("{}[{k}]", self.name))
+                    .chain([format!("{}.{coordinate}", self.name)])
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// A profile selection of ADR 0029 (end points per cut) as a cut filter
+/// (ADR 0031): all horizontal cuts become `along_x`, all vertical ones
+/// `along_y`, anything else free lines.
+fn cut_filter_from_selection(name: &str, grid: &str, selection: &Value) -> Option<FilterEntry> {
+    let cuts = selection.get("cuts")?.as_array()?;
+    let ends: Vec<[[f64; 2]; 2]> = cuts
+        .iter()
+        .map(|c| {
+            let p = |k: &str| -> Option<[f64; 2]> {
+                let a = c.get(k)?.as_array()?;
+                Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?])
+            };
+            Some([p("from")?, p("to")?])
+        })
+        .collect::<Option<_>>()?;
+    let mut settings = BTreeMap::new();
+    let along = |axis: usize| ends.iter().all(|[a, b]| a[axis] == b[axis]);
+    if along(1) {
+        settings.insert("mode".into(), Value::from("along_x"));
+        settings.insert("at".into(), ends.iter().map(|[a, _]| a[1]).collect());
+    } else if along(0) {
+        settings.insert("mode".into(), Value::from("along_y"));
+        settings.insert("at".into(), ends.iter().map(|[a, _]| a[0]).collect());
+    } else {
+        settings.insert("mode".into(), Value::from("free"));
+        settings.insert("whole".into(), Value::from(false));
+        let lines: Vec<Value> = ends
+            .iter()
+            .map(|[a, b]| serde_json::json!([[a[0], a[1]], [b[0], b[1]]]))
+            .collect();
+        settings.insert("lines".into(), Value::from(lines));
+    }
+    if let Some(i) = selection.get("interpolation") {
+        settings.insert("interpolation".into(), i.clone());
+    }
+    Some(FilterEntry {
+        name: name.into(),
+        type_name: "cut".into(),
+        inputs: vec![grid.into()],
+        settings,
+    })
 }
 
 /// One view: a registered view type, slot bindings and style values
@@ -366,6 +479,7 @@ impl Controls {
             && self.views.is_empty()
             && self.sweep.is_empty()
             && self.signals.is_empty()
+            && self.filters.is_empty()
             && self.view.is_none()
     }
 }
@@ -916,9 +1030,68 @@ impl ModelFile {
             }
         }
         c.sweep = sweep;
-        // Views may bind derived signals as well as outputs, and in a
+        // Derived signals as written before filters become expression
+        // filters (ADR 0030); their inputs are filled in by the app.
+        for (name, expr) in std::mem::take(&mut c.signals) {
+            if c.filters.iter().any(|f| f.name == name) {
+                warnings.push(format!(
+                    "controls.signals.{name}: a filter has that name; ignored"
+                ));
+                continue;
+            }
+            c.filters
+                .push(FilterEntry::expression(&name, &expr, Vec::new()));
+        }
+        // Filters need a unique, plain name and a known type.
+        let mut names: Vec<String> = Vec::new();
+        c.filters.retain(|f| {
+            let plain = f
+                .name
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_alphabetic() || ch == '_')
+                && f.name.chars().all(|ch| ch.is_alphanumeric() || ch == '_');
+            let problem = if !plain {
+                Some("names must be letters, digits and _".to_string())
+            } else if names.contains(&f.name) {
+                Some("defined twice".to_string())
+            } else if !["expression", "cut"].contains(&f.type_name.as_str()) {
+                Some(format!("unknown filter type '{}'", f.type_name))
+            } else {
+                None
+            };
+            if let Some(p) = problem {
+                warnings.push(format!("controls.filters.{}: {p}; ignored", f.name));
+                return false;
+            }
+            names.push(f.name.clone());
+            true
+        });
+        // A profile with ADR 0029 cuts becomes a profile of a cut filter
+        // (ADR 0031).
+        for v in &mut c.views {
+            let Some(sel) = v.selection.as_ref().filter(|s| s.get("cuts").is_some()) else {
+                continue;
+            };
+            let grid = v.bind.get("y").and_then(|b| b.signals().into_iter().next());
+            let mut k = 1;
+            while c.filters.iter().any(|f| f.name == format!("cuts{k}")) {
+                k += 1;
+            }
+            let filter = grid.and_then(|g| cut_filter_from_selection(&format!("cuts{k}"), &g, sel));
+            if let Some(f) = filter {
+                let outputs = f.outputs();
+                let (lines, coordinate) = outputs.split_at(outputs.len() - 1);
+                v.bind.insert("y".into(), Binding::from(lines.to_vec()));
+                v.bind
+                    .insert("x".into(), Binding::One(coordinate[0].clone()));
+                c.filters.push(f);
+            }
+            v.selection = None;
+        }
+        // Views may bind filter outputs as well as outputs, and in a
         // two-parameter sweep the swept parameters (their value grids).
-        let mut derived: Vec<String> = c.signals.keys().cloned().collect();
+        let mut derived: Vec<String> = c.filters.iter().flat_map(FilterEntry::outputs).collect();
         if c.sweep.len() == 2 {
             derived.extend(c.sweep.iter().map(|s| s.param.clone()));
         }

@@ -548,6 +548,66 @@ fn old_heat_map_placement_is_converted_to_axes() {
 }
 
 #[test]
+fn older_derived_signals_and_profile_cuts_become_filters() {
+    // controls.signals as written before filters (ADR 0030).
+    let old = OSCILLATORS.replace(
+        r#""filters": [
+      {
+        "name": "energy",
+        "type": "expression",
+        "inputs": [
+          "a.v",
+          "b.v",
+          "a.x",
+          "b.x"
+        ],
+        "expr":"#,
+        r#""signals": {
+      "energy":"#,
+    );
+    let old = old.replacen("\n      }\n    ]\n  }\n}", "\n    }\n  }\n}", 1);
+    assert!(old.contains("\"signals\""), "{old}");
+    let loaded = load(&old, &registry()).unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    let f = &loaded.file.controls.filters[0];
+    assert_eq!(
+        (f.name.as_str(), f.type_name.as_str()),
+        ("energy", "expression")
+    );
+    assert!(f.expr().unwrap().starts_with("0.5*(a.v^2"));
+
+    // A profile with ADR 0029 cuts becomes a cut filter and its lines.
+    let selection = r#""type": "plot.profile",
+        "bind": {
+          "y": "spring.amplitude"
+        },
+        "selection": {
+          "against": "x",
+          "cuts": [{"from": [0.0, 0.05], "to": [3.0, 0.05]}, {"from": [0.0, 0.2], "to": [3.0, 0.2]}],
+          "interpolation": "nearest"
+        }"#;
+    let i = RESONANCE_MAP.find(r#""type": "plot.profile""#).unwrap();
+    let j = i + RESONANCE_MAP[i..].find("\n      }").unwrap();
+    let mut text = RESONANCE_MAP.to_string();
+    text.replace_range(i..j, selection);
+    let k = text.find(r#""filters""#).unwrap();
+    let end = k + text[k..].find("\n    ],").unwrap() + "\n    ],".len();
+    text.replace_range(k..end, "");
+    let loaded = load(&text, &registry()).unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    let f = &loaded.file.controls.filters[0];
+    assert_eq!(f.type_name, "cut");
+    assert_eq!(f.inputs, ["spring.amplitude"]);
+    assert_eq!(f.settings["mode"], "along_x");
+    assert_eq!(f.settings["at"], serde_json::json!([0.05, 0.2]));
+    assert_eq!(f.settings["interpolation"], "nearest");
+    let v = &loaded.file.controls.views[1];
+    assert_eq!(v.bind["y"].signals(), ["cuts1[0]", "cuts1[1]"]);
+    assert_eq!(v.bind["x"].signals(), ["cuts1.x"]);
+    assert!(v.selection.is_none());
+}
+
+#[test]
 fn sweeps_are_read_and_checked_leniently() {
     let loaded = load(RESONANCE, &registry()).unwrap();
     let [sw] = loaded.file.controls.sweep.as_slice() else {

@@ -32,6 +32,8 @@ egui_plot = "=0.37.0"
 # Native Open/Save dialogs; on Linux through the XDG desktop portal, so no
 # GTK headers are needed to build.
 rfd = "0.17"
+# Filter settings are JSON in model files (ADR 0032).
+serde_json = "1"
 
 [lints]
 workspace = true

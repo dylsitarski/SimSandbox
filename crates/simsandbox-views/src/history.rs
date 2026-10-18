@@ -77,6 +77,9 @@ pub struct History {
     /// What the index is: `t`, or a swept parameter such as `spring.w`.
     index: String,
     coordinates: Vec<Coordinate>,
+    /// Display labels for signals and fields whose names are not readable
+    /// on their own, e.g. a cut filter's `curves[0]` as `spring.c = 0.05`.
+    labels: std::collections::BTreeMap<String, String>,
     names: Vec<String>,
     times: Vec<f64>,
     /// Per signal, `(t, value)` points, ready to plot against time.
@@ -108,6 +111,7 @@ impl History {
         Self {
             index: index.into(),
             coordinates: Vec::new(),
+            labels: Default::default(),
             names,
             times: Vec::new(),
             points,
@@ -126,6 +130,17 @@ impl History {
     /// Declare which fields are coordinates of which (ADR 0024).
     pub fn set_coordinates(&mut self, coordinates: Vec<Coordinate>) {
         self.coordinates = coordinates;
+    }
+
+    /// Show `name` as `label` in legends and on axes.
+    pub fn set_label(&mut self, name: &str, label: &str) {
+        self.labels.insert(name.into(), label.into());
+    }
+
+    /// The label of a signal or field: its display label, or its name.
+    pub fn label(&self, s: SignalRef) -> &str {
+        let name = self.name(s);
+        self.labels.get(name).map_or(name, String::as_str)
     }
 
     pub fn coordinates(&self) -> &[Coordinate] {

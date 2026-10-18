@@ -152,9 +152,29 @@
           "type": "array",
           "items": { "$ref": "#/$defs/ref" }
         },
+        "filters": {
+          "type": "array",
+          "description": "Filters turning recorded data into new signals and fields (ADR 0030, ADR 0032). Each names its inputs; order carries no meaning.",
+          "items": {
+            "type": "object",
+            "required": ["name", "type"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+              "type": { "enum": ["expression", "cut"] },
+              "inputs": { "type": "array", "items": { "type": "string" } },
+              "expr": { "type": "string", "description": "expression: over recorded signals, other expressions, parameters ('block.param') and 't'." },
+              "mode": { "enum": ["along_x", "along_y", "free"], "description": "cut (ADR 0031): along x at fixed y values, along y at fixed x values, or free lines." },
+              "at": { "type": "array", "items": { "type": "number" }, "description": "cut along x or y: the fixed values, one per cut." },
+              "lines": { "type": "array", "description": "cut along free lines: end points [[x0, y0], [x1, y1]] per cut." },
+              "whole": { "type": "boolean", "default": true, "description": "cut: the whole field (along x or y) or lines extended to the grid's edges (free)." },
+              "range": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+              "interpolation": { "enum": ["bilinear", "nearest"], "default": "bilinear" }
+            }
+          }
+        },
         "signals": {
           "type": "object",
-          "description": "Derived signals: name to expression over recorded signals, parameters ('block.param') and 't' (ADR 0015).",
+          "description": "Derived signals as written before filters: name to expression. Still read; converted into expression filters (ADR 0030).",
           "additionalProperties": { "type": "string" }
         },
         "sweep": {

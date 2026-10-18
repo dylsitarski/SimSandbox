@@ -519,8 +519,10 @@ impl SimApp {
             .response
             .on_hover_text("Add another view of this model");
             if ui
-                .button("Signals…")
-                .on_hover_text("Define signals computed from others, such as an energy")
+                .button("Data…")
+                .on_hover_text(
+                    "Filters: signals computed from others (such as an energy), and cuts through 2D grids",
+                )
                 .clicked()
             {
                 self.signals_editor = Some(SignalsEditor::new(session));
@@ -816,6 +818,8 @@ impl SimApp {
     }
 
     /// The derived-signals window (ADR 0015).
+    /// The Data window: the model's filters (ADR 0030, ADR 0032), derived
+    /// expressions and cuts, edited together and applied at once.
     fn signals_window(&mut self, ctx: &egui::Context) {
         let (Some(ed), Some(session)) = (self.signals_editor.as_mut(), self.session.as_mut())
         else {
@@ -823,45 +827,16 @@ impl SimApp {
         };
         let mut open = true;
         let (mut apply, mut cancel) = (false, false);
-        egui::Window::new("Derived signals")
+        egui::Window::new("Data")
             .open(&mut open)
-            .default_width(620.0)
+            .default_width(640.0)
             .min_width(480.0)
             .show(ctx, |ui| {
-                ui.label(
-                    "Each signal is computed from plotted signals (a.x, lorenz.xyz[0]), \
-                     parameters (a.k) and t, using the same operators and functions as \
-                     equations. It can then be plotted like any other signal.",
-                );
-                let mut remove = None;
-                // Fixed sizes: inside a grid the text boxes collapsed to a
-                // few characters.
-                let height = ui.spacing().interact_size.y;
-                for (k, (name, text)) in ed.rows.iter_mut().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.add_sized([120.0, height], egui::TextEdit::singleline(name));
-                        ui.label("=");
-                        let width = (ui.available_width() - 30.0).max(200.0);
-                        ui.add_sized(
-                            [width, height],
-                            egui::TextEdit::singleline(text).code_editor(),
-                        );
-                        if ui.small_button("×").on_hover_text("Remove").clicked() {
-                            remove = Some(k);
-                        }
+                egui::ScrollArea::vertical()
+                    .max_height(520.0)
+                    .show(ui, |ui| {
+                        data_editor(ui, ed, session);
                     });
-                }
-                if let Some(k) = remove {
-                    ed.rows.remove(k);
-                }
-                if ui.button("Add signal").clicked() {
-                    ed.rows
-                        .push((format!("signal{}", ed.rows.len() + 1), String::new()));
-                }
-                ui.weak(format!(
-                    "Plotted signals: {}",
-                    session.signals.names().join(", ")
-                ));
                 for p in &ed.problems {
                     ui.colored_label(ui.visuals().error_fg_color, p);
                 }
@@ -873,25 +848,30 @@ impl SimApp {
         if cancel || !open {
             self.signals_editor = None;
         } else if apply {
-            let mut map = std::collections::BTreeMap::new();
-            let mut problems = Vec::new();
-            for (name, text) in &ed.rows {
-                let name = name.trim().to_string();
-                if map.insert(name.clone(), text.trim().to_string()).is_some() {
-                    problems.push(format!("'{name}' is defined twice"));
-                }
-            }
-            if problems.is_empty() {
-                match session.set_derived(map) {
-                    Ok(()) => {
-                        self.signals_editor = None;
-                        self.log.info("Derived signals applied");
-                        return;
+            let before: Vec<String> = session.filters().iter().map(|f| f.name.clone()).collect();
+            match session.set_filters(ed.entries()) {
+                Ok(()) => {
+                    // A new cut filter opens a profile of its cuts.
+                    let available = session.available();
+                    for c in &ed.cuts {
+                        if before.contains(&c.name) {
+                            continue;
+                        }
+                        let entry = c.entry();
+                        let outputs = entry.outputs();
+                        let (lines, coordinate) = outputs.split_at(outputs.len() - 1);
+                        let bind = [
+                            ("y".to_string(), lines.to_vec()),
+                            ("x".to_string(), coordinate.to_vec()),
+                        ]
+                        .into();
+                        self.views.add_bound("plot.profile", bind, &available);
                     }
-                    Err(p) => problems = p,
+                    self.signals_editor = None;
+                    self.log.info("Data filters applied");
                 }
+                Err(p) => ed.problems = p,
             }
-            ed.problems = problems;
         }
     }
 
@@ -1518,21 +1498,276 @@ fn with_model_extension(path: PathBuf) -> PathBuf {
 /// The equation editor: for a new model (`block` is `None`) or for a block
 /// of the open model.
 /// Rows of the derived-signals window: name and expression.
+/// The Data window's working copy of the filters.
 struct SignalsEditor {
-    rows: Vec<(String, String)>,
+    exprs: Vec<(String, String)>,
+    cuts: Vec<CutEdit>,
     problems: Vec<String>,
 }
 
+/// One cut filter being edited.
+struct CutEdit {
+    name: String,
+    input: String,
+    settings: simsandbox_views::cut::CutSettings,
+}
+
+impl CutEdit {
+    fn entry(&self) -> simsandbox_file::FilterEntry {
+        let settings = match serde_json::to_value(&self.settings) {
+            Ok(serde_json::Value::Object(m)) => m.into_iter().collect(),
+            _ => Default::default(),
+        };
+        simsandbox_file::FilterEntry {
+            name: self.name.trim().into(),
+            type_name: "cut".into(),
+            inputs: vec![self.input.clone()],
+            settings,
+        }
+    }
+}
+
 impl SignalsEditor {
-    /// The session's derived signals, ready to edit.
+    /// The session's filters, ready to edit.
     fn new(session: &Session) -> Self {
-        Self {
-            rows: session
-                .derived()
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+        let mut ed = Self {
+            exprs: Vec::new(),
+            cuts: Vec::new(),
             problems: Vec::new(),
+        };
+        for f in session.filters() {
+            match f.type_name.as_str() {
+                "expression" => ed
+                    .exprs
+                    .push((f.name.clone(), f.expr().unwrap_or_default().to_string())),
+                "cut" => {
+                    let object =
+                        serde_json::Value::Object(f.settings.clone().into_iter().collect());
+                    if let Ok(settings) = serde_json::from_value(object) {
+                        ed.cuts.push(CutEdit {
+                            name: f.name.clone(),
+                            input: f.inputs.first().cloned().unwrap_or_default(),
+                            settings,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        ed
+    }
+
+    /// The filters to apply.
+    fn entries(&self) -> Vec<simsandbox_file::FilterEntry> {
+        self.exprs
+            .iter()
+            .map(|(name, text)| {
+                simsandbox_file::FilterEntry::expression(name.trim(), text.trim(), Vec::new())
+            })
+            .chain(self.cuts.iter().map(CutEdit::entry))
+            .collect()
+    }
+}
+
+/// The Data window's contents: expressions, then cuts.
+fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, session: &Session) {
+    use simsandbox_views::cut::{Interpolation, Mode};
+    ui.heading("Signals");
+    ui.label(
+        "Each signal is computed from plotted signals (a.x, lorenz.xyz[0]), other signals \
+         here, parameters (a.k) and t, using the same operators and functions as equations.",
+    );
+    let mut remove = None;
+    // Fixed sizes: inside a grid the text boxes collapsed to a few
+    // characters.
+    let height = ui.spacing().interact_size.y;
+    for (k, (name, text)) in ed.exprs.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add_sized([120.0, height], egui::TextEdit::singleline(name));
+            ui.label("=");
+            let width = (ui.available_width() - 30.0).max(200.0);
+            ui.add_sized(
+                [width, height],
+                egui::TextEdit::singleline(text).code_editor(),
+            );
+            if ui.small_button("×").on_hover_text("Remove").clicked() {
+                remove = Some(k);
+            }
+        });
+    }
+    if let Some(k) = remove {
+        ed.exprs.remove(k);
+    }
+    if ui.button("Add signal").clicked() {
+        ed.exprs
+            .push((format!("signal{}", ed.exprs.len() + 1), String::new()));
+    }
+    ui.weak(format!(
+        "Plotted signals: {}",
+        session.signals.names().join(", ")
+    ));
+
+    let inputs = session.cut_inputs();
+    ui.add_space(8.0);
+    ui.heading("Cuts");
+    if inputs.is_empty() {
+        ui.weak("Cuts take a 2D grid, such as the results of a two-parameter sweep; this model has none.");
+        return;
+    }
+    ui.label(
+        "Each cut filter cuts a 2D grid into lines, one per cut, which profiles and plots can \
+         show. Cuts run along x at fixed y values, along y at fixed x values, or along free lines.",
+    );
+    let mut remove = None;
+    for (k, c) in ed.cuts.iter_mut().enumerate() {
+        let g = session.cut_geometry(&c.input);
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.add_sized([100.0, height], egui::TextEdit::singleline(&mut c.name));
+            ui.label("cuts");
+            egui::ComboBox::from_id_salt(("cut_input", k))
+                .selected_text(&c.input)
+                .show_ui(ui, |ui| {
+                    for i in &inputs {
+                        ui.selectable_value(&mut c.input, i.clone(), i);
+                    }
+                });
+            if ui
+                .small_button("×")
+                .on_hover_text("Remove this filter")
+                .clicked()
+            {
+                remove = Some(k);
+            }
+        });
+        let s = &mut c.settings;
+        ui.horizontal(|ui| {
+            let mode_name = |m: Mode| match m {
+                Mode::AlongX => format!("along {} at fixed {}", g.label(0), g.label(1)),
+                Mode::AlongY => format!("along {} at fixed {}", g.label(1), g.label(0)),
+                Mode::Free => "along free lines".to_string(),
+            };
+            let before = s.mode;
+            egui::ComboBox::from_id_salt(("cut_mode", k))
+                .selected_text(mode_name(s.mode))
+                .show_ui(ui, |ui| {
+                    for m in [Mode::AlongX, Mode::AlongY, Mode::Free] {
+                        ui.selectable_value(&mut s.mode, m, mode_name(m));
+                    }
+                });
+            if s.mode != before {
+                // Start the new mode with one cut through the middle.
+                let mid = |axis: usize| {
+                    let c = &g.centres[axis];
+                    c[c.len() / 2]
+                };
+                let first = |axis: usize| g.centres[axis][0];
+                let last = |axis: usize| g.centres[axis][g.centres[axis].len() - 1];
+                match s.mode {
+                    Mode::AlongX => s.at = vec![mid(1)],
+                    Mode::AlongY => s.at = vec![mid(0)],
+                    Mode::Free => s.lines = vec![[[first(0), first(1)], [last(0), last(1)]]],
+                }
+                s.range = None;
+            }
+            ui.label("between cells");
+            ui.selectable_value(&mut s.interpolation, Interpolation::Bilinear, "bilinear")
+                .on_hover_text("Interpolate between the four nearest cells");
+            ui.selectable_value(&mut s.interpolation, Interpolation::Nearest, "nearest")
+                .on_hover_text("Take the nearest cell");
+        });
+        match s.mode {
+            Mode::AlongX | Mode::AlongY => {
+                let (free, fixed) = if s.mode == Mode::AlongX {
+                    (0, 1)
+                } else {
+                    (1, 0)
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("at {} =", g.label(fixed)));
+                    let mut gone = None;
+                    for (i, v) in s.at.iter_mut().enumerate() {
+                        ui.add(egui::DragValue::new(v).speed(0.01));
+                        if ui.small_button("×").clicked() {
+                            gone = Some(i);
+                        }
+                    }
+                    if let Some(i) = gone {
+                        s.at.remove(i);
+                    }
+                    if ui.small_button("+").on_hover_text("Add a cut").clicked() {
+                        let c = &g.centres[fixed];
+                        s.at.push(c[c.len() / 2]);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut s.whole, format!("whole {} range", g.label(free)))
+                        .changed()
+                        && !s.whole
+                        && s.range.is_none()
+                    {
+                        let c = &g.centres[free];
+                        let (a, b) = (c[0], c[c.len() - 1]);
+                        s.range = Some([a.min(b), a.max(b)]);
+                    }
+                    if let (false, Some(r)) = (s.whole, s.range.as_mut()) {
+                        ui.label("from");
+                        ui.add(egui::DragValue::new(&mut r[0]).speed(0.01));
+                        ui.label("to");
+                        ui.add(egui::DragValue::new(&mut r[1]).speed(0.01));
+                    }
+                });
+            }
+            Mode::Free => {
+                let mut gone = None;
+                for (i, [a, b]) in s.lines.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("from ({}, {})", g.label(0), g.label(1)));
+                        ui.add(egui::DragValue::new(&mut a[0]).speed(0.01));
+                        ui.add(egui::DragValue::new(&mut a[1]).speed(0.01));
+                        ui.label("to");
+                        ui.add(egui::DragValue::new(&mut b[0]).speed(0.01));
+                        ui.add(egui::DragValue::new(&mut b[1]).speed(0.01));
+                        if ui.small_button("×").clicked() {
+                            gone = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = gone {
+                    s.lines.remove(i);
+                }
+                ui.horizontal(|ui| {
+                    if ui.small_button("+").on_hover_text("Add a line").clicked() {
+                        let last = s.lines.last().copied().unwrap_or([[0.0, 0.0], [1.0, 1.0]]);
+                        s.lines.push(last);
+                    }
+                    ui.checkbox(&mut s.whole, "extend each line to the edges of the grid");
+                });
+            }
+        }
+    }
+    if let Some(k) = remove {
+        ed.cuts.remove(k);
+    }
+    ui.separator();
+    if ui
+        .button("Add cut filter")
+        .on_hover_text("Cut a 2D grid into lines")
+        .clicked()
+    {
+        let mut n = ed.cuts.len() + 1;
+        while ed.cuts.iter().any(|c| c.name == format!("cuts{n}")) {
+            n += 1;
+        }
+        let entry = session.default_cut(&format!("cuts{n}"), &inputs[0]);
+        let object = serde_json::Value::Object(entry.settings.into_iter().collect());
+        if let Ok(settings) = serde_json::from_value(object) {
+            ed.cuts.push(CutEdit {
+                name: format!("cuts{n}"),
+                input: inputs[0].clone(),
+                settings,
+            });
         }
     }
 }

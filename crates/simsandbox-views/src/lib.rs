@@ -15,6 +15,7 @@
 
 pub mod builtin;
 pub mod colour;
+pub mod cut;
 pub mod fields;
 pub mod history;
 pub mod view;

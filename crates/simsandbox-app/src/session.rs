@@ -1,17 +1,18 @@
 //! One open model: the running simulator, its snapshots for rewind, the
 //! recorded signals the views draw from, and its parameters.
 
+use crate::filters::Filters;
 use simsandbox_core::block::{MethodLabels, Shape};
 use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::{Simulator, Snapshot};
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
-use simsandbox_expr::Expr;
 use simsandbox_file::{
-    FusedGroup, ModelFile, SweepControl, ViewEntry, DEFAULT_GRID_POINTS, DEFAULT_SWEEP_POINTS,
-    MAX_GRID_EVALUATIONS,
+    FilterEntry, FusedGroup, ModelFile, SweepControl, ViewEntry, DEFAULT_GRID_POINTS,
+    DEFAULT_SWEEP_POINTS, MAX_GRID_EVALUATIONS,
 };
+use simsandbox_views::cut::Geometry;
 use simsandbox_views::history::thin;
 use simsandbox_views::{Available, Coordinate, FieldShape, History, SignalRef};
 use std::collections::BTreeMap;
@@ -125,17 +126,11 @@ pub struct Session {
     steps_since_snapshot: usize,
     /// Set when the model has no states: it is swept, not run.
     sweep: Option<Sweep>,
-    /// Derived signals as written (name to expression), for saving.
-    derived_text: BTreeMap<String, String>,
-    /// Derived signals compiled, recorded after the output signals.
-    derived: Vec<Derived>,
-}
-
-/// A derived signal (ADR 0015): an expression over the recorded output
-/// signals, parameters and `t`, evaluated as each sample is recorded.
-struct Derived {
-    name: String,
-    expr: Expr,
+    /// Filters as written, for saving and editing (ADR 0030, ADR 0032).
+    filter_entries: Vec<FilterEntry>,
+    /// Filters compiled: expressions recorded after the output signals,
+    /// cut fields after the recorded fields.
+    filters: Filters,
 }
 
 impl Session {
@@ -203,23 +198,8 @@ impl Session {
         });
         let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
         let sweep = default_sweep(&loaded.file, &loaded.ids, sim.model());
-        let mut warnings = loaded.warnings;
-        let mut derived = Vec::new();
-        let mut derived_text = BTreeMap::new();
-        for (name, text) in &loaded.file.controls.signals {
-            match compile_derived(
-                name,
-                text,
-                &names,
-                &param_keys(&loaded.file, &loaded.ids, sim.model()),
-            ) {
-                Ok(d) => {
-                    derived.push(d);
-                    derived_text.insert(name.clone(), text.clone());
-                }
-                Err(e) => warnings.push(format!("controls.signals.{name}: {e}; ignored")),
-            }
-        }
+        let warnings = loaded.warnings;
+        let entries = loaded.file.controls.filters.clone();
         let mut session = Self {
             title: title.into(),
             description: loaded.file.description.clone(),
@@ -243,9 +223,17 @@ impl Session {
             sim,
             steps_since_snapshot: 0,
             sweep,
-            derived_text,
-            derived,
+            filter_entries: Vec::new(),
+            filters: Filters::default(),
         };
+        let (filters, problems) = session.compile_filters(&entries);
+        session.filter_entries = filters.entries(&entries);
+        session.filters = filters;
+        for p in problems {
+            session
+                .warnings
+                .push(format!("controls.filters.{p}; ignored"));
+        }
         if session.sweep.is_some() {
             session.recompute_sweep();
         } else {
@@ -268,59 +256,112 @@ impl Session {
         }
     }
 
-    /// An empty history for the current mode: signals against time or one
-    /// swept parameter, or grids over two swept parameters.
-    fn rebuild_history(&mut self) {
-        let names: Vec<String> = self
-            .output_names
+    /// The names of the recorded scalar signals: outputs, then
+    /// expression filters.
+    fn scalar_names(&self) -> Vec<String> {
+        self.output_names
             .iter()
             .cloned()
-            .chain(self.derived.iter().map(|d| d.name.clone()))
-            .collect();
-        let of_kind = |fields: &[(String, FieldShape)], grid: bool| -> Vec<String> {
-            fields
-                .iter()
-                .filter(|(_, s)| matches!(s, FieldShape::Grid { .. }) == grid)
-                .map(|(n, _)| n.clone())
-                .collect()
-        };
+            .chain(self.filters.exprs.iter().map(|f| f.name.clone()))
+            .collect()
+    }
+
+    /// The grids recorded before any cut filter, which cuts may take as
+    /// input: the grid outputs, or in a two-parameter sweep a grid per
+    /// scalar (named in `scalars`) and per swept parameter.
+    fn source_grids(&self, scalars: &[String]) -> Vec<(String, FieldShape)> {
         match &self.sweep {
             Some(sw) if sw.is_grid() => {
                 let shape = FieldShape::Grid {
                     nx: sw.axes[0].points,
                     ny: sw.axes[1].points,
                 };
-                // The swept parameters' values place every result's cells.
-                let coordinates = sw
-                    .axes
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(axis, a)| {
-                        names.iter().map(move |n| Coordinate {
-                            name: a.key.clone(),
-                            of: n.clone(),
-                            axis,
-                        })
-                    })
-                    .collect();
-                let fields: Vec<(String, FieldShape)> = names
+                scalars
                     .iter()
                     .cloned()
                     .chain(sw.axes.iter().map(|a| a.key.clone()))
                     .map(|n| (n, shape))
-                    .collect();
-                self.grids = of_kind(&fields, true);
-                self.points = Vec::new();
-                self.signals = History::with_fields("sweep", Vec::new(), fields);
-                self.signals.set_coordinates(coordinates);
+                    .collect()
             }
-            sweep => {
-                let index = sweep.as_ref().map_or("t", |sw| sw.axes[0].key.as_str());
-                self.grids = of_kind(&self.base_fields, true);
-                self.points = of_kind(&self.base_fields, false);
-                self.signals = History::with_fields(index, names, self.base_fields.clone());
-                self.signals.set_coordinates(self.base_coordinates.clone());
+            _ => self.base_fields.clone(),
+        }
+    }
+
+    /// Compile filters for this model; problems are `name: reason`.
+    fn compile_filters(&self, entries: &[FilterEntry]) -> (Filters, Vec<String>) {
+        let params = param_keys(&self.file, &self.ids, self.sim.model());
+        // Cuts may take any grid an expression makes in a 2D sweep.
+        let mut scalars = self.output_names.clone();
+        scalars.extend(
+            entries
+                .iter()
+                .filter(|e| e.type_name == "expression")
+                .map(|e| e.name.clone()),
+        );
+        let grids = self.source_grids(&scalars);
+        Filters::compile(entries, &self.output_names, &params, &grids)
+    }
+
+    /// An empty history for the current mode: signals against time or one
+    /// swept parameter, or grids over two swept parameters; then the cut
+    /// filters' fields.
+    fn rebuild_history(&mut self) {
+        let names = self.scalar_names();
+        let mut fields = self.source_grids(&names);
+        let mut coordinates = match &self.sweep {
+            // The swept parameters' values place every result's cells.
+            Some(sw) if sw.is_grid() => sw
+                .axes
+                .iter()
+                .enumerate()
+                .flat_map(|(axis, a)| {
+                    names.iter().map(move |n| Coordinate {
+                        name: a.key.clone(),
+                        of: n.clone(),
+                        axis,
+                    })
+                })
+                .collect(),
+            _ => self.base_coordinates.clone(),
+        };
+        let mut labels = Vec::new();
+        for c in &self.filters.cuts {
+            fields.extend(c.fields());
+            let coordinate = c.coordinate();
+            // For labels only the coordinates' names matter.
+            let mut g = Geometry::cells(c.nx, c.ny);
+            for k in coordinates.iter().filter(|k| k.of == c.input && k.axis < 2) {
+                g.names[k.axis] = Some(k.name.clone());
             }
+            labels.extend(c.labels(&g));
+            coordinates.extend(c.lines().into_iter().map(|l| Coordinate {
+                name: coordinate.clone(),
+                of: l,
+                axis: 0,
+            }));
+        }
+        let index = match &self.sweep {
+            Some(sw) if sw.is_grid() => "sweep",
+            Some(sw) => sw.axes[0].key.as_str(),
+            None => "t",
+        };
+        let scalars = match &self.sweep {
+            Some(sw) if sw.is_grid() => Vec::new(),
+            _ => names,
+        };
+        let of_kind = |grid: bool| -> Vec<String> {
+            fields
+                .iter()
+                .filter(|(_, s)| matches!(s, FieldShape::Grid { .. }) == grid)
+                .map(|(n, _)| n.clone())
+                .collect()
+        };
+        self.grids = of_kind(true);
+        self.points = of_kind(false);
+        self.signals = History::with_fields(index, scalars, fields);
+        self.signals.set_coordinates(coordinates);
+        for (name, label) in labels {
+            self.signals.set_label(&name, &label);
         }
         self.lines = self
             .signals
@@ -329,6 +370,31 @@ impl Session {
             .filter(|f| matches!(f.shape, FieldShape::Grid { ny: 1, .. }))
             .map(|f| f.name.clone())
             .collect();
+    }
+
+    /// The cut filters' frames for one sample, from the frames of the
+    /// fields recorded before them (in history order).
+    fn cut_frames(&self, before: &[&[f64]]) -> Vec<Vec<f64>> {
+        let fields = self.signals.fields();
+        let frame = |name: &str| -> Option<&[f64]> {
+            fields
+                .iter()
+                .position(|f| f.name == name)
+                .and_then(|i| before.get(i).copied())
+        };
+        let coordinates = self.signals.coordinates();
+        self.filters
+            .cuts
+            .iter()
+            .flat_map(|c| match frame(&c.input) {
+                Some(input) => {
+                    let g = c.geometry(coordinates, frame);
+                    c.frames(&g, input)
+                }
+                // Recorded as NaN.
+                None => vec![Vec::new(); c.settings.count() + 1],
+            })
+            .collect()
     }
 
     pub fn time(&self) -> f64 {
@@ -440,7 +506,7 @@ impl Session {
         if let Some(v) = views {
             self.file.controls.views = v;
         }
-        self.file.controls.signals = self.derived_text.clone();
+        self.file.controls.filters = self.filter_entries.clone();
         if let Some(sw) = &self.sweep {
             self.file.controls.sweep = sw
                 .axes
@@ -534,7 +600,7 @@ impl Session {
         if let [x, y] = sw.axes.as_slice() {
             // Grids over (x, y), row by row: cell (i, j) at j * nx + i.
             let (nx, ny) = (x.points, y.points);
-            let names = self.signals.fields().len() - 2;
+            let names = self.scalar_names().len();
             let mut grids = vec![vec![f64::NAN; nx * ny]; names + 2];
             for j in 0..ny {
                 for i in 0..nx {
@@ -550,7 +616,8 @@ impl Session {
                 }
             }
             let frames: Vec<&[f64]> = grids.iter().map(Vec::as_slice).collect();
-            self.signals.push_sample(0.0, &[], &frames);
+            let cuts = self.cut_frames(&frames);
+            push(&mut self.signals, 0.0, &[], &frames, &cuts);
         } else {
             let a = &sw.axes[0];
             for k in 0..a.points {
@@ -560,7 +627,8 @@ impl Session {
                 }
                 let values = self.sample(v);
                 let frames = frames(&self.sim, &self.field_sources);
-                self.signals.push_sample(v, &values, &frames);
+                let cuts = self.cut_frames(&frames);
+                push(&mut self.signals, v, &values, &frames, &cuts);
             }
         }
         // Leave the model as the panel shows it.
@@ -591,19 +659,12 @@ impl Session {
         let t = self.sim.time();
         let values = self.sample(t);
         let frames = frames(&self.sim, &self.field_sources);
-        self.signals.push_sample(t, &values, &frames);
+        let cuts = self.cut_frames(&frames);
+        push(&mut self.signals, t, &values, &frames, &cuts);
     }
 
-    fn field_shapes(&self) -> Vec<(String, FieldShape)> {
-        self.signals
-            .fields()
-            .iter()
-            .map(|f| (f.name.clone(), f.shape))
-            .collect()
-    }
-
-    /// One sample: the output signals, then the derived signals computed
-    /// from them, the current parameter values and `t`.
+    /// One sample: the output signals, then the expression filters computed
+    /// from them, earlier filters, the current parameter values and `t`.
     fn sample(&self, t: f64) -> Vec<f64> {
         let mut values = self.output_values();
         self.append_derived(t, &mut values);
@@ -611,65 +672,124 @@ impl Session {
     }
 
     fn append_derived(&self, t: f64, values: &mut Vec<f64>) {
-        if self.derived.is_empty() {
+        let exprs = &self.filters.exprs;
+        if exprs.is_empty() {
             return;
         }
-        // Slots: t, the output signals, then every parameter.
-        let mut vars = Vec::with_capacity(1 + values.len() + 16);
+        // Slots: t, the output signals, the expression filters, then every
+        // parameter.
+        let outputs = self.sources.len();
+        let mut vars = Vec::with_capacity(1 + outputs + exprs.len() + 16);
         vars.push(t);
-        vars.extend_from_slice(&values[..self.sources.len()]);
-        for row in self.params() {
-            vars.push(row.value);
-        }
-        for d in &self.derived {
-            values.push(d.expr.eval(&vars));
+        vars.extend_from_slice(&values[..outputs]);
+        vars.extend(std::iter::repeat_n(0.0, exprs.len()));
+        vars.extend(self.params().iter().map(|r| r.value));
+        for (k, f) in exprs.iter().enumerate() {
+            let v = f.expr.eval(&vars);
+            vars[1 + outputs + k] = v;
+            values.push(v);
         }
     }
 
-    /// The derived signals as written: name to expression.
-    pub fn derived(&self) -> &BTreeMap<String, String> {
-        &self.derived_text
+    /// The filters as written (ADR 0032).
+    pub fn filters(&self) -> &[FilterEntry] {
+        &self.filter_entries
     }
 
-    /// Replace the derived signals. All must be valid, or nothing changes
-    /// and the problems are returned. The recorded history is kept and the
-    /// derived signals are recomputed for it, using current parameter values.
-    pub fn set_derived(&mut self, map: BTreeMap<String, String>) -> Result<(), Vec<String>> {
-        let outputs = self.output_names.clone();
-        let params = param_keys(&self.file, &self.ids, self.sim.model());
-        let mut compiled = Vec::new();
+    /// The 2D grids a cut filter can take: recorded grids that are not
+    /// themselves coordinates (in a two-parameter sweep, every result).
+    pub fn cut_inputs(&self) -> Vec<String> {
+        self.signals
+            .fields()
+            .iter()
+            .filter(|f| matches!(f.shape, FieldShape::Grid { nx, ny } if nx >= 2 && ny >= 2))
+            .filter(|f| !self.signals.coordinates().iter().any(|c| c.name == f.name))
+            .map(|f| f.name.clone())
+            .collect()
+    }
+
+    /// Where the cells of grid `input` lie, from the newest sample.
+    pub fn cut_geometry(&self, input: &str) -> Geometry {
+        let h = &self.signals;
+        let (nx, ny) = match h.fields().iter().find(|f| f.name == input).map(|f| f.shape) {
+            Some(FieldShape::Grid { nx, ny }) => (nx, ny),
+            _ => (1, 1),
+        };
+        let newest = |n: &str| {
+            h.fields()
+                .iter()
+                .find(|f| f.name == n)
+                .filter(|_| !h.is_empty())
+                .map(|f| f.frame(h.len() - 1))
+        };
+        h.coordinates()
+            .iter()
+            .filter(|c| c.of == input && c.axis < 2)
+            .fold(Geometry::cells(nx, ny), |g, c| match newest(&c.name) {
+                Some(f) => g.with_coordinate(c.axis, &c.name, f),
+                None => g,
+            })
+    }
+
+    /// A new cut filter through `input`: along x at four values spread over
+    /// its rows, each on a row so it reads it exactly.
+    pub fn default_cut(&self, name: &str, input: &str) -> FilterEntry {
+        let g = self.cut_geometry(input);
+        let ny = g.ny;
+        let mut rows: Vec<usize> = (0..4)
+            .map(|k| (((k as f64 + 0.5) / 4.0 * ny as f64) as usize).min(ny.max(1) - 1))
+            .collect();
+        rows.dedup();
+        let at: Vec<f64> = rows.iter().map(|&j| g.centres[1][j]).collect();
+        FilterEntry {
+            name: name.into(),
+            type_name: "cut".into(),
+            inputs: vec![input.into()],
+            settings: [
+                ("mode".to_string(), serde_json::Value::from("along_x")),
+                ("at".to_string(), serde_json::Value::from(at)),
+            ]
+            .into(),
+        }
+    }
+
+    /// Replace the filters. All must be usable, or nothing changes and the
+    /// problems are returned. The recorded history is kept and the filters
+    /// are recomputed for it, using current parameter values.
+    pub fn set_filters(&mut self, entries: Vec<FilterEntry>) -> Result<(), Vec<String>> {
         let mut problems = Vec::new();
-        for (name, text) in &map {
-            match compile_derived(name, text, &outputs, &params) {
-                Ok(d) => compiled.push(d),
-                Err(e) => problems.push(format!("{name}: {e}")),
+        let mut names = Vec::new();
+        for e in &entries {
+            if names.contains(&e.name) || self.output_names.contains(&e.name) {
+                problems.push(format!("{}: the name is already used", e.name));
             }
+            names.push(e.name.clone());
         }
+        let (filters, more) = self.compile_filters(&entries);
+        problems.extend(more);
         if !problems.is_empty() {
             return Err(problems);
         }
-        self.derived = compiled;
-        self.derived_text = map;
+        self.filter_entries = filters.entries(&entries);
+        self.filters = filters;
         if self.sweep.is_some() {
             self.recompute_sweep();
             return Ok(());
         }
-        let shapes = self.field_shapes();
-        let old = std::mem::replace(&mut self.signals, History::with_index("", Vec::new()));
-        let names: Vec<String> = outputs
-            .iter()
-            .cloned()
-            .chain(self.derived.iter().map(|d| d.name.clone()))
-            .collect();
-        self.signals = History::with_fields(old.index(), names, shapes);
+        // Replay the recorded outputs and fields through the new filters.
+        let old = std::mem::replace(&mut self.signals, History::new(Vec::new()));
+        self.rebuild_history();
+        let outputs = self.output_names.len();
+        let base = self.base_fields.len();
         for k in 0..old.len() {
             let t = old.times()[k];
-            let mut values: Vec<f64> = (0..outputs.len())
+            let mut values: Vec<f64> = (0..outputs)
                 .map(|i| old.value(SignalRef::Signal(i), k))
                 .collect();
             self.append_derived(t, &mut values);
-            let frames: Vec<&[f64]> = old.fields().iter().map(|f| f.frame(k)).collect();
-            self.signals.push_sample(t, &values, &frames);
+            let frames: Vec<&[f64]> = old.fields()[..base].iter().map(|f| f.frame(k)).collect();
+            let cuts = self.cut_frames(&frames);
+            push(&mut self.signals, t, &values, &frames, &cuts);
         }
         Ok(())
     }
@@ -686,6 +806,17 @@ impl Session {
             })
             .collect()
     }
+}
+
+/// Record one sample: scalar values, the frames of the fields before the
+/// cuts, then the cuts' frames.
+fn push(history: &mut History, index: f64, values: &[f64], before: &[&[f64]], cuts: &[Vec<f64>]) {
+    let frames: Vec<&[f64]> = before
+        .iter()
+        .copied()
+        .chain(cuts.iter().map(Vec::as_slice))
+        .collect();
+    history.push_sample(index, values, &frames);
 }
 
 /// The current value of every recorded field (empty if missing, which the
@@ -713,47 +844,6 @@ fn param_keys(file: &ModelFile, ids: &BTreeMap<String, BlockId>, model: &Model) 
         }
     }
     keys
-}
-
-/// Compile one derived signal. Slots: `t`, then the output signals, then
-/// the parameters.
-fn compile_derived(
-    name: &str,
-    text: &str,
-    outputs: &[String],
-    params: &[String],
-) -> Result<Derived, String> {
-    let simple = name
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_alphabetic() || c == '_')
-        && name.chars().all(|c| c.is_alphanumeric() || c == '_');
-    if !simple || name == "t" || simsandbox_expr::is_reserved(name) {
-        return Err(format!(
-            "'{name}' must be a plain name (letters, digits, _) other than t, pi or a function"
-        ));
-    }
-    let ast = simsandbox_expr::parse_signals(text).map_err(|e| e.to_string())?;
-    let expr = ast
-        .resolve(&|n| {
-            if n == "t" {
-                return Some(0);
-            }
-            if let Some(i) = outputs.iter().position(|o| o == n) {
-                return Some(1 + i);
-            }
-            params
-                .iter()
-                .position(|p| p == n)
-                .map(|i| 1 + outputs.len() + i)
-        })
-        .map_err(|e| {
-            format!("{e} (use plotted signals such as a.x, parameters such as a.k, or t)")
-        })?;
-    Ok(Derived {
-        name: name.into(),
-        expr,
-    })
 }
 
 /// The sweep for a model with no states: the file's `controls.sweep`, or
@@ -945,6 +1035,13 @@ mod tests {
         Session::load(e.name, e.text, &registry()).unwrap()
     }
 
+    fn exprs(pairs: &[(&str, &str)]) -> Vec<FilterEntry> {
+        pairs
+            .iter()
+            .map(|(n, e)| FilterEntry::expression(n, e, Vec::new()))
+            .collect()
+    }
+
     fn values(s: &Session, signal: &str) -> Vec<f64> {
         let r = s.signals.resolve(signal).unwrap();
         s.signals.values(r)
@@ -992,7 +1089,7 @@ mod tests {
     #[test]
     fn two_parameter_sweeps_record_every_output_as_a_grid() {
         let mut s = example("Resonance");
-        s.set_derived([("half".to_string(), "spring.amplitude/2".to_string())].into())
+        s.set_filters(exprs(&[("half", "spring.amplitude/2")]))
             .unwrap();
         let axis = |key: &str, range: [f64; 2], points| (key.to_string(), range, points);
         let (nx, ny) = (31, 20);
@@ -1088,7 +1185,7 @@ mod tests {
         let mut s = example("Coupled");
         // The example defines the total energy, which stays constant: the
         // two blocks are fused, so there is no coupling error (ADR 0023).
-        assert!(s.derived().contains_key("energy"), "{:?}", s.derived());
+        assert!(s.filters().iter().any(|f| f.name == "energy"));
         for _ in 0..500 {
             s.step().unwrap();
         }
@@ -1098,8 +1195,7 @@ mod tests {
         assert!(drift < 1e-9 * e[0], "energy drifted by {drift} of {}", e[0]);
 
         // Redefining recomputes the whole history.
-        let map = [("ax2".to_string(), "a.x^2 + 0*t".to_string())].into();
-        s.set_derived(map).unwrap();
+        s.set_filters(exprs(&[("ax2", "a.x^2 + 0*t")])).unwrap();
         let ax = values(&s, "a.x");
         let ax2 = values(&s, "ax2");
         assert_eq!(ax2.len(), ax.len());
@@ -1107,16 +1203,80 @@ mod tests {
         assert!(s.signals.resolve("energy").is_none());
 
         // Problems leave everything as it was.
-        let bad = [
-            ("b".to_string(), "nope + 1".to_string()),
-            ("a.x".to_string(), "1".to_string()),
-        ]
-        .into();
-        let problems = s.set_derived(bad).unwrap_err();
-        assert_eq!(problems.len(), 2, "{problems:?}");
+        let problems = s
+            .set_filters(exprs(&[("b", "nope + 1"), ("a.x", "1")]))
+            .unwrap_err();
+        assert!(problems.iter().any(|p| p.starts_with("b:")), "{problems:?}");
+        assert!(
+            problems.iter().any(|p| p.starts_with("a.x:")),
+            "{problems:?}"
+        );
         assert!(s.signals.resolve("ax2").is_some());
+        // Saved as a filter that names its inputs (ADR 0032).
         let saved = s.save_json(1.0, None).unwrap();
-        assert!(saved.contains("\"ax2\": \"a.x^2 + 0*t\""));
+        let file: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(
+            file["controls"]["filters"],
+            serde_json::json!([{"name": "ax2", "type": "expression", "inputs": ["a.x"], "expr": "a.x^2 + 0*t"}])
+        );
+    }
+
+    #[test]
+    fn expression_filters_may_read_each_other() {
+        let mut s = example("Coupled");
+        s.set_filters(exprs(&[("double", "2*sq"), ("sq", "a.x^2")]))
+            .unwrap();
+        for _ in 0..10 {
+            s.step().unwrap();
+        }
+        let ax = values(&s, "a.x");
+        let double = values(&s, "double");
+        assert!(ax
+            .iter()
+            .zip(&double)
+            .all(|(x, d)| (2.0 * x * x - d).abs() < 1e-14));
+        // A cycle is refused.
+        assert!(s.set_filters(exprs(&[("p", "q"), ("q", "p")])).is_err());
+    }
+
+    #[test]
+    fn cut_filters_cut_two_parameter_sweeps_into_lines() {
+        let mut s = example("Resonance map");
+        let cut = s.default_cut("res", "spring.amplitude");
+        let mut filters = s.filters().to_vec();
+        filters.push(cut.clone());
+        s.set_filters(filters).unwrap();
+        let a = s.available();
+        // Four cuts along w at fixed c, and their coordinate w.
+        let lines: Vec<&str> = a
+            .lines
+            .iter()
+            .map(String::as_str)
+            .filter(|l| l.starts_with("res"))
+            .collect();
+        assert_eq!(lines, ["res[0]", "res[1]", "res[2]", "res[3]", "res.x"]);
+        assert_eq!(a.axis_choices("res[0]"), ["t", "res.x"]);
+        let grid = |name: &str| {
+            let f = s.signals.fields().iter().find(|f| f.name == name).unwrap();
+            f.frame(0).to_vec()
+        };
+        let (amp, c, w) = (grid("spring.amplitude"), grid("spring.c"), grid("res.x"));
+        let at = cut.settings["at"].as_array().unwrap()[1].as_f64().unwrap();
+        // Default cuts lie on rows, so they read them exactly.
+        let row = (0..120).find(|&j| c[j * 200] == at).unwrap();
+        assert_eq!(grid("res[1]"), amp[row * 200..row * 200 + 200].to_vec());
+        assert_eq!(w, grid("spring.w")[..200].to_vec());
+        let label = s.signals.label(s.signals.resolve("res[1]").unwrap());
+        assert!(label.starts_with("spring.c = "), "{label}");
+        assert_eq!(
+            s.signals.label(s.signals.resolve("res.x").unwrap()),
+            "spring.w"
+        );
+        // Saved with its input.
+        let saved = s.save_json(1.0, None).unwrap();
+        let again = Session::load("again", &saved, &registry()).unwrap();
+        assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+        assert_eq!(again.filters(), s.filters());
     }
 
     #[test]
@@ -1150,8 +1310,7 @@ mod tests {
         };
         let before = frames(&s);
         assert_eq!(before.len(), 11);
-        s.set_derived([("one".to_string(), "1 + 0*t".to_string())].into())
-            .unwrap();
+        s.set_filters(exprs(&[("one", "1 + 0*t")])).unwrap();
         assert_eq!(frames(&s), before);
 
         let s = example("Orbiting");

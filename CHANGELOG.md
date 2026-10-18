@@ -42,6 +42,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- `plot.profile` draws line fields only; cuts through 2D grids come from cut filters (ADR 0031, superseding ADR 0029's cuts inside the profile).
+- Filters (ADRs 0030–0032): `controls.filters` holds named filters that name their inputs; `expression` filters are derived signals (they may now use each other) and `cut` filters cut 2D grids along x, along y or free lines into line fields with a coordinate and readable labels. The "Signals…" window becomes "Data…", listing and editing all filters; a new cut filter opens a profile of its cuts. Older `controls.signals` and profile cut selections are converted on load.
 - `plot.xy` (plots against time, phase portraits) has a "swap axes" button: the same signals drawn transposed, saved with the view.
 - Profile cuts (ADR 0029): `plot.profile` draws 2D grids as straight cuts in any direction, against fraction along the cut, x, y or distance, with bilinear or nearest interpolation; cuts are saved in the view's new `selection` and edited in the side panel. The resonance-map example adds resonance curves at four dampings.
 - Heat map axes (ADR 0024): `x` and `y` each take `t` or a coordinate of the field (declared by its block, e.g. `rod.position`, or a swept parameter); pickers list only those; a "swap axes" button; unevenly spaced coordinates are drawn correctly. Files with the old `position` and `time_axis` are converted on load.

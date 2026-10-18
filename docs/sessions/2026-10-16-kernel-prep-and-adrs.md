@@ -28,6 +28,7 @@
 - 2026-10-18: profile cuts built (ADR 0029); views crate gains serde for selections. 122 tests.
 - 2026-10-18: swap axes for `plot.xy` (transpose); Q23 and Q24 raised.
 - 2026-10-18: ADRs 0030–0031; Q25 (filters and views on the node canvas) raised.
+- 2026-10-18: ADR 0032; filters built (expression and cut filters, Data window, conversions). 128 tests.
 - 2026-10-17: messages moved into a log tile beside the rewind bar (`crates/simsandbox-app/src/log.rs`) at the owner's request; duplicate description tooltip removed (egui already shows cut text on hover). 104 tests.
 - 2026-10-17: views steps 5–6: `Shape::Grid`/`Shape::Points`, fields in the history, `plot.heatmap`, `plot.scatter`, slot kinds and `Available`; `eq.heat_rod`, `eq.orbits` and `eq.pendulum` with verification tests; the `eq.pendulum` view (`applies_to`) behind `simsandbox-eq`'s `views` feature; heat-rod, orbits and pendulum examples, checked by screenshot. 100 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
@@ -59,6 +60,8 @@
 
 ## Notes for the next session
 
+- Filters run per recorded sample: `Session::record` computes source frames, then `cut_frames`, and pushes all; `set_filters` replays the recorded sources (scalar outputs and source fields) through new filters. In a two-parameter sweep a cut reads the sweep's grids and the swept parameters as its coordinates. Expression slots are `t`, outputs, expression filters in dependency order, then parameters; failed expressions are dropped and the rest recompiled so slots stay consistent.
+- Slot pickers show field names (`cuts1.x`), not labels; legends and axes show labels (`spring.w`).
 - View selections are JSON (`ViewEntry::selection`, `View::selection`/`set_selection`/`edit_selection`); the views crate depends on serde for them. A selection that does not parse drops the view with a warning, like other bad controls.
 - Heat map axes: `heat_axes` resolves `x`/`y` to time or a grid axis; unbound axes take the directions left in order. `axis_map` maps texels to cells, one per cell when even, resampled at the smallest spacing (≤ 1024 texels) when not. A coordinate that is not strictly monotonic falls back to cell numbers at draw time (the picker and load check prevent binding non-coordinates).
 - Two-parameter sweep grids are stored row by row with the first parameter along x (cell (i, j) at j·nx + i); parameter values use the same lerp as one-parameter sweeps, so range ends are exact. The session keeps `output_names` and `base_fields` and rebuilds the history whenever the sweep's shape changes (`rebuild_history`).

@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "description": "The driven, damped spring of the resonance example, swept over two parameters at once: the driving frequency w and the damping c. Left: the amplitude of the steady swing over both, coloured on a log scale; the bright ridge at w ≈ 1 is the resonance, sharpest and tallest where damping is low. Right: cuts through the map at four dampings, the classic family of resonance curves. Change m or k and the ridge moves; edit the cuts in the side panel.",
+  "description": "The driven, damped spring of the resonance example, swept over two parameters at once: the driving frequency w and the damping c. Left: the amplitude of the steady swing over both, coloured on a log scale; the bright ridge at w ≈ 1 is the resonance, sharpest and tallest where damping is low. Right: a cut filter cuts the map at four dampings, the classic family of resonance curves. Change m or k and the ridge moves; edit the cuts under Data….",
   "run": {
     "dt": 0.01
   },
@@ -57,54 +57,31 @@
       {
         "type": "plot.profile",
         "bind": {
-          "y": "spring.amplitude"
-        },
-        "selection": {
-          "against": "x",
-          "cuts": [
-            {
-              "from": [
-                0.0,
-                0.05
-              ],
-              "to": [
-                3.0,
-                0.05
-              ]
-            },
-            {
-              "from": [
-                0.0,
-                0.1
-              ],
-              "to": [
-                3.0,
-                0.1
-              ]
-            },
-            {
-              "from": [
-                0.0,
-                0.2
-              ],
-              "to": [
-                3.0,
-                0.2
-              ]
-            },
-            {
-              "from": [
-                0.0,
-                0.5
-              ],
-              "to": [
-                3.0,
-                0.5
-              ]
-            }
-          ],
-          "interpolation": "bilinear"
+          "x": "cuts1.x",
+          "y": [
+            "cuts1[0]",
+            "cuts1[1]",
+            "cuts1[2]",
+            "cuts1[3]"
+          ]
         }
+      }
+    ],
+    "filters": [
+      {
+        "name": "cuts1",
+        "type": "cut",
+        "inputs": [
+          "spring.amplitude"
+        ],
+        "at": [
+          0.05,
+          0.1,
+          0.2,
+          0.5
+        ],
+        "interpolation": "bilinear",
+        "mode": "along_x"
       }
     ],
     "sweep": [

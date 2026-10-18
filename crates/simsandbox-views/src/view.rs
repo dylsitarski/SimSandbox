@@ -17,6 +17,8 @@ pub enum SlotKind {
     Grid,
     /// A point set.
     Points,
+    /// A grid with one row (a line of cells).
+    Line,
     /// An axis of a field picture: the index (`t`) or a coordinate of the
     /// field bound to the slot named in [`Slot::of`] (ADR 0024).
     Axis,
@@ -167,6 +169,7 @@ impl Available<'_> {
             SlotKind::Scalar => name == TIME || self.scalars.iter().any(|s| s == name),
             SlotKind::Grid => self.grids.iter().any(|s| s == name),
             SlotKind::Points => self.points.iter().any(|s| s == name),
+            SlotKind::Line => self.lines.iter().any(|s| s == name),
             // Whether it places the bound field is checked with the field,
             // so the reason can be given.
             SlotKind::Axis => name == TIME || self.grids.iter().any(|s| s == name),
@@ -216,6 +219,7 @@ impl Available<'_> {
                 .collect(),
             SlotKind::Grid => self.grids.iter().map(String::as_str).collect(),
             SlotKind::Points => self.points.iter().map(String::as_str).collect(),
+            SlotKind::Line => self.lines.iter().map(String::as_str).collect(),
             SlotKind::Axis => std::iter::once(TIME)
                 .chain(self.coordinates.iter().map(|c| c.name.as_str()))
                 .collect(),
