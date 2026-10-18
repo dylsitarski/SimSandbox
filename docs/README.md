@@ -101,6 +101,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0029-profile-cuts.md](decisions/0029-profile-cuts.md) | Decision record | Profiles as straight cuts in any direction; chosen horizontal axis; interpolation |
 | [decisions/0030-filters-and-native-visualization.md](decisions/0030-filters-and-native-visualization.md) | Decision record | Sources → filters → views; native visualization not capped, grows with need |
 | [decisions/0031-cut-filters.md](decisions/0031-cut-filters.md) | Decision record | Cut filters with modes: along x, along y, free lines |
+| [decisions/0032-filters-as-a-graph.md](decisions/0032-filters-as-a-graph.md) | Decision record | Filters as a graph with named inputs; list first, canvas observer layer later |
 
 ### Guides
 

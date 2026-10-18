@@ -1,6 +1,6 @@
 # 0030 — Filters feed views; native visualization grows with need
 
-- **Status:** Accepted
+- **Status:** Superseded by 0032
 - **Date:** 2026-10-18
 
 ## Context

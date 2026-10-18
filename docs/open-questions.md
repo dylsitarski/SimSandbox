@@ -10,7 +10,6 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | --- | --- | --- | --- | --- |
 | Q5 | Algebraic loops in fused groups | Causalisation and tearing; Newton solve per RHS evaluation; forbid and warn | Phase 1 | Current v0 restriction: no direct feedthrough |
 | Q17 | Implicit and implicit–explicit (IMEX) methods for stiff systems | (a) An implicit method (e.g. backward differentiation or an L-stable Runge–Kutta) for whole systems, with Jacobians by finite differences first; (b) named IMEX methods that treat a declared stiff part implicitly; (c) explicit methods with substeps only | Before stiff fields or large fused groups | Raised 2026-10-17 with ADR 0023, which rules out free per-block method mixing inside one fused system: arbitrary pairs of methods fall to first order. First case: `eq.heat_rod`, whose explicit step limit (≈0.7 h²/α for RK4) forces 10 substeps in the example |
-| Q25 | Filters and views on the node canvas | (a) Keep filters a flat list now but store them as a graph (each filter names its inputs; order carries no meaning), and show them on the node canvas when it exists, as visually distinct observer nodes on a layer that can be hidden; views appear there as sink nodes linked to their tiles (block diagram and front panel); (b) list only (ADR 0030 as written); (c) canvas only | Before filters are built | Raised by the owner 2026-10-18 while brainstorming. Option (a) would amend ADR 0030's "ordered entries" and "a list, not a node graph". Open: whether a filter output may feed a model block (then it must step with the model and becomes a block) |
 
 ## Resolved
 
@@ -43,4 +42,5 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | Q21 | Where run versus sweep is decided | [ADR 0027](decisions/0027-explicit-experiments.md) |
 | Q22 | Unstructured sweeps | [ADR 0028](decisions/0028-sweeps-as-samples.md) |
 | Q23 | A simpler way to choose profile cuts | [ADR 0031](decisions/0031-cut-filters.md) |
-| Q24 | Pipeline of filters versus views doing their own transforms | [ADR 0030](decisions/0030-filters-and-native-visualization.md) |
+| Q24 | Pipeline of filters versus views doing their own transforms | [ADR 0030](decisions/0030-filters-and-native-visualization.md), amended by [ADR 0032](decisions/0032-filters-as-a-graph.md) |
+| Q25 | Filters and views on the node canvas | [ADR 0032](decisions/0032-filters-as-a-graph.md) |

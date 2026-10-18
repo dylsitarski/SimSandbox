@@ -35,8 +35,9 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0027](0027-explicit-experiments.md) | Explicit experiments: sampling, run and reduction | Accepted | 2026-10-18 |
 | [0028](0028-sweeps-as-samples.md) | Sweeps recorded as samples | Accepted | 2026-10-18 |
 | [0029](0029-profile-cuts.md) | Profiles as cuts in any direction | Superseded by 0031 | 2026-10-18 |
-| [0030](0030-filters-and-native-visualization.md) | Filters feed views; native visualization grows with need | Accepted | 2026-10-18 |
+| [0030](0030-filters-and-native-visualization.md) | Filters feed views; native visualization grows with need | Superseded by 0032 | 2026-10-18 |
 | [0031](0031-cut-filters.md) | Cuts as filters with simple modes | Accepted | 2026-10-18 |
+| [0032](0032-filters-as-a-graph.md) | Filters stored as a graph, shown on the node canvas later | Accepted | 2026-10-18 |
 
 ## When to write one
 
