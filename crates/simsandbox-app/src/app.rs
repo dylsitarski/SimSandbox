@@ -626,11 +626,10 @@ impl SimApp {
             bind: &state.bind,
         };
         let shown: Vec<_> = t.style.iter().filter(|p| (p.applies)(&context)).collect();
-        if shown.is_empty() {
-            return;
-        }
         ui.add_space(10.0);
         ui.heading(format!("View: {}", t.label));
+        // The view's own picks, such as profile cuts (ADR 0029).
+        state.edit_selection(ui, t, &session.signals);
         egui::Grid::new(("style", t.name))
             .num_columns(3)
             .spacing([6.0, 4.0])

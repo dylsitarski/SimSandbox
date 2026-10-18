@@ -236,6 +236,10 @@ pub struct ViewEntry {
     pub style: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<CameraControl>,
+    /// What the user picked inside the view, e.g. profile cuts (ADR 0029);
+    /// checked by the view type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<Value>,
 }
 
 impl ViewEntry {
@@ -414,6 +418,7 @@ impl ViewControl {
             bind,
             style: BTreeMap::new(),
             camera: self.camera,
+            selection: None,
         }
     }
 

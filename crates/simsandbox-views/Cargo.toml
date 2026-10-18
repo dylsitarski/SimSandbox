@@ -13,6 +13,9 @@ authors.workspace = true
 # Same pinned versions as simsandbox-app (ADR 0008).
 egui = { version = "=0.36.2", default-features = false }
 egui_plot = "=0.37.0"
+# View selections (e.g. profile cuts) are saved as JSON with the view.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [lints]
 workspace = true

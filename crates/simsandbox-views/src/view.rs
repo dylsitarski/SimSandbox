@@ -20,6 +20,9 @@ pub enum SlotKind {
     /// An axis of a field picture: the index (`t`) or a coordinate of the
     /// field bound to the slot named in [`Slot::of`] (ADR 0024).
     Axis,
+    /// A coordinate of the field bound to the slot named in [`Slot::of`],
+    /// never the index.
+    Coordinate,
 }
 
 /// What a slot or style property's applicability is judged on (ADR 0025).
@@ -124,6 +127,20 @@ pub trait View {
     }
 
     fn set_camera(&mut self, _camera: [f64; 3]) {}
+
+    /// What the user picked inside the view, saved with it (e.g. profile
+    /// cuts, ADR 0029).
+    fn selection(&self) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Restore a saved selection; an error says why it cannot be used.
+    fn set_selection(&mut self, _selection: &serde_json::Value) -> Result<(), String> {
+        Err("this view keeps no selection".into())
+    }
+
+    /// Controls for the selection, shown in the side panel.
+    fn edit_selection(&mut self, _ui: &mut egui::Ui, _input: &ViewInput<'_>) {}
 }
 
 /// What a model offers views: its recorded signals by kind and its block
@@ -150,6 +167,7 @@ impl Available<'_> {
             // Whether it places the bound field is checked with the field,
             // so the reason can be given.
             SlotKind::Axis => name == TIME || self.grids.iter().any(|s| s == name),
+            SlotKind::Coordinate => self.grids.iter().any(|s| s == name),
         }
     }
 
@@ -198,6 +216,7 @@ impl Available<'_> {
             SlotKind::Axis => std::iter::once(TIME)
                 .chain(self.coordinates.iter().map(|c| c.name.as_str()))
                 .collect(),
+            SlotKind::Coordinate => self.coordinates.iter().map(|c| c.name.as_str()).collect(),
         }
     }
 }
@@ -271,7 +290,11 @@ impl ViewType {
         // Axis slots: each must be an axis of its field, and no two may
         // claim the same dimension (ADR 0024).
         let mut claimed: Vec<(&str, Option<usize>)> = Vec::new();
-        for s in self.slots.iter().filter(|s| s.kind == SlotKind::Axis) {
+        for s in self
+            .slots
+            .iter()
+            .filter(|s| matches!(s.kind, SlotKind::Axis | SlotKind::Coordinate))
+        {
             let (Some(of), Some(name)) = (s.of, bind.get(s.name).and_then(|v| v.first())) else {
                 continue;
             };
@@ -281,6 +304,9 @@ impl ViewType {
             let dim = available
                 .axis_of(field, name)
                 .map_err(|e| format!("slot '{}': {e}", s.name))?;
+            if s.kind == SlotKind::Coordinate && dim.is_none() {
+                return Err(format!("slot '{}': takes a coordinate, not t", s.name));
+            }
             if claimed.iter().any(|&(f, d)| f == field && d == dim) {
                 return Err(format!(
                     "slot '{}': '{name}' runs along the same direction as another axis",
@@ -346,6 +372,30 @@ impl ViewRegistry {
     }
 }
 
+/// What a view of type `t` draws from: its bindings resolved in `history`;
+/// bindings to signals that no longer exist are skipped.
+fn view_input<'a>(
+    bind: &'a Bindings,
+    style: &'a BTreeMap<String, f64>,
+    t: &'a ViewType,
+    history: &'a History,
+) -> ViewInput<'a> {
+    let slots = bind
+        .iter()
+        .map(|(slot, names)| {
+            let refs = names.iter().filter_map(|n| history.resolve(n)).collect();
+            (slot.as_str(), refs)
+        })
+        .collect();
+    ViewInput {
+        history,
+        bind,
+        slots,
+        style,
+        view_type: t,
+    }
+}
+
 /// One view on screen.
 pub struct ViewState {
     pub type_name: String,
@@ -391,24 +441,24 @@ impl ViewState {
         })
     }
 
+    pub fn selection(&self) -> Option<serde_json::Value> {
+        self.view.selection()
+    }
+
+    pub fn set_selection(&mut self, selection: &serde_json::Value) -> Result<(), String> {
+        self.view.set_selection(selection)
+    }
+
+    /// The view's selection controls, for the side panel.
+    pub fn edit_selection(&mut self, ui: &mut egui::Ui, t: &ViewType, history: &History) {
+        let input = view_input(&self.bind, &self.style, t, history);
+        self.view.edit_selection(ui, &input);
+    }
+
     /// Draw from `history`. Bindings to signals that no longer exist are
     /// skipped.
     pub fn show(&mut self, ui: &mut egui::Ui, t: &ViewType, history: &History) {
-        let slots = self
-            .bind
-            .iter()
-            .map(|(slot, names)| {
-                let refs = names.iter().filter_map(|n| history.resolve(n)).collect();
-                (slot.as_str(), refs)
-            })
-            .collect();
-        let input = ViewInput {
-            history,
-            bind: &self.bind,
-            slots,
-            style: &self.style,
-            view_type: t,
-        };
+        let input = view_input(&self.bind, &self.style, t, history);
         self.view.show(ui, &input);
     }
 

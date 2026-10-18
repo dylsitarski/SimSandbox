@@ -2682,6 +2682,8 @@ version = "0.0.1"
 dependencies = [
  "egui",
  "egui_plot",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

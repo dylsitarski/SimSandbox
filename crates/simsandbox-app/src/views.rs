@@ -73,7 +73,13 @@ impl Views {
             .map(|(k, v)| (k.clone(), v.signals()))
             .collect();
         let camera = e.camera.map(|c| [c.yaw, c.pitch, c.zoom]);
-        ViewState::restore(t, bind, e.style.clone(), camera, available)
+        let mut state = ViewState::restore(t, bind, e.style.clone(), camera, available)?;
+        if let Some(s) = &e.selection {
+            state
+                .set_selection(s)
+                .map_err(|err| format!("selection: {err}"))?;
+        }
+        Ok(state)
     }
 
     fn push(&mut self, state: ViewState) -> u64 {
@@ -150,6 +156,7 @@ impl Views {
                         let [yaw, pitch, zoom] = c.map(tidy);
                         CameraControl { yaw, pitch, zoom }
                     }),
+                    selection: s.selection(),
                 }
             })
             .collect()
@@ -199,6 +206,7 @@ mod tests {
                 pitch: 0.5,
                 zoom: 2.0,
             }),
+            selection: None,
         }
     }
 
