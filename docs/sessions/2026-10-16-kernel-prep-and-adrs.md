@@ -27,6 +27,7 @@
 - 2026-10-18: ADR 0029 (profile cuts, supersedes 0026); view axes built (ADRs 0024–0025). 118 tests.
 - 2026-10-18: profile cuts built (ADR 0029); views crate gains serde for selections. 122 tests.
 - 2026-10-18: swap axes for `plot.xy` (transpose); Q23 and Q24 raised.
+- 2026-10-18: ADRs 0030–0031; Q25 (filters and views on the node canvas) raised.
 - 2026-10-17: messages moved into a log tile beside the rewind bar (`crates/simsandbox-app/src/log.rs`) at the owner's request; duplicate description tooltip removed (egui already shows cut text on hover). 104 tests.
 - 2026-10-17: views steps 5–6: `Shape::Grid`/`Shape::Points`, fields in the history, `plot.heatmap`, `plot.scatter`, slot kinds and `Available`; `eq.heat_rod`, `eq.orbits` and `eq.pendulum` with verification tests; the `eq.pendulum` view (`applies_to`) behind `simsandbox-eq`'s `views` feature; heat-rod, orbits and pendulum examples, checked by screenshot. 100 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.

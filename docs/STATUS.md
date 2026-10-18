@@ -58,10 +58,11 @@ _Last updated: 2026-10-18_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Filters** ([ADR 0030](decisions/0030-filters-and-native-visualization.md), [ADR 0031](decisions/0031-cut-filters.md)): a filter layer between recorded data and views, saved in `controls`, with a "Data" panel; derived signals become the first filter type; cut filters with modes (along x, along y, free lines) replace the profile's cuts, converting ADR 0029 selections on load.
-2. **Sweep redesign** ([ADR 0027](decisions/0027-explicit-experiments.md), [ADR 0028](decisions/0028-sweeps-as-samples.md)): sweeps recorded as samples with designs (grid, list, random, Latin hypercube, Sobol), an explicit experiment section, `simsandbox run` sweeps; sweeping models with states later.
-3. **Surface and contour views for two-parameter sweeps** ([ADR 0022](decisions/0022-two-parameter-sweeps.md)): a coloured 3D surface (CPU projection like `plot.3d`), then contour lines.
-4. **Plan Phase 1 with the owner:** order the [Phase 1 roadmap](roadmap.md#phase-1--composition) items (node canvas, Python API, subsystems, agent domain, direct feedthrough).
+1. **Owner decision on Q25** ([open questions](open-questions.md)): whether filters (and view sinks) are stored as a graph for the future node canvas; decide before building filters.
+2. **Filters** ([ADR 0030](decisions/0030-filters-and-native-visualization.md), [ADR 0031](decisions/0031-cut-filters.md)): a filter layer between recorded data and views, saved in `controls`, with a "Data" panel; derived signals become the first filter type; cut filters with modes (along x, along y, free lines) replace the profile's cuts, converting ADR 0029 selections on load.
+3. **Sweep redesign** ([ADR 0027](decisions/0027-explicit-experiments.md), [ADR 0028](decisions/0028-sweeps-as-samples.md)): sweeps recorded as samples with designs (grid, list, random, Latin hypercube, Sobol), an explicit experiment section, `simsandbox run` sweeps; sweeping models with states later.
+4. **Surface and contour views for two-parameter sweeps** ([ADR 0022](decisions/0022-two-parameter-sweeps.md)): a coloured 3D surface (CPU projection like `plot.3d`), then contour lines.
+5. **Plan Phase 1 with the owner:** order the [Phase 1 roadmap](roadmap.md#phase-1--composition) items (node canvas, Python API, subsystems, agent domain, direct feedthrough).
 
 ## Known limitations
 
