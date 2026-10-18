@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/dylsitarski/SimSandbox/blob/main/crates/simsandbox-file/model.schema.json",
   "title": "SimSandbox model file",
-  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md and docs/decisions/0023-automatic-fusion.md.",
+  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md and docs/decisions/0023-automatic-fusion.md and docs/decisions/0028-sweeps-as-samples.md.",
   "type": "object",
   "required": ["format", "blocks"],
   "additionalProperties": false,
@@ -10,6 +10,32 @@
     "format": { "const": 1 },
     "description": { "type": "string" },
     "run": { "$ref": "#/$defs/run" },
+    "sample": {
+      "type": "object",
+      "description": "Where a model with no states is evaluated (ADR 0027, ADR 0028); without it such a model is swept over its first parameter. Each sample is recorded with the swept parameters as signals; a grid over two parameters also offers every signal as a grid named 'grid.<signal>'. At most 250000 samples. Invalid values are load errors.",
+      "required": ["params"],
+      "additionalProperties": false,
+      "properties": {
+        "design": {
+          "enum": ["grid", "list", "random", "latin_hypercube", "sobol"],
+          "default": "grid",
+          "description": "grid: every combination of evenly spaced values; list: the points in 'values'; random: independent uniform values; latin_hypercube: one value in each of 'count' slices of every parameter; sobol: the first 'count' points of the Sobol sequence (at most 10 parameters)."
+        },
+        "params": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The swept parameters. Range defaults to the slider's range, then the suggested range; points (grid only) to 400 for one parameter and 100 each for several.",
+          "items": { "$ref": "#/$defs/sweepAxis" }
+        },
+        "count": { "type": "integer", "minimum": 1, "maximum": 250000, "default": 1000, "description": "random, latin_hypercube and sobol: how many samples." },
+        "seed": { "type": "integer", "minimum": 0, "default": 1, "description": "random and latin_hypercube: the generator's seed." },
+        "values": {
+          "type": "array",
+          "description": "list: the samples, one value per parameter each.",
+          "items": { "type": "array", "items": { "type": "number" } }
+        }
+      }
+    },
     "blocks": {
       "type": "array",
       "items": { "$ref": "#/$defs/block" }
@@ -178,7 +204,7 @@
           "additionalProperties": { "type": "string" }
         },
         "sweep": {
-          "description": "The parameters swept when the model has no states: one (ADR 0021) or a list of two, giving every output as a grid over both (ADR 0022). Points default to 400 for one parameter and 100 each for two; two may ask for at most 250000 evaluations.",
+          "description": "The sweep as written before 'sample': one parameter or a list of two. Still read, leniently, and converted into a grid 'sample' (ADR 0027); views bound to 't' are bound to the first parameter, and two-parameter heat maps and cuts to the 'grid.' signals.",
           "oneOf": [
             { "$ref": "#/$defs/sweepAxis" },
             { "type": "array", "items": { "$ref": "#/$defs/sweepAxis" }, "minItems": 1, "maxItems": 2 }

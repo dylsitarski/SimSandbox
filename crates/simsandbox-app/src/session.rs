@@ -8,10 +8,7 @@ use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::{Simulator, Snapshot};
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
-use simsandbox_file::{
-    FilterEntry, FusedGroup, ModelFile, SweepControl, ViewEntry, DEFAULT_GRID_POINTS,
-    DEFAULT_SWEEP_POINTS, MAX_GRID_EVALUATIONS,
-};
+use simsandbox_file::{Design, FilterEntry, FusedGroup, ModelFile, Plan, Sampling, ViewEntry};
 use simsandbox_views::cut::Geometry;
 use simsandbox_views::history::thin;
 use simsandbox_views::{Available, Coordinate, FieldShape, History, SignalRef};
@@ -51,40 +48,50 @@ pub struct ParamRow {
     pub value: f64,
 }
 
-/// One swept parameter: `points` values evenly spread over `range`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SweepAxis {
-    /// `"block.param"`.
-    pub key: String,
-    pub block: BlockId,
-    pub param: String,
-    pub range: [f64; 2],
-    pub points: usize,
-}
-
-impl SweepAxis {
-    /// The `k`th value. Weighted this way, the first and last points hit the
-    /// range ends exactly.
-    pub fn value(&self, k: usize) -> f64 {
-        let f = k as f64 / (self.points - 1) as f64;
-        self.range[0] * (1.0 - f) + self.range[1] * f
-    }
-}
-
-/// Parameters swept across ranges, for models with no states: the outputs
-/// are evaluated at each value instead of running in time. One parameter
-/// (ADR 0021) gives signals against it; two (ADR 0022) give every output
-/// as a grid over both, first parameter along x.
+/// A sweep (ADR 0027, ADR 0028), for models with no states: the outputs
+/// are evaluated at each sample of the swept parameters instead of running
+/// in time. Every sample is recorded, with the swept parameters as signals;
+/// a grid over two parameters also gives every signal reshaped as a grid
+/// named `grid.<signal>`, the parameters' grids as its coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sweep {
-    pub axes: Vec<SweepAxis>,
+    /// As written in the file's `sample` section.
+    pub sampling: Sampling,
+    /// The samples it gives.
+    pub plan: Plan,
+    /// The block and parameter of each swept key.
+    targets: Vec<(BlockId, String)>,
 }
 
 impl Sweep {
-    /// Two parameters: the results are grids.
-    pub fn is_grid(&self) -> bool {
-        self.axes.len() == 2
+    /// The swept parameters' keys, `"block.param"`.
+    pub fn keys(&self) -> &[String] {
+        &self.plan.keys
     }
+
+    /// The grid's size when the design is a grid over two parameters.
+    pub fn grid(&self) -> Option<(usize, usize)> {
+        match self.plan.grid.as_deref() {
+            Some(&[nx, ny]) => Some((nx, ny)),
+            _ => None,
+        }
+    }
+
+    /// Two parameters on a grid: results are also offered as grids.
+    pub fn is_grid(&self) -> bool {
+        self.grid().is_some()
+    }
+
+    /// The samples have no order to draw lines along: anything but a grid
+    /// over one parameter.
+    pub fn unordered(&self) -> bool {
+        !(self.plan.design == Design::Grid && self.plan.keys.len() == 1)
+    }
+}
+
+/// The name of signal `name` reshaped as a grid over a two-parameter sweep.
+pub fn grid_name(name: &str) -> String {
+    format!("grid.{name}")
 }
 
 pub struct Session {
@@ -98,16 +105,15 @@ pub struct Session {
     /// Blocks solved together as one system (ADR 0023).
     pub groups: Vec<FusedGroup>,
     pub dt: f64,
-    /// Recorded signals, one per plotted output element (ADR 0015); in a
-    /// two-parameter sweep, one grid per output element instead.
+    /// Recorded signals, one per plotted output element (ADR 0015), and in
+    /// a sweep the swept parameters (ADR 0028).
     pub signals: History,
     sources: Vec<Source>,
     /// Names of the scalar output signals, in `sources` order.
     output_names: Vec<String>,
     /// Grid and point-set outputs and their shapes.
     base_fields: Vec<(String, FieldShape)>,
-    /// The swept parameters' keys when their values are recorded as
-    /// coordinate grids (two-parameter sweeps).
+    /// Coordinates among the grid outputs.
     base_coordinates: Vec<Coordinate>,
     /// Grids with one row, which views can draw over time.
     lines: Vec<String>,
@@ -196,8 +202,18 @@ impl Session {
             let shape = |n: &str| fields.iter().find(|(f, _)| f == n).map(|(_, s)| *s);
             shape(&c.name).is_some() && shape(&c.name) == shape(&c.of)
         });
+        let sweep = match loaded.plan {
+            Some(plan) => {
+                let sampling = loaded
+                    .file
+                    .sampling(&loaded.model, &loaded.ids)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("a sweep with nothing to sample")?;
+                Some(Sweep::new(sampling, plan, &loaded.ids)?)
+            }
+            None => None,
+        };
         let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
-        let sweep = default_sweep(&loaded.file, &loaded.ids, sim.model());
         let warnings = loaded.warnings;
         let entries = loaded.file.controls.filters.clone();
         let mut session = Self {
@@ -235,7 +251,7 @@ impl Session {
                 .push(format!("controls.filters.{p}; ignored"));
         }
         if session.sweep.is_some() {
-            session.recompute_sweep();
+            session.resample();
         } else {
             session.rebuild_history();
             session.record();
@@ -253,6 +269,7 @@ impl Session {
             block_types: &self.block_types,
             lines: &self.lines,
             coordinates: self.signals.coordinates(),
+            swept: self.sweep.as_ref().map_or(&[], |sw| sw.keys()),
         }
     }
 
@@ -267,24 +284,28 @@ impl Session {
     }
 
     /// The grids recorded before any cut filter, which cuts may take as
-    /// input: the grid outputs, or in a two-parameter sweep a grid per
-    /// scalar (named in `scalars`) and per swept parameter.
+    /// input: the grid outputs, and in a two-parameter grid sweep every
+    /// scalar (named in `scalars`) and swept parameter as a grid.
     fn source_grids(&self, scalars: &[String]) -> Vec<(String, FieldShape)> {
-        match &self.sweep {
-            Some(sw) if sw.is_grid() => {
-                let shape = FieldShape::Grid {
-                    nx: sw.axes[0].points,
-                    ny: sw.axes[1].points,
-                };
-                scalars
-                    .iter()
-                    .cloned()
-                    .chain(sw.axes.iter().map(|a| a.key.clone()))
-                    .map(|n| (n, shape))
-                    .collect()
+        let mut grids = self.base_fields.clone();
+        if let Some(sw) = &self.sweep {
+            if let Some((nx, ny)) = sw.grid() {
+                let shape = FieldShape::Grid { nx, ny };
+                grids.extend(
+                    scalars
+                        .iter()
+                        .chain(sw.keys())
+                        .map(|n| (grid_name(n), shape)),
+                );
             }
-            _ => self.base_fields.clone(),
         }
+        grids
+    }
+
+    /// Whether a cut filter reads a field made from the whole sweep, so it
+    /// is computed once rather than per sample.
+    fn whole_cut(&self, input: &str) -> bool {
+        !self.base_fields.iter().any(|(n, _)| n == input)
     }
 
     /// Compile filters for this model; problems are `name: reason`.
@@ -302,36 +323,50 @@ impl Session {
         Filters::compile(entries, &self.output_names, &params, &grids)
     }
 
-    /// An empty history for the current mode: signals against time or one
-    /// swept parameter, or grids over two swept parameters; then the cut
+    /// An empty history for the current mode: signals against time, or
+    /// samples of a sweep with the swept parameters as signals and, for a
+    /// two-parameter grid, every signal reshaped as a grid; then the cut
     /// filters' fields.
     fn rebuild_history(&mut self) {
         let names = self.scalar_names();
-        let mut fields = self.source_grids(&names);
-        let mut coordinates = match &self.sweep {
-            // The swept parameters' values place every result's cells.
-            Some(sw) if sw.is_grid() => sw
-                .axes
-                .iter()
-                .enumerate()
-                .flat_map(|(axis, a)| {
-                    names.iter().map(move |n| Coordinate {
-                        name: a.key.clone(),
-                        of: n.clone(),
+        let mut fields = self.base_fields.clone();
+        let mut whole = Vec::new();
+        let mut coordinates = self.base_coordinates.clone();
+        let mut scalars = names.clone();
+        if let Some(sw) = &self.sweep {
+            scalars.extend(sw.keys().iter().cloned());
+            if let Some((nx, ny)) = sw.grid() {
+                let shape = FieldShape::Grid { nx, ny };
+                whole.extend(scalars.iter().map(|n| (grid_name(n), shape)));
+                // The swept parameters place every result's cells.
+                for (axis, key) in sw.keys().iter().enumerate() {
+                    coordinates.extend(names.iter().map(|n| Coordinate {
+                        name: grid_name(key),
+                        of: grid_name(n),
                         axis,
-                    })
-                })
-                .collect(),
-            _ => self.base_coordinates.clone(),
-        };
+                    }));
+                }
+            }
+        }
         let mut labels = Vec::new();
         for c in &self.filters.cuts {
-            fields.extend(c.fields());
+            if self.whole_cut(&c.input) {
+                whole.extend(c.fields());
+            } else {
+                fields.extend(c.fields());
+            }
             let coordinate = c.coordinate();
             // For labels only the coordinates' names matter.
             let mut g = Geometry::cells(c.nx, c.ny);
             for k in coordinates.iter().filter(|k| k.of == c.input && k.axis < 2) {
-                g.names[k.axis] = Some(k.name.clone());
+                // A swept parameter's grid is labelled as the parameter.
+                let swept = self.sweep.as_ref().and_then(|sw| {
+                    sw.keys()
+                        .iter()
+                        .find(|key| grid_name(key) == k.name)
+                        .cloned()
+                });
+                g.names[k.axis] = Some(swept.unwrap_or_else(|| k.name.clone()));
             }
             labels.extend(c.labels(&g));
             coordinates.extend(c.lines().into_iter().map(|l| Coordinate {
@@ -340,18 +375,10 @@ impl Session {
                 axis: 0,
             }));
         }
-        let index = match &self.sweep {
-            Some(sw) if sw.is_grid() => "sweep",
-            Some(sw) => sw.axes[0].key.as_str(),
-            None => "t",
-        };
-        let scalars = match &self.sweep {
-            Some(sw) if sw.is_grid() => Vec::new(),
-            _ => names,
-        };
+        let index = if self.sweep.is_some() { "sample" } else { "t" };
+        let all: Vec<&(String, FieldShape)> = fields.iter().chain(&whole).collect();
         let of_kind = |grid: bool| -> Vec<String> {
-            fields
-                .iter()
+            all.iter()
                 .filter(|(_, s)| matches!(s, FieldShape::Grid { .. }) == grid)
                 .map(|(n, _)| n.clone())
                 .collect()
@@ -359,6 +386,16 @@ impl Session {
         self.grids = of_kind(true);
         self.points = of_kind(false);
         self.signals = History::with_fields(index, scalars, fields);
+        for (name, shape) in whole {
+            self.signals.add_whole(&name, shape);
+        }
+        if let Some(sw) = &self.sweep {
+            self.signals.keep_all();
+            self.signals.set_unordered(sw.unordered());
+            for key in sw.keys() {
+                self.signals.set_label(&grid_name(key), key);
+            }
+        }
         self.signals.set_coordinates(coordinates);
         for (name, label) in labels {
             self.signals.set_label(&name, &label);
@@ -372,29 +409,42 @@ impl Session {
             .collect();
     }
 
-    /// The cut filters' frames for one sample, from the frames of the
-    /// fields recorded before them (in history order).
-    fn cut_frames(&self, before: &[&[f64]]) -> Vec<Vec<f64>> {
-        let fields = self.signals.fields();
-        let frame = |name: &str| -> Option<&[f64]> {
-            fields
-                .iter()
-                .position(|f| f.name == name)
-                .and_then(|i| before.get(i).copied())
-        };
+    /// The frames of the cut filters that are per sample (`whole` false)
+    /// or made from the whole sweep (`whole` true), in order, given the
+    /// frames of the fields they read.
+    fn cut_frames<'a>(
+        &self,
+        frame: impl Fn(&str) -> Option<&'a [f64]>,
+        whole: bool,
+    ) -> Vec<Vec<f64>> {
         let coordinates = self.signals.coordinates();
         self.filters
             .cuts
             .iter()
+            .filter(|c| self.whole_cut(&c.input) == whole)
             .flat_map(|c| match frame(&c.input) {
                 Some(input) => {
-                    let g = c.geometry(coordinates, frame);
+                    let g = c.geometry(coordinates, &frame);
                     c.frames(&g, input)
                 }
                 // Recorded as NaN.
                 None => vec![Vec::new(); c.settings.count() + 1],
             })
             .collect()
+    }
+
+    /// The per-sample cut frames from the frames of the base fields.
+    fn sample_cuts(&self, before: &[&[f64]]) -> Vec<Vec<f64>> {
+        let fields = &self.base_fields;
+        self.cut_frames(
+            |name| {
+                fields
+                    .iter()
+                    .position(|(f, _)| f == name)
+                    .and_then(|i| before.get(i).copied())
+            },
+            false,
+        )
     }
 
     pub fn time(&self) -> f64 {
@@ -468,7 +518,7 @@ impl Session {
             .set_param(block, name, value)
             .map_err(|e| e.to_string())?;
         if self.sweep.is_some() {
-            self.recompute_sweep();
+            self.resample();
         } else if self.time() == 0.0 && self.snapshots.len() == 1 {
             self.restart().map_err(|e| e.to_string())?;
         }
@@ -479,7 +529,7 @@ impl Session {
     /// plots start over.
     pub fn restart(&mut self) -> Result<(), SimError> {
         if self.sweep.is_some() {
-            self.recompute_sweep();
+            self.resample();
             return Ok(());
         }
         self.sim.restart(0.0)?;
@@ -508,22 +558,9 @@ impl Session {
         }
         self.file.controls.filters = self.filter_entries.clone();
         if let Some(sw) = &self.sweep {
-            self.file.controls.sweep = sw
-                .axes
-                .iter()
-                .map(|a| SweepControl {
-                    param: a.key.clone(),
-                    range: Some(a.range),
-                    points: Some(a.points),
-                })
-                .collect();
+            self.file.sample = Some(sw.sampling.clone());
         }
         Ok(self.file.to_json())
-    }
-
-    /// The slider range the file sets for a parameter, if any.
-    pub fn slider_range(&self, key: &str) -> Option<[f64; 2]> {
-        self.file.controls.params.get(key).and_then(|c| c.range)
     }
 
     /// The sweep, if the model is swept instead of run.
@@ -531,104 +568,95 @@ impl Session {
         self.sweep.as_ref()
     }
 
-    /// Change what is swept: one or two `("block.param", range, points)`.
-    /// Recomputes at once.
-    pub fn set_sweep(&mut self, axes: &[(String, [f64; 2], usize)]) -> Result<(), String> {
+    /// Change what is swept and how (ADR 0028), and recompute. Filters that
+    /// no longer apply (a cut through a grid the sweep no longer makes) are
+    /// dropped; the returned notes say which.
+    pub fn set_sampling(&mut self, sampling: Sampling) -> Result<Vec<String>, String> {
         if self.sweep.is_none() {
             return Err("this model has states, so it runs in time instead".into());
         }
-        if !(1..=2).contains(&axes.len()) {
-            return Err("one or two parameters can be swept".into());
-        }
-        let mut built: Vec<SweepAxis> = Vec::new();
-        for (key, range, points) in axes {
-            let (block, param) = key
-                .split_once('.')
-                .and_then(|(b, p)| Some((*self.ids.get(b)?, p.to_string())))
-                .ok_or_else(|| format!("no parameter '{key}'"))?;
-            if self.sim.param(block, &param).is_err() {
-                return Err(format!("no parameter '{key}'"));
-            }
-            if built.iter().any(|a| a.key == *key) {
-                return Err(format!("'{key}' is swept twice"));
-            }
-            if !(range[0].is_finite() && range[1].is_finite() && range[0] < range[1]) {
-                return Err(format!(
-                    "[{}, {}] is not an increasing range",
-                    range[0], range[1]
-                ));
-            }
-            built.push(SweepAxis {
-                key: key.clone(),
-                block,
-                param,
-                range: *range,
-                points: (*points).clamp(2, 100_000),
-            });
-        }
-        if let [a, b] = built.as_slice() {
-            if a.points * b.points > MAX_GRID_EVALUATIONS {
-                return Err(format!(
-                    "{} × {} points is more than {MAX_GRID_EVALUATIONS}",
-                    a.points, b.points
-                ));
-            }
-        }
-        self.sweep = Some(Sweep { axes: built });
-        self.recompute_sweep();
-        Ok(())
+        let plan = sampling
+            .plan(&self.file, self.sim.model(), &self.ids)
+            .map_err(|e| e.to_string())?;
+        self.sweep = Some(Sweep::new(sampling, plan, &self.ids)?);
+        let entries = self.filter_entries.clone();
+        let (filters, problems) = self.compile_filters(&entries);
+        self.filter_entries = filters.entries(&entries);
+        self.filters = filters;
+        self.resample();
+        Ok(problems
+            .into_iter()
+            .map(|p| format!("filter {p}; removed"))
+            .collect())
     }
 
-    /// Evaluate the outputs at every value of the swept parameters.
-    fn recompute_sweep(&mut self) {
+    /// Evaluate the outputs at every sample of the sweep.
+    fn resample(&mut self) {
         let Some(sw) = self.sweep.clone() else {
             return;
         };
         self.rebuild_history();
         let originals: Vec<f64> = sw
-            .axes
+            .targets
             .iter()
-            .map(|a| self.sim.param(a.block, &a.param).unwrap_or(f64::NAN))
+            .map(|(b, p)| self.sim.param(*b, p).unwrap_or(f64::NAN))
             .collect();
         let set = |sim: &mut Simulator, values: &[f64]| {
-            sw.axes
+            sw.targets
                 .iter()
                 .zip(values)
-                .all(|(a, &v)| sim.set_param(a.block, &a.param, v).is_ok())
+                .all(|((b, p), &v)| sim.set_param(*b, p, v).is_ok())
                 && sim.restart(0.0).is_ok()
         };
-        if let [x, y] = sw.axes.as_slice() {
-            // Grids over (x, y), row by row: cell (i, j) at j * nx + i.
-            let (nx, ny) = (x.points, y.points);
-            let names = self.scalar_names().len();
-            let mut grids = vec![vec![f64::NAN; nx * ny]; names + 2];
-            for j in 0..ny {
-                for i in 0..nx {
-                    let (vx, vy) = (x.value(i), y.value(j));
-                    let cell = j * nx + i;
-                    grids[names][cell] = vx;
-                    grids[names + 1][cell] = vy;
-                    if set(&mut self.sim, &[vx, vy]) {
-                        for (g, v) in grids.iter_mut().zip(self.sample(0.0)) {
-                            g[cell] = v;
-                        }
-                    }
-                }
+        let names = self.scalar_names().len();
+        // For a grid over two parameters: every scalar signal, then the
+        // swept parameters, sample by sample (cell (i, j) at j * nx + i).
+        let mut columns = vec![Vec::new(); if sw.is_grid() { names + 2 } else { 0 }];
+        for (k, point) in sw.plan.points.iter().enumerate() {
+            let ok = set(&mut self.sim, point);
+            let mut values = if ok {
+                self.sample(k as f64)
+            } else {
+                vec![f64::NAN; names]
+            };
+            values.extend_from_slice(point);
+            for (c, v) in columns.iter_mut().zip(&values) {
+                c.push(*v);
             }
-            let frames: Vec<&[f64]> = grids.iter().map(Vec::as_slice).collect();
-            let cuts = self.cut_frames(&frames);
-            push(&mut self.signals, 0.0, &[], &frames, &cuts);
-        } else {
-            let a = &sw.axes[0];
-            for k in 0..a.points {
-                let v = a.value(k);
-                if !set(&mut self.sim, &[v]) {
-                    continue;
-                }
-                let values = self.sample(v);
-                let frames = frames(&self.sim, &self.field_sources);
-                let cuts = self.cut_frames(&frames);
-                push(&mut self.signals, v, &values, &frames, &cuts);
+            let frames = if ok {
+                frames(&self.sim, &self.field_sources)
+            } else {
+                vec![&[][..]; self.field_sources.len()]
+            };
+            let cuts = self.sample_cuts(&frames);
+            push(&mut self.signals, k as f64, &values, &frames, &cuts);
+        }
+        if sw.is_grid() {
+            let grids: Vec<(String, Vec<f64>)> = self
+                .scalar_names()
+                .iter()
+                .chain(sw.keys())
+                .map(|n| grid_name(n))
+                .zip(columns)
+                .collect();
+            let whole = self.cut_frames(
+                |name| {
+                    grids
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, f)| f.as_slice())
+                },
+                true,
+            );
+            let names: Vec<String> = self
+                .filters
+                .cuts
+                .iter()
+                .filter(|c| self.whole_cut(&c.input))
+                .flat_map(|c| c.fields().into_iter().map(|(n, _)| n))
+                .collect();
+            for (name, frame) in grids.into_iter().chain(names.into_iter().zip(whole)) {
+                self.signals.set_whole(&name, frame);
             }
         }
         // Leave the model as the panel shows it.
@@ -659,7 +687,7 @@ impl Session {
         let t = self.sim.time();
         let values = self.sample(t);
         let frames = frames(&self.sim, &self.field_sources);
-        let cuts = self.cut_frames(&frames);
+        let cuts = self.sample_cuts(&frames);
         push(&mut self.signals, t, &values, &frames, &cuts);
     }
 
@@ -683,12 +711,23 @@ impl Session {
         vars.push(t);
         vars.extend_from_slice(&values[..outputs]);
         vars.extend(std::iter::repeat_n(0.0, exprs.len()));
-        vars.extend(self.params().iter().map(|r| r.value));
+        vars.extend(self.param_values());
         for (k, f) in exprs.iter().enumerate() {
             let v = f.expr.eval(&vars);
             vars[1 + outputs + k] = v;
             values.push(v);
         }
+    }
+
+    /// Every parameter's value, in [`Session::params`] order.
+    fn param_values(&self) -> Vec<f64> {
+        let model = self.sim.model();
+        self.file
+            .blocks
+            .iter()
+            .flat_map(|e| model.params(self.ids[&e.name]).unwrap_or(&[]))
+            .copied()
+            .collect()
     }
 
     /// The filters as written (ADR 0032).
@@ -773,7 +812,7 @@ impl Session {
         self.filter_entries = filters.entries(&entries);
         self.filters = filters;
         if self.sweep.is_some() {
-            self.recompute_sweep();
+            self.resample();
             return Ok(());
         }
         // Replay the recorded outputs and fields through the new filters.
@@ -788,7 +827,7 @@ impl Session {
                 .collect();
             self.append_derived(t, &mut values);
             let frames: Vec<&[f64]> = old.fields()[..base].iter().map(|f| f.frame(k)).collect();
-            let cuts = self.cut_frames(&frames);
+            let cuts = self.sample_cuts(&frames);
             push(&mut self.signals, t, &values, &frames, &cuts);
         }
         Ok(())
@@ -846,64 +885,27 @@ fn param_keys(file: &ModelFile, ids: &BTreeMap<String, BlockId>, model: &Model) 
     keys
 }
 
-/// The sweep for a model with no states: the file's `controls.sweep`, or
-/// the first parameter over its slider or suggested range. `None` if any
-/// block has states.
-fn default_sweep(
-    file: &ModelFile,
-    ids: &BTreeMap<String, BlockId>,
-    model: &Model,
-) -> Option<Sweep> {
-    let mut first = None;
-    for entry in &file.blocks {
-        let spec = model.block(ids[&entry.name]).ok()?.spec();
-        if !spec.states.is_empty() {
-            return None;
-        }
-        if first.is_none() {
-            if let Some(p) = spec.params.first() {
-                first = Some(format!("{}.{}", entry.name, p.name));
-            }
-        }
-    }
-    let saved = &file.controls.sweep;
-    let wanted: Vec<(String, Option<[f64; 2]>, Option<usize>)> = if saved.is_empty() {
-        vec![(first?, None, None)]
-    } else {
-        saved
+impl Sweep {
+    fn new(
+        sampling: Sampling,
+        plan: Plan,
+        ids: &BTreeMap<String, BlockId>,
+    ) -> Result<Self, String> {
+        let targets = plan
+            .keys
             .iter()
-            .map(|s| (s.param.clone(), s.range, s.points))
-            .collect()
-    };
-    let default_points = if wanted.len() == 2 {
-        DEFAULT_GRID_POINTS
-    } else {
-        DEFAULT_SWEEP_POINTS
-    };
-    let mut axes = Vec::new();
-    for (key, range, points) in wanted {
-        let (block_name, param) = key.split_once('.')?;
-        let block = *ids.get(block_name)?;
-        let spec = model
-            .block(block)
-            .ok()?
-            .spec()
-            .params
-            .iter()
-            .find(|p| p.name == param)?
-            .clone();
-        let range = range
-            .or_else(|| file.controls.params.get(&key).and_then(|c| c.range))
-            .unwrap_or([spec.suggested_min, spec.suggested_max]);
-        axes.push(SweepAxis {
-            key: key.clone(),
-            block,
-            param: param.into(),
-            range,
-            points: points.unwrap_or(default_points),
-        });
+            .map(|key| {
+                key.split_once('.')
+                    .and_then(|(b, p)| Some((*ids.get(b)?, p.to_string())))
+                    .ok_or_else(|| format!("no parameter '{key}'"))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            sampling,
+            plan,
+            targets,
+        })
     }
-    Some(Sweep { axes })
 }
 
 #[cfg(test)]
@@ -1047,16 +1049,41 @@ mod tests {
         s.signals.values(r)
     }
 
+    /// A grid over the given `(key, range, points)`.
+    fn grid_of(params: &[(&str, [f64; 2], usize)]) -> Sampling {
+        Sampling {
+            design: Design::Grid,
+            params: params
+                .iter()
+                .map(|&(k, r, n)| simsandbox_file::SweepControl {
+                    param: k.into(),
+                    range: Some(r),
+                    points: Some(n),
+                })
+                .collect(),
+            count: None,
+            seed: None,
+            values: Vec::new(),
+        }
+    }
+
     #[test]
     fn formula_models_are_swept_not_run() {
-        let mut s = example("Resonance");
-        let sw = s.sweep().unwrap().axes[0].clone();
-        assert_eq!(
-            (sw.key.as_str(), sw.range, sw.points),
-            ("spring.w", [0.0, 3.0], 600)
-        );
-        assert_eq!(s.signals.index(), "spring.w");
+        let mut s = example("Resonance curve");
+        let sw = s.sweep().unwrap();
+        assert_eq!(sw.keys(), ["spring.w"]);
+        assert!(!sw.unordered());
+        assert_eq!(s.signals.index(), "sample");
         assert_eq!(s.signals.len(), 600);
+        assert!(!s.signals.unordered());
+        // The swept parameter is a signal like the outputs.
+        assert_eq!(
+            s.signals.names(),
+            ["spring.amplitude", "spring.lag", "spring.w"]
+        );
+        assert_eq!(s.available().swept, ["spring.w"]);
+        let w = values(&s, "spring.w");
+        assert_eq!((w[0], w[599]), (0.0, 3.0));
         let amp = values(&s, "spring.amplitude");
         // At w = 0 the swing is F/k; near w = 1 it peaks at about F/c.
         assert!((amp[0] - 1.0).abs() < 1e-12);
@@ -1070,43 +1097,93 @@ mod tests {
             .into_iter()
             .fold(0.0, f64::max);
         assert!((peak - 10.0).abs() < 0.3, "peak {peak}");
-        assert_eq!(
-            s.params().iter().find(|r| r.name == "w").unwrap().value,
-            1.0
-        );
+        assert_eq!(param(&s, "spring.w"), 1.0);
 
         // Sweep something else.
-        let axis = |key: &str, range: [f64; 2], points| (key.to_string(), range, points);
-        s.set_sweep(&[axis("spring.c", [0.1, 1.0], 10)]).unwrap();
-        assert_eq!(s.signals.index(), "spring.c");
-        assert_eq!(s.signals.times()[9], 1.0);
-        assert!(s.set_sweep(&[axis("spring.c", [1.0, 0.1], 10)]).is_err());
-        assert!(s.set_sweep(&[axis("spring.q", [0.0, 1.0], 10)]).is_err());
+        s.set_sampling(grid_of(&[("spring.c", [0.1, 1.0], 10)]))
+            .unwrap();
+        assert_eq!(values(&s, "spring.c")[9], 1.0);
+        assert!(s.signals.resolve("spring.w").is_none());
+        assert!(s
+            .set_sampling(grid_of(&[("spring.c", [1.0, 0.1], 10)]))
+            .is_err());
+        assert!(s
+            .set_sampling(grid_of(&[("spring.q", [0.0, 1.0], 10)]))
+            .is_err());
+        assert_eq!(s.sweep().unwrap().keys(), ["spring.c"]);
         let saved = s.save_json(1.0, None).unwrap();
-        assert!(saved.contains("\"param\": \"spring.c\""));
+        let file: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(
+            file["sample"],
+            serde_json::json!({"design": "grid", "params": [{"param": "spring.c", "range": [0.1, 1.0], "points": 10}]})
+        );
     }
 
     #[test]
-    fn two_parameter_sweeps_record_every_output_as_a_grid() {
-        let mut s = example("Resonance");
+    fn unordered_designs_record_samples_drawn_as_points() {
+        let mut s = example("Resonance samples");
+        let sw = s.sweep().unwrap();
+        assert_eq!(sw.plan.design, Design::Sobol);
+        assert!(sw.unordered() && !sw.is_grid());
+        assert!(s.signals.unordered());
+        assert_eq!(s.signals.len(), 2000);
+        assert!(s.available().grids.is_empty());
+        let (w, c, amp) = (
+            values(&s, "spring.w"),
+            values(&s, "spring.c"),
+            values(&s, "spring.amplitude"),
+        );
+        for k in [0, 1, 777, 1999] {
+            let exact = 1.0 / ((1.0 - w[k].powi(2)).powi(2) + (c[k] * w[k]).powi(2)).sqrt();
+            assert!((amp[k] - exact).abs() < 1e-12 * exact, "sample {k}");
+        }
+        // The first Sobol point is the lower corner, the second the centre.
+        assert_eq!((w[0], c[0]), (0.0, 0.02));
+        assert_eq!((w[1], c[1]), (1.5, 0.51));
+
+        // Another design, a third parameter; saved and loaded back alike.
+        let mut sampling = s.sweep().unwrap().sampling.clone();
+        sampling.design = Design::LatinHypercube;
+        sampling.count = Some(64);
+        sampling.seed = Some(9);
+        sampling.params.push(simsandbox_file::SweepControl {
+            param: "spring.m".into(),
+            range: None,
+            points: None,
+        });
+        assert!(s.set_sampling(sampling).unwrap().is_empty());
+        assert_eq!(s.signals.len(), 64);
+        let m = values(&s, "spring.m");
+        // The slider's range, one sample in each 64th of it.
+        let mut slices: Vec<usize> = m
+            .iter()
+            .map(|v| ((v - 0.2) / 3.8 * 64.0) as usize)
+            .collect();
+        slices.sort();
+        assert_eq!(slices, (0..64).collect::<Vec<_>>());
+        let text = s.save_json(1.0, None).unwrap();
+        let again = Session::load("again", &text, &registry()).unwrap();
+        assert_eq!(again.sweep(), s.sweep());
+        assert_eq!(values(&again, "spring.m"), m);
+    }
+
+    #[test]
+    fn two_parameter_grids_also_offer_every_signal_as_a_grid() {
+        let mut s = example("Resonance curve");
         s.set_filters(exprs(&[("half", "spring.amplitude/2")]))
             .unwrap();
-        let axis = |key: &str, range: [f64; 2], points| (key.to_string(), range, points);
         let (nx, ny) = (31, 20);
-        s.set_sweep(&[
-            axis("spring.w", [0.0, 3.0], nx),
-            axis("spring.c", [0.1, 2.0], ny),
-        ])
+        s.set_sampling(grid_of(&[
+            ("spring.w", [0.0, 3.0], nx),
+            ("spring.c", [0.1, 2.0], ny),
+        ]))
         .unwrap();
         assert!(s.sweep().unwrap().is_grid());
+        assert!(s.signals.unordered());
+        assert_eq!(s.signals.len(), nx * ny);
         let a = s.available();
-        assert!(a.scalars.is_empty());
-        // The swept parameters place every result's cells.
-        assert_eq!(a.axis_choices("half"), ["spring.w", "spring.c"]);
-        assert_eq!(a.axis_of("spring.amplitude", "spring.c"), Ok(Some(1)));
-        assert!(a.axis_of("spring.amplitude", "t").is_err());
         assert_eq!(
-            a.grids,
+            a.scalars,
             [
                 "spring.amplitude",
                 "spring.lag",
@@ -1115,17 +1192,39 @@ mod tests {
                 "spring.c"
             ]
         );
+        // The swept parameters place every result's cells.
+        assert_eq!(
+            a.axis_choices("grid.half"),
+            ["grid.spring.w", "grid.spring.c"]
+        );
+        assert_eq!(
+            a.axis_of("grid.spring.amplitude", "grid.spring.c"),
+            Ok(Some(1))
+        );
+        assert!(a.axis_of("grid.spring.amplitude", "t").is_err());
+        assert_eq!(
+            a.grids,
+            [
+                "grid.spring.amplitude",
+                "grid.spring.lag",
+                "grid.half",
+                "grid.spring.w",
+                "grid.spring.c"
+            ]
+        );
         let grid = |name: &str| {
             let f = s.signals.fields().iter().find(|f| f.name == name).unwrap();
             assert_eq!(f.shape, FieldShape::Grid { nx, ny });
             f.frame(0).to_vec()
         };
         let (amp, half, w, c) = (
-            grid("spring.amplitude"),
-            grid("half"),
-            grid("spring.w"),
-            grid("spring.c"),
+            grid("grid.spring.amplitude"),
+            grid("grid.half"),
+            grid("grid.spring.w"),
+            grid("grid.spring.c"),
         );
+        // The grids are the samples reshaped.
+        assert_eq!(amp, values(&s, "spring.amplitude"));
         // Cell (i, j) at j * nx + i: w along x, c along y; F = k = m = 1.
         for (i, j) in [(0, 0), (10, 0), (10, 7), (30, 19)] {
             let cell = j * nx + i;
@@ -1137,35 +1236,44 @@ mod tests {
             assert_eq!(half[cell], amp[cell] / 2.0);
         }
         // The panel's values are left alone.
-        assert_eq!(
-            s.params().iter().find(|r| r.name == "c").unwrap().value,
-            0.2
-        );
+        assert_eq!(param(&s, "spring.c"), 0.2);
 
         // Too many points, or one parameter twice, are refused.
         assert!(s
-            .set_sweep(&[
-                axis("spring.w", [0.0, 3.0], 1000),
-                axis("spring.c", [0.1, 2.0], 1000)
-            ])
+            .set_sampling(grid_of(&[
+                ("spring.w", [0.0, 3.0], 1000),
+                ("spring.c", [0.1, 2.0], 1000)
+            ]))
             .is_err());
         assert!(s
-            .set_sweep(&[
-                axis("spring.w", [0.0, 3.0], 9),
-                axis("spring.w", [0.1, 2.0], 9)
-            ])
+            .set_sampling(grid_of(&[
+                ("spring.w", [0.0, 3.0], 9),
+                ("spring.w", [0.1, 2.0], 9)
+            ]))
             .is_err());
 
-        // Saved as a list, and loaded back as a grid sweep.
+        // Saved, and loaded back as the same grid.
         let text = s.save_json(1.0, None).unwrap();
         let again = Session::load("again", &text, &registry()).unwrap();
         assert_eq!(again.sweep(), s.sweep());
-        assert_eq!(again.signals.fields()[0].frame(0), &amp[..]);
+        assert_eq!(
+            again
+                .signals
+                .fields()
+                .iter()
+                .find(|f| f.name == "grid.spring.amplitude")
+                .unwrap()
+                .frame(0),
+            &amp[..]
+        );
 
-        // Back to one parameter: signals again.
-        s.set_sweep(&[axis("spring.w", [0.0, 3.0], 50)]).unwrap();
+        // Back to one parameter: no grids, ordered samples.
+        s.set_sampling(grid_of(&[("spring.w", [0.0, 3.0], 50)]))
+            .unwrap();
         assert_eq!(s.signals.len(), 50);
+        assert!(!s.signals.unordered());
         assert!(s.available().coordinates.is_empty());
+        assert!(s.available().grids.is_empty());
         assert_eq!(values(&s, "half").len(), 50);
     }
 
@@ -1242,7 +1350,7 @@ mod tests {
     #[test]
     fn cut_filters_cut_two_parameter_sweeps_into_lines() {
         let mut s = example("Resonance map");
-        let cut = s.default_cut("res", "spring.amplitude");
+        let cut = s.default_cut("res", "grid.spring.amplitude");
         let mut filters = s.filters().to_vec();
         filters.push(cut.clone());
         s.set_filters(filters).unwrap();
@@ -1260,12 +1368,16 @@ mod tests {
             let f = s.signals.fields().iter().find(|f| f.name == name).unwrap();
             f.frame(0).to_vec()
         };
-        let (amp, c, w) = (grid("spring.amplitude"), grid("spring.c"), grid("res.x"));
+        let (amp, c, w) = (
+            grid("grid.spring.amplitude"),
+            grid("grid.spring.c"),
+            grid("res.x"),
+        );
         let at = cut.settings["at"].as_array().unwrap()[1].as_f64().unwrap();
         // Default cuts lie on rows, so they read them exactly.
         let row = (0..120).find(|&j| c[j * 200] == at).unwrap();
         assert_eq!(grid("res[1]"), amp[row * 200..row * 200 + 200].to_vec());
-        assert_eq!(w, grid("spring.w")[..200].to_vec());
+        assert_eq!(w, grid("grid.spring.w")[..200].to_vec());
         let label = s.signals.label(s.signals.resolve("res[1]").unwrap());
         assert!(label.starts_with("spring.c = "), "{label}");
         assert_eq!(
@@ -1277,6 +1389,13 @@ mod tests {
         let again = Session::load("again", &saved, &registry()).unwrap();
         assert!(again.warnings.is_empty(), "{:?}", again.warnings);
         assert_eq!(again.filters(), s.filters());
+
+        // A sweep with no grid drops the cuts, saying so.
+        let notes = s
+            .set_sampling(grid_of(&[("spring.w", [0.0, 3.0], 50)]))
+            .unwrap();
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(s.filters().is_empty());
     }
 
     #[test]

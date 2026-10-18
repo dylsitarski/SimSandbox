@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! simsandbox run FILE [--t-end SECONDS] [--dt SECONDS]   (default: the file's `run` section)
+//!                                   (a model with no states: one row per sample of its sweep)
 //! simsandbox lorenz [--t-end 20] [--dt 0.01] [--method euler|rk4|dopri5] [--rho 28]
 //! simsandbox --version
 //! ```
@@ -81,7 +82,9 @@ fn registry() -> Registry {
 }
 
 /// Run a model file and write every output, in file block order, as CSV.
-/// Vector outputs get one column per element: `block.port[i]`.
+/// Vector outputs get one column per element: `block.port[i]`. A model
+/// with no states is swept instead (ADR 0028): one row per sample, with
+/// the sample number and the swept parameters first.
 fn run_file(args: &[String]) -> Result<(), String> {
     let (path, rest) = args.split_first().ok_or(USAGE)?;
     let o = parse(rest)?;
@@ -95,9 +98,16 @@ fn run_file(args: &[String]) -> Result<(), String> {
     }
     let dt = o.dt.unwrap_or(loaded.file.run.dt);
     let t_end = o.t_end.or(loaded.file.run.t_end).unwrap_or(DEFAULT_T_END);
+    if loaded.plan.is_some() && (o.dt.is_some() || o.t_end.is_some()) {
+        return Err("--dt and --t-end do not apply to a swept model".into());
+    }
 
     let mut columns = Vec::new();
     let mut header = vec!["t".to_string()];
+    if let Some(plan) = &loaded.plan {
+        header = vec!["sample".to_string()];
+        header.extend(plan.keys.iter().cloned());
+    }
     for entry in &loaded.file.blocks {
         let id = loaded.ids[&entry.name];
         let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
@@ -120,7 +130,6 @@ fn run_file(args: &[String]) -> Result<(), String> {
     }
     let mut out = BufWriter::new(io::stdout().lock());
     let write = |out: &mut BufWriter<_>, sim: &Simulator| -> io::Result<()> {
-        write!(out, "{}", sim.time())?;
         for (id, port) in &columns {
             for v in sim.output(*id, port).unwrap_or(&[]) {
                 write!(out, ",{v}")?;
@@ -129,10 +138,32 @@ fn run_file(args: &[String]) -> Result<(), String> {
         writeln!(out)
     };
     writeln!(out, "{}", header.join(",")).map_err(|e| e.to_string())?;
+    if let Some(plan) = &loaded.plan {
+        let targets: Vec<_> = plan
+            .keys
+            .iter()
+            .map(|k| {
+                let (block, param) = k.split_once('.').expect("plan keys are block.param");
+                (loaded.ids[block], param)
+            })
+            .collect();
+        for (k, point) in plan.points.iter().enumerate() {
+            for (&(id, param), &v) in targets.iter().zip(point) {
+                sim.set_param(id, param, v).map_err(|e| e.to_string())?;
+            }
+            sim.restart(0.0).map_err(|e| e.to_string())?;
+            let values: String = point.iter().map(|v| format!(",{v}")).collect();
+            write!(out, "{k}{values}").map_err(|e| e.to_string())?;
+            write(&mut out, &sim).map_err(|e| e.to_string())?;
+        }
+        return out.flush().map_err(|e| e.to_string());
+    }
+    write!(out, "{}", sim.time()).map_err(|e| e.to_string())?;
     write(&mut out, &sim).map_err(|e| e.to_string())?;
     let steps = (t_end / dt).round() as usize;
     for _ in 0..steps {
         sim.step(dt).map_err(|e| e.to_string())?;
+        write!(out, "{}", sim.time()).map_err(|e| e.to_string())?;
         write(&mut out, &sim).map_err(|e| e.to_string())?;
     }
     out.flush().map_err(|e| e.to_string())

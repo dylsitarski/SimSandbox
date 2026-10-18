@@ -1,0 +1,83 @@
+{
+  "format": 1,
+  "description": "The driven, damped spring again, sampled at 2000 points spread over the driving frequency w and the damping c by a Sobol sequence instead of a grid. Left: where the samples fell, coloured by the lag, which turns from 0 to π across the resonance at w ≈ 1, sharply where damping is low. Right: every sample's amplitude against w, as points: low damping reaches highest. Try design random or Latin hypercube, or sweep a third parameter, in the sweep bar.",
+  "run": {
+    "dt": 0.01
+  },
+  "sample": {
+    "design": "sobol",
+    "params": [
+      {
+        "param": "spring.w",
+        "range": [
+          0.0,
+          3.0
+        ]
+      },
+      {
+        "param": "spring.c",
+        "range": [
+          0.02,
+          1.0
+        ]
+      }
+    ],
+    "count": 2000
+  },
+  "blocks": [
+    {
+      "name": "spring",
+      "type": "eq.equations",
+      "method": {
+        "name": "evaluate"
+      },
+      "equations": [
+        "# steady swing of a driven, damped spring (mass m, stiffness k, damping c, force F)",
+        "amplitude = F/sqrt((k - m*w^2)^2 + (c*w)^2)",
+        "lag = atan2(c*w, k - m*w^2)"
+      ],
+      "params": {
+        "F": 1.0,
+        "c": 0.2,
+        "k": 1.0,
+        "m": 1.0,
+        "w": 1.0
+      }
+    }
+  ],
+  "controls": {
+    "params": {
+      "spring.c": {
+        "slider": true,
+        "range": [
+          0.02,
+          2.0
+        ]
+      },
+      "spring.m": {
+        "slider": true,
+        "range": [
+          0.2,
+          4.0
+        ]
+      }
+    },
+    "views": [
+      {
+        "type": "plot.xy",
+        "bind": {
+          "colour": "spring.lag",
+          "x": "spring.w",
+          "y": "spring.c"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "spring.w",
+          "y": "spring.amplitude"
+        }
+      }
+    ]
+  }
+}

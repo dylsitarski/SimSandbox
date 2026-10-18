@@ -1,8 +1,21 @@
 {
   "format": 1,
-  "description": "A spring pushed back and forth: how strongly it swings at each driving frequency w. No time here: the outputs are formulas, swept across w. Lower the damping c and watch the resonance peak grow.",
+  "description": "A spring pushed back and forth: how strongly it swings at each driving frequency w. No time here: the outputs are formulas, evaluated at 600 values of w (the sample section). Lower the damping c and watch the resonance peak grow.",
   "run": {
     "dt": 0.01
+  },
+  "sample": {
+    "design": "grid",
+    "params": [
+      {
+        "param": "spring.w",
+        "range": [
+          0.0,
+          3.0
+        ],
+        "points": 600
+      }
+    ]
   },
   "blocks": [
     {
@@ -46,25 +59,17 @@
       {
         "type": "plot.xy",
         "bind": {
-          "x": "t",
+          "x": "spring.w",
           "y": "spring.amplitude"
         }
       },
       {
         "type": "plot.xy",
         "bind": {
-          "x": "t",
+          "x": "spring.w",
           "y": "spring.lag"
         }
       }
-    ],
-    "sweep": {
-      "param": "spring.w",
-      "range": [
-        0.0,
-        3.0
-      ],
-      "points": 600
-    }
+    ]
   }
 }

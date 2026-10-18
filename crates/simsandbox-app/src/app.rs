@@ -307,19 +307,29 @@ impl SimApp {
                 ui.add(egui::Label::new(d.as_str()).truncate());
             }
         });
-        // Models with no states are swept, not run (ADR 0019, ADR 0021,
-        // ADR 0022).
+        // Models with no states are swept, not run (ADR 0019, ADR 0027,
+        // ADR 0028).
         if let Some(sw) = session.sweep().cloned() {
             self.running = false;
-            if sweep_controls(ui, session, &sw, &mut self.error) {
-                // Grids instead of signals, or the reverse: the views start over.
-                self.views.open(&session.available(), &[]);
-                self.log
-                    .info(if session.sweep().is_some_and(|s| s.is_grid()) {
-                        "Swept over two parameters: every output is now a grid; views reset"
-                    } else {
-                        "Swept over one parameter; views reset"
-                    });
+            match sweep_controls(ui, session, &sw) {
+                Ok(None) => {}
+                Ok(Some(notes)) => {
+                    for n in notes {
+                        self.log.warn(n);
+                    }
+                    let now = session.sweep().expect("still swept");
+                    if structure(now) != structure(&sw) {
+                        // Other signals, grids or drawing: the views start over.
+                        self.views.open(&session.available(), &[]);
+                        self.log.info(if now.is_grid() {
+                            "Swept on a grid over two parameters: every signal is also a \
+                             grid; views reset"
+                        } else {
+                            "Sweep changed; views reset"
+                        });
+                    }
+                }
+                Err(e) => self.error = Some(format!("sweep: {e}")),
             }
         }
         if session.sweep().is_none() {
@@ -930,8 +940,6 @@ impl SimApp {
         }
     }
 
-    /// The open model as a file, with the equations of `block` replaced and
-    /// parameters that no longer exist dropped.
     /// Turn automatic fusion on or off (ADR 0023). The model is rebuilt from
     /// its saved form, so the run starts again at t = 0.
     fn set_fusion(&mut self, on: bool) {
@@ -968,6 +976,8 @@ impl SimApp {
         });
     }
 
+    /// The open model as a file, with the equations of `block` replaced and
+    /// parameters that no longer exist dropped.
     fn edited_model(
         &mut self,
         block: &str,
@@ -1001,6 +1011,25 @@ impl SimApp {
         };
         if !compatible {
             entry.method = set.kind().default_method().into();
+        }
+        // Only formulas are swept (ADR 0027), and only parameters that remain.
+        if let Some(sample) = &mut file.sample {
+            let gone = |key: &str| {
+                key.split_once('.')
+                    .is_some_and(|(b, p)| b == block && !keep.iter().any(|k| k == p))
+            };
+            let removed: Vec<usize> = (0..sample.params.len())
+                .filter(|&i| gone(&sample.params[i].param))
+                .collect();
+            for &i in removed.iter().rev() {
+                sample.params.remove(i);
+                for row in &mut sample.values {
+                    row.remove(i);
+                }
+            }
+            if sample.params.is_empty() || set.kind() != simsandbox_eq::Kind::Formulas {
+                file.sample = None;
+            }
         }
         Ok((session.title.clone(), file.to_json()))
     }
@@ -1165,13 +1194,9 @@ fn param_row(
             ui.weak("↻")
                 .on_hover_text("Initial condition: applies on Restart");
         }
-        if session
-            .sweep()
-            .is_some_and(|s| s.axes.iter().any(|a| a.key == row.key))
-        {
-            ui.weak("swept").on_hover_text(
-                "Swept along the horizontal axis: its own value is not used while sweeping",
-            );
+        if session.sweep().is_some_and(|s| s.keys().contains(&row.key)) {
+            ui.weak("swept")
+                .on_hover_text("Swept: its own value is not used while sweeping");
         }
     });
     let mut slider = control.slider;
@@ -1253,54 +1278,120 @@ fn number_entry(
 /// fit the tile.
 const SLOT_WIDTH: f32 = 150.0;
 
-/// What is swept, over which range and with how many points, for models
-/// with no states: one row per parameter, and a button to sweep a second
-/// (ADR 0022). Returns true if the number of swept parameters changed.
+/// What decides the views a sweep can show: the swept parameters, whether
+/// they form a two-parameter grid, and whether samples are drawn as points.
+fn structure(sw: &crate::session::Sweep) -> (Vec<String>, bool, bool) {
+    (sw.keys().to_vec(), sw.is_grid(), sw.unordered())
+}
+
+/// How a model with no states is swept (ADR 0028): the design, then one
+/// row per parameter with its range and, on a grid, its number of values.
+/// Returns the notes of an applied change, or why it was refused.
 fn sweep_controls(
     ui: &mut egui::Ui,
     session: &mut Session,
     sw: &crate::session::Sweep,
-    error: &mut Option<String>,
-) -> bool {
+) -> Result<Option<Vec<String>>, String> {
+    use simsandbox_file::{Design, SweepControl, DEFAULT_SAMPLE_COUNT, DEFAULT_SEED, MAX_SAMPLES};
     let rows = session.params();
-    let current: Vec<(String, [f64; 2], usize)> = sw
-        .axes
-        .iter()
-        .map(|a| (a.key.clone(), a.range, a.points))
-        .collect();
-    let mut axes = current.clone();
+    let mut sampling = sw.sampling.clone();
+    let designs = [
+        (
+            Design::Grid,
+            "grid",
+            "Every combination of evenly spaced values",
+        ),
+        (
+            Design::Random,
+            "random",
+            "Independent uniform values from a seeded generator",
+        ),
+        (
+            Design::LatinHypercube,
+            "Latin hypercube",
+            "One value in each of `count` equal slices of every parameter",
+        ),
+        (
+            Design::Sobol,
+            "Sobol",
+            "A low-discrepancy sequence: spread evenly at any count",
+        ),
+        (Design::List, "list", "The points written in the file"),
+    ];
+    let name = |d: Design| designs.iter().find(|x| x.0 == d).map_or("?", |x| x.1);
+    ui.horizontal(|ui| {
+        ui.label("Sweep").on_hover_text(
+            "This model has no states, so instead of running in time its outputs are \
+             evaluated at samples of the parameters below",
+        );
+        egui::ComboBox::from_id_salt("sweep_design")
+            .selected_text(name(sampling.design))
+            .show_ui(ui, |ui| {
+                for &(d, label, hover) in &designs {
+                    // A list is written in the file, not built here.
+                    if d == Design::List && sampling.design != Design::List {
+                        continue;
+                    }
+                    ui.selectable_value(&mut sampling.design, d, label)
+                        .on_hover_text(hover);
+                }
+            });
+        if !matches!(sampling.design, Design::Grid | Design::List) {
+            let mut count = sampling.count.unwrap_or(DEFAULT_SAMPLE_COUNT);
+            ui.label("count");
+            ui.add(egui::DragValue::new(&mut count).range(1..=MAX_SAMPLES));
+            sampling.count = Some(count);
+        }
+        if matches!(sampling.design, Design::Random | Design::LatinHypercube) {
+            let mut seed = sampling.seed.unwrap_or(DEFAULT_SEED);
+            ui.label("seed");
+            ui.add(egui::DragValue::new(&mut seed));
+            sampling.seed = Some(seed);
+        }
+    });
+    let grid = sampling.design == Design::Grid;
+    let several = sampling.params.len() > 1;
     let mut remove = None;
-    let two = axes.len() == 2;
-    for (k, (key, range, points)) in axes.iter_mut().enumerate() {
+    for (k, p) in sampling.params.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            let label = match (two, k) {
-                (false, _) => "Sweep",
-                (true, 0) => "Sweep x",
-                (true, _) => "and y",
-            };
-            ui.label(label).on_hover_text(
-                "This model has no states, so instead of running in time its outputs are \
-                 evaluated across parameter ranges: one parameter gives curves, two give \
-                 a grid of results",
-            );
+            ui.add_space(16.0);
             egui::ComboBox::from_id_salt(("sweep_param", k))
-                .selected_text(key.as_str())
+                .selected_text(p.param.as_str())
                 .show_ui(ui, |ui| {
                     for r in &rows {
-                        if ui.selectable_label(*key == r.key, &r.key).clicked() && *key != r.key {
-                            *key = r.key.clone();
-                            // The slider's range if it has one: the author chose it.
-                            *range = session.slider_range(&r.key).unwrap_or(r.suggested);
+                        if ui.selectable_label(p.param == r.key, &r.key).clicked()
+                            && p.param != r.key
+                        {
+                            p.param = r.key.clone();
+                            // The slider's or suggested range, as on load.
+                            p.range = None;
                         }
                     }
                 });
+            let mut range = sw.plan.ranges.get(k).copied().unwrap_or([0.0, 1.0]);
             ui.label("from");
-            ui.add(egui::DragValue::new(&mut range[0]).speed(0.1));
+            let a = ui.add(egui::DragValue::new(&mut range[0]).speed(0.1));
             ui.label("to");
-            ui.add(egui::DragValue::new(&mut range[1]).speed(0.1));
-            ui.label("points");
-            ui.add(egui::DragValue::new(points).range(2..=100_000));
-            if two
+            let b = ui.add(egui::DragValue::new(&mut range[1]).speed(0.1));
+            if a.changed() || b.changed() {
+                p.range = Some(range);
+            }
+            if grid {
+                let mut points = sw
+                    .plan
+                    .grid
+                    .as_ref()
+                    .and_then(|g| g.get(k).copied())
+                    .unwrap_or(2);
+                ui.label("points");
+                if ui
+                    .add(egui::DragValue::new(&mut points).range(2..=100_000))
+                    .changed()
+                {
+                    p.points = Some(points);
+                }
+            }
+            if several
                 && ui
                     .small_button("×")
                     .on_hover_text("Stop sweeping this parameter")
@@ -1308,42 +1399,49 @@ fn sweep_controls(
             {
                 remove = Some(k);
             }
-            if !two
-                && rows.len() > 1
-                && ui
-                    .button("+ parameter")
-                    .on_hover_text(
-                        "Sweep a second parameter: every output becomes a grid over both",
-                    )
-                    .clicked()
-            {
-                remove = Some(usize::MAX);
-            }
         });
     }
-    match remove {
-        Some(usize::MAX) => {
-            // Add the first parameter not yet swept; 100 × 100 to start.
-            if let Some(r) = rows.iter().find(|r| r.key != axes[0].0) {
-                let range = session.slider_range(&r.key).unwrap_or(r.suggested);
-                axes[0].2 = simsandbox_file::DEFAULT_GRID_POINTS;
-                axes.push((r.key.clone(), range, simsandbox_file::DEFAULT_GRID_POINTS));
-            }
+    let unswept = rows
+        .iter()
+        .find(|r| !sampling.params.iter().any(|p| p.param == r.key));
+    if let Some(r) = unswept {
+        let more = ui
+            .horizontal(|ui| {
+                ui.add_space(16.0);
+                ui.button("+ parameter").on_hover_text(if grid {
+                    "Sweep another parameter; two on a grid make every signal a grid too"
+                } else {
+                    "Sweep another parameter"
+                })
+            })
+            .inner
+            .clicked();
+        if more && sampling.design != Design::List {
+            sampling.params.push(SweepControl {
+                param: r.key.clone(),
+                range: None,
+                points: None,
+            });
         }
-        Some(k) => {
-            axes.remove(k);
-            axes[0].2 = simsandbox_file::DEFAULT_SWEEP_POINTS;
+    }
+    if let Some(k) = remove {
+        sampling.params.remove(k);
+        for row in &mut sampling.values {
+            row.remove(k);
         }
-        None => {}
     }
-    if axes == current {
-        return false;
+    if sampling.params.len() != sw.sampling.params.len() && grid {
+        // Start over from points that keep the grid within its limit.
+        let n = sampling.params.len();
+        let each = (MAX_SAMPLES as f64).powf(1.0 / n as f64).floor() as usize;
+        for p in &mut sampling.params {
+            p.points = (n > 2).then_some(each.min(100));
+        }
     }
-    if let Err(e) = session.set_sweep(&axes) {
-        *error = Some(format!("sweep: {e}"));
-        return false;
+    if sampling == sw.sampling {
+        return Ok(None);
     }
-    axes.len() != current.len()
+    session.set_sampling(sampling).map(Some)
 }
 
 /// Pickers for a view's slots: a menu of checkboxes for slots that take

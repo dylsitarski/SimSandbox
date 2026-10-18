@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Sweeps as samples (ADRs 0027–0028): a top-level `sample` section with designs `grid`, `list`, `random`, `latin_hypercube` and `sobol` over any number of parameters (seeded, at most 250 000 samples); every sample is recorded with the swept parameters as signals, a two-parameter grid also as `grid.<signal>` grids for heat maps and cuts, and unordered samples are drawn as markers coloured by value; the app's sweep bar chooses the design, count, seed and parameters; `simsandbox run` writes one row per sample; resonance-samples example (a Sobol sweep).
 - Documentation system: `AGENTS.md` entry point and session protocol, documentation map, status, vision, roadmap, architecture, design, guides, research, open questions, risks, glossary, session notes, ADRs 0005–0006.
 - Docs check (`scripts/check_docs.py`) in CI; pull request and issue templates.
 - `Model::param`, `Model::params`, `Model::block_ids`, `Simulator::model` and `Simulator::param` for reading parameters and Block specs.
@@ -42,6 +43,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Sweeps moved from `controls.sweep` to the top-level `sample` section (ADR 0027); old files are converted on load: views bound to `t` are bound to the first swept parameter, two-parameter heat maps and cut filters to the `grid.` signals. A one-parameter sweep is indexed by sample number, with the parameter as a signal.
 - `plot.profile` draws line fields only; cuts through 2D grids come from cut filters (ADR 0031, superseding ADR 0029's cuts inside the profile).
 - Filters (ADRs 0030–0032): `controls.filters` holds named filters that name their inputs; `expression` filters are derived signals (they may now use each other) and `cut` filters cut 2D grids along x, along y or free lines into line fields with a coordinate and readable labels. The "Signals…" window becomes "Data…", listing and editing all filters; a new cut filter opens a profile of its cuts. Older `controls.signals` and profile cut selections are converted on load.
 - `plot.xy` (plots against time, phase portraits) has a "swap axes" button: the same signals drawn transposed, saved with the view.

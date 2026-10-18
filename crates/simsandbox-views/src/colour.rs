@@ -65,6 +65,53 @@ pub fn segments(first: usize, n: usize, key: &ColourKey, chunks: usize) -> Vec<S
     out
 }
 
+/// Group samples `first..n` into at most `bins` colours, for samples drawn
+/// as separate markers (sweeps with no order, ADR 0028). Each group lists
+/// its samples.
+pub fn bins(first: usize, n: usize, key: &ColourKey, bins: usize) -> Vec<(Color32, Vec<usize>)> {
+    let bins = bins.max(1);
+    let scaled = |v: &[f64]| -> Vec<Option<usize>> {
+        let (lo, hi) = v[first..n]
+            .iter()
+            .filter(|x| x.is_finite())
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &x| {
+                (a.min(x), b.max(x))
+            });
+        let span = (hi - lo).max(1e-300);
+        v[first..n]
+            .iter()
+            .map(|x| {
+                x.is_finite()
+                    .then(|| (((x - lo) / span * bins as f64) as usize).min(bins - 1))
+            })
+            .collect()
+    };
+    let which = match key {
+        ColourKey::Constant => vec![Some(0); n.saturating_sub(first)],
+        ColourKey::Time(v) | ColourKey::Value(v) => scaled(v),
+    };
+    let colour = |b: usize| {
+        let x = (b as f32 + 0.5) / bins as f32;
+        match key {
+            ColourKey::Constant => LINE,
+            ColourKey::Time(_) => LINE.gamma_multiply(0.15 + 0.85 * x),
+            ColourKey::Value(_) => sequential(x),
+        }
+    };
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); bins];
+    for (k, b) in which.into_iter().enumerate() {
+        if let Some(b) = b {
+            groups[b].push(first + k);
+        }
+    }
+    groups
+        .into_iter()
+        .enumerate()
+        .filter(|(_, g)| !g.is_empty())
+        .map(|(b, g)| (colour(b), g))
+        .collect()
+}
+
 /// A colour-blind-safe sequential scale (viridis stops), `x` in [0, 1].
 pub fn sequential(x: f32) -> Color32 {
     const STOPS: [[u8; 3]; 5] = [
@@ -124,6 +171,18 @@ mod tests {
         assert_eq!(sequential(0.0), Color32::from_rgb(68, 1, 84));
         assert_eq!(sequential(1.0), Color32::from_rgb(253, 231, 37));
         assert_eq!(sequential(f32::NAN), sequential(0.0));
+    }
+
+    #[test]
+    fn bins_group_samples_by_value() {
+        let v = vec![0.0, 10.0, 5.0, f64::NAN, 9.9];
+        let b = bins(0, 5, &ColourKey::Value(v), 2);
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[0].1, [0]);
+        assert_eq!(b[1].1, [1, 2, 4]);
+        assert_ne!(b[0].0, b[1].0);
+        let all = bins(1, 5, &ColourKey::Constant, 8);
+        assert_eq!(all, [(LINE, vec![1, 2, 3, 4])]);
     }
 
     #[test]

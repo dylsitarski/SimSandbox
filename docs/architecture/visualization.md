@@ -2,7 +2,7 @@
 
 _Last updated: 2026-10-17_
 
-How the app turns a running model into pictures. Decision and rationale: [ADR 0015](../decisions/0015-pluggable-views.md). Status (2026-10-18): migration steps 1–6 are done. ADRs 0024 (heat map axes and coordinates), 0025 (index-aware settings) and the filter layer (ADRs 0030–0032) are built; 0027–0028 (explicit experiments, sweeps as samples) are accepted but not built, so two-parameter sweeps are still stored as grid fields.
+How the app turns a running model into pictures. Decision and rationale: [ADR 0015](../decisions/0015-pluggable-views.md). Status (2026-10-18): migration steps 1–6 are done. ADRs 0024 (heat map axes and coordinates), 0025 (index-aware settings), the filter layer (ADRs 0030–0032) and sweeps as samples (ADRs 0027–0028, for models without states) are built.
 
 ## Filters
 
@@ -29,7 +29,7 @@ A **signal** is a named quantity recorded over time.
 
 | Kind | Example name | Source |
 | --- | --- | --- |
-| Scalar | `a.x`, `lorenz.xyz[0]`, `t` | An element of an output port, or the index: time, or the swept parameter in a sweep ([ADR 0021](../decisions/0021-maps-formulas-and-sweeps.md)) |
+| Scalar | `a.x`, `lorenz.xyz[0]`, `spring.w`, `t` | An element of an output port; in a sweep, a swept parameter ([ADR 0028](../decisions/0028-sweeps-as-samples.md)); or the index `t`: time, or in a sweep the sample number |
 | Vector | `lorenz.xyz` | A whole vector output |
 | Grid | `rod.temperature` | A whole `Shape::Grid { nx, ny }` output, recorded as one frame per sample |
 | Point set | `disc.positions` | A whole `Shape::Points { count, dim }` output (`[x0, y0, x1, y1, …]`), recorded as one frame per sample |
@@ -55,9 +55,9 @@ Built-in types: `plot.xy` (any signals against time or each other, [ADR 0018](..
 
 A view type may offer "swap axes" (`ViewType::swap`): a heat map exchanges its `x` and `y` bindings; `plot.xy`, whose `y` may hold several signals, draws transposed instead and saves that in its `selection`.
 
-Coordinates are fields too: an output port may declare itself the coordinate of another output along a grid axis (`PortSpec::coordinate_of`; `eq.heat_rod` declares `position` for `temperature`), and in a two-parameter sweep the swept parameters are coordinates of every result. The history lists them (`History::coordinates`), axis pickers offer only `t` (for lines) and the bound field's coordinates, and a saved binding that cannot place the field is dropped with the reason. Slots and style properties declare where they apply (`applies`, [ADR 0025](../decisions/0025-index-aware-view-settings.md)); the panel hides the rest and views use their defaults there, so `trail_length` does nothing in sweeps. Views skip infinite and NaN values, leaving gaps (`finite_runs`). `plot.xy` and `plot.profile` span at least `MIN_RELATIVE_SPAN` (10⁻⁶) of the largest magnitude shown, so a conserved quantity is drawn flat rather than magnified to rounding noise; it is a fixed default, not a style property.
+Coordinates are fields too: an output port may declare itself the coordinate of another output along a grid axis (`PortSpec::coordinate_of`; `eq.heat_rod` declares `position` for `temperature`), and in a two-parameter grid sweep the swept parameters' grids are coordinates of every result's grid. The history lists them (`History::coordinates`), axis pickers offer only `t` (for lines) and the bound field's coordinates, and a saved binding that cannot place the field is dropped with the reason. Slots and style properties declare where they apply (`applies`, [ADR 0025](../decisions/0025-index-aware-view-settings.md)); the panel hides the rest and views use their defaults there, so `trail_length` does nothing in sweeps. Views skip infinite and NaN values, leaving gaps (`finite_runs`). `plot.xy` and `plot.profile` span at least `MIN_RELATIVE_SPAN` (10⁻⁶) of the largest magnitude shown, so a conserved quantity is drawn flat rather than magnified to rounding noise; it is a fixed default, not a style property.
 
-In a two-parameter sweep the history holds one sample: a grid per output and derived signal, plus the two parameters' values as grids, declared as coordinates, so the heat map preset binds them as `x` and `y`.
+A sweep ([ADR 0028](../decisions/0028-sweeps-as-samples.md)) records one sample per point of its design, indexed by sample number, with the swept parameters as scalar signals beside the outputs and derived signals; sweep histories are never thinned. Only a grid over one parameter is ordered (`History::unordered` is false), so `plot.xy` draws lines; every other design is drawn as markers, coloured by value in bins when `colour` is bound. A grid over two parameters also holds whole-history fields (`History::add_whole`): every scalar signal reshaped as a grid named `grid.<signal>`, with `grid.<p0>` and `grid.<p1>` as coordinates, so heat maps and cut filters work on it; cut filters through these grids are computed once per sweep. Presets for sweeps: "Samples" (two swept parameters, coloured by the first result) and "Against the swept parameter"; a two-parameter grid opens on a heat map.
 
 A view type lists the block types it applies to (`applies_to`, empty for generic views). A view that does not apply is neither offered under "More views…" nor restored from a file ([ADR 0016](../decisions/0016-model-curated-views.md)). What a model offers views is passed as `Available`: its scalar signals, grids, point sets and block types.
 

@@ -49,16 +49,24 @@ impl FieldShape {
     }
 }
 
-/// A field or point set recorded whole at every sample.
+/// A field or point set recorded whole at every sample, or (`whole`) one
+/// frame made from the whole history, such as a sweep reshaped into a grid
+/// (ADR 0028).
 pub struct Field {
     pub name: String,
     pub shape: FieldShape,
+    /// One frame for the whole history instead of one per sample.
+    pub whole: bool,
     frames: Vec<Vec<f64>>,
 }
 
 impl Field {
-    /// The values at sample `k`.
+    /// The values at sample `k` (any `k` for a whole-history field; empty
+    /// before it is set).
     pub fn frame(&self, k: usize) -> &[f64] {
+        if self.whole {
+            return self.frames.first().map_or(&[], Vec::as_slice);
+        }
         &self.frames[k]
     }
 }
@@ -77,6 +85,8 @@ pub struct History {
     /// What the index is: `t`, or a swept parameter such as `spring.w`.
     index: String,
     coordinates: Vec<Coordinate>,
+    /// The samples are a cloud with no order (ADR 0028).
+    unordered: bool,
     /// Display labels for signals and fields whose names are not readable
     /// on their own, e.g. a cut filter's `curves[0]` as `spring.c = 0.05`.
     labels: std::collections::BTreeMap<String, String>,
@@ -112,6 +122,7 @@ impl History {
             index: index.into(),
             coordinates: Vec::new(),
             labels: Default::default(),
+            unordered: false,
             names,
             times: Vec::new(),
             points,
@@ -120,11 +131,46 @@ impl History {
                 .map(|(name, shape)| Field {
                     name,
                     shape,
+                    whole: false,
                     frames: Vec::new(),
                 })
                 .collect(),
             max_samples,
         }
+    }
+
+    /// Add a field made from the whole history (e.g. a sweep reshaped into
+    /// a grid); its frame is set with [`History::set_whole`].
+    pub fn add_whole(&mut self, name: &str, shape: FieldShape) {
+        self.fields.push(Field {
+            name: name.into(),
+            shape,
+            whole: true,
+            frames: Vec::new(),
+        });
+    }
+
+    /// Set a whole-history field's frame.
+    pub fn set_whole(&mut self, name: &str, frame: Vec<f64>) {
+        if let Some(f) = self.fields.iter_mut().find(|f| f.whole && f.name == name) {
+            f.frames = vec![frame];
+        }
+    }
+
+    /// Keep every sample instead of thinning long histories (sweeps, whose
+    /// samples are all needed to reshape them).
+    pub fn keep_all(&mut self) {
+        self.max_samples = usize::MAX;
+    }
+
+    /// Mark the samples as an unordered cloud (random designs), which views
+    /// draw as points rather than lines.
+    pub fn set_unordered(&mut self, unordered: bool) {
+        self.unordered = unordered;
+    }
+
+    pub fn unordered(&self) -> bool {
+        self.unordered
     }
 
     /// Declare which fields are coordinates of which (ADR 0024).
@@ -193,12 +239,12 @@ impl History {
     /// Record one sample: scalar values and one frame per field.
     pub fn push_sample(&mut self, t: f64, values: &[f64], frames: &[&[f64]]) {
         debug_assert_eq!(values.len(), self.names.len());
-        debug_assert_eq!(frames.len(), self.fields.len());
+        let per_sample = self.fields.iter_mut().filter(|f| !f.whole);
         self.times.push(t);
         for (p, &v) in self.points.iter_mut().zip(values) {
             p.push(PlotPoint::new(t, v));
         }
-        for (f, frame) in self.fields.iter_mut().zip(frames) {
+        for (f, frame) in per_sample.zip(frames) {
             // A missing or misshapen frame is recorded as NaN, so every
             // frame has the field's size.
             let n = f.shape.len();
@@ -213,7 +259,7 @@ impl History {
             for p in &mut self.points {
                 thin(p);
             }
-            for f in &mut self.fields {
+            for f in self.fields.iter_mut().filter(|f| !f.whole) {
                 thin(&mut f.frames);
             }
         }
@@ -226,7 +272,7 @@ impl History {
         for p in &mut self.points {
             p.truncate(keep);
         }
-        for f in &mut self.fields {
+        for f in self.fields.iter_mut().filter(|f| !f.whole) {
             f.frames.truncate(keep);
         }
     }

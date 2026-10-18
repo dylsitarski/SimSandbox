@@ -160,6 +160,9 @@ pub struct Available<'a> {
     pub lines: &'a [String],
     /// Which fields place which others' cells (ADR 0024).
     pub coordinates: &'a [Coordinate],
+    /// In a sweep, the swept parameters' keys, also among `scalars`
+    /// (ADR 0028).
+    pub swept: &'a [String],
 }
 
 impl Available<'_> {

@@ -12,12 +12,15 @@
 //! - [`fusion`]: groups of equation Blocks solved together as one system.
 //! - [`sim`]: the co-simulation master and the kernel-owned state store.
 //! - [`registry`]: block types by name, for loading models from files.
+//! - [`sampling`]: sampling designs for sweeps (grid, random, Latin
+//!   hypercube, Sobol).
 
 pub mod block;
 pub mod error;
 pub mod fusion;
 pub mod graph;
 pub mod registry;
+pub mod sampling;
 pub mod sim;
 pub mod units;
 

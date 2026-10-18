@@ -4,6 +4,27 @@
   "run": {
     "dt": 0.01
   },
+  "sample": {
+    "design": "grid",
+    "params": [
+      {
+        "param": "spring.w",
+        "range": [
+          0.0,
+          3.0
+        ],
+        "points": 200
+      },
+      {
+        "param": "spring.c",
+        "range": [
+          0.02,
+          1.0
+        ],
+        "points": 120
+      }
+    ]
+  },
   "blocks": [
     {
       "name": "spring",
@@ -46,9 +67,9 @@
       {
         "type": "plot.heatmap",
         "bind": {
-          "field": "spring.amplitude",
-          "x": "spring.w",
-          "y": "spring.c"
+          "field": "grid.spring.amplitude",
+          "x": "grid.spring.w",
+          "y": "grid.spring.c"
         },
         "style": {
           "log_colour": 1.0
@@ -72,7 +93,7 @@
         "name": "cuts1",
         "type": "cut",
         "inputs": [
-          "spring.amplitude"
+          "grid.spring.amplitude"
         ],
         "at": [
           0.05,
@@ -82,24 +103,6 @@
         ],
         "interpolation": "bilinear",
         "mode": "along_x"
-      }
-    ],
-    "sweep": [
-      {
-        "param": "spring.w",
-        "range": [
-          0.0,
-          3.0
-        ],
-        "points": 200
-      },
-      {
-        "param": "spring.c",
-        "range": [
-          0.02,
-          1.0
-        ],
-        "points": 120
       }
     ]
   }

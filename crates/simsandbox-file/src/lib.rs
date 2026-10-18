@@ -55,6 +55,10 @@ pub struct ModelFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub run: RunSettings,
+    /// The parameter values a model without states is evaluated at
+    /// (ADR 0027, ADR 0028); `None` for one that runs in time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample: Option<Sampling>,
     pub blocks: Vec<BlockEntry>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<ConnectionEntry>,
@@ -111,6 +115,208 @@ pub const DEFAULT_DT: f64 = 0.01;
 
 fn default_dt() -> f64 {
     DEFAULT_DT
+}
+
+/// How a sweep chooses its parameter values (ADR 0028).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Design {
+    /// Every combination of evenly spaced values.
+    #[default]
+    Grid,
+    /// The points given in `values`.
+    List,
+    /// Independent uniform values from a seeded generator.
+    Random,
+    /// One value in each of `count` slices of every parameter.
+    LatinHypercube,
+    /// The first `count` points of the Sobol sequence.
+    Sobol,
+}
+
+impl Design {
+    /// Grids keep their order along each parameter; the others are clouds
+    /// of points.
+    pub fn structured(self) -> bool {
+        self == Design::Grid
+    }
+}
+
+/// A sweep (ADR 0027, ADR 0028): the swept parameters and how their values
+/// are chosen. Unlike `controls`, this decides what is computed, so invalid
+/// values are load errors.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sampling {
+    #[serde(default)]
+    pub design: Design,
+    /// The swept parameters: range (the slider's or the suggested range if
+    /// absent) and, for grids, number of values.
+    pub params: Vec<SweepControl>,
+    /// Random, Latin hypercube and Sobol: how many points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+    /// Random and Latin hypercube: the generator's seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    /// List: the points, one value per parameter each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<Vec<f64>>,
+}
+
+/// Points in a design that takes a count, unless the file says otherwise.
+pub const DEFAULT_SAMPLE_COUNT: usize = 1000;
+/// Seed of random designs unless the file says otherwise.
+pub const DEFAULT_SEED: u64 = 1;
+
+/// A sweep made concrete: where the model is evaluated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Plan {
+    /// `"block.param"` of each swept parameter.
+    pub keys: Vec<String>,
+    /// One value per key for each sample.
+    pub points: Vec<Vec<f64>>,
+    /// The range of each swept parameter, as given or defaulted.
+    pub ranges: Vec<[f64; 2]>,
+    /// For a grid design: values per parameter (first varies fastest).
+    pub grid: Option<Vec<usize>>,
+    pub design: Design,
+}
+
+impl Sampling {
+    /// Check against the model and make the points; errors carry a path
+    /// such as `sample.params[1].range`.
+    pub fn plan(
+        &self,
+        file: &ModelFile,
+        model: &Model,
+        ids: &BTreeMap<String, BlockId>,
+    ) -> Result<Plan, FileError> {
+        use simsandbox_core::sampling as design;
+        if self.params.is_empty() {
+            return Err(invalid("sample.params", "sweep at least one parameter"));
+        }
+        let mut keys: Vec<String> = Vec::new();
+        let mut ranges = Vec::new();
+        for (i, p) in self.params.iter().enumerate() {
+            let path = format!("sample.params[{i}]");
+            let spec = port_ref(&p.param, ids).ok().and_then(|(id, name)| {
+                model
+                    .block(id)
+                    .ok()?
+                    .spec()
+                    .params
+                    .iter()
+                    .find(|q| q.name == name)
+                    .cloned()
+            });
+            let Some(spec) = spec else {
+                return Err(invalid(
+                    format!("{path}.param"),
+                    format!("no parameter '{}'", p.param),
+                ));
+            };
+            if keys.contains(&p.param) {
+                return Err(invalid(
+                    format!("{path}.param"),
+                    format!("'{}' is swept twice", p.param),
+                ));
+            }
+            let [lo, hi] = p
+                .range
+                .or_else(|| file.controls.params.get(&p.param).and_then(|c| c.range))
+                .unwrap_or([spec.suggested_min, spec.suggested_max]);
+            if !(lo.is_finite() && hi.is_finite() && lo < hi) {
+                return Err(invalid(
+                    format!("{path}.range"),
+                    format!("[{lo}, {hi}] is not an increasing finite range"),
+                ));
+            }
+            keys.push(p.param.clone());
+            ranges.push([lo, hi]);
+        }
+        let count = |default: usize| -> Result<usize, FileError> {
+            let n = self.count.unwrap_or(default);
+            if (1..=MAX_SAMPLES).contains(&n) {
+                Ok(n)
+            } else {
+                Err(invalid(
+                    "sample.count",
+                    format!("{n} is outside 1 to {MAX_SAMPLES}"),
+                ))
+            }
+        };
+        let seed = self.seed.unwrap_or(DEFAULT_SEED);
+        let (points, grid) = match self.design {
+            Design::Grid => {
+                let default = if keys.len() == 1 {
+                    DEFAULT_SWEEP_POINTS
+                } else {
+                    DEFAULT_GRID_POINTS
+                };
+                let mut axes = Vec::new();
+                for (i, (p, range)) in self.params.iter().zip(&ranges).enumerate() {
+                    let n = p.points.unwrap_or(default);
+                    if !(2..=100_000).contains(&n) {
+                        return Err(invalid(
+                            format!("sample.params[{i}].points"),
+                            format!("{n} is outside 2 to 100000"),
+                        ));
+                    }
+                    axes.push(design::Axis {
+                        range: *range,
+                        points: n,
+                    });
+                }
+                let total = axes.iter().try_fold(1usize, |t, a| t.checked_mul(a.points));
+                if total.is_none_or(|t| t > MAX_SAMPLES) {
+                    return Err(invalid(
+                        "sample.params",
+                        format!("the grid has more than {MAX_SAMPLES} points"),
+                    ));
+                }
+                let shape = axes.iter().map(|a| a.points).collect();
+                (design::grid(&axes), Some(shape))
+            }
+            Design::Random => (
+                design::random(&ranges, count(DEFAULT_SAMPLE_COUNT)?, seed),
+                None,
+            ),
+            Design::LatinHypercube => (
+                design::latin_hypercube(&ranges, count(DEFAULT_SAMPLE_COUNT)?, seed),
+                None,
+            ),
+            Design::Sobol => (
+                design::sobol(&ranges, count(DEFAULT_SAMPLE_COUNT)?)
+                    .map_err(|e| invalid("sample.params", e))?,
+                None,
+            ),
+            Design::List => {
+                if self.values.is_empty() || self.values.len() > MAX_SAMPLES {
+                    return Err(invalid(
+                        "sample.values",
+                        format!("give 1 to {MAX_SAMPLES} points"),
+                    ));
+                }
+                for (k, row) in self.values.iter().enumerate() {
+                    if row.len() != keys.len() || !row.iter().all(|v| v.is_finite()) {
+                        return Err(invalid(
+                            format!("sample.values[{k}]"),
+                            format!("give {} finite values, one per parameter", keys.len()),
+                        ));
+                    }
+                }
+                (self.values.clone(), None)
+            }
+        };
+        Ok(Plan {
+            keys,
+            ranges,
+            points,
+            grid,
+            design: self.design,
+        })
+    }
 }
 
 /// How the model is run (ADR 0013). Unlike `controls`, these affect results.
@@ -212,10 +418,14 @@ pub struct Controls {
     /// written.
     #[serde(default, skip_serializing)]
     pub signals: BTreeMap<String, String>,
-    /// The parameters swept when the model has no states: one (ADR 0021) or
-    /// two (ADR 0022). Written as one object for one parameter, a list for
-    /// two.
-    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "one_or_many")]
+    /// The sweep as written before the `sample` section (ADR 0021,
+    /// ADR 0022): one object, or a list of two. Still read; converted into
+    /// a grid `sample` on load (ADR 0027) and never written.
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "one_or_many::deserialize"
+    )]
     pub sweep: Vec<SweepControl>,
     /// The single view of ADR 0014. Still read; converted into `views` on
     /// load and never written.
@@ -393,8 +603,7 @@ impl ViewEntry {
     }
 }
 
-/// A parameter swept across a range when a model has no states: outputs
-/// are evaluated at `points` values from `range[0]` to `range[1]`.
+/// A swept parameter: its range and, in a grid, how many values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SweepControl {
     /// `"block.param"`.
@@ -408,31 +617,24 @@ pub struct SweepControl {
     pub points: Option<usize>,
 }
 
-/// Points in a one-parameter sweep unless a file says otherwise.
+/// Values of a one-parameter grid unless a file says otherwise.
 pub const DEFAULT_SWEEP_POINTS: usize = 400;
-/// Points along each parameter of a two-parameter sweep unless a file says
-/// otherwise (100 × 100 evaluations).
+/// Values along each parameter of a grid over several parameters unless a
+/// file says otherwise (100 × 100 evaluations for two).
 pub const DEFAULT_GRID_POINTS: usize = 100;
-/// The most evaluations a two-parameter sweep may ask for.
-pub const MAX_GRID_EVALUATIONS: usize = 250_000;
+/// The most samples a sweep may ask for.
+pub const MAX_SAMPLES: usize = 250_000;
 
 /// `controls.sweep`: one object, or a list of them.
 mod one_or_many {
     use super::SweepControl;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer};
 
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum OneOrMany {
         One(SweepControl),
         Many(Vec<SweepControl>),
-    }
-
-    pub fn serialize<S: Serializer>(v: &[SweepControl], s: S) -> Result<S::Ok, S::Error> {
-        match v {
-            [one] => one.serialize(s),
-            many => many.serialize(s),
-        }
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<SweepControl>, D::Error> {
@@ -610,6 +812,9 @@ pub struct Loaded {
     pub warnings: Vec<String>,
     /// Blocks solved together (ADR 0023).
     pub groups: Vec<FusedGroup>,
+    /// Where a model without states is evaluated (ADR 0027); `None` for one
+    /// that runs in time.
+    pub plan: Option<Plan>,
 }
 
 /// Parse a model file and build its model.
@@ -618,12 +823,14 @@ pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
     let (mut model, ids) = file.build(registry)?;
     let groups = file.fuse(&mut model, &ids, registry)?;
     warnings.extend(file.check_controls(&model, &ids));
+    let plan = file.plan(&model, &ids)?;
     Ok(Loaded {
         file,
         model,
         ids,
         warnings,
         groups,
+        plan,
     })
 }
 
@@ -637,6 +844,8 @@ struct RawFile {
     description: Option<String>,
     #[serde(default)]
     run: RunSettings,
+    #[serde(default)]
+    sample: Option<Sampling>,
     blocks: Vec<BlockEntry>,
     #[serde(default)]
     connections: Vec<ConnectionEntry>,
@@ -655,6 +864,7 @@ impl ModelFile {
             format: FORMAT_VERSION,
             description: None,
             run: RunSettings::default(),
+            sample: None,
             blocks: Vec::new(),
             connections: Vec::new(),
             fusion: Fusion::Auto,
@@ -697,6 +907,7 @@ impl ModelFile {
                 format: raw.format,
                 description: raw.description,
                 run: raw.run,
+                sample: raw.sample,
                 blocks: raw.blocks,
                 connections: raw.connections,
                 fusion: raw.fusion,
@@ -920,6 +1131,63 @@ impl ModelFile {
         Ok(fused)
     }
 
+    /// The sweep made concrete for `model`: the file's `sample`, or for a
+    /// model without states a grid over its first parameter; `None` for a
+    /// model that runs in time.
+    pub fn plan(
+        &self,
+        model: &Model,
+        ids: &BTreeMap<String, BlockId>,
+    ) -> Result<Option<Plan>, FileError> {
+        match self.sampling(model, ids)? {
+            Some(s) => s.plan(self, model, ids).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// How `model` is sampled: the file's `sample`, or for a model without
+    /// states a grid over its first parameter; `None` for a model that runs
+    /// in time.
+    pub fn sampling(
+        &self,
+        model: &Model,
+        ids: &BTreeMap<String, BlockId>,
+    ) -> Result<Option<Sampling>, FileError> {
+        let stateless = self.blocks.iter().all(|b| {
+            model
+                .block(ids[&b.name])
+                .is_ok_and(|x| x.spec().states.is_empty())
+        });
+        match (&self.sample, stateless) {
+            (Some(_), false) => Err(invalid(
+                "sample",
+                "sampling models with states is not supported yet (ADR 0027); remove \
+                 'sample' to run in time",
+            )),
+            (Some(s), true) => Ok(Some(s.clone())),
+            (None, false) => Ok(None),
+            (None, true) => {
+                let first = self.blocks.iter().find_map(|b| {
+                    let spec = model.block(ids[&b.name]).ok()?.spec().clone();
+                    spec.params
+                        .first()
+                        .map(|p| format!("{}.{}", b.name, p.name))
+                });
+                Ok(first.map(|param| Sampling {
+                    design: Design::Grid,
+                    params: vec![SweepControl {
+                        param,
+                        range: None,
+                        points: None,
+                    }],
+                    count: None,
+                    seed: None,
+                    values: Vec::new(),
+                }))
+            }
+        }
+    }
+
     /// Drop controls that refer to nothing or carry bad values; return a
     /// warning for each.
     fn check_controls(&mut self, model: &Model, ids: &BTreeMap<String, BlockId>) -> Vec<String> {
@@ -973,63 +1241,7 @@ impl ModelFile {
                 None => {}
             }
         }
-        let mut sweep = Vec::new();
-        let single = c.sweep.len() == 1;
-        for (i, mut sw) in std::mem::take(&mut c.sweep).into_iter().enumerate() {
-            let path = if single {
-                "controls.sweep".to_string()
-            } else {
-                format!("controls.sweep[{i}]")
-            };
-            let known = port_ref(&sw.param, ids).ok().is_some_and(|(id, name)| {
-                model
-                    .block(id)
-                    .is_ok_and(|b| b.spec().params.iter().any(|p| p.name == name))
-            });
-            if !known {
-                warnings.push(format!("{path}: no parameter '{}'; ignored", sw.param));
-                continue;
-            }
-            if sweep.iter().any(|s: &SweepControl| s.param == sw.param) {
-                warnings.push(format!("{path}: '{}' is swept twice; ignored", sw.param));
-                continue;
-            }
-            if sweep.len() == 2 {
-                warnings.push(format!(
-                    "{path}: at most two parameters can be swept; '{}' ignored",
-                    sw.param
-                ));
-                continue;
-            }
-            if let Some([lo, hi]) = sw.range {
-                if !(lo.is_finite() && hi.is_finite() && lo < hi) {
-                    warnings.push(format!(
-                        "{path}.range: [{lo}, {hi}] is not an increasing finite range; ignored"
-                    ));
-                    sw.range = None;
-                }
-            }
-            if let Some(n) = sw.points.filter(|n| !(2..=100_000).contains(n)) {
-                warnings.push(format!(
-                    "{path}.points: {n} is outside 2 to 100000; using the default"
-                ));
-                sw.points = None;
-            }
-            sweep.push(sw);
-        }
-        if let [a, b] = sweep.as_mut_slice() {
-            let n = |s: &SweepControl| s.points.unwrap_or(DEFAULT_GRID_POINTS);
-            if n(a) * n(b) > MAX_GRID_EVALUATIONS {
-                warnings.push(format!(
-                    "controls.sweep: {} × {} points is more than {MAX_GRID_EVALUATIONS}; using {DEFAULT_GRID_POINTS} × {DEFAULT_GRID_POINTS}",
-                    n(a),
-                    n(b)
-                ));
-                a.points = None;
-                b.points = None;
-            }
-        }
-        c.sweep = sweep;
+        let c = &mut self.controls;
         // Derived signals as written before filters become expression
         // filters (ADR 0030); their inputs are filled in by the app.
         for (name, expr) in std::mem::take(&mut c.signals) {
@@ -1089,17 +1301,126 @@ impl ModelFile {
             }
             v.selection = None;
         }
-        // Views may bind filter outputs as well as outputs, and in a
-        // two-parameter sweep the swept parameters (their value grids).
-        let mut derived: Vec<String> = c.filters.iter().flat_map(FilterEntry::outputs).collect();
-        if c.sweep.len() == 2 {
-            derived.extend(c.sweep.iter().map(|s| s.param.clone()));
+        // The sweep as written before `sample` (ADR 0027): a grid over the
+        // parameters it names, read leniently as controls were, with views
+        // that bound `t` (the swept parameter) bound to the first
+        // parameter, and two-parameter results read from their grids
+        // (ADR 0028).
+        let old_sweep = std::mem::take(&mut c.sweep);
+        let stateless = self.blocks.iter().all(|b| {
+            model
+                .block(ids[&b.name])
+                .is_ok_and(|x| x.spec().states.is_empty())
+        });
+        if !old_sweep.is_empty() && !stateless {
+            warnings
+                .push("controls.sweep: the model has states, so it runs in time; ignored".into());
         }
+        let mut params: Vec<SweepControl> = Vec::new();
+        for (i, mut sw) in old_sweep.into_iter().enumerate() {
+            if self.sample.is_some() || !stateless {
+                break;
+            }
+            let path = format!("controls.sweep[{i}]");
+            let known = port_ref(&sw.param, ids).ok().is_some_and(|(id, name)| {
+                model
+                    .block(id)
+                    .is_ok_and(|b| b.spec().params.iter().any(|p| p.name == name))
+            });
+            let problem = if !known {
+                Some(format!("no parameter '{}'", sw.param))
+            } else if params.iter().any(|p| p.param == sw.param) {
+                Some(format!("'{}' is swept twice", sw.param))
+            } else if params.len() == 2 {
+                Some("at most two parameters".into())
+            } else {
+                None
+            };
+            if let Some(p) = problem {
+                warnings.push(format!("{path}: {p}; ignored"));
+                continue;
+            }
+            if let Some([lo, hi]) = sw.range {
+                if !(lo.is_finite() && hi.is_finite() && lo < hi) {
+                    warnings.push(format!(
+                        "{path}.range: [{lo}, {hi}] is not an increasing range; using the default"
+                    ));
+                    sw.range = None;
+                }
+            }
+            if let Some(n) = sw.points.filter(|n| !(2..=100_000).contains(n)) {
+                warnings.push(format!(
+                    "{path}.points: {n} is outside 2 to 100000; using the default"
+                ));
+                sw.points = None;
+            }
+            params.push(sw);
+        }
+        if let [a, b] = params.as_mut_slice() {
+            let n = |p: &SweepControl| p.points.unwrap_or(DEFAULT_GRID_POINTS);
+            if n(a).saturating_mul(n(b)) > MAX_SAMPLES {
+                warnings.push(format!(
+                    "controls.sweep: more than {MAX_SAMPLES} points; using the default"
+                ));
+                a.points = None;
+                b.points = None;
+            }
+        }
+        if !params.is_empty() {
+            let keys: Vec<String> = params.iter().map(|s| s.param.clone()).collect();
+            for v in &mut c.views {
+                for b in v.bind.values_mut() {
+                    let names: Vec<String> = b
+                        .signals()
+                        .into_iter()
+                        .map(|n| match (n.as_str(), keys.len(), v.type_name.as_str()) {
+                            ("t", _, _) => keys[0].clone(),
+                            (_, 2, "plot.heatmap") => format!("grid.{n}"),
+                            _ => n,
+                        })
+                        .collect();
+                    *b = Binding::from(names);
+                }
+            }
+            if keys.len() == 2 {
+                for f in c.filters.iter_mut().filter(|f| f.type_name == "cut") {
+                    for i in &mut f.inputs {
+                        *i = format!("grid.{i}");
+                    }
+                }
+            }
+            self.sample = Some(Sampling {
+                design: Design::Grid,
+                params,
+                count: None,
+                seed: None,
+                values: Vec::new(),
+            });
+        }
+        let c = &mut self.controls;
+        // Views may bind filter outputs as well as outputs; in a sweep the
+        // swept parameters, and in a two-parameter grid every scalar's grid
+        // (`grid.<name>`, ADR 0028).
+        let mut derived: Vec<String> = c.filters.iter().flat_map(FilterEntry::outputs).collect();
+        let (keys, grid2) = match &self.sample {
+            Some(sm) => (
+                sm.params
+                    .iter()
+                    .map(|p| p.param.clone())
+                    .collect::<Vec<_>>(),
+                sm.design == Design::Grid && sm.params.len() == 2,
+            ),
+            None => (Vec::new(), false),
+        };
+        derived.extend(keys.iter().cloned());
         let mut kept = Vec::new();
         for (i, mut v) in std::mem::take(&mut c.views).into_iter().enumerate() {
             v.upgrade();
+            let scalar =
+                |s: &str| derived.iter().any(|d| d == s) || output_element_exists(s, model, ids);
             let unknown = v.bind.values().flat_map(Binding::signals).find(|s| {
-                s != "t" && !derived.contains(s) && !output_element_exists(s, model, ids)
+                let grid = grid2 && s.strip_prefix("grid.").is_some_and(scalar);
+                s != "t" && !scalar(s) && !grid
             });
             if let Some(s) = unknown {
                 warnings.push(format!("controls.views[{i}]: no signal '{s}'; ignored"));

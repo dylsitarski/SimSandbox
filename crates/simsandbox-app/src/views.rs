@@ -33,7 +33,8 @@ impl Views {
 
     /// Start over for a model offering `available`: the saved views, or the
     /// first preset that fits (a plot against time, if the model records
-    /// scalars) if none can be used.
+    /// scalars; a heat map for a sweep over two parameters) if none can be
+    /// used.
     /// Returns warnings for saved views that cannot be used.
     pub fn open(&mut self, available: &Available<'_>, saved: &[ViewEntry]) -> Vec<String> {
         self.tiles.clear();
@@ -48,11 +49,16 @@ impl Views {
             }
         }
         if self.tiles.is_empty() {
-            let first_fit = self
-                .registry
-                .types()
-                .iter()
-                .flat_map(|t| (0..t.presets.len()).map(move |p| (t.name, p)))
+            // A grid over two swept parameters is best seen as a heat map.
+            let heat = (available.swept.len() == 2).then_some(("plot.heatmap", 0));
+            let first_fit = heat
+                .into_iter()
+                .chain(
+                    self.registry
+                        .types()
+                        .iter()
+                        .flat_map(|t| (0..t.presets.len()).map(move |p| (t.name, p))),
+                )
                 .find(|&(n, p)| self.fits(n, p, available));
             if let Some((n, p)) = first_fit {
                 self.add(n, p, available);
@@ -302,30 +308,53 @@ mod tests {
     }
 
     #[test]
-    fn a_two_parameter_sweep_opens_a_heat_map_over_both() {
+    fn sweeps_open_views_of_their_samples() {
         use crate::examples::{registry, view_registry, EXAMPLES};
         use crate::session::Session;
+        use simsandbox_file::{Design, Sampling, SweepControl};
         let e = EXAMPLES
             .iter()
-            .find(|e| e.name.contains("Resonance"))
+            .find(|e| e.name.contains("Resonance curve"))
             .unwrap();
         let mut s = Session::load(e.name, e.text, &registry()).unwrap();
-        s.set_sweep(&[
-            ("spring.w".into(), [0.0, 3.0], 40),
-            ("spring.c".into(), [0.1, 2.0], 30),
-        ])
-        .unwrap();
         let mut v = Views::new(view_registry());
-        // The file's x-y plots have no scalars to show, so they are dropped.
-        let w = v.open(&s.available(), &s.file.controls.views);
-        assert_eq!(w.len(), s.file.controls.views.len());
+        // One parameter: the results against it.
+        v.open(&s.available(), &[]);
+        let b = &v.tiles[0].state.bind;
+        assert_eq!(b["x"], ["spring.w"]);
+        assert_eq!(b["y"], ["spring.amplitude", "spring.lag"]);
+
+        let param = |p: &str| SweepControl {
+            param: p.into(),
+            range: None,
+            points: Some(30),
+        };
+        let mut sampling = Sampling {
+            design: Design::Grid,
+            params: vec![param("spring.w"), param("spring.c")],
+            count: None,
+            seed: None,
+            values: Vec::new(),
+        };
+        s.set_sampling(sampling.clone()).unwrap();
+        // Two on a grid: a heat map over both.
+        v.open(&s.available(), &[]);
         let b = &v.tiles[0].state.bind;
         assert_eq!(v.tiles[0].state.type_name, "plot.heatmap");
-        assert_eq!(b["field"], ["spring.amplitude"]);
+        assert_eq!(b["field"], ["grid.spring.amplitude"]);
         assert_eq!(
             (b["x"][0].as_str(), b["y"][0].as_str()),
-            ("spring.w", "spring.c")
+            ("grid.spring.w", "grid.spring.c")
         );
+        // Not on a grid: where the samples fell, coloured by a result.
+        sampling.design = Design::Random;
+        s.set_sampling(sampling).unwrap();
+        v.open(&s.available(), &[]);
+        let b = &v.tiles[0].state.bind;
+        assert_eq!(v.tiles[0].state.type_name, "plot.xy");
+        assert_eq!(b["x"], ["spring.w"]);
+        assert_eq!(b["y"], ["spring.c"]);
+        assert_eq!(b["colour"], ["spring.amplitude"]);
     }
 
     #[test]
