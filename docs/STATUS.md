@@ -54,7 +54,7 @@ _Last updated: 2026-10-18_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **View axes and settings** ([ADR 0024](decisions/0024-heat-map-axes-and-coordinates.md), [ADR 0025](decisions/0025-index-aware-view-settings.md), [ADR 0026](decisions/0026-profile-slices.md)): coordinate role on ports, heat map `x`/`y` taking the index or coordinates with swap and uneven spacing, settings that declare where they apply, profile slices.
+1. **View axes and settings** ([ADR 0024](decisions/0024-heat-map-axes-and-coordinates.md), [ADR 0025](decisions/0025-index-aware-view-settings.md), [ADR 0029](decisions/0029-profile-cuts.md)): coordinate role on ports, heat map `x`/`y` taking the index or coordinates with swap and uneven spacing, settings that declare where they apply, profile cuts.
 2. **Sweep redesign** ([ADR 0027](decisions/0027-explicit-experiments.md), [ADR 0028](decisions/0028-sweeps-as-samples.md)): sweeps recorded as samples with designs (grid, list, random, Latin hypercube, Sobol), an explicit experiment section, `simsandbox run` sweeps; sweeping models with states later.
 3. **Surface and contour views for two-parameter sweeps** ([ADR 0022](decisions/0022-two-parameter-sweeps.md)): a coloured 3D surface (CPU projection like `plot.3d`), then contour lines.
 4. **Plan Phase 1 with the owner:** order the [Phase 1 roadmap](roadmap.md#phase-1--composition) items (node canvas, Python API, subsystems, agent domain, direct feedthrough).

@@ -98,6 +98,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0026-profile-slices.md](decisions/0026-profile-slices.md) | Decision record | Profiles of 2D grids as slices |
 | [decisions/0027-explicit-experiments.md](decisions/0027-explicit-experiments.md) | Decision record | Experiments: sampling × run × reduction, at model level |
 | [decisions/0028-sweeps-as-samples.md](decisions/0028-sweeps-as-samples.md) | Decision record | Sweeps recorded as samples; grid structure as metadata |
+| [decisions/0029-profile-cuts.md](decisions/0029-profile-cuts.md) | Decision record | Profiles as straight cuts in any direction; chosen horizontal axis; interpolation |
 
 ### Guides
 

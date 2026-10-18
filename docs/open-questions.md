@@ -38,6 +38,6 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | Q16 | Reducing coupling error between co-simulated Blocks | [ADR 0023](decisions/0023-automatic-fusion.md) |
 | Q18 | Heat map axes and coordinates | [ADR 0024](decisions/0024-heat-map-axes-and-coordinates.md) |
 | Q19 | Settings whose meaning depends on the index | [ADR 0025](decisions/0025-index-aware-view-settings.md) |
-| Q20 | Profiles of 2D grids | [ADR 0026](decisions/0026-profile-slices.md) |
+| Q20 | Profiles of 2D grids | [ADR 0026](decisions/0026-profile-slices.md), superseded by [ADR 0029](decisions/0029-profile-cuts.md) |
 | Q21 | Where run versus sweep is decided | [ADR 0027](decisions/0027-explicit-experiments.md) |
 | Q22 | Unstructured sweeps | [ADR 0028](decisions/0028-sweeps-as-samples.md) |

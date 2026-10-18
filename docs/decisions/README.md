@@ -31,9 +31,10 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0023](0023-automatic-fusion.md) | Automatic fusion of equation blocks, with opt-out and explicit groups | Accepted | 2026-10-17 |
 | [0024](0024-heat-map-axes-and-coordinates.md) | Heat map axes and coordinate fields | Accepted | 2026-10-18 |
 | [0025](0025-index-aware-view-settings.md) | View settings that depend on the index | Accepted | 2026-10-18 |
-| [0026](0026-profile-slices.md) | Profiles of 2D grids as slices | Accepted | 2026-10-18 |
+| [0026](0026-profile-slices.md) | Profiles of 2D grids as slices | Superseded by 0029 | 2026-10-18 |
 | [0027](0027-explicit-experiments.md) | Explicit experiments: sampling, run and reduction | Accepted | 2026-10-18 |
 | [0028](0028-sweeps-as-samples.md) | Sweeps recorded as samples | Accepted | 2026-10-18 |
+| [0029](0029-profile-cuts.md) | Profiles as cuts in any direction | Accepted | 2026-10-18 |
 
 ## When to write one
 

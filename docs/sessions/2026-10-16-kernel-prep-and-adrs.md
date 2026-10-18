@@ -31,6 +31,7 @@
 
 ## Decided
 
+- Profiles of 2D grids are straight cuts in any direction, with a chosen horizontal axis (fraction, x, y or distance) and nearest or bilinear interpolation; supersedes ADR 0026 at the owner's request ([ADR 0029](../decisions/0029-profile-cuts.md)).
 - Field views and sweeps (2026-10-18, owner agreed to the recommendations): heat map axes take the index or declared coordinate fields, with swap ([ADR 0024](../decisions/0024-heat-map-axes-and-coordinates.md)); slots and settings declare where they apply ([ADR 0025](../decisions/0025-index-aware-view-settings.md)); profiles of 2D grids are slices ([ADR 0026](../decisions/0026-profile-slices.md)); experiments are explicit, sampling × run × reduction, decided at model level ([ADR 0027](../decisions/0027-explicit-experiments.md)); sweeps are recorded as samples with grid structure as metadata, superseding ADR 0022's storage ([ADR 0028](../decisions/0028-sweeps-as-samples.md)).
 - Sweeps cover one or two parameters; two give grid fields shown by heat map, then surface and contour views; sweeping models with states waits for bifurcation diagrams ([ADR 0022](../decisions/0022-two-parameter-sweeps.md)).
 - Equation blocks are fused automatically when connected and using identical methods; the owner asked that fusion can be turned off (`fusion: off`) and that explicit groups stay optional, so different methods remain possible across groups ([ADR 0023](../decisions/0023-automatic-fusion.md)).

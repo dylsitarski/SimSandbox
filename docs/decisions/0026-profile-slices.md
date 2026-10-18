@@ -1,6 +1,6 @@
 # 0026 — Profiles of 2D grids as slices
 
-- **Status:** Accepted
+- **Status:** Superseded by 0029
 - **Date:** 2026-10-18
 
 ## Context
