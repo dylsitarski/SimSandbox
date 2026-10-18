@@ -42,6 +42,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- `plot.xy` (plots against time, phase portraits) has a "swap axes" button: the same signals drawn transposed, saved with the view.
 - Profile cuts (ADR 0029): `plot.profile` draws 2D grids as straight cuts in any direction, against fraction along the cut, x, y or distance, with bilinear or nearest interpolation; cuts are saved in the view's new `selection` and edited in the side panel. The resonance-map example adds resonance curves at four dampings.
 - Heat map axes (ADR 0024): `x` and `y` each take `t` or a coordinate of the field (declared by its block, e.g. `rod.position`, or a swept parameter); pickers list only those; a "swap axes" button; unevenly spaced coordinates are drawn correctly. Files with the old `position` and `time_axis` are converted on load.
 - View settings and slots are shown only where they apply (ADR 0025): e.g. `trail_length` is hidden and ignored in sweeps.

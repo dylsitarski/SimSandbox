@@ -590,8 +590,8 @@ impl SimApp {
                                 },
                             );
                         });
-                        if let (true, Some(pair)) = (std::mem::take(&mut swap), t.swap) {
-                            tile.state.swap(pair);
+                        if std::mem::take(&mut swap) {
+                            tile.state.swap(t);
                         }
                         slot_editors(ui, t, &mut tile.state, &available, &session.signals);
                         tile.state.show(ui, t, &session.signals);

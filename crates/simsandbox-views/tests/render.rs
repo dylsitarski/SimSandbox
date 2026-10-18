@@ -115,5 +115,10 @@ fn views_draw_signals_with_infinities_and_nans() {
         let t = registry.get(name).unwrap();
         let mut state = ViewState::restore(t, b, Default::default(), None, &available).unwrap();
         render(&mut state, &registry, &h);
+        // And transposed, where the view can swap that way.
+        if t.swap == Some(simsandbox_views::Swap::Transpose) {
+            state.swap(t);
+            render(&mut state, &registry, &h);
+        }
     }
 }

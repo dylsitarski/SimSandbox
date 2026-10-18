@@ -141,6 +141,9 @@ pub trait View {
 
     /// Controls for the selection, shown in the side panel.
     fn edit_selection(&mut self, _ui: &mut egui::Ui, _input: &ViewInput<'_>) {}
+
+    /// Draw transposed from now on, or back (for [`Swap::Transpose`]).
+    fn transpose(&mut self) {}
 }
 
 /// What a model offers views: its recorded signals by kind and its block
@@ -233,8 +236,8 @@ pub struct ViewType {
     /// Block types this view applies to; empty for generic views, which fit
     /// any model whose signals fill their slots (ADR 0016).
     pub applies_to: &'static [&'static str],
-    /// Two slots the view's "swap axes" button exchanges, if it has one.
-    pub swap: Option<[&'static str; 2]>,
+    /// What the view's "swap axes" button does, if it has one.
+    pub swap: Option<Swap>,
     /// Named starting bindings offered in "More views…" (ADR 0018); the
     /// first is the default.
     pub presets: &'static [Preset],
@@ -325,6 +328,16 @@ impl ViewType {
         }
         Ok(())
     }
+}
+
+/// How a view swaps its axes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Swap {
+    /// Exchange the bindings of two slots (e.g. a heat map's `x` and `y`).
+    Slots([&'static str; 2]),
+    /// Draw the same bindings transposed (e.g. a plot with several curves
+    /// against one signal); the view keeps the state.
+    Transpose,
 }
 
 /// A named way to start a view, e.g. "Phase portrait" for `plot.xy`.
@@ -466,14 +479,20 @@ impl ViewState {
         self.view.camera()
     }
 
-    /// Exchange the bindings of two slots (the "swap axes" button).
-    pub fn swap(&mut self, [a, b]: [&str; 2]) {
-        let (va, vb) = (self.bind.remove(a), self.bind.remove(b));
-        if let Some(v) = va {
-            self.bind.insert(b.into(), v);
-        }
-        if let Some(v) = vb {
-            self.bind.insert(a.into(), v);
+    /// The "swap axes" button: exchange two slots' bindings, or transpose.
+    pub fn swap(&mut self, t: &ViewType) {
+        match t.swap {
+            Some(Swap::Slots([a, b])) => {
+                let (va, vb) = (self.bind.remove(a), self.bind.remove(b));
+                if let Some(v) = va {
+                    self.bind.insert(b.into(), v);
+                }
+                if let Some(v) = vb {
+                    self.bind.insert(a.into(), v);
+                }
+            }
+            Some(Swap::Transpose) => self.view.transpose(),
+            None => {}
         }
     }
 
@@ -642,5 +661,41 @@ mod tests {
         // Over time the saved trail applies; in a sweep it means nothing.
         assert_eq!(input(&History::new(vec![])), 5.0);
         assert_eq!(input(&History::with_index("spring.w", vec![])), -1.0);
+    }
+
+    #[test]
+    fn plots_swap_by_transposing_and_heat_maps_by_exchanging_axes() {
+        let r = ViewRegistry::builtin();
+        let three = signals();
+        let xy = r.get("plot.xy").unwrap();
+        let mut time = ViewState::from_preset(xy, 0, &avail(&three)).unwrap();
+        let before = time.bind.clone();
+        time.swap(xy);
+        // Same bindings, drawn transposed, and saved that way.
+        assert_eq!(time.bind, before);
+        assert_eq!(
+            time.selection(),
+            Some(serde_json::json!({"transposed": true}))
+        );
+        time.swap(xy);
+        assert_eq!(time.selection(), None);
+        assert!(time
+            .set_selection(&serde_json::json!({"transposed": "yes"}))
+            .is_err());
+
+        let heat = r.get("plot.heatmap").unwrap();
+        let mut state = ViewState::from_preset(
+            heat,
+            0,
+            &Available {
+                grids: &["g".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        state.bind.insert("x".into(), vec!["t".into()]);
+        state.swap(heat);
+        assert_eq!(state.bind.get("y"), Some(&vec!["t".to_string()]));
+        assert!(!state.bind.contains_key("x"));
     }
 }

@@ -6,7 +6,7 @@ use crate::builtin::{bindings, finite_runs, scroll_to_zoom, series_colour, widen
 use crate::colour::{sequential, trail_start};
 use crate::history::{FieldShape, History, SignalRef, TIME};
 use crate::view::{
-    always, Available, Context, Preset, Slot, SlotKind, StyleProperty, View, ViewInput,
+    always, Available, Context, Preset, Slot, SlotKind, StyleProperty, Swap, View, ViewInput,
     ViewRegistry, ViewType,
 };
 use egui_plot::{Legend, Line, Plot, PlotImage, PlotPoint, Points};
@@ -106,7 +106,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
         ],
         style: &[HEAT_TRAIL, LOG_COLOUR],
         applies_to: &[],
-        swap: Some(["x", "y"]),
+        swap: Some(Swap::Slots(["x", "y"])),
         presets: &[Preset {
             label: "Heat map",
             description: "A grid field as colours",

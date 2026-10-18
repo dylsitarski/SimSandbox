@@ -21,4 +21,6 @@ pub mod view;
 pub mod view3d;
 
 pub use history::{Coordinate, Field, FieldShape, History, SignalRef};
-pub use view::{Available, Bindings, Context, Preset, SlotKind, ViewRegistry, ViewState, ViewType};
+pub use view::{
+    Available, Bindings, Context, Preset, SlotKind, Swap, ViewRegistry, ViewState, ViewType,
+};

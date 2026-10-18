@@ -5,7 +5,7 @@
 use crate::colour::{segments, trail_start, ColourKey, HEAD};
 use crate::history::{History, SignalRef, TIME};
 use crate::view::{
-    always, over_time, Bindings, Preset, Slot, SlotKind, StyleProperty, View, ViewInput,
+    always, over_time, Bindings, Preset, Slot, SlotKind, StyleProperty, Swap, View, ViewInput,
     ViewRegistry, ViewType,
 };
 use crate::view3d::{self, Camera};
@@ -62,7 +62,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
         ],
         style: &[TRAIL_LENGTH],
         applies_to: &[],
-        swap: None,
+        swap: Some(Swap::Transpose),
         presets: &[
             Preset {
                 label: "Plot against time",
@@ -90,7 +90,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
                 },
             },
         ],
-        create: || Box::new(Xy),
+        create: || Box::new(Xy::default()),
     })?;
     r.register(ViewType {
         name: "plot.3d",
@@ -227,7 +227,11 @@ pub(crate) fn series_colour(k: usize) -> egui::Color32 {
 }
 
 /// Any signals against any signal (ADR 0018).
-struct Xy;
+#[derive(Default)]
+struct Xy {
+    /// Drawn with the `y` signals across and `x` up ("swap axes").
+    transposed: bool,
+}
 
 impl View for Xy {
     fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>) {
@@ -244,31 +248,47 @@ impl View for Xy {
         } else {
             h.name(x).to_string()
         };
-        let mut plot = Plot::new("plot.xy")
-            .x_axis_label(x_label)
-            .allow_scroll(false);
+        let y_label = (ys.len() == 1).then(|| h.name(ys[0]).to_string());
+        // A point of the curve of y against x, as drawn.
+        let tr = self.transposed;
+        let at = move |a: f64, b: f64| if tr { [b, a] } else { [a, b] };
+        let (across, up) = if tr {
+            (y_label, Some(x_label))
+        } else {
+            (Some(x_label), y_label)
+        };
+        let mut plot = Plot::new("plot.xy").allow_scroll(false);
+        if let Some(l) = across {
+            plot = plot.x_axis_label(l);
+        }
+        if let Some(l) = up {
+            plot = plot.y_axis_label(l);
+        }
+        if ys.len() > 1 {
+            plot = plot.legend(Legend::default());
+        }
         // Keep near-constant signals (e.g. a conserved energy) from being
         // magnified until rounding noise looks like drift.
         let range = |s: SignalRef| value_range((first..n).map(|k| h.value(s, k)));
-        if let Some([lo, hi]) = range(x).and_then(widened) {
-            plot = plot.include_x(lo).include_x(hi);
-        }
         let y_range = ys
             .iter()
             .filter_map(|&y| range(y))
             .reduce(|a, b| [a[0].min(b[0]), a[1].max(b[1])]);
-        if let Some([lo, hi]) = y_range.and_then(widened) {
-            plot = plot.include_y(lo).include_y(hi);
-        }
-        if ys.len() == 1 {
-            plot = plot.y_axis_label(h.name(ys[0]));
+        let (across_range, up_range) = if tr {
+            (y_range, range(x))
         } else {
-            plot = plot.legend(Legend::default());
+            (range(x), y_range)
+        };
+        if let Some([lo, hi]) = across_range.and_then(widened) {
+            plot = plot.include_x(lo).include_x(hi);
+        }
+        if let Some([lo, hi]) = up_range.and_then(widened) {
+            plot = plot.include_y(lo).include_y(hi);
         }
         plot.show(ui, |plot| {
             scroll_to_zoom(plot);
             let points = |y: SignalRef, from: usize, to: usize| {
-                finite_runs((from..to).map(|k| [h.value(x, k), h.value(y, k)]))
+                finite_runs((from..to).map(|k| at(h.value(x, k), h.value(y, k))))
             };
             if let ([y], Some(_)) = (ys, input.one("colour")) {
                 // One curve with a colour encoding: coloured segments.
@@ -288,6 +308,7 @@ impl View for Xy {
                         // directly when they are all finite.
                         SignalRef::Signal(i)
                             if against_time
+                                && !tr
                                 && first == 0
                                 && h.points(i).iter().all(|p| p.y.is_finite()) =>
                         {
@@ -302,10 +323,10 @@ impl View for Xy {
                     }
                 }
             }
-            // Mark the current point unless time runs along x (it is the right edge).
+            // Mark the current point unless time is an axis (it is the edge).
             if !against_time && n > 0 {
                 for &y in ys {
-                    let now = [h.value(x, n - 1), h.value(y, n - 1)];
+                    let now = at(h.value(x, n - 1), h.value(y, n - 1));
                     if now.iter().all(|v| v.is_finite()) {
                         plot.points(
                             Points::new("now", vec![now])
@@ -317,6 +338,28 @@ impl View for Xy {
                 }
             }
         });
+    }
+
+    fn transpose(&mut self) {
+        self.transposed = !self.transposed;
+    }
+
+    fn selection(&self) -> Option<serde_json::Value> {
+        self.transposed
+            .then(|| serde_json::json!({ "transposed": true }))
+    }
+
+    fn set_selection(&mut self, selection: &serde_json::Value) -> Result<(), String> {
+        match selection
+            .get("transposed")
+            .and_then(serde_json::Value::as_bool)
+        {
+            Some(t) if selection.as_object().is_some_and(|o| o.len() == 1) => {
+                self.transposed = t;
+                Ok(())
+            }
+            _ => Err("expected {\"transposed\": true or false}".into()),
+        }
     }
 }
 
