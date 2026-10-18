@@ -24,6 +24,7 @@ _Last updated: 2026-10-18_
 
 ## Done recently
 
+- 2026-10-18: ADR 0030 (sources → filters → views; native visualization grows with need, including 3D rendering) and ADR 0031 (cut filters with modes; supersedes 0029) accepted, resolving Q24 and Q23.
 - 2026-10-18: `plot.xy` swaps axes by drawing transposed (saved in its `selection`); Q23 (cut interface) and Q24 (pipeline versus views, native visualization) raised.
 - 2026-10-18: profile cuts (ADR 0029): straight cuts through 2D grids, against fraction, x, y or distance, bilinear or nearest interpolation, saved as `selection`, edited in the side panel; the resonance-map example shows four resonance curves.
 - 2026-10-18: view axes (ADRs 0024–0025): coordinate ports, heat map `x`/`y` axes with swap and uneven coordinates, `position`/`time_axis` converted on load, settings and slots that declare where they apply; field views moved to `fields.rs`.
@@ -57,7 +58,7 @@ _Last updated: 2026-10-18_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Owner decisions on Q23 and Q24** ([open questions](open-questions.md)): a simpler cut interface; filters as a pipeline versus transforms inside views, and how far native visualization should go. Q24 shapes the sweep redesign and the surface view.
+1. **Filters** ([ADR 0030](decisions/0030-filters-and-native-visualization.md), [ADR 0031](decisions/0031-cut-filters.md)): a filter layer between recorded data and views, saved in `controls`, with a "Data" panel; derived signals become the first filter type; cut filters with modes (along x, along y, free lines) replace the profile's cuts, converting ADR 0029 selections on load.
 2. **Sweep redesign** ([ADR 0027](decisions/0027-explicit-experiments.md), [ADR 0028](decisions/0028-sweeps-as-samples.md)): sweeps recorded as samples with designs (grid, list, random, Latin hypercube, Sobol), an explicit experiment section, `simsandbox run` sweeps; sweeping models with states later.
 3. **Surface and contour views for two-parameter sweeps** ([ADR 0022](decisions/0022-two-parameter-sweeps.md)): a coloured 3D surface (CPU projection like `plot.3d`), then contour lines.
 4. **Plan Phase 1 with the owner:** order the [Phase 1 roadmap](roadmap.md#phase-1--composition) items (node canvas, Python API, subsystems, agent domain, direct feedthrough).

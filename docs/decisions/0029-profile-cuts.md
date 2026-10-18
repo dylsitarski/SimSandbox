@@ -1,6 +1,6 @@
 # 0029 — Profiles as cuts in any direction
 
-- **Status:** Accepted
+- **Status:** Superseded by 0031
 - **Date:** 2026-10-18
 
 ## Context
