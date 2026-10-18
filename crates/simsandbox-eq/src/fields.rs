@@ -34,7 +34,8 @@ impl HeatRod {
                 domain: Domain::Equations,
                 ports: vec![
                     PortSpec::output("temperature", k, Shape::Grid { nx: n, ny: 1 }),
-                    PortSpec::output("position", Unit::METER, Shape::Grid { nx: n, ny: 1 }),
+                    PortSpec::output("position", Unit::METER, Shape::Grid { nx: n, ny: 1 })
+                        .coordinate_of("temperature", 0),
                 ],
                 params: vec![
                     param(

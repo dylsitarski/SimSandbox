@@ -239,9 +239,10 @@ pub struct ViewEntry {
 }
 
 impl ViewEntry {
-    /// Convert the view types that `plot.xy` replaced (ADR 0018):
-    /// `plot.time` becomes `plot.xy` against `t`, `plot.phase` becomes
-    /// `plot.xy` with its bindings and style kept.
+    /// Convert older forms: the view types that `plot.xy` replaced
+    /// (ADR 0018) — `plot.time` becomes `plot.xy` against `t`, `plot.phase`
+    /// becomes `plot.xy` with its bindings and style kept — and the heat
+    /// map's `position` and `time_axis` (ADR 0024).
     pub fn upgrade(&mut self) {
         match self.type_name.as_str() {
             "plot.time" => {
@@ -251,6 +252,25 @@ impl ViewEntry {
                     .or_insert_with(|| Binding::One("t".into()));
             }
             "plot.phase" => self.type_name = "plot.xy".into(),
+            // ADR 0024: `position` and `time_axis` became bindings of the
+            // `x` and `y` axes.
+            "plot.heatmap" => {
+                let upwards = self.style.remove("time_axis").is_some_and(|v| v != 0.0);
+                let position = self.bind.remove("position");
+                let time = Binding::One("t".into());
+                if position.is_some() || upwards {
+                    let (along, up) = if upwards {
+                        (position, Some(time))
+                    } else {
+                        (Some(time), position)
+                    };
+                    for (slot, b) in [("x", along), ("y", up)] {
+                        if let Some(b) = b {
+                            self.bind.entry(slot.into()).or_insert(b);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }

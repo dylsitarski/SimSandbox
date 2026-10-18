@@ -1,7 +1,9 @@
 //! Every built-in view draws without panicking, including on signals that
 //! reach infinity or NaN (e.g. a resonance curve swept through zero damping).
 
-use simsandbox_views::{Available, Bindings, FieldShape, History, ViewRegistry, ViewState};
+use simsandbox_views::{
+    Available, Bindings, Coordinate, FieldShape, History, ViewRegistry, ViewState,
+};
 
 /// Draw `state` for a few frames in a headless egui context and tessellate
 /// the result, as the app would.
@@ -42,8 +44,16 @@ fn views_draw_signals_with_infinities_and_nans() {
         vec![
             ("g".into(), FieldShape::Grid { nx: 3, ny: 1 }),
             ("p".into(), FieldShape::Points { count: 2, dim: 2 }),
+            ("gx".into(), FieldShape::Grid { nx: 3, ny: 1 }),
+            ("s".into(), FieldShape::Grid { nx: 2, ny: 2 }),
         ],
     );
+    let coordinates = vec![Coordinate {
+        name: "gx".into(),
+        of: "g".into(),
+        axis: 0,
+    }];
+    h.set_coordinates(coordinates.clone());
     let bad = [f64::INFINITY, f64::NAN, f64::NEG_INFINITY];
     for k in 0..50 {
         let v = k as f64;
@@ -51,15 +61,23 @@ fn views_draw_signals_with_infinities_and_nans() {
         h.push_sample(
             v * 0.1,
             &[1.0 / (v - 10.0).abs().min(1.0) * odd, odd.sin(), v],
-            &[&[odd, 1.0, 2.0], &[odd, 0.0, 1.0, odd]],
+            &[
+                &[odd, 1.0, 2.0],
+                &[odd, 0.0, 1.0, odd],
+                &[0.0, if k % 5 == 0 { odd } else { 1.0 }, 2.0],
+                &[odd, 1.0, odd, 2.0],
+            ],
         );
     }
-    let grids = vec!["g".to_string()];
+    let grids = vec!["g".to_string(), "gx".to_string(), "s".to_string()];
+    let lines = vec!["g".to_string(), "gx".to_string()];
     let points = vec!["p".to_string()];
     let available = Available {
         scalars: &names,
         grids: &grids,
         points: &points,
+        lines: &lines,
+        coordinates: &coordinates,
         ..Default::default()
     };
     let cases = [
@@ -80,10 +98,16 @@ fn views_draw_signals_with_infinities_and_nans() {
         ("plot.heatmap", bind(&[("field", &["g"])])),
         (
             "plot.heatmap",
-            bind(&[("field", &["g"]), ("position", &["g"])]),
+            bind(&[("field", &["g"]), ("x", &["t"]), ("y", &["gx"])]),
         ),
+        (
+            "plot.heatmap",
+            bind(&[("field", &["g"]), ("x", &["gx"]), ("y", &["t"])]),
+        ),
+        ("plot.heatmap", bind(&[("field", &["g"]), ("x", &["gx"])])),
+        ("plot.heatmap", bind(&[("field", &["s"])])),
         ("plot.profile", bind(&[("y", &["g"])])),
-        ("plot.profile", bind(&[("x", &["g"]), ("y", &["g"])])),
+        ("plot.profile", bind(&[("x", &["gx"]), ("y", &["g"])])),
         ("plot.scatter", bind(&[("points", &["p"])])),
     ];
     for (name, b) in cases {

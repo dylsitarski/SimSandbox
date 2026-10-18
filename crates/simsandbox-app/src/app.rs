@@ -532,6 +532,7 @@ impl SimApp {
         let (cols, rows) = crate::views::grid(views.tiles.len());
         let mut close = None;
         let mut select = None;
+        let mut swap = false;
         for (k, tile) in views.tiles.iter_mut().enumerate() {
             let Some(t) = views.registry.get(&tile.state.type_name) else {
                 continue;
@@ -576,10 +577,23 @@ impl SimApp {
                                     {
                                         close = Some(tile.id);
                                     }
+                                    if t.swap.is_some()
+                                        && ui
+                                            .small_button("swap axes")
+                                            .on_hover_text(
+                                                "Exchange what runs across and what runs up",
+                                            )
+                                            .clicked()
+                                    {
+                                        swap = true;
+                                    }
                                 },
                             );
                         });
-                        slot_editors(ui, t, &mut tile.state, &available, session.signals.index());
+                        if let (true, Some(pair)) = (std::mem::take(&mut swap), t.swap) {
+                            tile.state.swap(pair);
+                        }
+                        slot_editors(ui, t, &mut tile.state, &available, &session.signals);
                         tile.state.show(ui, t, &session.signals);
                     });
             });
@@ -603,7 +617,16 @@ impl SimApp {
         let Some((t, state)) = self.views.selected_mut() else {
             return;
         };
-        if t.style.is_empty() {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        // Only the properties that mean something here (ADR 0025).
+        let context = simsandbox_views::Context {
+            history: &session.signals,
+            bind: &state.bind,
+        };
+        let shown: Vec<_> = t.style.iter().filter(|p| (p.applies)(&context)).collect();
+        if shown.is_empty() {
             return;
         }
         ui.add_space(10.0);
@@ -612,7 +635,7 @@ impl SimApp {
             .num_columns(3)
             .spacing([6.0, 4.0])
             .show(ui, |ui| {
-                for p in t.style {
+                for p in shown {
                     ui.label(p.name).on_hover_text(format!(
                         "{}\nSuggested range: {} to {}",
                         p.description, p.suggested[0], p.suggested[1]
@@ -1346,20 +1369,26 @@ fn sweep_controls(
 
 /// Pickers for a view's slots: a menu of checkboxes for slots that take
 /// several signals, a combo box otherwise (with "none" when optional).
-/// `index` is what `t` means: time, or the swept parameter (ADR 0021).
+/// `t` is shown as what it means: time, or the swept parameter (ADR 0021).
+/// Slots that do not apply here are hidden (ADR 0025).
 fn slot_editors(
     ui: &mut egui::Ui,
     t: &ViewType,
     state: &mut ViewState,
     available: &Available<'_>,
-    index: &str,
+    history: &simsandbox_views::History,
 ) {
+    let context = simsandbox_views::Context {
+        history,
+        bind: &state.bind,
+    };
+    let shown: Vec<_> = t.slots.iter().filter(|s| (s.applies)(&context)).collect();
     let gap = ui.spacing().item_spacing.x;
     let per_row = (((ui.available_width() + gap) / (SLOT_WIDTH + gap)).floor() as usize).max(1);
-    for row in t.slots.chunks(per_row) {
+    for row in shown.chunks(per_row) {
         ui.horizontal(|ui| {
             for slot in row {
-                slot_editor(ui, t.name, slot, state, available, index);
+                slot_editor(ui, t.name, slot, state, available, history.index());
             }
         });
     }
@@ -1373,7 +1402,15 @@ fn slot_editor(
     available: &Available<'_>,
     index: &str,
 ) {
-    let choices = available.choices(slot.kind);
+    // An axis lists only what can place the bound field's cells (ADR 0024).
+    let choices = match (slot.kind, slot.of) {
+        (simsandbox_views::SlotKind::Axis, Some(of)) => state
+            .bind
+            .get(of)
+            .and_then(|v| v.first())
+            .map_or_else(Vec::new, |field| available.axis_choices(field)),
+        _ => available.choices(slot.kind),
+    };
     let current = state.bind.get(slot.name).cloned().unwrap_or_default();
     // "t" is stored, but shown as what it is: time, or the swept parameter.
     let display = |s: &str| {

@@ -127,6 +127,18 @@ pub struct PortSpec {
     pub causality: Causality,
     pub unit: Unit,
     pub shape: Shape,
+    /// Set when this output gives the positions of another output's cells
+    /// along one grid axis (ADR 0024), e.g. a rod's `position` for its
+    /// `temperature`.
+    pub coordinate: Option<CoordinateOf>,
+}
+
+/// What an output is a coordinate of: another output of the same Block, of
+/// the same shape, along grid axis `axis` (0 = x, 1 = y).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoordinateOf {
+    pub port: String,
+    pub axis: usize,
 }
 
 impl PortSpec {
@@ -136,7 +148,18 @@ impl PortSpec {
             causality: Causality::Input,
             unit,
             shape,
+            coordinate: None,
         }
+    }
+
+    /// Declare this output a coordinate of output `port` along grid axis
+    /// `axis` (ADR 0024).
+    pub fn coordinate_of(mut self, port: &str, axis: usize) -> Self {
+        self.coordinate = Some(CoordinateOf {
+            port: port.into(),
+            axis,
+        });
+        self
     }
 
     pub fn output(name: &str, unit: Unit, shape: Shape) -> Self {
@@ -145,6 +168,7 @@ impl PortSpec {
             causality: Causality::Output,
             unit,
             shape,
+            coordinate: None,
         }
     }
 }

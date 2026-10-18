@@ -13,7 +13,7 @@ use simsandbox_file::{
     MAX_GRID_EVALUATIONS,
 };
 use simsandbox_views::history::thin;
-use simsandbox_views::{Available, FieldShape, History, SignalRef};
+use simsandbox_views::{Available, Coordinate, FieldShape, History, SignalRef};
 use std::collections::BTreeMap;
 
 /// Take a snapshot for rewind every this many steps.
@@ -107,7 +107,9 @@ pub struct Session {
     base_fields: Vec<(String, FieldShape)>,
     /// The swept parameters' keys when their values are recorded as
     /// coordinate grids (two-parameter sweeps).
-    sweep_keys: Vec<String>,
+    base_coordinates: Vec<Coordinate>,
+    /// Grids with one row, which views can draw over time.
+    lines: Vec<String>,
     /// Grid and point-set outputs, recorded whole (ADR 0016).
     field_sources: Vec<FieldSource>,
     /// Names of the recorded grids and point sets, and the model's block
@@ -144,6 +146,7 @@ impl Session {
         let mut sources = Vec::new();
         let mut fields = Vec::new();
         let mut field_sources = Vec::new();
+        let mut coordinates: Vec<Coordinate> = Vec::new();
         let mut block_types = Vec::new();
         let plots = &loaded.file.controls.plots;
         for entry in &loaded.file.blocks {
@@ -165,6 +168,13 @@ impl Session {
                     Shape::Scalar | Shape::Vector(_) => None,
                 };
                 if let Some(shape) = field {
+                    if let Some(c) = &port.coordinate {
+                        coordinates.push(Coordinate {
+                            name: key.clone(),
+                            of: format!("{}.{}", entry.name, c.port),
+                            axis: c.axis,
+                        });
+                    }
                     fields.push((key, shape));
                     field_sources.push(FieldSource {
                         block: id,
@@ -186,6 +196,11 @@ impl Session {
                 }
             }
         }
+        // A coordinate needs the field it places, recorded, of the same shape.
+        coordinates.retain(|c| {
+            let shape = |n: &str| fields.iter().find(|(f, _)| f == n).map(|(_, s)| *s);
+            shape(&c.name).is_some() && shape(&c.name) == shape(&c.of)
+        });
         let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
         let sweep = default_sweep(&loaded.file, &loaded.ids, sim.model());
         let mut warnings = loaded.warnings;
@@ -218,7 +233,8 @@ impl Session {
             sources,
             output_names: names,
             base_fields: fields,
-            sweep_keys: Vec::new(),
+            base_coordinates: coordinates,
+            lines: Vec::new(),
             field_sources,
             grids: Vec::new(),
             points: Vec::new(),
@@ -247,7 +263,8 @@ impl Session {
             grids: &self.grids,
             points: &self.points,
             block_types: &self.block_types,
-            sweep: &self.sweep_keys,
+            lines: &self.lines,
+            coordinates: self.signals.coordinates(),
         }
     }
 
@@ -273,24 +290,45 @@ impl Session {
                     nx: sw.axes[0].points,
                     ny: sw.axes[1].points,
                 };
-                self.sweep_keys = sw.axes.iter().map(|a| a.key.clone()).collect();
+                // The swept parameters' values place every result's cells.
+                let coordinates = sw
+                    .axes
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(axis, a)| {
+                        names.iter().map(move |n| Coordinate {
+                            name: a.key.clone(),
+                            of: n.clone(),
+                            axis,
+                        })
+                    })
+                    .collect();
                 let fields: Vec<(String, FieldShape)> = names
-                    .into_iter()
-                    .chain(self.sweep_keys.iter().cloned())
+                    .iter()
+                    .cloned()
+                    .chain(sw.axes.iter().map(|a| a.key.clone()))
                     .map(|n| (n, shape))
                     .collect();
                 self.grids = of_kind(&fields, true);
                 self.points = Vec::new();
                 self.signals = History::with_fields("sweep", Vec::new(), fields);
+                self.signals.set_coordinates(coordinates);
             }
             sweep => {
                 let index = sweep.as_ref().map_or("t", |sw| sw.axes[0].key.as_str());
-                self.sweep_keys = Vec::new();
                 self.grids = of_kind(&self.base_fields, true);
                 self.points = of_kind(&self.base_fields, false);
                 self.signals = History::with_fields(index, names, self.base_fields.clone());
+                self.signals.set_coordinates(self.base_coordinates.clone());
             }
         }
+        self.lines = self
+            .signals
+            .fields()
+            .iter()
+            .filter(|f| matches!(f.shape, FieldShape::Grid { ny: 1, .. }))
+            .map(|f| f.name.clone())
+            .collect();
     }
 
     pub fn time(&self) -> f64 {
@@ -966,7 +1004,10 @@ mod tests {
         assert!(s.sweep().unwrap().is_grid());
         let a = s.available();
         assert!(a.scalars.is_empty());
-        assert_eq!(a.sweep, ["spring.w", "spring.c"]);
+        // The swept parameters place every result's cells.
+        assert_eq!(a.axis_choices("half"), ["spring.w", "spring.c"]);
+        assert_eq!(a.axis_of("spring.amplitude", "spring.c"), Ok(Some(1)));
+        assert!(a.axis_of("spring.amplitude", "t").is_err());
         assert_eq!(
             a.grids,
             [
@@ -1027,7 +1068,7 @@ mod tests {
         // Back to one parameter: signals again.
         s.set_sweep(&[axis("spring.w", [0.0, 3.0], 50)]).unwrap();
         assert_eq!(s.signals.len(), 50);
-        assert!(s.available().sweep.is_empty());
+        assert!(s.available().coordinates.is_empty());
         assert_eq!(values(&s, "half").len(), 50);
     }
 

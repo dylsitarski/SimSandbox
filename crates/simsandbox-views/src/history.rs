@@ -63,9 +63,20 @@ impl Field {
     }
 }
 
+/// A field that gives the positions of another field's cells along one
+/// grid axis (ADR 0024): `rod.position` for `rod.temperature` along axis 0,
+/// or a swept parameter for every result of a two-parameter sweep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Coordinate {
+    pub name: String,
+    pub of: String,
+    pub axis: usize,
+}
+
 pub struct History {
     /// What the index is: `t`, or a swept parameter such as `spring.w`.
     index: String,
+    coordinates: Vec<Coordinate>,
     names: Vec<String>,
     times: Vec<f64>,
     /// Per signal, `(t, value)` points, ready to plot against time.
@@ -96,6 +107,7 @@ impl History {
             .map_or(MAX_SAMPLES, |n| n.clamp(1000, MAX_SAMPLES));
         Self {
             index: index.into(),
+            coordinates: Vec::new(),
             names,
             times: Vec::new(),
             points,
@@ -109,6 +121,29 @@ impl History {
                 .collect(),
             max_samples,
         }
+    }
+
+    /// Declare which fields are coordinates of which (ADR 0024).
+    pub fn set_coordinates(&mut self, coordinates: Vec<Coordinate>) {
+        self.coordinates = coordinates;
+    }
+
+    pub fn coordinates(&self) -> &[Coordinate] {
+        &self.coordinates
+    }
+
+    /// The grid axis along which field `coord` places the cells of field
+    /// `of`, if it is one of its coordinates.
+    pub fn coordinate_axis(&self, coord: &str, of: &str) -> Option<usize> {
+        self.coordinates
+            .iter()
+            .find(|c| c.name == coord && c.of == of)
+            .map(|c| c.axis)
+    }
+
+    /// Whether the history is indexed by time (not a swept parameter).
+    pub fn over_time(&self) -> bool {
+        self.index == TIME
     }
 
     /// The recorded fields and point sets.

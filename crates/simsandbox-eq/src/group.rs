@@ -124,10 +124,12 @@ impl EquationGroup {
                 local_in += len;
             }
             for p in s.outputs() {
-                spec.ports.push(PortSpec {
-                    name: format!("{}.{}", s.name, p.name),
-                    ..p.clone()
-                });
+                let mut q = p.clone();
+                q.name = format!("{}.{}", s.name, p.name);
+                if let Some(c) = &mut q.coordinate {
+                    c.port = format!("{}.{}", s.name, c.port);
+                }
+                spec.ports.push(q);
             }
             for p in &s.params {
                 let mut q = p.clone();

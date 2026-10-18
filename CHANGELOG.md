@@ -42,6 +42,9 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Heat map axes (ADR 0024): `x` and `y` each take `t` or a coordinate of the field (declared by its block, e.g. `rod.position`, or a swept parameter); pickers list only those; a "swap axes" button; unevenly spaced coordinates are drawn correctly. Files with the old `position` and `time_axis` are converted on load.
+- View settings and slots are shown only where they apply (ADR 0025): e.g. `trail_length` is hidden and ignored in sweeps.
+- `PortSpec::coordinate_of` declares an output a coordinate of another.
 - Two-parameter sweeps (ADR 0022): `controls.sweep` may list two parameters; every output and derived signal becomes a grid over both, shown by a heat map placed by the parameter values; "+ parameter" and × in the app's sweep bar; heat maps gain `x`/`y` coordinate slots for 2D grids and a `log_colour` style property; resonance-map example.
 - Plots span at least a millionth of the largest value shown, so a conserved quantity draws flat instead of magnifying rounding noise into apparent drift (zooming in still works).
 - App: messages go to a log: a tile left of the rewind bar shows the newest one (dimmed after 8 s) and opens the full list, so messages never resize the window; the model description is one line with the full text on hover (one tooltip); the Derived signals text boxes are wider.

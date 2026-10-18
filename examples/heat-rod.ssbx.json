@@ -40,7 +40,8 @@
         "type": "plot.heatmap",
         "bind": {
           "field": "rod.temperature",
-          "position": "rod.position"
+          "x": "t",
+          "y": "rod.position"
         }
       },
       {

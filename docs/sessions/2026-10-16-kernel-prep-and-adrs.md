@@ -24,6 +24,7 @@
 - 2026-10-17: Q17 (implicit and IMEX methods) raised; automatic fusion built (ADR 0023). 111 tests.
 - 2026-10-17: minimum plot span; two-parameter sweeps with heat map coordinates and log colour, resonance-map example. 115 tests.
 - 2026-10-18: owner questions on heat map axes, index-dependent settings, profiles of 2D grids, run versus sweep, unstructured sweeps recorded as Q18–Q22.
+- 2026-10-18: ADR 0029 (profile cuts, supersedes 0026); view axes built (ADRs 0024–0025). 118 tests.
 - 2026-10-17: messages moved into a log tile beside the rewind bar (`crates/simsandbox-app/src/log.rs`) at the owner's request; duplicate description tooltip removed (egui already shows cut text on hover). 104 tests.
 - 2026-10-17: views steps 5–6: `Shape::Grid`/`Shape::Points`, fields in the history, `plot.heatmap`, `plot.scatter`, slot kinds and `Available`; `eq.heat_rod`, `eq.orbits` and `eq.pendulum` with verification tests; the `eq.pendulum` view (`applies_to`) behind `simsandbox-eq`'s `views` feature; heat-rod, orbits and pendulum examples, checked by screenshot. 100 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
@@ -53,6 +54,7 @@
 
 ## Notes for the next session
 
+- Heat map axes: `heat_axes` resolves `x`/`y` to time or a grid axis; unbound axes take the directions left in order. `axis_map` maps texels to cells, one per cell when even, resampled at the smallest spacing (≤ 1024 texels) when not. A coordinate that is not strictly monotonic falls back to cell numbers at draw time (the picker and load check prevent binding non-coordinates).
 - Two-parameter sweep grids are stored row by row with the first parameter along x (cell (i, j) at j·nx + i); parameter values use the same lerp as one-parameter sweeps, so range ends are exact. The session keeps `output_names` and `base_fields` and rebuilds the history whenever the sweep's shape changes (`rebuild_history`).
 - A linear colour scale hides everything but the resonance peak (amplitude ~ 1/c); the example uses `log_colour`.
 - Fusion was built in the master rather than as ADR 0023's consequences sketched (the loader building an `EquationGroup` and renaming ports): members stay separate Blocks and only their stepping changes, so names, ids, snapshots and `set_param` needed no mapping. The master's group right-hand side is bit-identical to `FusedSystem`'s (test `master_fusion_matches_the_fused_system_bit_for_bit`).

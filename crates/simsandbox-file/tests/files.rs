@@ -524,6 +524,30 @@ fn time_and_phase_views_are_converted_to_xy_plots() {
 }
 
 #[test]
+fn old_heat_map_placement_is_converted_to_axes() {
+    let new = r#""x": "t",
+          "y": "rod.position""#;
+    assert!(HEAT_ROD.contains(new), "the example uses the axes");
+    let old = HEAT_ROD.replace(new, r#""position": "rod.position""#);
+    let loaded = load(&old, &registry()).unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    assert_eq!(loaded.file.to_json(), HEAT_ROD);
+    // Time upwards: the position runs across instead.
+    let upwards = old.replace(
+        r#""position": "rod.position""#,
+        r#""position": "rod.position"
+        },
+        "style": {
+          "time_axis": 1.0"#,
+    );
+    let loaded = load(&upwards, &registry()).unwrap();
+    let bind = &loaded.file.controls.views[0].bind;
+    assert_eq!(bind["x"], Binding::One("rod.position".into()));
+    assert_eq!(bind["y"], Binding::One("t".into()));
+    assert!(loaded.file.controls.views[0].style.is_empty());
+}
+
+#[test]
 fn sweeps_are_read_and_checked_leniently() {
     let loaded = load(RESONANCE, &registry()).unwrap();
     let [sw] = loaded.file.controls.sweep.as_slice() else {

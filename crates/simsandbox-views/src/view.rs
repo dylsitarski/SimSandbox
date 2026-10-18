@@ -5,7 +5,7 @@
 //! parameters). A [`ViewState`] is one view on screen: a type, its slot
 //! bindings, its style values and the drawing state (e.g. a 3D camera).
 
-use crate::history::{History, SignalRef, TIME};
+use crate::history::{Coordinate, History, SignalRef, TIME};
 use std::collections::BTreeMap;
 
 /// What a slot accepts.
@@ -17,6 +17,25 @@ pub enum SlotKind {
     Grid,
     /// A point set.
     Points,
+    /// An axis of a field picture: the index (`t`) or a coordinate of the
+    /// field bound to the slot named in [`Slot::of`] (ADR 0024).
+    Axis,
+}
+
+/// What a slot or style property's applicability is judged on (ADR 0025).
+pub struct Context<'a> {
+    pub history: &'a History,
+    pub bind: &'a Bindings,
+}
+
+/// Applies everywhere.
+pub fn always(_: &Context<'_>) -> bool {
+    true
+}
+
+/// Applies when the index is time, not a swept parameter.
+pub fn over_time(c: &Context<'_>) -> bool {
+    c.history.over_time()
 }
 
 /// A named input of a view.
@@ -24,6 +43,11 @@ pub enum SlotKind {
 pub struct Slot {
     pub name: &'static str,
     pub kind: SlotKind,
+    /// For an [`SlotKind::Axis`] slot: the slot holding the field it is an
+    /// axis of.
+    pub of: Option<&'static str>,
+    /// Whether the slot means anything in this context; hidden if not.
+    pub applies: fn(&Context<'_>) -> bool,
     /// Takes a list of signals (e.g. the curves of a time series) rather
     /// than exactly one.
     pub many: bool,
@@ -40,6 +64,9 @@ pub struct StyleProperty {
     pub suggested: [f64; 2],
     pub unit: &'static str,
     pub description: &'static str,
+    /// Whether the property means anything in this context; where it does
+    /// not, it is hidden and its default is used (ADR 0025).
+    pub applies: fn(&Context<'_>) -> bool,
 }
 
 /// Slot name to signal names (`"t"`, `"a.x"`, `"lorenz.xyz[0]"`).
@@ -48,6 +75,7 @@ pub type Bindings = BTreeMap<String, Vec<String>>;
 /// What a view draws from in one frame.
 pub struct ViewInput<'a> {
     pub history: &'a History,
+    pub bind: &'a Bindings,
     slots: BTreeMap<&'a str, Vec<SignalRef>>,
     style: &'a BTreeMap<String, f64>,
     view_type: &'a ViewType,
@@ -64,15 +92,25 @@ impl ViewInput<'_> {
         self.slots.get(slot).map_or(&[], Vec::as_slice)
     }
 
-    /// A style property's value, or its default.
+    /// A style property's value, or its default where it is unset or does
+    /// not apply.
     pub fn style(&self, name: &str) -> f64 {
-        self.style.get(name).copied().unwrap_or_else(|| {
-            self.view_type
-                .style
-                .iter()
-                .find(|p| p.name == name)
-                .map_or(0.0, |p| p.default)
-        })
+        let Some(p) = self.view_type.style.iter().find(|p| p.name == name) else {
+            return 0.0;
+        };
+        let context = Context {
+            history: self.history,
+            bind: self.bind,
+        };
+        match self.style.get(name) {
+            Some(&v) if (p.applies)(&context) => v,
+            _ => p.default,
+        }
+    }
+
+    /// The name bound to a slot, as written (e.g. `t` or `rod.position`).
+    pub fn bound(&self, slot: &str) -> Option<&str> {
+        self.bind.get(slot)?.first().map(String::as_str)
     }
 }
 
@@ -96,9 +134,10 @@ pub struct Available<'a> {
     pub grids: &'a [String],
     pub points: &'a [String],
     pub block_types: &'a [String],
-    /// In a two-parameter sweep, the swept parameters (x first); their
-    /// values are grids in `grids`, coordinates for the other grids.
-    pub sweep: &'a [String],
+    /// Grids with one row (lines of cells), which can be drawn over time.
+    pub lines: &'a [String],
+    /// Which fields place which others' cells (ADR 0024).
+    pub coordinates: &'a [Coordinate],
 }
 
 impl Available<'_> {
@@ -108,7 +147,44 @@ impl Available<'_> {
             SlotKind::Scalar => name == TIME || self.scalars.iter().any(|s| s == name),
             SlotKind::Grid => self.grids.iter().any(|s| s == name),
             SlotKind::Points => self.points.iter().any(|s| s == name),
+            // Whether it places the bound field is checked with the field,
+            // so the reason can be given.
+            SlotKind::Axis => name == TIME || self.grids.iter().any(|s| s == name),
         }
+    }
+
+    /// What an axis slot of `field` can take: `t` for a line of cells
+    /// (drawn over time), then the field's coordinates.
+    pub fn axis_choices(&self, field: &str) -> Vec<&str> {
+        let time = self.lines.iter().any(|l| l == field).then_some(TIME);
+        time.into_iter()
+            .chain(
+                self.coordinates
+                    .iter()
+                    .filter(|c| c.of == field)
+                    .map(|c| c.name.as_str()),
+            )
+            .collect()
+    }
+
+    /// The dimension an axis binding claims for `field`: `None` for time,
+    /// `Some(axis)` for a coordinate; an error if it cannot be an axis of
+    /// it.
+    pub fn axis_of(&self, field: &str, name: &str) -> Result<Option<usize>, String> {
+        if name == TIME {
+            return if self.lines.iter().any(|l| l == field) {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "'{field}' is not a line of cells, so it cannot be drawn over t"
+                ))
+            };
+        }
+        self.coordinates
+            .iter()
+            .find(|c| c.name == name && c.of == field)
+            .map(|c| Some(c.axis))
+            .ok_or_else(|| format!("'{name}' is not a coordinate of '{field}'"))
     }
 
     /// The names a slot of this kind can take (`t` first for scalars).
@@ -119,6 +195,9 @@ impl Available<'_> {
                 .collect(),
             SlotKind::Grid => self.grids.iter().map(String::as_str).collect(),
             SlotKind::Points => self.points.iter().map(String::as_str).collect(),
+            SlotKind::Axis => std::iter::once(TIME)
+                .chain(self.coordinates.iter().map(|c| c.name.as_str()))
+                .collect(),
         }
     }
 }
@@ -135,6 +214,8 @@ pub struct ViewType {
     /// Block types this view applies to; empty for generic views, which fit
     /// any model whose signals fill their slots (ADR 0016).
     pub applies_to: &'static [&'static str],
+    /// Two slots the view's "swap axes" button exchanges, if it has one.
+    pub swap: Option<[&'static str; 2]>,
     /// Named starting bindings offered in "More views…" (ADR 0018); the
     /// first is the default.
     pub presets: &'static [Preset],
@@ -186,6 +267,27 @@ impl ViewType {
             .find(|s| s.required && bind.get(s.name).is_none_or(Vec::is_empty))
         {
             return Err(format!("slot '{}' is required", s.name));
+        }
+        // Axis slots: each must be an axis of its field, and no two may
+        // claim the same dimension (ADR 0024).
+        let mut claimed: Vec<(&str, Option<usize>)> = Vec::new();
+        for s in self.slots.iter().filter(|s| s.kind == SlotKind::Axis) {
+            let (Some(of), Some(name)) = (s.of, bind.get(s.name).and_then(|v| v.first())) else {
+                continue;
+            };
+            let Some(field) = bind.get(of).and_then(|v| v.first()) else {
+                continue;
+            };
+            let dim = available
+                .axis_of(field, name)
+                .map_err(|e| format!("slot '{}': {e}", s.name))?;
+            if claimed.iter().any(|&(f, d)| f == field && d == dim) {
+                return Err(format!(
+                    "slot '{}': '{name}' runs along the same direction as another axis",
+                    s.name
+                ));
+            }
+            claimed.push((field, dim));
         }
         for (name, v) in style {
             if !self.style.iter().any(|p| p.name == name) {
@@ -302,6 +404,7 @@ impl ViewState {
             .collect();
         let input = ViewInput {
             history,
+            bind: &self.bind,
             slots,
             style: &self.style,
             view_type: t,
@@ -311,6 +414,17 @@ impl ViewState {
 
     pub fn camera(&self) -> Option<[f64; 3]> {
         self.view.camera()
+    }
+
+    /// Exchange the bindings of two slots (the "swap axes" button).
+    pub fn swap(&mut self, [a, b]: [&str; 2]) {
+        let (va, vb) = (self.bind.remove(a), self.bind.remove(b));
+        if let Some(v) = va {
+            self.bind.insert(b.into(), v);
+        }
+        if let Some(v) = vb {
+            self.bind.insert(a.into(), v);
+        }
     }
 
     /// A style property's value, or its default.
@@ -419,5 +533,64 @@ mod tests {
             .is_err());
         let bad_style: BTreeMap<String, f64> = [("glow".to_string(), 1.0)].into();
         assert!(t3.check(&good, &bad_style, &avail(&signals())).is_err());
+    }
+
+    #[test]
+    fn axis_slots_take_only_what_can_place_the_field() {
+        let r = ViewRegistry::builtin();
+        let heat = r.get("plot.heatmap").unwrap();
+        let grids: Vec<String> = ["rod.T", "rod.x", "rod.k"].map(String::from).to_vec();
+        let lines = grids.clone();
+        let coordinates = [Coordinate {
+            name: "rod.x".into(),
+            of: "rod.T".into(),
+            axis: 0,
+        }];
+        let a = Available {
+            grids: &grids,
+            lines: &lines,
+            coordinates: &coordinates,
+            ..Default::default()
+        };
+        assert_eq!(a.axis_choices("rod.T"), ["t", "rod.x"]);
+        let bind = |x: &str, y: &str| -> Bindings {
+            [
+                ("field".to_string(), vec!["rod.T".to_string()]),
+                ("x".to_string(), vec![x.to_string()]),
+                ("y".to_string(), vec![y.to_string()]),
+            ]
+            .into()
+        };
+        let none = BTreeMap::new();
+        assert!(heat.check(&bind("t", "rod.x"), &none, &a).is_ok());
+        assert!(heat.check(&bind("rod.x", "t"), &none, &a).is_ok());
+        // Not a coordinate of the field, or two axes in one direction.
+        let e = heat.check(&bind("t", "rod.k"), &none, &a).unwrap_err();
+        assert!(e.contains("not a coordinate"), "{e}");
+        assert!(heat.check(&bind("t", "t"), &none, &a).is_err());
+        // A 2D grid cannot be drawn over t.
+        let flat = Available { lines: &[], ..a };
+        assert!(heat.check(&bind("t", "rod.x"), &none, &flat).is_err());
+    }
+
+    #[test]
+    fn settings_that_do_not_apply_fall_back_to_their_defaults() {
+        let r = ViewRegistry::builtin();
+        let xy = r.get("plot.xy").unwrap();
+        let bind: Bindings = [("x".to_string(), vec!["t".to_string()])].into();
+        let style: BTreeMap<String, f64> = [("trail_length".to_string(), 5.0)].into();
+        let input = |h: &History| -> f64 {
+            ViewInput {
+                history: h,
+                bind: &bind,
+                slots: BTreeMap::new(),
+                style: &style,
+                view_type: xy,
+            }
+            .style("trail_length")
+        };
+        // Over time the saved trail applies; in a sweep it means nothing.
+        assert_eq!(input(&History::new(vec![])), 5.0);
+        assert_eq!(input(&History::with_index("spring.w", vec![])), -1.0);
     }
 }

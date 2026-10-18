@@ -15,9 +15,10 @@
 
 pub mod builtin;
 pub mod colour;
+pub mod fields;
 pub mod history;
 pub mod view;
 pub mod view3d;
 
-pub use history::{Field, FieldShape, History, SignalRef};
-pub use view::{Available, Bindings, Preset, SlotKind, ViewRegistry, ViewState, ViewType};
+pub use history::{Coordinate, Field, FieldShape, History, SignalRef};
+pub use view::{Available, Bindings, Context, Preset, SlotKind, ViewRegistry, ViewState, ViewType};

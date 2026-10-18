@@ -5,7 +5,7 @@ use crate::registry::PENDULUM;
 use egui_plot::{Line, Plot, Points};
 use simsandbox_views::builtin::{finite_runs, scroll_to_zoom};
 use simsandbox_views::colour::{trail_start, HEAD, LINE};
-use simsandbox_views::view::{Slot, StyleProperty, View, ViewInput};
+use simsandbox_views::view::{always, over_time, Slot, StyleProperty, View, ViewInput};
 use simsandbox_views::{Available, Bindings, Preset, SlotKind, ViewRegistry, ViewType};
 
 /// Register the domain's views.
@@ -18,6 +18,8 @@ pub fn register_views(r: &mut ViewRegistry) -> Result<(), String> {
             Slot {
                 name: "x",
                 kind: SlotKind::Scalar,
+                of: None,
+                applies: always,
                 many: false,
                 required: true,
                 description: "Bob position across, pivot at 0",
@@ -25,6 +27,8 @@ pub fn register_views(r: &mut ViewRegistry) -> Result<(), String> {
             Slot {
                 name: "y",
                 kind: SlotKind::Scalar,
+                of: None,
+                applies: always,
                 many: false,
                 required: true,
                 description: "Bob position up, pivot at 0",
@@ -36,8 +40,10 @@ pub fn register_views(r: &mut ViewRegistry) -> Result<(), String> {
             suggested: [-1.0, 10.0],
             unit: "s",
             description: "Seconds of the bob's path shown; 0 shows none, -1 the whole run",
+            applies: over_time,
         }],
         applies_to: &[PENDULUM],
+        swap: None,
         presets: &[Preset {
             label: "Pendulum",
             description: "The pendulum swinging",
