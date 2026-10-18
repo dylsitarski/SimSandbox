@@ -10,11 +10,6 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | --- | --- | --- | --- | --- |
 | Q5 | Algebraic loops in fused groups | Causalisation and tearing; Newton solve per RHS evaluation; forbid and warn | Phase 1 | Current v0 restriction: no direct feedthrough |
 | Q17 | Implicit and implicit–explicit (IMEX) methods for stiff systems | (a) An implicit method (e.g. backward differentiation or an L-stable Runge–Kutta) for whole systems, with Jacobians by finite differences first; (b) named IMEX methods that treat a declared stiff part implicitly; (c) explicit methods with substeps only | Before stiff fields or large fused groups | Raised 2026-10-17 with ADR 0023, which rules out free per-block method mixing inside one fused system: arbitrary pairs of methods fall to first order. First case: `eq.heat_rod`, whose explicit step limit (≈0.7 h²/α for RK4) forces 10 substeps in the example |
-| Q18 | Heat map axes and coordinates | (a) Replace `position` and `time_axis` with `x` and `y` slots that each take the index (`t`) or a coordinate field, so flipping axes is swapping bindings; coordinates are a declared role with the grid axis they run along, and pickers list only coordinates for that axis; (b) keep `position`/`x`/`y` and add a flip setting; (c) a separate space–time view | Before more field views | Raised by the owner 2026-10-18: `position` duplicates `y`; binding a non-coordinate (e.g. `spring.amplitude`) silently falls back to cell numbers; `spring.lag` is accepted but its uneven spacing is drawn as even |
-| Q19 | Settings whose meaning depends on the index | (a) The history states its index (time, a swept parameter, sample number) and slots and style properties declare where they apply, so the panel hides or relabels the rest; (b) per-view text only | With Q18 | `trail_length` (seconds) trims a one-parameter sweep's curve to the last stretch of the parameter; `time_axis` and `position` show for 2D grids where they do nothing |
-| Q20 | Profiles of 2D grids | (a) `plot.profile` draws a 2D grid as curves along one axis at chosen values of the other (slices, saved with the view), e.g. resonance curves at several dampings; later linked to a cursor on a heat map; (b) profiles take line fields only | With Q18 | Today a 2D grid is drawn as one line through every cell row by row, a zigzag |
-| Q21 | Where run versus sweep is decided | (a) An explicit experiment in the model file: parameter sampling (outer) × run in time (inner) × reduction, with today's behaviour as defaults; (b) keep deciding from the model (no states anywhere: sweep) | Before sweeping models with states | Today the whole model is either run or swept: `Session` sweeps when no block has states; blocks only declare their time semantics |
-| Q22 | Unstructured sweeps | (a) Record every sweep as samples (index = sample number, swept parameters as signals), with grid structure as optional metadata that enables heat maps; random, Latin hypercube, Sobol or listed points; shown as coloured scatter, later triangulated contours; also allows more than two parameters; (b) keep grids only | Before sensitivity studies | Would change ADR 0022's representation (grid fields), so it needs a superseding ADR |
 
 ## Resolved
 
@@ -41,3 +36,8 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | Q14 | Methods for operations inside equations | [ADR 0020](decisions/0020-methods-for-approximations.md) |
 | Q15 | Sweeps over several parameters | [ADR 0022](decisions/0022-two-parameter-sweeps.md) |
 | Q16 | Reducing coupling error between co-simulated Blocks | [ADR 0023](decisions/0023-automatic-fusion.md) |
+| Q18 | Heat map axes and coordinates | [ADR 0024](decisions/0024-heat-map-axes-and-coordinates.md) |
+| Q19 | Settings whose meaning depends on the index | [ADR 0025](decisions/0025-index-aware-view-settings.md) |
+| Q20 | Profiles of 2D grids | [ADR 0026](decisions/0026-profile-slices.md) |
+| Q21 | Where run versus sweep is decided | [ADR 0027](decisions/0027-explicit-experiments.md) |
+| Q22 | Unstructured sweeps | [ADR 0028](decisions/0028-sweeps-as-samples.md) |

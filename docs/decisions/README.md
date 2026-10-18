@@ -27,8 +27,13 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0019](0019-equations-without-time.md) | Typed models without time: formulas and discrete maps first | Accepted | 2026-10-17 |
 | [0020](0020-methods-for-approximations.md) | Only approximating operations have a method choice | Accepted | 2026-10-17 |
 | [0021](0021-maps-formulas-and-sweeps.md) | Maps, formula blocks and parameter sweeps | Accepted | 2026-10-17 |
-| [0022](0022-two-parameter-sweeps.md) | Sweeps over two parameters | Accepted | 2026-10-17 |
+| [0022](0022-two-parameter-sweeps.md) | Sweeps over two parameters | Superseded by 0028 | 2026-10-17 |
 | [0023](0023-automatic-fusion.md) | Automatic fusion of equation blocks, with opt-out and explicit groups | Accepted | 2026-10-17 |
+| [0024](0024-heat-map-axes-and-coordinates.md) | Heat map axes and coordinate fields | Accepted | 2026-10-18 |
+| [0025](0025-index-aware-view-settings.md) | View settings that depend on the index | Accepted | 2026-10-18 |
+| [0026](0026-profile-slices.md) | Profiles of 2D grids as slices | Accepted | 2026-10-18 |
+| [0027](0027-explicit-experiments.md) | Explicit experiments: sampling, run and reduction | Accepted | 2026-10-18 |
+| [0028](0028-sweeps-as-samples.md) | Sweeps recorded as samples | Accepted | 2026-10-18 |
 
 ## When to write one
 

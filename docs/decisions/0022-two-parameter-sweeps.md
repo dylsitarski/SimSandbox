@@ -1,6 +1,6 @@
 # 0022 — Sweeps over two parameters
 
-- **Status:** Accepted
+- **Status:** Superseded by 0028
 - **Date:** 2026-10-17
 
 ## Context
