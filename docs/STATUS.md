@@ -2,7 +2,7 @@
 
 _Last updated: 2026-10-19_
 
-**Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0033](decisions/0033-phase-1-plan.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
+**Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0036](decisions/0036-python-blocks.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
 
 ## What works
 
@@ -24,6 +24,7 @@ _Last updated: 2026-10-19_
 
 ## Done recently
 
+- 2026-10-19: ADR 0035 (the simulation moves to a worker thread; supersedes ADR 0010, pacing unchanged) and ADR 0036 (Python-defined blocks join Phase 1: in process through PyO3, state in the kernel, asking before running a model's Python; revised Phase 1 order; supersedes ADR 0033). Q27 (how the app finds Python) raised.
 - 2026-10-19: ADR 0034 (agent domain): populations as kernel-owned tables with stable ids and no capacity limit, variable-length point-set ports, update order (`random_order`, `synchronous`, `id_order`) chosen per block in the model, counter-based randomness from `run.seed`; Q26 (typed agent rules) raised. Owner confirmed the Phase 0 gate on Windows and Linux.
 - 2026-10-19: Phase 1 planned with the owner (ADR 0033): agents first (grazing model), then direct feedthrough, node canvas, subsystems, headless Python API, the rest of shareable files; the simulation moves off the UI thread only if the grazing model needs it.
 - 2026-10-19: surface and contour views: `plot.surface` (CPU-projected, depth-sorted quads shaded by slope, fitted to the current rotation) and `plot.contour` (marching squares, levels evenly or log spaced) over the heat map's axes; the resonance-map example shows its amplitude as a surface.
@@ -64,10 +65,11 @@ _Last updated: 2026-10-19_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Kernel support for populations** ([ADR 0034](decisions/0034-agent-domain.md)): `BlockSpec::tables` with kernel-owned rows and stable ids in snapshots and rewind, `StepIo` access to tables, variable-length point-set ports and connections, variable-length frames in the history, `run.seed`; tests that fixed-size models are unchanged bit for bit.
-2. **Agent domain and the grazing model** ([ADR 0033](decisions/0033-phase-1-plan.md), [ADR 0034](decisions/0034-agent-domain.md)): a `simsandbox-agents` crate with `agents.grazers` and its `update` setting, grass as an ODE on a grid, sheep agents, coupled both ways, verified (seeded runs reproduce; known limits such as no sheep giving logistic grass), with a curated view (sheep over the grass heat map, population counts). Measure whether the UI stays responsive; if not, ADR for a simulation worker thread.
-3. **Direct feedthrough and algebraic loops** ([Q5](open-questions.md)).
-4. **Visual node canvas**, then subsystems, the Python API and the rest of shareable files, in [roadmap](roadmap.md#phase-1--composition) order.
+1. **Simulation worker thread** ([ADR 0035](decisions/0035-simulation-worker-thread.md)): `Session` on a worker thread owning the simulator, pacing, rewind, filters and sweeps; commands over a channel (latest of a kind wins); history shared under a lock with batched, non-blocking appends; status for the log and achieved speed; cancellable sweeps with progress; tests that runs, rewinds and sweeps match direct stepping bit for bit; `--screenshot` waits for its samples.
+2. **Kernel support for populations** ([ADR 0034](decisions/0034-agent-domain.md)): `BlockSpec::tables` with kernel-owned rows and stable ids in snapshots and rewind, `StepIo` access to tables, variable-length point-set ports and connections, variable-length frames in the history, `run.seed`; tests that fixed-size models are unchanged bit for bit.
+3. **Agent domain and the grazing model** ([ADR 0036](decisions/0036-python-blocks.md), [ADR 0034](decisions/0034-agent-domain.md)): a `simsandbox-agents` crate with `agents.grazers` and its `update` setting, grass as an ODE on a grid, sheep agents, coupled both ways, verified (seeded runs reproduce; known limits such as no sheep giving logistic grass), with a curated view (sheep over the grass heat map, population counts). 
+4. **Python embedding spike** on Windows and Linux ([Q27](open-questions.md)).
+5. **Direct feedthrough and algebraic loops** ([Q5](open-questions.md)), then the node canvas, subsystems, Python (headless API and Python blocks) and the rest of shareable files, in [roadmap](roadmap.md#phase-1--composition) order.
 
 ## Known limitations
 
@@ -82,7 +84,7 @@ In priority order. Each item should end with tests and updated docs.
 - Sweeps run on the UI thread and recompute every sample on each slider change; large designs (up to 250 000 samples) make sliders sluggish. Models with states cannot be sampled yet (reductions, [ADR 0027](decisions/0027-explicit-experiments.md)). A `list` design cannot be edited in the app, and grids over three or more parameters offer no grid views. `t` in an expression filter is the sample number in a sweep.
 - The app does not track unsaved changes: opening another model or closing the window discards them without asking.
 - On Linux the file dialogs need the XDG desktop portal (standard on GNOME and KDE desktops); without it Open and Save as do nothing, and drag and drop or a command-line path still work.
-- The simulation runs on the UI thread ([ADR 0010](decisions/0010-live-loop-pacing.md)); a heavy model slows the window's controls as well as the plot.
+- The simulation runs on the UI thread ([ADR 0010](decisions/0010-live-loop-pacing.md)) until the worker thread lands ([ADR 0035](decisions/0035-simulation-worker-thread.md)); a heavy model slows the window's controls as well as the plot.
 - Plotted series and rewind history are thinned (every other point dropped) beyond 100 000 points and 10 000 snapshots, so very long runs lose resolution in the past.
 - A model built in code cannot be saved (Blocks do not know their type name); files are the source for saving.
 - Only models with no states can be swept; sweeping models with states (bifurcation diagrams) is a later feature. Maps have no step-number variable `n` yet.

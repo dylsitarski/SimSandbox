@@ -15,7 +15,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0007](0007-json-model-files.md) | JSON model files with a block-type registry | Accepted | 2026-10-16 |
 | [0008](0008-native-egui-ui.md) | All-native desktop UI with egui and wgpu | Accepted | 2026-10-16 |
 | [0009](0009-hobbyists-first.md) | Hobbyists are the first audience | Accepted | 2026-10-16 |
-| [0010](0010-live-loop-pacing.md) | Pace the live loop by wall-clock time | Accepted | 2026-10-16 |
+| [0010](0010-live-loop-pacing.md) | Pace the live loop by wall-clock time | Superseded by 0035 | 2026-10-16 |
 | [0011](0011-parameter-entry.md) | Typed parameter entry; ranges are suggestions | Accepted | 2026-10-16 |
 | [0012](0012-controls-in-model-files.md) | Exploration controls are saved in model files | Accepted | 2026-10-16 |
 | [0013](0013-run-section.md) | Run settings are saved in a `run` section | Accepted | 2026-10-16 |
@@ -38,8 +38,10 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0030](0030-filters-and-native-visualization.md) | Filters feed views; native visualization grows with need | Superseded by 0032 | 2026-10-18 |
 | [0031](0031-cut-filters.md) | Cuts as filters with simple modes | Accepted | 2026-10-18 |
 | [0032](0032-filters-as-a-graph.md) | Filters stored as a graph, shown on the node canvas later | Accepted | 2026-10-18 |
-| [0033](0033-phase-1-plan.md) | Phase 1 order and scope: agents first, grazing model, headless Python | Accepted | 2026-10-19 |
+| [0033](0033-phase-1-plan.md) | Phase 1 order and scope: agents first, grazing model, headless Python | Superseded by 0036 | 2026-10-19 |
 | [0034](0034-agent-domain.md) | Agent domain: kernel-owned tables, update order per block, counter-based randomness | Accepted | 2026-10-19 |
+| [0035](0035-simulation-worker-thread.md) | The simulation runs on a worker thread; pacing as before | Accepted | 2026-10-19 |
+| [0036](0036-python-blocks.md) | Python-defined blocks in Phase 1, in process, state in the kernel; revised Phase 1 order | Accepted | 2026-10-19 |
 
 ## When to write one
 

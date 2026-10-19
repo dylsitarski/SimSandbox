@@ -1,6 +1,6 @@
 # 0010 — Pace the live loop by wall-clock time
 
-- **Status:** Accepted
+- **Status:** Superseded by 0035
 - **Date:** 2026-10-16
 
 ## Context

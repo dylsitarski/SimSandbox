@@ -30,7 +30,7 @@ A Block separates **what** is simulated from **how** it is computed. The model d
 | `Derivatives` | No | Jacobian of the right-hand side | Implicit coupling, sensitivities, parameter fitting | Trait only |
 | `Realtime` | No | Guaranteed worst-case step time | Admits it into real-time models | Trait only |
 
-Capabilities are discovered through `as_equations()`, `as_rollback()`, `as_derivatives()` and `as_realtime()`, which default to `None`. Out-of-process Blocks (OpenFOAM, Python, Julia) will implement the same traits through a gRPC adapter.
+Capabilities are discovered through `as_equations()`, `as_rollback()`, `as_derivatives()` and `as_realtime()`, which default to `None`. Python Blocks run in process through PyO3, with their state in the kernel ([ADR 0036](../decisions/0036-python-blocks.md)); out-of-process Blocks (OpenFOAM, Julia, untrusted code) will implement the same traits through a gRPC adapter.
 
 ## Coupling
 

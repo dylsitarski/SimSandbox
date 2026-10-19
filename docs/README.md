@@ -104,6 +104,8 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0032-filters-as-a-graph.md](decisions/0032-filters-as-a-graph.md) | Decision record | Filters as a graph with named inputs; list first, canvas observer layer later |
 | [decisions/0033-phase-1-plan.md](decisions/0033-phase-1-plan.md) | Decision record | Phase 1 order and scope: agents first, grazing model, headless Python, threading when needed |
 | [decisions/0034-agent-domain.md](decisions/0034-agent-domain.md) | Decision record | Agent domain: populations as kernel-owned tables without capacity, variable point sets, update order per block, counter-based randomness |
+| [decisions/0035-simulation-worker-thread.md](decisions/0035-simulation-worker-thread.md) | Decision record | The simulation runs on a worker thread: commands over a channel, a shared history, pacing unchanged |
+| [decisions/0036-python-blocks.md](decisions/0036-python-blocks.md) | Decision record | Python-defined blocks in Phase 1 (PyO3, state in the kernel, asking before running a model's Python); revised Phase 1 order |
 
 ### Guides
 

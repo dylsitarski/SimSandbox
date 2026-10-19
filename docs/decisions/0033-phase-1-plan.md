@@ -1,6 +1,6 @@
 # 0033 — Phase 1 order and scope
 
-- **Status:** Accepted
+- **Status:** Superseded by 0036
 - **Date:** 2026-10-19
 
 ## Context

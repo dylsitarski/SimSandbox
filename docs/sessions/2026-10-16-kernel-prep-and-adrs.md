@@ -31,7 +31,7 @@
 - 2026-10-18: ADR 0032; filters built (expression and cut filters, Data window, conversions). 128 tests.
 - 2026-10-18: sweep redesign built (ADRs 0027–0028): `sample` section, five designs, samples with parameters as signals, `grid.` fields, markers for unordered samples, sweep bar, CLI sweeps, resonance-samples example. 134 tests.
 - 2026-10-19: `plot.surface` and `plot.contour`; heat map axis handling shared through `fields::sheet`; `view3d::Frame` shared by 3D views. 142 tests.
-- 2026-10-19: Phase 1 planned with the owner; ADR 0033. Phase 0 gate confirmed by the owner on Windows and Linux. ADR 0034 (agent domain); Q26 raised.
+- 2026-10-19: Phase 1 planned with the owner; ADR 0033. Phase 0 gate confirmed by the owner on Windows and Linux. ADR 0034 (agent domain); Q26 raised. ADRs 0035 (worker thread) and 0036 (Python blocks in Phase 1, revised order); Q27 raised.
 - 2026-10-17: messages moved into a log tile beside the rewind bar (`crates/simsandbox-app/src/log.rs`) at the owner's request; duplicate description tooltip removed (egui already shows cut text on hover). 104 tests.
 - 2026-10-17: views steps 5–6: `Shape::Grid`/`Shape::Points`, fields in the history, `plot.heatmap`, `plot.scatter`, slot kinds and `Available`; `eq.heat_rod`, `eq.orbits` and `eq.pendulum` with verification tests; the `eq.pendulum` view (`applies_to`) behind `simsandbox-eq`'s `views` feature; heat-rod, orbits and pendulum examples, checked by screenshot. 100 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
@@ -39,6 +39,7 @@
 
 ## Decided
 
+- Python-defined blocks join Phase 1, in process through PyO3, with their state in kernel memory seen as numpy arrays; a model's Python runs only after the user agrees; the simulation moves to a worker thread first, with ADR 0010's pacing kept (owner, 2026-10-19; [ADR 0035](../decisions/0035-simulation-worker-thread.md), [ADR 0036](../decisions/0036-python-blocks.md)).
 - Agent domain (owner, 2026-10-19): no capacity limits, so populations are kernel-owned tables that grow and shrink, with stable ids, and point-set ports get variable lengths; agent behaviour as built-in types first (typed rules later, Q26); update order is a per-block setting in the model, since it changes results; randomness is counter-based from `run.seed` ([ADR 0034](../decisions/0034-agent-domain.md)).
 - Phase 1 order and scope (owner, 2026-10-19): agent domain with the grazing model first, then direct feedthrough, node canvas, subsystems, a headless Python API, and the rest of shareable files; the simulation moves off the UI thread only if the grazing model needs it ([ADR 0033](../decisions/0033-phase-1-plan.md)).
 - Filters are stored as a graph (each names its inputs, order carries no meaning); the list UI comes first and the node canvas later shows filters as a distinct, hideable observer layer and views as sinks linked to their tiles; observers never feed model blocks and are promoted to blocks instead ([ADR 0032](../decisions/0032-filters-as-a-graph.md), amending ADR 0030).
