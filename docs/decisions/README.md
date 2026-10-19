@@ -39,6 +39,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0031](0031-cut-filters.md) | Cuts as filters with simple modes | Accepted | 2026-10-18 |
 | [0032](0032-filters-as-a-graph.md) | Filters stored as a graph, shown on the node canvas later | Accepted | 2026-10-18 |
 | [0033](0033-phase-1-plan.md) | Phase 1 order and scope: agents first, grazing model, headless Python | Accepted | 2026-10-19 |
+| [0034](0034-agent-domain.md) | Agent domain: kernel-owned tables, update order per block, counter-based randomness | Accepted | 2026-10-19 |
 
 ## When to write one
 

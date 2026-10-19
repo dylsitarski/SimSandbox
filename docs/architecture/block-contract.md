@@ -12,6 +12,7 @@ Every simulation, from a pendulum to a CFD solver to a neural network, is wrappe
 | Ports | Typed inputs and outputs with SI unit and shape, e.g. `velocity: Vector(3) [m/s]`; an output may declare itself the coordinate of another along a grid axis (ADR 0024) | Yes, scalar, vector, grid and point-set signal ports (`PortSpec`) |
 | Parameters | Named, unit-aware, with default, suggested range, description and an `initial_condition` flag (applies on restart); become entry fields and optional sliders ([ADR 0011](../decisions/0011-parameter-entry.md)) | Yes (`ParamSpec`) |
 | State | Named variables owned by the kernel as a flat `f64` slice, so snapshots and rewind work uniformly; external Blocks must save and restore their own | Kernel-owned state, yes |
+| Tables | Named populations of rows (columns of `f64`, a stable id per row) that grow and shrink, owned by the kernel beside the fixed state and included in snapshots ([ADR 0034](../decisions/0034-agent-domain.md)) | No (planned, Phase 1) |
 | Time semantics | Continuous with events (as in FMI 3.0); fixed-step, discrete-event and stateless as special cases | Declared (`TimeSemantics`); the master only uses fixed communication steps today |
 | Method | The method being run, with speed and accuracy labels | Yes (`MethodSpec`, `MethodLabels`) |
 
@@ -76,4 +77,4 @@ Measured effect (test `cosimulation_adds_coupling_error`): two coupled oscillato
 ## Current restrictions
 
 - Fused-group members must have no direct feedthrough (outputs depend on state and parameters only); see [Q5](../open-questions.md).
-- `Shape` supports scalars, vectors, grids (`Grid { nx, ny }`, row-major) and point sets (`Points { count, dim }`); tensors and meshes come with their domains.
+- `Shape` supports scalars, vectors, grids (`Grid { nx, ny }`, row-major) and point sets (`Points { count, dim }`); point sets of variable length are planned for populations ([ADR 0034](../decisions/0034-agent-domain.md)); tensors and meshes come with their domains.

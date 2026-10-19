@@ -2,7 +2,7 @@
 
 _Last updated: 2026-10-19_
 
-**Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0033](decisions/0033-phase-1-plan.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16, checked headless in the cloud; to confirm on the owner's Windows machine.
+**Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0033](decisions/0033-phase-1-plan.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
 
 ## What works
 
@@ -24,6 +24,7 @@ _Last updated: 2026-10-19_
 
 ## Done recently
 
+- 2026-10-19: ADR 0034 (agent domain): populations as kernel-owned tables with stable ids and no capacity limit, variable-length point-set ports, update order (`random_order`, `synchronous`, `id_order`) chosen per block in the model, counter-based randomness from `run.seed`; Q26 (typed agent rules) raised. Owner confirmed the Phase 0 gate on Windows and Linux.
 - 2026-10-19: Phase 1 planned with the owner (ADR 0033): agents first (grazing model), then direct feedthrough, node canvas, subsystems, headless Python API, the rest of shareable files; the simulation moves off the UI thread only if the grazing model needs it.
 - 2026-10-19: surface and contour views: `plot.surface` (CPU-projected, depth-sorted quads shaded by slope, fitted to the current rotation) and `plot.contour` (marching squares, levels evenly or log spaced) over the heat map's axes; the resonance-map example shows its amplitude as a surface.
 - 2026-10-18: sweep redesign (ADRs 0027–0028): `sample` section with grid, list, random, Latin hypercube and Sobol designs over any number of parameters; sweeps recorded as samples with the parameters as signals, `grid.<signal>` grids for two-parameter grids, markers for unordered samples; sweep bar with design, count and seed; `simsandbox run` writes one row per sample; resonance examples converted, resonance-samples example added.
@@ -63,8 +64,8 @@ _Last updated: 2026-10-19_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Agent domain ADR:** how agents are stored (an ECS library or plain arrays), stepped and seeded, how populations become outputs (counts and means as scalars, positions as point sets) and how they read inputs from equation blocks; settle with the owner before code.
-2. **Agent domain and the grazing model** ([ADR 0033](decisions/0033-phase-1-plan.md)): a `simsandbox-agents` crate, grass as an ODE on a grid, sheep agents, coupled both ways, verified (seeded runs reproduce; known limits such as no sheep giving logistic grass), with a curated view (sheep over the grass heat map, population counts). Measure whether the UI stays responsive; if not, ADR for a simulation worker thread.
+1. **Kernel support for populations** ([ADR 0034](decisions/0034-agent-domain.md)): `BlockSpec::tables` with kernel-owned rows and stable ids in snapshots and rewind, `StepIo` access to tables, variable-length point-set ports and connections, variable-length frames in the history, `run.seed`; tests that fixed-size models are unchanged bit for bit.
+2. **Agent domain and the grazing model** ([ADR 0033](decisions/0033-phase-1-plan.md), [ADR 0034](decisions/0034-agent-domain.md)): a `simsandbox-agents` crate with `agents.grazers` and its `update` setting, grass as an ODE on a grid, sheep agents, coupled both ways, verified (seeded runs reproduce; known limits such as no sheep giving logistic grass), with a curated view (sheep over the grass heat map, population counts). Measure whether the UI stays responsive; if not, ADR for a simulation worker thread.
 3. **Direct feedthrough and algebraic loops** ([Q5](open-questions.md)).
 4. **Visual node canvas**, then subsystems, the Python API and the rest of shareable files, in [roadmap](roadmap.md#phase-1--composition) order.
 
