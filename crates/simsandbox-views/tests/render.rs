@@ -109,6 +109,13 @@ fn views_draw_signals_with_infinities_and_nans() {
         ("plot.profile", bind(&[("y", &["g"])])),
         ("plot.profile", bind(&[("x", &["gx"]), ("y", &["g"])])),
         ("plot.scatter", bind(&[("points", &["p"])])),
+        ("plot.surface", bind(&[("field", &["s"])])),
+        (
+            "plot.surface",
+            bind(&[("field", &["g"]), ("x", &["gx"]), ("y", &["t"])]),
+        ),
+        ("plot.contour", bind(&[("field", &["s"])])),
+        ("plot.contour", bind(&[("field", &["g"]), ("x", &["t"])])),
     ];
     for (name, b) in cases {
         let t = registry.get(name).unwrap();

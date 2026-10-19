@@ -12,7 +12,7 @@ use crate::view::{
 use egui_plot::{Legend, Line, Plot, PlotImage, PlotPoint, Points};
 
 /// At most this many samples of a line field over time are drawn.
-const MAX_COLUMNS: usize = 512;
+pub(crate) const MAX_COLUMNS: usize = 512;
 /// Uneven coordinates are resampled onto at most this many texels per axis.
 const MAX_TEXELS: usize = 1024;
 
@@ -30,7 +30,7 @@ fn line_over_time(c: &Context<'_>) -> bool {
     line && c.history.over_time()
 }
 
-const HEAT_TRAIL: StyleProperty = StyleProperty {
+pub(crate) const HEAT_TRAIL: StyleProperty = StyleProperty {
     name: "trail_length",
     default: -1.0,
     suggested: [-1.0, 60.0],
@@ -67,64 +67,75 @@ fn coordinate<'a>(a: &'a Available<'_>, field: &str, axis: usize) -> Option<&'a 
         .map(|c| c.name.as_str())
 }
 
+/// The grid field a heat map, surface or contour view shows.
+pub(crate) const FIELD: Slot = Slot {
+    name: "field",
+    kind: SlotKind::Grid,
+    of: None,
+    applies: always,
+    many: false,
+    required: true,
+    description: "The grid field shown",
+};
+
+/// The field's direction across the view.
+pub(crate) const X_AXIS: Slot = Slot {
+    name: "x",
+    kind: SlotKind::Axis,
+    of: Some("field"),
+    applies: always,
+    many: false,
+    required: false,
+    description: "Across: t, or a coordinate of the field such as rod.position or a \
+                  swept parameter; without it, the field's next direction by cell number",
+};
+
+/// The field's other direction.
+pub(crate) const Y_AXIS: Slot = Slot {
+    name: "y",
+    kind: SlotKind::Axis,
+    of: Some("field"),
+    applies: always,
+    many: false,
+    required: false,
+    description: "The other direction (up in a heat map, into the picture in a surface): t, \
+                  or a coordinate of the field; without it, the field's remaining direction \
+                  by cell number",
+};
+
+/// The first result grid over its coordinates (or a line of cells over
+/// time): the starting bindings of every view of a grid field.
+pub(crate) fn grid_bindings(a: &Available<'_>) -> Option<Bindings> {
+    let field = first_result(a, false)?;
+    let mut b = bindings(&[("field", field)]);
+    let line = a.lines.iter().any(|l| l == field);
+    let (x, y) = if line {
+        (Some(TIME), coordinate(a, field, 0))
+    } else {
+        (coordinate(a, field, 0), coordinate(a, field, 1))
+    };
+    for (slot, name) in [("x", x), ("y", y)] {
+        if let Some(n) = name {
+            b.insert(slot.into(), vec![n.to_string()]);
+        }
+    }
+    Some(b)
+}
+
 pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
     r.register(ViewType {
         name: "plot.heatmap",
         label: "Heat map",
-        description: "A grid field as colours over two axes: a line of cells over time, or a 2D grid now",
-        slots: &[
-            Slot {
-                name: "field",
-                kind: SlotKind::Grid,
-                of: None,
-                applies: always,
-                many: false,
-                required: true,
-                description: "The grid field shown",
-            },
-            Slot {
-                name: "x",
-                kind: SlotKind::Axis,
-                of: Some("field"),
-                applies: always,
-                many: false,
-                required: false,
-                description: "Across: t, or a coordinate of the field such as rod.position or a \
-                              swept parameter; without it, the field's next direction by cell number",
-            },
-            Slot {
-                name: "y",
-                kind: SlotKind::Axis,
-                of: Some("field"),
-                applies: always,
-                many: false,
-                required: false,
-                description: "Up: t, or a coordinate of the field; without it, the field's \
-                              remaining direction by cell number",
-            },
-        ],
+        description:
+            "A grid field as colours over two axes: a line of cells over time, or a 2D grid now",
+        slots: &[FIELD, X_AXIS, Y_AXIS],
         style: &[HEAT_TRAIL, LOG_COLOUR],
         applies_to: &[],
         swap: Some(Swap::Slots(["x", "y"])),
         presets: &[Preset {
             label: "Heat map",
             description: "A grid field as colours",
-            bindings: |a| {
-                let field = first_result(a, false)?;
-                let mut b = bindings(&[("field", field)]);
-                let line = a.lines.iter().any(|l| l == field);
-                let (x, y) = if line {
-                    (Some(TIME), coordinate(a, field, 0))
-                } else {
-                    (coordinate(a, field, 0), coordinate(a, field, 1))
-                };
-                for (slot, name) in [("x", x), ("y", y)] {
-                    if let Some(n) = name {
-                        b.insert(slot.into(), vec![n.to_string()]);
-                    }
-                }
-                Some(b)
-            },
+            bindings: grid_bindings,
         }],
         create: || Box::new(Heatmap::default()),
     })?;
@@ -283,21 +294,9 @@ fn heat_image(
     let FieldShape::Grid { nx, .. } = f.shape else {
         return None;
     };
-    let n = h.len();
     let (ex, mx) = axis_map(&x.centres)?;
     let (ey, my) = axis_map(&y.centres)?;
-    // Which sample and cell a pair of axis positions shows.
-    let value = |a: usize, b: usize| {
-        let (mut k, mut i, mut j) = (n - 1, 0, 0);
-        for (dim, pos) in [(x.dim, a), (y.dim, b)] {
-            match dim {
-                Dim::Time => k = samples[pos],
-                Dim::Grid(0) => i = pos,
-                Dim::Grid(_) => j = pos,
-            }
-        }
-        f.frame(k).get(j * nx + i).copied().unwrap_or(f64::NAN)
-    };
+    let value = |a: usize, b: usize| cell_value(h, field, nx, samples, x, y, a, b);
     let (w, hgt) = (mx.len(), my.len());
     let mut values = Vec::with_capacity(w * hgt);
     for ty in (0..hgt).rev() {
@@ -306,6 +305,94 @@ fn heat_image(
         }
     }
     Some(([w, hgt], values, [ex[0], ex[1], ey[0], ey[1]]))
+}
+
+/// The value a pair of positions along screen axes `x` and `y` shows: a
+/// sample (along a time axis, else the newest) and a cell.
+#[allow(clippy::too_many_arguments)]
+fn cell_value(
+    h: &History,
+    field: usize,
+    nx: usize,
+    samples: &[usize],
+    x: &Axis,
+    y: &Axis,
+    a: usize,
+    b: usize,
+) -> f64 {
+    let (mut k, mut i, mut j) = (h.len() - 1, 0, 0);
+    for (dim, pos) in [(x.dim, a), (y.dim, b)] {
+        match dim {
+            Dim::Time => k = samples[pos],
+            Dim::Grid(0) => i = pos,
+            Dim::Grid(_) => j = pos,
+        }
+    }
+    h.fields()[field]
+        .frame(k)
+        .get(j * nx + i)
+        .copied()
+        .unwrap_or(f64::NAN)
+}
+
+/// A grid field laid over two screen axes, as a heat map shows it, for
+/// views that draw it otherwise (surfaces, contours): positions along each
+/// axis in data units, the values `z[j * x.len() + i]`, and labels for x,
+/// y and the values.
+pub(crate) struct Sheet {
+    pub x: Vec<f64>,
+    pub y: Vec<f64>,
+    pub z: Vec<f64>,
+    pub labels: [String; 3],
+}
+
+/// The sheet of the bound field: at most `max_samples` samples along a
+/// time axis, within the trail length.
+pub(crate) fn sheet(input: &ViewInput<'_>, max_samples: usize) -> Option<Sheet> {
+    let h = input.history;
+    let Some(SignalRef::Field(field)) = input.one("field") else {
+        return None;
+    };
+    let FieldShape::Grid { nx, .. } = h.fields()[field].shape else {
+        return None;
+    };
+    if h.is_empty() {
+        return None;
+    }
+    let first = trail_start(h.times(), input.style("trail_length")).min(h.len() - 1);
+    let stride = (h.len() - first).div_ceil(max_samples).max(1);
+    let samples: Vec<usize> = (first..h.len()).step_by(stride).collect();
+    let (x, y) = heat_axes(input, field, &samples)?;
+    let mut z = Vec::with_capacity(x.centres.len() * y.centres.len());
+    for b in 0..y.centres.len() {
+        for a in 0..x.centres.len() {
+            z.push(cell_value(h, field, nx, &samples, &x, &y, a, b));
+        }
+    }
+    let labels = [
+        axis_label(h, field, &x),
+        axis_label(h, field, &y),
+        h.label(SignalRef::Field(field)).to_string(),
+    ];
+    Some(Sheet {
+        x: x.centres,
+        y: y.centres,
+        z,
+        labels,
+    })
+}
+
+/// The name of a screen axis: time, the coordinate's label, or cells.
+fn axis_label(h: &History, field: usize, a: &Axis) -> String {
+    let line = matches!(h.fields()[field].shape, FieldShape::Grid { ny: 1, .. });
+    match (a.dim, a.coord) {
+        (Dim::Time, _) if h.over_time() => "t [s]".to_string(),
+        (Dim::Time, _) => h.index().to_string(),
+        (_, Some(c)) => h.label(SignalRef::Field(c)).to_string(),
+        (Dim::Grid(_), None) if line => "cell".to_string(),
+        (Dim::Grid(0), None) => "column".to_string(),
+        (Dim::Grid(_), None) => "row".to_string(),
+    }
 }
 
 /// Colour each value on the sequential scale between the smallest and
@@ -470,18 +557,9 @@ impl View for Heatmap {
             fmt(hi),
             if log { ", log scale" } else { "" }
         ));
-        let line = matches!(h.fields()[field].shape, FieldShape::Grid { ny: 1, .. });
-        let label = |a: &Axis| match (a.dim, a.coord) {
-            (Dim::Time, _) if h.over_time() => "t [s]".to_string(),
-            (Dim::Time, _) => h.index().to_string(),
-            (_, Some(c)) => h.label(SignalRef::Field(c)).to_string(),
-            (Dim::Grid(_), None) if line => "cell".to_string(),
-            (Dim::Grid(0), None) => "column".to_string(),
-            (Dim::Grid(_), None) => "row".to_string(),
-        };
         Plot::new("plot.heatmap")
-            .x_axis_label(label(&x))
-            .y_axis_label(label(&y))
+            .x_axis_label(axis_label(h, field, &x))
+            .y_axis_label(axis_label(h, field, &y))
             .allow_scroll(false)
             .show(ui, |plot| {
                 scroll_to_zoom(plot);
@@ -495,7 +573,7 @@ impl View for Heatmap {
     }
 }
 
-fn fmt(v: f64) -> String {
+pub(crate) fn fmt(v: f64) -> String {
     if v.is_finite() {
         format!("{v:.4}")
     } else {

@@ -164,7 +164,8 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
         }],
         create: || Box::new(Trajectory::default()),
     })?;
-    crate::fields::register(r)
+    crate::fields::register(r)?;
+    crate::surface::register(r)
 }
 
 /// The scalar signals of a sweep that are not swept parameters.

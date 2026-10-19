@@ -392,8 +392,11 @@ impl Session {
         if let Some(sw) = &self.sweep {
             self.signals.keep_all();
             self.signals.set_unordered(sw.unordered());
-            for key in sw.keys() {
-                self.signals.set_label(&grid_name(key), key);
+            // A grid of a signal is labelled as the signal.
+            if sw.is_grid() {
+                for name in self.scalar_names().iter().chain(sw.keys()) {
+                    self.signals.set_label(&grid_name(name), name);
+                }
             }
         }
         self.signals.set_coordinates(coordinates);

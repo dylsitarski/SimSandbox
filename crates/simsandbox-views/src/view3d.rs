@@ -1,9 +1,10 @@
-//! A rotatable 3D trajectory view, projected on the CPU and drawn with the
-//! egui painter. Enough for lines; full 3D scenes will use wgpu paint
-//! callbacks (ADR 0008).
+//! Rotatable 3D views projected on the CPU and drawn with the egui painter:
+//! trajectories (`plot.3d`) and the frame shared with surfaces
+//! (`plot.surface`). Enough for lines and moderate meshes; full 3D scenes
+//! will use wgpu paint callbacks (ADR 0008).
 
 use crate::colour::{Segment, HEAD};
-use egui::{Align2, FontId, Pos2, Sense, Stroke, Vec2};
+use egui::{Align2, FontId, Painter, Pos2, Rect, Sense, Stroke, Vec2};
 
 /// Distance of the eye from the centre, in normalised units; smaller is a
 /// stronger perspective.
@@ -98,9 +99,14 @@ impl Normaliser {
 /// Screen scale (points per normalised unit) that keeps the whole bounding
 /// box inside a square of side `side` at any rotation, at zoom 1: the box's
 /// bounding sphere, enlarged by perspective when it is nearest the eye.
+#[cfg(test)]
 fn fit_radius(norm: &Normaliser, side: f32) -> f32 {
-    let lo = norm.apply(norm.lo);
-    let hi = norm.apply(norm.hi);
+    fit_box(norm.apply(norm.lo), norm.apply(norm.hi), side)
+}
+
+/// Screen scale (points per normalised unit) that keeps the box `lo..hi`
+/// (normalised, around the origin) inside a square of side `side`.
+pub fn fit_box(lo: [f32; 3], hi: [f32; 3], side: f32) -> f32 {
     let r = (0..3)
         .map(|k| lo[k].abs().max(hi[k].abs()).powi(2))
         .sum::<f32>()
@@ -108,6 +114,137 @@ fn fit_radius(norm: &Normaliser, side: f32) -> f32 {
         .max(1e-6);
     let nearest = EYE_DISTANCE / (EYE_DISTANCE - r.min(0.9 * EYE_DISTANCE));
     0.49 * side / (r * nearest)
+}
+
+/// Screen scale (points per normalised unit) that keeps the box `lo..hi`
+/// inside `size` as `camera` sees it now, at zoom 1.
+pub fn fit_view(camera: &Camera, lo: [f32; 3], hi: [f32; 3], size: Vec2) -> f32 {
+    let unzoomed = Camera {
+        zoom: 1.0,
+        ..*camera
+    };
+    let (mut mx, mut my) = (1e-6f32, 1e-6f32);
+    for m in 0..8 {
+        let p = [0, 1, 2].map(|k| if m >> k & 1 == 1 { hi[k] } else { lo[k] });
+        let [x, y, _] = unzoomed.project(p);
+        mx = mx.max(x.abs());
+        my = my.max(y.abs());
+    }
+    // Room for the axis names beside the box.
+    (0.42 * size.x / mx).min(0.45 * size.y / my)
+}
+
+/// A 3D picture being drawn: where it is on screen, how normalised points
+/// map there, and the painter.
+pub struct Frame {
+    pub painter: Painter,
+    pub rect: Rect,
+    pub radius: f32,
+    pub camera: Camera,
+}
+
+impl Frame {
+    /// Take the available space, apply drag (rotate), scroll (zoom) and
+    /// double-click (reset) to `camera`, and fill the background. `lo..hi`
+    /// is the normalised box that must stay in view: at every rotation if
+    /// `steady` (it then keeps its size while turned), else as it is now
+    /// (filling the space better).
+    pub fn begin(
+        ui: &mut egui::Ui,
+        camera: &mut Camera,
+        lo: [f32; 3],
+        hi: [f32; 3],
+        steady: bool,
+    ) -> Self {
+        let size = ui.available_size();
+        let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
+        if response.dragged() {
+            camera.drag(response.drag_delta());
+        }
+        if response.hovered() {
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            camera.zoom = (camera.zoom * (scroll * 0.002).exp()).clamp(0.1, 20.0);
+        }
+        if response.double_clicked() {
+            *camera = Camera::default();
+        }
+        let rect = response.rect;
+        painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+        let radius = if steady {
+            fit_box(lo, hi, rect.width().min(rect.height()))
+        } else {
+            fit_view(camera, lo, hi, rect.size())
+        };
+        Self {
+            painter,
+            radius,
+            rect,
+            camera: *camera,
+        }
+    }
+
+    /// A normalised point on screen, with its depth (larger is further).
+    pub fn project(&self, p: [f32; 3]) -> (Pos2, f32) {
+        let [x, y, depth] = self.camera.project(p);
+        let c = self.rect.center();
+        (
+            Pos2::new(c.x + x * self.radius, c.y - y * self.radius),
+            depth,
+        )
+    }
+
+    pub fn to_screen(&self, p: [f32; 3]) -> Pos2 {
+        self.project(p).0
+    }
+
+    /// The box `lo..hi`, with the three edges from the low corner drawn as
+    /// axes and named by `labels` at their far ends.
+    pub fn axes(&self, visuals: &egui::Visuals, lo: [f32; 3], hi: [f32; 3], labels: [&str; 3]) {
+        let corner = |m: [bool; 3]| [0, 1, 2].map(|k| if m[k] { hi[k] } else { lo[k] });
+        let box_stroke = Stroke::new(1.0, visuals.weak_text_color().gamma_multiply(0.4));
+        let axis_stroke = Stroke::new(1.5, visuals.text_color().gamma_multiply(0.7));
+        for k in 0..3 {
+            for a in [false, true] {
+                for b in [false, true] {
+                    let mut m0 = [false; 3];
+                    let others: Vec<usize> = (0..3).filter(|&j| j != k).collect();
+                    m0[others[0]] = a;
+                    m0[others[1]] = b;
+                    let mut m1 = m0;
+                    m1[k] = true;
+                    let stroke = if !a && !b { axis_stroke } else { box_stroke };
+                    self.painter.line_segment(
+                        [self.to_screen(corner(m0)), self.to_screen(corner(m1))],
+                        stroke,
+                    );
+                }
+            }
+            let mut end = [false; 3];
+            end[k] = true;
+            self.painter.text(
+                self.to_screen(corner(end)),
+                Align2::LEFT_BOTTOM,
+                format!(" {}", labels[k]),
+                FontId::proportional(13.0),
+                visuals.text_color(),
+            );
+        }
+    }
+
+    /// How to move the picture, in the bottom-right corner; left out where
+    /// it would crowd a small picture.
+    pub fn hint(&self, visuals: &egui::Visuals) {
+        if self.rect.height() < 240.0 {
+            return;
+        }
+        self.painter.text(
+            self.rect.right_bottom() + Vec2::new(-8.0, -6.0),
+            Align2::RIGHT_BOTTOM,
+            "drag to rotate · scroll to zoom · double-click to reset",
+            FontId::proportional(12.0),
+            visuals.weak_text_color(),
+        );
+    }
 }
 
 /// Draw the trajectory `points` in coloured `segments` (see
@@ -121,61 +258,19 @@ pub fn show(
     segments: &[Segment],
     labels: [&str; 3],
 ) {
-    let size = ui.available_size();
-    let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
-    if response.dragged() {
-        camera.drag(response.drag_delta());
-    }
-    if response.hovered() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        camera.zoom = (camera.zoom * (scroll * 0.002).exp()).clamp(0.1, 20.0);
-    }
-    if response.double_clicked() {
-        *camera = Camera::default();
-    }
-
-    let rect = response.rect;
-    let visuals = ui.visuals();
-    painter.rect_filled(rect, 0.0, visuals.extreme_bg_color);
-    let Some(norm) = Normaliser::fit(points.iter().copied()) else {
+    let norm = Normaliser::fit(points.iter().copied());
+    let (lo, hi) = match &norm {
+        Some(n) => (n.apply(n.lo), n.apply(n.hi)),
+        None => ([-1.0; 3], [1.0; 3]),
+    };
+    let frame = Frame::begin(ui, camera, lo, hi, true);
+    let Some(norm) = norm else {
         return;
     };
-    let center = rect.center();
-    let radius = fit_radius(&norm, rect.width().min(rect.height()));
-    let to_screen = |p: [f32; 3]| {
-        let [x, y, _] = camera.project(p);
-        Pos2::new(center.x + x * radius, center.y - y * radius)
-    };
-
-    // Bounding box and labelled axes along three edges from the low corner.
-    let lo = norm.apply(norm.lo);
-    let hi = norm.apply(norm.hi);
-    let corner = |m: [bool; 3]| [0, 1, 2].map(|k| if m[k] { hi[k] } else { lo[k] });
-    let box_stroke = Stroke::new(1.0, visuals.weak_text_color().gamma_multiply(0.4));
-    let axis_stroke = Stroke::new(1.5, visuals.text_color().gamma_multiply(0.7));
-    for k in 0..3 {
-        for a in [false, true] {
-            for b in [false, true] {
-                let mut m0 = [false; 3];
-                let others: Vec<usize> = (0..3).filter(|&j| j != k).collect();
-                m0[others[0]] = a;
-                m0[others[1]] = b;
-                let mut m1 = m0;
-                m1[k] = true;
-                let stroke = if !a && !b { axis_stroke } else { box_stroke };
-                painter.line_segment([to_screen(corner(m0)), to_screen(corner(m1))], stroke);
-            }
-        }
-        let mut end = [false; 3];
-        end[k] = true;
-        painter.text(
-            to_screen(corner(end)),
-            Align2::LEFT_BOTTOM,
-            format!(" {}", labels[k]),
-            FontId::proportional(13.0),
-            visuals.text_color(),
-        );
-    }
+    let visuals = ui.visuals();
+    frame.axes(visuals, lo, hi, labels);
+    let to_screen = |p: [f32; 3]| frame.to_screen(p);
+    let painter = &frame.painter;
 
     // The trail, in coloured segments; long runs are strided.
     let drawn = segments.last().map_or(0, |l| l.end + 1 - segments[0].start);
@@ -199,13 +294,7 @@ pub fn show(
     if let Some(head) = points.last().filter(|p| finite(p)) {
         painter.circle_filled(to_screen(norm.apply(*head)), 4.0, HEAD);
     }
-    painter.text(
-        rect.right_bottom() + Vec2::new(-8.0, -6.0),
-        Align2::RIGHT_BOTTOM,
-        "drag to rotate · scroll to zoom · double-click to reset",
-        FontId::proportional(12.0),
-        visuals.weak_text_color(),
-    );
+    frame.hint(visuals);
 }
 
 #[cfg(test)]
@@ -270,6 +359,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_current_view_fits_the_space() {
+        let (lo, hi) = ([-1.0, -1.0, -0.7], [1.0, 1.0, 0.7]);
+        let c = Camera::default();
+        let size = Vec2::new(600.0, 200.0);
+        let r = fit_view(&c, lo, hi, size);
+        let mut touches = false;
+        for m in 0..8 {
+            let p = [0, 1, 2].map(|k| if m >> k & 1 == 1 { hi[k] } else { lo[k] });
+            let [x, y, _] = c.project(p);
+            assert!(x.abs() * r <= 0.5 * size.x && y.abs() * r <= 0.5 * size.y);
+            touches |= (y.abs() * r - 0.45 * size.y).abs() < 1e-3;
+        }
+        // A wide, short space is filled from top to bottom.
+        assert!(touches);
     }
 
     #[test]

@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Surface and contour views: `plot.surface` shows a grid field as a rotatable, shaded 3D surface over its axes and `plot.contour` as lines of equal value (`levels`, `log_scale`); both work on two-parameter sweeps and on lines of cells over time (e.g. the heat rod). The resonance-map example adds a surface.
 - Sweeps as samples (ADRs 0027–0028): a top-level `sample` section with designs `grid`, `list`, `random`, `latin_hypercube` and `sobol` over any number of parameters (seeded, at most 250 000 samples); every sample is recorded with the swept parameters as signals, a two-parameter grid also as `grid.<signal>` grids for heat maps and cuts, and unordered samples are drawn as markers coloured by value; the app's sweep bar chooses the design, count, seed and parameters; `simsandbox run` writes one row per sample; resonance-samples example (a Sobol sweep).
 - Documentation system: `AGENTS.md` entry point and session protocol, documentation map, status, vision, roadmap, architecture, design, guides, research, open questions, risks, glossary, session notes, ADRs 0005–0006.
 - Docs check (`scripts/check_docs.py`) in CI; pull request and issue templates.

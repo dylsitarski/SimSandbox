@@ -535,7 +535,9 @@ mod tests {
                 "plot.3d",
                 "plot.heatmap",
                 "plot.profile",
-                "plot.scatter"
+                "plot.scatter",
+                "plot.surface",
+                "plot.contour"
             ]
         );
         assert!(crate::builtin::register(&mut r).is_err());

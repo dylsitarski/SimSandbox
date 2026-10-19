@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "description": "The driven, damped spring of the resonance example, swept over two parameters at once: the driving frequency w and the damping c. Left: the amplitude of the steady swing over both, coloured on a log scale; the bright ridge at w ≈ 1 is the resonance, sharpest and tallest where damping is low. Right: a cut filter cuts the map at four dampings, the classic family of resonance curves. Change m or k and the ridge moves; edit the cuts under Data….",
+  "description": "The driven, damped spring of the resonance example, swept over two parameters at once: the driving frequency w and the damping c. Left: the amplitude of the steady swing over both, coloured on a log scale; the bright ridge at w ≈ 1 is the resonance, sharpest and tallest where damping is low. Middle: the same as a surface, heights on a log scale; drag to turn it. Right: a cut filter cuts the map at four dampings, the classic family of resonance curves. Change m or k and the ridge moves; edit the cuts under Data….",
   "run": {
     "dt": 0.01
   },
@@ -73,6 +73,22 @@
         },
         "style": {
           "log_colour": 1.0
+        }
+      },
+      {
+        "type": "plot.surface",
+        "bind": {
+          "field": "grid.spring.amplitude",
+          "x": "grid.spring.w",
+          "y": "grid.spring.c"
+        },
+        "style": {
+          "log_scale": 1.0
+        },
+        "camera": {
+          "yaw": -0.6,
+          "pitch": 0.35,
+          "zoom": 1.0
         }
       },
       {
