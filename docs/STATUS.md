@@ -2,7 +2,7 @@
 
 _Last updated: 2026-10-19_
 
-**Phase:** 0 · Foundations ([roadmap](roadmap.md#phase-0--foundations)). **Gate:** the Lorenz system runs live on the desktop with sliders. **Gate met:** yes, 2026-10-16: Lorenz runs live in the desktop app with rho and sigma sliders (checked headless in the cloud; to confirm on the owner's Windows machine). Phase 0 continues with the remaining roadmap items before Phase 1.
+**Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0033](decisions/0033-phase-1-plan.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16, checked headless in the cloud; to confirm on the owner's Windows machine.
 
 ## What works
 
@@ -24,6 +24,7 @@ _Last updated: 2026-10-19_
 
 ## Done recently
 
+- 2026-10-19: Phase 1 planned with the owner (ADR 0033): agents first (grazing model), then direct feedthrough, node canvas, subsystems, headless Python API, the rest of shareable files; the simulation moves off the UI thread only if the grazing model needs it.
 - 2026-10-19: surface and contour views: `plot.surface` (CPU-projected, depth-sorted quads shaded by slope, fitted to the current rotation) and `plot.contour` (marching squares, levels evenly or log spaced) over the heat map's axes; the resonance-map example shows its amplitude as a surface.
 - 2026-10-18: sweep redesign (ADRs 0027–0028): `sample` section with grid, list, random, Latin hypercube and Sobol designs over any number of parameters; sweeps recorded as samples with the parameters as signals, `grid.<signal>` grids for two-parameter grids, markers for unordered samples; sweep bar with design, count and seed; `simsandbox run` writes one row per sample; resonance examples converted, resonance-samples example added.
 - 2026-10-18: filters (ADRs 0030–0032): `controls.filters` with expression and cut filters evaluated per sample, a "Data…" window, cut filters along x, along y or free lines; `controls.signals` and ADR 0029 profile cuts converted on load; the profile view plots line fields only.
@@ -62,7 +63,10 @@ _Last updated: 2026-10-19_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Plan Phase 1 with the owner:** order the [Phase 1 roadmap](roadmap.md#phase-1--composition) items (node canvas, Python API, subsystems, agent domain, direct feedthrough).
+1. **Agent domain ADR:** how agents are stored (an ECS library or plain arrays), stepped and seeded, how populations become outputs (counts and means as scalars, positions as point sets) and how they read inputs from equation blocks; settle with the owner before code.
+2. **Agent domain and the grazing model** ([ADR 0033](decisions/0033-phase-1-plan.md)): a `simsandbox-agents` crate, grass as an ODE on a grid, sheep agents, coupled both ways, verified (seeded runs reproduce; known limits such as no sheep giving logistic grass), with a curated view (sheep over the grass heat map, population counts). Measure whether the UI stays responsive; if not, ADR for a simulation worker thread.
+3. **Direct feedthrough and algebraic loops** ([Q5](open-questions.md)).
+4. **Visual node canvas**, then subsystems, the Python API and the rest of shareable files, in [roadmap](roadmap.md#phase-1--composition) order.
 
 ## Known limitations
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-_Last updated: 2026-10-15_
+_Last updated: 2026-10-19_
 
 Start with the equation sandbox: it exercises the whole Block contract, delivers all three pillars at small scale, and is useful on its own. Each gate is a working demo, not a feature count. If a gate fails, fix the Block contract before adding any new backend, because every later phase depends on it.
 
@@ -31,16 +31,16 @@ Goal: one equation, live. Gate: the Lorenz system runs live on the desktop with 
 
 ## Phase 1 · Composition
 
-Goal: connect and reuse. Gate: an ODE model and an agent model run in one graph.
+Goal: connect and reuse. Gate: an ODE model and an agent model run in one graph (the grazing model: grass regrowing by an ODE, sheep agents eating it). Order and scope: [ADR 0033](decisions/0033-phase-1-plan.md).
 
-- [ ] Pluggable views with slots, derived signals and multi-view layout ([ADR 0015](decisions/0015-pluggable-views.md))
-- [ ] Visual node canvas
-- [ ] Python API (PyO3)
-- [ ] Subsystems collapsed into reusable Blocks
-- [ ] Pause, rewind and branch in the UI
-- [ ] Shareable model files
-- [ ] Agent domain (ECS) with a first agent model
-- [ ] Direct feedthrough and algebraic loops in fused groups
+- [x] Pluggable views with slots, derived signals and multi-view layout ([ADR 0015](decisions/0015-pluggable-views.md)), built during Phase 0
+- [x] Pause, rewind and branch in the UI, built during Phase 0
+- [ ] 1. Agent domain with a first agent model (grazing)
+- [ ] 2. Direct feedthrough and algebraic loops in fused groups
+- [ ] 3. Visual node canvas
+- [ ] 4. Subsystems collapsed into reusable Blocks
+- [ ] 5. Python API (PyO3): headless scripting, results as numpy arrays
+- [ ] 6. Shareable model files: ask before discarding unsaved changes; a stated rule for converting older files (files are already self-contained)
 
 ## Phase 2 · Breadth
 
