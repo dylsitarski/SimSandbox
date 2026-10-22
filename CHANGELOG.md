@@ -6,6 +6,9 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Node canvas (ADR 0042): a Diagram tab beside Views shows the model's blocks, ports and wires; drag blocks, draw wires from outputs to inputs, drag a wire off an input to remove it, add blocks by type, rename and delete them, and double-click to edit equations. Positions are saved in the file (`at` per block); blocks without one are laid out by signal flow. Edits restart the run once the model loads; until then they wait as a draft with the reason, and the run goes on.
+- "Start from here": the current state becomes where the run starts, saved with the model (initial-condition parameters such as `v0`, or a `start` entry with a block's state and table rows), e.g. to study a transient from a steady state; "Forget start state" undoes it. Headless: `simsandbox start-from FILE --t T` and `Model.start_from(t)`.
+- `simsandbox render --diagram` and `Model.render(diagram=True)` draw the block diagram; `Model.add_block(..., at=(x, y))`.
 - Headless interface for people and AI agents (ADRs 0039, 0041; [guide](docs/guides/headless.md)): `simsandbox describe [TYPE]` lists every block, view and filter type with ports, units, parameters, methods and labels as JSON; `simsandbox schema` prints the file's JSON Schema; `simsandbox check FILE` reports every problem with its path or line and column, plus parameters and what the model records, as JSON (exit status 1 if it cannot run); `simsandbox run --format json` writes outputs grouped by port, including populations; `simsandbox render FILE --out IMAGE.png` draws the model's views as the app shows them, without a window or GPU.
 - Python package `simsandbox` (`pip install ./python`): describe, check, build (`Model.add_block`, `connect`, `set`, `sweep`, `set_run`), run (results as numpy arrays) and render models; errors raise `ModelError` with every problem found.
 
@@ -50,6 +53,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- Numbers in model files are read back exactly as written; before, some values came back one unit in the last place off, so a saved model could differ slightly from the one that was saved.
 - App: a sweep that reaches an infinite value (the resonance example swept over `spring.c` from 0) no longer crashes; plots leave a gap at infinite or NaN values. Choosing a sweep parameter uses its slider range when it has one.
 
 ### Changed

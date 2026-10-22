@@ -720,6 +720,106 @@ impl Session {
         Ok(())
     }
 
+    /// Start from the current state (ADR 0042): every block's state now
+    /// becomes where the run starts, then the run restarts at t = 0 from
+    /// it. Blocks whose initial-condition parameters can say it exactly
+    /// (`x0` for a state `x`) get those parameters; the others get a
+    /// `start` entry in the file with their state and tables. Returns a
+    /// note per block.
+    pub fn start_from_now(&mut self) -> Result<Vec<String>, String> {
+        if self.sweep.is_some() {
+            return Err("a swept model has no state to start from".into());
+        }
+        let t = self.time();
+        let mut notes = Vec::new();
+        for i in 0..self.file.blocks.len() {
+            let name = self.file.blocks[i].name.clone();
+            let id = self.ids[&name];
+            let now = self.sim.current(id);
+            if now.state.is_empty() && now.tables.is_empty() {
+                continue;
+            }
+            let model = self.sim.model();
+            let block = model.block(id).map_err(|e| e.to_string())?;
+            let spec = block.spec();
+            let params = model.params(id).map_err(|e| e.to_string())?;
+            let by_params = now
+                .tables
+                .is_empty()
+                .then(|| block.initial_params(&now.state, params))
+                .flatten();
+            if let Some(p) = by_params {
+                let changed: Vec<(String, f64)> = spec
+                    .params
+                    .iter()
+                    .zip(p.iter().zip(params))
+                    .filter(|(_, (new, old))| new != old)
+                    .map(|(q, (new, _))| (q.name.clone(), *new))
+                    .collect();
+                let shown: Vec<String> = changed
+                    .iter()
+                    .map(|(n, v)| format!("{n} = {}", crate::session::short(*v)))
+                    .collect();
+                for (n, v) in changed {
+                    self.sim.set_param(id, &n, v).map_err(|e| e.to_string())?;
+                }
+                self.sim.set_start(id, None).map_err(|e| e.to_string())?;
+                self.file.blocks[i].start = None;
+                notes.push(format!("{name}: {}", shown.join(", ")));
+            } else {
+                let entry = simsandbox_file::StartEntry::from_start(&now, spec);
+                let rows: usize = now.tables.iter().map(Vec::len).sum();
+                let what = if rows > 0 {
+                    format!("{} values and {rows} rows", now.state.len())
+                } else {
+                    format!("{} values", now.state.len())
+                };
+                self.sim
+                    .set_start(id, Some(now))
+                    .map_err(|e| e.to_string())?;
+                self.file.blocks[i].start = Some(entry);
+                notes.push(format!("{name}: start state saved ({what})"));
+            }
+        }
+        if notes.is_empty() {
+            return Err("no block has a state to start from".into());
+        }
+        self.restart().map_err(|e| e.to_string())?;
+        notes.insert(0, format!("Starting from the state at t = {}", short(t)));
+        Ok(notes)
+    }
+
+    /// Where a block sits on the node canvas (ADR 0042); layout only, so
+    /// the run goes on.
+    pub fn set_position(&mut self, block: &str, at: [f64; 2]) -> Result<(), String> {
+        let mut file = std::mem::take(&mut self.file);
+        let edit = crate::diagram::Edit::Move {
+            block: block.into(),
+            at,
+        };
+        let result = crate::diagram::apply(&mut file, &Registry::new(), &edit);
+        self.file = file;
+        result.map(|_| ())
+    }
+
+    /// Whether any block starts from a saved state instead of its
+    /// parameters.
+    pub fn has_start_states(&self) -> bool {
+        self.file.blocks.iter().any(|b| b.start.is_some())
+    }
+
+    /// Start every block from its parameters again, and restart.
+    pub fn forget_start_states(&mut self) -> Result<(), String> {
+        for b in &mut self.file.blocks {
+            if b.start.take().is_some() {
+                self.sim
+                    .set_start(self.ids[&b.name], None)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        self.restart().map_err(|e| e.to_string())
+    }
+
     /// The model file with the current parameters, step, default speed and
     /// views (ADR 0012, ADR 0013, ADR 0015), ready to write.
     pub fn save_json(
@@ -1151,6 +1251,17 @@ impl Sweep {
             plan,
             targets,
         })
+    }
+}
+
+/// A number in its shortest form, at most 6 significant digits.
+pub(crate) fn short(v: f64) -> String {
+    let r = format!("{v:.6e}").parse::<f64>().unwrap_or(v);
+    let s = format!("{r}");
+    if s.len() > 12 {
+        format!("{r:.6e}")
+    } else {
+        s
     }
 }
 
@@ -1694,5 +1805,95 @@ mod tests {
     fn bad_files_report_errors() {
         let err = Session::load("x", "{", &registry()).err().unwrap();
         assert!(err.contains("line"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+    use crate::examples::{registry, EXAMPLES};
+
+    fn open(part: &str) -> Session {
+        let e = EXAMPLES.iter().find(|e| e.name.contains(part)).unwrap();
+        Session::load(e.name, e.text, &registry()).unwrap()
+    }
+
+    fn reopen(s: &mut Session) -> Session {
+        let text = s.save_json(1.0, None).unwrap();
+        Session::load("again", &text, &registry()).unwrap()
+    }
+
+    #[test]
+    fn equation_blocks_start_from_now_through_their_initial_parameters() {
+        let mut s = open("Cruise");
+        s.run_until(60.0).unwrap();
+        let (car, cruise) = (s.ids["car"], s.ids["cruise"]);
+        let v = s.sim.state(car).to_vec();
+        let i = s.sim.state(cruise).to_vec();
+        let notes = s.start_from_now().unwrap();
+        assert!(notes[0].contains("t = 60"), "{notes:?}");
+        assert!(
+            notes.iter().any(|n| n.starts_with("car: v0 = ")),
+            "{notes:?}"
+        );
+        assert_eq!(s.time(), 0.0);
+        assert_eq!(s.sim.state(car), v);
+        assert_eq!(s.sim.state(cruise), i);
+        assert!(!s.has_start_states(), "parameters say it");
+        // Saved and opened again, it starts there.
+        let again = reopen(&mut s);
+        assert_eq!(again.sim.state(car), v);
+        assert!(!again.file.to_json().contains("\"start\""));
+    }
+
+    #[test]
+    fn fields_and_populations_save_a_start_state_that_reproduces() {
+        let mut s = open("Sheep");
+        s.run_until(5.0).unwrap();
+        let (grass, sheep) = (s.ids["grass"], s.ids["sheep"]);
+        let field = s.sim.state(grass).to_vec();
+        let animals = s.sim.current(sheep).tables;
+        let notes = s.start_from_now().unwrap();
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("grass: start state saved (1600 values)")),
+            "{notes:?}"
+        );
+        assert!(s.has_start_states());
+        assert_eq!(s.sim.state(grass), field);
+        assert_eq!(s.sim.current(sheep).tables, animals);
+        // The same run from the saved file as from here.
+        s.run_until(2.0).unwrap();
+        let mut again = reopen(&mut s);
+        assert_eq!(again.sim.state(grass), field);
+        again.run_until(2.0).unwrap();
+        s.restart().unwrap();
+        s.run_until(2.0).unwrap();
+        assert_eq!(again.sim.state(grass), s.sim.state(grass));
+        assert_eq!(again.sim.current(sheep), s.sim.current(sheep));
+        // Forgetting goes back to the parameters' start.
+        again.forget_start_states().unwrap();
+        assert!(again
+            .sim
+            .state(grass)
+            .iter()
+            .all(|&g| g == again.sim.state(grass)[0]));
+        assert!(!again.has_start_states());
+    }
+
+    #[test]
+    fn bad_start_states_are_load_errors_at_their_path() {
+        let e = EXAMPLES.iter().find(|e| e.name.contains("Lorenz")).unwrap();
+        let text = e.text.replacen(
+            "\"type\": \"eq.lorenz\",",
+            "\"type\": \"eq.lorenz\", \"start\": {\"state\": [1, 2]},",
+            1,
+        );
+        let check = crate::describe::check(&text, &registry());
+        assert_eq!(check["errors"][0]["path"], "blocks[0].start", "{check}");
+        let swept = open("Resonance curve");
+        let mut swept = swept;
+        assert!(swept.start_from_now().is_err());
     }
 }

@@ -35,6 +35,21 @@ pub struct Model {
     pub(crate) groups: Vec<Group>,
     pub(crate) seed: u64,
     pub(crate) loops: crate::loops::LoopMethod,
+    /// Per Block, a state to start from instead of the one its parameters
+    /// give (ADR 0042).
+    pub(crate) starts: Vec<Option<Start>>,
+}
+
+/// A Block's state and table rows to start from, replacing what `init`
+/// and `init_tables` compute from its parameters: how a run continues
+/// from a state reached before (e.g. a steady state), reproducibly
+/// (ADR 0042).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Start {
+    /// One value per state, in `BlockSpec::states` order.
+    pub state: Vec<f64>,
+    /// Per table in `BlockSpec::tables` order, its rows.
+    pub tables: Vec<Vec<Vec<f64>>>,
 }
 
 impl Default for Model {
@@ -46,6 +61,7 @@ impl Default for Model {
             groups: Vec::new(),
             seed: DEFAULT_SEED,
             loops: crate::loops::LoopMethod::default(),
+            starts: Vec::new(),
         }
     }
 }
@@ -77,6 +93,7 @@ impl Model {
     /// Add a Block with its default parameter values.
     pub fn add(&mut self, block: Box<dyn Block>) -> BlockId {
         self.params.push(block.spec().default_params());
+        self.starts.push(None);
         self.blocks.push(block);
         BlockId(self.blocks.len() - 1)
     }
@@ -93,6 +110,58 @@ impl Model {
         }
         self.params[block.0][idx] = value;
         Ok(())
+    }
+
+    /// Start a Block from `start` instead of its parameters' initial
+    /// state, or from its parameters again with `None`. Checked against
+    /// the Block's states and tables.
+    pub fn set_start(&mut self, block: BlockId, start: Option<Start>) -> Result<()> {
+        let spec = self.block(block)?.spec();
+        if let Some(s) = &start {
+            let bad = |reason: String| SimError::InvalidSetting {
+                setting: "start".into(),
+                reason,
+            };
+            if s.state.len() != spec.states.len() {
+                return Err(bad(format!(
+                    "{} has {} states, not {}",
+                    spec.name,
+                    spec.states.len(),
+                    s.state.len()
+                )));
+            }
+            if s.tables.len() != spec.tables.len() {
+                return Err(bad(format!(
+                    "{} has {} tables, not {}",
+                    spec.name,
+                    spec.tables.len(),
+                    s.tables.len()
+                )));
+            }
+            for (t, rows) in spec.tables.iter().zip(&s.tables) {
+                if let Some(r) = rows.iter().find(|r| r.len() != t.columns.len()) {
+                    return Err(bad(format!(
+                        "rows of {}.{} have {} values ({}), not {}",
+                        spec.name,
+                        t.name,
+                        t.columns.len(),
+                        t.columns.join(", "),
+                        r.len()
+                    )));
+                }
+            }
+            let values = s.state.iter().chain(s.tables.iter().flatten().flatten());
+            if values.into_iter().any(|v| !v.is_finite()) {
+                return Err(bad("values must be finite".into()));
+            }
+        }
+        self.starts[block.0] = start;
+        Ok(())
+    }
+
+    /// The state a Block starts from, if not its parameters'.
+    pub fn start(&self, block: BlockId) -> Option<&Start> {
+        self.starts.get(block.0)?.as_ref()
     }
 
     /// Current value of a parameter.

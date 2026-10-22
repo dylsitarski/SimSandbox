@@ -225,6 +225,31 @@ pub fn run(
     Ok(r)
 }
 
+/// Run a model file to `t` and make that state its start (ADR 0042):
+/// the model file that starts there, and a note per block. See
+/// [`crate::Session::start_from_now`].
+pub fn start_from(
+    text: &str,
+    registry: &Registry,
+    t: f64,
+) -> Result<(String, Vec<String>), String> {
+    if !(t.is_finite() && t >= 0.0) {
+        return Err("the time must be zero or positive".into());
+    }
+    let mut s = crate::Session::load("model", text, registry)?;
+    s.run_until(t).map_err(|e| e.to_string())?;
+    let notes = s.start_from_now()?;
+    let speed = s.file.controls.speed.unwrap_or(1.0);
+    let mut text = s.save_json(speed, None)?;
+    if s.file.controls.speed.is_none() {
+        // Keep the file as it was where nothing changed.
+        let (mut f, _) = simsandbox_file::ModelFile::from_json(&text).map_err(|e| e.to_string())?;
+        f.controls.speed = None;
+        text = f.to_json();
+    }
+    Ok((text, notes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +285,18 @@ mod tests {
         let csv = String::from_utf8(csv).unwrap();
         assert_eq!(csv.lines().count(), rows + 1);
         assert!(csv.starts_with("t,grass.grass[0],"));
+    }
+
+    #[test]
+    fn start_from_gives_a_file_that_starts_there() {
+        let (text, notes) = start_from(example("cruise"), &registry(), 30.0).unwrap();
+        assert!(notes.iter().any(|n| n.contains("v0 = ")), "{notes:?}");
+        let r = run(&text, &registry(), Some(0.1), None).unwrap();
+        let v = r.outputs.iter().find(|o| o.name == "car.v").unwrap();
+        let before = run(example("cruise"), &registry(), Some(30.0), None).unwrap();
+        let v30 = before.outputs.iter().find(|o| o.name == "car.v").unwrap();
+        assert_eq!(v.values[0], *v30.values.last().unwrap());
+        assert!(start_from(example("cruise"), &registry(), -1.0).is_err());
     }
 
     #[test]

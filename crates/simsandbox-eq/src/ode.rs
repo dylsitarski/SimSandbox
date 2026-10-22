@@ -57,6 +57,12 @@ impl Block for OdeBlock {
         Ok(())
     }
 
+    fn initial_params(&self, state: &[f64], params: &[f64]) -> Option<Vec<f64>> {
+        initial_params_by_name(self.spec(), state, params, |p, x| {
+            self.system.initial_state(p, x)
+        })
+    }
+
     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
         let sys = self.system.as_ref();
         let f = |t: f64, x: &[f64], dx: &mut [f64]| sys.rhs(t, x, io.inputs, io.params, dx);
@@ -76,4 +82,28 @@ impl Block for OdeBlock {
     fn as_equations(&self) -> Option<&dyn Equations> {
         Some(self.system.as_ref())
     }
+}
+
+/// Parameters whose initial state is `state`, for blocks whose states
+/// `s` each start from an initial-condition parameter `s0` (typed
+/// equations and the built-in systems): set them, then check that
+/// `initial_state` gives `state` exactly (ADR 0042).
+pub(crate) fn initial_params_by_name(
+    spec: &BlockSpec,
+    state: &[f64],
+    params: &[f64],
+    initial_state: impl Fn(&[f64], &mut [f64]),
+) -> Option<Vec<f64>> {
+    let mut p = params.to_vec();
+    for (s, &v) in spec.states.iter().zip(state) {
+        let name = format!("{s}0");
+        let k = spec
+            .params
+            .iter()
+            .position(|q| q.initial_condition && q.name == name)?;
+        p[k] = v;
+    }
+    let mut check = vec![0.0; state.len()];
+    initial_state(&p, &mut check);
+    (check == state).then_some(p)
 }

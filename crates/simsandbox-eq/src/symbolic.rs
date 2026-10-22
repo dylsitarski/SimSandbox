@@ -525,6 +525,12 @@ impl Block for ExplicitBlock {
         Ok(())
     }
 
+    fn initial_params(&self, state: &[f64], params: &[f64]) -> Option<Vec<f64>> {
+        crate::ode::initial_params_by_name(&self.set.spec, state, params, |p, x| {
+            self.set.initial_state(p, x)
+        })
+    }
+
     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
         if self.set.kind == Kind::Map {
             // All states update together from the current values.

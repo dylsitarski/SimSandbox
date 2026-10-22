@@ -163,3 +163,61 @@ fn render_writes_a_png_of_the_views() {
     let missing = simsandbox(&["render", &example("pendulum.ssbx.json")]);
     assert!(String::from_utf8_lossy(&missing.stderr).contains("--out"));
 }
+
+#[test]
+fn the_diagram_renders_and_start_from_writes_a_file_that_starts_there() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let png = dir.join("cruise-diagram.png");
+    let out = simsandbox(&[
+        "render",
+        &example("cruise-control.ssbx.json"),
+        "--diagram",
+        "--out",
+        &png.to_string_lossy(),
+        "--width",
+        "400",
+        "--height",
+        "300",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(&std::fs::read(&png).unwrap()[1..4], b"PNG");
+
+    let started = dir.join("cruise-at-30.json");
+    let out = simsandbox(&[
+        "start-from",
+        &example("cruise-control.ssbx.json"),
+        "--t",
+        "30",
+        "--out",
+        &started.to_string_lossy(),
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("v0 = "));
+    let first = json(&simsandbox(&[
+        "run",
+        &started.to_string_lossy(),
+        "--t-end",
+        "0.1",
+        "--format",
+        "json",
+    ]));
+    let before = json(&simsandbox(&[
+        "run",
+        &example("cruise-control.ssbx.json"),
+        "--t-end",
+        "30",
+        "--format",
+        "json",
+    ]));
+    let v = |r: &Value, k: usize| r["outputs"]["car.v"]["values"][k].as_f64().unwrap();
+    let last = before["rows"].as_u64().unwrap() as usize - 1;
+    assert_eq!(v(&first, 0), v(&before, last));
+}

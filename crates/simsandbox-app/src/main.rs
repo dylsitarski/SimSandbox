@@ -1,7 +1,7 @@
 //! `simsandbox-app` — the SimSandbox desktop app (ADR 0008).
 //!
 //! ```text
-//! simsandbox-app [FILE] [--view time|phase|3d]   (shows only that view)
+//! simsandbox-app [FILE] [--view time|phase|3d|diagram]   (shows only that view)
 //! simsandbox-app [FILE] --window signals|equations (opens that window)
 //! simsandbox-app [FILE] --screenshot OUT.ppm [--after SECONDS]
 //! ```
@@ -11,6 +11,7 @@
 //! for documentation and visual checks.
 
 mod app;
+mod diagram;
 mod live;
 mod log;
 mod pacing;
@@ -40,8 +41,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--view" => {
                 let v = it.next().ok_or("missing value for --view")?;
-                if !["time", "phase", "3d"].contains(&v.as_str()) {
-                    return Err(format!("unknown view '{v}' (expected time, phase or 3d)"));
+                if !["time", "phase", "3d", "diagram"].contains(&v.as_str()) {
+                    return Err(format!(
+                        "unknown view '{v}' (expected time, phase, 3d or diagram)"
+                    ));
                 }
                 view = Some(v.clone());
             }
@@ -82,7 +85,7 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => {
             eprintln!(
-                "error: {e}\nusage: simsandbox-app [FILE] [--view time|phase|3d] [--window signals|equations] [--screenshot OUT.ppm [--after SECONDS]]"
+                "error: {e}\nusage: simsandbox-app [FILE] [--view time|phase|3d|diagram] [--window signals|equations] [--screenshot OUT.ppm [--after SECONDS]]"
             );
             return ExitCode::FAILURE;
         }

@@ -370,6 +370,65 @@ pub struct BlockEntry {
     pub equations: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, f64>,
+    /// Where the block sits on the node canvas, `[x, y]` in canvas units,
+    /// y downwards (ADR 0042). Blocks without one are laid out
+    /// automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<[f64; 2]>,
+    /// The state the block starts from instead of the one its parameters
+    /// give, e.g. a steady state reached before (ADR 0042).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<StartEntry>,
+}
+
+/// A saved start (ADR 0042): every state, in the block's state order, and
+/// the rows of its tables by table name.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StartEntry {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state: Vec<f64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tables: BTreeMap<String, Vec<Vec<f64>>>,
+}
+
+impl StartEntry {
+    /// As the kernel takes it, with tables in the block's order.
+    pub fn to_start(
+        &self,
+        spec: &simsandbox_core::block::BlockSpec,
+    ) -> Result<simsandbox_core::graph::Start, String> {
+        if let Some(name) = self
+            .tables
+            .keys()
+            .find(|n| !spec.tables.iter().any(|t| &t.name == *n))
+        {
+            return Err(format!("{} has no table '{name}'", spec.name));
+        }
+        Ok(simsandbox_core::graph::Start {
+            state: self.state.clone(),
+            tables: spec
+                .tables
+                .iter()
+                .map(|t| self.tables.get(&t.name).cloned().unwrap_or_default())
+                .collect(),
+        })
+    }
+
+    /// From the kernel's form.
+    pub fn from_start(
+        start: &simsandbox_core::graph::Start,
+        spec: &simsandbox_core::block::BlockSpec,
+    ) -> Self {
+        Self {
+            state: start.state.clone(),
+            tables: spec
+                .tables
+                .iter()
+                .zip(&start.tables)
+                .map(|(t, rows)| (t.name.clone(), rows.clone()))
+                .collect(),
+        }
+    }
 }
 
 /// A method name plus numeric options, e.g. `{"name": "rk4", "substeps": 4}`.
@@ -994,6 +1053,12 @@ impl ModelFile {
                     ),
                 ));
             }
+            if entry.at.is_some_and(|p| !p.iter().all(|v| v.is_finite())) {
+                return Err(invalid(
+                    format!("{path}.at"),
+                    "positions must be finite numbers",
+                ));
+            }
             if ids.contains_key(&entry.name) {
                 return Err(invalid(
                     format!("{path}.name"),
@@ -1025,12 +1090,21 @@ impl ModelFile {
                     }
                     _ => invalid(format!("{path}.method"), e),
                 })?;
+            let start = entry
+                .start
+                .as_ref()
+                .map(|s| s.to_start(block.spec()))
+                .transpose()
+                .map_err(|e| invalid(format!("{path}.start"), e))?;
             let id = model.add(block);
             for (name, &value) in &entry.params {
                 model
                     .set_param(id, name, value)
                     .map_err(|e| invalid(format!("{path}.params.{name}"), e))?;
             }
+            model
+                .set_start(id, start)
+                .map_err(|e| invalid(format!("{path}.start"), e))?;
             ids.insert(entry.name.clone(), id);
         }
         for (ci, c) in self.connections.iter().enumerate() {

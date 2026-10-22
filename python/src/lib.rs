@@ -154,6 +154,47 @@ fn render<'py>(
     Ok((PyBytes::new(py, &image), warnings))
 }
 
+/// The block diagram of a model file as a PNG, as the node canvas shows
+/// it (ADR 0042); drawn even if the model cannot run.
+#[pyfunction]
+#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false))]
+fn render_diagram<'py>(
+    py: Python<'py>,
+    text: &str,
+    width: f32,
+    height: f32,
+    scale: f32,
+    light: bool,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let image = py
+        .detach(|| -> Result<_, String> {
+            let (file, _) =
+                simsandbox_session::ModelFile::from_json(text).map_err(|e| e.to_string())?;
+            let o = RenderOptions {
+                width,
+                height,
+                scale,
+                view: None,
+                light,
+            };
+            png(&simsandbox_session::render::render_diagram(
+                &file,
+                &registry(),
+                &o,
+            )?)
+        })
+        .map_err(ModelError::new_err)?;
+    Ok(PyBytes::new(py, &image))
+}
+
+/// Run a model file to `t` and return the model file that starts from the
+/// state there (ADR 0042), with a note per block.
+#[pyfunction]
+fn start_from(py: Python<'_>, text: &str, t: f64) -> PyResult<(String, Vec<String>)> {
+    py.detach(|| simsandbox_session::run::start_from(text, &registry(), t))
+        .map_err(ModelError::new_err)
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ModelError", m.py().get_type::<ModelError>())?;
@@ -163,6 +204,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(examples, m)?)?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
     m.add_function(wrap_pyfunction!(render, m)?)?;
+    m.add_function(wrap_pyfunction!(render_diagram, m)?)?;
+    m.add_function(wrap_pyfunction!(start_from, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

@@ -1,6 +1,6 @@
 # Visualization architecture
 
-_Last updated: 2026-10-17_
+_Last updated: 2026-10-22_
 
 How the app turns a running model into pictures. Decision and rationale: [ADR 0015](../decisions/0015-pluggable-views.md). Status (2026-10-18): migration steps 1–6 are done. ADRs 0024 (heat map axes and coordinates), 0025 (index-aware settings), the filter layer (ADRs 0030–0032) and sweeps as samples (ADRs 0027–0028, for models without states) are built.
 
@@ -11,7 +11,7 @@ Data flows sources → filters → views ([ADR 0030](../decisions/0030-filters-a
 - `expression`: a derived signal over recorded signals, other expressions (evaluated in dependency order; cycles are dropped), parameters and `t`. The older `controls.signals` is converted on load.
 - `cut` ([ADR 0031](../decisions/0031-cut-filters.md), `crates/simsandbox-views/src/cut.rs`): through one 2D grid, along x at fixed y values, along y at fixed x values, or along free lines (extended to the grid's edges by default), with bilinear or nearest interpolation. It records one line field per cut (`name[k]`, labelled e.g. `spring.c = 0.05`) and their shared coordinate (`name.x`, `name.y` or `name.fraction`). Profiles saved with ADR 0029 cuts are converted into cut filters on load.
 
-The "Data…" window lists and edits all filters; a new cut filter opens a profile of its cuts. Filters that work on a window of history (FFT, smoothing, sections) are not built yet; they will not fit the per-sample evaluation and need their own path. The node-canvas observer layer waits for the canvas. Field views are in `crates/simsandbox-views/src/fields.rs`. `crates/simsandbox-views` holds the history, the view contract and registry (`view.rs`), colour encodings (`colour.rs`) and the built-in views (`builtin.rs`, `view3d.rs`); the app shows the model's views as tiles in an automatic grid, with "More views…" for any other view that fits ([ADR 0016](../decisions/0016-model-curated-views.md); `crates/simsandbox-app/src/views.rs`). Derived signals and field recording are in `crates/simsandbox-app/src/session.rs`. The first domain view, `eq.pendulum`, lives in `crates/simsandbox-eq/src/views.rs` behind the crate's `views` feature. The viewer theme is planned.
+The "Data…" window lists and edits all filters; a new cut filter opens a profile of its cuts. Filters that work on a window of history (FFT, smoothing, sections) are not built yet; they will not fit the per-sample evaluation and need their own path. The node-canvas observer layer waits for the canvas. Field views are in `crates/simsandbox-views/src/fields.rs`. `crates/simsandbox-views` holds the history, the view contract and registry (`view.rs`), colour encodings (`colour.rs`) and the built-in views (`builtin.rs`, `view3d.rs`); the app shows the model's views as tiles in an automatic grid, with "More views…" for any other view that fits ([ADR 0016](../decisions/0016-model-curated-views.md); `crates/simsandbox-session/src/views.rs`). Derived signals and field recording are in `crates/simsandbox-session/src/session.rs` and `filters.rs`; views and the node canvas also render headless (`render.rs`, [ADR 0041](../decisions/0041-headless-interface.md)). The first domain view, `eq.pendulum`, lives in `crates/simsandbox-eq/src/views.rs` behind the crate's `views` feature. The viewer theme is planned.
 
 ```mermaid
 flowchart LR

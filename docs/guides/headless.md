@@ -21,6 +21,8 @@ Build with `cargo build --release -p simsandbox-cli`; the binary is `target/rele
 | `simsandbox check FILE` | JSON report; exit status 1 if the model cannot run |
 | `simsandbox run FILE [--t-end S] [--dt S] [--format csv\|json]` | Every output at every step (or sweep sample) |
 | `simsandbox render FILE --out IMAGE.png [--t-end S] [--view N] [--width P] [--height P] [--scale S] [--light]` | PNG of the views after running to `t_end` |
+| `simsandbox render FILE --diagram --out IMAGE.png [--width P] [--height P] [--scale S] [--light]` | PNG of the block diagram, as the app's Diagram tab shows it (also for a file that cannot run) |
+| `simsandbox start-from FILE --t S [--out NEW.json]` | The model file that starts from the state reached at `t` ([ADR 0042](../decisions/0042-node-canvas.md)): initial-condition parameters where they say it exactly, else a `start` entry per block |
 
 Notes, warnings and labels go to standard error; data to standard output.
 
@@ -68,9 +70,11 @@ r = m.run()                                      # numpy arrays
 r.t, r["decay.x"]
 m.set("decay.k", 1.0)                            # edits are file edits: m.data, m.save(path)
 m.render("decay.png")                            # PNG of the views
+m.render("diagram.png", diagram=True)             # PNG of the block diagram
+settled = m.start_from(10.0)                     # starts from the state at t = 10
 ```
 
-- `Model.connect("a.y", "b.u")` wires blocks; `Model.sweep(("spring.w", 0, 3, 600))` evaluates a model with no states over parameter values.
+- `Model.add_block(..., at=(x, y))` places a block on the canvas (laid out automatically otherwise). `Model.connect("a.y", "b.u")` wires blocks; `Model.sweep(("spring.w", 0, 3, 600))` evaluates a model with no states over parameter values.
 - `Results.outputs` shapes: scalar `(rows,)`, vector `(rows, n)`, grid `(rows, ny, nx)`, points `(rows, count, dim)`; `Results.populations[name]` is a list of `(n, dim)` arrays.
 - Problems raise `simsandbox.ModelError`, listing every error `check` finds.
 

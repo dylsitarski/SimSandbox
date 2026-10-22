@@ -112,6 +112,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0039-ai-agent-access.md](decisions/0039-ai-agent-access.md) | Decision record | AI agents as first-class users: rules for discovery, checking, headless runs and rendering |
 | [decisions/0040-feedthrough-and-algebraic-loops.md](decisions/0040-feedthrough-and-algebraic-loops.md) | Decision record | Direct feedthrough, algebraic loops and typed inputs |
 | [decisions/0041-headless-interface.md](decisions/0041-headless-interface.md) | Decision record | Headless commands, CPU rendering of views, the Python package |
+| [decisions/0042-node-canvas.md](decisions/0042-node-canvas.md) | Decision record | The node canvas, block positions, edits to a running model, starting from a reached state |
 
 ### Guides
 

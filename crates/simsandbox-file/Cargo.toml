@@ -11,7 +11,10 @@ authors.workspace = true
 [dependencies]
 simsandbox-core = { path = "../simsandbox-core" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# Numbers read back exactly as written, so a saved file reproduces its
+# run bit for bit (ADR 0039, ADR 0042); the default parser can be one
+# unit in the last place off.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 [dev-dependencies]
 serde_json = "1"

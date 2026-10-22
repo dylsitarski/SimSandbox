@@ -315,6 +315,14 @@ pub trait Block: Send {
         Ok(())
     }
 
+    /// Parameter values whose initial state (`init`) is exactly `state`,
+    /// if the Block's initial-condition parameters can express it; `None`
+    /// otherwise, and then a start state is saved instead (ADR 0042).
+    fn initial_params(&self, state: &[f64], params: &[f64]) -> Option<Vec<f64>> {
+        let _ = (state, params);
+        None
+    }
+
     /// Advance from `ctx.t` to `ctx.t + ctx.dt`, then write outputs.
     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()>;
 

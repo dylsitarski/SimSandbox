@@ -1,6 +1,6 @@
 # Block contract
 
-_Last updated: 2026-10-15_
+_Last updated: 2026-10-22_
 
 Every simulation, from a pendulum to a CFD solver to a neural network, is wrapped as a **Block**. Blocks in the same domain are fused and solved together using that domain's native approach; different domains are coupled through an FMI-style step interface run by a co-simulation master. Rationale and rejected alternatives: [ADR 0002](../decisions/0002-layered-block-contract.md). Code: `crates/simsandbox-core/src/block.rs`.
 
@@ -24,7 +24,7 @@ A Block separates **what** is simulated from **how** it is computed. The model d
 
 | Trait | Required | What the Block provides | What the kernel does with it | Implemented |
 | --- | --- | --- | --- | --- |
-| `Block` | Yes | Spec, method, `init`, `do_step`, `compute_outputs`; `init_tables` for Blocks with tables (default: nothing) | Steps it as a co-simulated black box; each step's `StepContext` carries the step number and the Block's random stream (`random::stream(model seed, Block name)`, draws with `random::Draws`, ADR 0034) | Yes |
+| `Block` | Yes | Spec, method, `init`, `do_step`, `compute_outputs`; `init_tables` for Blocks with tables (default: nothing); `initial_params` for Blocks whose initial-condition parameters can reproduce a given state (default: none; equation Blocks map a state `s` to a parameter `s0`, [ADR 0042](../decisions/0042-node-canvas.md)) | Steps it as a co-simulated black box; each step's `StepContext` carries the step number and the Block's random stream (`random::stream(model seed, Block name)`, draws with `random::Draws`, ADR 0034) | Yes |
 | `Equations` | No | `rhs` (dx/dt) and `outputs`, both given the inputs; outputs may depend on inputs only as their ports declare (`PortSpec::feedthrough`, ADR 0040) | Fuses it with other equation Blocks into one system, ordering feedthrough and solving loops at every evaluation | Yes |
 | `Rollback` | No | Cheap undo of a rejected step | Iterative coupling and step rejection | Trait only |
 | `Derivatives` | No | Jacobian of the right-hand side | Implicit coupling, sensitivities, parameter fitting | Trait only |

@@ -107,3 +107,25 @@ def test_every_example_loads_runs_briefly_and_round_trips():
         swept = "sample" in m.data
         r = m.run() if swept else m.run(t_end=10 * m.data.get("run", {}).get("dt", 0.01))
         assert r.rows > 0 and all(math.isfinite(x) for x in next(iter(r.index.values())))
+
+
+def test_the_diagram_renders_even_for_a_model_that_cannot_run(tmp_path):
+    m = ss.Model().add_block("a", "eq.equations", "rk4", equations="input u\ndx/dt = u - x", at=(0, 0))
+    assert not m.check()["ok"], "a.u is not connected"
+    png = m.render(tmp_path / "d.png", diagram=True, width=300, height=200)
+    assert png[1:4] == b"PNG"
+    with pytest.raises(ValueError):
+        m.render(diagram=True, t_end=1.0)
+
+
+def test_start_from_continues_from_a_reached_state():
+    car = ss.Model.example("Cruise control")
+    settled = car.start_from(60.0)
+    assert any("v0 = " in n for n in settled.start_notes)
+    before = car.run(t_end=60.0)["car.v"][-1]
+    after = settled.run(t_end=0.1)["car.v"][0]
+    assert after == before
+    # Fields and populations are saved as a start state.
+    grazing = ss.Model.example("grazing").start_from(2.0)
+    assert "start" in grazing.block("sheep") and "start" in grazing.block("grass")
+    assert grazing.check()["ok"]

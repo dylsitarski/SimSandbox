@@ -785,3 +785,34 @@ fn legacy_sweeps_become_samples_leniently() {
         Err(FileError::Invalid { path, .. }) if path == "blocks[0].method"
     ));
 }
+
+#[test]
+fn block_positions_are_optional_and_round_trip() {
+    let (mut file, _) = ModelFile::from_json(CRUISE).unwrap();
+    assert!(file.blocks.iter().all(|b| b.at.is_none()));
+    file.blocks[0].at = Some([120.0, -40.5]);
+    let text = file.to_json();
+    assert!(
+        text.contains("\"at\": [\n        120.0,\n        -40.5\n      ]"),
+        "{text}"
+    );
+    let (again, _) = ModelFile::from_json(&text).unwrap();
+    assert_eq!(again.blocks[0].at, Some([120.0, -40.5]));
+    assert_eq!(again.blocks[1].at, None);
+    load(&text, &registry()).unwrap();
+    let bad = text.replace("-40.5", "\"up\"");
+    assert!(load(&bad, &registry()).is_err());
+}
+
+#[test]
+fn numbers_read_back_exactly_as_written() {
+    let (mut file, _) = ModelFile::from_json(CRUISE).unwrap();
+    let values: Vec<f64> = (1..2000).map(|k| (k as f64 * 0.7368).sin() / 3.0).collect();
+    for (k, v) in values.iter().enumerate() {
+        file.blocks[0].params.insert(format!("p{k}"), *v);
+    }
+    let (again, _) = ModelFile::from_json(&file.to_json()).unwrap();
+    for (k, v) in values.iter().enumerate() {
+        assert_eq!(again.blocks[0].params[&format!("p{k}")], *v);
+    }
+}

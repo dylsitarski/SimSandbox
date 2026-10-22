@@ -132,12 +132,14 @@ class Model:
         equations: Iterable[str] | str | None = None,
         params: dict[str, float] | None = None,
         update: str | None = None,
+        at: tuple[float, float] | None = None,
     ) -> "Model":
         """Add a block. ``method`` is a name (``"rk4"``) or a dict with its
         options (``{"name": "dopri5", "rtol": 1e-9}``); without one, the
         type's first method (see :func:`describe`). ``equations`` are the
         lines of an ``eq.equations`` block (a string is split into
-        lines)."""
+        lines). ``at`` places it on the node canvas (laid out automatically
+        if absent)."""
         if any(b["name"] == name for b in self.data.get("blocks", [])):
             raise ModelError(f"there is already a block named {name!r}")
         if method is None:
@@ -160,6 +162,8 @@ class Model:
             block["params"] = {k: float(v) for k, v in params.items()}
         if update is not None:
             block["update"] = update
+        if at is not None:
+            block["at"] = [float(at[0]), float(at[1])]
         self.data.setdefault("blocks", []).append(block)
         return self
 
@@ -237,6 +241,18 @@ class Model:
             raise ModelError(_errors(report) if not report["ok"] else str(e)) from None
         return Results(raw)
 
+    def start_from(self, t: float) -> "Model":
+        """Run to ``t`` and return the model that starts from the state
+        reached there, at time 0 (ADR 0042): e.g. a steady state from which
+        to study a transient. Initial-condition parameters (``x0`` for a
+        state ``x``) take the values where they can express the state;
+        other blocks get a ``start`` entry with their state and tables.
+        The notes say which (``.start_notes``)."""
+        text, notes = _native.start_from(self.to_json(), float(t))
+        m = Model.from_json(text)
+        m.start_notes = notes
+        return m
+
     def render(
         self,
         path: str | os.PathLike | None = None,
@@ -246,13 +262,23 @@ class Model:
         height: float = 800,
         scale: float = 1.0,
         light: bool = False,
+        diagram: bool = False,
     ) -> bytes:
         """Run to ``t_end`` and draw the model's views (``controls.views``,
-        or ``view`` alone) as a PNG, as the app shows them. Writes it to
-        ``path`` if given; returns the PNG bytes."""
-        image, warnings = _native.render(
-            self.to_json(), t_end, view, float(width), float(height), float(scale), light
-        )
+        or ``view`` alone) as a PNG, as the app shows them; with
+        ``diagram``, draw its block diagram instead (no run needed). Writes
+        it to ``path`` if given; returns the PNG bytes."""
+        if diagram:
+            if t_end is not None or view is not None:
+                raise ValueError("t_end and view do not apply to a diagram")
+            image = _native.render_diagram(
+                self.to_json(), float(width), float(height), float(scale), light
+            )
+            warnings = []
+        else:
+            image, warnings = _native.render(
+                self.to_json(), t_end, view, float(width), float(height), float(scale), light
+            )
         for w in warnings:
             import warnings as _w
 

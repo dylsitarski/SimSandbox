@@ -12,6 +12,9 @@
 //! simsandbox schema                 (the model file's JSON Schema)
 //! simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N]
 //!                   [--width POINTS] [--height POINTS] [--scale S] [--light]
+//!                   [--diagram]     (the block diagram instead of the views)
+//! simsandbox start-from FILE --t SECONDS [--out NEW.json]
+//!                                   (the model file that starts from the state at t)
 //! simsandbox lorenz [--t-end 20] [--dt 0.01] [--method euler|rk4|dopri5] [--rho 28]
 //! simsandbox --version
 //! ```
@@ -22,8 +25,8 @@ use simsandbox_core::sim::Simulator;
 use simsandbox_eq::systems::Lorenz;
 use simsandbox_eq::{Integrator, OdeBlock};
 use simsandbox_session::examples::{registry, view_registry};
-use simsandbox_session::render::{png, render, RenderOptions};
-use simsandbox_session::run::{run, DEFAULT_T_END};
+use simsandbox_session::render::{png, render, render_diagram, RenderOptions};
+use simsandbox_session::run::{run, start_from, DEFAULT_T_END};
 use simsandbox_session::{describe, Session};
 use std::collections::BTreeMap;
 use std::io::{self, BufWriter, Write};
@@ -34,10 +37,11 @@ const USAGE: &str = "usage:
   simsandbox check FILE
   simsandbox describe [TYPE]
   simsandbox schema
-  simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--width POINTS] [--height POINTS] [--scale S] [--light]
+  simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--width POINTS] [--height POINTS] [--scale S] [--light] [--diagram]
+  simsandbox start-from FILE --t SECONDS [--out NEW.json]
   simsandbox lorenz [--t-end SECONDS] [--dt SECONDS] [--method euler|rk4|dopri5] [--rho VALUE]";
 
-/// Flags and their values; `--light` takes none.
+/// Flags and their values; `--light` and `--diagram` take none.
 struct Flags(BTreeMap<String, String>);
 
 impl Flags {
@@ -49,7 +53,7 @@ impl Flags {
             if !allowed.contains(&flag.as_str()) {
                 return Err(format!("unknown flag '{flag}'\n{USAGE}"));
             }
-            let value = if flag == "--light" {
+            let value = if flag == "--light" || flag == "--diagram" {
                 String::new()
             } else {
                 it.next()
@@ -179,11 +183,40 @@ fn render_file(args: &[String]) -> Result<(), String> {
     let flags = Flags::parse(
         rest,
         &[
-            "--out", "--t-end", "--view", "--width", "--height", "--scale", "--light",
+            "--out",
+            "--t-end",
+            "--view",
+            "--width",
+            "--height",
+            "--scale",
+            "--light",
+            "--diagram",
         ],
     )?;
     let out = flags.get("--out").ok_or("render needs --out IMAGE.png")?;
-    let mut s = Session::load(path, &read(path)?, &registry())?;
+    let text = read(path)?;
+    let defaults = RenderOptions::default();
+    let size = |flag: &str, default: f32| -> Result<f32, String> {
+        Ok(flags.positive(flag)?.map_or(default, |v| v as f32))
+    };
+    if flags.has("--diagram") {
+        if flags.has("--t-end") || flags.has("--view") {
+            return Err("--t-end and --view do not apply to --diagram".into());
+        }
+        // The diagram is drawn even if the model cannot run.
+        let (file, _) =
+            simsandbox_file::ModelFile::from_json(&text).map_err(|e| format!("{path}: {e}"))?;
+        let o = RenderOptions {
+            width: size("--width", defaults.width)?,
+            height: size("--height", defaults.height)?,
+            scale: size("--scale", defaults.scale)?,
+            view: None,
+            light: flags.has("--light"),
+        };
+        let image = render_diagram(&file, &registry(), &o)?;
+        return std::fs::write(out, png(&image)?).map_err(|e| format!("{out}: {e}"));
+    }
+    let mut s = Session::load(path, &text, &registry())?;
     for w in &s.warnings {
         eprintln!("warning: {path}: {w}");
     }
@@ -192,7 +225,6 @@ fn render_file(args: &[String]) -> Result<(), String> {
         .or(s.file.run.t_end)
         .unwrap_or(DEFAULT_T_END);
     s.run_until(t_end).map_err(|e| e.to_string())?;
-    let defaults = RenderOptions::default();
     let o = RenderOptions {
         width: flags
             .positive("--width")?
@@ -217,6 +249,30 @@ fn render_file(args: &[String]) -> Result<(), String> {
         eprintln!("warning: {path}: {w}");
     }
     std::fs::write(out, png(&image)?).map_err(|e| format!("{out}: {e}"))
+}
+
+/// Run a model file to a time and write the file that starts from the
+/// state reached there (ADR 0042): to `--out`, or standard output.
+fn start_from_file(args: &[String]) -> Result<(), String> {
+    let (path, rest) = args.split_first().ok_or(USAGE)?;
+    let flags = Flags::parse(rest, &["--t", "--out"])?;
+    let t: f64 = flags
+        .get("--t")
+        .ok_or("start-from needs --t SECONDS")?
+        .parse()
+        .map_err(|_| "--t takes a number of seconds".to_string())?;
+    let (text, notes) =
+        start_from(&read(path)?, &registry(), t).map_err(|e| format!("{path}: {e}"))?;
+    for n in notes {
+        eprintln!("note: {n}");
+    }
+    match flags.get("--out") {
+        Some(out) => std::fs::write(out, text + "\n").map_err(|e| format!("{out}: {e}")),
+        None => {
+            println!("{text}");
+            Ok(())
+        }
+    }
 }
 
 fn run_lorenz(args: &[String]) -> Result<(), String> {
@@ -281,6 +337,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Some("render") => render_file(rest),
+        Some("start-from") => start_from_file(rest),
         Some("lorenz") => run_lorenz(rest),
         _ => Err(USAGE.to_string()),
     };

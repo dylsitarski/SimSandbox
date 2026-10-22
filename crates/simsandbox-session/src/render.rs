@@ -1,6 +1,7 @@
-//! A model's views drawn to an image without a window (ADR 0039): the
-//! tiles the app would show, laid out the same way, painted by egui and
-//! rasterised on the CPU ([`crate::raster`]), then encoded as PNG.
+//! A model's views, or its diagram, drawn to an image without a window
+//! (ADR 0039): the tiles or the node canvas the app would show, painted
+//! by egui and rasterised on the CPU ([`crate::raster`]), then encoded as
+//! PNG.
 
 use crate::raster::{Canvas, Image, Textures};
 use crate::views::{grid, Views};
@@ -39,9 +40,7 @@ pub fn render(
     registry: ViewRegistry,
     o: &RenderOptions,
 ) -> Result<(Image, Vec<String>), String> {
-    if !(o.width >= 1.0 && o.height >= 1.0 && o.scale > 0.0 && o.scale <= 8.0) {
-        return Err("the size must be at least 1 × 1 and the scale in (0, 8]".into());
-    }
+    check(o)?;
     let h = s.signals();
     let available = s.available(&h);
     let mut views = Views::new(registry);
@@ -58,6 +57,37 @@ pub fn render(
         views.tiles = vec![keep];
     }
 
+    let image = paint(o, |ui| tiles(ui, &mut views, &h));
+    Ok((image, warnings))
+}
+
+/// Draw a model file's diagram, as the node canvas shows it, fitted to
+/// the image (ADR 0042). Works for files that do not load: blocks that
+/// cannot be built show their error.
+pub fn render_diagram(
+    file: &simsandbox_file::ModelFile,
+    registry: &simsandbox_core::registry::Registry,
+    o: &RenderOptions,
+) -> Result<Image, String> {
+    check(o)?;
+    let mut d = crate::diagram::Diagram::new(file, registry);
+    let mut canvas = crate::canvas::Canvas::default();
+    Ok(paint(o, |ui| {
+        canvas.show(ui, &mut d, registry, false);
+    }))
+}
+
+fn check(o: &RenderOptions) -> Result<(), String> {
+    if o.width >= 1.0 && o.height >= 1.0 && o.scale > 0.0 && o.scale <= 8.0 {
+        Ok(())
+    } else {
+        Err("the size must be at least 1 × 1 and the scale in (0, 8]".into())
+    }
+}
+
+/// Run egui headless for a few frames with `draw` filling a central
+/// panel, and rasterise the last frame.
+fn paint(o: &RenderOptions, mut draw: impl FnMut(&mut egui::Ui)) -> Image {
     let ctx = egui::Context::default();
     let theme = if o.light {
         egui::Theme::Light
@@ -84,9 +114,7 @@ pub fn render(
             ..Default::default()
         };
         let out = ctx.run_ui(input, |ui| {
-            egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-                tiles(ui, &mut views, &h);
-            });
+            egui::Frame::central_panel(ui.style()).show(ui, |ui| draw(ui));
         });
         textures.update(out.textures_delta);
         last = Some((out.shapes, out.pixels_per_point));
@@ -99,7 +127,7 @@ pub fn render(
     );
     let mut canvas = Canvas::new(w, hgt, ctx.style_of(theme).visuals.panel_fill);
     canvas.paint(&primitives, &textures, ppp);
-    Ok((canvas.image(), warnings))
+    canvas.image()
 }
 
 /// The tiles in a grid, each with its type's name as a title, as in the
@@ -171,6 +199,22 @@ mod tests {
             assert!(differing > 2000, "{}: {differing} pixels drawn", e.name);
             let bytes = png(&img).unwrap();
             assert_eq!(&bytes[1..4], b"PNG");
+        }
+    }
+
+    #[test]
+    fn every_example_renders_its_diagram() {
+        for e in EXAMPLES {
+            let (f, _) = simsandbox_file::ModelFile::from_json(e.text).unwrap();
+            let o = RenderOptions {
+                width: 500.0,
+                height: 300.0,
+                ..Default::default()
+            };
+            let img = render_diagram(&f, &registry(), &o).unwrap();
+            let first = &img.rgba[..4];
+            let differing = img.rgba.chunks(4).filter(|p| p != &first).count();
+            assert!(differing > 3000, "{}: {differing} pixels drawn", e.name);
         }
     }
 

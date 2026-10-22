@@ -311,6 +311,16 @@ impl Simulator {
                 t.reset();
             }
             block.init_tables(params, self.seeds[bi], &mut self.tables[bi])?;
+            // A saved start replaces what the parameters give (ADR 0042).
+            if let Some(start) = &self.model.starts[bi] {
+                self.states[bi].copy_from_slice(&start.state);
+                for (table, rows) in self.tables[bi].iter_mut().zip(&start.tables) {
+                    table.reset();
+                    for row in rows {
+                        table.push(row);
+                    }
+                }
+            }
             self.inputs[bi].fill(0.0);
             for v in &mut self.population_inputs[bi] {
                 v.clear();
@@ -466,6 +476,23 @@ impl Simulator {
 
     pub fn time(&self) -> f64 {
         self.t
+    }
+
+    /// Start a Block from `start` (or from its parameters with `None`) at
+    /// the next restart; see [`Model::set_start`].
+    pub fn set_start(&mut self, id: BlockId, start: Option<crate::graph::Start>) -> Result<()> {
+        self.model.set_start(id, start)
+    }
+
+    /// The current state and table rows of a Block, as a start (ADR 0042).
+    pub fn current(&self, id: BlockId) -> crate::graph::Start {
+        crate::graph::Start {
+            state: self.states[id.0].clone(),
+            tables: self.tables[id.0]
+                .iter()
+                .map(|t| (0..t.len()).map(|r| t.row(r)).collect())
+                .collect(),
+        }
     }
 
     /// Kernel-owned state of one Block.

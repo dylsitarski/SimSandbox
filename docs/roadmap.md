@@ -40,7 +40,7 @@ Goal: connect and reuse. Gate: an ODE model and an agent model run in one graph 
 - [x] 3. Agent domain with a first agent model (grazing)
 - [x] 4. Direct feedthrough and algebraic loops in fused groups
 - [x] 5. Headless interface for people and AI agents: Python API (PyO3) with results as numpy arrays; `simsandbox describe`, `check` and `render` ([ADR 0039](decisions/0039-ai-agent-access.md); built 2026-10-22, [ADR 0041](decisions/0041-headless-interface.md))
-- [ ] 6. Visual node canvas
+- [x] 6. Visual node canvas: Diagram tab, block positions in the file, edits, start from a reached state, headless diagram images ([ADR 0042](decisions/0042-node-canvas.md); built 2026-10-22). Its observer layer for filters and views ([ADR 0032](decisions/0032-filters-as-a-graph.md)) follows
 - [ ] 7. Subsystems collapsed into reusable Blocks
 - [ ] 8. Shareable model files: ask before discarding unsaved changes; a stated rule for converting older files (files are already self-contained)
 
@@ -53,6 +53,7 @@ Goal: many domains. Gate: the verification suite passes for every backend.
 - [ ] FMI 3.0 import and export
 - [ ] Fast GPU fluids (real-time method)
 - [ ] Co-simulation master with adaptive steps, coupling-error estimates, iteration and rollback
+- [ ] Scheduled changes: parameter steps and disturbances at set times in the `run` section, so one run covers settling and a transient ([ADR 0042](decisions/0042-node-canvas.md))
 - [ ] Physical (acausal) connections in the equation domain
 
 ## Phase 3 · Research

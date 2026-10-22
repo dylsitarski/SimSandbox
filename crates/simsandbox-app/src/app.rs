@@ -1,6 +1,7 @@
 //! The window: open and save a model, run, pause, rewind, change parameters,
 //! and watch it plot live.
 
+use crate::diagram::{DiagramTab, Outcome};
 use crate::live::{Event, Live, Model};
 use crate::log::{Kind as LogKind, Log};
 use eframe::egui;
@@ -21,6 +22,13 @@ const SLOW_STEP: Duration = Duration::from_millis(500);
 pub struct ScreenshotRequest {
     pub path: std::path::PathBuf,
     pub after: f64,
+}
+
+/// The central area: the model's views or its block diagram (ADR 0042).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Central {
+    Views,
+    Diagram,
 }
 
 pub struct SimApp {
@@ -48,6 +56,9 @@ pub struct SimApp {
     signals_editor: Option<SignalsEditor>,
     rewind_t: f64,
     views: Views,
+    /// Which the central area shows: the views or the diagram.
+    central: Central,
+    diagram: DiagramTab,
     started: Instant,
     screenshot: Option<ScreenshotRequest>,
     screenshot_requested: bool,
@@ -74,6 +85,8 @@ impl SimApp {
             signals_editor: None,
             rewind_t: 0.0,
             views: Views::new(simsandbox_session::examples::view_registry()),
+            central: Central::Views,
+            diagram: DiagramTab::default(),
             started: Instant::now(),
             screenshot,
             screenshot_requested: false,
@@ -84,7 +97,9 @@ impl SimApp {
             None => app.open_text(EXAMPLES[0].name, EXAMPLES[0].text),
         }
         // A --view flag overrides the view saved in the file.
-        if let (Some(v), Some(live)) = (view, &app.session) {
+        if view == Some("diagram") {
+            app.central = Central::Diagram;
+        } else if let (Some(v), Some(live)) = (view, &app.session) {
             let (name, preset) = match v {
                 "phase" => ("plot.xy", 1),
                 "3d" => ("plot.3d", 0),
@@ -172,11 +187,18 @@ impl SimApp {
     /// Open a model and start it running.
     fn open_text(&mut self, title: &str, text: &str) {
         self.open_text_with(title, text, true);
+        if self.error.is_none() {
+            self.diagram.canvas.refit();
+        }
     }
 
     /// Open a model; it runs at once if `running` (sweeps are evaluated
     /// either way). The previous model's worker stops.
     fn open_text_with(&mut self, title: &str, text: &str, running: bool) {
+        self.open_inner(title, text, running, true);
+    }
+
+    fn open_inner(&mut self, title: &str, text: &str, running: bool, announce: bool) {
         match Session::load_deferred(title, text, &self.registry) {
             Ok(mut s) => {
                 self.speed = s.file.controls.speed.unwrap_or(1.0);
@@ -193,7 +215,10 @@ impl SimApp {
                 self.error = None;
                 self.param_edits.clear();
                 self.pending.clear();
-                self.log.info(format!("Opened {title}"));
+                self.diagram.reset();
+                if announce {
+                    self.log.info(format!("Opened {title}"));
+                }
                 self.rewind_t = 0.0;
             }
             Err(e) => self.error = Some(format!("{title}: {e}")),
@@ -327,6 +352,45 @@ impl SimApp {
                     live.send(None, |s, c| {
                         if let Err(e) = s.restart() {
                             c.error(format!("restart failed: {e}"));
+                        }
+                        c.reset_pacer();
+                    });
+                    self.rewind_t = 0.0;
+                }
+                if ui
+                    .button("Start from here")
+                    .on_hover_text(
+                        "Make the current state where the run starts, and restart from it at \
+                         t = 0: e.g. to study a transient from a steady state. Saved with the \
+                         model: initial-condition parameters where they can say it, else a \
+                         start state per block.",
+                    )
+                    .clicked()
+                {
+                    live.send(None, |s, c| {
+                        match s.start_from_now() {
+                            Ok(notes) => {
+                                for n in notes {
+                                    c.info(n);
+                                }
+                            }
+                            Err(e) => c.error(e),
+                        }
+                        c.reset_pacer();
+                    });
+                    self.param_edits.clear();
+                    self.rewind_t = 0.0;
+                }
+                if m.file.blocks.iter().any(|b| b.start.is_some())
+                    && ui
+                        .button("Forget start state")
+                        .on_hover_text("Start every block from its parameters again, and restart")
+                        .clicked()
+                {
+                    live.send(None, |s, c| {
+                        match s.forget_start_states() {
+                            Ok(()) => c.info("Starting from the parameters again"),
+                            Err(e) => c.error(e),
                         }
                         c.reset_pacer();
                     });
@@ -495,6 +559,92 @@ impl SimApp {
                     }
                 });
             });
+    }
+
+    /// The central area: tabs for the views and the diagram.
+    fn central(&mut self, ui: &mut egui::Ui) {
+        if self.session.is_some() {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.central, Central::Views, "Views")
+                    .on_hover_text("Plots of the run");
+                let diagram = match self.diagram.draft_problem() {
+                    Some(_) => "Diagram ⚠",
+                    None => "Diagram",
+                };
+                ui.selectable_value(&mut self.central, Central::Diagram, diagram)
+                    .on_hover_text("The blocks and how they are connected; edit the model here");
+            });
+            ui.separator();
+        }
+        match self.central {
+            Central::Views => self.plot(ui),
+            Central::Diagram => self.diagram_tab(ui),
+        }
+    }
+
+    /// The node canvas (ADR 0042), and what its edits ask for.
+    fn diagram_tab(&mut self, ui: &mut egui::Ui) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let m = live.model();
+        let (speed, views) = (self.speed, self.views.entries());
+        let current = || live.call(move |s, _| s.save_json(speed, Some(views)))?;
+        let outcomes = self.diagram.show(ui, &m, &self.registry, current);
+        self.diagram_outcomes(&m, outcomes);
+    }
+
+    /// Carry out what the canvas asked for.
+    fn diagram_outcomes(&mut self, m: &crate::live::Model, outcomes: Vec<Outcome>) {
+        for o in outcomes {
+            match o {
+                Outcome::Moved(moves) => {
+                    let Some(live) = &self.session else {
+                        return;
+                    };
+                    for (block, at) in moves {
+                        let key = format!("at:{block}");
+                        live.send(Some(&key), move |s, c| {
+                            if let Err(e) = s.set_position(&block, at) {
+                                c.error(e);
+                            }
+                        });
+                    }
+                }
+                Outcome::Apply { text, notes } => {
+                    let running = self.session.as_ref().is_some_and(|l| l.status().running);
+                    let path = self.path.clone();
+                    let canvas = self.diagram.canvas.clone();
+                    self.open_inner(&m.title, &text, running, false);
+                    self.path = path;
+                    self.diagram.canvas = canvas;
+                    for n in notes.iter().filter(|n| !n.is_empty()) {
+                        self.log.info(format!("{n}; restarted"));
+                    }
+                }
+                Outcome::Open(name) => self.open_block(m, &name),
+                Outcome::Error(e) => self.error = Some(e),
+            }
+        }
+    }
+
+    /// Open a block's definition: the equation editor for typed equations.
+    fn open_block(&mut self, m: &crate::live::Model, name: &str) {
+        let Some(b) = m.file.blocks.iter().find(|b| b.name == name) else {
+            return;
+        };
+        if b.type_name == simsandbox_eq::registry::EQUATIONS {
+            self.editor = Some(Editor {
+                block: Some(name.to_string()),
+                text: b.equations.join("\n"),
+                error: None,
+            });
+        } else {
+            self.log.info(format!(
+                "{name} ({}) has built-in equations; its parameters and settings are in the side panel",
+                b.type_name
+            ));
+        }
     }
 
     /// The model's views as tiles, each with its slot pickers, plus a "More
@@ -986,6 +1136,8 @@ impl SimApp {
                     update: None,
                     equations: lines,
                     params: Default::default(),
+                    at: None,
+                    start: None,
                 });
                 Ok(("Untitled".to_string(), file.to_json()))
             }
@@ -1190,7 +1342,7 @@ impl eframe::App for SimApp {
                     });
                 });
         }
-        egui::CentralPanel::default().show(ui, |ui| self.plot(ui));
+        egui::CentralPanel::default().show(ui, |ui| self.central(ui));
 
         self.handle_screenshot(&ctx);
     }
@@ -2266,5 +2418,99 @@ mod tests {
         assert_eq!(format_value(123456.0), "123456");
         assert_eq!(format_value(1e-7), "1e-7");
         assert_eq!(format_value(2.5e9), "2.5e9");
+    }
+
+    /// Apply canvas edits to the open model as the Diagram tab does.
+    fn canvas_edits(app: &mut SimApp, edits: Vec<simsandbox_session::diagram::Edit>) {
+        let live = app.session.as_ref().unwrap();
+        let m = live.model();
+        let (speed, views) = (app.speed, app.views.entries());
+        let current = || live.call(move |s, _| s.save_json(speed, Some(views)))?;
+        let outcomes = app.diagram.handle(edits, &app.registry, current);
+        app.diagram_outcomes(&m, outcomes);
+    }
+
+    #[test]
+    fn canvas_edits_apply_when_the_model_loads_and_wait_as_a_draft_otherwise() {
+        use simsandbox_session::diagram::Edit;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES.iter().find(|e| e.name.contains("Cruise")).unwrap();
+        app.open_text(e.name, e.text);
+        let live = app.session.as_ref().unwrap();
+        live.call(|s, _| s.run_until(5.0)).unwrap().unwrap();
+        let id = live.call(|s, _| s.ids["cruise"]).unwrap();
+        live.call(move |s, _| s.set_param(id, "kp", 900.0))
+            .unwrap()
+            .unwrap();
+
+        // Moving only saves the layout: the run goes on.
+        canvas_edits(
+            &mut app,
+            vec![Edit::Move {
+                block: "car".into(),
+                at: [10.0, 20.0],
+            }],
+        );
+        let live = app.session.as_ref().unwrap();
+        live.sync();
+        assert!(live.status().time > 4.9);
+        assert_eq!(live.model().file.blocks[0].at, Some([10.0, 20.0]));
+
+        // Removing a wire leaves an input open: kept as a draft, the run
+        // goes on.
+        canvas_edits(&mut app, vec![Edit::Disconnect { to: "car.F".into() }]);
+        let problem = app.diagram.draft_problem().unwrap().to_string();
+        assert!(problem.contains("car.F"), "{problem}");
+        assert!(app.session.as_ref().unwrap().status().time > 4.9);
+        // Wiring it again (from elsewhere) applies, restarting at t = 0
+        // with the parameter values and layout kept.
+        canvas_edits(
+            &mut app,
+            vec![Edit::Connect {
+                from: "cruise.e".into(),
+                to: "car.F".into(),
+            }],
+        );
+        assert!(app.diagram.draft_problem().is_none());
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let live = app.session.as_ref().unwrap();
+        let m = live.model();
+        assert_eq!(live.status().time, 0.0);
+        assert!(m
+            .file
+            .connections
+            .iter()
+            .any(|c| c.from == "cruise.e" && c.to == "car.F"));
+        assert_eq!(
+            m.params
+                .iter()
+                .find(|r| r.key == "cruise.kp")
+                .unwrap()
+                .value,
+            900.0
+        );
+        assert_eq!(m.file.blocks[0].at, Some([10.0, 20.0]));
+        assert!(
+            m.file.blocks.iter().all(|b| b.at.is_some()),
+            "the layout is fixed"
+        );
+    }
+
+    #[test]
+    fn start_from_here_restarts_at_the_current_state() {
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("grazing"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        let live = app.session.as_ref().unwrap();
+        live.set_running(false);
+        live.call(|s, _| s.run_until(3.0)).unwrap().unwrap();
+        let notes = live.call(|s, _| s.start_from_now()).unwrap().unwrap();
+        assert!(notes.len() == 3, "{notes:?}");
+        let m = live.model();
+        assert!(m.file.blocks.iter().all(|b| b.start.is_some()));
+        assert_eq!(live.status().time, 0.0);
     }
 }

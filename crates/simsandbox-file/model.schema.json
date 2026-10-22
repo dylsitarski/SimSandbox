@@ -139,6 +139,33 @@
           "additionalProperties": { "type": "number" },
           "description": "Method name plus numeric options, e.g. {\"name\": \"rk4\", \"substeps\": 4}."
         },
+        "at": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Where the block sits on the node canvas, [x, y] in canvas units with y downwards (ADR 0042). Optional: blocks without one are laid out left to right by signal flow."
+        },
+        "start": {
+          "type": "object",
+          "description": "The state the block starts from instead of the one its parameters give, e.g. a steady state reached before (ADR 0042). Written by 'Start from current state'.",
+          "properties": {
+            "state": {
+              "type": "array",
+              "items": { "type": "number" },
+              "description": "Every state, in the block's state order (see simsandbox describe)."
+            },
+            "tables": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": { "type": "array", "items": { "type": "number" } }
+              },
+              "description": "Rows of the block's tables by table name, each row one value per column (e.g. animals: [x, y, energy])."
+            }
+          },
+          "additionalProperties": false
+        },
         "update": {
           "enum": ["random_order", "synchronous", "id_order"],
           "default": "random_order",

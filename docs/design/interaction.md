@@ -1,6 +1,6 @@
 # Interaction, parameters and visualization
 
-_Last updated: 2026-10-17_
+_Last updated: 2026-10-22_
 
 Because parameters, ports and state are declared metadata, most of the interface can be generated rather than hand-built. The desktop app implements run, pause, restart, rewind with branching, paced playback, live time-series, phase-portrait and 3D trajectory views, and the parameter panel and typed equations (an editor opened from "New model…" or "Edit equations…", [ADR 0017](../decisions/0017-typed-equations.md)), including discrete maps and formulas explored by sweeping a parameter ([ADR 0021](../decisions/0021-maps-formulas-and-sweeps.md)); everything else here is planned, in the order given in [STATUS.md](../STATUS.md).
 
@@ -9,6 +9,7 @@ Because parameters, ports and state are declared metadata, most of the interface
 - Live parameter changes while the simulation runs, with no restart (kernel support exists: `Simulator::set_param`).
 - Direct manipulation: drag bodies, paint obstacles into a flow, drop agents, inject a disturbance.
 - Pause, rewind and branch from any point (implemented in the app: a rewind slider; snapshots also restore parameter values, and running on from a rewound point starts a new branch).
+- Start from here (implemented): the current state becomes where the run starts, saved with the model, e.g. a steady state from which to study a transient ([ADR 0042](../decisions/0042-node-canvas.md)).
 - Inputs from keyboard, gamepad and mouse; later sensors or MIDI.
 
 ## For learning
@@ -34,7 +35,7 @@ Architecture: [visualization](../architecture/visualization.md) ([ADR 0015](../d
 
 ## Three ways to build, one model file
 
-1. Visual canvas: drag and wire Blocks.
+1. Visual canvas: drag and wire Blocks (the app's Diagram tab, [ADR 0042](../decisions/0042-node-canvas.md); positions are saved in the model file, and edits rebuild and restart the run).
 2. Code: a Python (later Julia) API that produces the same graph.
 3. Natural language: an AI assistant drafts Blocks and equations; the result is ordinary, editable model code that passes the same unit and validation checks.
 
