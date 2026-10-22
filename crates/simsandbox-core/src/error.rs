@@ -30,6 +30,8 @@ pub enum SimError {
     InvalidDefinition(String),
     /// Blocks cannot be fused into one group (ADR 0023).
     CannotFuse(String),
+    /// An algebraic loop (ADR 0040) is refused or could not be solved.
+    AlgebraicLoop(String),
     /// A Block's setting (e.g. its `update` order) is unknown or does not
     /// apply to its type.
     InvalidSetting { setting: String, reason: String },
@@ -59,6 +61,7 @@ impl fmt::Display for SimError {
             SimError::InvalidMethod(s) => write!(f, "invalid method: {s}"),
             SimError::InvalidDefinition(s) => write!(f, "{s}"),
             SimError::CannotFuse(s) => write!(f, "cannot fuse: {s}"),
+            SimError::AlgebraicLoop(s) => write!(f, "algebraic loop: {s}"),
             SimError::InvalidSetting { setting, reason } => write!(f, "{setting}: {reason}"),
         }
     }

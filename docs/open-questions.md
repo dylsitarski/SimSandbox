@@ -8,7 +8,6 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Options | Needed by | Notes |
 | --- | --- | --- | --- | --- |
-| Q5 | Algebraic loops in fused groups | Causalisation and tearing; Newton solve per RHS evaluation; forbid and warn | Phase 1 | Current v0 restriction: no direct feedthrough |
 | Q30 | Parameters shared by several blocks | (a) Model-level parameters that blocks' parameters can refer to; (b) a parameter passed along a connection (e.g. the field size as an output); (c) subsystems exposing one parameter for their members | With subsystems (Phase 1 item 7) | Raised 2026-10-22: the grazing model's field size is a parameter of both `eq.grass` and `agents.grazers` and must be kept equal by hand |
 | Q28 | How users define their own blocks without rebuilding SimSandbox | (a) Python, in process through PyO3; (b) WebAssembly plugins (sandboxed, any compiled language); (c) Julia, out of process; (d) extended typed languages only | After the typed agent rules (Q26) | Raised 2026-10-22 with [ADR 0038](decisions/0038-phase-1-revised.md), which deferred Python-defined blocks ([ADR 0036](decisions/0036-python-blocks.md)). Any choice keeps state in kernel memory and runs under the worker thread |
 | Q29 | When to add an MCP server and AI control of the running app | (a) With the headless interface; (b) after the node canvas, so an agent can build models in front of the user; (c) with the in-app AI assistant (Phase 3) | After Phase 1 item 5 | Raised 2026-10-22 with [ADR 0039](decisions/0039-ai-agent-access.md) |
@@ -26,6 +25,7 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | — | "One model, three modes" or per-method classification | [ADR 0004](decisions/0004-method-classification.md) |
 | — | Where project knowledge lives | [ADR 0005](decisions/0005-repository-as-source-of-truth.md) |
 | — | License | [ADR 0006](decisions/0006-apache-2-license.md) |
+| Q5 | Algebraic loops in fused groups | [ADR 0040](decisions/0040-feedthrough-and-algebraic-loops.md) |
 | Q1 | Model file format | [ADR 0007](decisions/0007-json-model-files.md) |
 | Q3 | Desktop UI approach | [ADR 0008](decisions/0008-native-egui-ui.md) |
 | Q2 | First audience for the prototype | [ADR 0009](decisions/0009-hobbyists-first.md) |

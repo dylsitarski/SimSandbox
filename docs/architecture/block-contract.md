@@ -25,7 +25,7 @@ A Block separates **what** is simulated from **how** it is computed. The model d
 | Trait | Required | What the Block provides | What the kernel does with it | Implemented |
 | --- | --- | --- | --- | --- |
 | `Block` | Yes | Spec, method, `init`, `do_step`, `compute_outputs`; `init_tables` for Blocks with tables (default: nothing) | Steps it as a co-simulated black box; each step's `StepContext` carries the step number and the Block's random stream (`random::stream(model seed, Block name)`, draws with `random::Draws`, ADR 0034) | Yes |
-| `Equations` | No | `rhs` (dx/dt) and `outputs` | Fuses it with other equation Blocks into one system | Yes |
+| `Equations` | No | `rhs` (dx/dt) and `outputs`, both given the inputs; outputs may depend on inputs only as their ports declare (`PortSpec::feedthrough`, ADR 0040) | Fuses it with other equation Blocks into one system, ordering feedthrough and solving loops at every evaluation | Yes |
 | `Rollback` | No | Cheap undo of a rejected step | Iterative coupling and step rejection | Trait only |
 | `Derivatives` | No | Jacobian of the right-hand side | Implicit coupling, sensitivities, parameter fitting | Trait only |
 | `Realtime` | No | Guaranteed worst-case step time | Admits it into real-time models | Trait only |
@@ -76,5 +76,5 @@ Measured effect (test `cosimulation_adds_coupling_error`): two coupled oscillato
 
 ## Current restrictions
 
-- Fused-group members must have no direct feedthrough (outputs depend on state and parameters only); see [Q5](../open-questions.md).
+- Direct feedthrough ([ADR 0040](../decisions/0040-feedthrough-and-algebraic-loops.md)): an output lists the inputs it depends on at the same instant (`PortSpec::depends_on`). The master evaluates such outputs in dependency order at every communication point, fused groups at every right-hand-side evaluation, and algebraic loops are solved as `run.loops` says (Newton by default). Population ports cannot feed through yet; code-built `EquationGroup`s refuse members that do.
 - `Shape` supports scalars, vectors, grids (`Grid { nx, ny }`, row-major) and point sets (`Points { count, dim }`) and populations (`Population { dim }`: points whose number varies from step to step, [ADR 0034](../decisions/0034-agent-domain.md)). Population ports take no room in the fixed input and output arrays: they are `StepIo::population_inputs`/`population_outputs` (one vector per such port), routed and unit-converted like other connections, and connect only to populations of the same `dim`. Tensors and meshes come with their domains.

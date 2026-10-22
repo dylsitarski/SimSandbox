@@ -290,7 +290,8 @@ impl Session {
             None => None,
         };
         let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
-        let warnings = loaded.warnings;
+        let mut warnings = loaded.warnings;
+        warnings.extend(loop_notes(&sim));
         let entries = loaded.file.controls.filters.clone();
         let mut session = Self {
             title: title.into(),
@@ -1020,6 +1021,20 @@ impl Session {
             })
             .collect()
     }
+}
+
+/// One note per algebraic loop (ADR 0040), saying how it is solved.
+pub fn loop_notes(sim: &Simulator) -> Vec<String> {
+    let method = sim.model().loop_method().name();
+    sim.loops()
+        .into_iter()
+        .map(|l| {
+            format!(
+                "algebraic loop {}: solved at every step by '{method}' (run.loops)",
+                l.join(" → ")
+            )
+        })
+        .collect()
 }
 
 /// The 2D grids a cut filter can take: recorded grids that are not

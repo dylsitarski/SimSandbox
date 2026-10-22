@@ -1995,6 +1995,7 @@ const SYNTAX_HELP: &str = "\
 One equation per line:
   dx/dt = ...    (or x' = ...)   x is a state that changes over time
   E = ...                         a quantity computed from the states
+  input u, F                      u and F are inputs, set by connected blocks
 Every other name is a parameter (default 1) you can change in the side panel.
 Each state x also gets an initial value x0 (default 1).
 t is time. Operators: + - * / ^ and parentheses; write 2*x, not 2x.

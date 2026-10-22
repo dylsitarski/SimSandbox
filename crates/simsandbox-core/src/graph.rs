@@ -34,6 +34,7 @@ pub struct Model {
     pub(crate) connections: Vec<Connection>,
     pub(crate) groups: Vec<Group>,
     pub(crate) seed: u64,
+    pub(crate) loops: crate::loops::LoopMethod,
 }
 
 impl Default for Model {
@@ -44,6 +45,7 @@ impl Default for Model {
             connections: Vec::new(),
             groups: Vec::new(),
             seed: DEFAULT_SEED,
+            loops: crate::loops::LoopMethod::default(),
         }
     }
 }
@@ -61,6 +63,15 @@ impl Model {
 
     pub fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// How algebraic loops are solved (ADR 0040).
+    pub fn set_loop_method(&mut self, method: crate::loops::LoopMethod) {
+        self.loops = method;
+    }
+
+    pub fn loop_method(&self) -> crate::loops::LoopMethod {
+        self.loops
     }
 
     /// Add a Block with its default parameter values.

@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Direct feedthrough and algebraic loops (ADR 0040): outputs may depend on inputs at the same instant (declared per output and input), so chains such as sensor → controller → actuator agree without a step's delay, also inside blocks solved together; loops of such outputs are found when a model opens, named in the log and by `simsandbox run`, and solved by Newton's method unless `run.loops` says `fixed_point` or `refuse`. Typed equations take `input u, F` lines. Cruise-control example.
 - The agent domain and the grazing model (Phase 1 gate): `agents.grazers` (animals that wander, eat grass, breed and die, competing in an update order chosen per block: `random_order`, `synchronous` or `id_order`, saved as `update` and chosen in the side panel), `eq.grass` (grass regrowing on a 40 × 40 field), a heat map `points` slot to draw animals over their field, and the grazing example.
 - Kernel support for populations (ADR 0034): Blocks can keep tables of rows with stable ids that grow and shrink, saved in snapshots and rewound like other state; population ports carry a varying number of points between Blocks; `run.seed` in model files seeds counter-based random numbers, so the same file gives the same run. The point-set view draws populations.
 - ADRs 0037 (sliders live only for real-time models), 0038 (Phase 1 revised; user-defined blocks decided later) and 0039 (AI agents as first-class users, also in the vision and `AGENTS.md`).

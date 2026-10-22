@@ -78,7 +78,7 @@ impl Equations for Lorenz {
         dx[2] = x[0] * x[1] - beta * x[2];
     }
 
-    fn outputs(&self, _t: f64, x: &[f64], _p: &[f64], y: &mut [f64]) {
+    fn outputs(&self, _t: f64, x: &[f64], _u: &[f64], _p: &[f64], y: &mut [f64]) {
         y.copy_from_slice(&x[..3]);
     }
 }
@@ -157,7 +157,7 @@ impl Equations for CoupledOscillator {
         dx[1] = -w0sq * x[0] + kappa * (u[0] - x[0]);
     }
 
-    fn outputs(&self, _t: f64, x: &[f64], _p: &[f64], y: &mut [f64]) {
+    fn outputs(&self, _t: f64, x: &[f64], _u: &[f64], _p: &[f64], y: &mut [f64]) {
         y[0] = x[0];
         y[1] = x[1];
     }
@@ -241,7 +241,7 @@ impl Equations for Pendulum {
         dx[1] = -(g / l) * x[0].sin() - c * x[1];
     }
 
-    fn outputs(&self, _t: f64, x: &[f64], p: &[f64], y: &mut [f64]) {
+    fn outputs(&self, _t: f64, x: &[f64], _u: &[f64], p: &[f64], y: &mut [f64]) {
         let l = p[1];
         y[0] = x[0];
         y[1] = x[1];

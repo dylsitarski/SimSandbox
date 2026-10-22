@@ -109,6 +109,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0037-when-parameter-changes-apply.md](decisions/0037-when-parameter-changes-apply.md) | Decision record | Sliders apply while dragged for real-time models, on release otherwise |
 | [decisions/0038-phase-1-revised.md](decisions/0038-phase-1-revised.md) | Decision record | Phase 1 order revised; how users define their own blocks decided later; headless Python API kept |
 | [decisions/0039-ai-agent-access.md](decisions/0039-ai-agent-access.md) | Decision record | AI agents as first-class users: rules for discovery, checking, headless runs and rendering |
+| [decisions/0040-feedthrough-and-algebraic-loops.md](decisions/0040-feedthrough-and-algebraic-loops.md) | Decision record | Direct feedthrough, algebraic loops and typed inputs |
 
 ### Guides
 

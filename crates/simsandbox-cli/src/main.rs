@@ -138,6 +138,14 @@ fn run_file(args: &[String]) -> Result<(), String> {
     if let Some(l) = sim.labels() {
         eprintln!("speed: {:?} | accuracy: {:?}", l.speed, l.accuracy);
     }
+    // Algebraic loops are named, with how they are solved (ADR 0040).
+    let method = sim.model().loop_method().name();
+    for l in sim.loops() {
+        eprintln!(
+            "note: algebraic loop {}: solved at every step by '{method}' (run.loops)",
+            l.join(" → ")
+        );
+    }
     let mut out = BufWriter::new(io::stdout().lock());
     let write = |out: &mut BufWriter<_>, sim: &Simulator| -> io::Result<()> {
         for (id, port) in &columns {

@@ -95,6 +95,11 @@
           "minimum": 0,
           "default": 1,
           "description": "The seed every random draw derives from (ADR 0034): the same file and seed give the same run."
+        },
+        "loops": {
+          "enum": ["newton", "fixed_point", "refuse"],
+          "default": "newton",
+          "description": "How algebraic loops (outputs that depend on each other at the same instant, ADR 0040) are solved: newton (Newton's method, the default), fixed_point (repeat until settled; fails when the loop gain exceeds one) or refuse (a model with a loop does not run)."
         }
       }
     },

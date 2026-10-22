@@ -100,6 +100,13 @@ impl EquationGroup {
 
         for (mi, sys) in self.members.into_iter().enumerate() {
             let s = sys.spec();
+            if let Some(p) = s.outputs().find(|p| !p.feedthrough.is_empty()) {
+                return Err(SimError::InvalidDefinition(format!(
+                    "{}.{} has direct feedthrough, which an EquationGroup cannot order; \
+                     connect the blocks in a model, where the kernel orders it (ADR 0040)",
+                    s.name, p.name
+                )));
+            }
             let mut local_in = 0;
             for p in s.inputs() {
                 let len = p.shape.len();
@@ -193,14 +200,15 @@ impl FusedSystem {
 
 impl Equations for FusedSystem {
     fn rhs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], dx: &mut [f64]) {
-        // Member outputs depend only on state, so they can be evaluated first.
+        // Members have no feedthrough (checked when built), so their outputs
+        // depend only on state and can be evaluated first.
         let ys: Vec<Vec<f64>> = self
             .members
             .iter()
             .map(|m| {
                 let (xm, pm) = self.slices(m, x, p);
                 let mut y = vec![0.0; m.sys.spec().output_len()];
-                m.sys.outputs(t, xm, pm, &mut y);
+                m.sys.outputs(t, xm, &[], pm, &mut y);
                 y
             })
             .collect();
@@ -225,12 +233,12 @@ impl Equations for FusedSystem {
         }
     }
 
-    fn outputs(&self, t: f64, x: &[f64], p: &[f64], y: &mut [f64]) {
+    fn outputs(&self, t: f64, x: &[f64], _u: &[f64], p: &[f64], y: &mut [f64]) {
         let mut off = 0;
         for m in &self.members {
             let (xm, pm) = self.slices(m, x, p);
             let len = m.sys.spec().output_len();
-            m.sys.outputs(t, xm, pm, &mut y[off..off + len]);
+            m.sys.outputs(t, xm, &[], pm, &mut y[off..off + len]);
             off += len;
         }
     }

@@ -107,7 +107,7 @@ impl Equations for HeatRod {
         }
     }
 
-    fn outputs(&self, _t: f64, x: &[f64], p: &[f64], y: &mut [f64]) {
+    fn outputs(&self, _t: f64, x: &[f64], _u: &[f64], p: &[f64], y: &mut [f64]) {
         let (temperature, position) = y.split_at_mut(x.len());
         temperature.copy_from_slice(x);
         let h = Self::h(p[1]);
@@ -217,7 +217,7 @@ impl Equations for Grass {
         }
     }
 
-    fn outputs(&self, _t: f64, x: &[f64], p: &[f64], y: &mut [f64]) {
+    fn outputs(&self, _t: f64, x: &[f64], _u: &[f64], p: &[f64], y: &mut [f64]) {
         let n = Self::CELLS;
         let cell = p[2] / n as f64;
         let (grass, rest) = y.split_at_mut(n * n);
@@ -327,7 +327,7 @@ impl Equations for Orbits {
         }
     }
 
-    fn outputs(&self, _t: f64, x: &[f64], _p: &[f64], y: &mut [f64]) {
+    fn outputs(&self, _t: f64, x: &[f64], _u: &[f64], _p: &[f64], y: &mut [f64]) {
         for (s, out) in x.chunks_exact(4).zip(y.chunks_exact_mut(2)) {
             out.copy_from_slice(&s[..2]);
         }
@@ -458,7 +458,7 @@ mod tests {
         assert!((dx[0] - (logistic - 0.5 * x[0])).abs() < 1e-12);
         // Cell centres and the total.
         let mut y = vec![0.0; 3 * n + 1];
-        grass.outputs(0.0, &x, &p, &mut y);
+        grass.outputs(0.0, &x, &[], &p, &mut y);
         assert_eq!((y[n], y[2 * n]), (0.5, 0.5));
         assert_eq!(y[2 * n - 1], 39.5);
         assert!((y[3 * n] - x[0] * 1600.0).abs() < 1e-9 * y[3 * n]);

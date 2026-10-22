@@ -332,6 +332,10 @@ pub struct RunSettings {
     /// The seed every random draw derives from (ADR 0034); 1 if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+    /// How algebraic loops are solved (ADR 0040): `newton` (the default if
+    /// absent), `fixed_point` or `refuse`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loops: Option<String>,
 }
 
 impl Default for RunSettings {
@@ -340,6 +344,7 @@ impl Default for RunSettings {
             dt: DEFAULT_DT,
             t_end: None,
             seed: None,
+            loops: None,
         }
     }
 }
@@ -899,6 +904,14 @@ impl ModelFile {
                 format!("must be positive, got {}", raw.run.dt),
             ));
         }
+        if let Some(name) = raw.run.loops.as_deref() {
+            if simsandbox_core::loops::LoopMethod::from_name(name).is_none() {
+                return Err(invalid(
+                    "run.loops",
+                    format!("unknown method '{name}' (expected newton, fixed_point or refuse)"),
+                ));
+            }
+        }
         if let Some(t) = raw.run.t_end.filter(|&t| !positive(t)) {
             return Err(invalid("run.t_end", format!("must be positive, got {t}")));
         }
@@ -964,6 +977,10 @@ impl ModelFile {
             self.run
                 .seed
                 .unwrap_or(simsandbox_core::graph::DEFAULT_SEED),
+        );
+        let loops = self.run.loops.as_deref().unwrap_or("newton");
+        model.set_loop_method(
+            simsandbox_core::loops::LoopMethod::from_name(loops).unwrap_or_default(),
         );
         let mut ids = BTreeMap::new();
         for (bi, entry) in self.blocks.iter().enumerate() {

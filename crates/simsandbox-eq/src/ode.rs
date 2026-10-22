@@ -61,12 +61,15 @@ impl Block for OdeBlock {
         let sys = self.system.as_ref();
         let f = |t: f64, x: &[f64], dx: &mut [f64]| sys.rhs(t, x, io.inputs, io.params, dx);
         self.integrator.advance(&f, ctx.t, ctx.dt, io.state)?;
-        sys.outputs(ctx.t + ctx.dt, io.state, io.params, io.outputs);
+        // With the inputs held over the step; the master then makes
+        // feedthrough outputs consistent (ADR 0040).
+        sys.outputs(ctx.t + ctx.dt, io.state, io.inputs, io.params, io.outputs);
         Ok(())
     }
 
     fn compute_outputs(&self, t: f64, io: StepIo<'_>) -> Result<()> {
-        self.system.outputs(t, io.state, io.params, io.outputs);
+        self.system
+            .outputs(t, io.state, io.inputs, io.params, io.outputs);
         Ok(())
     }
 

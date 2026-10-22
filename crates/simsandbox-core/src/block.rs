@@ -149,6 +149,10 @@ pub struct PortSpec {
     /// along one grid axis (ADR 0024), e.g. a rod's `position` for its
     /// `temperature`.
     pub coordinate: Option<CoordinateOf>,
+    /// For an output: the inputs of its Block it depends on at the same
+    /// instant (direct feedthrough, ADR 0040). Empty if it depends on state
+    /// and parameters only.
+    pub feedthrough: Vec<String>,
 }
 
 /// What an output is a coordinate of: another output of the same Block, of
@@ -167,7 +171,15 @@ impl PortSpec {
             unit,
             shape,
             coordinate: None,
+            feedthrough: Vec::new(),
         }
+    }
+
+    /// Declare that this output depends on these inputs at the same
+    /// instant (direct feedthrough, ADR 0040).
+    pub fn depends_on(mut self, inputs: &[&str]) -> Self {
+        self.feedthrough = inputs.iter().map(|i| i.to_string()).collect();
+        self
     }
 
     /// Declare this output a coordinate of output `port` along grid axis
@@ -187,6 +199,7 @@ impl PortSpec {
             unit,
             shape,
             coordinate: None,
+            feedthrough: Vec::new(),
         }
     }
 }
@@ -325,13 +338,14 @@ pub trait Block: Send {
 /// Capability: the Block can expose its equations, so the equation domain can
 /// fuse it with neighbours into one system solved by one integrator.
 ///
-/// v0 restriction: outputs depend on state and parameters only (no direct
-/// feedthrough from inputs), which rules out algebraic loops inside a group.
+/// Outputs may depend on the inputs `u` only where their ports declare it
+/// (`PortSpec::feedthrough`, ADR 0040); the kernel orders such outputs and
+/// solves loops between them.
 pub trait Equations {
     /// dx/dt = f(t, x, u, p)
     fn rhs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], dx: &mut [f64]);
-    /// y = g(t, x, p)
-    fn outputs(&self, t: f64, x: &[f64], p: &[f64], y: &mut [f64]);
+    /// y = g(t, x, u, p)
+    fn outputs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], y: &mut [f64]);
 }
 
 /// Capability: cheap undo of a rejected step (for external Blocks whose state

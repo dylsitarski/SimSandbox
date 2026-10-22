@@ -22,6 +22,10 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/predator-prey.ssbx.json"),
     },
     Example {
+        name: "Cruise control (a controller with feedthrough)",
+        text: include_str!("../../../examples/cruise-control.ssbx.json"),
+    },
+    Example {
         name: "Logistic map (a discrete map)",
         text: include_str!("../../../examples/logistic-map.ssbx.json"),
     },

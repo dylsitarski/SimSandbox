@@ -20,6 +20,7 @@ const PENDULUM: &str = include_str!("../../../examples/pendulum.ssbx.json");
 const RESONANCE_MAP: &str = include_str!("../../../examples/resonance-map.ssbx.json");
 const RESONANCE_SAMPLES: &str = include_str!("../../../examples/resonance-samples.ssbx.json");
 const GRAZING: &str = include_str!("../../../examples/grazing.ssbx.json");
+const CRUISE: &str = include_str!("../../../examples/cruise-control.ssbx.json");
 
 fn registry() -> Registry {
     let mut r = Registry::new();
@@ -50,6 +51,7 @@ fn examples_load_without_warnings() {
         RESONANCE_MAP,
         RESONANCE_SAMPLES,
         GRAZING,
+        CRUISE,
     ] {
         let loaded = load(text, &registry()).unwrap();
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
@@ -71,6 +73,7 @@ fn examples_are_written_exactly_as_saved() {
         RESONANCE_MAP,
         RESONANCE_SAMPLES,
         GRAZING,
+        CRUISE,
     ] {
         let (file, _) = ModelFile::from_json(text).unwrap();
         assert_eq!(file.to_json(), text);

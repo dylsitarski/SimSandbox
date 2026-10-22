@@ -8,8 +8,10 @@
 
 use crate::block::{Block, Causality, MethodLabels, StepContext, StepIo};
 use crate::graph::{population_index, port_offset, BlockId, Model};
+use crate::loops::{Link, LoopMethod, OutputPlan};
 use crate::table::Table;
 use crate::{Result, SimError};
+use std::cell::RefCell;
 
 /// A saved point in a run, used for rewind and branching: time, every
 /// Block's state, tables, outputs and parameter values.
@@ -53,10 +55,26 @@ struct GroupPlan {
     /// Routes between members, with `from_block`/`to_block` as member
     /// positions in `members`.
     internal: Vec<Route>,
+    /// Feedthrough outputs among the members, ordered, with their loops.
+    outputs: OutputPlan,
+    method: LoopMethod,
+}
+
+impl Route {
+    fn link(&self) -> Link {
+        Link {
+            from: self.from_block,
+            from_offset: self.from_offset,
+            to: self.to_block,
+            to_offset: self.to_offset,
+            len: self.len,
+            factor: self.factor,
+        }
+    }
 }
 
 impl GroupPlan {
-    fn new(model: &Model, group: usize, routes: &[Route]) -> Self {
+    fn new(model: &Model, group: usize, routes: &[Route]) -> Result<Self> {
         let ids: Vec<usize> = model.groups[group].members.iter().map(|b| b.0).collect();
         let mut members = Vec::new();
         let mut len = 0;
@@ -74,17 +92,29 @@ impl GroupPlan {
                     ..*r
                 })
             })
+            .collect::<Vec<Route>>();
+        let units: Vec<(&crate::block::BlockSpec, &str)> = ids
+            .iter()
+            .map(|&b| {
+                let spec = model.blocks[b].spec();
+                (spec, spec.name.as_str())
+            })
             .collect();
-        Self {
+        let links: Vec<Link> = internal.iter().map(Route::link).collect();
+        Ok(Self {
             members,
             len,
+            outputs: OutputPlan::new(&units, &links)?,
             internal,
-        }
+            method: model.loops,
+        })
     }
 
-    /// The combined `dx/dt`: member outputs first (they depend on state and
-    /// parameters only), then member inputs from inside the group or, for
-    /// inputs from outside, the values held since the last exchange.
+    /// The combined `dx/dt`. Member outputs first, from state, parameters
+    /// and the inputs held since the last exchange; then feedthrough
+    /// outputs made consistent with the inputs from inside the group, loops
+    /// solved (ADR 0040); then every member's inputs from inside the group
+    /// (or held, from outside), and the right-hand sides.
     fn rhs(
         &self,
         blocks: &[Box<dyn Block>],
@@ -93,22 +123,32 @@ impl GroupPlan {
         t: f64,
         x: &[f64],
         dx: &mut [f64],
-    ) {
+    ) -> Result<()> {
         let state = |k: usize| {
             let (b, off) = self.members[k];
             &x[off..off + blocks[b].spec().states.len()]
         };
-        let ys: Vec<Vec<f64>> = (0..self.members.len())
+        let mut us: Vec<Vec<f64>> = self.members.iter().map(|&(b, _)| held[b].clone()).collect();
+        let mut ys: Vec<Vec<f64>> = (0..self.members.len())
             .map(|k| {
                 let b = self.members[k].0;
                 let mut y = vec![0.0; blocks[b].spec().output_len()];
                 if let Some(eq) = blocks[b].as_equations() {
-                    eq.outputs(t, state(k), &params[b], &mut y);
+                    eq.outputs(t, state(k), &us[k], &params[b], &mut y);
                 }
                 y
             })
             .collect();
-        let mut us: Vec<Vec<f64>> = self.members.iter().map(|&(b, _)| held[b].clone()).collect();
+        if !self.outputs.is_empty() {
+            self.outputs
+                .solve(self.method, &mut ys, &mut us, &mut |k, u, y| {
+                    let b = self.members[k].0;
+                    if let Some(eq) = blocks[b].as_equations() {
+                        eq.outputs(t, state(k), u, &params[b], y);
+                    }
+                    Ok(())
+                })?;
+        }
         for r in &self.internal {
             for i in 0..r.len {
                 us[r.to_block][r.to_offset + i] = r.factor * ys[r.from_block][r.from_offset + i];
@@ -120,6 +160,7 @@ impl GroupPlan {
                 eq.rhs(t, state(k), &us[k], &params[b], &mut dx[off..off + n]);
             }
         }
+        Ok(())
     }
 }
 
@@ -127,6 +168,9 @@ impl GroupPlan {
 pub struct Simulator {
     model: Model,
     routes: Vec<Route>,
+    /// Feedthrough outputs of all Blocks, ordered, with their loops
+    /// (ADR 0040).
+    outputs_plan: OutputPlan,
     population_routes: Vec<PopulationRoute>,
     plans: Vec<GroupPlan>,
     states: Vec<Vec<f64>>,
@@ -219,10 +263,27 @@ impl Simulator {
 
         let plans = (0..model.groups.len())
             .map(|g| GroupPlan::new(&model, g, &routes))
+            .collect::<Result<Vec<_>>>()?;
+        let units: Vec<(&crate::block::BlockSpec, &str)> = model
+            .blocks
+            .iter()
+            .map(|b| (b.spec(), b.spec().name.as_str()))
             .collect();
+        let links: Vec<Link> = routes.iter().map(Route::link).collect();
+        let outputs_plan = OutputPlan::new(&units, &links)?;
+        if model.loops == LoopMethod::Refuse {
+            if let Some(l) = outputs_plan.loops().first() {
+                return Err(SimError::AlgebraicLoop(format!(
+                    "{} form a loop, and run.loops is 'refuse'; break it, or let it be \
+                     solved with 'newton'",
+                    l.join(" → ")
+                )));
+            }
+        }
         let mut sim = Self {
             model,
             routes,
+            outputs_plan,
             population_routes,
             plans,
             states,
@@ -269,8 +330,46 @@ impl Simulator {
         }
         self.t = t0;
         self.step = 0;
+        self.resolve(t0)?;
         self.exchange();
         Ok(())
+    }
+
+    /// Make feedthrough outputs consistent with their inputs at time `t`,
+    /// solving loops (ADR 0040).
+    fn resolve(&mut self, t: f64) -> Result<()> {
+        if self.outputs_plan.is_empty() {
+            return Ok(());
+        }
+        let blocks = &self.model.blocks;
+        let params = &self.model.params;
+        let (states, tables) = (&mut self.states, &mut self.tables);
+        let (pin, pout) = (&self.population_inputs, &mut self.population_outputs);
+        self.outputs_plan.solve(
+            self.model.loops,
+            &mut self.outputs,
+            &mut self.inputs,
+            &mut |b, u, y| {
+                blocks[b].compute_outputs(
+                    t,
+                    StepIo {
+                        params: &params[b],
+                        inputs: u,
+                        state: &mut states[b],
+                        outputs: y,
+                        tables: &mut tables[b],
+                        population_inputs: &pin[b],
+                        population_outputs: &mut pout[b],
+                    },
+                )
+            },
+        )
+    }
+
+    /// The algebraic loops of the model, each as the outputs in it
+    /// (`block.port`), found when it was built (ADR 0040).
+    pub fn loops(&self) -> Vec<Vec<String>> {
+        self.outputs_plan.loops()
     }
 
     /// Copy outputs to connected inputs, applying unit conversion.
@@ -328,8 +427,19 @@ impl Simulator {
                 x.extend_from_slice(&self.states[b]);
             }
             let (blocks, params, held) = (&self.model.blocks, &self.model.params, &self.inputs);
-            let rhs = |t: f64, x: &[f64], dx: &mut [f64]| plan.rhs(blocks, params, held, t, x, dx);
+            // The solver's right-hand side cannot fail; a loop that does
+            // not converge is reported after the step.
+            let failed = RefCell::new(None);
+            let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
+                if let Err(e) = plan.rhs(blocks, params, held, t, x, dx) {
+                    dx.fill(f64::NAN);
+                    failed.borrow_mut().get_or_insert(e);
+                }
+            };
             group.solver.advance(&rhs, base.t, dt, &mut x)?;
+            if let Some(e) = failed.into_inner() {
+                return Err(e);
+            }
             for &(b, off) in &plan.members {
                 let n = self.states[b].len();
                 self.states[b].copy_from_slice(&x[off..off + n]);
@@ -349,6 +459,7 @@ impl Simulator {
         }
         self.t += dt;
         self.step += 1;
+        self.resolve(self.t)?;
         self.exchange();
         Ok(())
     }

@@ -16,6 +16,10 @@
 //!   (ADR 0019), evaluated from its parameters (and `t`).
 //! - `name = …` defines a quantity computed from the states, e.g. an
 //!   energy; it may use quantities defined above it.
+//! - `input u, F` makes `u` and `F` input ports (ADR 0040), set by whatever
+//!   is connected to them, instead of parameters. A defined quantity that
+//!   uses an input (directly or through quantities above it) depends on it
+//!   at the same instant (direct feedthrough); states do not.
 //! - Every other name is a parameter (default 1). Each state `x` also gets
 //!   an initial-value parameter `x0` (default 1), marked as an initial
 //!   condition. `t` is time; `pi` and the function names are reserved.
@@ -66,6 +70,7 @@ pub struct EquationSet {
     kind: Kind,
     spec: BlockSpec,
     states: usize,
+    inputs: usize,
     params: usize,
     /// Defined quantities, evaluated in order.
     defined: Vec<Expr>,
@@ -73,7 +78,7 @@ pub struct EquationSet {
     rhs: Vec<Expr>,
     /// For each state, the parameter holding its initial value.
     initial: Vec<usize>,
-    /// Values by slot: `t`, states, parameters, defined quantities.
+    /// Values by slot: `t`, states, inputs, parameters, defined quantities.
     scratch: RefCell<Vec<f64>>,
 }
 
@@ -125,12 +130,34 @@ fn read_lhs(lhs: &str) -> Option<Lhs> {
 impl EquationSet {
     /// Build from the lines of a definition, as a Block named `name`.
     pub fn parse(name: &str, lines: &[String]) -> Result<Self> {
-        // First the left-hand sides, which decide the kind of block.
+        // First the left-hand sides, which decide the kind of block, and
+        // the inputs.
         let mut sides = Vec::new();
+        let mut inputs: Vec<String> = Vec::new();
         for (k, text) in lines.iter().enumerate() {
             let number = k + 1;
             let trimmed = text.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if let Some(names) = trimmed.strip_prefix("input ") {
+                for n in names.split([',', ' ']).filter(|n| !n.is_empty()) {
+                    if !is_name(n) || n == "t" || is_reserved(n) {
+                        return Err(definition_error(
+                            number,
+                            1,
+                            format!("'{n}' cannot be an input name"),
+                        ));
+                    }
+                    if inputs.iter().any(|i| i == n) {
+                        return Err(definition_error(
+                            number,
+                            1,
+                            format!("'{n}' is an input twice"),
+                        ));
+                    }
+                    inputs.push(n.to_string());
+                }
                 continue;
             }
             let Some((lhs, rhs)) = text.split_once('=') else {
@@ -201,7 +228,7 @@ impl EquationSet {
                     format!("'{n}' is a reserved name"),
                 ));
             }
-            if states.contains(n) || defined.contains(n) {
+            if states.contains(n) || defined.contains(n) || inputs.contains(n) {
                 return Err(definition_error(
                     line.number,
                     1,
@@ -217,7 +244,8 @@ impl EquationSet {
         let mut params: Vec<String> = Vec::new();
         for line in &parsed {
             for (n, _) in line.ast.names() {
-                let known = n == "t" || states.contains(&n) || defined.contains(&n);
+                let known =
+                    n == "t" || states.contains(&n) || defined.contains(&n) || inputs.contains(&n);
                 if !known && !params.contains(&n) {
                     params.push(n);
                 }
@@ -248,8 +276,8 @@ impl EquationSet {
             initial.push(i);
         }
 
-        // Slots: t, states, parameters, defined quantities.
-        let (ns, np) = (states.len(), params.len());
+        // Slots: t, states, inputs, parameters, defined quantities.
+        let (ns, ni, np) = (states.len(), inputs.len(), params.len());
         let slot_of = |n: &str, defined_so_far: usize| -> Option<usize> {
             if n == "t" {
                 return Some(0);
@@ -257,13 +285,16 @@ impl EquationSet {
             if let Some(i) = states.iter().position(|s| s == n) {
                 return Some(1 + i);
             }
-            if let Some(i) = params.iter().position(|p| p == n) {
+            if let Some(i) = inputs.iter().position(|s| s == n) {
                 return Some(1 + ns + i);
+            }
+            if let Some(i) = params.iter().position(|p| p == n) {
+                return Some(1 + ns + ni + i);
             }
             defined[..defined_so_far]
                 .iter()
                 .position(|d| d == n)
-                .map(|i| 1 + ns + np + i)
+                .map(|i| 1 + ns + ni + np + i)
         };
         let mut rhs = vec![None; ns];
         let mut defined_exprs = Vec::new();
@@ -316,12 +347,41 @@ impl EquationSet {
             p.suggested_min = -10.0;
             p.description = format!("Initial value of {s}");
         }
-        let ports = states
+        // Which inputs each defined quantity uses, directly or through
+        // quantities above it.
+        let mut uses: Vec<Vec<String>> = Vec::new();
+        for line in parsed.iter().filter(|l| matches!(l.lhs, Lhs::Defined(_))) {
+            let mut u: Vec<String> = Vec::new();
+            for (n, _) in line.ast.names() {
+                let via: Vec<String> = match defined[..uses.len()].iter().position(|d| *d == n) {
+                    Some(i) => uses[i].clone(),
+                    None if inputs.contains(&n) => vec![n],
+                    None => Vec::new(),
+                };
+                for i in via {
+                    if !u.contains(&i) {
+                        u.push(i);
+                    }
+                }
+            }
+            // In input order, so the declaration reads naturally.
+            u.sort_by_key(|i| inputs.iter().position(|x| x == i));
+            uses.push(u);
+        }
+        let ports = inputs
             .iter()
-            .chain(&defined)
-            .map(|n| PortSpec::output(n, one, Shape::Scalar))
+            .map(|n| PortSpec::input(n, one, Shape::Scalar))
+            .chain(
+                states
+                    .iter()
+                    .map(|n| PortSpec::output(n, one, Shape::Scalar)),
+            )
+            .chain(defined.iter().zip(&uses).map(|(n, u)| {
+                let u: Vec<&str> = u.iter().map(String::as_str).collect();
+                PortSpec::output(n, one, Shape::Scalar).depends_on(&u)
+            }))
             .collect();
-        let slots = 1 + ns + np + defined.len();
+        let slots = 1 + ns + ni + np + defined.len();
         Ok(Self {
             kind,
             spec: BlockSpec {
@@ -338,6 +398,7 @@ impl EquationSet {
                 },
             },
             states: ns,
+            inputs: ni,
             params: np,
             defined: defined_exprs,
             rhs: rhs
@@ -353,34 +414,39 @@ impl EquationSet {
         self.kind
     }
 
-    /// Fill the value buffer for time `t`, states `x` and parameters `p`,
-    /// including the defined quantities.
-    fn fill(&self, t: f64, x: &[f64], p: &[f64], v: &mut [f64]) {
-        let (ns, np) = (self.states, self.params);
+    /// Fill the value buffer for time `t`, states `x`, inputs `u` and
+    /// parameters `p`, including the defined quantities. Missing inputs read
+    /// as 0.
+    fn fill(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], v: &mut [f64]) {
+        let (ns, ni, np) = (self.states, self.inputs, self.params);
         v[0] = t;
         v[1..=ns].copy_from_slice(&x[..ns]);
-        v[1 + ns..1 + ns + np].copy_from_slice(&p[..np]);
+        for (k, slot) in v[1 + ns..1 + ns + ni].iter_mut().enumerate() {
+            *slot = u.get(k).copied().unwrap_or(0.0);
+        }
+        v[1 + ns + ni..1 + ns + ni + np].copy_from_slice(&p[..np]);
+        let first = 1 + ns + ni + np;
         for (k, e) in self.defined.iter().enumerate() {
-            v[1 + ns + np + k] = e.eval(v);
+            v[first + k] = e.eval(v);
         }
     }
 }
 
 impl Equations for EquationSet {
-    fn rhs(&self, t: f64, x: &[f64], _u: &[f64], p: &[f64], dx: &mut [f64]) {
+    fn rhs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], dx: &mut [f64]) {
         let mut v = self.scratch.borrow_mut();
-        self.fill(t, x, p, &mut v);
+        self.fill(t, x, u, p, &mut v);
         for (d, e) in dx.iter_mut().zip(&self.rhs) {
             *d = e.eval(&v);
         }
     }
 
-    fn outputs(&self, t: f64, x: &[f64], p: &[f64], y: &mut [f64]) {
+    fn outputs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], y: &mut [f64]) {
         let mut v = self.scratch.borrow_mut();
-        self.fill(t, x, p, &mut v);
+        self.fill(t, x, u, p, &mut v);
         let ns = self.states;
         y[..ns].copy_from_slice(&x[..ns]);
-        let first = 1 + ns + self.params;
+        let first = 1 + ns + self.inputs + self.params;
         y[ns..].copy_from_slice(&v[first..first + self.defined.len()]);
     }
 }
@@ -467,12 +533,13 @@ impl Block for ExplicitBlock {
             io.state.copy_from_slice(&self.next);
         }
         self.set
-            .outputs(ctx.t + ctx.dt, io.state, io.params, io.outputs);
+            .outputs(ctx.t + ctx.dt, io.state, io.inputs, io.params, io.outputs);
         Ok(())
     }
 
     fn compute_outputs(&self, t: f64, io: StepIo<'_>) -> Result<()> {
-        self.set.outputs(t, io.state, io.params, io.outputs);
+        self.set
+            .outputs(t, io.state, io.inputs, io.params, io.outputs);
         Ok(())
     }
 }
@@ -521,7 +588,7 @@ mod tests {
         s.rhs(0.0, &x0, &[], &p, &mut dx);
         assert_eq!(dx, [3.0, -2.0]);
         let mut y = [0.0; 3];
-        s.outputs(0.0, &x0, &p, &mut y);
+        s.outputs(0.0, &x0, &[], &p, &mut y);
         assert_eq!(y, [1.0, 3.0, 0.5 * 9.0 + 0.5 * 2.0]);
     }
 

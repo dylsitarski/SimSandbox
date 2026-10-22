@@ -10,6 +10,8 @@
 //!   and the speed/accuracy labels every method carries.
 //! - [`graph`]: the model graph of Blocks and connections.
 //! - [`fusion`]: groups of equation Blocks solved together as one system.
+//! - [`loops`]: direct feedthrough ordered and algebraic loops solved
+//!   (ADR 0040).
 //! - [`sim`]: the co-simulation master and the kernel-owned state store.
 //! - [`registry`]: block types by name, for loading models from files.
 //! - [`sampling`]: sampling designs for sweeps (grid, random, Latin
@@ -21,6 +23,7 @@ pub mod block;
 pub mod error;
 pub mod fusion;
 pub mod graph;
+pub mod loops;
 pub mod random;
 pub mod registry;
 pub mod sampling;
