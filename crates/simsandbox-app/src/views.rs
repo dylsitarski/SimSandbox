@@ -296,8 +296,8 @@ mod tests {
 
     #[test]
     fn every_example_opens_its_saved_views() {
-        use crate::examples::{registry, view_registry, EXAMPLES};
-        use crate::session::Session;
+        use simsandbox_session::examples::{registry, view_registry, EXAMPLES};
+        use simsandbox_session::session::Session;
         for e in EXAMPLES {
             let s = Session::load(e.name, e.text, &registry()).unwrap();
             let mut v = Views::new(view_registry());
@@ -309,8 +309,8 @@ mod tests {
 
     #[test]
     fn sweeps_open_views_of_their_samples() {
-        use crate::examples::{registry, view_registry, EXAMPLES};
-        use crate::session::Session;
+        use simsandbox_session::examples::{registry, view_registry, EXAMPLES};
+        use simsandbox_session::session::Session;
         use simsandbox_file::{Design, Sampling, SweepControl};
         let e = EXAMPLES
             .iter()

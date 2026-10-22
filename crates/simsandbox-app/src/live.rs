@@ -5,7 +5,7 @@
 //! the shared history to draw, and reads what the worker publishes.
 
 use crate::pacing::Pacer;
-use crate::session::{ParamRow, Session, SharedHistory, Sweep};
+use simsandbox_session::session::{ParamRow, Session, SharedHistory, Sweep};
 use eframe::egui;
 use simsandbox_core::block::MethodLabels;
 use simsandbox_core::SimError;
@@ -430,7 +430,7 @@ fn newest_of_each_key(commands: Vec<Command>) -> Vec<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::examples::{registry, EXAMPLES};
+    use simsandbox_session::examples::{registry, EXAMPLES};
 
     fn example(part: &str) -> &'static str {
         EXAMPLES

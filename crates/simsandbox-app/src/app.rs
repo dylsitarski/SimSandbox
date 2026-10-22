@@ -1,10 +1,10 @@
 //! The window: open and save a model, run, pause, rewind, change parameters,
 //! and watch it plot live.
 
-use crate::examples::{registry, EXAMPLES};
+use simsandbox_session::examples::{registry, EXAMPLES};
 use crate::live::{Event, Live, Model};
 use crate::log::{Kind as LogKind, Log};
-use crate::session::{ParamRow, Session};
+use simsandbox_session::session::{ParamRow, Session};
 use crate::views::Views;
 use eframe::egui;
 use simsandbox_core::registry::Registry;
@@ -73,7 +73,7 @@ impl SimApp {
             editor: None,
             signals_editor: None,
             rewind_t: 0.0,
-            views: Views::new(crate::examples::view_registry()),
+            views: Views::new(simsandbox_session::examples::view_registry()),
             started: Instant::now(),
             screenshot,
             screenshot_requested: false,
@@ -1388,7 +1388,7 @@ const SLOT_WIDTH: f32 = 150.0;
 
 /// What decides the views a sweep can show: the swept parameters, whether
 /// they form a two-parameter grid, and whether samples are drawn as points.
-fn structure(sw: &crate::session::Sweep) -> (Vec<String>, bool, bool) {
+fn structure(sw: &simsandbox_session::session::Sweep) -> (Vec<String>, bool, bool) {
     (sw.keys().to_vec(), sw.is_grid(), sw.unordered())
 }
 
@@ -1399,7 +1399,7 @@ fn sweep_controls(
     ui: &mut egui::Ui,
     live: &Live,
     m: &Model,
-    sw: &crate::session::Sweep,
+    sw: &simsandbox_session::session::Sweep,
 ) -> Result<Option<Vec<String>>, String> {
     use simsandbox_file::{Design, SweepControl, DEFAULT_SAMPLE_COUNT, DEFAULT_SEED, MAX_SAMPLES};
     let rows = &m.params;
@@ -1811,7 +1811,7 @@ fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History) {
     }
     ui.weak(format!("Plotted signals: {}", history.names().join(", ")));
 
-    let inputs = crate::session::cut_inputs(history);
+    let inputs = simsandbox_session::session::cut_inputs(history);
     ui.add_space(8.0);
     ui.heading("Cuts");
     if inputs.is_empty() {
@@ -1824,7 +1824,7 @@ fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History) {
     );
     let mut remove = None;
     for (k, c) in ed.cuts.iter_mut().enumerate() {
-        let g = crate::session::cut_geometry(history, &c.input);
+        let g = simsandbox_session::session::cut_geometry(history, &c.input);
         ui.separator();
         ui.horizontal(|ui| {
             ui.add_sized([100.0, height], egui::TextEdit::singleline(&mut c.name));
@@ -1964,7 +1964,7 @@ fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History) {
         while ed.cuts.iter().any(|c| c.name == format!("cuts{n}")) {
             n += 1;
         }
-        let entry = crate::session::default_cut(history, &format!("cuts{n}"), &inputs[0]);
+        let entry = simsandbox_session::session::default_cut(history, &format!("cuts{n}"), &inputs[0]);
         let object = serde_json::Value::Object(entry.settings.into_iter().collect());
         if let Ok(settings) = serde_json::from_value(object) {
             ed.cuts.push(CutEdit {

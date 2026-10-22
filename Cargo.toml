@@ -8,6 +8,7 @@ members = [
     "crates/simsandbox-file",
     "crates/simsandbox-cli",
     "crates/simsandbox-views",
+    "crates/simsandbox-session",
     "crates/simsandbox-app",
 ]
 

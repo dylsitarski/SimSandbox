@@ -200,7 +200,6 @@ pub struct Session {
 impl Session {
     /// Load a model file, evaluating any sweep at once. Errors are
     /// formatted for display.
-    #[cfg(test)]
     pub fn load(title: &str, text: &str, registry: &Registry) -> Result<Self, String> {
         Self::load_with(title, text, registry, false)
     }

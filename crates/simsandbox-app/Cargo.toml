@@ -20,6 +20,7 @@ simsandbox-eq = { path = "../simsandbox-eq", features = ["views"] }
 simsandbox-expr = { path = "../simsandbox-expr" }
 simsandbox-file = { path = "../simsandbox-file" }
 simsandbox-views = { path = "../simsandbox-views" }
+simsandbox-session = { path = "../simsandbox-session" }
 # Pinned deliberately (ADR 0008): egui releases change APIs often.
 # egui_plot 0.37 is built against egui 0.36, so eframe stays on 0.36.
 eframe = { version = "=0.36.2", default-features = false, features = [

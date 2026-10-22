@@ -2645,6 +2645,7 @@ dependencies = [
  "simsandbox-eq",
  "simsandbox-expr",
  "simsandbox-file",
+ "simsandbox-session",
  "simsandbox-views",
 ]
 
@@ -2686,6 +2687,19 @@ dependencies = [
  "simsandbox-agents",
  "simsandbox-core",
  "simsandbox-eq",
+]
+
+[[package]]
+name = "simsandbox-session"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "simsandbox-agents",
+ "simsandbox-core",
+ "simsandbox-eq",
+ "simsandbox-expr",
+ "simsandbox-file",
+ "simsandbox-views",
 ]
 
 [[package]]
