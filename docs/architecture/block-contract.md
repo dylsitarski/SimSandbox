@@ -12,7 +12,7 @@ Every simulation, from a pendulum to a CFD solver to a neural network, is wrappe
 | Ports | Typed inputs and outputs with SI unit and shape, e.g. `velocity: Vector(3) [m/s]`; an output may declare itself the coordinate of another along a grid axis (ADR 0024) | Yes, scalar, vector, grid and point-set signal ports (`PortSpec`) |
 | Parameters | Named, unit-aware, with default, suggested range, description and an `initial_condition` flag (applies on restart); become entry fields and optional sliders ([ADR 0011](../decisions/0011-parameter-entry.md)) | Yes (`ParamSpec`) |
 | State | Named variables owned by the kernel as a flat `f64` slice, so snapshots and rewind work uniformly; external Blocks must save and restore their own | Kernel-owned state, yes |
-| Tables | Named populations of rows (columns of `f64`, a stable id per row) that grow and shrink, owned by the kernel beside the fixed state and included in snapshots ([ADR 0034](../decisions/0034-agent-domain.md)) | No (planned, Phase 1) |
+| Tables | Named populations of rows (columns of `f64`, a stable id per row) that grow and shrink, owned by the kernel beside the fixed state and included in snapshots ([ADR 0034](../decisions/0034-agent-domain.md)). Declared as `BlockSpec::tables` (`TableSpec`), held as `Table` (`crates/simsandbox-core/src/table.rs`), filled by `Block::init_tables` and changed through `StepIo::tables`; ids restart at 0 on restart | Yes |
 | Time semantics | Continuous with events (as in FMI 3.0); fixed-step, discrete-event and stateless as special cases | Declared (`TimeSemantics`); the master only uses fixed communication steps today |
 | Method | The method being run, with speed and accuracy labels | Yes (`MethodSpec`, `MethodLabels`) |
 
@@ -24,7 +24,7 @@ A Block separates **what** is simulated from **how** it is computed. The model d
 
 | Trait | Required | What the Block provides | What the kernel does with it | Implemented |
 | --- | --- | --- | --- | --- |
-| `Block` | Yes | Spec, method, `init`, `do_step`, `compute_outputs` | Steps it as a co-simulated black box | Yes |
+| `Block` | Yes | Spec, method, `init`, `do_step`, `compute_outputs`; `init_tables` for Blocks with tables (default: nothing) | Steps it as a co-simulated black box; each step's `StepContext` carries the step number and the Block's random stream (`random::stream(model seed, Block name)`, draws with `random::Draws`, ADR 0034) | Yes |
 | `Equations` | No | `rhs` (dx/dt) and `outputs` | Fuses it with other equation Blocks into one system | Yes |
 | `Rollback` | No | Cheap undo of a rejected step | Iterative coupling and step rejection | Trait only |
 | `Derivatives` | No | Jacobian of the right-hand side | Implicit coupling, sensitivities, parameter fitting | Trait only |
@@ -77,4 +77,4 @@ Measured effect (test `cosimulation_adds_coupling_error`): two coupled oscillato
 ## Current restrictions
 
 - Fused-group members must have no direct feedthrough (outputs depend on state and parameters only); see [Q5](../open-questions.md).
-- `Shape` supports scalars, vectors, grids (`Grid { nx, ny }`, row-major) and point sets (`Points { count, dim }`); point sets of variable length are planned for populations ([ADR 0034](../decisions/0034-agent-domain.md)); tensors and meshes come with their domains.
+- `Shape` supports scalars, vectors, grids (`Grid { nx, ny }`, row-major) and point sets (`Points { count, dim }`) and populations (`Population { dim }`: points whose number varies from step to step, [ADR 0034](../decisions/0034-agent-domain.md)). Population ports take no room in the fixed input and output arrays: they are `StepIo::population_inputs`/`population_outputs` (one vector per such port), routed and unit-converted like other connections, and connect only to populations of the same `dim`. Tensors and meshes come with their domains.

@@ -29,7 +29,7 @@ flowchart TB
 
 | Crate | Layer | Status | Contents |
 | --- | --- | --- | --- |
-| `crates/simsandbox-core` | Kernel | Exists | `block.rs` (contract, labels), `units.rs`, `graph.rs` (model graph), `sim.rs` (master, snapshots), `registry.rs` (block types by name), `error.rs` |
+| `crates/simsandbox-core` | Kernel | Exists | `block.rs` (contract, labels), `units.rs`, `graph.rs` (model graph), `sim.rs` (master, snapshots), `table.rs` (populations of rows, ADR 0034), `random.rs` (counter-based random numbers), `sampling.rs` (sweep designs), `registry.rs` (block types by name), `error.rs` |
 | `crates/simsandbox-expr` | Backend support: expressions | Exists | Parser and evaluator for typed equations and, later, derived signals ([ADR 0017](../decisions/0017-typed-equations.md)) |
 | `crates/simsandbox-eq` | Backend: equations | Exists | `ode.rs` (`OdeSystem`, `OdeBlock`), `integrators.rs`, `group.rs` (fusion), `systems.rs` (examples), `symbolic.rs` (typed equations, `eq.equations`), `registry.rs` (file types) |
 | `crates/simsandbox-file` | Model graph: files | Exists | JSON model files, `controls`, JSON Schema ([ADR 0007](../decisions/0007-json-model-files.md)); depends on `serde`, `serde_json` |

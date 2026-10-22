@@ -12,6 +12,7 @@
 //!   and saving work the same for every native Block.
 //! - Each Block runs one chosen *method*, labelled for speed and accuracy.
 
+use crate::table::{Table, TableSpec};
 use crate::units::Unit;
 use crate::Result;
 use std::time::Duration;
@@ -96,6 +97,13 @@ pub enum Shape {
         count: usize,
         dim: usize,
     },
+    /// Points of `dim` values each whose number changes from step to step,
+    /// such as the positions of a population (ADR 0034). Such ports take no
+    /// room in the fixed input and output arrays; their values are in
+    /// [`StepIo::population_inputs`] and [`StepIo::population_outputs`].
+    Population {
+        dim: usize,
+    },
 }
 
 impl Shape {
@@ -105,13 +113,23 @@ impl Shape {
             Shape::Vector(n) => *n,
             Shape::Grid { nx, ny } => nx * ny,
             Shape::Points { count, dim } => count * dim,
+            // Not in the fixed arrays.
+            Shape::Population { .. } => 0,
         }
     }
 
     /// Fields and point sets are recorded and shown as a whole, not as one
     /// signal per element.
     pub fn is_field(&self) -> bool {
-        matches!(self, Shape::Grid { .. } | Shape::Points { .. })
+        matches!(
+            self,
+            Shape::Grid { .. } | Shape::Points { .. } | Shape::Population { .. }
+        )
+    }
+
+    /// The number of values changes from step to step.
+    pub fn is_variable(&self) -> bool {
+        matches!(self, Shape::Population { .. })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -210,6 +228,8 @@ pub struct BlockSpec {
     pub params: Vec<ParamSpec>,
     /// Names of the kernel-owned state variables, in slice order.
     pub states: Vec<String>,
+    /// Kernel-owned populations of rows that grow and shrink (ADR 0034).
+    pub tables: Vec<TableSpec>,
     pub time: TimeSemantics,
 }
 
@@ -244,14 +264,24 @@ impl BlockSpec {
 pub struct StepContext {
     pub t: f64,
     pub dt: f64,
+    /// Steps taken since the run (re)started: 0 for the first.
+    pub step: u64,
+    /// The Block's random stream ([`crate::random`], ADR 0034).
+    pub seed: u64,
 }
 
-/// Data for one step. Inputs and outputs are flattened in port order.
+/// Data for one step. Inputs and outputs are flattened in port order;
+/// variable-length ports (`Shape::Population`) have one vector each, in port
+/// order among such ports.
 pub struct StepIo<'a> {
     pub params: &'a [f64],
     pub inputs: &'a [f64],
     pub state: &'a mut [f64],
     pub outputs: &'a mut [f64],
+    /// The Block's tables, in `BlockSpec::tables` order.
+    pub tables: &'a mut [Table],
+    pub population_inputs: &'a [Vec<f64>],
+    pub population_outputs: &'a mut [Vec<f64>],
 }
 
 /// The required contract. Enough for the master to step any Block as a black box.
@@ -263,6 +293,14 @@ pub trait Block: Send {
 
     /// Set initial state from parameters.
     fn init(&mut self, params: &[f64], state: &mut [f64]) -> Result<()>;
+
+    /// Fill the Block's tables, empty when called, with their first rows
+    /// (ADR 0034); `seed` is the Block's random stream. Blocks without
+    /// tables need not implement it.
+    fn init_tables(&mut self, params: &[f64], seed: u64, tables: &mut [Table]) -> Result<()> {
+        let _ = (params, seed, tables);
+        Ok(())
+    }
 
     /// Advance from `ctx.t` to `ctx.t + ctx.dt`, then write outputs.
     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()>;

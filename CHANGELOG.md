@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Kernel support for populations (ADR 0034): Blocks can keep tables of rows with stable ids that grow and shrink, saved in snapshots and rewound like other state; population ports carry a varying number of points between Blocks; `run.seed` in model files seeds counter-based random numbers, so the same file gives the same run. The point-set view draws populations.
 - ADRs 0037 (sliders live only for real-time models), 0038 (Phase 1 revised; user-defined blocks decided later) and 0039 (AI agents as first-class users, also in the vision and `AGENTS.md`).
 - ADRs 0035 (the simulation moves to a worker thread) and 0036 (Python-defined blocks in Phase 1; revised Phase 1 order).
 - ADR 0034: the agent domain (populations as kernel-owned tables without a capacity limit, variable-length point sets, per-block update order, counter-based randomness from `run.seed`).

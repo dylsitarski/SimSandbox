@@ -81,7 +81,8 @@ fn registry() -> Registry {
     r
 }
 
-/// Run a model file and write every output, in file block order, as CSV.
+/// Run a model file and write every output, in file block order, as CSV
+/// (populations, whose length varies, are left out).
 /// Vector outputs get one column per element: `block.port[i]`. A model
 /// with no states is swept instead (ADR 0028): one row per sample, with
 /// the sample number and the swept parameters first.
@@ -112,6 +113,14 @@ fn run_file(args: &[String]) -> Result<(), String> {
         let id = loaded.ids[&entry.name];
         let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
         for port in spec.outputs() {
+            // Populations vary in length, which rows of CSV cannot hold.
+            if port.shape.is_variable() {
+                eprintln!(
+                    "note: {}.{} is a population (variable length) and is not written",
+                    entry.name, port.name
+                );
+                continue;
+            }
             let n = port.shape.len();
             for i in 0..n {
                 header.push(if port.shape == Shape::Scalar {

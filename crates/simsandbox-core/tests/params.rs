@@ -32,6 +32,7 @@ impl Decay {
                     initial_condition: false,
                 }],
                 states: vec!["x".into()],
+                tables: Vec::new(),
                 time: TimeSemantics::Continuous,
             },
             method: MethodSpec {

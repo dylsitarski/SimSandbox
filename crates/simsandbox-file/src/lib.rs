@@ -329,6 +329,9 @@ pub struct RunSettings {
     /// Where batch runs stop and where the app pauses; none runs on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub t_end: Option<f64>,
+    /// The seed every random draw derives from (ADR 0034); 1 if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 impl Default for RunSettings {
@@ -336,6 +339,7 @@ impl Default for RunSettings {
         Self {
             dt: DEFAULT_DT,
             t_end: None,
+            seed: None,
         }
     }
 }
@@ -952,6 +956,11 @@ impl ModelFile {
 
     fn build(&self, registry: &Registry) -> Result<(Model, BTreeMap<String, BlockId>), FileError> {
         let mut model = Model::new();
+        model.set_seed(
+            self.run
+                .seed
+                .unwrap_or(simsandbox_core::graph::DEFAULT_SEED),
+        );
         let mut ids = BTreeMap::new();
         for (bi, entry) in self.blocks.iter().enumerate() {
             let path = format!("blocks[{bi}]");
@@ -1488,7 +1497,10 @@ fn output_element_exists(key: &str, model: &Model, ids: &BTreeMap<String, BlockI
                     (Shape::Scalar, None) => true,
                     (Shape::Vector(n), Some(i)) => i < n,
                     // Fields and point sets are bound as a whole.
-                    (Shape::Grid { .. } | Shape::Points { .. }, None) => true,
+                    (
+                        Shape::Grid { .. } | Shape::Points { .. } | Shape::Population { .. },
+                        None,
+                    ) => true,
                     _ => false,
                 }
         })

@@ -46,6 +46,7 @@ fn views_draw_signals_with_infinities_and_nans() {
             ("p".into(), FieldShape::Points { count: 2, dim: 2 }),
             ("gx".into(), FieldShape::Grid { nx: 3, ny: 1 }),
             ("s".into(), FieldShape::Grid { nx: 2, ny: 2 }),
+            ("q".into(), FieldShape::Population { dim: 2 }),
         ],
     );
     let coordinates = vec![Coordinate {
@@ -66,12 +67,13 @@ fn views_draw_signals_with_infinities_and_nans() {
                 &[odd, 0.0, 1.0, odd],
                 &[0.0, if k % 5 == 0 { odd } else { 1.0 }, 2.0],
                 &[odd, 1.0, odd, 2.0],
+                &[odd, 0.0, 1.0, odd, 2.0, 3.0][..2 * (k % 4).min(3)],
             ],
         );
     }
     let grids = vec!["g".to_string(), "gx".to_string(), "s".to_string()];
     let lines = vec!["g".to_string(), "gx".to_string()];
-    let points = vec!["p".to_string()];
+    let points = vec!["p".to_string(), "q".to_string()];
     let available = Available {
         scalars: &names,
         grids: &grids,
@@ -109,6 +111,7 @@ fn views_draw_signals_with_infinities_and_nans() {
         ("plot.profile", bind(&[("y", &["g"])])),
         ("plot.profile", bind(&[("x", &["gx"]), ("y", &["g"])])),
         ("plot.scatter", bind(&[("points", &["p"])])),
+        ("plot.scatter", bind(&[("points", &["q"])])),
         ("plot.surface", bind(&[("field", &["s"])])),
         (
             "plot.surface",

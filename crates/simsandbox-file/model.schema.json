@@ -89,6 +89,12 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "description": "Where batch runs stop and where the app pauses."
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1,
+          "description": "The seed every random draw derives from (ADR 0034): the same file and seed give the same run."
         }
       }
     },

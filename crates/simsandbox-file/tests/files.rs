@@ -374,6 +374,21 @@ fn run_settings_default_validate_and_round_trip() {
     let (again, _) = ModelFile::from_json(&file.to_json()).unwrap();
     assert_eq!(again.run, file.run);
 
+    // The seed (ADR 0034): 1 unless given, and given to the model.
+    assert_eq!(load(bare, &registry()).unwrap().model.seed(), 1);
+    let seeded = bare.replace(r#""blocks""#, r#""run": {"seed": 42}, "blocks""#);
+    let loaded = load(&seeded, &registry()).unwrap();
+    assert_eq!(loaded.model.seed(), 42);
+    assert!(loaded.file.to_json().contains("\"seed\": 42"));
+    // Not a whole number from 0 up: reported where it is written.
+    assert!(matches!(
+        load(
+            &bare.replace(r#""blocks""#, r#""run": {"seed": -1}, "blocks""#),
+            &registry()
+        ),
+        Err(FileError::Syntax { .. })
+    ));
+
     for (bad, path) in [
         (r#""run": {"dt": 0}, "blocks""#, "run.dt"),
         (r#""run": {"dt": -0.1}, "blocks""#, "run.dt"),

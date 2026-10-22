@@ -63,6 +63,7 @@ impl Lorenz {
                     initial("z0", one, 1.0, 0.0, 60.0, "Initial z"),
                 ],
                 states: vec!["x".into(), "y".into(), "z".into()],
+                tables: Vec::new(),
                 time: TimeSemantics::Continuous,
             },
         }
@@ -142,6 +143,7 @@ impl CoupledOscillator {
                     ),
                 ],
                 states: vec!["x".into(), "v".into()],
+                tables: Vec::new(),
                 time: TimeSemantics::Continuous,
             },
         }
@@ -225,6 +227,7 @@ impl Pendulum {
                     ),
                 ],
                 states: vec!["theta".into(), "omega".into()],
+                tables: Vec::new(),
                 time: TimeSemantics::Continuous,
             },
         }

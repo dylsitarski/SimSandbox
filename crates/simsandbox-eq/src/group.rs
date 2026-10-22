@@ -91,6 +91,7 @@ impl EquationGroup {
             ports: Vec::new(),
             params: Vec::new(),
             states: Vec::new(),
+            tables: Vec::new(),
             time: TimeSemantics::Continuous,
         };
         let mut members = Vec::new();

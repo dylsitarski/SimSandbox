@@ -79,7 +79,8 @@ struct Source {
 struct FieldSource {
     block: BlockId,
     port: String,
-    len: usize,
+    /// Values per frame; `None` for a population, whose frames vary.
+    len: Option<usize>,
 }
 
 /// One parameter as the panel shows it.
@@ -240,6 +241,7 @@ impl Session {
                 let field = match port.shape {
                     Shape::Grid { nx, ny } => Some(FieldShape::Grid { nx, ny }),
                     Shape::Points { count, dim } => Some(FieldShape::Points { count, dim }),
+                    Shape::Population { dim } => Some(FieldShape::Population { dim }),
                     Shape::Scalar | Shape::Vector(_) => None,
                 };
                 if let Some(shape) = field {
@@ -254,7 +256,7 @@ impl Session {
                     field_sources.push(FieldSource {
                         block: id,
                         port: port.name.clone(),
-                        len: port.shape.len(),
+                        len: (!port.shape.is_variable()).then(|| port.shape.len()),
                     });
                     continue;
                 }
@@ -1082,7 +1084,7 @@ fn frames<'a>(sim: &'a Simulator, sources: &[FieldSource]) -> Vec<&'a [f64]> {
         .iter()
         .map(|f| {
             sim.output(f.block, &f.port)
-                .filter(|v| v.len() == f.len)
+                .filter(|v| f.len.is_none_or(|n| v.len() == n))
                 .unwrap_or(&[])
         })
         .collect()

@@ -81,6 +81,7 @@ impl HeatRod {
                     ),
                 ],
                 states: (0..n).map(|i| format!("T{i}")).collect(),
+                tables: Vec::new(),
                 time: TimeSemantics::Continuous,
             },
         }
@@ -191,6 +192,7 @@ impl Orbits {
                         ]
                     })
                     .collect(),
+                tables: Vec::new(),
                 time: TimeSemantics::Continuous,
             },
         }

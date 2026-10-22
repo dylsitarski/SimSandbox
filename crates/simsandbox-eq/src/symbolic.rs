@@ -330,6 +330,7 @@ impl EquationSet {
                 ports,
                 params: param_specs,
                 states: states.clone(),
+                tables: Vec::new(),
                 time: match kind {
                     Kind::Continuous => TimeSemantics::Continuous,
                     Kind::Map => TimeSemantics::DiscreteEvent,
@@ -532,7 +533,12 @@ mod tests {
         let mut b = ExplicitBlock::new(s, &Kind::Map.default_method()).unwrap();
         let (p, mut x, mut y) = ([1.0, 0.0], [0.0; 2], [0.0; 2]);
         b.init(&p, &mut x).unwrap();
-        let ctx = StepContext { t: 0.0, dt: 1.0 };
+        let ctx = StepContext {
+            t: 0.0,
+            dt: 1.0,
+            step: 0,
+            seed: 0,
+        };
         let mut step = |x: &mut [f64], y: &mut [f64]| {
             b.do_step(
                 ctx,
@@ -541,6 +547,9 @@ mod tests {
                     inputs: &[],
                     state: x,
                     outputs: y,
+                    tables: &mut [],
+                    population_inputs: &[],
+                    population_outputs: &mut [],
                 },
             )
             .unwrap();
@@ -572,6 +581,9 @@ mod tests {
                 inputs: &[],
                 state: &mut [],
                 outputs: &mut y,
+                tables: &mut [],
+                population_inputs: &[],
+                population_outputs: &mut [],
             },
         )
         .unwrap();

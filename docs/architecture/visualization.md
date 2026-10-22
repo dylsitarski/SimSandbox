@@ -33,6 +33,7 @@ A **signal** is a named quantity recorded over time.
 | Vector | `lorenz.xyz` | A whole vector output |
 | Grid | `rod.temperature` | A whole `Shape::Grid { nx, ny }` output, recorded as one frame per sample |
 | Point set | `disc.positions` | A whole `Shape::Points { count, dim }` output (`[x0, y0, x1, y1, …]`), recorded as one frame per sample |
+| Population | `sheep.position` | A `Shape::Population { dim }` output: points whose number varies, recorded as one frame per sample of its own length (`FieldShape::Population`); the history counts the values held when thinning, keeping at least 1000 samples |
 | Derived | `energy`, `fft(a.x)`, `pca(state)[0]` | Computed from other signals; presentation only |
 
 Names follow the model file conventions: `block.port` for a whole output, `block.port[i]` for one element ([ADR 0014](../decisions/0014-view-in-controls.md)). The history records every signal at every communication step and is thinned, rewound and branched as a whole, so signals always pair by index. Grids and point sets are recorded whole and are not split into scalars; when a model has fields, the history keeps at most 4 000 000 field values (but at least 1000 samples) before thinning. Derived signals cannot use fields yet.

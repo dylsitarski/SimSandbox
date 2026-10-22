@@ -24,18 +24,43 @@ pub struct Connection {
     pub factor: f64,
 }
 
+/// The seed of a model that sets none ([`Model::set_seed`]).
+pub const DEFAULT_SEED: u64 = 1;
+
 /// A graph of Blocks and the connections between them.
-#[derive(Default)]
 pub struct Model {
     pub(crate) blocks: Vec<Box<dyn Block>>,
     pub(crate) params: Vec<Vec<f64>>,
     pub(crate) connections: Vec<Connection>,
     pub(crate) groups: Vec<Group>,
+    pub(crate) seed: u64,
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        Self {
+            blocks: Vec::new(),
+            params: Vec::new(),
+            connections: Vec::new(),
+            groups: Vec::new(),
+            seed: DEFAULT_SEED,
+        }
+    }
 }
 
 impl Model {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The seed every random draw derives from (ADR 0034): the same seed
+    /// gives the same run.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.seed = seed;
+    }
+
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
     /// Add a Block with its default parameter values.
@@ -207,6 +232,19 @@ fn param_index(spec: &BlockSpec, name: &str) -> Result<usize> {
             block: spec.name.clone(),
             name: name.into(),
         })
+}
+
+/// Position of a named variable-length port (`Shape::Population`) among a
+/// Block's variable-length inputs or outputs.
+pub(crate) fn population_index(
+    ports: &[PortSpec],
+    causality: Causality,
+    name: &str,
+) -> Option<usize> {
+    ports
+        .iter()
+        .filter(|p| p.causality == causality && p.shape.is_variable())
+        .position(|p| p.name == name)
 }
 
 /// Offset of a named port within a Block's flattened inputs or outputs.

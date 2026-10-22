@@ -34,13 +34,34 @@ pub enum FieldShape {
     Grid { nx: usize, ny: usize },
     /// `count` points of `dim` coordinates, point by point.
     Points { count: usize, dim: usize },
+    /// Points of `dim` values whose number changes from sample to sample,
+    /// such as a population's positions (ADR 0034).
+    Population { dim: usize },
 }
 
 impl FieldShape {
+    /// Values per frame; 0 for a population, whose frames vary.
     pub fn len(&self) -> usize {
         match *self {
             FieldShape::Grid { nx, ny } => nx * ny,
             FieldShape::Points { count, dim } => count * dim,
+            FieldShape::Population { .. } => 0,
+        }
+    }
+
+    /// Whether a frame of `n` values has this shape.
+    pub fn fits(&self, n: usize) -> bool {
+        match *self {
+            FieldShape::Population { dim } => dim > 0 && n.is_multiple_of(dim),
+            _ => n == self.len(),
+        }
+    }
+
+    /// Values per point, for point sets and populations.
+    pub fn point_dim(&self) -> Option<usize> {
+        match *self {
+            FieldShape::Points { dim, .. } | FieldShape::Population { dim } => Some(dim),
+            FieldShape::Grid { .. } => None,
         }
     }
 
@@ -96,6 +117,8 @@ pub struct History {
     points: Vec<Vec<PlotPoint>>,
     fields: Vec<Field>,
     max_samples: usize,
+    /// Values held in population frames, which vary in size.
+    population_values: usize,
 }
 
 impl History {
@@ -136,6 +159,7 @@ impl History {
                 })
                 .collect(),
             max_samples,
+            population_values: 0,
         }
     }
 
@@ -245,16 +269,23 @@ impl History {
             p.push(PlotPoint::new(t, v));
         }
         for (f, frame) in per_sample.zip(frames) {
-            // A missing or misshapen frame is recorded as NaN, so every
-            // frame has the field's size.
-            let n = f.shape.len();
-            f.frames.push(if frame.len() == n {
+            // A missing or misshapen frame is recorded as NaN (empty for a
+            // population), so every frame has the field's shape.
+            let population = matches!(f.shape, FieldShape::Population { .. });
+            f.frames.push(if f.shape.fits(frame.len()) {
                 frame.to_vec()
+            } else if population {
+                Vec::new()
             } else {
-                vec![f64::NAN; n]
+                vec![f64::NAN; f.shape.len()]
             });
+            if population {
+                self.population_values += f.frames.last().map_or(0, Vec::len);
+            }
         }
-        if self.times.len() > self.max_samples {
+        // Populations count by the values they hold, like fixed fields.
+        let crowded = self.population_values > FIELD_VALUES && self.times.len() > 1000;
+        if self.times.len() > self.max_samples || crowded {
             thin(&mut self.times);
             for p in &mut self.points {
                 thin(p);
@@ -262,7 +293,17 @@ impl History {
             for f in self.fields.iter_mut().filter(|f| !f.whole) {
                 thin(&mut f.frames);
             }
+            self.count_population_values();
         }
+    }
+
+    fn count_population_values(&mut self) {
+        self.population_values = self
+            .fields
+            .iter()
+            .filter(|f| !f.whole && matches!(f.shape, FieldShape::Population { .. }))
+            .flat_map(|f| f.frames.iter().map(Vec::len))
+            .sum();
     }
 
     /// Drop every sample after `t` (rewind).
@@ -275,6 +316,7 @@ impl History {
         for f in self.fields.iter_mut().filter(|f| !f.whole) {
             f.frames.truncate(keep);
         }
+        self.count_population_values();
     }
 
     pub fn clear(&mut self) {
@@ -285,6 +327,7 @@ impl History {
         for f in &mut self.fields {
             f.frames.clear();
         }
+        self.population_values = 0;
     }
 
     pub fn times(&self) -> &[f64] {
@@ -375,6 +418,35 @@ mod tests {
         assert_eq!(swept.resolve("t"), Some(SignalRef::Time));
         assert_eq!(swept.resolve("s.w"), Some(SignalRef::Time));
         assert_eq!(swept.name(SignalRef::Time), "s.w");
+    }
+
+    #[test]
+    fn population_frames_vary_in_size() {
+        let shape = FieldShape::Population { dim: 2 };
+        let mut h = History::with_fields("t", vec![], vec![("p".into(), shape)]);
+        h.push_sample(0.0, &[], &[&[1.0, 2.0, 3.0, 4.0]]);
+        h.push_sample(1.0, &[], &[&[5.0, 6.0]]);
+        // Not whole points: recorded as no points.
+        h.push_sample(2.0, &[], &[&[7.0]]);
+        let f = &h.fields()[0];
+        assert_eq!(f.frame(0).len(), 4);
+        assert_eq!(f.frame(1), [5.0, 6.0]);
+        assert!(f.frame(2).is_empty());
+        assert_eq!(f.shape.point_dim(), Some(2));
+        assert!(shape.fits(0) && !shape.fits(3));
+        h.truncate_after(0.5);
+        assert_eq!(h.population_values, 4);
+
+        // Thinned by the values held, as fixed fields are, but never below
+        // 1000 samples.
+        let mut big = History::with_fields("t", vec![], vec![("p".into(), shape)]);
+        let frame = vec![0.0; 20_000];
+        for k in 0..2_000 {
+            big.push_sample(k as f64, &[], &[&frame]);
+        }
+        assert!((500..=1001).contains(&big.len()), "{}", big.len());
+        assert_eq!(big.population_values, big.len() * frame.len());
+        assert_eq!(big.times()[0], 0.0);
     }
 
     #[test]

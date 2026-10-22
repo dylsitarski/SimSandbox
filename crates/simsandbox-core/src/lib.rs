@@ -14,14 +14,18 @@
 //! - [`registry`]: block types by name, for loading models from files.
 //! - [`sampling`]: sampling designs for sweeps (grid, random, Latin
 //!   hypercube, Sobol).
+//! - [`table`]: populations of rows owned by the kernel (ADR 0034).
+//! - [`random`]: counter-based random numbers (ADR 0034).
 
 pub mod block;
 pub mod error;
 pub mod fusion;
 pub mod graph;
+pub mod random;
 pub mod registry;
 pub mod sampling;
 pub mod sim;
+pub mod table;
 pub mod units;
 
 pub use error::{Result, SimError};

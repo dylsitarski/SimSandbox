@@ -665,7 +665,7 @@ impl View for Scatter {
             return;
         };
         let f = &h.fields()[field];
-        let FieldShape::Points { dim, .. } = f.shape else {
+        let Some(dim) = f.shape.point_dim() else {
             return;
         };
         if h.is_empty() || dim < 2 {
