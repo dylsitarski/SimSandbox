@@ -1,6 +1,6 @@
 # Vision
 
-_Last updated: 2026-10-16_
+_Last updated: 2026-10-22_
 
 SimSandbox is a desktop environment for building, connecting and exploring simulations of all kinds — from typed equations and physical networks to rigid bodies, agent populations, CFD and ML models — for fun, for learning and for research.
 
@@ -26,6 +26,10 @@ The pillars pull in different directions: real-time favours speed, research favo
 - **Composition across simulation types** with unit safety: an ODE wired to an agent population wired to an ML controller, without hand-written glue.
 - **Explorable research models** that others can open and poke instead of reading a static figure.
 - **Honest trust labels and provenance**, which no single solver offers.
+
+## Open to AI agents
+
+Everything a person can do in SimSandbox, an AI agent can do without the window, and check ([ADR 0039](decisions/0039-ai-agent-access.md)): models are plain files, every type is discoverable, files are validated with errors that say what to fix, and runs, sweeps and views work headless and reproducibly. A user can ask an AI to build a complete working model; an AI doing research can clone SimSandbox and set up and validate research models quickly.
 
 ## Non-goals
 

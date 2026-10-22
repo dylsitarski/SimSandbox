@@ -41,7 +41,10 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0033](0033-phase-1-plan.md) | Phase 1 order and scope: agents first, grazing model, headless Python | Superseded by 0036 | 2026-10-19 |
 | [0034](0034-agent-domain.md) | Agent domain: kernel-owned tables, update order per block, counter-based randomness | Accepted | 2026-10-19 |
 | [0035](0035-simulation-worker-thread.md) | The simulation runs on a worker thread; pacing as before | Accepted | 2026-10-19 |
-| [0036](0036-python-blocks.md) | Python-defined blocks in Phase 1, in process, state in the kernel; revised Phase 1 order | Accepted | 2026-10-19 |
+| [0036](0036-python-blocks.md) | Python-defined blocks in Phase 1, in process, state in the kernel; revised Phase 1 order | Superseded by 0038 | 2026-10-19 |
+| [0037](0037-when-parameter-changes-apply.md) | Sliders apply while dragged for real-time models, on release otherwise | Accepted | 2026-10-22 |
+| [0038](0038-phase-1-revised.md) | Phase 1 revised: user-defined blocks decided later; headless interface before the canvas | Accepted | 2026-10-22 |
+| [0039](0039-ai-agent-access.md) | AI agents are first-class users: no window-only features; discover, check, run and render headless | Accepted | 2026-10-22 |
 
 ## When to write one
 

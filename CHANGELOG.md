@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- ADRs 0037 (sliders live only for real-time models), 0038 (Phase 1 revised; user-defined blocks decided later) and 0039 (AI agents as first-class users, also in the vision and `AGENTS.md`).
 - ADRs 0035 (the simulation moves to a worker thread) and 0036 (Python-defined blocks in Phase 1; revised Phase 1 order).
 - ADR 0034: the agent domain (populations as kernel-owned tables without a capacity limit, variable-length point sets, per-block update order, counter-based randomness from `run.seed`).
 - ADR 0033: Phase 1 order and scope (agent domain and the grazing model first, then direct feedthrough, node canvas, subsystems, headless Python API).

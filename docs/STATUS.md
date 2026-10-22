@@ -1,8 +1,8 @@
 # Status
 
-_Last updated: 2026-10-19_
+_Last updated: 2026-10-22_
 
-**Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0036](decisions/0036-python-blocks.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
+**Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0038](decisions/0038-phase-1-revised.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
 
 ## What works
 
@@ -24,6 +24,7 @@ _Last updated: 2026-10-19_
 
 ## Done recently
 
+- 2026-10-22: ADR 0037 (sliders apply while dragged only for real-time models), ADR 0038 (user-defined blocks decided later, Q28; headless interface before the canvas; supersedes ADR 0036) and ADR 0039 (AI agents as first-class users, added to the vision); Q29 (MCP server, AI control of the app) raised.
 - 2026-10-19: ADR 0035 (the simulation moves to a worker thread; supersedes ADR 0010, pacing unchanged) and ADR 0036 (Python-defined blocks join Phase 1: in process through PyO3, state in the kernel, asking before running a model's Python; revised Phase 1 order; supersedes ADR 0033). Q27 (how the app finds Python) raised.
 - 2026-10-19: ADR 0034 (agent domain): populations as kernel-owned tables with stable ids and no capacity limit, variable-length point-set ports, update order (`random_order`, `synchronous`, `id_order`) chosen per block in the model, counter-based randomness from `run.seed`; Q26 (typed agent rules) raised. Owner confirmed the Phase 0 gate on Windows and Linux.
 - 2026-10-19: Phase 1 planned with the owner (ADR 0033): agents first (grazing model), then direct feedthrough, node canvas, subsystems, headless Python API, the rest of shareable files; the simulation moves off the UI thread only if the grazing model needs it.
@@ -65,11 +66,10 @@ _Last updated: 2026-10-19_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Simulation worker thread** ([ADR 0035](decisions/0035-simulation-worker-thread.md)): `Session` on a worker thread owning the simulator, pacing, rewind, filters and sweeps; commands over a channel (latest of a kind wins); history shared under a lock with batched, non-blocking appends; status for the log and achieved speed; cancellable sweeps with progress; tests that runs, rewinds and sweeps match direct stepping bit for bit; `--screenshot` waits for its samples.
+1. **Simulation worker thread** ([ADR 0035](decisions/0035-simulation-worker-thread.md)): `Session` on a worker thread owning the simulator, pacing, rewind, filters and sweeps; commands over a channel (latest of a kind wins); history shared under a lock with batched, non-blocking appends; status for the log and achieved speed; cancellable sweeps with progress; sliders apply while dragged for real-time models and on release otherwise ([ADR 0037](decisions/0037-when-parameter-changes-apply.md)); tests that runs, rewinds and sweeps match direct stepping bit for bit; `--screenshot` waits for its samples.
 2. **Kernel support for populations** ([ADR 0034](decisions/0034-agent-domain.md)): `BlockSpec::tables` with kernel-owned rows and stable ids in snapshots and rewind, `StepIo` access to tables, variable-length point-set ports and connections, variable-length frames in the history, `run.seed`; tests that fixed-size models are unchanged bit for bit.
-3. **Agent domain and the grazing model** ([ADR 0036](decisions/0036-python-blocks.md), [ADR 0034](decisions/0034-agent-domain.md)): a `simsandbox-agents` crate with `agents.grazers` and its `update` setting, grass as an ODE on a grid, sheep agents, coupled both ways, verified (seeded runs reproduce; known limits such as no sheep giving logistic grass), with a curated view (sheep over the grass heat map, population counts). 
-4. **Python embedding spike** on Windows and Linux ([Q27](open-questions.md)).
-5. **Direct feedthrough and algebraic loops** ([Q5](open-questions.md)), then the node canvas, subsystems, Python (headless API and Python blocks) and the rest of shareable files, in [roadmap](roadmap.md#phase-1--composition) order.
+3. **Agent domain and the grazing model** ([ADR 0033](decisions/0033-phase-1-plan.md), [ADR 0034](decisions/0034-agent-domain.md)): a `simsandbox-agents` crate with `agents.grazers` and its `update` setting, grass as an ODE on a grid, sheep agents, coupled both ways, verified (seeded runs reproduce; known limits such as no sheep giving logistic grass), with a curated view (sheep over the grass heat map, population counts). 
+4. **Direct feedthrough and algebraic loops** ([Q5](open-questions.md)), then the headless interface for people and AI agents (Python API; `simsandbox describe`, `check`, `render`; [ADR 0039](decisions/0039-ai-agent-access.md)), the node canvas, subsystems and the rest of shareable files, in [roadmap](roadmap.md#phase-1--composition) order.
 
 ## Known limitations
 

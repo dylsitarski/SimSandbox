@@ -1,6 +1,6 @@
 # 0036 — Python-defined blocks in Phase 1
 
-- **Status:** Accepted
+- **Status:** Superseded by 0038
 - **Date:** 2026-10-19
 - **Supersedes:** [ADR 0033](0033-phase-1-plan.md) (its order and Python scope; the rest is restated below)
 
