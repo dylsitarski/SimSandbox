@@ -16,14 +16,14 @@
 //! simsandbox --version
 //! ```
 
-use serde_json::{json, Value};
-use simsandbox_core::block::Shape;
+use serde_json::Value;
 use simsandbox_core::graph::Model;
 use simsandbox_core::sim::Simulator;
 use simsandbox_eq::systems::Lorenz;
 use simsandbox_eq::{Integrator, OdeBlock};
 use simsandbox_session::examples::{registry, view_registry};
 use simsandbox_session::render::{png, render, RenderOptions};
+use simsandbox_session::run::{run, DEFAULT_T_END};
 use simsandbox_session::{describe, Session};
 use std::collections::BTreeMap;
 use std::io::{self, BufWriter, Write};
@@ -36,9 +36,6 @@ const USAGE: &str = "usage:
   simsandbox schema
   simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--width POINTS] [--height POINTS] [--scale S] [--light]
   simsandbox lorenz [--t-end SECONDS] [--dt SECONDS] [--method euler|rk4|dopri5] [--rho VALUE]";
-
-/// Used when neither a flag nor the model file gives a value.
-const DEFAULT_T_END: f64 = 20.0;
 
 /// Flags and their values; `--light` takes none.
 struct Flags(BTreeMap<String, String>);
@@ -94,25 +91,8 @@ fn print_json(v: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// The outputs of a run: one row per communication step (or sweep
-/// sample) of fixed-size outputs, and the populations at each row.
-struct Results {
-    header: Vec<String>,
-    /// How many leading columns index the rows: `t`, or `sample` and the
-    /// swept parameters.
-    index: usize,
-    /// Each fixed-size output: `block.port`, its shape and its columns.
-    outputs: Vec<(String, Shape, std::ops::Range<usize>)>,
-    rows: Vec<Vec<f64>>,
-    /// `block.port`, its point dimension, and its values at each row.
-    populations: Vec<(String, usize, Vec<Vec<f64>>)>,
-}
-
-/// Run a model file and print every output, in file block order, as CSV
-/// (populations, whose length varies, are left out) or JSON (with them).
-/// Vector outputs get one column per element: `block.port[i]`. A model
-/// with no states is swept instead (ADR 0028): one row per sample, with
-/// the sample number and the swept parameters first.
+/// Run a model file and print every output (see
+/// [`simsandbox_session::run`]) as CSV (without populations) or JSON.
 fn run_file(args: &[String]) -> Result<(), String> {
     let (path, rest) = args.split_first().ok_or(USAGE)?;
     let flags = Flags::parse(rest, &["--t-end", "--dt", "--format"])?;
@@ -121,196 +101,35 @@ fn run_file(args: &[String]) -> Result<(), String> {
         Some("json") => true,
         Some(other) => return Err(format!("unknown format '{other}': csv or json")),
     };
-    let (o_dt, o_t_end) = (flags.positive("--dt")?, flags.positive("--t-end")?);
-    let text = read(path)?;
-    let loaded = simsandbox_file::load(&text, &registry()).map_err(|e| format!("{path}: {e}"))?;
-    for w in &loaded.warnings {
+    let (t_end, dt) = (flags.positive("--t-end")?, flags.positive("--dt")?);
+    let r = run(&read(path)?, &registry(), t_end, dt).map_err(|e| format!("{path}: {e}"))?;
+    for w in &r.warnings {
         eprintln!("warning: {path}: {w}");
     }
-    let dt = o_dt.unwrap_or(loaded.file.run.dt);
-    let t_end = o_t_end.or(loaded.file.run.t_end).unwrap_or(DEFAULT_T_END);
-    if loaded.plan.is_some() && (o_dt.is_some() || o_t_end.is_some()) {
-        return Err("--dt and --t-end do not apply to a swept model".into());
-    }
-
-    let mut columns = Vec::new();
-    let mut outputs = Vec::new();
-    let mut populations = Vec::new();
-    let mut header = vec!["t".to_string()];
-    if let Some(plan) = &loaded.plan {
-        header = vec!["sample".to_string()];
-        header.extend(plan.keys.iter().cloned());
-    }
-    for entry in &loaded.file.blocks {
-        let id = loaded.ids[&entry.name];
-        let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
-        for port in spec.outputs() {
-            let name = format!("{}.{}", entry.name, port.name);
-            // Populations vary in length, which rows of CSV cannot hold.
-            if let Shape::Population { dim } = port.shape {
-                if !json {
-                    eprintln!(
-                        "note: {name} is a population (variable length) and is not written \
-                         (--format json includes it)"
-                    );
-                }
-                populations.push((id, port.name.clone(), name, dim));
-                continue;
-            }
-            let n = port.shape.len();
-            outputs.push((name.clone(), port.shape, header.len()..header.len() + n));
-            for i in 0..n {
-                header.push(if port.shape == Shape::Scalar {
-                    name.clone()
-                } else {
-                    format!("{name}[{i}]")
-                });
-            }
-            columns.push((id, port.name.clone()));
-        }
-    }
-
-    let mut sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
-    let labels = sim.labels();
-    if let Some(l) = labels {
+    if let Some(l) = r.labels {
         eprintln!("speed: {:?} | accuracy: {:?}", l.speed, l.accuracy);
     }
-    let notes = simsandbox_session::session::loop_notes(&sim);
-    for n in &notes {
+    for n in &r.notes {
         eprintln!("note: {n}");
     }
-    let mut results = Results {
-        index: outputs.first().map_or(header.len(), |o| o.2.start),
-        header,
-        outputs,
-        rows: Vec::new(),
-        populations: populations
-            .iter()
-            .map(|(_, _, name, dim)| (name.clone(), *dim, Vec::new()))
-            .collect(),
-    };
-    let mut record = |sim: &Simulator, first: Vec<f64>| {
-        let mut row = first;
-        for (id, port) in &columns {
-            row.extend_from_slice(sim.output(*id, port).unwrap_or(&[]));
-        }
-        results.rows.push(row);
-        for (k, (id, port, _, _)) in populations.iter().enumerate() {
-            let values = sim.output(*id, port).unwrap_or(&[]).to_vec();
-            results.populations[k].2.push(values);
-        }
-    };
-    if let Some(plan) = &loaded.plan {
-        let targets: Vec<_> = plan
-            .keys
-            .iter()
-            .map(|k| {
-                let (block, param) = k.split_once('.').expect("plan keys are block.param");
-                (loaded.ids[block], param)
-            })
-            .collect();
-        for (k, point) in plan.points.iter().enumerate() {
-            for (&(id, param), &v) in targets.iter().zip(point) {
-                sim.set_param(id, param, v).map_err(|e| e.to_string())?;
-            }
-            sim.restart(0.0).map_err(|e| e.to_string())?;
-            let mut first = vec![k as f64];
-            first.extend_from_slice(point);
-            record(&sim, first);
-        }
-    } else {
-        record(&sim, vec![sim.time()]);
-        let steps = (t_end / dt).round() as usize;
-        for _ in 0..steps {
-            sim.step(dt).map_err(|e| e.to_string())?;
-            record(&sim, vec![sim.time()]);
-        }
-    }
-
     let mut out = BufWriter::new(io::stdout().lock());
     let written = if json {
-        let mut v = run_json(&results);
-        v["labels"] = json!(labels.map(|l| json!({
-            "speed": format!("{:?}", l.speed),
-            "accuracy": format!("{:?}", l.accuracy),
-        })));
-        v["notes"] = json!(notes);
-        v["warnings"] = json!(loaded.warnings);
-        serde_json::to_writer(&mut out, &v)
+        serde_json::to_writer(&mut out, &r.to_json())
             .map_err(io::Error::other)
             .and_then(|()| writeln!(out))
     } else {
-        write_csv(&mut out, &results)
+        for p in &r.populations {
+            eprintln!(
+                "note: {} is a population (variable length) and is not written \
+                 (--format json includes it)",
+                p.name
+            );
+        }
+        r.write_csv(&mut out)
     };
     written
         .and_then(|()| out.flush())
         .map_err(|e| e.to_string())
-}
-
-fn write_csv(out: &mut impl Write, r: &Results) -> io::Result<()> {
-    writeln!(out, "{}", r.header.join(","))?;
-    for row in &r.rows {
-        let cells: Vec<String> = row.iter().map(f64::to_string).collect();
-        writeln!(out, "{}", cells.join(","))?;
-    }
-    Ok(())
-}
-
-/// The index columns (`t`, or `sample` and the swept parameters) as
-/// lists; each output as a list over rows of its value (a number for a
-/// scalar, else a list in the port's element order); populations as a
-/// list over rows of points. JSON has no infinities or NaN: they become
-/// null.
-fn run_json(r: &Results) -> Value {
-    let column = |c: usize| Value::Array(r.rows.iter().map(|row| number(row[c])).collect());
-    let index: serde_json::Map<String, Value> = (0..r.index)
-        .map(|c| (r.header[c].clone(), column(c)))
-        .collect();
-    let outputs: serde_json::Map<String, Value> = r
-        .outputs
-        .iter()
-        .map(|(name, shape, cols)| {
-            let values = if *shape == Shape::Scalar {
-                column(cols.start)
-            } else {
-                r.rows
-                    .iter()
-                    .map(|row| Value::Array(row[cols.clone()].iter().map(|&v| number(v)).collect()))
-                    .collect()
-            };
-            (
-                name.clone(),
-                json!({"shape": describe::shape(shape), "values": values}),
-            )
-        })
-        .collect();
-    let populations: serde_json::Map<String, Value> = r
-        .populations
-        .iter()
-        .map(|(name, dim, frames)| {
-            let frames: Vec<Value> = frames
-                .iter()
-                .map(|f| {
-                    Value::Array(
-                        f.chunks(*dim)
-                            .map(|p| Value::Array(p.iter().map(|&v| number(v)).collect()))
-                            .collect(),
-                    )
-                })
-                .collect();
-            (name.clone(), json!({"dim": dim, "frames": frames}))
-        })
-        .collect();
-    json!({
-        "rows": r.rows.len(),
-        "index": index,
-        "outputs": outputs,
-        "populations": populations,
-    })
-}
-
-fn number(v: f64) -> Value {
-    serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number)
 }
 
 /// Check a model file and print the findings as JSON. Fails (exit status

@@ -1,6 +1,6 @@
 # Roadmap
 
-_Last updated: 2026-10-19_
+_Last updated: 2026-10-22_
 
 Start with the equation sandbox: it exercises the whole Block contract, delivers all three pillars at small scale, and is useful on its own. Each gate is a working demo, not a feature count. If a gate fails, fix the Block contract before adding any new backend, because every later phase depends on it.
 
@@ -39,7 +39,7 @@ Goal: connect and reuse. Gate: an ODE model and an agent model run in one graph 
 - [x] 2. Kernel support for populations: tables and variable-length point sets ([ADR 0034](decisions/0034-agent-domain.md))
 - [x] 3. Agent domain with a first agent model (grazing)
 - [x] 4. Direct feedthrough and algebraic loops in fused groups
-- [ ] 5. Headless interface for people and AI agents: Python API (PyO3) with results as numpy arrays; `simsandbox describe`, `check` and `render` ([ADR 0039](decisions/0039-ai-agent-access.md))
+- [x] 5. Headless interface for people and AI agents: Python API (PyO3) with results as numpy arrays; `simsandbox describe`, `check` and `render` ([ADR 0039](decisions/0039-ai-agent-access.md); built 2026-10-22, [ADR 0041](decisions/0041-headless-interface.md))
 - [ ] 6. Visual node canvas
 - [ ] 7. Subsystems collapsed into reusable Blocks
 - [ ] 8. Shareable model files: ask before discarding unsaved changes; a stated rule for converting older files (files are already self-contained)

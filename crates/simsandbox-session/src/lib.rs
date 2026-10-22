@@ -8,6 +8,7 @@
 //! - [`session`]: [`Session`], loading a model file and running it.
 //! - [`filters`]: expression and cut filters, compiled.
 //! - [`views`]: the model's views, opened from the file, as tiles.
+//! - [`run`]: a model file run headless, every output collected.
 //! - [`render`]: the views drawn to an image without a window.
 //! - [`describe`]: the catalogue of types and model checks, as JSON
 //!   (ADR 0039).
@@ -19,7 +20,10 @@ pub mod examples;
 pub mod filters;
 pub mod raster;
 pub mod render;
+pub mod run;
 pub mod session;
 pub mod views;
 
 pub use session::Session;
+/// The model file's JSON Schema.
+pub use simsandbox_file::SCHEMA;

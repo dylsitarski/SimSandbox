@@ -6,6 +6,9 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Headless interface for people and AI agents (ADRs 0039, 0041; [guide](docs/guides/headless.md)): `simsandbox describe [TYPE]` lists every block, view and filter type with ports, units, parameters, methods and labels as JSON; `simsandbox schema` prints the file's JSON Schema; `simsandbox check FILE` reports every problem with its path or line and column, plus parameters and what the model records, as JSON (exit status 1 if it cannot run); `simsandbox run --format json` writes outputs grouped by port, including populations; `simsandbox render FILE --out IMAGE.png` draws the model's views as the app shows them, without a window or GPU.
+- Python package `simsandbox` (`pip install ./python`): describe, check, build (`Model.add_block`, `connect`, `set`, `sweep`, `set_run`), run (results as numpy arrays) and render models; errors raise `ModelError` with every problem found.
+
 - Direct feedthrough and algebraic loops (ADR 0040): outputs may depend on inputs at the same instant (declared per output and input), so chains such as sensor → controller → actuator agree without a step's delay, also inside blocks solved together; loops of such outputs are found when a model opens, named in the log and by `simsandbox run`, and solved by Newton's method unless `run.loops` says `fixed_point` or `refuse`. Typed equations take `input u, F` lines. Cruise-control example.
 - The agent domain and the grazing model (Phase 1 gate): `agents.grazers` (animals that wander, eat grass, breed and die, competing in an update order chosen per block: `random_order`, `synchronous` or `id_order`, saved as `update` and chosen in the side panel), `eq.grass` (grass regrowing on a 40 × 40 field), a heat map `points` slot to draw animals over their field, and the grazing example.
 - Kernel support for populations (ADR 0034): Blocks can keep tables of rows with stable ids that grow and shrink, saved in snapshots and rewound like other state; population ports carry a varying number of points between Blocks; `run.seed` in model files seeds counter-based random numbers, so the same file gives the same run. The point-set view draws populations.
@@ -51,6 +54,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- The CLI needs Rust 1.95 (it renders views with egui).
 - The simulation runs on its own thread (ADR 0035): the window stays responsive during slow steps and large sweeps, which are evaluated in the background with progress and restarted by any change; a step running longer than half a second is shown in the toolbar. Sliders apply while dragged only for real-time models; for others the parameter's field shows the pending value in the warning colour while dragging, and it applies on release (ADR 0037).
 
 - Sweeps moved from `controls.sweep` to the top-level `sample` section (ADR 0027); old files are converted on load: views bound to `t` are bound to the first swept parameter, two-parameter heat maps and cut filters to the `grid.` signals. A one-parameter sweep is indexed by sample number, with the parameter as a signal.

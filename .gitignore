@@ -8,3 +8,10 @@ Thumbs.db
 *.csv
 !examples/**/*.csv
 *.ppm
+# The Python package's build output (python/README.md)
+/python/target
+/python/dist
+*.so
+*.pyd
+__pycache__/
+*.pyc

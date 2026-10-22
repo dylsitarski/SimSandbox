@@ -1,6 +1,6 @@
 # Architecture overview
 
-_Last updated: 2026-10-16_
+_Last updated: 2026-10-22_
 
 SimSandbox has five layers. Only the kernel and the model graph are new code; interfaces and backends are replaceable around them. The kernel never contains physics: it schedules Blocks, checks units, stores state and records provenance, which is what lets a CFD solver, an ODE and a neural network sit in one graph.
 
@@ -33,11 +33,12 @@ flowchart TB
 | `crates/simsandbox-expr` | Backend support: expressions | Exists | Parser and evaluator for typed equations and, later, derived signals ([ADR 0017](../decisions/0017-typed-equations.md)) |
 | `crates/simsandbox-eq` | Backend: equations | Exists | `ode.rs` (`OdeSystem`, `OdeBlock`), `integrators.rs`, `group.rs` (fusion), `systems.rs` (examples), `symbolic.rs` (typed equations, `eq.equations`), `registry.rs` (file types) |
 | `crates/simsandbox-file` | Model graph: files | Exists | JSON model files, `controls`, JSON Schema ([ADR 0007](../decisions/0007-json-model-files.md)); depends on `serde`, `serde_json` |
-| `crates/simsandbox-cli` | Runtime: headless | Exists | `simsandbox` binary |
-| `crates/simsandbox-app` | Runtime: desktop | Exists | eframe + egui + wgpu ([ADR 0008](../decisions/0008-native-egui-ui.md)): `live.rs` (the open model on its worker thread: commands, published model and status, [ADR 0035](../decisions/0035-simulation-worker-thread.md)), `pacing.rs` (wall-clock pacing, [ADR 0010](../decisions/0010-live-loop-pacing.md)), `session.rs` (open model, shared history, sweeps evaluated in slices), `app.rs` (window and views), `views.rs` (the open model's view tiles), `examples.rs` (built-in examples) |
+| `crates/simsandbox-cli` | Runtime: headless | Exists | `simsandbox` binary: `run`, `check`, `describe`, `schema`, `render` ([guide](../guides/headless.md)) |
+| `crates/simsandbox-session` | Interfaces: shared | Exists | The open model as every interface uses it ([ADR 0041](../decisions/0041-headless-interface.md)): `session.rs` (simulator, shared history, rewind, sweeps evaluated in slices), `filters.rs`, `views.rs` (view tiles from `controls.views`), `describe.rs` (type catalogue and model checks as JSON), `run.rs` (headless runs), `render.rs` and `raster.rs` (views to PNG on the CPU), `examples.rs` |
+| `crates/simsandbox-app` | Runtime: desktop | Exists | eframe + egui + wgpu ([ADR 0008](../decisions/0008-native-egui-ui.md)): `live.rs` (the open model on its worker thread: commands, published model and status, [ADR 0035](../decisions/0035-simulation-worker-thread.md)), `pacing.rs` (wall-clock pacing, [ADR 0010](../decisions/0010-live-loop-pacing.md)), `app.rs` (window and views); the open model itself comes from `simsandbox-session` |
 | `crates/simsandbox-agents` | Backend: agents | Exists | Agent block types on kernel tables ([ADR 0034](../decisions/0034-agent-domain.md)): `update.rs` (update orders and sharing), `grazers.rs` (`agents.grazers`) |
 | `crates/simsandbox-views` | Interface: views | Exists | History of recorded signals, view contract and registry, built-in views, 3D projection ([visualization](visualization.md)) |
-| `crates/simsandbox-py` | Interface: Python | Planned | PyO3 bindings |
+| `python/` (`simsandbox-py`) | Interface: Python | Exists | The `simsandbox` Python package: PyO3 extension over `simsandbox-session` plus a Python layer (`Model`, `Results`); its own Cargo workspace, built with maturin |
 | further domain crates | Backends | Planned | e.g. `simsandbox-rigid`, `simsandbox-ml`, `simsandbox-fmi` |
 
 Dependency rule: domain crates depend on `simsandbox-core`; the kernel depends on no domain crate. Runtimes and interfaces depend on whatever they host.

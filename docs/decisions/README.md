@@ -46,6 +46,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0038](0038-phase-1-revised.md) | Phase 1 revised: user-defined blocks decided later; headless interface before the canvas | Accepted | 2026-10-22 |
 | [0039](0039-ai-agent-access.md) | AI agents are first-class users: no window-only features; discover, check, run and render headless | Accepted | 2026-10-22 |
 | [0040](0040-feedthrough-and-algebraic-loops.md) | Direct feedthrough per output and input; loops detected and solved by Newton (or as `run.loops` says); typed `input` lines | Accepted | 2026-10-22 |
+| [0041](0041-headless-interface.md) | Headless interface: shared session crate, `describe`/`check`/`run --format json`/`render`, views rasterised on the CPU, Python package in its own workspace | Accepted | 2026-10-22 |
 
 ## When to write one
 

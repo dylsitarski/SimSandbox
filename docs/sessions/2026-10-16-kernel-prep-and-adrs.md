@@ -39,11 +39,13 @@
 - 2026-10-22: ADR 0040 (owner's choices: loops detected and named, Newton by default and changeable, per-output per-input declarations, typed `input` lines); feedthrough and loops built; cruise-control example. 173 tests.
 - 2026-10-17: messages moved into a log tile beside the rewind bar (`crates/simsandbox-app/src/log.rs`) at the owner's request; duplicate description tooltip removed (egui already shows cut text on hover). 104 tests.
 - 2026-10-17: views steps 5–6: `Shape::Grid`/`Shape::Points`, fields in the history, `plot.heatmap`, `plot.scatter`, slot kinds and `Available`; `eq.heat_rod`, `eq.orbits` and `eq.pendulum` with verification tests; the `eq.pendulum` view (`applies_to`) behind `simsandbox-eq`'s `views` feature; heat-rod, orbits and pendulum examples, checked by screenshot. 100 tests.
+- 2026-10-22: headless interface ([ADR 0041](../decisions/0041-headless-interface.md)): registry `TypeInfo` for every type; `simsandbox-session` gains `describe`, `run`, `views` (moved from the app), `raster` and `render`; CLI `describe`, `schema`, `check`, `run --format json`, `render`; the `simsandbox` Python package in `python/` with pytest tests and a CI job. Checked by rendering the grazing and resonance-map examples to PNG (dark and light) and by installing the package into a clean virtual environment.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
 - Wrote ADRs 0007 to 0015; updated STATUS, open questions, architecture overview, block contract and interaction docs.
 
 ## Decided
 
+- Headless interface (2026-10-22, within ADR 0039's scope; [ADR 0041](../decisions/0041-headless-interface.md)): shared code in `simsandbox-session`; views rendered by rasterising egui's meshes on the CPU; JSON reports and runs; the Python package as its own Cargo workspace built by maturin, stable ABI from CPython 3.10.
 - Algebraic loops are detected and named; Newton's method by default, changeable per model (`run.loops`); feedthrough declared per output and input; typed equations take `input` lines (owner, 2026-10-22; [ADR 0040](../decisions/0040-feedthrough-and-algebraic-loops.md)).
 - Sliders apply while dragged only for real-time models, on release otherwise; how users define their own blocks (Python, WebAssembly, Julia, typed languages) is decided later, the headless Python API stays in Phase 1; AI agents are first-class users: no window-only features, everything discoverable, checkable, runnable and renderable headless (owner, 2026-10-22; [ADR 0037](../decisions/0037-when-parameter-changes-apply.md), [ADR 0038](../decisions/0038-phase-1-revised.md), [ADR 0039](../decisions/0039-ai-agent-access.md)).
 - Python-defined blocks join Phase 1, in process through PyO3, with their state in kernel memory seen as numpy arrays; a model's Python runs only after the user agrees; the simulation moves to a worker thread first, with ADR 0010's pacing kept (owner, 2026-10-19; [ADR 0035](../decisions/0035-simulation-worker-thread.md), [ADR 0036](../decisions/0036-python-blocks.md)).
@@ -114,3 +116,5 @@
 
 - The owner agreed to the recommendation "JSON or TOML via serde"; this session chose JSON for schema tooling and nested blocks/connections. Revisit by superseding ADR 0007 if the owner prefers TOML.
 - A Block whose maths fails for some finite parameter values must report it with `SimError::Block`; the kernel no longer filters by range.
+- egui 0.36 hands texture updates as `TexturesDelta`, which panics if dropped unapplied; `raster::Textures::update` takes it by value and clears it. egui's `Context::set_visuals` sets the current theme only; `render` uses `set_theme` and `style_of`.
+- PyO3 0.30 releases the GIL with `Python::detach` (formerly `allow_threads`).

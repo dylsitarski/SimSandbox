@@ -1,10 +1,10 @@
 # Development setup
 
-_Last updated: 2026-10-16_
+_Last updated: 2026-10-22_
 
 ## Toolchain
 
-SimSandbox needs stable Rust 1.86 or newer; the desktop app (`crates/simsandbox-app`) and `crates/simsandbox-views` need 1.95 or newer because of egui. `rust-toolchain.toml` makes `rustup` select stable with `rustfmt` and `clippy`. Python 3 is needed only for `scripts/check_docs.py`.
+SimSandbox needs stable Rust 1.86 or newer; the crates that use egui (the desktop app, the CLI, `simsandbox-views` and `simsandbox-session`) need 1.95 or newer. `rust-toolchain.toml` makes `rustup` select stable with `rustfmt` and `clippy`. Python 3 is needed for `scripts/check_docs.py`, and Python 3.10 or newer with `maturin` for the Python package (`python/`, [README](../../python/README.md)).
 
 | Platform | Install |
 | --- | --- |
@@ -29,6 +29,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 python3 scripts/check_docs.py          # on Windows: py scripts/check_docs.py
 cargo run -p simsandbox-cli -- lorenz --t-end 20 --dt 0.01 --method rk4 > lorenz.csv
 cargo run -p simsandbox-cli -- run examples/lorenz.ssbx.json --t-end 20 > lorenz.csv
+cargo run -p simsandbox-cli -- check examples/grazing.ssbx.json      # JSON report
+cargo run -p simsandbox-cli -- render examples/grazing.ssbx.json --t-end 30 --out grazing.png
 cargo run -p simsandbox-app                                   # desktop app
 cargo run -p simsandbox-app -- examples/coupled-oscillators.ssbx.json
 cargo run -p simsandbox-app -- --view 3d                     # open in the 3D trajectory view
@@ -51,7 +53,7 @@ wgpu runs on software drivers, so rendering and compute code can be tested on ma
 
 The app pins `eframe` and `egui_plot` to exact versions ([ADR 0008](../decisions/0008-native-egui-ui.md)); `egui_plot` version numbers run one ahead of the egui they use (`egui_plot` 0.37 uses egui 0.36), so upgrade them together.
 
-CI (`.github/workflows/ci.yml`) runs formatting, clippy and tests on Windows, macOS and Linux, plus the docs check.
+CI (`.github/workflows/ci.yml`) runs formatting, clippy and tests on Windows, macOS and Linux, the same for the Python package (with pytest), plus the docs check. The [headless guide](headless.md) covers the CLI's machine-readable commands and the Python API.
 
 ## Dependencies
 

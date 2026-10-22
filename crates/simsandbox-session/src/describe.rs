@@ -5,7 +5,7 @@
 
 use crate::Session;
 use serde_json::{json, Value};
-use simsandbox_core::block::{Block, Causality, PortSpec, Shape};
+use simsandbox_core::block::{Block, Causality, MethodLabels, PortSpec, Shape};
 use simsandbox_core::registry::{BlockConfig, MethodSettings, Registry};
 use simsandbox_file::FileError;
 use simsandbox_views::{SlotKind, ViewRegistry, ViewType};
@@ -38,6 +38,11 @@ fn port(p: &PortSpec) -> Value {
         v["coordinate_of"] = json!({"port": c.port, "axis": c.axis});
     }
     v
+}
+
+/// Speed and accuracy labels (ADR 0004).
+pub fn labels(l: MethodLabels) -> Value {
+    json!({"speed": format!("{:?}", l.speed), "accuracy": format!("{:?}", l.accuracy)})
 }
 
 /// A Block's interface: ports, parameters, states and tables.
@@ -81,8 +86,7 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
             json!({
                 "name": m,
                 "options": options,
-                "speed": labels.map(|l| format!("{:?}", l.speed)),
-                "accuracy": labels.map(|l| format!("{:?}", l.accuracy)),
+                "labels": labels.map(self::labels),
             })
         })
         .collect();
@@ -199,13 +203,21 @@ pub fn check(text: &str, r: &Registry) -> Value {
                 "ok": true,
                 "errors": [],
                 "warnings": s.warnings,
-                "labels": labels.map(|l| json!({"speed": format!("{:?}", l.speed), "accuracy": format!("{:?}", l.accuracy)})),
+                "labels": labels.map(self::labels),
                 "swept": s.sweep().map(|sw| sw.keys().to_vec()),
                 "fused_groups": s.groups.iter().map(|g| json!({"blocks": g.blocks, "method": g.method.to_string()})).collect::<Vec<_>>(),
                 "recorded": {
                     "signals": h.names(),
                     "fields": h.fields().iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
                 },
+                "params": s.params().iter().map(|p| json!({
+                    "key": p.key,
+                    "value": p.value,
+                    "unit": p.unit,
+                    "suggested": p.suggested,
+                    "initial_condition": p.initial_condition,
+                    "description": p.description,
+                })).collect::<Vec<_>>(),
                 "filters": s.filters().iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
                 "views": s.file.controls.views.iter().map(|v| v.type_name.clone()).collect::<Vec<_>>(),
             })
@@ -229,7 +241,7 @@ mod tests {
                 // Every listed method builds (formulas need the example to
                 // be continuous, so typed equations list theirs anyway).
                 if name != simsandbox_eq::registry::EQUATIONS {
-                    assert!(m["speed"].is_string(), "{name}: {m}");
+                    assert!(m["labels"]["speed"].is_string(), "{name}: {m}");
                 }
             }
         }
@@ -259,6 +271,13 @@ mod tests {
         let ok = check(EXAMPLES[0].text, &r);
         assert_eq!(ok["ok"], true);
         assert_eq!(ok["recorded"]["signals"][0], "lorenz.xyz[0]");
+        let rho = ok["params"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["key"] == "lorenz.rho")
+            .unwrap();
+        assert_eq!(rho["value"], 28.0);
         let bad = check(
             r#"{"format": 1, "blocks": [{"name": "a", "type": "eq.nothing", "method": {"name": "rk4"}}]}"#,
             &r,

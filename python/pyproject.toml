@@ -1,0 +1,19 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "simsandbox"
+description = "Describe, check, build, run and render SimSandbox models from Python"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = ["numpy>=1.24"]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.maturin]
+python-source = "."
+module-name = "simsandbox._native"
+features = []

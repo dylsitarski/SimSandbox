@@ -27,7 +27,7 @@ cargo test --workspace
 python3 scripts/check_docs.py
 ```
 
-All four run in CI and must stay green.
+All four run in CI and must stay green. Changes that touch the Python package or the crates it uses also run its checks ([`python/README.md`](python/README.md)), which CI runs too. To use SimSandbox headless (describe types, check, run and render models), see the [headless guide](docs/guides/headless.md).
 
 ## 3. Close the session (required)
 

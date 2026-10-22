@@ -1,6 +1,6 @@
 # Documentation system
 
-_Last updated: 2026-10-16_
+_Last updated: 2026-10-22_
 
 This page is the map of every document in the repository and the rules for keeping them current. The repository is the single source of truth for SimSandbox ([ADR 0005](decisions/0005-repository-as-source-of-truth.md)).
 
@@ -41,6 +41,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [CLAUDE.md](../CLAUDE.md) | Entry point | Points Claude Code at AGENTS.md |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Guide | Branches, commits, pull requests, definition of done |
 | [CHANGELOG.md](../CHANGELOG.md) | Changelog | User-visible changes |
+| [python/README.md](../python/README.md) | Guide | The Python package's layout and checks |
 
 ### Project
 
@@ -110,12 +111,14 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0038-phase-1-revised.md](decisions/0038-phase-1-revised.md) | Decision record | Phase 1 order revised; how users define their own blocks decided later; headless Python API kept |
 | [decisions/0039-ai-agent-access.md](decisions/0039-ai-agent-access.md) | Decision record | AI agents as first-class users: rules for discovery, checking, headless runs and rendering |
 | [decisions/0040-feedthrough-and-algebraic-loops.md](decisions/0040-feedthrough-and-algebraic-loops.md) | Decision record | Direct feedthrough, algebraic loops and typed inputs |
+| [decisions/0041-headless-interface.md](decisions/0041-headless-interface.md) | Decision record | Headless commands, CPU rendering of views, the Python package |
 
 ### Guides
 
 | Document | Type | What it covers |
 | --- | --- | --- |
 | [guides/development-setup.md](guides/development-setup.md) | Guide | Toolchain on Windows, macOS, Linux and WSL; commands |
+| [guides/headless.md](guides/headless.md) | Guide | Describe, check, run and render models from the CLI and Python, with the JSON formats |
 | [guides/verification-policy.md](guides/verification-policy.md) | Guide | Rules and tests every numerical method must meet |
 | [guides/adding-an-integrator.md](guides/adding-an-integrator.md) | Guide | Worked steps for adding a method to the equation domain |
 | [guides/adding-a-block-type.md](guides/adding-a-block-type.md) | Guide | Making a model definition loadable from model files |
