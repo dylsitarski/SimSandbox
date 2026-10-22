@@ -6,7 +6,7 @@ use crate::ode::OdeBlock;
 use crate::symbolic::{EquationSet, ExplicitBlock, Kind};
 use crate::systems::{CoupledOscillator, Lorenz, Pendulum};
 use simsandbox_core::block::{Block, Domain};
-use simsandbox_core::registry::{BlockConfig, Registry};
+use simsandbox_core::registry::{BlockConfig, Registry, TypeInfo};
 use simsandbox_core::{Result, SimError};
 
 /// The Lorenz system ([`Lorenz`]).
@@ -65,7 +65,57 @@ pub fn register(registry: &mut Registry) -> Result<()> {
             Kind::Map | Kind::Formulas => Ok(Box::new(ExplicitBlock::new(set, &c.method)?)),
         }
     })?;
-    Ok(())
+    describe(registry)
+}
+
+/// The ODE methods every continuous type accepts.
+fn ode(summary: &str) -> TypeInfo {
+    TypeInfo::new(summary)
+        .method("rk4", &["substeps"])
+        .method("euler", &["substeps"])
+        .method("dopri5", &["rtol", "atol"])
+}
+
+/// What each type is, for discovery (ADR 0039).
+fn describe(r: &mut Registry) -> Result<()> {
+    r.describe(
+        LORENZ,
+        ode("The Lorenz system: dx/dt = σ(y − x), dy/dt = x(ρ − z) − y, dz/dt = xy − βz; output xyz."),
+    )?;
+    r.describe(
+        COUPLED_OSCILLATOR,
+        ode("A mass on a spring coupled to a neighbour: input neighbor_x, outputs x and v."),
+    )?;
+    r.describe(
+        PENDULUM,
+        ode("A damped pendulum; outputs the bob's position and the angle. Has its own view, eq.pendulum."),
+    )?;
+    r.describe(
+        HEAT_ROD,
+        ode("Heat along a rod with held ends (method of lines); outputs temperature and position as one-row grids."),
+    )?;
+    r.describe(
+        GRASS,
+        ode("Grass regrowing logistically on a 40 × 40 field, grazed at a per-cell rate (input grazing); the grazing model's environment."),
+    )?;
+    r.describe(
+        ORBITS,
+        ode("Test particles orbiting a central mass; outputs their positions as a point set."),
+    )?;
+    r.describe(
+        EQUATIONS,
+        TypeInfo::new(
+            "Equations typed as lines (ADR 0017): 'dx/dt = ...' for states (an ODE method), \
+             'x[n+1] = ...' for a map (method iterate), only 'name = ...' for formulas (method \
+             evaluate); 'input u, F' declares inputs; every other name is a parameter.",
+        )
+        .method("rk4", &["substeps"])
+        .method("euler", &["substeps"])
+        .method("dopri5", &["rtol", "atol"])
+        .method(crate::symbolic::ITERATE, &[])
+        .method(crate::symbolic::EVALUATE, &[])
+        .definition(&["input u", "dx/dt = -k*x + u", "E = x^2/2"]),
+    )
 }
 
 /// Equation blocks have no agents, so no update order (ADR 0034).

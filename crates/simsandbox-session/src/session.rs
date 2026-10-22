@@ -636,6 +636,19 @@ impl Session {
         Ok(())
     }
 
+    /// Step until the time reaches `t` (within rounding), recording every
+    /// step: how headless interfaces run a model (ADR 0039). A swept model
+    /// is not run in time; this does nothing for it.
+    pub fn run_until(&mut self, t: f64) -> Result<(), SimError> {
+        if self.sweep.is_some() {
+            return Ok(());
+        }
+        while self.time() < t - 1e-9 * self.dt.max(t.abs()) {
+            self.step()?;
+        }
+        Ok(())
+    }
+
     /// The run has reached the file's `t_end`. Returns true once, then the
     /// run may continue past it.
     pub fn take_end_reached(&mut self) -> bool {

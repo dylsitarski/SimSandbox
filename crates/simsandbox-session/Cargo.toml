@@ -17,6 +17,10 @@ simsandbox-views = { path = "../simsandbox-views" }
 simsandbox-eq = { path = "../simsandbox-eq", features = ["views"] }
 simsandbox-agents = { path = "../simsandbox-agents" }
 serde_json = "1"
+# Headless rendering (ADR 0039): egui with its own fonts, as the views
+# draw, and PNG output. Same pinned egui as simsandbox-views.
+egui = { version = "=0.36.2", default-features = false, features = ["default_fonts"] }
+png = "0.18"
 
 [lints]
 workspace = true

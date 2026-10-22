@@ -5,11 +5,11 @@
 //! the shared history to draw, and reads what the worker publishes.
 
 use crate::pacing::Pacer;
-use simsandbox_session::session::{ParamRow, Session, SharedHistory, Sweep};
 use eframe::egui;
 use simsandbox_core::block::MethodLabels;
 use simsandbox_core::SimError;
 use simsandbox_file::{FilterEntry, FusedGroup, ModelFile};
+use simsandbox_session::session::{ParamRow, Session, SharedHistory, Sweep};
 use simsandbox_views::{Available, History};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError, RwLockReadGuard};

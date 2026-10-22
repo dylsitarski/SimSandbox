@@ -7,11 +7,19 @@
 //!
 //! - [`session`]: [`Session`], loading a model file and running it.
 //! - [`filters`]: expression and cut filters, compiled.
+//! - [`views`]: the model's views, opened from the file, as tiles.
+//! - [`render`]: the views drawn to an image without a window.
+//! - [`describe`]: the catalogue of types and model checks, as JSON
+//!   (ADR 0039).
 //! - [`examples`]: the built-in example models and the registries of every
 //!   block type and view this build knows.
 
+pub mod describe;
 pub mod examples;
 pub mod filters;
+pub mod raster;
+pub mod render;
 pub mod session;
+pub mod views;
 
 pub use session::Session;

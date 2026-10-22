@@ -44,6 +44,48 @@ pub struct BlockConfig {
     pub update: Option<String>,
 }
 
+/// What a block type is and how it is configured, for discovery by people
+/// and AI agents (ADR 0039): shown by `simsandbox describe`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TypeInfo {
+    /// One or two sentences on what the type models.
+    pub summary: String,
+    /// The methods it accepts, the default first, each with the names of
+    /// its numeric options.
+    pub methods: Vec<(String, Vec<String>)>,
+    /// For types defined by lines (typed equations), an example definition;
+    /// `None` for fixed types.
+    pub definition: Option<Vec<String>>,
+    /// Named settings and their choices, e.g. `update`.
+    pub settings: Vec<(String, Vec<String>)>,
+}
+
+impl TypeInfo {
+    pub fn new(summary: &str) -> Self {
+        Self {
+            summary: summary.into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn method(mut self, name: &str, options: &[&str]) -> Self {
+        self.methods
+            .push((name.into(), options.iter().map(|o| o.to_string()).collect()));
+        self
+    }
+
+    pub fn definition(mut self, lines: &[&str]) -> Self {
+        self.definition = Some(lines.iter().map(|l| l.to_string()).collect());
+        self
+    }
+
+    pub fn setting(mut self, name: &str, choices: &[&str]) -> Self {
+        self.settings
+            .push((name.into(), choices.iter().map(|c| c.to_string()).collect()));
+        self
+    }
+}
+
 /// Builds a Block named `name` from its configuration.
 pub type BlockFactory = fn(name: &str, config: &BlockConfig) -> Result<Box<dyn Block>>;
 
@@ -55,6 +97,7 @@ pub type GroupSolverFactory = fn(method: &MethodSettings) -> Result<Box<dyn Grou
 #[derive(Default)]
 pub struct Registry {
     factories: BTreeMap<String, BlockFactory>,
+    info: BTreeMap<String, TypeInfo>,
     group_solvers: Vec<(Domain, GroupSolverFactory)>,
 }
 
@@ -70,6 +113,38 @@ impl Registry {
         }
         self.factories.insert(type_name.into(), factory);
         Ok(())
+    }
+
+    /// Describe a registered type (ADR 0039).
+    pub fn describe(&mut self, type_name: &str, info: TypeInfo) -> Result<()> {
+        if !self.factories.contains_key(type_name) {
+            return Err(SimError::UnknownBlockType(type_name.into()));
+        }
+        self.info.insert(type_name.into(), info);
+        Ok(())
+    }
+
+    /// What a type is, if described.
+    pub fn info(&self, type_name: &str) -> Option<&TypeInfo> {
+        self.info.get(type_name)
+    }
+
+    /// A Block of a described type built with its default method and
+    /// example definition, to read its ports, parameters and labels.
+    pub fn example(&self, type_name: &str) -> Result<Box<dyn Block>> {
+        let info = self
+            .info(type_name)
+            .ok_or_else(|| SimError::UnknownBlockType(type_name.into()))?;
+        let method = info
+            .methods
+            .first()
+            .map_or_else(MethodSettings::default, |(m, _)| MethodSettings::new(m));
+        let config = BlockConfig {
+            method,
+            definition: info.definition.clone().unwrap_or_default(),
+            update: None,
+        };
+        self.build(type_name, "example", &config)
     }
 
     /// Build a Block of a registered type.

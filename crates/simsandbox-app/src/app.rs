@@ -1,13 +1,13 @@
 //! The window: open and save a model, run, pause, rewind, change parameters,
 //! and watch it plot live.
 
-use simsandbox_session::examples::{registry, EXAMPLES};
 use crate::live::{Event, Live, Model};
 use crate::log::{Kind as LogKind, Log};
-use simsandbox_session::session::{ParamRow, Session};
-use crate::views::Views;
 use eframe::egui;
 use simsandbox_core::registry::Registry;
+use simsandbox_session::examples::{registry, EXAMPLES};
+use simsandbox_session::session::{ParamRow, Session};
+use simsandbox_session::views::Views;
 use simsandbox_views::{Available, History, ViewState, ViewType};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -551,7 +551,7 @@ impl SimApp {
         });
 
         let area = ui.available_rect_before_wrap();
-        let (cols, rows) = crate::views::grid(views.tiles.len());
+        let (cols, rows) = simsandbox_session::views::grid(views.tiles.len());
         let mut close = None;
         let mut select = None;
         let mut swap = false;
@@ -1964,7 +1964,8 @@ fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History) {
         while ed.cuts.iter().any(|c| c.name == format!("cuts{n}")) {
             n += 1;
         }
-        let entry = simsandbox_session::session::default_cut(history, &format!("cuts{n}"), &inputs[0]);
+        let entry =
+            simsandbox_session::session::default_cut(history, &format!("cuts{n}"), &inputs[0]);
         let object = serde_json::Value::Object(entry.settings.into_iter().collect());
         if let Ok(settings) = serde_json::from_value(object) {
             ed.cuts.push(CutEdit {

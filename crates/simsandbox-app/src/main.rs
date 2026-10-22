@@ -14,7 +14,6 @@ mod app;
 mod live;
 mod log;
 mod pacing;
-mod views;
 
 use app::{ScreenshotRequest, SimApp};
 use eframe::egui;

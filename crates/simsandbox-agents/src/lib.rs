@@ -12,7 +12,7 @@ pub mod grazers;
 pub mod update;
 
 use simsandbox_core::block::{AccuracyClass, MethodLabels, MethodSpec, SpeedClass};
-use simsandbox_core::registry::{BlockConfig, Registry};
+use simsandbox_core::registry::{BlockConfig, Registry, TypeInfo};
 use simsandbox_core::{Result, SimError};
 
 pub use grazers::Grazers;
@@ -36,7 +36,17 @@ pub fn register(registry: &mut Registry) -> Result<()> {
         }
         let update = Update::from_setting(c.update.as_deref())?;
         Ok(Box::new(Grazers::new(name, update)))
-    })
+    })?;
+    registry.describe(
+        GRAZERS,
+        TypeInfo::new(
+            "Animals on a square field that wander, eat the grass under them (input grass, a \
+             40 × 40 grid), breed and die; output positions, energies, count and the grazing \
+             rate for the grass (connect to eq.grass).",
+        )
+        .method(RULES, &[])
+        .setting("update", &Update::ALL.map(Update::name)),
+    )
 }
 
 fn rules_only(c: &BlockConfig) -> Result<()> {

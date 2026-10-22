@@ -2653,10 +2653,12 @@ dependencies = [
 name = "simsandbox-cli"
 version = "0.0.1"
 dependencies = [
+ "serde_json",
  "simsandbox-agents",
  "simsandbox-core",
  "simsandbox-eq",
  "simsandbox-file",
+ "simsandbox-session",
 ]
 
 [[package]]
@@ -2693,6 +2695,8 @@ dependencies = [
 name = "simsandbox-session"
 version = "0.0.1"
 dependencies = [
+ "egui",
+ "png",
  "serde_json",
  "simsandbox-agents",
  "simsandbox-core",
