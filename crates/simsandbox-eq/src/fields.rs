@@ -133,6 +133,117 @@ impl OdeSystem for HeatRod {
     }
 }
 
+/// Grass growing on a square field of side `size`, split into
+/// [`Grass::CELLS`] × [`Grass::CELLS`] cells. In each cell the grass density
+/// G (kg/m²) grows logistically towards the capacity K and is grazed at a
+/// per-cell rate p (1/s) given as an input:
+///
+/// dG/dt = r G (1 − G/K) − p G.
+///
+/// Grazing removes a fraction of what is there, so grass never goes below
+/// zero. Outputs: `grass` (a grid), `x` and `y` (each cell's centre, its
+/// coordinates along both axes) and `total` (the grass on the field, kg).
+/// It is the environment of the grazing model (ADR 0033, ADR 0034).
+pub struct Grass {
+    spec: BlockSpec,
+}
+
+impl Grass {
+    pub const CELLS: usize = 40;
+
+    pub fn new(name: &str) -> Self {
+        let n = Self::CELLS;
+        let grid = Shape::Grid { nx: n, ny: n };
+        let density = Unit::new([-2, 1, 0, 0, 0, 0, 0], 1.0);
+        let per_second = Unit::new([0, 0, -1, 0, 0, 0, 0], 1.0);
+        Self {
+            spec: BlockSpec {
+                name: name.into(),
+                domain: Domain::Equations,
+                ports: vec![
+                    PortSpec::input("grazing", per_second, grid),
+                    PortSpec::output("grass", density, grid),
+                    PortSpec::output("x", Unit::METER, grid).coordinate_of("grass", 0),
+                    PortSpec::output("y", Unit::METER, grid).coordinate_of("grass", 1),
+                    PortSpec::output("total", Unit::KILOGRAM, Shape::Scalar),
+                ],
+                params: vec![
+                    param(
+                        "r",
+                        per_second,
+                        0.2,
+                        0.0,
+                        2.0,
+                        "Growth rate of sparse grass",
+                    ),
+                    param(
+                        "K",
+                        density,
+                        1.0,
+                        0.1,
+                        5.0,
+                        "Capacity: the density grass grows towards",
+                    ),
+                    param(
+                        "size",
+                        Unit::METER,
+                        40.0,
+                        5.0,
+                        200.0,
+                        "Side of the square field (give the grazers the same size)",
+                    ),
+                    initial(
+                        "g0",
+                        density,
+                        0.5,
+                        0.0,
+                        5.0,
+                        "Initial grass density, the same everywhere",
+                    ),
+                ],
+                states: (0..n * n).map(|i| format!("G{i}")).collect(),
+                tables: Vec::new(),
+                time: TimeSemantics::Continuous,
+            },
+        }
+    }
+}
+
+impl Equations for Grass {
+    fn rhs(&self, _t: f64, x: &[f64], u: &[f64], p: &[f64], dx: &mut [f64]) {
+        let (r, k) = (p[0], p[1]);
+        for ((d, &g), &graze) in dx.iter_mut().zip(x).zip(u) {
+            *d = r * g * (1.0 - g / k) - graze * g;
+        }
+    }
+
+    fn outputs(&self, _t: f64, x: &[f64], p: &[f64], y: &mut [f64]) {
+        let n = Self::CELLS;
+        let cell = p[2] / n as f64;
+        let (grass, rest) = y.split_at_mut(n * n);
+        let (xs, rest) = rest.split_at_mut(n * n);
+        let (ys, total) = rest.split_at_mut(n * n);
+        grass.copy_from_slice(x);
+        for j in 0..n {
+            for i in 0..n {
+                xs[j * n + i] = (i as f64 + 0.5) * cell;
+                ys[j * n + i] = (j as f64 + 0.5) * cell;
+            }
+        }
+        total[0] = x.iter().sum::<f64>() * cell * cell;
+    }
+}
+
+impl OdeSystem for Grass {
+    fn spec(&self) -> &BlockSpec {
+        &self.spec
+    }
+
+    fn initial_state(&self, p: &[f64], x0: &mut [f64]) {
+        x0.fill(p[3]);
+    }
+}
+
 /// Test particles orbiting a central mass in a plane: each feels only the
 /// centre, r'' = −GM r / (|r|² + ε²)^(3/2), with softening ε. They start
 /// spread over a disc between `r_min` and `r_max`, moving at `speed` times
@@ -316,6 +427,41 @@ mod tests {
         for (i, (v, x)) in t.iter().zip(x).enumerate() {
             assert!((v - (20.0 + 30.0 * x)).abs() < 1e-6, "point {i}: {v}");
         }
+    }
+
+    #[test]
+    fn ungrazed_grass_grows_logistically_and_grazing_removes_a_fraction() {
+        let (r, k, g0) = (0.3, 2.0, 0.1);
+        let dt = 0.05;
+        let steps = 400;
+        // Integrated directly, with no grazing.
+        let grass = Grass::new("g");
+        let p = [r, k, 40.0, g0];
+        let n = Grass::CELLS * Grass::CELLS;
+        let mut x = vec![0.0; n];
+        grass.initial_state(&p, &mut x);
+        assert!(x.iter().all(|&v| v == g0));
+        let none = vec![0.0; n];
+        let integrator = Integrator::Rk4 { substeps: 1 };
+        for s in 0..steps {
+            let f = |t: f64, x: &[f64], dx: &mut [f64]| grass.rhs(t, x, &none, &p, dx);
+            integrator.advance(&f, s as f64 * dt, dt, &mut x).unwrap();
+        }
+        let t = steps as f64 * dt;
+        let exact = k / (1.0 + (k / g0 - 1.0) * (-r * t).exp());
+        assert!((x[0] - exact).abs() < 1e-7 * exact, "{} vs {exact}", x[0]);
+        // Grazing at rate p removes p G.
+        let mut dx = vec![0.0; n];
+        let graze = vec![0.5; n];
+        grass.rhs(0.0, &x, &graze, &p, &mut dx);
+        let logistic = r * x[0] * (1.0 - x[0] / k);
+        assert!((dx[0] - (logistic - 0.5 * x[0])).abs() < 1e-12);
+        // Cell centres and the total.
+        let mut y = vec![0.0; 3 * n + 1];
+        grass.outputs(0.0, &x, &p, &mut y);
+        assert_eq!((y[n], y[2 * n]), (0.5, 0.5));
+        assert_eq!(y[2 * n - 1], 39.5);
+        assert!((y[3 * n] - x[0] * 1600.0).abs() < 1e-9 * y[3 * n]);
     }
 
     #[test]

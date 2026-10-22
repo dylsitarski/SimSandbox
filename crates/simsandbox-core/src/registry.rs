@@ -39,6 +39,9 @@ pub struct BlockConfig {
     /// `eq.equations` block (ADR 0017). Empty for fixed types such as
     /// `eq.lorenz`.
     pub definition: Vec<String>,
+    /// The order agents act in within a step (ADR 0034), for agent types:
+    /// e.g. `random_order`. `None` takes the type's default.
+    pub update: Option<String>,
 }
 
 /// Builds a Block named `name` from its configuration.

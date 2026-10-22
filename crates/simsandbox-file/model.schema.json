@@ -134,6 +134,11 @@
           "additionalProperties": { "type": "number" },
           "description": "Method name plus numeric options, e.g. {\"name\": \"rk4\", \"substeps\": 4}."
         },
+        "update": {
+          "enum": ["random_order", "synchronous", "id_order"],
+          "default": "random_order",
+          "description": "Agent blocks: the order agents act in within a step, part of the model because it changes results (ADR 0034). random_order: one after another in a new random order each step; synchronous: all decide from the start of the step and share what they compete for; id_order: oldest first."
+        },
         "equations": {
           "type": "array",
           "items": { "type": "string" },

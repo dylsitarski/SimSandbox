@@ -78,6 +78,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
 fn registry() -> Registry {
     let mut r = Registry::new();
     simsandbox_eq::register(&mut r).expect("equation types register once");
+    simsandbox_agents::register(&mut r).expect("agent types register once");
     r
 }
 

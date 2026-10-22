@@ -49,12 +49,17 @@ pub const EXAMPLES: &[Example] = &[
         name: "Orbiting particles (a point set)",
         text: include_str!("../../../examples/orbits.ssbx.json"),
     },
+    Example {
+        name: "Sheep grazing (agents and an ODE)",
+        text: include_str!("../../../examples/grazing.ssbx.json"),
+    },
 ];
 
 /// Every block type the app can load.
 pub fn registry() -> Registry {
     let mut r = Registry::new();
     simsandbox_eq::register(&mut r).expect("equation types register once");
+    simsandbox_agents::register(&mut r).expect("agent types register once");
     r
 }
 

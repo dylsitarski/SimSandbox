@@ -2625,6 +2625,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
+name = "simsandbox-agents"
+version = "0.0.1"
+dependencies = [
+ "simsandbox-core",
+ "simsandbox-eq",
+]
+
+[[package]]
 name = "simsandbox-app"
 version = "0.0.1"
 dependencies = [
@@ -2632,6 +2640,7 @@ dependencies = [
  "egui_plot",
  "rfd",
  "serde_json",
+ "simsandbox-agents",
  "simsandbox-core",
  "simsandbox-eq",
  "simsandbox-expr",
@@ -2643,6 +2652,7 @@ dependencies = [
 name = "simsandbox-cli"
 version = "0.0.1"
 dependencies = [
+ "simsandbox-agents",
  "simsandbox-core",
  "simsandbox-eq",
  "simsandbox-file",
@@ -2673,6 +2683,7 @@ version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
+ "simsandbox-agents",
  "simsandbox-core",
  "simsandbox-eq",
 ]

@@ -1,6 +1,6 @@
 //! Block types of the equation domain, registered for model files.
 
-use crate::fields::{HeatRod, Orbits};
+use crate::fields::{Grass, HeatRod, Orbits};
 use crate::integrators::{GroupIntegrator, Integrator};
 use crate::ode::OdeBlock;
 use crate::symbolic::{EquationSet, ExplicitBlock, Kind};
@@ -18,6 +18,8 @@ pub const COUPLED_OSCILLATOR: &str = "eq.coupled_oscillator";
 pub const PENDULUM: &str = "eq.pendulum";
 /// Heat along a rod, a grid output ([`HeatRod`]).
 pub const HEAT_ROD: &str = "eq.heat_rod";
+/// Grass on a field, the environment of the grazing model ([`Grass`]).
+pub const GRASS: &str = "eq.grass";
 /// Test particles around a central mass, a point-set output ([`Orbits`]).
 pub const ORBITS: &str = "eq.orbits";
 /// Equations typed as text ([`EquationSet`]); the definition lines are the
@@ -42,6 +44,10 @@ pub fn register(registry: &mut Registry) -> Result<()> {
         fixed(HEAT_ROD, c)?;
         ode_block(HeatRod::new(name), c)
     })?;
+    registry.register(GRASS, |name, c| {
+        fixed(GRASS, c)?;
+        ode_block(Grass::new(name), c)
+    })?;
     registry.register(ORBITS, |name, c| {
         fixed(ORBITS, c)?;
         ode_block(Orbits::new(name), c)
@@ -52,6 +58,7 @@ pub fn register(registry: &mut Registry) -> Result<()> {
         )?)))
     })?;
     registry.register(EQUATIONS, |name, c| {
+        no_update(c)?;
         let set = EquationSet::parse(name, &c.definition)?;
         match set.kind() {
             Kind::Continuous => ode_block(set, c),
@@ -61,8 +68,20 @@ pub fn register(registry: &mut Registry) -> Result<()> {
     Ok(())
 }
 
+/// Equation blocks have no agents, so no update order (ADR 0034).
+fn no_update(c: &BlockConfig) -> Result<()> {
+    match c.update {
+        None => Ok(()),
+        Some(_) => Err(SimError::InvalidSetting {
+            setting: "update".into(),
+            reason: "only agent blocks have an update order".into(),
+        }),
+    }
+}
+
 /// Types with built-in equations take no definition lines.
 fn fixed(type_name: &str, c: &BlockConfig) -> Result<()> {
+    no_update(c)?;
     if c.definition.is_empty() {
         Ok(())
     } else {
@@ -122,7 +141,7 @@ mod tests {
         assert!(register(&mut r).is_err(), "double registration must fail");
         let rk4 = BlockConfig {
             method: MethodSettings::new("rk4"),
-            definition: Vec::new(),
+            ..Default::default()
         };
         let b = r.build(LORENZ, "l", &rk4).unwrap();
         assert_eq!(b.spec().name, "l");

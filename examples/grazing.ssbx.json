@@ -1,0 +1,106 @@
+{
+  "format": 1,
+  "description": "Sheep grazing a field: an ODE and an agent model in one graph. The grass (eq.grass) regrows in each of 40 × 40 cells; the sheep (agents.grazers) wander at random, eat the grass under them, split in two when well fed and die when starved, and their grazing goes back to the grass. The two settle into damped cycles around the balance where grass is just dense enough to feed the flock (about 0.4 kg/m² here). Left: the grass, with the sheep on it. Change how fast grass regrows (r) or how much a sheep needs (metabolism) and watch the balance move; the update order is in the side panel.",
+  "run": {
+    "dt": 0.1,
+    "seed": 1
+  },
+  "blocks": [
+    {
+      "name": "grass",
+      "type": "eq.grass",
+      "method": {
+        "name": "rk4"
+      },
+      "params": {
+        "g0": 1.0
+      }
+    },
+    {
+      "name": "sheep",
+      "type": "agents.grazers",
+      "method": {
+        "name": "rules"
+      },
+      "update": "random_order"
+    }
+  ],
+  "connections": [
+    {
+      "from": "grass.grass",
+      "to": "sheep.grass"
+    },
+    {
+      "from": "sheep.grazing",
+      "to": "grass.grazing"
+    }
+  ],
+  "controls": {
+    "params": {
+      "grass.r": {
+        "slider": true,
+        "range": [
+          0.0,
+          1.0
+        ]
+      },
+      "sheep.D": {
+        "slider": true,
+        "range": [
+          0.0,
+          10.0
+        ]
+      },
+      "sheep.c": {
+        "slider": true,
+        "range": [
+          0.0,
+          2.0
+        ]
+      },
+      "sheep.metabolism": {
+        "slider": true,
+        "range": [
+          0.0,
+          0.3
+        ]
+      }
+    },
+    "speed": 4.0,
+    "plots": [
+      "grass.grass",
+      "grass.x",
+      "grass.y",
+      "grass.total",
+      "sheep.position",
+      "sheep.count",
+      "sheep.mean_energy"
+    ],
+    "views": [
+      {
+        "type": "plot.heatmap",
+        "bind": {
+          "field": "grass.grass",
+          "points": "sheep.position",
+          "x": "grass.x",
+          "y": "grass.y"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "sheep.count"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "colour": "t",
+          "x": "grass.total",
+          "y": "sheep.count"
+        }
+      }
+    ]
+  }
+}

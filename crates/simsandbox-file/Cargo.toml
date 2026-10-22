@@ -16,6 +16,7 @@ serde_json = "1"
 [dev-dependencies]
 serde_json = "1"
 simsandbox-eq = { path = "../simsandbox-eq" }
+simsandbox-agents = { path = "../simsandbox-agents" }
 
 [lints]
 workspace = true

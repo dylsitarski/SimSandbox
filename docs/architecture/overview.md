@@ -35,9 +35,10 @@ flowchart TB
 | `crates/simsandbox-file` | Model graph: files | Exists | JSON model files, `controls`, JSON Schema ([ADR 0007](../decisions/0007-json-model-files.md)); depends on `serde`, `serde_json` |
 | `crates/simsandbox-cli` | Runtime: headless | Exists | `simsandbox` binary |
 | `crates/simsandbox-app` | Runtime: desktop | Exists | eframe + egui + wgpu ([ADR 0008](../decisions/0008-native-egui-ui.md)): `live.rs` (the open model on its worker thread: commands, published model and status, [ADR 0035](../decisions/0035-simulation-worker-thread.md)), `pacing.rs` (wall-clock pacing, [ADR 0010](../decisions/0010-live-loop-pacing.md)), `session.rs` (open model, shared history, sweeps evaluated in slices), `app.rs` (window and views), `views.rs` (the open model's view tiles), `examples.rs` (built-in examples) |
+| `crates/simsandbox-agents` | Backend: agents | Exists | Agent block types on kernel tables ([ADR 0034](../decisions/0034-agent-domain.md)): `update.rs` (update orders and sharing), `grazers.rs` (`agents.grazers`) |
 | `crates/simsandbox-views` | Interface: views | Exists | History of recorded signals, view contract and registry, built-in views, 3D projection ([visualization](visualization.md)) |
 | `crates/simsandbox-py` | Interface: Python | Planned | PyO3 bindings |
-| further domain crates | Backends | Planned | e.g. `simsandbox-rigid`, `simsandbox-agents`, `simsandbox-ml`, `simsandbox-fmi` |
+| further domain crates | Backends | Planned | e.g. `simsandbox-rigid`, `simsandbox-ml`, `simsandbox-fmi` |
 
 Dependency rule: domain crates depend on `simsandbox-core`; the kernel depends on no domain crate. Runtimes and interfaces depend on whatever they host.
 

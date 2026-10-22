@@ -108,6 +108,10 @@ fn views_draw_signals_with_infinities_and_nans() {
         ),
         ("plot.heatmap", bind(&[("field", &["g"]), ("x", &["gx"])])),
         ("plot.heatmap", bind(&[("field", &["s"])])),
+        (
+            "plot.heatmap",
+            bind(&[("field", &["s"]), ("points", &["q"])]),
+        ),
         ("plot.profile", bind(&[("y", &["g"])])),
         ("plot.profile", bind(&[("x", &["gx"]), ("y", &["g"])])),
         ("plot.scatter", bind(&[("points", &["p"])])),

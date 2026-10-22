@@ -1,0 +1,18 @@
+[package]
+name = "simsandbox-agents"
+description = "SimSandbox agent domain: populations of agents as kernel-owned tables (ADR 0034)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+simsandbox-core = { path = "../simsandbox-core" }
+
+[dev-dependencies]
+simsandbox-eq = { path = "../simsandbox-eq" }
+
+[lints]
+workspace = true

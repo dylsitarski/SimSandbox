@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 simsandbox-core = { path = "../simsandbox-core" }
+simsandbox-agents = { path = "../simsandbox-agents" }
 simsandbox-eq = { path = "../simsandbox-eq" }
 simsandbox-file = { path = "../simsandbox-file" }
 

@@ -354,6 +354,10 @@ pub struct BlockEntry {
     #[serde(rename = "type")]
     pub type_name: String,
     pub method: MethodEntry,
+    /// Agent blocks: the order agents act in within a step (ADR 0034),
+    /// e.g. `random_order`; the type's default if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<String>,
     /// The equations of an `eq.equations` block, one per line (ADR 0017),
     /// e.g. `"dx/dt = sigma*(y - x)"`. Absent for types with built-in
     /// equations.
@@ -993,11 +997,15 @@ impl ModelFile {
             let config = BlockConfig {
                 method: (&entry.method).into(),
                 definition: entry.equations.clone(),
+                update: entry.update.clone(),
             };
             let block = registry
                 .build(&entry.type_name, &entry.name, &config)
                 .map_err(|e| match e {
                     SimError::InvalidDefinition(_) => invalid(format!("{path}.equations"), e),
+                    SimError::InvalidSetting { ref setting, .. } => {
+                        invalid(format!("{path}.{setting}"), e)
+                    }
                     _ => invalid(format!("{path}.method"), e),
                 })?;
             let id = model.add(block);

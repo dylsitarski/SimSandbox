@@ -37,7 +37,7 @@ Goal: connect and reuse. Gate: an ODE model and an agent model run in one graph 
 - [x] Pause, rewind and branch in the UI, built during Phase 0
 - [x] 1. Simulation on a worker thread ([ADR 0035](decisions/0035-simulation-worker-thread.md)), sliders live only for real-time models ([ADR 0037](decisions/0037-when-parameter-changes-apply.md))
 - [x] 2. Kernel support for populations: tables and variable-length point sets ([ADR 0034](decisions/0034-agent-domain.md))
-- [ ] 3. Agent domain with a first agent model (grazing)
+- [x] 3. Agent domain with a first agent model (grazing)
 - [ ] 4. Direct feedthrough and algebraic loops in fused groups
 - [ ] 5. Headless interface for people and AI agents: Python API (PyO3) with results as numpy arrays; `simsandbox describe`, `check` and `render` ([ADR 0039](decisions/0039-ai-agent-access.md))
 - [ ] 6. Visual node canvas

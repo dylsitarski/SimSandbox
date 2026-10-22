@@ -4,6 +4,7 @@ members = [
     "crates/simsandbox-core",
     "crates/simsandbox-expr",
     "crates/simsandbox-eq",
+    "crates/simsandbox-agents",
     "crates/simsandbox-file",
     "crates/simsandbox-cli",
     "crates/simsandbox-views",

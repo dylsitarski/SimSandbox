@@ -122,13 +122,25 @@ pub(crate) fn grid_bindings(a: &Available<'_>) -> Option<Bindings> {
     Some(b)
 }
 
+/// Points drawn over a heat map, such as animals on the grass they graze.
+const OVERLAY: Slot = Slot {
+    name: "points",
+    kind: SlotKind::Points,
+    of: None,
+    applies: always,
+    many: false,
+    required: false,
+    description: "A point set or population drawn over the map, newest frame, its first two \
+                  values as positions in the map's coordinates",
+};
+
 pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
     r.register(ViewType {
         name: "plot.heatmap",
         label: "Heat map",
         description:
             "A grid field as colours over two axes: a line of cells over time, or a 2D grid now",
-        slots: &[FIELD, X_AXIS, Y_AXIS],
+        slots: &[FIELD, X_AXIS, Y_AXIS, OVERLAY],
         style: &[HEAT_TRAIL, LOG_COLOUR],
         applies_to: &[],
         swap: Some(Swap::Slots(["x", "y"])),
@@ -569,8 +581,38 @@ impl View for Heatmap {
                     PlotPoint::new((x0 + x1) / 2.0, (y0 + y1) / 2.0),
                     egui::vec2((x1 - x0) as f32, (y1 - y0) as f32),
                 ));
+                if let Some(pts) = overlay(input, &x, &y) {
+                    plot.points(
+                        Points::new("points", pts)
+                            .radius(2.5)
+                            .color(crate::colour::HEAD),
+                    );
+                }
             });
     }
+}
+
+/// The bound point set's newest points in the map's coordinates: only when
+/// both axes run along the grid (not time), swapped if the map is.
+fn overlay(input: &ViewInput<'_>, x: &Axis, y: &Axis) -> Option<Vec<[f64; 2]>> {
+    let h = input.history;
+    let Some(SignalRef::Field(f)) = input.one("points") else {
+        return None;
+    };
+    let field = &h.fields()[f];
+    let dim = field.shape.point_dim().filter(|&d| d >= 2)?;
+    let swapped = match (x.dim, y.dim) {
+        (Dim::Grid(0), Dim::Grid(_)) => false,
+        (Dim::Grid(_), Dim::Grid(0)) => true,
+        _ => return None,
+    };
+    let pts = field
+        .frame(h.len().checked_sub(1)?)
+        .chunks_exact(dim)
+        .map(|p| if swapped { [p[1], p[0]] } else { [p[0], p[1]] })
+        .filter(|p| p.iter().all(|v| v.is_finite()))
+        .collect();
+    Some(pts)
 }
 
 pub(crate) fn fmt(v: f64) -> String {

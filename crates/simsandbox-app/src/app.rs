@@ -724,6 +724,7 @@ impl SimApp {
         };
         let m = live.model();
         let mut fusion = None;
+        let mut update: Option<(String, simsandbox_agents::Update)> = None;
         if m.file.blocks.len() > 1 {
             fusion = solving_section(ui, &m);
         }
@@ -748,8 +749,34 @@ impl SimApp {
                     .find(|b| b.name == block_name)
                     .filter(|b| b.type_name == simsandbox_eq::registry::EQUATIONS)
                     .map(|b| b.equations.join("\n"));
+                let entry = m.file.blocks.iter().find(|b| b.name == block_name);
+                let agents = entry.filter(|b| b.type_name.starts_with("agents."));
                 ui.horizontal(|ui| {
                     ui.strong(&block_name);
+                    if let Some(b) = agents {
+                        // The update order is part of the model (ADR 0034).
+                        let now = simsandbox_agents::Update::from_setting(b.update.as_deref())
+                            .unwrap_or_default();
+                        egui::ComboBox::from_id_salt(("update", &block_name))
+                            .selected_text(now.name())
+                            .show_ui(ui, |ui| {
+                                for u in simsandbox_agents::Update::ALL {
+                                    if ui
+                                        .selectable_label(u == now, u.name())
+                                        .on_hover_text(u.description())
+                                        .clicked()
+                                        && u != now
+                                    {
+                                        update = Some((block_name.clone(), u));
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text(
+                                "The order agents act in each step; it changes results. \
+                                 Changing it restarts the run.",
+                            );
+                    }
                     if let Some(text) = typed {
                         if ui
                             .small_button("Edit equations…")
@@ -815,6 +842,16 @@ impl SimApp {
         }
         if let Some(on) = fusion {
             self.set_fusion(on);
+        }
+        if let Some((block, u)) = update {
+            self.rebuild(
+                |file| {
+                    if let Some(b) = file.blocks.iter_mut().find(|b| b.name == block) {
+                        b.update = Some(u.name().into());
+                    }
+                },
+                &format!("Update order is now {}; the run restarted", u.name()),
+            );
         }
     }
 
@@ -946,6 +983,7 @@ impl SimApp {
                         .map_or(simsandbox_eq::Kind::Continuous, |s| s.kind())
                         .default_method()
                         .into(),
+                    update: None,
                     equations: lines,
                     params: Default::default(),
                 });
@@ -984,6 +1022,25 @@ impl SimApp {
     /// Turn automatic fusion on or off (ADR 0023). The model is rebuilt from
     /// its saved form, so the run starts again at t = 0.
     fn set_fusion(&mut self, on: bool) {
+        self.rebuild(
+            |file| {
+                file.fusion = if on {
+                    simsandbox_file::Fusion::Auto
+                } else {
+                    simsandbox_file::Fusion::Off
+                };
+            },
+            if on {
+                "Connected equation blocks are solved together; the run restarted"
+            } else {
+                "Each block is solved on its own (co-simulated); the run restarted"
+            },
+        );
+    }
+
+    /// Change the open model's file with `edit` and open it again from t = 0,
+    /// keeping its path and whether it runs.
+    fn rebuild(&mut self, edit: impl FnOnce(&mut simsandbox_file::ModelFile), note: &str) {
         let Some(live) = self.session.as_ref() else {
             return;
         };
@@ -999,19 +1056,13 @@ impl SimApp {
                 return;
             }
         };
-        file.fusion = if on {
-            simsandbox_file::Fusion::Auto
-        } else {
-            simsandbox_file::Fusion::Off
-        };
+        edit(&mut file);
         let path = self.path.clone();
         self.open_text_with(&title, &file.to_json(), running);
         self.path = path;
-        self.log.info(if on {
-            "Connected equation blocks are solved together; the run restarted"
-        } else {
-            "Each block is solved on its own (co-simulated); the run restarted"
-        });
+        if self.error.is_none() {
+            self.log.info(note);
+        }
     }
 
     /// The open model as a file, with the equations of `block` replaced and
@@ -2181,6 +2232,27 @@ mod tests {
         let app = SimApp::new(None, None, None, None);
         let live = app.session.as_ref().unwrap();
         assert!(live.model().real_time);
+    }
+
+    #[test]
+    fn agent_blocks_change_their_update_order() {
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("grazing"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        app.rebuild(
+            |f| f.blocks[1].update = Some("synchronous".into()),
+            "changed",
+        );
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let m = app.session.as_ref().unwrap().model();
+        assert_eq!(m.file.blocks[1].update.as_deref(), Some("synchronous"));
+        // An unknown order is refused, naming where it is written.
+        app.rebuild(|f| f.blocks[1].update = Some("bogus".into()), "changed");
+        let err = app.error.clone().unwrap();
+        assert!(err.contains("blocks[1].update"), "{err}");
     }
 
     #[test]

@@ -19,10 +19,12 @@ const ORBITS: &str = include_str!("../../../examples/orbits.ssbx.json");
 const PENDULUM: &str = include_str!("../../../examples/pendulum.ssbx.json");
 const RESONANCE_MAP: &str = include_str!("../../../examples/resonance-map.ssbx.json");
 const RESONANCE_SAMPLES: &str = include_str!("../../../examples/resonance-samples.ssbx.json");
+const GRAZING: &str = include_str!("../../../examples/grazing.ssbx.json");
 
 fn registry() -> Registry {
     let mut r = Registry::new();
     simsandbox_eq::register(&mut r).unwrap();
+    simsandbox_agents::register(&mut r).unwrap();
     r
 }
 
@@ -47,6 +49,7 @@ fn examples_load_without_warnings() {
         PENDULUM,
         RESONANCE_MAP,
         RESONANCE_SAMPLES,
+        GRAZING,
     ] {
         let loaded = load(text, &registry()).unwrap();
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
@@ -67,6 +70,7 @@ fn examples_are_written_exactly_as_saved() {
         PENDULUM,
         RESONANCE_MAP,
         RESONANCE_SAMPLES,
+        GRAZING,
     ] {
         let (file, _) = ModelFile::from_json(text).unwrap();
         assert_eq!(file.to_json(), text);
