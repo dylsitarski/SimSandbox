@@ -301,7 +301,7 @@ mod tests {
         for e in EXAMPLES {
             let s = Session::load(e.name, e.text, &registry()).unwrap();
             let mut v = Views::new(view_registry());
-            let w = v.open(&s.available(), &s.file.controls.views);
+            let w = v.open(&s.available(&s.signals()), &s.file.controls.views);
             assert!(w.is_empty(), "{}: {w:?}", e.name);
             assert_eq!(v.entries(), s.file.controls.views, "{}", e.name);
         }
@@ -319,7 +319,7 @@ mod tests {
         let mut s = Session::load(e.name, e.text, &registry()).unwrap();
         let mut v = Views::new(view_registry());
         // One parameter: the results against it.
-        v.open(&s.available(), &[]);
+        v.open(&s.available(&s.signals()), &[]);
         let b = &v.tiles[0].state.bind;
         assert_eq!(b["x"], ["spring.w"]);
         assert_eq!(b["y"], ["spring.amplitude", "spring.lag"]);
@@ -338,7 +338,7 @@ mod tests {
         };
         s.set_sampling(sampling.clone()).unwrap();
         // Two on a grid: a heat map over both.
-        v.open(&s.available(), &[]);
+        v.open(&s.available(&s.signals()), &[]);
         let b = &v.tiles[0].state.bind;
         assert_eq!(v.tiles[0].state.type_name, "plot.heatmap");
         assert_eq!(b["field"], ["grid.spring.amplitude"]);
@@ -349,7 +349,7 @@ mod tests {
         // Not on a grid: where the samples fell, coloured by a result.
         sampling.design = Design::Random;
         s.set_sampling(sampling).unwrap();
-        v.open(&s.available(), &[]);
+        v.open(&s.available(&s.signals()), &[]);
         let b = &v.tiles[0].state.bind;
         assert_eq!(v.tiles[0].state.type_name, "plot.xy");
         assert_eq!(b["x"], ["spring.w"]);

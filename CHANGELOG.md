@@ -48,6 +48,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- The simulation runs on its own thread (ADR 0035): the window stays responsive during slow steps and large sweeps, which are evaluated in the background with progress and restarted by any change; a step running longer than half a second is shown in the toolbar. Sliders apply while dragged only for real-time models; for others the value is marked pending and applies on release (ADR 0037).
+
 - Sweeps moved from `controls.sweep` to the top-level `sample` section (ADR 0027); old files are converted on load: views bound to `t` are bound to the first swept parameter, two-parameter heat maps and cut filters to the `grid.` signals. A one-parameter sweep is indexed by sample number, with the parameter as a signal.
 - `plot.profile` draws line fields only; cuts through 2D grids come from cut filters (ADR 0031, superseding ADR 0029's cuts inside the profile).
 - Filters (ADRs 0030–0032): `controls.filters` holds named filters that name their inputs; `expression` filters are derived signals (they may now use each other) and `cut` filters cut 2D grids along x, along y or free lines into line fields with a coordinate and readable labels. The "Signals…" window becomes "Data…", listing and editing all filters; a new cut filter opens a profile of its cuts. Older `controls.signals` and profile cut selections are converted on load.

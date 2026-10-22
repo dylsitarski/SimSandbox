@@ -13,6 +13,54 @@ use simsandbox_views::cut::Geometry;
 use simsandbox_views::history::thin;
 use simsandbox_views::{Available, Coordinate, FieldShape, History, SignalRef};
 use std::collections::BTreeMap;
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{Duration, Instant};
+
+/// The recorded history, shared with the window (ADR 0035): the session
+/// writes it, the window reads it to draw. Cloning shares it.
+#[derive(Clone)]
+pub struct SharedHistory(Arc<RwLock<History>>);
+
+impl SharedHistory {
+    fn new(h: History) -> Self {
+        Self(Arc::new(RwLock::new(h)))
+    }
+
+    /// Read access; waits only while the session replaces or appends.
+    pub fn read(&self) -> RwLockReadGuard<'_, History> {
+        self.0.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, History> {
+        self.0.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn try_write(&self) -> Option<RwLockWriteGuard<'_, History>> {
+        match self.0.try_write() {
+            Ok(g) => Some(g),
+            Err(std::sync::TryLockError::Poisoned(e)) => Some(e.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
+}
+
+/// A sample that found the history being read, kept to append later.
+struct Pending {
+    index: f64,
+    values: Vec<f64>,
+    frames: Vec<Vec<f64>>,
+}
+
+/// A sweep being evaluated, a slice at a time (ADR 0035): the next sample,
+/// and for a two-parameter grid the columns collected so far.
+struct ResampleJob {
+    next: usize,
+    columns: Vec<Vec<f64>>,
+    started: Instant,
+}
+
+/// A sweep counts as real-time (ADR 0037) when it recomputes within this.
+const REAL_TIME_SWEEP: Duration = Duration::from_millis(33);
 
 /// Take a snapshot for rewind every this many steps.
 const SNAPSHOT_EVERY: usize = 10;
@@ -106,8 +154,10 @@ pub struct Session {
     pub groups: Vec<FusedGroup>,
     pub dt: f64,
     /// Recorded signals, one per plotted output element (ADR 0015), and in
-    /// a sweep the swept parameters (ADR 0028).
-    pub signals: History,
+    /// a sweep the swept parameters (ADR 0028); shared with the window.
+    history: SharedHistory,
+    /// Samples waiting for the window to stop reading.
+    pending: Vec<Pending>,
     sources: Vec<Source>,
     /// Names of the scalar output signals, in `sources` order.
     output_names: Vec<String>,
@@ -131,7 +181,14 @@ pub struct Session {
     snapshots: Vec<Snapshot>,
     steps_since_snapshot: usize,
     /// Set when the model has no states: it is swept, not run.
-    sweep: Option<Sweep>,
+    sweep: Option<Arc<Sweep>>,
+    /// The sweep being evaluated, if not finished.
+    job: Option<ResampleJob>,
+    /// Sweeps are evaluated by [`Session::resume_resample`] (on the worker
+    /// thread) instead of at once.
+    deferred: bool,
+    /// How long the last complete sweep took.
+    last_sweep: Option<Duration>,
     /// Filters as written, for saving and editing (ADR 0030, ADR 0032).
     filter_entries: Vec<FilterEntry>,
     /// Filters compiled: expressions recorded after the output signals,
@@ -140,8 +197,25 @@ pub struct Session {
 }
 
 impl Session {
-    /// Load a model file. Errors are formatted for display.
+    /// Load a model file, evaluating any sweep at once. Errors are
+    /// formatted for display.
+    #[cfg(test)]
     pub fn load(title: &str, text: &str, registry: &Registry) -> Result<Self, String> {
+        Self::load_with(title, text, registry, false)
+    }
+
+    /// Load a model file, leaving its sweep (if any) to be evaluated by
+    /// [`Session::resume_resample`].
+    pub fn load_deferred(title: &str, text: &str, registry: &Registry) -> Result<Self, String> {
+        Self::load_with(title, text, registry, true)
+    }
+
+    fn load_with(
+        title: &str,
+        text: &str,
+        registry: &Registry,
+        deferred: bool,
+    ) -> Result<Self, String> {
         let loaded = simsandbox_file::load(text, registry).map_err(|e| e.to_string())?;
         let mut names = Vec::new();
         let mut sources = Vec::new();
@@ -209,7 +283,7 @@ impl Session {
                     .sampling(&loaded.model, &loaded.ids)
                     .map_err(|e| e.to_string())?
                     .ok_or("a sweep with nothing to sample")?;
-                Some(Sweep::new(sampling, plan, &loaded.ids)?)
+                Some(Arc::new(Sweep::new(sampling, plan, &loaded.ids)?))
             }
             None => None,
         };
@@ -225,7 +299,8 @@ impl Session {
             ids: loaded.ids,
             groups: loaded.groups,
             warnings,
-            signals: History::new(Vec::new()),
+            history: SharedHistory::new(History::new(Vec::new())),
+            pending: Vec::new(),
             sources,
             output_names: names,
             base_fields: fields,
@@ -239,6 +314,9 @@ impl Session {
             sim,
             steps_since_snapshot: 0,
             sweep,
+            job: None,
+            deferred,
+            last_sweep: None,
             filter_entries: Vec::new(),
             filters: Filters::default(),
         };
@@ -259,16 +337,98 @@ impl Session {
         Ok(session)
     }
 
-    /// What views can bind: the scalar signals, grids, point sets and the
-    /// model's block types.
-    pub fn available(&self) -> Available<'_> {
+    /// Names of the recorded grids, point sets, one-row grids and the
+    /// model's block types: what views can bind besides scalars.
+    pub fn bindable(&self) -> [&[String]; 4] {
+        [&self.grids, &self.points, &self.lines, &self.block_types]
+    }
+
+    /// The sweep, shared.
+    pub fn sweep_shared(&self) -> Option<Arc<Sweep>> {
+        self.sweep.clone()
+    }
+
+    /// The recorded signals, for reading.
+    pub fn signals(&self) -> RwLockReadGuard<'_, History> {
+        self.history.read()
+    }
+
+    /// The recorded signals, shared, for the window to read.
+    pub fn shared_history(&self) -> SharedHistory {
+        self.history.clone()
+    }
+
+    /// Write access to the history, with any pending samples appended
+    /// first.
+    fn history_mut(&mut self) -> RwLockWriteGuard<'_, History> {
+        let mut h = self.history.write();
+        for p in self.pending.drain(..) {
+            let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
+            h.push_sample(p.index, &p.values, &frames);
+        }
+        h
+    }
+
+    /// Replace the history's contents (the window's handle stays valid).
+    fn replace_history(&mut self, h: History) -> History {
+        self.pending.clear();
+        std::mem::replace(&mut *self.history.write(), h)
+    }
+
+    /// Append pending samples: waiting for the window if `wait`, else only
+    /// if it is not reading. Returns whether none are left.
+    pub fn flush(&mut self, wait: bool) -> bool {
+        if self.pending.is_empty() {
+            return true;
+        }
+        if wait {
+            drop(self.history_mut());
+            return true;
+        }
+        let Some(mut h) = self.history.try_write() else {
+            return false;
+        };
+        for p in self.pending.drain(..) {
+            let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
+            h.push_sample(p.index, &p.values, &frames);
+        }
+        true
+    }
+
+    /// Record one sample: scalar values, the frames of the fields before
+    /// the cuts, then the cuts' frames. It never waits for the window: a
+    /// sample that finds the history being read is appended later.
+    fn push(&mut self, index: f64, values: &[f64], before: &[&[f64]], cuts: &[Vec<f64>]) {
+        let frames: Vec<&[f64]> = before
+            .iter()
+            .copied()
+            .chain(cuts.iter().map(Vec::as_slice))
+            .collect();
+        if let Some(mut h) = self.history.try_write() {
+            for p in self.pending.drain(..) {
+                let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
+                h.push_sample(p.index, &p.values, &frames);
+            }
+            h.push_sample(index, values, &frames);
+            return;
+        }
+        self.pending.push(Pending {
+            index,
+            values: values.to_vec(),
+            frames: frames.iter().map(|f| f.to_vec()).collect(),
+        });
+    }
+
+    /// What views can bind, with `h` this session's history: the scalar
+    /// signals, grids, point sets and the model's block types.
+    pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
         Available {
-            scalars: self.signals.names(),
+            scalars: h.names(),
             grids: &self.grids,
             points: &self.points,
             block_types: &self.block_types,
             lines: &self.lines,
-            coordinates: self.signals.coordinates(),
+            coordinates: h.coordinates(),
             swept: self.sweep.as_ref().map_or(&[], |sw| sw.keys()),
         }
     }
@@ -385,31 +545,31 @@ impl Session {
         };
         self.grids = of_kind(true);
         self.points = of_kind(false);
-        self.signals = History::with_fields(index, scalars, fields);
+        let mut h = History::with_fields(index, scalars, fields);
         for (name, shape) in whole {
-            self.signals.add_whole(&name, shape);
+            h.add_whole(&name, shape);
         }
         if let Some(sw) = &self.sweep {
-            self.signals.keep_all();
-            self.signals.set_unordered(sw.unordered());
+            h.keep_all();
+            h.set_unordered(sw.unordered());
             // A grid of a signal is labelled as the signal.
             if sw.is_grid() {
                 for name in self.scalar_names().iter().chain(sw.keys()) {
-                    self.signals.set_label(&grid_name(name), name);
+                    h.set_label(&grid_name(name), name);
                 }
             }
         }
-        self.signals.set_coordinates(coordinates);
+        h.set_coordinates(coordinates);
         for (name, label) in labels {
-            self.signals.set_label(&name, &label);
+            h.set_label(&name, &label);
         }
-        self.lines = self
-            .signals
+        self.lines = h
             .fields()
             .iter()
             .filter(|f| matches!(f.shape, FieldShape::Grid { ny: 1, .. }))
             .map(|f| f.name.clone())
             .collect();
+        self.replace_history(h);
     }
 
     /// The frames of the cut filters that are per sample (`whole` false)
@@ -420,7 +580,8 @@ impl Session {
         frame: impl Fn(&str) -> Option<&'a [f64]>,
         whole: bool,
     ) -> Vec<Vec<f64>> {
-        let coordinates = self.signals.coordinates();
+        let h = self.signals();
+        let coordinates = h.coordinates();
         self.filters
             .cuts
             .iter()
@@ -539,7 +700,7 @@ impl Session {
         self.snapshots = vec![self.sim.snapshot()];
         self.steps_since_snapshot = 0;
         self.stop_at = self.file.run.t_end;
-        self.signals.clear();
+        self.history_mut().clear();
         self.record();
         Ok(())
     }
@@ -568,7 +729,7 @@ impl Session {
 
     /// The sweep, if the model is swept instead of run.
     pub fn sweep(&self) -> Option<&Sweep> {
-        self.sweep.as_ref()
+        self.sweep.as_deref()
     }
 
     /// Change what is swept and how (ADR 0028), and recompute. Filters that
@@ -581,7 +742,7 @@ impl Session {
         let plan = sampling
             .plan(&self.file, self.sim.model(), &self.ids)
             .map_err(|e| e.to_string())?;
-        self.sweep = Some(Sweep::new(sampling, plan, &self.ids)?);
+        self.sweep = Some(Arc::new(Sweep::new(sampling, plan, &self.ids)?));
         let entries = self.filter_entries.clone();
         let (filters, problems) = self.compile_filters(&entries);
         self.filter_entries = filters.entries(&entries);
@@ -593,12 +754,41 @@ impl Session {
             .collect())
     }
 
-    /// Evaluate the outputs at every sample of the sweep.
+    /// Evaluate the outputs at every sample of the sweep: at once, or when
+    /// deferred, by later calls to [`Session::resume_resample`].
     fn resample(&mut self) {
-        let Some(sw) = self.sweep.clone() else {
+        if self.sweep.is_none() {
             return;
-        };
+        }
         self.rebuild_history();
+        let names = self.scalar_names().len();
+        let grid = self.sweep.as_ref().is_some_and(|sw| sw.is_grid());
+        self.job = Some(ResampleJob {
+            next: 0,
+            columns: vec![Vec::new(); if grid { names + 2 } else { 0 }],
+            started: Instant::now(),
+        });
+        if !self.deferred {
+            self.resume_resample(None);
+        }
+    }
+
+    /// The sweep's progress while it is being evaluated: samples done and
+    /// in all.
+    pub fn resampling(&self) -> Option<(usize, usize)> {
+        let job = self.job.as_ref()?;
+        let total = self.sweep.as_ref().map_or(0, |sw| sw.plan.points.len());
+        Some((job.next, total))
+    }
+
+    /// Evaluate more of the sweep, for at most `budget` (all of it if
+    /// `None`). The model is left with the panel's values after each call.
+    /// Returns true when the sweep is complete.
+    pub fn resume_resample(&mut self, budget: Option<Duration>) -> bool {
+        let (Some(sw), Some(mut job)) = (self.sweep.clone(), self.job.take()) else {
+            return true;
+        };
+        let start = Instant::now();
         let originals: Vec<f64> = sw
             .targets
             .iter()
@@ -614,8 +804,12 @@ impl Session {
         let names = self.scalar_names().len();
         // For a grid over two parameters: every scalar signal, then the
         // swept parameters, sample by sample (cell (i, j) at j * nx + i).
-        let mut columns = vec![Vec::new(); if sw.is_grid() { names + 2 } else { 0 }];
-        for (k, point) in sw.plan.points.iter().enumerate() {
+        while job.next < sw.plan.points.len() {
+            if budget.is_some_and(|b| start.elapsed() >= b) {
+                break;
+            }
+            let k = job.next;
+            let point = &sw.plan.points[k];
             let ok = set(&mut self.sim, point);
             let mut values = if ok {
                 self.sample(k as f64)
@@ -623,16 +817,27 @@ impl Session {
                 vec![f64::NAN; names]
             };
             values.extend_from_slice(point);
-            for (c, v) in columns.iter_mut().zip(&values) {
+            for (c, v) in job.columns.iter_mut().zip(&values) {
                 c.push(*v);
             }
-            let frames = if ok {
+            let owned: Vec<Vec<f64>> = if ok {
                 frames(&self.sim, &self.field_sources)
+                    .into_iter()
+                    .map(<[f64]>::to_vec)
+                    .collect()
             } else {
-                vec![&[][..]; self.field_sources.len()]
+                vec![Vec::new(); self.field_sources.len()]
             };
+            let frames: Vec<&[f64]> = owned.iter().map(Vec::as_slice).collect();
             let cuts = self.sample_cuts(&frames);
-            push(&mut self.signals, k as f64, &values, &frames, &cuts);
+            self.push(k as f64, &values, &frames, &cuts);
+            job.next += 1;
+        }
+        // Leave the model as the panel shows it.
+        set(&mut self.sim, &originals);
+        if job.next < sw.plan.points.len() {
+            self.job = Some(job);
+            return false;
         }
         if sw.is_grid() {
             let grids: Vec<(String, Vec<f64>)> = self
@@ -640,7 +845,7 @@ impl Session {
                 .iter()
                 .chain(sw.keys())
                 .map(|n| grid_name(n))
-                .zip(columns)
+                .zip(std::mem::take(&mut job.columns))
                 .collect();
             let whole = self.cut_frames(
                 |name| {
@@ -658,12 +863,29 @@ impl Session {
                 .filter(|c| self.whole_cut(&c.input))
                 .flat_map(|c| c.fields().into_iter().map(|(n, _)| n))
                 .collect();
+            let mut h = self.history_mut();
             for (name, frame) in grids.into_iter().chain(names.into_iter().zip(whole)) {
-                self.signals.set_whole(&name, frame);
+                h.set_whole(&name, frame);
             }
         }
-        // Leave the model as the panel shows it.
-        set(&mut self.sim, &originals);
+        self.last_sweep = Some(job.started.elapsed());
+        true
+    }
+
+    /// Whether dragged sliders apply while dragged (ADR 0037): every method
+    /// is real-time and, for a sweep, the last complete one took at most
+    /// two frames.
+    pub fn real_time(&self) -> bool {
+        let methods = self
+            .labels()
+            .is_some_and(|l| l.speed == simsandbox_core::block::SpeedClass::RealTime);
+        let sweep = match &self.sweep {
+            None => true,
+            // The last complete sweep, so a drag does not change the rule
+            // halfway while each change restarts the sweep.
+            Some(_) => self.last_sweep.is_some_and(|d| d <= REAL_TIME_SWEEP),
+        };
+        methods && sweep
     }
 
     /// Earliest and latest time the run can be rewound to.
@@ -682,16 +904,20 @@ impl Session {
         self.sim.restore(snap);
         let t0 = snap.t;
         self.stop_at = self.file.run.t_end.filter(|&end| end > t0);
-        self.signals.truncate_after(t0);
+        self.history_mut().truncate_after(t0);
         self.steps_since_snapshot = 0;
     }
 
     fn record(&mut self) {
         let t = self.sim.time();
         let values = self.sample(t);
-        let frames = frames(&self.sim, &self.field_sources);
+        let owned: Vec<Vec<f64>> = frames(&self.sim, &self.field_sources)
+            .into_iter()
+            .map(<[f64]>::to_vec)
+            .collect();
+        let frames: Vec<&[f64]> = owned.iter().map(Vec::as_slice).collect();
         let cuts = self.sample_cuts(&frames);
-        push(&mut self.signals, t, &values, &frames, &cuts);
+        self.push(t, &values, &frames, &cuts);
     }
 
     /// One sample: the output signals, then the expression filters computed
@@ -738,63 +964,6 @@ impl Session {
         &self.filter_entries
     }
 
-    /// The 2D grids a cut filter can take: recorded grids that are not
-    /// themselves coordinates (in a two-parameter sweep, every result).
-    pub fn cut_inputs(&self) -> Vec<String> {
-        self.signals
-            .fields()
-            .iter()
-            .filter(|f| matches!(f.shape, FieldShape::Grid { nx, ny } if nx >= 2 && ny >= 2))
-            .filter(|f| !self.signals.coordinates().iter().any(|c| c.name == f.name))
-            .map(|f| f.name.clone())
-            .collect()
-    }
-
-    /// Where the cells of grid `input` lie, from the newest sample.
-    pub fn cut_geometry(&self, input: &str) -> Geometry {
-        let h = &self.signals;
-        let (nx, ny) = match h.fields().iter().find(|f| f.name == input).map(|f| f.shape) {
-            Some(FieldShape::Grid { nx, ny }) => (nx, ny),
-            _ => (1, 1),
-        };
-        let newest = |n: &str| {
-            h.fields()
-                .iter()
-                .find(|f| f.name == n)
-                .filter(|_| !h.is_empty())
-                .map(|f| f.frame(h.len() - 1))
-        };
-        h.coordinates()
-            .iter()
-            .filter(|c| c.of == input && c.axis < 2)
-            .fold(Geometry::cells(nx, ny), |g, c| match newest(&c.name) {
-                Some(f) => g.with_coordinate(c.axis, &c.name, f),
-                None => g,
-            })
-    }
-
-    /// A new cut filter through `input`: along x at four values spread over
-    /// its rows, each on a row so it reads it exactly.
-    pub fn default_cut(&self, name: &str, input: &str) -> FilterEntry {
-        let g = self.cut_geometry(input);
-        let ny = g.ny;
-        let mut rows: Vec<usize> = (0..4)
-            .map(|k| (((k as f64 + 0.5) / 4.0 * ny as f64) as usize).min(ny.max(1) - 1))
-            .collect();
-        rows.dedup();
-        let at: Vec<f64> = rows.iter().map(|&j| g.centres[1][j]).collect();
-        FilterEntry {
-            name: name.into(),
-            type_name: "cut".into(),
-            inputs: vec![input.into()],
-            settings: [
-                ("mode".to_string(), serde_json::Value::from("along_x")),
-                ("at".to_string(), serde_json::Value::from(at)),
-            ]
-            .into(),
-        }
-    }
-
     /// Replace the filters. All must be usable, or nothing changes and the
     /// problems are returned. The recorded history is kept and the filters
     /// are recomputed for it, using current parameter values.
@@ -819,7 +988,8 @@ impl Session {
             return Ok(());
         }
         // Replay the recorded outputs and fields through the new filters.
-        let old = std::mem::replace(&mut self.signals, History::new(Vec::new()));
+        drop(self.history_mut());
+        let old = self.replace_history(History::new(Vec::new()));
         self.rebuild_history();
         let outputs = self.output_names.len();
         let base = self.base_fields.len();
@@ -831,7 +1001,7 @@ impl Session {
             self.append_derived(t, &mut values);
             let frames: Vec<&[f64]> = old.fields()[..base].iter().map(|f| f.frame(k)).collect();
             let cuts = self.sample_cuts(&frames);
-            push(&mut self.signals, t, &values, &frames, &cuts);
+            self.push(t, &values, &frames, &cuts);
         }
         Ok(())
     }
@@ -850,15 +1020,59 @@ impl Session {
     }
 }
 
-/// Record one sample: scalar values, the frames of the fields before the
-/// cuts, then the cuts' frames.
-fn push(history: &mut History, index: f64, values: &[f64], before: &[&[f64]], cuts: &[Vec<f64>]) {
-    let frames: Vec<&[f64]> = before
+/// The 2D grids a cut filter can take: recorded grids that are not
+/// themselves coordinates (in a two-parameter sweep, every result).
+pub fn cut_inputs(h: &History) -> Vec<String> {
+    h.fields()
         .iter()
-        .copied()
-        .chain(cuts.iter().map(Vec::as_slice))
+        .filter(|f| matches!(f.shape, FieldShape::Grid { nx, ny } if nx >= 2 && ny >= 2))
+        .filter(|f| !h.coordinates().iter().any(|c| c.name == f.name))
+        .map(|f| f.name.clone())
+        .collect()
+}
+
+/// Where the cells of grid `input` lie, from the newest sample.
+pub fn cut_geometry(h: &History, input: &str) -> Geometry {
+    let (nx, ny) = match h.fields().iter().find(|f| f.name == input).map(|f| f.shape) {
+        Some(FieldShape::Grid { nx, ny }) => (nx, ny),
+        _ => (1, 1),
+    };
+    let newest = |n: &str| {
+        h.fields()
+            .iter()
+            .find(|f| f.name == n)
+            .filter(|_| !h.is_empty())
+            .map(|f| f.frame(h.len() - 1))
+    };
+    h.coordinates()
+        .iter()
+        .filter(|c| c.of == input && c.axis < 2)
+        .fold(Geometry::cells(nx, ny), |g, c| match newest(&c.name) {
+            Some(f) => g.with_coordinate(c.axis, &c.name, f),
+            None => g,
+        })
+}
+
+/// A new cut filter through `input`: along x at four values spread over
+/// its rows, each on a row so it reads it exactly.
+pub fn default_cut(h: &History, name: &str, input: &str) -> FilterEntry {
+    let g = cut_geometry(h, input);
+    let ny = g.ny;
+    let mut rows: Vec<usize> = (0..4)
+        .map(|k| (((k as f64 + 0.5) / 4.0 * ny as f64) as usize).min(ny.max(1) - 1))
         .collect();
-    history.push_sample(index, values, &frames);
+    rows.dedup();
+    let at: Vec<f64> = rows.iter().map(|&j| g.centres[1][j]).collect();
+    FilterEntry {
+        name: name.into(),
+        type_name: "cut".into(),
+        inputs: vec![input.into()],
+        settings: [
+            ("mode".to_string(), serde_json::Value::from("along_x")),
+            ("at".to_string(), serde_json::Value::from(at)),
+        ]
+        .into(),
+    }
 }
 
 /// The current value of every recorded field (empty if missing, which the
@@ -924,7 +1138,7 @@ mod tests {
     fn examples_load_and_plot_what_their_controls_ask_for() {
         let s = lorenz();
         assert_eq!(
-            s.signals.names(),
+            s.signals().names(),
             ["lorenz.xyz[0]", "lorenz.xyz[1]", "lorenz.xyz[2]"]
         );
         assert!(s.warnings.is_empty());
@@ -939,20 +1153,20 @@ mod tests {
         for _ in 0..300 {
             s.step().unwrap();
         }
-        let reference: Vec<_> = s.signals.points(0).to_vec();
+        let reference: Vec<_> = s.signals().points(0).to_vec();
 
         s.rewind_to(1.234);
         // Latest snapshot at or before 1.234 (snapshots every 0.1 s).
         assert!((s.time() - 1.2).abs() < 1e-9, "{}", s.time());
-        assert!(s.signals.points(0).last().unwrap().x <= s.time());
-        while s.signals.points(0).len() < reference.len() {
+        assert!(s.signals().points(0).last().unwrap().x <= s.time());
+        while s.signals().points(0).len() < reference.len() {
             s.step().unwrap();
         }
-        assert_eq!(s.signals.points(0), reference.as_slice());
+        assert_eq!(s.signals().points(0), reference.as_slice());
 
         s.rewind_to(0.0);
         assert_eq!(s.time(), 0.0);
-        assert_eq!(s.signals.points(0).len(), 1);
+        assert_eq!(s.signals().points(0).len(), 1);
         assert_eq!(s.history_range(), (0.0, 0.0));
     }
 
@@ -973,7 +1187,7 @@ mod tests {
 
         // Before the run starts, the plot's first point moves at once.
         s.set_param(id, "x0", 5.0).unwrap();
-        assert_eq!(s.signals.points(0)[0].y, 5.0);
+        assert_eq!(s.signals().points(0)[0].y, 5.0);
 
         for _ in 0..50 {
             s.step().unwrap();
@@ -982,8 +1196,8 @@ mod tests {
         assert!(s.time() > 0.0, "a running model is not restarted");
         s.restart().unwrap();
         assert_eq!(s.time(), 0.0);
-        assert_eq!(s.signals.points(0).len(), 1);
-        assert_eq!(s.signals.points(0)[0].y, -3.0);
+        assert_eq!(s.signals().points(0).len(), 1);
+        assert_eq!(s.signals().points(0)[0].y, -3.0);
         assert_eq!(s.history_range(), (0.0, 0.0));
     }
 
@@ -1048,8 +1262,8 @@ mod tests {
     }
 
     fn values(s: &Session, signal: &str) -> Vec<f64> {
-        let r = s.signals.resolve(signal).unwrap();
-        s.signals.values(r)
+        let r = s.signals().resolve(signal).unwrap();
+        s.signals().values(r)
     }
 
     /// A grid over the given `(key, range, points)`.
@@ -1076,15 +1290,15 @@ mod tests {
         let sw = s.sweep().unwrap();
         assert_eq!(sw.keys(), ["spring.w"]);
         assert!(!sw.unordered());
-        assert_eq!(s.signals.index(), "sample");
-        assert_eq!(s.signals.len(), 600);
-        assert!(!s.signals.unordered());
+        assert_eq!(s.signals().index(), "sample");
+        assert_eq!(s.signals().len(), 600);
+        assert!(!s.signals().unordered());
         // The swept parameter is a signal like the outputs.
         assert_eq!(
-            s.signals.names(),
+            s.signals().names(),
             ["spring.amplitude", "spring.lag", "spring.w"]
         );
-        assert_eq!(s.available().swept, ["spring.w"]);
+        assert_eq!(s.available(&s.signals()).swept, ["spring.w"]);
         let w = values(&s, "spring.w");
         assert_eq!((w[0], w[599]), (0.0, 3.0));
         let amp = values(&s, "spring.amplitude");
@@ -1106,7 +1320,7 @@ mod tests {
         s.set_sampling(grid_of(&[("spring.c", [0.1, 1.0], 10)]))
             .unwrap();
         assert_eq!(values(&s, "spring.c")[9], 1.0);
-        assert!(s.signals.resolve("spring.w").is_none());
+        assert!(s.signals().resolve("spring.w").is_none());
         assert!(s
             .set_sampling(grid_of(&[("spring.c", [1.0, 0.1], 10)]))
             .is_err());
@@ -1128,9 +1342,9 @@ mod tests {
         let sw = s.sweep().unwrap();
         assert_eq!(sw.plan.design, Design::Sobol);
         assert!(sw.unordered() && !sw.is_grid());
-        assert!(s.signals.unordered());
-        assert_eq!(s.signals.len(), 2000);
-        assert!(s.available().grids.is_empty());
+        assert!(s.signals().unordered());
+        assert_eq!(s.signals().len(), 2000);
+        assert!(s.available(&s.signals()).grids.is_empty());
         let (w, c, amp) = (
             values(&s, "spring.w"),
             values(&s, "spring.c"),
@@ -1155,7 +1369,7 @@ mod tests {
             points: None,
         });
         assert!(s.set_sampling(sampling).unwrap().is_empty());
-        assert_eq!(s.signals.len(), 64);
+        assert_eq!(s.signals().len(), 64);
         let m = values(&s, "spring.m");
         // The slider's range, one sample in each 64th of it.
         let mut slices: Vec<usize> = m
@@ -1182,9 +1396,10 @@ mod tests {
         ]))
         .unwrap();
         assert!(s.sweep().unwrap().is_grid());
-        assert!(s.signals.unordered());
-        assert_eq!(s.signals.len(), nx * ny);
-        let a = s.available();
+        assert!(s.signals().unordered());
+        assert_eq!(s.signals().len(), nx * ny);
+        let h = s.signals();
+        let a = s.available(&h);
         assert_eq!(
             a.scalars,
             [
@@ -1215,8 +1430,10 @@ mod tests {
                 "grid.spring.c"
             ]
         );
+        drop(h);
         let grid = |name: &str| {
-            let f = s.signals.fields().iter().find(|f| f.name == name).unwrap();
+            let h = s.signals();
+            let f = h.fields().iter().find(|f| f.name == name).unwrap();
             assert_eq!(f.shape, FieldShape::Grid { nx, ny });
             f.frame(0).to_vec()
         };
@@ -1261,7 +1478,7 @@ mod tests {
         assert_eq!(again.sweep(), s.sweep());
         assert_eq!(
             again
-                .signals
+                .signals()
                 .fields()
                 .iter()
                 .find(|f| f.name == "grid.spring.amplitude")
@@ -1273,10 +1490,10 @@ mod tests {
         // Back to one parameter: no grids, ordered samples.
         s.set_sampling(grid_of(&[("spring.w", [0.0, 3.0], 50)]))
             .unwrap();
-        assert_eq!(s.signals.len(), 50);
-        assert!(!s.signals.unordered());
-        assert!(s.available().coordinates.is_empty());
-        assert!(s.available().grids.is_empty());
+        assert_eq!(s.signals().len(), 50);
+        assert!(!s.signals().unordered());
+        assert!(s.available(&s.signals()).coordinates.is_empty());
+        assert!(s.available(&s.signals()).grids.is_empty());
         assert_eq!(values(&s, "half").len(), 50);
     }
 
@@ -1301,7 +1518,7 @@ mod tests {
             s.step().unwrap();
         }
         let e = values(&s, "energy");
-        assert_eq!(e.len(), s.signals.len());
+        assert_eq!(e.len(), s.signals().len());
         let drift = e.iter().map(|v| (v - e[0]).abs()).fold(0.0, f64::max);
         assert!(drift < 1e-9 * e[0], "energy drifted by {drift} of {}", e[0]);
 
@@ -1311,7 +1528,7 @@ mod tests {
         let ax2 = values(&s, "ax2");
         assert_eq!(ax2.len(), ax.len());
         assert!(ax.iter().zip(&ax2).all(|(x, y)| (x * x - y).abs() < 1e-15));
-        assert!(s.signals.resolve("energy").is_none());
+        assert!(s.signals().resolve("energy").is_none());
 
         // Problems leave everything as it was.
         let problems = s
@@ -1322,7 +1539,7 @@ mod tests {
             problems.iter().any(|p| p.starts_with("a.x:")),
             "{problems:?}"
         );
-        assert!(s.signals.resolve("ax2").is_some());
+        assert!(s.signals().resolve("ax2").is_some());
         // Saved as a filter that names its inputs (ADR 0032).
         let saved = s.save_json(1.0, None).unwrap();
         let file: serde_json::Value = serde_json::from_str(&saved).unwrap();
@@ -1353,11 +1570,12 @@ mod tests {
     #[test]
     fn cut_filters_cut_two_parameter_sweeps_into_lines() {
         let mut s = example("Resonance map");
-        let cut = s.default_cut("res", "grid.spring.amplitude");
+        let cut = default_cut(&s.signals(), "res", "grid.spring.amplitude");
         let mut filters = s.filters().to_vec();
         filters.push(cut.clone());
         s.set_filters(filters).unwrap();
-        let a = s.available();
+        let h = s.signals();
+        let a = s.available(&h);
         // Four cuts along w at fixed c, and their coordinate w.
         let lines: Vec<&str> = a
             .lines
@@ -1367,8 +1585,10 @@ mod tests {
             .collect();
         assert_eq!(lines, ["res[0]", "res[1]", "res[2]", "res[3]", "res.x"]);
         assert_eq!(a.axis_choices("res[0]"), ["t", "res.x"]);
+        drop(h);
         let grid = |name: &str| {
-            let f = s.signals.fields().iter().find(|f| f.name == name).unwrap();
+            let h = s.signals();
+            let f = h.fields().iter().find(|f| f.name == name).unwrap();
             f.frame(0).to_vec()
         };
         let (amp, c, w) = (
@@ -1381,12 +1601,11 @@ mod tests {
         let row = (0..120).find(|&j| c[j * 200] == at).unwrap();
         assert_eq!(grid("res[1]"), amp[row * 200..row * 200 + 200].to_vec());
         assert_eq!(w, grid("grid.spring.w")[..200].to_vec());
-        let label = s.signals.label(s.signals.resolve("res[1]").unwrap());
+        let h = s.signals();
+        let label = h.label(h.resolve("res[1]").unwrap());
         assert!(label.starts_with("spring.c = "), "{label}");
-        assert_eq!(
-            s.signals.label(s.signals.resolve("res.x").unwrap()),
-            "spring.w"
-        );
+        assert_eq!(h.label(h.resolve("res.x").unwrap()), "spring.w");
+        drop(h);
         // Saved with its input.
         let saved = s.save_json(1.0, None).unwrap();
         let again = Session::load("again", &saved, &registry()).unwrap();
@@ -1404,18 +1623,20 @@ mod tests {
     #[test]
     fn field_outputs_are_recorded_whole_and_offered_to_views() {
         let mut s = example("rod");
-        let a = s.available();
+        let h = s.signals();
+        let a = s.available(&h);
         assert!(a.scalars.is_empty());
         assert_eq!(a.grids, ["rod.temperature", "rod.position"]);
         assert_eq!(a.block_types, ["eq.heat_rod"]);
+        drop(h);
         for _ in 0..20 {
             s.step().unwrap();
         }
-        assert_eq!(s.signals.len(), 21);
-        assert_eq!(s.signals.fields()[0].frame(20).len(), 50);
+        assert_eq!(s.signals().len(), 21);
+        assert_eq!(s.signals().fields()[0].frame(20).len(), 50);
         // The hot spot cools.
         let peak = |k: usize| {
-            s.signals.fields()[0]
+            s.signals().fields()[0]
                 .frame(k)
                 .iter()
                 .cloned()
@@ -1426,8 +1647,8 @@ mod tests {
         // Rewind and derived signals keep the frames in step with the times.
         s.rewind_to(0.5);
         let frames = |s: &Session| -> Vec<Vec<f64>> {
-            (0..s.signals.len())
-                .map(|k| s.signals.fields()[0].frame(k).to_vec())
+            (0..s.signals().len())
+                .map(|k| s.signals().fields()[0].frame(k).to_vec())
                 .collect()
         };
         let before = frames(&s);
@@ -1436,8 +1657,8 @@ mod tests {
         assert_eq!(frames(&s), before);
 
         let s = example("Orbiting");
-        assert_eq!(s.available().points, ["disc.positions"]);
-        assert_eq!(s.signals.fields()[0].frame(0).len(), 400);
+        assert_eq!(s.available(&s.signals()).points, ["disc.positions"]);
+        assert_eq!(s.signals().fields()[0].frame(0).len(), 400);
     }
 
     #[test]

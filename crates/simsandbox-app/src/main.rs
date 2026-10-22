@@ -13,6 +13,7 @@
 mod app;
 mod examples;
 mod filters;
+mod live;
 mod log;
 mod pacing;
 mod session;

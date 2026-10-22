@@ -2,17 +2,19 @@
 //! and watch it plot live.
 
 use crate::examples::{registry, EXAMPLES};
+use crate::live::{Event, Live, Model};
 use crate::log::{Kind as LogKind, Log};
-use crate::pacing::Pacer;
 use crate::session::{ParamRow, Session};
 use crate::views::Views;
 use eframe::egui;
 use simsandbox_core::registry::Registry;
-use simsandbox_core::SimError;
-use simsandbox_views::{Available, ViewState, ViewType};
+use simsandbox_views::{Available, History, ViewState, ViewType};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// A step running longer than this is reported in the toolbar.
+const SLOW_STEP: Duration = Duration::from_millis(500);
 
 /// A screenshot request for documentation and visual checks
 /// (`--screenshot FILE --after SECONDS`).
@@ -23,10 +25,9 @@ pub struct ScreenshotRequest {
 
 pub struct SimApp {
     registry: Registry,
-    session: Option<Session>,
-    pacer: Pacer,
-    running: bool,
-    /// Requested speed; the pacer runs at it while `running`.
+    /// The open model, running on its worker thread (ADR 0035).
+    session: Option<Live>,
+    /// Requested speed, sent to the worker when changed.
     speed: f64,
     error: Option<String>,
     /// Success messages, e.g. "Saved to …".
@@ -39,11 +40,12 @@ pub struct SimApp {
     path: Option<PathBuf>,
     /// Text being typed into parameter fields, keyed by `"block.param"`.
     param_edits: HashMap<String, String>,
+    /// Values of sliders being dragged that apply on release (ADR 0037).
+    pending: HashMap<String, f64>,
     /// The equation editor window, when open.
     editor: Option<Editor>,
     /// The derived-signals window, when open.
     signals_editor: Option<SignalsEditor>,
-    last_frame: Option<Instant>,
     rewind_t: f64,
     views: Views,
     started: Instant,
@@ -61,42 +63,40 @@ impl SimApp {
         let mut app = Self {
             registry: registry(),
             session: None,
-            pacer: Pacer::new(1.0),
-            running: false,
             speed: 1.0,
             error: None,
             log: Log::default(),
             logged_error: None,
             path: None,
             param_edits: HashMap::new(),
+            pending: HashMap::new(),
             editor: None,
             signals_editor: None,
-            last_frame: None,
             rewind_t: 0.0,
             views: Views::new(crate::examples::view_registry()),
             started: Instant::now(),
             screenshot,
             screenshot_requested: false,
         };
+        // Hobbyists first (ADR 0009): a model runs as soon as it opens.
         match path {
             Some(p) => app.open_path(&p),
             None => app.open_text(EXAMPLES[0].name, EXAMPLES[0].text),
         }
-        // Hobbyists first (ADR 0009): a model runs as soon as it opens.
-        app.running = app.session.is_some();
         // A --view flag overrides the view saved in the file.
-        if let (Some(v), Some(session)) = (view, &app.session) {
+        if let (Some(v), Some(live)) = (view, &app.session) {
             let (name, preset) = match v {
                 "phase" => ("plot.xy", 1),
                 "3d" => ("plot.3d", 0),
                 _ => ("plot.xy", 0),
             };
-            app.views.show_only(name, preset, &session.available());
+            let (m, h) = (live.model(), live.history());
+            app.views.show_only(name, preset, &m.available(&h));
         }
         // A --window flag opens a window at once (for headless checks).
         match (window, &app.session) {
-            (Some("signals"), Some(session)) => {
-                app.signals_editor = Some(SignalsEditor::new(session));
+            (Some("signals"), Some(live)) => {
+                app.signals_editor = Some(SignalsEditor::new(&live.model()));
             }
             (Some("equations"), _) => {
                 app.editor = Some(Editor {
@@ -135,7 +135,6 @@ impl SimApp {
         }
         if let Some(path) = dialog.pick_file() {
             self.open_path(&path.to_string_lossy());
-            self.running = self.session.is_some() && self.error.is_none();
         }
     }
 
@@ -151,11 +150,11 @@ impl SimApp {
     /// Save to a file chosen in the system save dialog, which asks before
     /// overwriting.
     fn save_as_dialog(&mut self) {
-        let Some(session) = &self.session else {
+        let Some(live) = &self.session else {
             return;
         };
         let name = self.path.as_deref().and_then(Path::file_name).map_or_else(
-            || default_file_name(&session.title),
+            || default_file_name(&live.model().title),
             |n| n.to_string_lossy().into_owned(),
         );
         let mut dialog = rfd::FileDialog::new()
@@ -170,72 +169,52 @@ impl SimApp {
         }
     }
 
+    /// Open a model and start it running.
     fn open_text(&mut self, title: &str, text: &str) {
-        match Session::load(title, text, &self.registry) {
-            Ok(s) => {
+        self.open_text_with(title, text, true);
+    }
+
+    /// Open a model; it runs at once if `running` (sweeps are evaluated
+    /// either way). The previous model's worker stops.
+    fn open_text_with(&mut self, title: &str, text: &str, running: bool) {
+        match Session::load_deferred(title, text, &self.registry) {
+            Ok(mut s) => {
                 self.speed = s.file.controls.speed.unwrap_or(1.0);
-                self.session = Some(s);
+                let w = {
+                    let h = s.signals();
+                    self.views.open(&s.available(&h), &s.file.controls.views)
+                };
+                s.warnings.extend(w);
+                for w in &s.warnings {
+                    self.log.warn(format!("{title}: {w}"));
+                }
+                let running = running && s.sweep().is_none();
+                self.session = Some(Live::start(s, self.speed, running));
                 self.error = None;
                 self.param_edits.clear();
+                self.pending.clear();
                 self.log.info(format!("Opened {title}"));
-                if let Some(s) = self.session.as_mut() {
-                    let w = self.views.open(&s.available(), &s.file.controls.views);
-                    s.warnings.extend(w);
-                    for w in &s.warnings {
-                        self.log.warn(format!("{title}: {w}"));
-                    }
-                }
                 self.rewind_t = 0.0;
-                self.pacer.reset();
             }
             Err(e) => self.error = Some(format!("{title}: {e}")),
         }
     }
 
-    /// Advance the simulation for this frame (ADR 0010).
-    fn advance(&mut self) {
-        let now = Instant::now();
-        let elapsed = self
-            .last_frame
-            .map_or(0.0, |t| now.duration_since(t).as_secs_f64());
-        self.last_frame = Some(now);
-        let Some(session) = self.session.as_mut() else {
+    /// Take the worker's messages into the log and follow the run's time.
+    fn poll(&mut self, ctx: &egui::Context) {
+        let Some(live) = &self.session else {
             return;
         };
-        if session.sweep().is_some() {
-            return;
-        }
-        self.pacer.speed = if self.running { self.speed } else { 0.0 };
-        let dt = session.dt;
-        let work_start = Instant::now();
-        let result = self.pacer.frame(
-            elapsed,
-            dt,
-            || work_start.elapsed(),
-            || {
-                session.step().map_err(Stop::Failed)?;
-                if session.take_end_reached() {
-                    return Err(Stop::EndReached);
-                }
-                Ok(())
-            },
-        );
-        match result {
-            Ok(_) => {}
-            Err(Stop::EndReached) => {
-                self.running = false;
-                self.log.info(format!(
-                    "Paused at the file's end time t = {:.3} s; Run continues",
-                    session.time()
-                ));
-            }
-            Err(Stop::Failed(e)) => {
-                self.running = false;
-                self.error = Some(format!("stopped at t = {:.4}: {e}", session.time()));
+        live.set_repaint(ctx);
+        for e in live.take_events() {
+            match e {
+                Event::Info(t) => self.log.info(t),
+                Event::Error(t) => self.error = Some(t),
             }
         }
-        if self.running {
-            self.rewind_t = session.time();
+        let st = live.status();
+        if st.running {
+            self.rewind_t = st.time;
         }
     }
 
@@ -248,7 +227,6 @@ impl SimApp {
                         if self.error.is_none() {
                             self.path = None;
                         }
-                        self.running = true;
                         ui.close();
                     }
                 }
@@ -296,32 +274,35 @@ impl SimApp {
         });
         self.shortcuts(ui);
 
-        let Some(session) = self.session.as_mut() else {
+        let Some(live) = self.session.as_ref() else {
             return;
         };
+        let m = live.model();
+        let st = live.status();
         ui.horizontal(|ui| {
-            ui.heading(&session.title);
+            ui.heading(&m.title);
             // One line, so a long description cannot widen the window or push
             // the toolbar down; egui shows the whole text on hover when it is cut.
-            if let Some(d) = &session.description {
+            if let Some(d) = &m.description {
                 ui.add(egui::Label::new(d.as_str()).truncate());
             }
         });
         // Models with no states are swept, not run (ADR 0019, ADR 0027,
         // ADR 0028).
-        if let Some(sw) = session.sweep().cloned() {
-            self.running = false;
-            match sweep_controls(ui, session, &sw) {
+        if let Some(sw) = m.sweep.clone() {
+            match sweep_controls(ui, live, &m, &sw) {
                 Ok(None) => {}
                 Ok(Some(notes)) => {
                     for n in notes {
                         self.log.warn(n);
                     }
-                    let now = session.sweep().expect("still swept");
-                    if structure(now) != structure(&sw) {
+                    let now = live.model();
+                    let now_sweep = now.sweep().expect("still swept");
+                    if structure(now_sweep) != structure(&sw) {
                         // Other signals, grids or drawing: the views start over.
-                        self.views.open(&session.available(), &[]);
-                        self.log.info(if now.is_grid() {
+                        let h = live.history();
+                        self.views.open(&now.available(&h), &[]);
+                        self.log.info(if now_sweep.is_grid() {
                             "Swept on a grid over two parameters: every signal is also a \
                              grid; views reset"
                         } else {
@@ -332,78 +313,99 @@ impl SimApp {
                 Err(e) => self.error = Some(format!("sweep: {e}")),
             }
         }
-        if session.sweep().is_none() {
+        if m.sweep.is_none() {
             ui.horizontal(|ui| {
-                let label = if self.running { "⏸ Pause" } else { "▶ Run" };
+                let label = if st.running { "⏸ Pause" } else { "▶ Run" };
                 if ui.button(label).clicked() {
-                    self.running = !self.running;
-                    self.pacer.reset();
+                    live.set_running(!st.running);
                 }
                 if ui
                     .button("⏮ Restart")
                     .on_hover_text("Start again from t = 0 with the current parameter values")
                     .clicked()
                 {
-                    if let Err(e) = session.restart() {
-                        self.error = Some(format!("restart failed: {e}"));
-                    }
+                    live.send(None, |s, c| {
+                        if let Err(e) = s.restart() {
+                            c.error(format!("restart failed: {e}"));
+                        }
+                        c.reset_pacer();
+                    });
                     self.rewind_t = 0.0;
-                    self.pacer.reset();
                 }
                 ui.separator();
-                ui.add(
-                    egui::Slider::new(&mut self.speed, 0.01..=100.0)
-                        .logarithmic(true)
-                        .clamping(egui::SliderClamping::Never)
-                        .suffix("×")
-                        .text("speed"),
-                )
-                .on_hover_text("Simulated seconds per wall-clock second");
+                let r = ui
+                    .add(
+                        egui::Slider::new(&mut self.speed, 0.01..=100.0)
+                            .logarithmic(true)
+                            .clamping(egui::SliderClamping::Never)
+                            .suffix("×")
+                            .text("speed"),
+                    )
+                    .on_hover_text("Simulated seconds per wall-clock second");
                 if self.speed <= 0.0 || !self.speed.is_finite() {
                     self.speed = 0.01;
                 }
+                if r.changed() {
+                    live.set_speed(self.speed);
+                }
                 ui.separator();
                 ui.label("step");
-                ui.add(
-                    egui::DragValue::new(&mut session.dt)
-                        .range(1e-6..=10.0)
-                        .speed(0.001)
-                        .suffix(" s"),
-                )
-                .on_hover_text("Communication step: simulated time per step");
+                let mut dt = m.dt;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut dt)
+                            .range(1e-6..=10.0)
+                            .speed(0.001)
+                            .suffix(" s"),
+                    )
+                    .on_hover_text("Communication step: simulated time per step")
+                    .changed()
+                {
+                    live.send(Some("dt"), move |s, _| s.dt = dt);
+                }
                 ui.separator();
-                ui.monospace(format!("t = {:.3} s", session.time()));
+                ui.monospace(format!("t = {:.3} s", st.time));
             });
         }
         ui.horizontal(|ui| {
-            if let Some(l) = session.labels() {
+            if let Some(l) = m.labels {
                 ui.label(format!("Speed class: {:?}", l.speed))
                     .on_hover_text("RealTime keeps a live loop; Responsive takes seconds; Batch runs as a job");
                 ui.label(format!("Accuracy: {:?}", l.accuracy)).on_hover_text(
                     "Qualitative: right behaviour, untrusted numbers; Quantitative: numerically controlled; Verified: error estimated for this case",
                 );
             }
-            if self.running && self.pacer.is_limited() {
+            if st.limited {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
                     format!(
                         "running at {:.2}× of the requested {:.2}×",
-                        self.pacer.achieved_speed(),
-                        self.speed
+                        st.achieved, self.speed
                     ),
                 );
+            }
+            if let Some(d) = live.stepping_for().filter(|d| *d >= SLOW_STEP) {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!("a step has been running for {:.1} s", d.as_secs_f64()),
+                )
+                .on_hover_text("Commands, including Pause, take effect when it ends");
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            }
+            if let Some((done, total)) = st.sweep {
+                ui.weak(format!("evaluating sample {done} of {total}"));
             }
         });
     }
 
     fn rewind_bar(&mut self, ui: &mut egui::Ui) {
-        let Some(session) = self.session.as_mut() else {
+        let Some(live) = self.session.as_ref() else {
             return;
         };
-        if session.sweep().is_some() {
+        if live.model().sweep.is_some() {
             return;
         }
-        let (first, last) = session.history_range();
+        let (first, last) = live.status().history_range;
         ui.horizontal(|ui| {
             ui.label("Rewind");
             ui.spacing_mut().slider_width = (ui.available_width() - 120.0).max(100.0);
@@ -412,12 +414,17 @@ impl SimApp {
                 egui::Slider::new(&mut self.rewind_t, first..=last.max(first + 1e-9)).suffix(" s"),
             );
             if r.drag_started() || r.changed() {
-                self.running = false;
+                live.set_running(false);
             }
             if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                session.rewind_to(self.rewind_t);
-                self.rewind_t = session.time();
-                self.pacer.reset();
+                let t = self.rewind_t;
+                if let Ok(now) = live.call(move |s, c| {
+                    s.rewind_to(t);
+                    c.reset_pacer();
+                    s.time()
+                }) {
+                    self.rewind_t = now;
+                }
             }
         })
         .response
@@ -493,11 +500,14 @@ impl SimApp {
     /// The model's views as tiles, each with its slot pickers, plus a "More
     /// views…" menu for any other view that fits (ADR 0016).
     fn plot(&mut self, ui: &mut egui::Ui) {
-        let Some(session) = &self.session else {
+        let Some(live) = &self.session else {
             ui.centered_and_justified(|ui| ui.label("Open an example or a model file."));
             return;
         };
-        let available = session.available();
+        let m = live.model();
+        // Read while drawing; the worker keeps stepping and appends later.
+        let history = live.history();
+        let available = m.available(&history);
         let views = &mut self.views;
         ui.horizontal(|ui| {
             ui.menu_button("More views…", |ui| {
@@ -535,7 +545,7 @@ impl SimApp {
                 )
                 .clicked()
             {
-                self.signals_editor = Some(SignalsEditor::new(session));
+                self.signals_editor = Some(SignalsEditor::new(&m));
             }
             ui.weak("Click a view's name to edit its style in the side panel");
         });
@@ -605,8 +615,8 @@ impl SimApp {
                         if std::mem::take(&mut swap) {
                             tile.state.swap(t);
                         }
-                        slot_editors(ui, t, &mut tile.state, &available, &session.signals);
-                        tile.state.show(ui, t, &session.signals);
+                        slot_editors(ui, t, &mut tile.state, &available, &history);
+                        tile.state.show(ui, t, &history);
                     });
             });
         }
@@ -629,19 +639,20 @@ impl SimApp {
         let Some((t, state)) = self.views.selected_mut() else {
             return;
         };
-        let Some(session) = self.session.as_ref() else {
+        let Some(live) = self.session.as_ref() else {
             return;
         };
+        let history = live.history();
         // Only the properties that mean something here (ADR 0025).
         let context = simsandbox_views::Context {
-            history: &session.signals,
+            history: &history,
             bind: &state.bind,
         };
         let shown: Vec<_> = t.style.iter().filter(|p| (p.applies)(&context)).collect();
         ui.add_space(10.0);
         ui.heading(format!("View: {}", t.label));
         // The view's own picks, such as profile cuts (ADR 0029).
-        state.edit_selection(ui, t, &session.signals);
+        state.edit_selection(ui, t, &history);
         egui::Grid::new(("style", t.name))
             .num_columns(3)
             .spacing([6.0, 4.0])
@@ -665,12 +676,13 @@ impl SimApp {
     }
 
     fn save_to(&mut self, path: &Path) {
-        let Some(session) = self.session.as_mut() else {
+        let Some(live) = self.session.as_ref() else {
             return;
         };
-        let result = session
-            .save_json(self.speed, Some(self.views.entries()))
+        let result = self
+            .saved_text()
             .and_then(|text| std::fs::write(path, text).map_err(|e| e.to_string()));
+        let _ = live;
         match result {
             Ok(()) => {
                 self.error = None;
@@ -679,6 +691,14 @@ impl SimApp {
             }
             Err(e) => self.error = Some(format!("{}: {e}", path.display())),
         }
+    }
+
+    /// The open model as a file, with the current parameters, step, speed
+    /// and views.
+    fn saved_text(&self) -> Result<String, String> {
+        let live = self.session.as_ref().ok_or("no model is open")?;
+        let (speed, views) = (self.speed, self.views.entries());
+        live.call(move |s, _| s.save_json(speed, Some(views)))?
     }
 
     fn shortcuts(&mut self, ui: &mut egui::Ui) {
@@ -699,19 +719,20 @@ impl SimApp {
     /// Typed entry for every parameter, plus opt-in sliders (ADR 0011) whose
     /// choices are saved in `controls` (ADR 0012).
     fn param_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(session) = self.session.as_mut() else {
+        let Some(live) = self.session.as_ref() else {
             return;
         };
+        let m = live.model();
         let mut fusion = None;
-        if session.file.blocks.len() > 1 {
-            fusion = solving_section(ui, session);
+        if m.file.blocks.len() > 1 {
+            fusion = solving_section(ui, &m);
         }
         ui.heading("Parameters");
-        let rows = session.params();
         let mut changes: Vec<(ParamRow, f64)> = Vec::new();
+        let mut controls: Vec<(String, simsandbox_file::ParamControl)> = Vec::new();
         {
             let mut blocks: Vec<(String, Vec<ParamRow>)> = Vec::new();
-            for row in rows {
+            for row in m.params.iter().cloned() {
                 let name = row.key.split_once('.').map_or("", |(b, _)| b).to_string();
                 match blocks.last_mut() {
                     Some((b, list)) if *b == name => list.push(row),
@@ -720,7 +741,7 @@ impl SimApp {
             }
             for (block_name, rows) in blocks {
                 ui.add_space(6.0);
-                let typed = session
+                let typed = m
                     .file
                     .blocks
                     .iter()
@@ -750,37 +771,47 @@ impl SimApp {
                         for row in rows {
                             param_row(
                                 ui,
-                                session,
+                                &m,
                                 &row,
-                                &mut changes,
-                                &mut self.param_edits,
-                                &mut self.error,
+                                Edits {
+                                    changes: &mut changes,
+                                    controls: &mut controls,
+                                    text: &mut self.param_edits,
+                                    pending: &mut self.pending,
+                                    error: &mut self.error,
+                                },
                             );
                         }
                     });
             }
         }
 
+        for (key, control) in controls {
+            live.send(None, move |s, _| {
+                s.file.controls.params.insert(key, control);
+            });
+        }
         for (row, v) in changes {
-            match session.set_param(row.block, &row.name, v) {
-                Ok(()) => {
-                    self.error = None;
-                    // A typed value outside the slider range widens it (ADR 0011).
-                    if let Some(c) = session.file.controls.params.get_mut(&row.key) {
-                        if c.slider {
-                            let [lo, hi] = c.range.unwrap_or(row.suggested);
-                            if v < lo || v > hi {
-                                c.range = Some([lo.min(v), hi.max(v)]);
+            let key = row.key.clone();
+            live.send(Some(&format!("param:{key}")), move |s, c| {
+                match s.set_param(row.block, &row.name, v) {
+                    Ok(()) => {
+                        // A typed value outside the slider range widens it (ADR 0011).
+                        if let Some(ctl) = s.file.controls.params.get_mut(&row.key) {
+                            if ctl.slider {
+                                let [lo, hi] = ctl.range.unwrap_or(row.suggested);
+                                if v < lo || v > hi {
+                                    ctl.range = Some([lo.min(v), hi.max(v)]);
+                                }
                             }
                         }
+                        if row.initial_condition && s.time() > 0.0 {
+                            c.info(format!("{} changed: press Restart to apply it", row.key));
+                        }
                     }
-                    if row.initial_condition && session.time() > 0.0 {
-                        self.log
-                            .info(format!("{} changed: press Restart to apply it", row.key));
-                    }
+                    Err(e) => c.error(format!("{}: {e}", row.key)),
                 }
-                Err(e) => self.error = Some(format!("{}: {e}", row.key)),
-            }
+            });
         }
         if let Some(on) = fusion {
             self.set_fusion(on);
@@ -831,38 +862,48 @@ impl SimApp {
     /// The Data window: the model's filters (ADR 0030, ADR 0032), derived
     /// expressions and cuts, edited together and applied at once.
     fn signals_window(&mut self, ctx: &egui::Context) {
-        let (Some(ed), Some(session)) = (self.signals_editor.as_mut(), self.session.as_mut())
-        else {
+        let (Some(ed), Some(live)) = (self.signals_editor.as_mut(), self.session.as_ref()) else {
             return;
         };
         let mut open = true;
         let (mut apply, mut cancel) = (false, false);
-        egui::Window::new("Data")
-            .open(&mut open)
-            .default_width(640.0)
-            .min_width(480.0)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(520.0)
-                    .show(ui, |ui| {
-                        data_editor(ui, ed, session);
+        {
+            let history = live.history();
+            egui::Window::new("Data")
+                .open(&mut open)
+                .default_width(640.0)
+                .min_width(480.0)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(520.0)
+                        .show(ui, |ui| {
+                            data_editor(ui, ed, &history);
+                        });
+                    for p in &ed.problems {
+                        ui.colored_label(ui.visuals().error_fg_color, p);
+                    }
+                    ui.horizontal(|ui| {
+                        apply = ui.button("Apply").clicked();
+                        cancel = ui.button("Cancel").clicked();
                     });
-                for p in &ed.problems {
-                    ui.colored_label(ui.visuals().error_fg_color, p);
-                }
-                ui.horizontal(|ui| {
-                    apply = ui.button("Apply").clicked();
-                    cancel = ui.button("Cancel").clicked();
                 });
-            });
+        }
         if cancel || !open {
             self.signals_editor = None;
         } else if apply {
-            let before: Vec<String> = session.filters().iter().map(|f| f.name.clone()).collect();
-            match session.set_filters(ed.entries()) {
-                Ok(()) => {
+            let before: Vec<String> = live
+                .model()
+                .filters
+                .iter()
+                .map(|f| f.name.clone())
+                .collect();
+            let entries = ed.entries();
+            match live.call(move |s, _| s.set_filters(entries)) {
+                Ok(Ok(())) => {
                     // A new cut filter opens a profile of its cuts.
-                    let available = session.available();
+                    let m = live.model();
+                    let history = live.history();
+                    let available = m.available(&history);
                     for c in &ed.cuts {
                         if before.contains(&c.name) {
                             continue;
@@ -880,7 +921,8 @@ impl SimApp {
                     self.signals_editor = None;
                     self.log.info("Data filters applied");
                 }
-                Err(p) => ed.problems = p,
+                Ok(Err(p)) => ed.problems = p,
+                Err(e) => ed.problems = vec![e],
             }
         }
     }
@@ -933,7 +975,6 @@ impl SimApp {
                 if block.is_none() {
                     self.path = None;
                 }
-                self.running = true;
                 self.editor = None;
                 self.log.info("Equations applied");
             }
@@ -943,14 +984,14 @@ impl SimApp {
     /// Turn automatic fusion on or off (ADR 0023). The model is rebuilt from
     /// its saved form, so the run starts again at t = 0.
     fn set_fusion(&mut self, on: bool) {
-        let Some(session) = self.session.as_mut() else {
+        let Some(live) = self.session.as_ref() else {
             return;
         };
-        let result = session
-            .save_json(self.speed, Some(self.views.entries()))
-            .and_then(|text| {
-                simsandbox_file::ModelFile::from_json(&text).map_err(|e| e.to_string())
-            });
+        let title = live.model().title.clone();
+        let running = live.status().running;
+        let result = self.saved_text().and_then(|text| {
+            simsandbox_file::ModelFile::from_json(&text).map_err(|e| e.to_string())
+        });
         let mut file = match result {
             Ok((file, _)) => file,
             Err(e) => {
@@ -963,12 +1004,9 @@ impl SimApp {
         } else {
             simsandbox_file::Fusion::Off
         };
-        let title = session.title.clone();
         let path = self.path.clone();
-        let running = self.running;
-        self.open_text(&title, &file.to_json());
+        self.open_text_with(&title, &file.to_json(), running);
         self.path = path;
-        self.running = running;
         self.log.info(if on {
             "Connected equation blocks are solved together; the run restarted"
         } else {
@@ -983,8 +1021,9 @@ impl SimApp {
         block: &str,
         lines: Vec<String>,
     ) -> Result<(String, String), String> {
-        let Some(session) = self.session.as_mut() else {
-            return Err("no model is open".into());
+        let title = match &self.session {
+            Some(live) => live.model().title.clone(),
+            None => return Err("no model is open".into()),
         };
         let set = simsandbox_eq::EquationSet::parse(block, &lines).map_err(|e| e.to_string())?;
         let keep: Vec<String> = simsandbox_eq::OdeSystem::spec(&set)
@@ -992,7 +1031,7 @@ impl SimApp {
             .iter()
             .map(|p| p.name.clone())
             .collect();
-        let text = session.save_json(self.speed, Some(self.views.entries()))?;
+        let text = self.saved_text()?;
         let (mut file, _) =
             simsandbox_file::ModelFile::from_json(&text).map_err(|e| e.to_string())?;
         let entry = file
@@ -1031,7 +1070,7 @@ impl SimApp {
                 file.sample = None;
             }
         }
-        Ok((session.title.clone(), file.to_json()))
+        Ok((title, file.to_json()))
     }
 
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
@@ -1039,7 +1078,6 @@ impl SimApp {
         if let Some(f) = dropped.first() {
             let path = f.path().to_string_lossy().into_owned();
             self.open_path(&path);
-            self.running = self.session.is_some() && self.error.is_none();
         }
     }
 
@@ -1072,7 +1110,7 @@ impl eframe::App for SimApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_dropped_files(&ctx);
-        self.advance();
+        self.poll(&ctx);
         self.equation_editor(&ctx);
         self.signals_window(&ctx);
 
@@ -1103,9 +1141,6 @@ impl eframe::App for SimApp {
         }
         egui::CentralPanel::default().show(ui, |ui| self.plot(ui));
 
-        if self.running {
-            ctx.request_repaint();
-        }
         self.handle_screenshot(&ctx);
     }
 }
@@ -1113,7 +1148,7 @@ impl eframe::App for SimApp {
 /// How the model's blocks are solved (ADR 0023): the automatic-fusion switch
 /// and the groups solved together. Returns the switch's new value if the
 /// user changed it.
-fn solving_section(ui: &mut egui::Ui, session: &Session) -> Option<bool> {
+fn solving_section(ui: &mut egui::Ui, session: &Model) -> Option<bool> {
     ui.heading("Solving");
     let mut auto = session.file.fusion == simsandbox_file::Fusion::Auto;
     let changed = ui
@@ -1158,17 +1193,23 @@ fn log_colour(visuals: &egui::Visuals, kind: LogKind, bright: bool) -> egui::Col
     }
 }
 
+/// What the parameter panel collects from its rows this frame.
+struct Edits<'a> {
+    /// New values to apply.
+    changes: &'a mut Vec<(ParamRow, f64)>,
+    /// Slider choices and ranges to save in `controls` (ADR 0012).
+    controls: &'a mut Vec<(String, simsandbox_file::ParamControl)>,
+    /// Text being typed, by field.
+    text: &'a mut HashMap<String, String>,
+    /// Values of sliders being dragged that apply on release (ADR 0037).
+    pending: &'a mut HashMap<String, f64>,
+    error: &'a mut Option<String>,
+}
+
 /// One parameter: name, typed entry, unit, slider toggle; then the
 /// slider and its range when enabled.
-fn param_row(
-    ui: &mut egui::Ui,
-    session: &mut Session,
-    row: &ParamRow,
-    changes: &mut Vec<(ParamRow, f64)>,
-    edits: &mut HashMap<String, String>,
-    error: &mut Option<String>,
-) {
-    let control = session
+fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
+    let mut control = m
         .file
         .controls
         .params
@@ -1184,8 +1225,8 @@ fn param_row(
     }
     ui.label(&row.name).on_hover_text(hover);
 
-    if let Some(v) = number_entry(ui, &row.key, row.value, edits, error) {
-        changes.push((row.clone(), v));
+    if let Some(v) = number_entry(ui, &row.key, row.value, edits.text, edits.error) {
+        edits.changes.push((row.clone(), v));
     }
 
     ui.horizontal(|ui| {
@@ -1194,39 +1235,32 @@ fn param_row(
             ui.weak("↻")
                 .on_hover_text("Initial condition: applies on Restart");
         }
-        if session.sweep().is_some_and(|s| s.keys().contains(&row.key)) {
+        if m.sweep().is_some_and(|s| s.keys().contains(&row.key)) {
             ui.weak("swept")
                 .on_hover_text("Swept: its own value is not used while sweeping");
         }
     });
-    let mut slider = control.slider;
-    ui.checkbox(&mut slider, "slider");
+    let before = control.clone();
+    ui.checkbox(&mut control.slider, "slider");
     ui.end_row();
-    if slider != control.slider {
-        session
-            .file
-            .controls
-            .params
-            .entry(row.key.clone())
-            .or_default()
-            .slider = slider;
-    }
 
-    if slider {
-        let entry = session
-            .file
-            .controls
-            .params
-            .entry(row.key.clone())
-            .or_default();
-        let [mut lo, mut hi] = entry.range.unwrap_or(row.suggested);
-        ui.label("");
-        let mut v = row.value;
-        if ui
-            .add(egui::Slider::new(&mut v, lo..=hi).show_value(false))
-            .changed()
-        {
-            changes.push((row.clone(), v));
+    if control.slider {
+        let [mut lo, mut hi] = control.range.unwrap_or(row.suggested);
+        let pending = edits.pending.get(&row.key).copied();
+        if pending.is_some() {
+            ui.weak("pending").on_hover_text(
+                "This model is not real-time: the value applies when you let go (ADR 0037)",
+            );
+        } else {
+            ui.label("");
+        }
+        let mut v = pending.unwrap_or(row.value);
+        let r = ui.add(egui::Slider::new(&mut v, lo..=hi).show_value(false));
+        if apply_now(m.real_time, r.changed(), r.dragged(), r.drag_stopped()) {
+            edits.pending.remove(&row.key);
+            edits.changes.push((row.clone(), v));
+        } else if r.changed() {
+            edits.pending.insert(row.key.clone(), v);
         }
         ui.weak("range");
         ui.horizontal(|ui| {
@@ -1234,10 +1268,23 @@ fn param_row(
             ui.weak("to");
             let b = ui.add(egui::DragValue::new(&mut hi).speed(0.1));
             if (a.changed() || b.changed()) && lo < hi {
-                entry.range = Some([lo, hi]);
+                control.range = Some([lo, hi]);
             }
         });
         ui.end_row();
+    }
+    if control != before {
+        edits.controls.push((row.key.clone(), control));
+    }
+}
+
+/// Whether a slider's value applies now (ADR 0037): on every change for a
+/// real-time model, otherwise when the drag ends (or on a click or key).
+fn apply_now(real_time: bool, changed: bool, dragged: bool, drag_stopped: bool) -> bool {
+    if real_time {
+        changed
+    } else {
+        drag_stopped || (changed && !dragged)
     }
 }
 
@@ -1289,11 +1336,12 @@ fn structure(sw: &crate::session::Sweep) -> (Vec<String>, bool, bool) {
 /// Returns the notes of an applied change, or why it was refused.
 fn sweep_controls(
     ui: &mut egui::Ui,
-    session: &mut Session,
+    live: &Live,
+    m: &Model,
     sw: &crate::session::Sweep,
 ) -> Result<Option<Vec<String>>, String> {
     use simsandbox_file::{Design, SweepControl, DEFAULT_SAMPLE_COUNT, DEFAULT_SEED, MAX_SAMPLES};
-    let rows = session.params();
+    let rows = &m.params;
     let mut sampling = sw.sampling.clone();
     let designs = [
         (
@@ -1358,7 +1406,7 @@ fn sweep_controls(
             egui::ComboBox::from_id_salt(("sweep_param", k))
                 .selected_text(p.param.as_str())
                 .show_ui(ui, |ui| {
-                    for r in &rows {
+                    for r in rows {
                         if ui.selectable_label(p.param == r.key, &r.key).clicked()
                             && p.param != r.key
                         {
@@ -1441,7 +1489,7 @@ fn sweep_controls(
     if sampling == sw.sampling {
         return Ok(None);
     }
-    session.set_sampling(sampling).map(Some)
+    live.call(move |s, _| s.set_sampling(sampling))?.map(Some)
 }
 
 /// Pickers for a view's slots: a menu of checkboxes for slots that take
@@ -1627,13 +1675,13 @@ impl CutEdit {
 
 impl SignalsEditor {
     /// The session's filters, ready to edit.
-    fn new(session: &Session) -> Self {
+    fn new(session: &Model) -> Self {
         let mut ed = Self {
             exprs: Vec::new(),
             cuts: Vec::new(),
             problems: Vec::new(),
         };
-        for f in session.filters() {
+        for f in &session.filters {
             match f.type_name.as_str() {
                 "expression" => ed
                     .exprs
@@ -1668,7 +1716,7 @@ impl SignalsEditor {
 }
 
 /// The Data window's contents: expressions, then cuts.
-fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, session: &Session) {
+fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History) {
     use simsandbox_views::cut::{Interpolation, Mode};
     ui.heading("Signals");
     ui.label(
@@ -1700,12 +1748,9 @@ fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, session: &Session) {
         ed.exprs
             .push((format!("signal{}", ed.exprs.len() + 1), String::new()));
     }
-    ui.weak(format!(
-        "Plotted signals: {}",
-        session.signals.names().join(", ")
-    ));
+    ui.weak(format!("Plotted signals: {}", history.names().join(", ")));
 
-    let inputs = session.cut_inputs();
+    let inputs = crate::session::cut_inputs(history);
     ui.add_space(8.0);
     ui.heading("Cuts");
     if inputs.is_empty() {
@@ -1718,7 +1763,7 @@ fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, session: &Session) {
     );
     let mut remove = None;
     for (k, c) in ed.cuts.iter_mut().enumerate() {
-        let g = session.cut_geometry(&c.input);
+        let g = crate::session::cut_geometry(history, &c.input);
         ui.separator();
         ui.horizontal(|ui| {
             ui.add_sized([100.0, height], egui::TextEdit::singleline(&mut c.name));
@@ -1858,7 +1903,7 @@ fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, session: &Session) {
         while ed.cuts.iter().any(|c| c.name == format!("cuts{n}")) {
             n += 1;
         }
-        let entry = session.default_cut(&format!("cuts{n}"), &inputs[0]);
+        let entry = crate::session::default_cut(history, &format!("cuts{n}"), &inputs[0]);
         let object = serde_json::Value::Object(entry.settings.into_iter().collect());
         if let Ok(settings) = serde_json::from_value(object) {
             ed.cuts.push(CutEdit {
@@ -1895,13 +1940,6 @@ t is time. Operators: + - * / ^ and parentheses; write 2*x, not 2x.
 Functions: sin cos tan asin acos atan atan2 sinh cosh tanh exp ln log10
 sqrt abs sign floor ceil min max pow. pi is 3.14159…
 Lines starting with # are comments.";
-
-/// Why stepping stopped within a frame.
-enum Stop {
-    /// The file's `run.t_end` was reached (ADR 0013).
-    EndReached,
-    Failed(SimError),
-}
 
 /// A compact display of a value: up to 6 significant digits.
 fn format_value(v: f64) -> String {
@@ -1998,9 +2036,12 @@ mod tests {
         app.editor = editor(None, NEW_MODEL);
         app.apply_equations();
         assert!(app.editor.is_none(), "applied editors close");
-        let s = app.session.as_ref().unwrap();
-        assert_eq!(s.title, "Untitled");
-        assert_eq!(s.signals.names(), ["model.x", "model.v", "model.energy"]);
+        let live = app.session.as_ref().unwrap();
+        assert_eq!(live.model().title, "Untitled");
+        assert_eq!(
+            live.history().names(),
+            ["model.x", "model.v", "model.energy"]
+        );
         assert!(app.path.is_none());
     }
 
@@ -2010,27 +2051,26 @@ mod tests {
         let e = &EXAMPLES[1];
         assert!(e.name.contains("oscillators"));
         app.open_text(e.name, e.text);
-        let s = app.session.as_mut().unwrap();
-        assert_eq!(s.groups.len(), 1, "the example is fused by default");
-        let id = s.ids["a"];
-        s.set_param(id, "kappa", 0.8).unwrap();
+        let live = app.session.as_ref().unwrap();
+        let m = live.model();
+        assert_eq!(m.groups.len(), 1, "the example is fused by default");
+        let id = live.call(|s, _| s.ids["a"]).unwrap();
+        live.call(move |s, _| s.set_param(id, "kappa", 0.8))
+            .unwrap()
+            .unwrap();
 
         app.set_fusion(false);
-        let s = app.session.as_ref().unwrap();
-        assert!(s.groups.is_empty());
-        assert_eq!(s.file.fusion, simsandbox_file::Fusion::Off);
+        let m = app.session.as_ref().unwrap().model();
+        assert!(m.groups.is_empty());
+        assert_eq!(m.file.fusion, simsandbox_file::Fusion::Off);
         assert_eq!(
-            s.params()
-                .iter()
-                .find(|r| r.key == "a.kappa")
-                .unwrap()
-                .value,
+            m.params.iter().find(|r| r.key == "a.kappa").unwrap().value,
             0.8
         );
         assert!(app.error.is_none());
 
         app.set_fusion(true);
-        assert_eq!(app.session.as_ref().unwrap().groups.len(), 1);
+        assert_eq!(app.session.as_ref().unwrap().model().groups.len(), 1);
     }
 
     #[test]
@@ -2039,23 +2079,24 @@ mod tests {
         app.editor = editor(None, "x[n+1] = r*x*(1 - x)");
         app.apply_equations();
         assert!(app.editor.is_none());
-        assert_eq!(
-            app.session.as_ref().unwrap().file.blocks[0].method.name,
-            "iterate"
-        );
+        let method = |app: &SimApp| {
+            app.session.as_ref().unwrap().model().file.blocks[0]
+                .method
+                .name
+                .clone()
+        };
+        assert_eq!(method(&app), "iterate");
 
         app.editor = editor(None, "y = a*x^2");
         app.apply_equations();
-        let s = app.session.as_ref().unwrap();
-        assert_eq!(s.file.blocks[0].method.name, "evaluate");
-        assert!(s.sweep().is_some());
+        assert_eq!(method(&app), "evaluate");
+        assert!(app.session.as_ref().unwrap().model().sweep.is_some());
 
         // Editing a formula block into a continuous one switches the method.
         app.editor = editor(Some("model"), "dy/dt = -a*y");
         app.apply_equations();
-        let s = app.session.as_ref().unwrap();
-        assert_eq!(s.file.blocks[0].method.name, "rk4");
-        assert!(s.sweep().is_none());
+        assert_eq!(method(&app), "rk4");
+        assert!(app.session.as_ref().unwrap().model().sweep.is_none());
     }
 
     #[test]
@@ -2065,7 +2106,7 @@ mod tests {
         app.apply_equations();
         let e = app.editor.as_ref().unwrap().error.as_deref().unwrap();
         assert!(e.contains("line 1, column 12"), "{e}");
-        assert_eq!(app.session.as_ref().unwrap().title, "Lorenz system");
+        assert_eq!(app.session.as_ref().unwrap().model().title, "Lorenz system");
         assert_eq!(app.error, None);
     }
 
@@ -2074,9 +2115,11 @@ mod tests {
         let mut app = SimApp::new(None, None, None, None);
         let (name, text) = (EXAMPLES[2].name, EXAMPLES[2].text);
         app.open_text(name, text);
-        let s = app.session.as_mut().unwrap();
-        let id = s.ids["ecosystem"];
-        s.set_param(id, "alpha", 2.0).unwrap();
+        let live = app.session.as_ref().unwrap();
+        let id = live.call(|s, _| s.ids["ecosystem"]).unwrap();
+        live.call(move |s, _| s.set_param(id, "alpha", 2.0))
+            .unwrap()
+            .unwrap();
 
         let edited = "dprey/dt = alpha*prey - beta*prey*predators\n\
                       dpredators/dt = delta*prey*predators - gamma*predators";
@@ -2087,15 +2130,47 @@ mod tests {
             "{:?}",
             app.editor.as_ref().map(|e| &e.error)
         );
-        let s = app.session.as_ref().unwrap();
-        assert_eq!(s.title, name);
+        let live = app.session.as_ref().unwrap();
+        let m = live.model();
+        assert_eq!(m.title, name);
         assert_eq!(
-            s.params().iter().find(|r| r.name == "alpha").unwrap().value,
+            m.params.iter().find(|r| r.name == "alpha").unwrap().value,
             2.0
         );
-        assert_eq!(s.signals.names(), ["ecosystem.prey", "ecosystem.predators"]);
+        assert_eq!(
+            live.history().names(),
+            ["ecosystem.prey", "ecosystem.predators"]
+        );
         // Both saved views still fit.
         assert_eq!(app.views.tiles.len(), 2);
+    }
+
+    #[test]
+    fn sliders_apply_while_dragged_only_for_real_time_models() {
+        // (changed, dragged, drag stopped)
+        let dragging = (true, true, false);
+        let released = (false, false, true);
+        let clicked = (true, false, false);
+        for (real_time, case, expected) in [
+            (true, dragging, true),
+            (true, released, false),
+            (true, clicked, true),
+            (false, dragging, false),
+            (false, released, true),
+            (false, clicked, true),
+        ] {
+            let (c, d, s) = case;
+            assert_eq!(
+                apply_now(real_time, c, d, s),
+                expected,
+                "{real_time} {case:?}"
+            );
+        }
+        // The examples: the Lorenz system is real-time; a sweep is once
+        // evaluated quickly.
+        let app = SimApp::new(None, None, None, None);
+        let live = app.session.as_ref().unwrap();
+        assert!(live.model().real_time);
     }
 
     #[test]

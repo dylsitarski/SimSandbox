@@ -33,6 +33,7 @@
 - 2026-10-19: `plot.surface` and `plot.contour`; heat map axis handling shared through `fields::sheet`; `view3d::Frame` shared by 3D views. 142 tests.
 - 2026-10-19: Phase 1 planned with the owner; ADR 0033. Phase 0 gate confirmed by the owner on Windows and Linux. ADR 0034 (agent domain); Q26 raised. ADRs 0035 (worker thread) and 0036 (Python blocks in Phase 1, revised order); Q27 raised.
 - 2026-10-22: discussion of why Python blocks and rewind; ADRs 0037 (slider timing), 0038 (user-defined blocks later, supersedes 0036), 0039 (AI agents as first-class users); Q28, Q29 raised.
+- 2026-10-22: worker thread built (ADR 0035, `live.rs`), slider timing (ADR 0037). 146 tests.
 - 2026-10-17: messages moved into a log tile beside the rewind bar (`crates/simsandbox-app/src/log.rs`) at the owner's request; duplicate description tooltip removed (egui already shows cut text on hover). 104 tests.
 - 2026-10-17: views steps 5–6: `Shape::Grid`/`Shape::Points`, fields in the history, `plot.heatmap`, `plot.scatter`, slot kinds and `Available`; `eq.heat_rod`, `eq.orbits` and `eq.pendulum` with verification tests; the `eq.pendulum` view (`applies_to`) behind `simsandbox-eq`'s `views` feature; heat-rod, orbits and pendulum examples, checked by screenshot. 100 tests.
 - Wrote ADR 0015 and the [visualization architecture](../architecture/visualization.md) for Q9 and Q10.
@@ -68,6 +69,8 @@
 
 ## Notes for the next session
 
+- The window must not hold the history's read guard (`Live::history`) while calling `Live::call`: the worker may need the write lock for the command (a rebuild), and the window would wait on it. Appends never block: `Session::push` uses `try_write` and keeps samples pending; `flush(true)` before the worker idles. A history replaced by `rebuild_history` keeps its `Arc`, so the window's handle stays valid. `Live::call` replies after the model and status are republished, so tests can read them straight after.
+- Sweeps: `Session::resample` starts a `ResampleJob`; with `load_deferred` (the app) the worker continues it with `resume_resample(budget)` each tick, restoring the panel's parameter values after every slice; `Session::load` (tests) finishes at once.
 - Filters run per recorded sample: `Session::record` computes source frames, then `sample_cuts`, and pushes all; `set_filters` replays the recorded sources (scalar outputs and source fields) through new filters. A cut whose input is not a base field (a `grid.` field of a two-parameter grid sweep) is whole: `resample` computes it once after all samples (`whole_cut`, `cut_frames(.., true)`). Expression slots are `t`, outputs, expression filters in dependency order, then parameters; failed expressions are dropped and the rest recompiled so slots stay consistent.
 - Slot pickers show field names (`cuts1.x`), not labels; legends and axes show labels (`spring.w`).
 - View selections are JSON (`ViewEntry::selection`, `View::selection`/`set_selection`/`edit_selection`); the views crate depends on serde for them. A selection that does not parse drops the view with a warning, like other bad controls.

@@ -1,9 +1,10 @@
-//! Wall-clock pacing of the live loop (ADR 0010).
+//! Wall-clock pacing of the live loop (ADR 0010, kept by ADR 0035).
 //!
-//! Each frame adds `elapsed wall time × speed` to an accumulator and steps
-//! while it holds at least one `dt`. Stepping stops when the frame's work
-//! budget is used; the leftover backlog is dropped, so a slow model runs in
-//! slow motion instead of falling ever further behind and freezing the UI.
+//! Each frame (a tick of the simulation thread) adds `elapsed wall time ×
+//! speed` to an accumulator and steps while it holds at least one `dt`.
+//! Stepping stops when the tick's work budget is used; the leftover backlog
+//! is dropped, so a slow model runs in slow motion instead of falling ever
+//! further behind.
 
 use std::time::Duration;
 
