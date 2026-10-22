@@ -1225,7 +1225,11 @@ fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
     }
     ui.label(&row.name).on_hover_text(hover);
 
-    if let Some(v) = number_entry(ui, &row.key, row.value, edits.text, edits.error) {
+    // While a slider is dragged on a model that is not real-time, its field
+    // shows the value that applies on release (ADR 0037).
+    if let Some(p) = edits.pending.get(&row.key) {
+        pending_field(ui, *p);
+    } else if let Some(v) = number_entry(ui, &row.key, row.value, edits.text, edits.error) {
         edits.changes.push((row.clone(), v));
     }
 
@@ -1246,15 +1250,8 @@ fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
 
     if control.slider {
         let [mut lo, mut hi] = control.range.unwrap_or(row.suggested);
-        let pending = edits.pending.get(&row.key).copied();
-        if pending.is_some() {
-            ui.weak("pending").on_hover_text(
-                "This model is not real-time: the value applies when you let go (ADR 0037)",
-            );
-        } else {
-            ui.label("");
-        }
-        let mut v = pending.unwrap_or(row.value);
+        ui.label("");
+        let mut v = edits.pending.get(&row.key).copied().unwrap_or(row.value);
         let r = ui.add(egui::Slider::new(&mut v, lo..=hi).show_value(false));
         if apply_now(m.real_time, r.changed(), r.dragged(), r.drag_stopped()) {
             edits.pending.remove(&row.key);
@@ -1286,6 +1283,19 @@ fn apply_now(real_time: bool, changed: bool, dragged: bool, drag_stopped: bool) 
     } else {
         drag_stopped || (changed && !dragged)
     }
+}
+
+/// A parameter field showing a slider's pending value: the same size as
+/// the typed field, in the warning colour, not editable.
+fn pending_field(ui: &mut egui::Ui, value: f64) {
+    let mut text = format_value(value);
+    ui.add(
+        egui::TextEdit::singleline(&mut text)
+            .desired_width(90.0)
+            .interactive(false)
+            .text_color(ui.visuals().warn_fg_color),
+    )
+    .on_hover_text("Pending: this model is not real-time, so the value applies when you let go");
 }
 
 /// A typed number field. It shows a compact value and returns a new value
