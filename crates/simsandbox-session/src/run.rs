@@ -145,7 +145,7 @@ pub fn run(
 
     let mut fixed = Vec::new();
     let mut variable = Vec::new();
-    for entry in &loaded.file.blocks {
+    for entry in &loaded.flat.blocks {
         let id = loaded.ids[&entry.name];
         let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
         for port in spec.outputs() {

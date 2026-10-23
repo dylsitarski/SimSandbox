@@ -1,6 +1,6 @@
 # Documentation system
 
-_Last updated: 2026-10-22_
+_Last updated: 2026-10-23_
 
 This page is the map of every document in the repository and the rules for keeping them current. The repository is the single source of truth for SimSandbox ([ADR 0005](decisions/0005-repository-as-source-of-truth.md)).
 
@@ -113,6 +113,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0040-feedthrough-and-algebraic-loops.md](decisions/0040-feedthrough-and-algebraic-loops.md) | Decision record | Direct feedthrough, algebraic loops and typed inputs |
 | [decisions/0041-headless-interface.md](decisions/0041-headless-interface.md) | Decision record | Headless commands, CPU rendering of views, the Python package |
 | [decisions/0042-node-canvas.md](decisions/0042-node-canvas.md) | Decision record | The node canvas, block positions, edits to a running model, starting from a reached state |
+| [decisions/0043-subsystems.md](decisions/0043-subsystems.md) | Decision record | Subsystems, declared parameters and formulas |
 
 ### Guides
 

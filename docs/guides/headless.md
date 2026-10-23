@@ -21,7 +21,7 @@ Build with `cargo build --release -p simsandbox-cli`; the binary is `target/rele
 | `simsandbox check FILE` | JSON report; exit status 1 if the model cannot run |
 | `simsandbox run FILE [--t-end S] [--dt S] [--format csv\|json]` | Every output at every step (or sweep sample) |
 | `simsandbox render FILE --out IMAGE.png [--t-end S] [--view N] [--width P] [--height P] [--scale S] [--light]` | PNG of the views after running to `t_end` |
-| `simsandbox render FILE --diagram --out IMAGE.png [--width P] [--height P] [--scale S] [--light]` | PNG of the block diagram, as the app's Diagram tab shows it (also for a file that cannot run) |
+| `simsandbox render FILE --diagram [--subsystem NAME] --out IMAGE.png [--width P] [--height P] [--scale S] [--light]` | PNG of the block diagram, or a subsystem's inside, as the app's Diagram tab shows it (also for a file that cannot run) |
 | `simsandbox start-from FILE --t S [--out NEW.json]` | The model file that starts from the state reached at `t` ([ADR 0042](../decisions/0042-node-canvas.md)): initial-condition parameters where they say it exactly, else a `start` entry per block |
 
 Notes, warnings and labels go to standard error; data to standard output.
@@ -33,7 +33,8 @@ Notes, warnings and labels go to standard error; data to standard output.
 | `ok` | The model loads and can run |
 | `errors` | Each `{path, message}` (file structure) or `{line, column, message}` (JSON syntax) or `{message}` |
 | `warnings` | Problems that were worked around, e.g. a saved view that cannot be shown |
-| `params` | Every parameter: `key` (`block.param`), `value`, `unit`, `suggested` range, `initial_condition`, `description` |
+| `params` | Every parameter: `key` (`block.param`; a model parameter's `name`, a subsystem use's `instance.name`; blocks inside uses `instance/inner.param`), `value`, `formula` (set when a formula computes it), `unit`, `suggested` range, `initial_condition`, `description` |
+| `subsystems`, `blocks` | Each subsystem's parameters, ports and uses ([ADR 0043](../decisions/0043-subsystems.md)); every block after flattening, as signals and sliders name them |
 | `labels` | Speed and accuracy of the model's methods |
 | `recorded` | `signals` (scalars) and `fields` (grids, point sets, populations) that views can bind |
 | `fused_groups`, `swept`, `filters`, `views` | How blocks are solved together, the swept parameters, filter and view names |
@@ -71,6 +72,9 @@ r.t, r["decay.x"]
 m.set("decay.k", 1.0)                            # edits are file edits: m.data, m.save(path)
 m.render("decay.png")                            # PNG of the views
 m.render("diagram.png", diagram=True)             # PNG of the block diagram
+m.declare("rate", 0.5)                            # a model parameter (ADR 0043)
+m.set("decay.k", "2*rate")                        # a block parameter as a formula of it
+m.group(["decay"])                                # make a subsystem of blocks
 settled = m.start_from(10.0)                     # starts from the state at t = 10
 ```
 

@@ -1,6 +1,6 @@
 # Block contract
 
-_Last updated: 2026-10-22_
+_Last updated: 2026-10-23_
 
 Every simulation, from a pendulum to a CFD solver to a neural network, is wrapped as a **Block**. Blocks in the same domain are fused and solved together using that domain's native approach; different domains are coupled through an FMI-style step interface run by a co-simulation master. Rationale and rejected alternatives: [ADR 0002](../decisions/0002-layered-block-contract.md). Code: `crates/simsandbox-core/src/block.rs`.
 
@@ -71,7 +71,8 @@ Measured effect (test `cosimulation_adds_coupling_error`): two coupled oscillato
 
 ## Composition
 
-- A group of connected Blocks can be collapsed into a new Block with its own exposed ports and parameters (equation domain: `FusedSystem` exposes `<member>.<name>` ports and parameters).
+- Subsystems ([ADR 0043](../decisions/0043-subsystems.md)): a model file defines groups of blocks with their own parameters and ports, used like block types by name. Loading flattens each use into its blocks (`instance/inner`), so Blocks never see subsystems; parameters of the model and of each use reach block parameters through formulas (`crates/simsandbox-file/src/subsystems.rs`, `ParamPlan`).
+- In code, the equation domain can also collapse a group into one Block: `FusedSystem` exposes `<member>.<name>` ports and parameters.
 - The saved model will be a JSON file naming each Block by a registered type ([ADR 0007](../decisions/0007-json-model-files.md)), with an optional `controls` section for sliders, playback speed, default plots and the opening view ([ADR 0012](../decisions/0012-controls-in-model-files.md), [ADR 0014](../decisions/0014-view-in-controls.md)).
 
 ## Current restrictions

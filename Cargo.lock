@@ -2689,6 +2689,7 @@ dependencies = [
  "simsandbox-agents",
  "simsandbox-core",
  "simsandbox-eq",
+ "simsandbox-expr",
 ]
 
 [[package]]

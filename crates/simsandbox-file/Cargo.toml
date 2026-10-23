@@ -10,6 +10,8 @@ authors.workspace = true
 
 [dependencies]
 simsandbox-core = { path = "../simsandbox-core" }
+# Formulas of declared parameters (ADR 0043).
+simsandbox-expr = { path = "../simsandbox-expr" }
 serde = { version = "1", features = ["derive"] }
 # Numbers read back exactly as written, so a saved file reproduces its
 # run bit for bit (ADR 0039, ADR 0042); the default parser can be one

@@ -145,6 +145,7 @@ fn render<'py>(
                 scale,
                 view,
                 light,
+                subsystem: None,
             };
             let (image, mut warnings) = render_views(&s, view_registry(), &o)?;
             warnings.splice(0..0, s.warnings.iter().cloned());
@@ -157,7 +158,7 @@ fn render<'py>(
 /// The block diagram of a model file as a PNG, as the node canvas shows
 /// it (ADR 0042); drawn even if the model cannot run.
 #[pyfunction]
-#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false))]
+#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, subsystem=None))]
 fn render_diagram<'py>(
     py: Python<'py>,
     text: &str,
@@ -165,6 +166,7 @@ fn render_diagram<'py>(
     height: f32,
     scale: f32,
     light: bool,
+    subsystem: Option<String>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let image = py
         .detach(|| -> Result<_, String> {
@@ -176,6 +178,7 @@ fn render_diagram<'py>(
                 scale,
                 view: None,
                 light,
+                subsystem,
             };
             png(&simsandbox_session::render::render_diagram(
                 &file,
@@ -195,6 +198,20 @@ fn start_from(py: Python<'_>, text: &str, t: f64) -> PyResult<(String, Vec<Strin
         .map_err(ModelError::new_err)
 }
 
+/// Group blocks into a new subsystem, as "Make subsystem" on the canvas
+/// does (ADR 0043). Returns the changed model file and a note.
+#[pyfunction]
+#[pyo3(signature = (text, blocks, subsystem=None))]
+fn group(text: &str, blocks: Vec<String>, subsystem: Option<String>) -> PyResult<(String, String)> {
+    use simsandbox_session::diagram::{apply_in, Edit, Scope};
+    let (mut file, _) = simsandbox_session::ModelFile::from_json(text)
+        .map_err(|e| ModelError::new_err(e.to_string()))?;
+    let scope = subsystem.map_or(Scope::Model, Scope::Subsystem);
+    let note = apply_in(&mut file, &scope, &registry(), &Edit::Group { blocks })
+        .map_err(ModelError::new_err)?;
+    Ok((file.to_json(), note))
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ModelError", m.py().get_type::<ModelError>())?;
@@ -206,6 +223,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(render, m)?)?;
     m.add_function(wrap_pyfunction!(render_diagram, m)?)?;
     m.add_function(wrap_pyfunction!(start_from, m)?)?;
+    m.add_function(wrap_pyfunction!(group, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

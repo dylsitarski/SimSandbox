@@ -19,6 +19,9 @@ pub struct RenderOptions {
     /// Only this tile (0-based, in `controls.views` order); all if `None`.
     pub view: Option<usize>,
     pub light: bool,
+    /// For the diagram: a subsystem's inside instead of the model
+    /// (ADR 0043).
+    pub subsystem: Option<String>,
 }
 
 impl Default for RenderOptions {
@@ -29,6 +32,7 @@ impl Default for RenderOptions {
             scale: 1.0,
             view: None,
             light: false,
+            subsystem: None,
         }
     }
 }
@@ -70,7 +74,22 @@ pub fn render_diagram(
     o: &RenderOptions,
 ) -> Result<Image, String> {
     check(o)?;
-    let mut d = crate::diagram::Diagram::new(file, registry);
+    let scope = match &o.subsystem {
+        None => crate::diagram::Scope::Model,
+        Some(s) if file.subsystems.contains_key(s) => crate::diagram::Scope::Subsystem(s.clone()),
+        Some(s) => {
+            let known: Vec<&str> = file.subsystems.keys().map(String::as_str).collect();
+            return Err(format!(
+                "no subsystem '{s}' (subsystems: {})",
+                if known.is_empty() {
+                    "none".into()
+                } else {
+                    known.join(", ")
+                }
+            ));
+        }
+    };
+    let mut d = crate::diagram::Diagram::of(file, &scope, registry);
     let mut canvas = crate::canvas::Canvas::default();
     Ok(paint(o, |ui| {
         canvas.show(ui, &mut d, registry, false);
@@ -229,6 +248,7 @@ mod tests {
             scale: 2.0,
             view: Some(0),
             light: true,
+            subsystem: None,
         };
         let (img, _) = render(&s, view_registry(), &o).unwrap();
         assert_eq!((img.width, img.height), (400, 200));

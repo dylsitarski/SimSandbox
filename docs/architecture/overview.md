@@ -1,6 +1,6 @@
 # Architecture overview
 
-_Last updated: 2026-10-22_
+_Last updated: 2026-10-23_
 
 SimSandbox has five layers. Only the kernel and the model graph are new code; interfaces and backends are replaceable around them. The kernel never contains physics: it schedules Blocks, checks units, stores state and records provenance, which is what lets a CFD solver, an ODE and a neural network sit in one graph.
 
@@ -32,7 +32,7 @@ flowchart TB
 | `crates/simsandbox-core` | Kernel | Exists | `block.rs` (contract, labels), `units.rs`, `graph.rs` (model graph), `sim.rs` (master, snapshots), `table.rs` (populations of rows, ADR 0034), `random.rs` (counter-based random numbers), `sampling.rs` (sweep designs), `registry.rs` (block types by name), `error.rs` |
 | `crates/simsandbox-expr` | Backend support: expressions | Exists | Parser and evaluator for typed equations and, later, derived signals ([ADR 0017](../decisions/0017-typed-equations.md)) |
 | `crates/simsandbox-eq` | Backend: equations | Exists | `ode.rs` (`OdeSystem`, `OdeBlock`), `integrators.rs`, `group.rs` (fusion), `systems.rs` (examples), `symbolic.rs` (typed equations, `eq.equations`), `registry.rs` (file types) |
-| `crates/simsandbox-file` | Model graph: files | Exists | JSON model files, `controls`, JSON Schema ([ADR 0007](../decisions/0007-json-model-files.md)); depends on `serde`, `serde_json` |
+| `crates/simsandbox-file` | Model graph: files | Exists | JSON model files, `controls`, JSON Schema ([ADR 0007](../decisions/0007-json-model-files.md)); `subsystems.rs`: subsystems and declared parameters, flattened on load, formulas as a `ParamPlan` ([ADR 0043](../decisions/0043-subsystems.md)); depends on `serde`, `serde_json`, `simsandbox-expr` |
 | `crates/simsandbox-cli` | Runtime: headless | Exists | `simsandbox` binary: `run`, `check`, `describe`, `schema`, `render` ([guide](../guides/headless.md)) |
 | `crates/simsandbox-session` | Interfaces: shared | Exists | The open model as every interface uses it ([ADR 0041](../decisions/0041-headless-interface.md)): `session.rs` (simulator, shared history, rewind, sweeps evaluated in slices), `filters.rs`, `views.rs` (view tiles from `controls.views`), `diagram.rs` (the model graph, its automatic layout and the canvas's edits as file changes) and `canvas.rs` (the node canvas drawn and edited with egui, [ADR 0042](../decisions/0042-node-canvas.md)), `describe.rs` (type catalogue and model checks as JSON), `run.rs` (headless runs), `render.rs` and `raster.rs` (views to PNG on the CPU), `examples.rs` |
 | `crates/simsandbox-app` | Runtime: desktop | Exists | eframe + egui + wgpu ([ADR 0008](../decisions/0008-native-egui-ui.md)): `live.rs` (the open model on its worker thread: commands, published model and status, [ADR 0035](../decisions/0035-simulation-worker-thread.md)), `pacing.rs` (wall-clock pacing, [ADR 0010](../decisions/0010-live-loop-pacing.md)), `app.rs` (window and views), `diagram.rs` (the Diagram tab: drafts that do not load yet, edits applied by rebuilding); the open model itself comes from `simsandbox-session` |
@@ -45,7 +45,7 @@ Dependency rule: domain crates depend on `simsandbox-core`; the kernel depends o
 
 ## Data flow of a run
 
-1. A model file is parsed and each block is built by name from a `Registry` that domain crates fill (`simsandbox_file::load`), or Blocks are added in code. Blocks start with default parameters, then the file's values are applied; connections are checked for direction, shape and unit dimension, and a conversion factor is stored.
+1. A model file is parsed, its subsystems are expanded into their blocks (`instance/inner`) and parameter formulas evaluated ([ADR 0043](../decisions/0043-subsystems.md)), and each block is built by name from a `Registry` that domain crates fill (`simsandbox_file::load`), or Blocks are added in code. Blocks start with default parameters, then the file's values are applied; connections are checked for direction, shape and unit dimension, and a conversion factor is stored.
 2. `Simulator::new` checks every input is connected, lets each Block initialise its kernel-owned state, computes initial outputs and copies them to inputs.
 3. `Simulator::step(dt)` calls `do_step` on every Block with the inputs from the previous exchange (Jacobi), then exchanges outputs to inputs again.
 4. `Simulator::set_param` changes a parameter between steps; any finite value is accepted; the `ParamSpec` range is only a suggestion ([ADR 0011](../decisions/0011-parameter-entry.md)). `Simulator::model()` exposes Block specs and current parameter values to interfaces.

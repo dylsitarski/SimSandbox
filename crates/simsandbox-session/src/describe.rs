@@ -213,11 +213,21 @@ pub fn check(text: &str, r: &Registry) -> Value {
                 "params": s.params().iter().map(|p| json!({
                     "key": p.key,
                     "value": p.value,
+                    "formula": p.formula,
                     "unit": p.unit,
                     "suggested": p.suggested,
                     "initial_condition": p.initial_condition,
                     "description": p.description,
                 })).collect::<Vec<_>>(),
+                "subsystems": s.file.subsystems.iter().map(|(name, d)| json!({
+                    "name": name,
+                    "description": d.description,
+                    "params": d.params.keys().collect::<Vec<_>>(),
+                    "inputs": d.inputs.iter().map(|p| &p.name).collect::<Vec<_>>(),
+                    "outputs": d.outputs.iter().map(|p| &p.name).collect::<Vec<_>>(),
+                    "used_by": crate::diagram::uses(&s.file, name),
+                })).collect::<Vec<_>>(),
+                "blocks": s.flat.blocks.iter().map(|b| &b.name).collect::<Vec<_>>(),
                 "filters": s.filters().iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
                 "views": s.file.controls.views.iter().map(|v| v.type_name.clone()).collect::<Vec<_>>(),
             })

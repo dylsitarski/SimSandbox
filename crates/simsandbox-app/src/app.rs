@@ -598,14 +598,15 @@ impl SimApp {
     fn diagram_outcomes(&mut self, m: &crate::live::Model, outcomes: Vec<Outcome>) {
         for o in outcomes {
             match o {
-                Outcome::Moved(moves) => {
+                Outcome::Moved(scope, moves) => {
                     let Some(live) = &self.session else {
                         return;
                     };
                     for (block, at) in moves {
-                        let key = format!("at:{block}");
+                        let key = format!("at:{scope:?}:{block}");
+                        let scope = scope.clone();
                         live.send(Some(&key), move |s, c| {
-                            if let Err(e) = s.set_position(&block, at) {
+                            if let Err(e) = s.set_position_in(&scope, &block, at) {
                                 c.error(e);
                             }
                         });
@@ -630,7 +631,13 @@ impl SimApp {
 
     /// Open a block's definition: the equation editor for typed equations.
     fn open_block(&mut self, m: &crate::live::Model, name: &str) {
-        let Some(b) = m.file.blocks.iter().find(|b| b.name == name) else {
+        // `subsystem::block` for a block inside a subsystem (ADR 0043).
+        let blocks = match name.split_once("::") {
+            Some((def, _)) => m.file.subsystems.get(def).map(|d| &d.blocks),
+            None => Some(&m.file.blocks),
+        };
+        let inner = name.rsplit("::").next().unwrap_or(name);
+        let Some(b) = blocks.and_then(|bs| bs.iter().find(|b| b.name == inner)) else {
             return;
         };
         if b.type_name == simsandbox_eq::registry::EQUATIONS {
@@ -884,7 +891,7 @@ impl SimApp {
         {
             let mut blocks: Vec<(String, Vec<ParamRow>)> = Vec::new();
             for row in m.params.iter().cloned() {
-                let name = row.key.split_once('.').map_or("", |(b, _)| b).to_string();
+                let name = row.owner.clone();
                 match blocks.last_mut() {
                     Some((b, list)) if *b == name => list.push(row),
                     _ => blocks.push((name, vec![row])),
@@ -902,7 +909,23 @@ impl SimApp {
                 let entry = m.file.blocks.iter().find(|b| b.name == block_name);
                 let agents = entry.filter(|b| b.type_name.starts_with("agents."));
                 ui.horizontal(|ui| {
-                    ui.strong(&block_name);
+                    // The model's own parameters (ADR 0043), a subsystem
+                    // use, or a block (inside one: `car1/car`).
+                    let sub = entry.filter(|b| m.file.subsystems.contains_key(&b.type_name));
+                    match (block_name.as_str(), sub) {
+                        ("", _) => {
+                            ui.strong("Model").on_hover_text(
+                                "Parameters of the model itself, used by formulas in blocks",
+                            );
+                        }
+                        (_, Some(b)) => {
+                            ui.strong(&block_name);
+                            ui.weak(format!("({})", b.type_name));
+                        }
+                        _ => {
+                            ui.strong(&block_name);
+                        }
+                    }
                     if let Some(b) = agents {
                         // The update order is part of the model (ADR 0034).
                         let now = simsandbox_agents::Update::from_setting(b.update.as_deref())
@@ -971,7 +994,7 @@ impl SimApp {
         for (row, v) in changes {
             let key = row.key.clone();
             live.send(Some(&format!("param:{key}")), move |s, c| {
-                match s.set_param(row.block, &row.name, v) {
+                match s.set_param_key(&row.key, v) {
                     Ok(()) => {
                         // A typed value outside the slider range widens it (ADR 0011).
                         if let Some(ctl) = s.file.controls.params.get_mut(&row.key) {
@@ -1136,8 +1159,7 @@ impl SimApp {
                     update: None,
                     equations: lines,
                     params: Default::default(),
-                    at: None,
-                    start: None,
+                    ..Default::default()
                 });
                 Ok(("Untitled".to_string(), file.to_json()))
             }
@@ -1228,7 +1250,12 @@ impl SimApp {
             Some(live) => live.model().title.clone(),
             None => return Err("no model is open".into()),
         };
-        let set = simsandbox_eq::EquationSet::parse(block, &lines).map_err(|e| e.to_string())?;
+        // `subsystem::block` edits a block inside a subsystem (ADR 0043).
+        let (def, inner) = match block.split_once("::") {
+            Some((d, b)) => (Some(d.to_string()), b),
+            None => (None, block),
+        };
+        let set = simsandbox_eq::EquationSet::parse(inner, &lines).map_err(|e| e.to_string())?;
         let keep: Vec<String> = simsandbox_eq::OdeSystem::spec(&set)
             .params
             .iter()
@@ -1237,10 +1264,19 @@ impl SimApp {
         let text = self.saved_text()?;
         let (mut file, _) =
             simsandbox_file::ModelFile::from_json(&text).map_err(|e| e.to_string())?;
-        let entry = file
-            .blocks
+        let blocks = match &def {
+            Some(d) => {
+                &mut file
+                    .subsystems
+                    .get_mut(d)
+                    .ok_or_else(|| format!("no subsystem '{d}'"))?
+                    .blocks
+            }
+            None => &mut file.blocks,
+        };
+        let entry = blocks
             .iter_mut()
-            .find(|b| b.name == block)
+            .find(|b| b.name == inner)
             .ok_or_else(|| format!("no block '{block}'"))?;
         entry.equations = lines;
         entry.params.retain(|name, _| keep.contains(name));
@@ -1426,7 +1462,24 @@ fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
     if row.initial_condition {
         hover.push_str("\nSets the initial state: applies on Restart");
     }
+    if let Some(f) = &row.formula {
+        hover.push_str(&format!("\nComputed: {f}"));
+    }
     ui.label(&row.name).on_hover_text(hover);
+
+    // A value a formula sets is shown, not edited (ADR 0043).
+    if let Some(f) = &row.formula {
+        ui.add_enabled(false, egui::Label::new(format_value(row.value)))
+            .on_disabled_hover_text(format!("= {f}"));
+        ui.horizontal(|ui| {
+            ui.label(&row.unit);
+            ui.weak(format!("= {}", fit_text(f, 18)))
+                .on_hover_text(format!("Set by the formula {f}"));
+        });
+        ui.label("");
+        ui.end_row();
+        return;
+    }
 
     // While a slider is dragged on a model that is not real-time, its field
     // shows the value that applies on release (ADR 0037).
@@ -2156,6 +2209,17 @@ Functions: sin cos tan asin acos atan atan2 sinh cosh tanh exp ln log10
 sqrt abs sign floor ceil min max pow. pi is 3.14159…
 Lines starting with # are comments.";
 
+/// Text cut to `max` characters with an ellipsis.
+fn fit_text(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut t: String = s.chars().take(max - 1).collect();
+        t.push('…');
+        t
+    }
+}
+
 /// A compact display of a value: up to 6 significant digits.
 fn format_value(v: f64) -> String {
     if v == 0.0 {
@@ -2512,5 +2576,71 @@ mod tests {
         let m = live.model();
         assert!(m.file.blocks.iter().all(|b| b.start.is_some()));
         assert_eq!(live.status().time, 0.0);
+    }
+
+    #[test]
+    fn subsystems_are_grouped_opened_and_edited_from_the_canvas() {
+        use simsandbox_session::diagram::{Edit, Scope};
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES.iter().find(|e| e.name.contains("Cruise")).unwrap();
+        app.open_text(e.name, e.text);
+        // Group both blocks: the model now uses a subsystem, and runs.
+        canvas_edits(
+            &mut app,
+            vec![Edit::Group {
+                blocks: vec!["car".into(), "cruise".into()],
+            }],
+        );
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let m = app.session.as_ref().unwrap().model();
+        assert!(m.file.subsystems.contains_key("group1"));
+        assert!(m.params.iter().any(|r| r.key == "group1/cruise.kp"));
+        // Inside it, an edit changes the subsystem.
+        app.diagram.scope = Scope::Subsystem("group1".into());
+        canvas_edits(
+            &mut app,
+            vec![Edit::Rename {
+                from: "car".into(),
+                to: "body".into(),
+            }],
+        );
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let m = app.session.as_ref().unwrap().model();
+        assert!(m.file.subsystems["group1"]
+            .blocks
+            .iter()
+            .any(|b| b.name == "body"));
+        assert!(m.params.iter().any(|r| r.key == "group1/body.m"));
+        // And the equation editor works on a block inside it.
+        app.open_block(&m, "group1::body");
+        let ed = app.editor.as_mut().unwrap();
+        ed.text = ed.text.replace("(F - c*v)/m", "(F - c*v - drag2*v^2)/m");
+        app.apply_equations();
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let m = app.session.as_ref().unwrap().model();
+        assert!(m.params.iter().any(|r| r.key == "group1/body.drag2"));
+    }
+
+    #[test]
+    fn model_parameters_set_every_block_using_them() {
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        let live = app.session.as_ref().unwrap();
+        live.call(|s, _| s.set_param_key("kp", 800.0))
+            .unwrap()
+            .unwrap();
+        let m = live.model();
+        for car in ["car1", "car2", "car3"] {
+            let row = m
+                .params
+                .iter()
+                .find(|r| r.key == format!("{car}/control.kp"))
+                .unwrap();
+            assert_eq!((row.value, row.formula.as_deref()), (800.0, Some("kp")));
+        }
     }
 }

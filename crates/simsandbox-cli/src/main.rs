@@ -12,7 +12,7 @@
 //! simsandbox schema                 (the model file's JSON Schema)
 //! simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N]
 //!                   [--width POINTS] [--height POINTS] [--scale S] [--light]
-//!                   [--diagram]     (the block diagram instead of the views)
+//!                   [--diagram [--subsystem NAME]]  (the block diagram instead of the views)
 //! simsandbox start-from FILE --t SECONDS [--out NEW.json]
 //!                                   (the model file that starts from the state at t)
 //! simsandbox lorenz [--t-end 20] [--dt 0.01] [--method euler|rk4|dopri5] [--rho 28]
@@ -37,7 +37,7 @@ const USAGE: &str = "usage:
   simsandbox check FILE
   simsandbox describe [TYPE]
   simsandbox schema
-  simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--width POINTS] [--height POINTS] [--scale S] [--light] [--diagram]
+  simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--width POINTS] [--height POINTS] [--scale S] [--light] [--diagram [--subsystem NAME]]
   simsandbox start-from FILE --t SECONDS [--out NEW.json]
   simsandbox lorenz [--t-end SECONDS] [--dt SECONDS] [--method euler|rk4|dopri5] [--rho VALUE]";
 
@@ -191,6 +191,7 @@ fn render_file(args: &[String]) -> Result<(), String> {
             "--scale",
             "--light",
             "--diagram",
+            "--subsystem",
         ],
     )?;
     let out = flags.get("--out").ok_or("render needs --out IMAGE.png")?;
@@ -199,6 +200,9 @@ fn render_file(args: &[String]) -> Result<(), String> {
     let size = |flag: &str, default: f32| -> Result<f32, String> {
         Ok(flags.positive(flag)?.map_or(default, |v| v as f32))
     };
+    if flags.has("--subsystem") && !flags.has("--diagram") {
+        return Err("--subsystem draws a subsystem's diagram: add --diagram".into());
+    }
     if flags.has("--diagram") {
         if flags.has("--t-end") || flags.has("--view") {
             return Err("--t-end and --view do not apply to --diagram".into());
@@ -212,6 +216,7 @@ fn render_file(args: &[String]) -> Result<(), String> {
             scale: size("--scale", defaults.scale)?,
             view: None,
             light: flags.has("--light"),
+            subsystem: flags.get("--subsystem").map(str::to_string),
         };
         let image = render_diagram(&file, &registry(), &o)?;
         return std::fs::write(out, png(&image)?).map_err(|e| format!("{out}: {e}"));
@@ -243,6 +248,7 @@ fn render_file(args: &[String]) -> Result<(), String> {
             })
             .transpose()?,
         light: flags.has("--light"),
+        subsystem: None,
     };
     let (image, warnings) = render(&s, view_registry(), &o)?;
     for w in warnings {

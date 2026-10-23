@@ -180,10 +180,16 @@ class Model:
 
     # Parameters
 
-    def set(self, key: str, value: float) -> "Model":
-        """Set a parameter, ``"block.param"``."""
+    def set(self, key: str, value: "float | str") -> "Model":
+        """Set a parameter: ``"block.param"``, a subsystem use's
+        ``"instance.param"``, or a declared ``"name"``. A block parameter
+        may be a formula of declared parameters (``"2*size"``)."""
+        if key in self.data.get("params", {}):
+            self.data["params"][key]["value"] = float(value)
+            return self
         block, param = _split(key)
-        self.block(block).setdefault("params", {})[param] = float(value)
+        v = value if isinstance(value, str) else float(value)
+        self.block(block).setdefault("params", {})[param] = v
         return self
 
     def get(self, key: str) -> float:
@@ -241,6 +247,36 @@ class Model:
             raise ModelError(_errors(report) if not report["ok"] else str(e)) from None
         return Results(raw)
 
+    def declare(
+        self,
+        name: str,
+        value: float,
+        unit: str = "",
+        description: str = "",
+        range: tuple[float, float] | None = None,
+    ) -> "Model":
+        """Declare a parameter of the model itself, which block parameters
+        can use in formulas (ADR 0043): ``m.declare("size", 40, "m")`` then
+        ``m.set("grass.size", "size")``."""
+        d: dict[str, Any] = {"value": float(value)}
+        if unit:
+            d["unit"] = unit
+        if description:
+            d["description"] = description
+        if range is not None:
+            d["range"] = [float(range[0]), float(range[1])]
+        self.data.setdefault("params", {})[name] = d
+        return self
+
+    def group(self, blocks: Iterable[str], subsystem: str | None = None) -> str:
+        """Move ``blocks`` (of the model, or inside ``subsystem``) into a new
+        subsystem used in their place, as "Make subsystem" does on the
+        canvas: wires that cross become its ports. Returns a note naming
+        it."""
+        text, note = _native.group(self.to_json(), list(blocks), subsystem)
+        self.data = json.loads(text)
+        return note
+
     def start_from(self, t: float) -> "Model":
         """Run to ``t`` and return the model that starts from the state
         reached there, at time 0 (ADR 0042): e.g. a steady state from which
@@ -263,16 +299,20 @@ class Model:
         scale: float = 1.0,
         light: bool = False,
         diagram: bool = False,
+        subsystem: str | None = None,
     ) -> bytes:
         """Run to ``t_end`` and draw the model's views (``controls.views``,
         or ``view`` alone) as a PNG, as the app shows them; with
-        ``diagram``, draw its block diagram instead (no run needed). Writes
-        it to ``path`` if given; returns the PNG bytes."""
+        ``diagram``, draw its block diagram instead (no run needed), or
+        with ``subsystem`` too, that subsystem's inside. Writes it to
+        ``path`` if given; returns the PNG bytes."""
+        if subsystem is not None and not diagram:
+            raise ValueError("subsystem draws a subsystem's diagram: add diagram=True")
         if diagram:
             if t_end is not None or view is not None:
                 raise ValueError("t_end and view do not apply to a diagram")
             image = _native.render_diagram(
-                self.to_json(), float(width), float(height), float(scale), light
+                self.to_json(), float(width), float(height), float(scale), light, subsystem
             )
             warnings = []
         else:

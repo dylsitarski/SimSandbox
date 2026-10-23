@@ -39,6 +39,11 @@ use simsandbox_core::SimError;
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub mod subsystems;
+pub use subsystems::{
+    Declared, Derived, InputPort, OutputPort, ParamDecl, ParamPlan, ParamValue, Subsystem,
+};
+
 /// The format version this crate reads and writes.
 pub const FORMAT_VERSION: u32 = 1;
 
@@ -59,6 +64,13 @@ pub struct ModelFile {
     /// (ADR 0027, ADR 0028); `None` for one that runs in time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample: Option<Sampling>,
+    /// Parameters of the model itself, which block parameters can use in
+    /// formulas, e.g. a field size shared by two blocks (ADR 0043).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, ParamDecl>,
+    /// Groups of blocks used like block types by name (ADR 0043).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub subsystems: BTreeMap<String, Subsystem>,
     pub blocks: Vec<BlockEntry>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<ConnectionEntry>,
@@ -352,12 +364,15 @@ impl Default for RunSettings {
 /// One Block: a unique name, a registered type, a method and parameter
 /// values in each parameter's declared unit. Omitted parameters take their
 /// defaults.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlockEntry {
     pub name: String,
+    /// A registered block type, or a subsystem of this file (ADR 0043).
     #[serde(rename = "type")]
     pub type_name: String,
+    /// Absent for a subsystem, whose blocks have their own.
+    #[serde(default, skip_serializing_if = "MethodEntry::is_empty")]
     pub method: MethodEntry,
     /// Agent blocks: the order agents act in within a step (ADR 0034),
     /// e.g. `random_order`; the type's default if absent.
@@ -368,8 +383,11 @@ pub struct BlockEntry {
     /// equations.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub equations: Vec<String>,
+    /// Numbers, or formulas of the declared parameters in scope
+    /// (ADR 0043). For a subsystem: its declared parameters, and inner
+    /// values for this instance only as `"block.param"`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub params: BTreeMap<String, f64>,
+    pub params: BTreeMap<String, ParamValue>,
     /// Where the block sits on the node canvas, `[x, y]` in canvas units,
     /// y downwards (ADR 0042). Blocks without one are laid out
     /// automatically.
@@ -379,6 +397,10 @@ pub struct BlockEntry {
     /// give, e.g. a steady state reached before (ADR 0042).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<StartEntry>,
+    /// A subsystem's start states, by inner block (`"grass"`, nested
+    /// `"field/grass"`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub starts: BTreeMap<String, StartEntry>,
 }
 
 /// A saved start (ADR 0042): every state, in the block's state order, and
@@ -432,11 +454,17 @@ impl StartEntry {
 }
 
 /// A method name plus numeric options, e.g. `{"name": "rk4", "substeps": 4}`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MethodEntry {
     pub name: String,
     #[serde(flatten)]
     pub options: BTreeMap<String, f64>,
+}
+
+impl MethodEntry {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_empty() && self.options.is_empty()
+    }
 }
 
 impl From<&MethodEntry> for MethodSettings {
@@ -877,8 +905,15 @@ fn invalid(path: impl Into<String>, message: impl fmt::Display) -> FileError {
 pub struct Loaded {
     /// The file as read, with invalid controls removed.
     pub file: ModelFile,
+    /// The same with every subsystem expanded into its blocks (named
+    /// `instance/inner`) and formulas evaluated: one entry per Block in
+    /// `model` (ADR 0043). Equal to `file` for a file without subsystems
+    /// or declared parameters.
+    pub flat: ModelFile,
+    /// Declared parameters and the formulas they feed.
+    pub params: ParamPlan,
     pub model: Model,
-    /// Block names from the file mapped to their ids in `model`.
+    /// Flat block names mapped to their ids in `model`.
     pub ids: BTreeMap<String, BlockId>,
     /// Problems that did not stop loading, e.g. dropped controls.
     pub warnings: Vec<String>,
@@ -892,18 +927,77 @@ pub struct Loaded {
 /// Parse a model file and build its model.
 pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
     let (mut file, mut warnings) = ModelFile::from_json(text)?;
-    let (mut model, ids) = file.build(registry)?;
-    let groups = file.fuse(&mut model, &ids, registry)?;
-    warnings.extend(file.check_controls(&model, &ids));
-    let plan = file.plan(&model, &ids)?;
+    let subsystems::Flat {
+        file: mut flat,
+        plan: mut params,
+        block_origins,
+        connection_origins,
+        checks,
+    } = file.flatten()?;
+    for c in &checks {
+        c.verify(registry)?;
+    }
+    // Errors name the place in the file as written.
+    let origin = |e: FileError| origin(e, &block_origins, &connection_origins);
+    let (mut model, ids) = flat.build(registry).map_err(origin)?;
+    // Every parameter of a block inside an instance has a base value (the
+    // subsystem's, or the type's default), so saving writes only changes.
+    for b in flat.blocks.iter().filter(|b| b.name.contains('/')) {
+        let block = model.block(ids[&b.name]).map_err(|e| invalid(&b.name, e))?;
+        for p in &block.spec().params {
+            let known = params
+                .inner
+                .iter()
+                .any(|n| n.block == b.name && n.param == p.name)
+                || params.formula_of(&b.name, &p.name).is_some();
+            if !known {
+                params.inner.push(subsystems::Inner {
+                    block: b.name.clone(),
+                    param: p.name.clone(),
+                    base: p.default,
+                });
+            }
+        }
+    }
+    let groups = flat.fuse(&mut model, &ids, registry)?;
+    flat.controls = file.controls.clone();
+    warnings.extend(flat.check_controls(&model, &ids, &params));
+    file.controls = flat.controls.clone();
+    let plan = flat.plan(&model, &ids)?;
+    // Older sweep controls become a `sample` section as the file is read.
+    file.sample = flat.sample.clone();
+    file.controls = flat.controls.clone();
     Ok(Loaded {
         file,
+        flat,
+        params,
         model,
         ids,
         warnings,
         groups,
         plan,
     })
+}
+
+/// Map an error at a flat path (`blocks[3].method`) to where it is
+/// written (`subsystems.lag.blocks[0].method`).
+pub(crate) fn origin(e: FileError, blocks: &[String], connections: &[String]) -> FileError {
+    match e {
+        FileError::Invalid { path, message } => {
+            let mapped = [("blocks[", blocks), ("connections[", connections)]
+                .iter()
+                .find_map(|(head, origins)| {
+                    let rest = path.strip_prefix(head)?;
+                    let (i, tail) = rest.split_once(']')?;
+                    Some(format!("{}{tail}", origins.get(i.parse::<usize>().ok()?)?))
+                });
+            FileError::Invalid {
+                path: mapped.unwrap_or(path),
+                message,
+            }
+        }
+        e => e,
+    }
 }
 
 /// What is read from disk: like [`ModelFile`], but `controls` stays raw JSON
@@ -918,6 +1012,10 @@ struct RawFile {
     run: RunSettings,
     #[serde(default)]
     sample: Option<Sampling>,
+    #[serde(default)]
+    params: BTreeMap<String, ParamDecl>,
+    #[serde(default)]
+    subsystems: BTreeMap<String, Subsystem>,
     blocks: Vec<BlockEntry>,
     #[serde(default)]
     connections: Vec<ConnectionEntry>,
@@ -937,6 +1035,8 @@ impl ModelFile {
             description: None,
             run: RunSettings::default(),
             sample: None,
+            params: BTreeMap::new(),
+            subsystems: BTreeMap::new(),
             blocks: Vec::new(),
             connections: Vec::new(),
             fusion: Fusion::Auto,
@@ -988,6 +1088,8 @@ impl ModelFile {
                 description: raw.description,
                 run: raw.run,
                 sample: raw.sample,
+                params: raw.params,
+                subsystems: raw.subsystems,
                 blocks: raw.blocks,
                 connections: raw.connections,
                 fusion: raw.fusion,
@@ -1024,13 +1126,16 @@ impl ModelFile {
                 .params
                 .iter()
                 .zip(values)
-                .map(|(p, v)| (p.name.clone(), *v))
+                .map(|(p, v)| (p.name.clone(), ParamValue::Number(*v)))
                 .collect();
         }
         Ok(())
     }
 
-    fn build(&self, registry: &Registry) -> Result<(Model, BTreeMap<String, BlockId>), FileError> {
+    pub(crate) fn build(
+        &self,
+        registry: &Registry,
+    ) -> Result<(Model, BTreeMap<String, BlockId>), FileError> {
         let mut model = Model::new();
         model.set_seed(
             self.run
@@ -1044,6 +1149,15 @@ impl ModelFile {
         let mut ids = BTreeMap::new();
         for (bi, entry) in self.blocks.iter().enumerate() {
             let path = format!("blocks[{bi}]");
+            if entry.method.name.is_empty() {
+                return Err(invalid(
+                    format!("{path}.method"),
+                    format!(
+                        "'{}' needs a method (see simsandbox describe {})",
+                        entry.type_name, entry.type_name
+                    ),
+                ));
+            }
             if entry.name.is_empty() || entry.name.contains('.') {
                 return Err(invalid(
                     format!("{path}.name"),
@@ -1097,7 +1211,11 @@ impl ModelFile {
                 .transpose()
                 .map_err(|e| invalid(format!("{path}.start"), e))?;
             let id = model.add(block);
-            for (name, &value) in &entry.params {
+            for (name, value) in &entry.params {
+                // Formulas were evaluated when the file was flattened.
+                let value = value
+                    .number()
+                    .ok_or_else(|| invalid(format!("{path}.params.{name}"), "not evaluated"))?;
                 model
                     .set_param(id, name, value)
                     .map_err(|e| invalid(format!("{path}.params.{name}"), e))?;
@@ -1298,11 +1416,16 @@ impl ModelFile {
 
     /// Drop controls that refer to nothing or carry bad values; return a
     /// warning for each.
-    fn check_controls(&mut self, model: &Model, ids: &BTreeMap<String, BlockId>) -> Vec<String> {
+    fn check_controls(
+        &mut self,
+        model: &Model,
+        ids: &BTreeMap<String, BlockId>,
+        declared: &ParamPlan,
+    ) -> Vec<String> {
         let mut warnings = Vec::new();
         let c = &mut self.controls;
         c.params.retain(|key, pc| {
-            let known = port_ref(key, ids).ok().is_some_and(|(id, name)| {
+            let known = declared.declared(key).is_some() || port_ref(key, ids).ok().is_some_and(|(id, name)| {
                 model
                     .block(id)
                     .is_ok_and(|b| b.spec().params.iter().any(|p| p.name == name))

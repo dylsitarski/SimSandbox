@@ -129,3 +129,28 @@ def test_start_from_continues_from_a_reached_state():
     grazing = ss.Model.example("grazing").start_from(2.0)
     assert "start" in grazing.block("sheep") and "start" in grazing.block("grass")
     assert grazing.check()["ok"]
+
+
+def test_subsystems_and_model_parameters():
+    platoon = ss.Model.example("Platoon")
+    report = platoon.check()
+    assert report["subsystems"][0]["used_by"] == ["car1", "car2", "car3"]
+    kp = next(p for p in report["params"] if p["key"] == "car2/control.kp")
+    assert kp["formula"] == "kp"
+    platoon.set("kp", 800.0)
+    r = platoon.run(t_end=1.0)
+    assert r["car3/car.v"].shape == (21,)
+    assert platoon.render(diagram=True, subsystem="follower", width=300, height=200)[1:4] == b"PNG"
+    with pytest.raises(ss.ModelError, match="no subsystem"):
+        platoon.render(diagram=True, subsystem="nope")
+
+    # Q30: one field size for grass and sheep, then the sheep grouped.
+    g = ss.Model.example("grazing")
+    g.declare("size", 60, "m", "Side of the field")
+    g.set("grass.size", "size").set("sheep.size", "size")
+    assert {p["key"]: p["value"] for p in g.params()}["sheep.size"] == 60
+    note = g.group(["sheep"])
+    assert "group1" in note
+    assert g.data["subsystems"]["group1"]["params"]["size"]["value"] == 60
+    assert g.check()["ok"]
+    assert g.run(t_end=0.5).rows == 6

@@ -8,7 +8,9 @@ use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::{Simulator, Snapshot};
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
-use simsandbox_file::{Design, FilterEntry, FusedGroup, ModelFile, Plan, Sampling, ViewEntry};
+use simsandbox_file::{
+    Design, FilterEntry, FusedGroup, ModelFile, ParamPlan, Plan, Sampling, ViewEntry,
+};
 use simsandbox_views::cut::Geometry;
 use simsandbox_views::history::thin;
 use simsandbox_views::{Available, Coordinate, FieldShape, History, SignalRef};
@@ -86,10 +88,17 @@ struct FieldSource {
 /// One parameter as the panel shows it.
 #[derive(Clone)]
 pub struct ParamRow {
-    /// `"block.param"`, the key used in `controls.params`.
+    /// `"block.param"`, the key used in `controls.params`; for a declared
+    /// parameter (ADR 0043) `"name"` (the model's) or `"instance.name"`.
     pub key: String,
-    pub block: BlockId,
+    /// The Block it belongs to; `None` for a declared parameter.
+    pub block: Option<BlockId>,
+    /// The flat block name (`"pasture/grass"`), or for a declared
+    /// parameter the instance (`""` for the model's own).
+    pub owner: String,
     pub name: String,
+    /// Set when a formula computes it: it is shown, not edited.
+    pub formula: Option<String>,
     pub unit: String,
     pub description: String,
     pub suggested: [f64; 2],
@@ -149,6 +158,11 @@ pub struct Session {
     pub description: Option<String>,
     /// The file as loaded; the source for saving.
     pub file: ModelFile,
+    /// The file flattened: one entry per Block, subsystems expanded
+    /// (ADR 0043).
+    pub flat: ModelFile,
+    /// Declared parameters and the formulas they feed.
+    plan: ParamPlan,
     pub ids: BTreeMap<String, BlockId>,
     pub warnings: Vec<String>,
     /// Blocks solved together as one system (ADR 0023).
@@ -224,7 +238,7 @@ impl Session {
         let mut coordinates: Vec<Coordinate> = Vec::new();
         let mut block_types = Vec::new();
         let plots = &loaded.file.controls.plots;
-        for entry in &loaded.file.blocks {
+        for entry in &loaded.flat.blocks {
             let id = loaded.ids[&entry.name];
             let block = loaded.model.block(id).map_err(|e| e.to_string())?;
             if !block_types.contains(&entry.type_name) {
@@ -298,6 +312,8 @@ impl Session {
             dt: loaded.file.run.dt,
             stop_at: loaded.file.run.t_end,
             file: loaded.file,
+            flat: loaded.flat,
+            plan: loaded.params,
             ids: loaded.ids,
             groups: loaded.groups,
             warnings,
@@ -472,7 +488,7 @@ impl Session {
 
     /// Compile filters for this model; problems are `name: reason`.
     fn compile_filters(&self, entries: &[FilterEntry]) -> (Filters, Vec<String>) {
-        let params = param_keys(&self.file, &self.ids, self.sim.model());
+        let params = param_keys(&self.flat, &self.ids, self.sim.model());
         // Cuts may take any grid an expression makes in a 2D sweep.
         let mut scalars = self.output_names.clone();
         scalars.extend(
@@ -661,11 +677,33 @@ impl Session {
         reached
     }
 
-    /// Every parameter, in file block order.
+    /// Every parameter: the declared ones (the model's, then each
+    /// instance's), then every block's in flat block order.
     pub fn params(&self) -> Vec<ParamRow> {
         let model = self.sim.model();
         let mut rows = Vec::new();
-        for entry in &self.file.blocks {
+        for d in &self.plan.declared {
+            let (owner, name) = d.key.rsplit_once('.').unwrap_or(("", &d.key));
+            let formula = match (&d.formula, d.editable) {
+                (Some(f), _) => Some(f.text.clone()),
+                // Set inside another subsystem: fixed by its definition.
+                (None, false) => Some(short(d.value)),
+                (None, true) => None,
+            };
+            rows.push(ParamRow {
+                key: d.key.clone(),
+                block: None,
+                owner: owner.into(),
+                name: name.into(),
+                formula,
+                unit: d.unit.clone(),
+                description: d.description.clone(),
+                suggested: d.range.unwrap_or_else(|| suggested_range(d.value)),
+                initial_condition: false,
+                value: d.value,
+            });
+        }
+        for entry in &self.flat.blocks {
             let id = self.ids[&entry.name];
             let (Ok(block), Ok(values)) = (model.block(id), model.params(id)) else {
                 continue;
@@ -673,7 +711,12 @@ impl Session {
             for (p, &value) in block.spec().params.iter().zip(values) {
                 rows.push(ParamRow {
                     key: format!("{}.{}", entry.name, p.name),
-                    block: id,
+                    block: Some(id),
+                    owner: entry.name.clone(),
+                    formula: self
+                        .plan
+                        .formula_of(&entry.name, &p.name)
+                        .map(|f| f.text.clone()),
                     name: p.name.clone(),
                     unit: if p.unit == Unit::DIMENSIONLESS {
                         String::new()
@@ -690,12 +733,42 @@ impl Session {
         rows
     }
 
+    /// Change a parameter by its key (`"block.param"`, or a declared
+    /// parameter's), recomputing what formulas set from it (ADR 0043).
+    pub fn set_param_key(&mut self, key: &str, value: f64) -> Result<(), String> {
+        if self.plan.declared(key).is_some() {
+            let set = self.plan.set(key, value)?;
+            for (block, param, v) in set {
+                let id = self.ids[&block];
+                self.sim
+                    .set_param(id, &param, v)
+                    .map_err(|e| e.to_string())?;
+            }
+            return self.after_param_change();
+        }
+        let (block, name) = key
+            .rsplit_once('.')
+            .ok_or_else(|| format!("'{key}' is not 'block.param'"))?;
+        let id = *self
+            .ids
+            .get(block)
+            .ok_or_else(|| format!("no block '{block}'"))?;
+        if let Some(f) = self.plan.formula_of(block, name) {
+            return Err(format!("{key} is computed from '{}'", f.text));
+        }
+        self.set_param(id, name, value)
+    }
+
     /// Change a parameter while running. Initial conditions apply on
     /// [`Session::restart`], or at once if the run has not started.
     pub fn set_param(&mut self, block: BlockId, name: &str, value: f64) -> Result<(), String> {
         self.sim
             .set_param(block, name, value)
             .map_err(|e| e.to_string())?;
+        self.after_param_change()
+    }
+
+    fn after_param_change(&mut self) -> Result<(), String> {
         if self.sweep.is_some() {
             self.resample();
         } else if self.time() == 0.0 && self.snapshots.len() == 1 {
@@ -732,8 +805,8 @@ impl Session {
         }
         let t = self.time();
         let mut notes = Vec::new();
-        for i in 0..self.file.blocks.len() {
-            let name = self.file.blocks[i].name.clone();
+        for i in 0..self.flat.blocks.len() {
+            let name = self.flat.blocks[i].name.clone();
             let id = self.ids[&name];
             let now = self.sim.current(id);
             if now.state.is_empty() && now.tables.is_empty() {
@@ -764,7 +837,7 @@ impl Session {
                     self.sim.set_param(id, &n, v).map_err(|e| e.to_string())?;
                 }
                 self.sim.set_start(id, None).map_err(|e| e.to_string())?;
-                self.file.blocks[i].start = None;
+                self.flat.blocks[i].start = None;
                 notes.push(format!("{name}: {}", shown.join(", ")));
             } else {
                 let entry = simsandbox_file::StartEntry::from_start(&now, spec);
@@ -777,13 +850,14 @@ impl Session {
                 self.sim
                     .set_start(id, Some(now))
                     .map_err(|e| e.to_string())?;
-                self.file.blocks[i].start = Some(entry);
+                self.flat.blocks[i].start = Some(entry);
                 notes.push(format!("{name}: start state saved ({what})"));
             }
         }
         if notes.is_empty() {
             return Err("no block has a state to start from".into());
         }
+        self.sync_file()?;
         self.restart().map_err(|e| e.to_string())?;
         notes.insert(0, format!("Starting from the state at t = {}", short(t)));
         Ok(notes)
@@ -792,12 +866,23 @@ impl Session {
     /// Where a block sits on the node canvas (ADR 0042); layout only, so
     /// the run goes on.
     pub fn set_position(&mut self, block: &str, at: [f64; 2]) -> Result<(), String> {
+        self.set_position_in(&crate::diagram::Scope::Model, block, at)
+    }
+
+    /// Where a block, or a subsystem's port node, sits on the canvas of one
+    /// level (ADR 0043); layout only.
+    pub fn set_position_in(
+        &mut self,
+        scope: &crate::diagram::Scope,
+        block: &str,
+        at: [f64; 2],
+    ) -> Result<(), String> {
         let mut file = std::mem::take(&mut self.file);
         let edit = crate::diagram::Edit::Move {
             block: block.into(),
             at,
         };
-        let result = crate::diagram::apply(&mut file, &Registry::new(), &edit);
+        let result = crate::diagram::apply_in(&mut file, scope, &Registry::new(), &edit);
         self.file = file;
         result.map(|_| ())
     }
@@ -805,18 +890,28 @@ impl Session {
     /// Whether any block starts from a saved state instead of its
     /// parameters.
     pub fn has_start_states(&self) -> bool {
-        self.file.blocks.iter().any(|b| b.start.is_some())
+        self.flat.blocks.iter().any(|b| b.start.is_some())
+    }
+
+    /// Bring the file as written up to date with what runs.
+    fn sync_file(&mut self) -> Result<(), String> {
+        self.flat
+            .capture_params(self.sim.model(), &self.ids)
+            .map_err(|e| e.to_string())?;
+        self.file.capture_from(&self.flat, &self.plan);
+        Ok(())
     }
 
     /// Start every block from its parameters again, and restart.
     pub fn forget_start_states(&mut self) -> Result<(), String> {
-        for b in &mut self.file.blocks {
+        for b in &mut self.flat.blocks {
             if b.start.take().is_some() {
                 self.sim
                     .set_start(self.ids[&b.name], None)
                     .map_err(|e| e.to_string())?;
             }
         }
+        self.sync_file()?;
         self.restart().map_err(|e| e.to_string())
     }
 
@@ -827,9 +922,10 @@ impl Session {
         speed: f64,
         views: Option<Vec<ViewEntry>>,
     ) -> Result<String, String> {
-        self.file
+        self.flat
             .capture_params(self.sim.model(), &self.ids)
             .map_err(|e| e.to_string())?;
+        self.file.capture_from(&self.flat, &self.plan);
         self.file.run.dt = self.dt;
         self.file.controls.speed = Some(speed);
         if let Some(v) = views {
@@ -855,7 +951,7 @@ impl Session {
             return Err("this model has states, so it runs in time instead".into());
         }
         let plan = sampling
-            .plan(&self.file, self.sim.model(), &self.ids)
+            .plan(&self.flat, self.sim.model(), &self.ids)
             .map_err(|e| e.to_string())?;
         self.sweep = Some(Arc::new(Sweep::new(sampling, plan, &self.ids)?));
         let entries = self.filter_entries.clone();
@@ -1066,7 +1162,7 @@ impl Session {
     /// Every parameter's value, in [`Session::params`] order.
     fn param_values(&self) -> Vec<f64> {
         let model = self.sim.model();
-        self.file
+        self.flat
             .blocks
             .iter()
             .flat_map(|e| model.params(self.ids[&e.name]).unwrap_or(&[]))
@@ -1251,6 +1347,18 @@ impl Sweep {
             plan,
             targets,
         })
+    }
+}
+
+/// A slider range for a declared parameter that gives none: from zero to
+/// twice its value (or ±1 around zero).
+fn suggested_range(v: f64) -> [f64; 2] {
+    if v == 0.0 {
+        [-1.0, 1.0]
+    } else if v > 0.0 {
+        [0.0, 2.0 * v]
+    } else {
+        [2.0 * v, 0.0]
     }
 }
 
@@ -1895,5 +2003,104 @@ mod start_tests {
         let swept = open("Resonance curve");
         let mut swept = swept;
         assert!(swept.start_from_now().is_err());
+    }
+}
+
+#[cfg(test)]
+mod subsystem_tests {
+    use super::*;
+    use crate::examples::{registry, EXAMPLES};
+    use simsandbox_file::ParamValue;
+
+    fn platoon() -> Session {
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap();
+        Session::load(e.name, e.text, &registry()).unwrap()
+    }
+
+    #[test]
+    fn declared_parameters_are_listed_first_and_formulas_are_shown_not_edited() {
+        let s = platoon();
+        let rows = s.params();
+        let keys: Vec<&str> = rows.iter().take(5).map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["ki", "kp", "car1.ki", "car1.kp", "car1.mass"]);
+        let car1_kp = rows.iter().find(|r| r.key == "car1.kp").unwrap();
+        assert_eq!(car1_kp.formula.as_deref(), Some("kp"));
+        assert_eq!(car1_kp.owner, "car1");
+        let mass = rows.iter().find(|r| r.key == "car2.mass").unwrap();
+        assert!(mass.formula.is_none() && mass.block.is_none());
+        let m = rows.iter().find(|r| r.key == "car2/car.m").unwrap();
+        assert_eq!((m.value, m.formula.as_deref()), (1500.0, Some("mass")));
+        let c = rows.iter().find(|r| r.key == "car2/car.c").unwrap();
+        assert!(c.formula.is_none() && c.block.is_some());
+    }
+
+    #[test]
+    fn changing_a_declared_parameter_reaches_every_block_using_it() {
+        let mut s = platoon();
+        s.set_param_key("kp", 900.0).unwrap();
+        for car in ["car1", "car2", "car3"] {
+            let id = s.ids[&format!("{car}/control")];
+            assert_eq!(s.sim.model().param(id, "kp").unwrap(), 900.0);
+        }
+        s.set_param_key("car3.mass", 3000.0).unwrap();
+        assert_eq!(s.sim.model().param(s.ids["car3/car"], "m").unwrap(), 3000.0);
+        assert!(s
+            .set_param_key("car1.kp", 1.0)
+            .unwrap_err()
+            .contains("computed"));
+        assert!(s
+            .set_param_key("car1/car.m", 1.0)
+            .unwrap_err()
+            .contains("computed"));
+        s.set_param_key("car1/car.c", 80.0).unwrap();
+
+        // Saved, the formulas stay formulas and only changes are written.
+        let text = s.save_json(4.0, None).unwrap();
+        let (f, _) = ModelFile::from_json(&text).unwrap();
+        assert_eq!(f.params["kp"].value, 900.0);
+        let car3 = &f.blocks[3].params;
+        assert_eq!(car3["mass"], ParamValue::Number(3000.0));
+        assert_eq!(car3["kp"], ParamValue::Formula("kp".into()));
+        let car1 = &f.blocks[1].params;
+        assert_eq!(car1["car.c"], ParamValue::Number(80.0));
+        assert_eq!(car1.len(), 4, "{car1:?}");
+        assert_eq!(
+            f.subsystems["follower"].blocks[0].params["c"],
+            ParamValue::Number(50.0)
+        );
+        let again = Session::load("again", &text, &registry()).unwrap();
+        assert_eq!(
+            again.sim.model().param(again.ids["car1/car"], "c").unwrap(),
+            80.0
+        );
+        assert_eq!(
+            again
+                .sim
+                .model()
+                .param(again.ids["car2/control"], "kp")
+                .unwrap(),
+            900.0
+        );
+    }
+
+    #[test]
+    fn instances_start_from_a_reached_state_through_their_own_entry() {
+        let mut s = platoon();
+        s.run_until(20.0).unwrap();
+        let v = s.sim.state(s.ids["car3/car"]).to_vec();
+        s.start_from_now().unwrap();
+        let text = s.save_json(4.0, None).unwrap();
+        let (f, _) = ModelFile::from_json(&text).unwrap();
+        // The cars' initial speeds are parameters, set for each instance.
+        assert_eq!(f.blocks[3].params["car.v0"], ParamValue::Number(v[0]));
+        assert_eq!(
+            f.subsystems["follower"].blocks[0].params["v0"],
+            ParamValue::Number(0.0)
+        );
+        let again = Session::load("again", &text, &registry()).unwrap();
+        assert_eq!(again.sim.state(again.ids["car3/car"]), v);
     }
 }

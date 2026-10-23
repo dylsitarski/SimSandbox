@@ -21,6 +21,7 @@ const RESONANCE_MAP: &str = include_str!("../../../examples/resonance-map.ssbx.j
 const RESONANCE_SAMPLES: &str = include_str!("../../../examples/resonance-samples.ssbx.json");
 const GRAZING: &str = include_str!("../../../examples/grazing.ssbx.json");
 const CRUISE: &str = include_str!("../../../examples/cruise-control.ssbx.json");
+const PLATOON: &str = include_str!("../../../examples/platoon.ssbx.json");
 
 fn registry() -> Registry {
     let mut r = Registry::new();
@@ -52,6 +53,7 @@ fn examples_load_without_warnings() {
         RESONANCE_SAMPLES,
         GRAZING,
         CRUISE,
+        PLATOON,
     ] {
         let loaded = load(text, &registry()).unwrap();
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
@@ -356,8 +358,10 @@ fn schema_is_valid_json_and_lists_the_file_fields() {
             "format",
             "fusion",
             "groups",
+            "params",
             "run",
-            "sample"
+            "sample",
+            "subsystems"
         ]
     );
     assert_eq!(schema["properties"]["format"]["const"], 1);
@@ -809,10 +813,10 @@ fn numbers_read_back_exactly_as_written() {
     let (mut file, _) = ModelFile::from_json(CRUISE).unwrap();
     let values: Vec<f64> = (1..2000).map(|k| (k as f64 * 0.7368).sin() / 3.0).collect();
     for (k, v) in values.iter().enumerate() {
-        file.blocks[0].params.insert(format!("p{k}"), *v);
+        file.blocks[0].params.insert(format!("p{k}"), (*v).into());
     }
     let (again, _) = ModelFile::from_json(&file.to_json()).unwrap();
     for (k, v) in values.iter().enumerate() {
-        assert_eq!(again.blocks[0].params[&format!("p{k}")], *v);
+        assert_eq!(again.blocks[0].params[&format!("p{k}")].number(), Some(*v));
     }
 }

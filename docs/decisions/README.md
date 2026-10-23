@@ -48,6 +48,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0040](0040-feedthrough-and-algebraic-loops.md) | Direct feedthrough per output and input; loops detected and solved by Newton (or as `run.loops` says); typed `input` lines | Accepted | 2026-10-22 |
 | [0041](0041-headless-interface.md) | Headless interface: shared session crate, `describe`/`check`/`run --format json`/`render`, views rasterised on the CPU, Python package in its own workspace | Accepted | 2026-10-22 |
 | [0042](0042-node-canvas.md) | Node canvas as a Diagram tab; per-block `at`; edits rebuild and restart (drafts until they load); "Start from here" saves a reached state as the start | Accepted | 2026-10-22 |
+| [0043](0043-subsystems.md) | Subsystems defined in the file and flattened on load; declared parameters with formulas (resolves Q30); open and group on the canvas | Accepted | 2026-10-23 |
 
 ## When to write one
 

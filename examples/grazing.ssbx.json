@@ -1,9 +1,20 @@
 {
   "format": 1,
-  "description": "Sheep grazing a field: an ODE and an agent model in one graph. The grass (eq.grass) regrows in each of 40 × 40 cells; the sheep (agents.grazers) wander at random, eat the grass under them, split in two when well fed and die when starved, and their grazing goes back to the grass. The two settle into damped cycles around the balance where grass is just dense enough to feed the flock (about 0.4 kg/m² here). Left: the grass, with the sheep on it. Change how fast grass regrows (r) or how much a sheep needs (metabolism) and watch the balance move; the update order is in the side panel.",
+  "description": "Sheep grazing a field: an ODE and an agent model in one graph. The grass (eq.grass) regrows in each of 40 × 40 cells; the sheep (agents.grazers) wander at random, eat the grass under them, split in two when well fed and die when starved, and their grazing goes back to the grass. The two settle into damped cycles around the balance where grass is just dense enough to feed the flock (about 0.4 kg/m² here). Left: the grass, with the sheep on it. Change how fast grass regrows (r) or how much a sheep needs (metabolism) and watch the balance move; the update order is in the side panel. The field size is one model parameter that both blocks use.",
   "run": {
     "dt": 0.1,
     "seed": 1
+  },
+  "params": {
+    "size": {
+      "value": 40.0,
+      "unit": "m",
+      "description": "Side of the square field, the same for the grass and the sheep",
+      "range": [
+        10.0,
+        200.0
+      ]
+    }
   },
   "blocks": [
     {
@@ -13,7 +24,8 @@
         "name": "rk4"
       },
       "params": {
-        "g0": 1.0
+        "g0": 1.0,
+        "size": "size"
       }
     },
     {
@@ -22,7 +34,10 @@
       "method": {
         "name": "rules"
       },
-      "update": "random_order"
+      "update": "random_order",
+      "params": {
+        "size": "size"
+      }
     }
   ],
   "connections": [
@@ -63,6 +78,13 @@
         "range": [
           0.0,
           0.3
+        ]
+      },
+      "size": {
+        "slider": true,
+        "range": [
+          10.0,
+          200.0
         ]
       }
     },

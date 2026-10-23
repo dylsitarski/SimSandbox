@@ -6,9 +6,13 @@
 //! - Drag a block to move it; click to select it or a wire.
 //! - Drag from an output to an input (or back) to connect; drag a wire's
 //!   end off an input to move or remove it.
-//! - Delete removes the selection; right-click for block and canvas menus.
+//! - Shift-click adds a block to the selection; Shift-drag on the
+//!   background selects every block in a box; dragging a selected block
+//!   moves the selection.
+//! - Delete removes the selection; right-click for block and canvas menus,
+//!   among them "Make subsystem" (ADR 0043).
 
-use crate::diagram::{Diagram, Edit, Node, HEADER, NODE_WIDTH, ROW};
+use crate::diagram::{Diagram, Edit, Node, NodeKind, Scope, HEADER, NODE_WIDTH, ROW};
 use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use simsandbox_core::block::{Causality, Shape};
 use simsandbox_core::registry::Registry;
@@ -17,14 +21,28 @@ use simsandbox_core::registry::Registry;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Selection {
     Block(String),
+    /// Several blocks.
+    Many(Vec<String>),
     /// A wire, by the input it feeds.
     Wire(String),
+}
+
+impl Selection {
+    /// The selected nodes' names.
+    pub fn blocks(&self) -> Vec<String> {
+        match self {
+            Selection::Block(b) => vec![b.clone()],
+            Selection::Many(v) => v.clone(),
+            Selection::Wire(_) => Vec::new(),
+        }
+    }
 }
 
 /// What the user asked for besides edits.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
-    /// Open the block's definition (equations) or settings.
+    /// Open the block's definition (equations), settings or, for a
+    /// subsystem, its inside.
     Open(String),
 }
 
@@ -49,7 +67,10 @@ pub struct Canvas {
     fitted: Option<Vec2>,
     user_moved: bool,
     pub selected: Option<Selection>,
-    moving: Option<(usize, Vec2)>,
+    /// Nodes being dragged, each with where the pointer holds it.
+    moving: Vec<(usize, Vec2)>,
+    /// Where a Shift-drag selection box started, on screen.
+    band: Option<Pos2>,
     wiring: Option<Dragging>,
     /// Where a context menu was opened, in canvas units, and on what.
     menu: Option<([f64; 2], Option<usize>)>,
@@ -64,7 +85,8 @@ impl Default for Canvas {
             fitted: None,
             user_moved: false,
             selected: None,
-            moving: None,
+            moving: Vec::new(),
+            band: None,
             wiring: None,
             menu: None,
             rename: String::new(),
@@ -175,7 +197,7 @@ impl Canvas {
             ));
         }
         for (i, n) in d.nodes.iter().enumerate() {
-            let selected = self.selected == Some(Selection::Block(n.name.clone()));
+            let selected = self.is_selected(&n.name);
             self.node(&painter, &visuals, origin, n, selected);
             if interactive {
                 // Hover help: the error, or a port's unit and shape.
@@ -200,11 +222,31 @@ impl Canvas {
                 }
             }
         }
+        if let (Some(a), Some(b)) = (self.band, pointer) {
+            let r = Rect::from_two_pos(a, b);
+            painter.rect_filled(
+                r,
+                CornerRadius::ZERO,
+                visuals.selection.bg_fill.gamma_multiply(0.2),
+            );
+            painter.rect_stroke(
+                r,
+                CornerRadius::ZERO,
+                visuals.selection.stroke,
+                StrokeKind::Inside,
+            );
+        }
         if d.nodes.is_empty() {
+            let empty = match d.scope {
+                Scope::Model => "Empty model: right-click to add a block",
+                Scope::Subsystem(_) => {
+                    "Empty subsystem: right-click to add blocks, inputs and outputs"
+                }
+            };
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Empty model: right-click to add a block",
+                empty,
                 FontId::proportional(14.0),
                 visuals.weak_text_color(),
             );
@@ -233,6 +275,14 @@ impl Canvas {
         }
     }
 
+    fn is_selected(&self, name: &str) -> bool {
+        match &self.selected {
+            Some(Selection::Block(b)) => b == name,
+            Some(Selection::Many(v)) => v.iter().any(|b| b == name),
+            _ => false,
+        }
+    }
+
     fn node_rect(&self, origin: Pos2, n: &Node) -> Rect {
         Rect::from_min_size(
             self.to_screen(origin, n.at),
@@ -253,6 +303,11 @@ impl Canvas {
         let radius = CornerRadius::same((6.0 * z).round().clamp(0.0, 255.0) as u8);
         painter.rect_filled(r, radius, visuals.window_fill);
         let header = Rect::from_min_size(r.min, Vec2::new(r.width(), HEADER as f32 * z));
+        let header_fill = match n.kind {
+            NodeKind::Block => visuals.widgets.inactive.bg_fill,
+            NodeKind::Subsystem => visuals.selection.bg_fill.gamma_multiply(0.45),
+            NodeKind::Input | NodeKind::Output => visuals.warn_fg_color.gamma_multiply(0.25),
+        };
         painter.rect_filled(
             header,
             CornerRadius {
@@ -261,7 +316,7 @@ impl Canvas {
                 sw: 0,
                 se: 0,
             },
-            visuals.widgets.inactive.bg_fill,
+            header_fill,
         );
         let border = if n.error.is_some() {
             Stroke::new(2.0, visuals.error_fg_color)
@@ -271,20 +326,40 @@ impl Canvas {
             visuals.window_stroke
         };
         painter.rect_stroke(r, radius, border, StrokeKind::Inside);
+        if n.kind == NodeKind::Subsystem {
+            // A second outline: there is more inside.
+            painter.rect_stroke(
+                r.shrink(3.0 * z),
+                radius,
+                Stroke::new(1.0, border.color),
+                StrokeKind::Inside,
+            );
+        }
         let text = visuals.text_color();
         let weak = visuals.weak_text_color();
         let pad = 8.0 * z;
+        let title = match n.kind {
+            NodeKind::Input | NodeKind::Output => {
+                n.name[n.name.find(':').map_or(0, |i| i + 1)..].to_string()
+            }
+            _ => n.name.clone(),
+        };
         painter.text(
             r.min + Vec2::new(pad, 5.0 * z),
             egui::Align2::LEFT_TOP,
-            &n.name,
+            &title,
             FontId::proportional(14.0 * z),
             visuals.strong_text_color(),
         );
         let kind = if n.error.is_some() {
             "cannot be built (hover)".to_string()
         } else {
-            format!("{} · {}", n.type_name, n.method)
+            match n.kind {
+                NodeKind::Block => format!("{} · {}", n.type_name, n.method),
+                NodeKind::Subsystem => format!("{} · subsystem", n.type_name),
+                NodeKind::Input => "subsystem input".into(),
+                NodeKind::Output => "subsystem output".into(),
+            }
         };
         painter.text(
             r.min + Vec2::new(pad, 22.0 * z),
@@ -441,27 +516,58 @@ impl Canvas {
                         },
                     });
                 } else if let Some(i) = self.node_under(d, origin, p) {
-                    let grab = p - self.to_screen(origin, d.nodes[i].at);
-                    self.moving = Some((i, grab));
-                    self.selected = Some(Selection::Block(d.nodes[i].name.clone()));
+                    // A selected block moves the whole selection.
+                    if !self.is_selected(&d.nodes[i].name) {
+                        self.selected = Some(Selection::Block(d.nodes[i].name.clone()));
+                    }
+                    let group = self
+                        .selected
+                        .as_ref()
+                        .map(Selection::blocks)
+                        .unwrap_or_default();
+                    self.moving = d
+                        .nodes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, n)| group.contains(&n.name))
+                        .map(|(k, n)| (k, p - self.to_screen(origin, n.at)))
+                        .collect();
+                } else if ui.input(|i| i.modifiers.shift) {
+                    self.band = Some(p);
                 }
             }
         }
         if response.dragged_by(egui::PointerButton::Primary) {
-            if let (Some((i, grab)), Some(p)) = (self.moving, pointer) {
-                d.nodes[i].at = self.to_canvas(origin, p - grab);
-            } else if self.wiring.is_none() {
+            if let (false, Some(p)) = (self.moving.is_empty(), pointer) {
+                for &(i, grab) in &self.moving {
+                    d.nodes[i].at = self.to_canvas(origin, p - grab);
+                }
+            } else if self.wiring.is_none() && self.band.is_none() {
                 self.pan += response.drag_delta();
                 self.user_moved = true;
             }
         }
         if response.drag_stopped() {
-            if let Some((i, _)) = self.moving.take() {
+            for (i, _) in std::mem::take(&mut self.moving) {
                 d.nodes[i].placed = true;
                 edits.push(Edit::Move {
                     block: d.nodes[i].name.clone(),
                     at: d.nodes[i].at,
                 });
+            }
+            if let (Some(a), Some(b)) = (self.band.take(), pointer) {
+                let r = Rect::from_two_pos(a, b);
+                let inside: Vec<String> = d
+                    .nodes
+                    .iter()
+                    .filter(|n| n.is_block() && r.intersects(self.node_rect(origin, n)))
+                    .map(|n| n.name.clone())
+                    .collect();
+                self.selected = match inside.len() {
+                    0 => None,
+                    1 => Some(Selection::Block(inside[0].clone())),
+                    _ => Some(Selection::Many(inside)),
+                };
             }
             if let Some(g) = self.wiring.take() {
                 let target = pointer.and_then(|p| self.port_under(d, origin, p));
@@ -499,10 +605,30 @@ impl Canvas {
         }
         if response.clicked() {
             if let Some(p) = response.interact_pointer_pos() {
-                self.selected = if let Some(i) = self.node_under(d, origin, p) {
-                    Some(Selection::Block(d.nodes[i].name.clone()))
-                } else {
-                    self.wire_under(d, origin, p).map(Selection::Wire)
+                let shift = ui.input(|i| i.modifiers.shift);
+                self.selected = match self.node_under(d, origin, p) {
+                    // Shift-click adds or removes a block.
+                    Some(i) if shift && d.nodes[i].is_block() => {
+                        let name = d.nodes[i].name.clone();
+                        let mut v = self
+                            .selected
+                            .as_ref()
+                            .map(Selection::blocks)
+                            .unwrap_or_default();
+                        match v.iter().position(|b| b == &name) {
+                            Some(k) => {
+                                v.remove(k);
+                            }
+                            None => v.push(name),
+                        }
+                        match v.len() {
+                            0 => None,
+                            1 => Some(Selection::Block(v.remove(0))),
+                            _ => Some(Selection::Many(v)),
+                        }
+                    }
+                    Some(i) => Some(Selection::Block(d.nodes[i].name.clone())),
+                    None => self.wire_under(d, origin, p).map(Selection::Wire),
                 };
             }
         }
@@ -518,8 +644,11 @@ impl Canvas {
             if let Some(p) = response.interact_pointer_pos() {
                 let on = self.node_under(d, origin, p);
                 if let Some(i) = on {
-                    self.selected = Some(Selection::Block(d.nodes[i].name.clone()));
-                    self.rename = d.nodes[i].name.clone();
+                    let n = &d.nodes[i];
+                    if !self.is_selected(&n.name) {
+                        self.selected = Some(Selection::Block(n.name.clone()));
+                    }
+                    self.rename = n.name[n.name.find(':').map_or(0, |k| k + 1)..].to_string();
                 }
                 self.menu = Some((self.to_canvas(origin, p), on));
             }
@@ -529,8 +658,12 @@ impl Canvas {
         let typing = ui.ctx().egui_wants_keyboard_input();
         if delete && !typing && response.hovered() {
             match self.selected.take() {
-                Some(Selection::Block(block)) => edits.push(Edit::Delete { block }),
                 Some(Selection::Wire(to)) => edits.push(Edit::Disconnect { to }),
+                Some(s) => {
+                    for block in s.blocks() {
+                        edits.push(Edit::Delete { block });
+                    }
+                }
                 None => {}
             }
         }
@@ -547,23 +680,36 @@ impl Canvas {
         let Some((at, on)) = self.menu else {
             return;
         };
+        let selection = self
+            .selected
+            .as_ref()
+            .map(Selection::blocks)
+            .unwrap_or_default();
         let open = response.context_menu(|ui| match on {
             Some(i) => {
-                let name = d.nodes[i].name.clone();
-                ui.label(egui::RichText::new(&name).strong());
-                if ui
-                    .button("Edit…")
-                    .on_hover_text("Its equations or settings")
-                    .clicked()
-                {
-                    requests.push(Request::Open(name.clone()));
-                    ui.close();
+                let n = &d.nodes[i];
+                let name = n.name.clone();
+                let shown = name[name.find(':').map_or(0, |k| k + 1)..].to_string();
+                ui.label(egui::RichText::new(&shown).strong());
+                match n.kind {
+                    NodeKind::Subsystem => {
+                        if ui.button("Open").on_hover_text("Edit what is inside (every use changes)").clicked() {
+                            requests.push(Request::Open(name.clone()));
+                            ui.close();
+                        }
+                    }
+                    NodeKind::Block => {
+                        if ui.button("Edit…").on_hover_text("Its equations or settings").clicked() {
+                            requests.push(Request::Open(name.clone()));
+                            ui.close();
+                        }
+                    }
+                    NodeKind::Input | NodeKind::Output => {}
                 }
                 ui.horizontal(|ui| {
-                    let field =
-                        ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(110.0));
+                    let field = ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(110.0));
                     let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (ui.button("Rename").clicked() || enter) && self.rename != name {
+                    if (ui.button("Rename").clicked() || enter) && self.rename != shown {
                         edits.push(Edit::Rename {
                             from: name.clone(),
                             to: self.rename.trim().to_string(),
@@ -571,16 +717,60 @@ impl Canvas {
                         ui.close();
                     }
                 });
-                if ui.button("Delete").clicked() {
-                    edits.push(Edit::Delete { block: name });
+                if n.is_block() {
+                    let group: Vec<String> = if selection.contains(&name) {
+                        selection
+                            .iter()
+                            .filter(|b| d.node(b).is_some_and(|k| d.nodes[k].is_block()))
+                            .cloned()
+                            .collect()
+                    } else {
+                        vec![name.clone()]
+                    };
+                    let label = match group.len() {
+                        1 => "Make subsystem".to_string(),
+                        k => format!("Make subsystem of {k} blocks"),
+                    };
+                    if ui
+                        .button(label)
+                        .on_hover_text("Move into a new subsystem; wires that cross become its ports (Shift-click or Shift-drag to select several)")
+                        .clicked()
+                    {
+                        edits.push(Edit::Group { blocks: group });
+                        ui.close();
+                    }
+                }
+                let delete = match selection.len() {
+                    k if k > 1 && selection.contains(&name) => format!("Delete {k} blocks"),
+                    _ => "Delete".into(),
+                };
+                if ui.button(delete).clicked() {
+                    if selection.len() > 1 && selection.contains(&name) {
+                        for block in &selection {
+                            edits.push(Edit::Delete { block: block.clone() });
+                        }
+                    } else {
+                        edits.push(Edit::Delete { block: name });
+                    }
                     ui.close();
                 }
             }
             None => {
                 ui.label("Add block");
-                if let Some(type_name) = type_menu(ui, registry) {
+                if let Some(type_name) = type_menu(ui, registry, &d.subsystems) {
                     edits.push(Edit::Add { type_name, at });
                     ui.close();
+                }
+                if matches!(d.scope, Scope::Subsystem(_)) {
+                    ui.separator();
+                    if ui.button("Add input").clicked() {
+                        edits.push(Edit::AddPort { input: true, at });
+                        ui.close();
+                    }
+                    if ui.button("Add output").clicked() {
+                        edits.push(Edit::AddPort { input: false, at });
+                        ui.close();
+                    }
                 }
             }
         });
@@ -590,9 +780,9 @@ impl Canvas {
     }
 }
 
-/// A menu of block types by domain, with their summaries on hover.
-/// Returns the chosen type.
-pub fn type_menu(ui: &mut egui::Ui, registry: &Registry) -> Option<String> {
+/// A menu of block types by domain, with their summaries on hover, and
+/// the file's subsystems. Returns the chosen type.
+pub fn type_menu(ui: &mut egui::Ui, registry: &Registry, subsystems: &[String]) -> Option<String> {
     let mut domains: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
     for t in registry.type_names() {
         let domain = t.split_once('.').map_or("other", |(d, _)| d);
@@ -610,6 +800,15 @@ pub fn type_menu(ui: &mut egui::Ui, registry: &Registry) -> Option<String> {
                 let summary = registry.info(t).map_or("", |i| i.summary.as_str());
                 if ui.button(t).on_hover_text(summary).clicked() {
                     chosen = Some(t.to_string());
+                }
+            }
+        });
+    }
+    if !subsystems.is_empty() {
+        ui.menu_button("Subsystems", |ui| {
+            for s in subsystems {
+                if ui.button(s).clicked() {
+                    chosen = Some(s.clone());
                 }
             }
         });
@@ -719,10 +918,22 @@ mod tests {
         d: &mut Diagram,
         events: Vec<egui::Event>,
     ) -> (Vec<Edit>, Vec<Request>) {
+        frame_with(ctx, canvas, d, events, egui::Modifiers::NONE)
+    }
+
+    fn frame_with(
+        ctx: &egui::Context,
+        canvas: &mut Canvas,
+        d: &mut Diagram,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> (Vec<Edit>, Vec<Request>) {
         let r = registry();
+        let mut all = vec![egui::Event::ModifiersChanged(modifiers)];
+        all.extend(events);
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
-            events,
+            events: all,
             ..Default::default()
         };
         let mut out = (Vec::new(), Vec::new());
@@ -867,5 +1078,77 @@ mod tests {
         let after = c.to_canvas(Pos2::ZERO, p);
         assert!((before[0] - after[0]).abs() < 0.5 && (before[1] - after[1]).abs() < 0.5);
         assert_eq!(rows(&d.nodes[0]), 1);
+    }
+
+    #[test]
+    fn a_box_selects_several_blocks_which_move_and_delete_together() {
+        let (mut d, mut c, ctx) = cruise();
+        let shift = egui::Modifiers::SHIFT;
+        // A box around everything, Shift held.
+        let (a, b) = (Pos2::new(2.0, 2.0), Pos2::new(798.0, 598.0));
+        for events in [
+            vec![egui::Event::PointerMoved(a)],
+            vec![press(a, true)],
+            vec![egui::Event::PointerMoved(Pos2::new(400.0, 300.0))],
+            vec![egui::Event::PointerMoved(b)],
+            vec![press(b, false)],
+        ] {
+            frame_with(&ctx, &mut c, &mut d, events, shift);
+        }
+        let mut chosen = c.selected.clone().unwrap().blocks();
+        chosen.sort();
+        assert_eq!(chosen, ["car", "cruise"]);
+        // Dragging one moves both.
+        let before: Vec<[f64; 2]> = d.nodes.iter().map(|n| n.at).collect();
+        let n = &d.nodes[0];
+        let grab = c.to_screen(Pos2::ZERO, [n.at[0] + 60.0, n.at[1] + 10.0]);
+        let edits = drag(&ctx, &mut c, &mut d, grab, grab + Vec2::new(30.0, 0.0));
+        assert_eq!(edits.len(), 2, "{edits:?}");
+        for (k, n) in d.nodes.iter().enumerate() {
+            assert!(n.at[0] > before[k][0]);
+        }
+        // Delete removes both.
+        let p = c.to_screen(
+            Pos2::ZERO,
+            [d.nodes[0].at[0] + 60.0, d.nodes[0].at[1] + 10.0],
+        );
+        frame(&ctx, &mut c, &mut d, vec![egui::Event::PointerMoved(p)]);
+        let key = egui::Event::Key {
+            key: egui::Key::Delete,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        let (edits, _) = frame(&ctx, &mut c, &mut d, vec![key]);
+        assert_eq!(edits.len(), 2);
+        assert!(edits.iter().all(|e| matches!(e, Edit::Delete { .. })));
+    }
+
+    #[test]
+    fn shift_click_adds_to_the_selection() {
+        let (mut d, mut c, ctx) = cruise();
+        for name in ["car", "cruise"] {
+            let n = &d.nodes[d.node(name).unwrap()];
+            let p = c.to_screen(Pos2::ZERO, [n.at[0] + 50.0, n.at[1] + 5.0]);
+            frame(&ctx, &mut c, &mut d, vec![egui::Event::PointerMoved(p)]);
+            let pr = |pressed| egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::SHIFT,
+            };
+            frame_with(
+                &ctx,
+                &mut c,
+                &mut d,
+                vec![pr(true), pr(false)],
+                egui::Modifiers::SHIFT,
+            );
+        }
+        assert_eq!(
+            c.selected,
+            Some(Selection::Many(vec!["car".into(), "cruise".into()]))
+        );
     }
 }

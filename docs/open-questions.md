@@ -1,6 +1,6 @@
 # Open questions
 
-_Last updated: 2026-10-22_
+_Last updated: 2026-10-23_
 
 Decisions not yet made. When one is resolved, write an ADR, link it in the **Resolved** table and remove the row from **Open**.
 
@@ -8,7 +8,6 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Options | Needed by | Notes |
 | --- | --- | --- | --- | --- |
-| Q30 | Parameters shared by several blocks | (a) Model-level parameters that blocks' parameters can refer to; (b) a parameter passed along a connection (e.g. the field size as an output); (c) subsystems exposing one parameter for their members | With subsystems (Phase 1 item 7) | Raised 2026-10-22: the grazing model's field size is a parameter of both `eq.grass` and `agents.grazers` and must be kept equal by hand |
 | Q28 | How users define their own blocks without rebuilding SimSandbox | (a) Python, in process through PyO3; (b) WebAssembly plugins (sandboxed, any compiled language); (c) Julia, out of process; (d) extended typed languages only | After the typed agent rules (Q26) | Raised 2026-10-22 with [ADR 0038](decisions/0038-phase-1-revised.md), which deferred Python-defined blocks ([ADR 0036](decisions/0036-python-blocks.md)). Any choice keeps state in kernel memory and runs under the worker thread |
 | Q29 | When to add an MCP server and AI control of the running app | (a) With the headless interface; (b) after the node canvas, so an agent can build models in front of the user; (c) with the in-app AI assistant (Phase 3) | After Phase 1 item 5 | Raised 2026-10-22 with [ADR 0039](decisions/0039-ai-agent-access.md) |
 | Q27 | How the app finds Python | (a) The user's installed Python (minimum version to choose); (b) a Python shipped with the app (e.g. python-build-standalone), packages in an app-managed environment; (c) both, preferring the user's | Only if Q28 chooses Python | Raised 2026-10-19 with [ADR 0036](decisions/0036-python-blocks.md); settled by an embedding spike on Windows and Linux |
@@ -49,3 +48,4 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 | Q23 | A simpler way to choose profile cuts | [ADR 0031](decisions/0031-cut-filters.md) |
 | Q24 | Pipeline of filters versus views doing their own transforms | [ADR 0030](decisions/0030-filters-and-native-visualization.md), amended by [ADR 0032](decisions/0032-filters-as-a-graph.md) |
 | Q25 | Filters and views on the node canvas | [ADR 0032](decisions/0032-filters-as-a-graph.md) |
+| Q30 | Parameters shared by several blocks | [ADR 0043](decisions/0043-subsystems.md): declared parameters with formulas |

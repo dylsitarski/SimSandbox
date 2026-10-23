@@ -1,12 +1,16 @@
-//! The model graph as the node canvas shows it (ADR 0042): blocks with
-//! their ports, wires, positions (saved as `at`, or laid out left to right
-//! by signal flow), and the edits the canvas makes, as changes to the
-//! model file. Shared by the app and headless rendering.
+//! The model graph as the node canvas shows it (ADR 0042, ADR 0043): one
+//! level at a time (the model, or a subsystem's inside), with its blocks,
+//! subsystem instances and, inside a subsystem, nodes for its inputs and
+//! outputs; wires; positions (saved as `at`, or laid out left to right by
+//! signal flow); and the edits the canvas makes, as changes to the model
+//! file. Shared by the app and headless rendering.
 
 use serde_json::Value;
 use simsandbox_core::block::{Causality, Shape};
 use simsandbox_core::registry::{BlockConfig, Registry};
-use simsandbox_file::{BlockEntry, ConnectionEntry, ModelFile};
+use simsandbox_file::{
+    BlockEntry, ConnectionEntry, InputPort, ModelFile, OutputPort, ParamDecl, ParamValue, Subsystem,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Node size in canvas units.
@@ -17,6 +21,25 @@ pub const ROW: f64 = 20.0;
 const GAP_X: f64 = 90.0;
 const GAP_Y: f64 = 40.0;
 
+/// Which level of the model a diagram shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Scope {
+    #[default]
+    Model,
+    /// The inside of a subsystem, by name; editing it changes every use.
+    Subsystem(String),
+}
+
+/// Inside a subsystem, its ports are nodes named `in:u` and `out:y`, each
+/// with one port named like it (so wires read `in:u.u`, `out:y.y`).
+pub fn input_node(port: &str) -> String {
+    format!("in:{port}")
+}
+
+pub fn output_node(port: &str) -> String {
+    format!("out:{port}")
+}
+
 /// One port on a node.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Port {
@@ -25,10 +48,23 @@ pub struct Port {
     pub shape: Shape,
 }
 
-/// One block.
+/// What a node stands for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeKind {
+    Block,
+    /// A use of a subsystem.
+    Subsystem,
+    /// A subsystem's input or output, seen from inside.
+    Input,
+    Output,
+}
+
+/// One node.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
     pub name: String,
+    pub kind: NodeKind,
+    /// The block type, or the subsystem's name; `input` or `output`.
     pub type_name: String,
     pub method: String,
     pub inputs: Vec<Port>,
@@ -54,37 +90,118 @@ impl Node {
             Causality::Output => [self.at[0] + NODE_WIDTH, y],
         }
     }
+
+    /// Whether it is one of the model's blocks or instances (not a port
+    /// node), so it can be grouped.
+    pub fn is_block(&self) -> bool {
+        matches!(self.kind, NodeKind::Block | NodeKind::Subsystem)
+    }
 }
 
-/// A connection, by block and port index.
+/// A connection, by node and port index.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Wire {
     pub from: (usize, usize),
     pub to: (usize, usize),
-    /// `"block.port"` as in the file.
+    /// `"node.port"` as the canvas names it.
     pub from_name: String,
     pub to_name: String,
 }
 
-/// The whole graph.
+/// One level of the graph.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Diagram {
+    pub scope: Scope,
     pub nodes: Vec<Node>,
     pub wires: Vec<Wire>,
     /// Connections that name a block or port that does not exist.
     pub dangling: Vec<String>,
+    /// The file's subsystems, which can be added like block types.
+    pub subsystems: Vec<String>,
+    /// Inside a subsystem: the blocks using it (`"car1"`, nested
+    /// `"farm/pasture"` as flat names).
+    pub used_by: Vec<String>,
+}
+
+/// The blocks and wires of one level, and its ports inside a subsystem.
+struct Level<'a> {
+    blocks: &'a [BlockEntry],
+    connections: &'a [ConnectionEntry],
+    inputs: &'a [InputPort],
+    outputs: &'a [OutputPort],
+}
+
+fn level<'a>(file: &'a ModelFile, scope: &Scope) -> Option<Level<'a>> {
+    match scope {
+        Scope::Model => Some(Level {
+            blocks: &file.blocks,
+            connections: &file.connections,
+            inputs: &[],
+            outputs: &[],
+        }),
+        Scope::Subsystem(name) => file.subsystems.get(name).map(|d| Level {
+            blocks: &d.blocks,
+            connections: &d.connections,
+            inputs: &d.inputs,
+            outputs: &d.outputs,
+        }),
+    }
 }
 
 impl Diagram {
-    /// The graph of a model file, each block built alone so one that fails
-    /// still shows (with its error and no ports).
+    /// The model level of a file.
     pub fn new(file: &ModelFile, registry: &Registry) -> Self {
-        let mut nodes: Vec<Node> = file.blocks.iter().map(|b| node(b, registry)).collect();
-        let index: BTreeMap<&str, usize> = file
+        Self::of(file, &Scope::Model, registry)
+    }
+
+    /// One level of a file, each block built alone so one that fails
+    /// still shows (with its error and no ports).
+    pub fn of(file: &ModelFile, scope: &Scope, registry: &Registry) -> Self {
+        let Some(l) = level(file, scope) else {
+            return Self {
+                scope: scope.clone(),
+                ..Self::default()
+            };
+        };
+        let mut nodes: Vec<Node> = l
             .blocks
             .iter()
+            .map(|b| match file.subsystems.get(&b.type_name) {
+                Some(_) => instance_node(file, b, registry),
+                None => node(b, registry),
+            })
+            .collect();
+        for p in l.inputs {
+            let port = interface_port(
+                file,
+                l.blocks,
+                p.to.first().map(String::as_str),
+                true,
+                registry,
+                0,
+            );
+            nodes.push(boundary(
+                &input_node(&p.name),
+                NodeKind::Input,
+                &p.name,
+                port,
+                p.at,
+            ));
+        }
+        for p in l.outputs {
+            let port = interface_port(file, l.blocks, Some(&p.from), false, registry, 0);
+            nodes.push(boundary(
+                &output_node(&p.name),
+                NodeKind::Output,
+                &p.name,
+                port,
+                p.at,
+            ));
+        }
+        let index: BTreeMap<String, usize> = nodes
+            .iter()
             .enumerate()
-            .map(|(i, b)| (b.name.as_str(), i))
+            .map(|(i, n)| (n.name.clone(), i))
             .collect();
         let find = |key: &str, causality: Causality, nodes: &[Node]| {
             let (b, p) = key.split_once('.')?;
@@ -95,27 +212,50 @@ impl Diagram {
             };
             Some((n, ports.iter().position(|q| q.name == p)?))
         };
+        let mut links: Vec<(String, String)> = l
+            .connections
+            .iter()
+            .map(|c| (c.from.clone(), c.to.clone()))
+            .collect();
+        for p in l.inputs {
+            for t in &p.to {
+                links.push((format!("{}.{}", input_node(&p.name), p.name), t.clone()));
+            }
+        }
+        for p in l.outputs {
+            links.push((
+                p.from.clone(),
+                format!("{}.{}", output_node(&p.name), p.name),
+            ));
+        }
         let mut wires = Vec::new();
         let mut dangling = Vec::new();
-        for c in &file.connections {
+        for (from, to) in links {
             match (
-                find(&c.from, Causality::Output, &nodes),
-                find(&c.to, Causality::Input, &nodes),
+                find(&from, Causality::Output, &nodes),
+                find(&to, Causality::Input, &nodes),
             ) {
-                (Some(from), Some(to)) => wires.push(Wire {
-                    from,
-                    to,
-                    from_name: c.from.clone(),
-                    to_name: c.to.clone(),
+                (Some(f), Some(t)) => wires.push(Wire {
+                    from: f,
+                    to: t,
+                    from_name: from,
+                    to_name: to,
                 }),
-                _ => dangling.push(format!("{} → {}", c.from, c.to)),
+                _ => dangling.push(format!("{from} → {to}")),
             }
         }
         layout(&mut nodes, &wires);
+        let used_by = match scope {
+            Scope::Model => Vec::new(),
+            Scope::Subsystem(name) => uses(file, name),
+        };
         Self {
+            scope: scope.clone(),
             nodes,
             wires,
             dangling,
+            subsystems: file.subsystems.keys().cloned().collect(),
+            used_by,
         }
     }
 
@@ -143,6 +283,41 @@ impl Diagram {
     }
 }
 
+/// Flat names of every use of a subsystem (`"car1"`, `"farm/pasture"`).
+pub fn uses(file: &ModelFile, subsystem: &str) -> Vec<String> {
+    fn walk(
+        file: &ModelFile,
+        blocks: &[BlockEntry],
+        prefix: &str,
+        target: &str,
+        out: &mut Vec<String>,
+        depth: usize,
+    ) {
+        if depth > 16 {
+            return;
+        }
+        for b in blocks {
+            if let Some(def) = file.subsystems.get(&b.type_name) {
+                let flat = format!("{prefix}{}", b.name);
+                if b.type_name == target {
+                    out.push(flat.clone());
+                }
+                walk(
+                    file,
+                    &def.blocks,
+                    &format!("{flat}/"),
+                    target,
+                    out,
+                    depth + 1,
+                );
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(file, &file.blocks, "", subsystem, &mut out, 0);
+    out
+}
+
 fn ports(spec: &simsandbox_core::block::BlockSpec, c: Causality) -> Vec<Port> {
     spec.ports
         .iter()
@@ -155,22 +330,32 @@ fn ports(spec: &simsandbox_core::block::BlockSpec, c: Causality) -> Vec<Port> {
         .collect()
 }
 
-fn node(b: &BlockEntry, registry: &Registry) -> Node {
+fn build(
+    b: &BlockEntry,
+    registry: &Registry,
+) -> Result<Box<dyn simsandbox_core::block::Block>, String> {
     let config = BlockConfig {
         method: (&b.method).into(),
         definition: b.equations.clone(),
         update: b.update.clone(),
     };
-    let (inputs, outputs, error) = match registry.build(&b.type_name, &b.name, &config) {
+    registry
+        .build(&b.type_name, &b.name, &config)
+        .map_err(|e| e.to_string())
+}
+
+fn node(b: &BlockEntry, registry: &Registry) -> Node {
+    let (inputs, outputs, error) = match build(b, registry) {
         Ok(block) => (
             ports(block.spec(), Causality::Input),
             ports(block.spec(), Causality::Output),
             None,
         ),
-        Err(e) => (Vec::new(), Vec::new(), Some(e.to_string())),
+        Err(e) => (Vec::new(), Vec::new(), Some(e)),
     };
     Node {
         name: b.name.clone(),
+        kind: NodeKind::Block,
         type_name: b.type_name.clone(),
         method: b.method.name.clone(),
         inputs,
@@ -178,6 +363,137 @@ fn node(b: &BlockEntry, registry: &Registry) -> Node {
         at: b.at.unwrap_or_default(),
         placed: b.at.is_some(),
         error,
+    }
+}
+
+/// A port of a subsystem, typed by the inner port it leads to or from.
+fn interface_port(
+    file: &ModelFile,
+    blocks: &[BlockEntry],
+    inner: Option<&str>,
+    input: bool,
+    registry: &Registry,
+    depth: usize,
+) -> Option<Port> {
+    let (b, p) = inner?.split_once('.')?;
+    let entry = blocks.iter().find(|e| e.name == b)?;
+    if depth > 16 {
+        return None;
+    }
+    match file.subsystems.get(&entry.type_name) {
+        Some(def) => {
+            if input {
+                let port = def.inputs.iter().find(|q| q.name == p)?;
+                interface_port(
+                    file,
+                    &def.blocks,
+                    port.to.first().map(String::as_str),
+                    true,
+                    registry,
+                    depth + 1,
+                )
+            } else {
+                let port = def.outputs.iter().find(|q| q.name == p)?;
+                interface_port(
+                    file,
+                    &def.blocks,
+                    Some(&port.from),
+                    false,
+                    registry,
+                    depth + 1,
+                )
+            }
+        }
+        None => {
+            let block = build(entry, registry).ok()?;
+            let want = if input {
+                Causality::Input
+            } else {
+                Causality::Output
+            };
+            ports(block.spec(), want).into_iter().find(|q| q.name == p)
+        }
+    }
+}
+
+fn instance_node(file: &ModelFile, b: &BlockEntry, registry: &Registry) -> Node {
+    let def = &file.subsystems[&b.type_name];
+    let unknown = |name: &str| Port {
+        name: name.into(),
+        unit: String::new(),
+        shape: Shape::Scalar,
+    };
+    let inputs = def
+        .inputs
+        .iter()
+        .map(|p| {
+            let typed = interface_port(
+                file,
+                &def.blocks,
+                p.to.first().map(String::as_str),
+                true,
+                registry,
+                0,
+            );
+            Port {
+                name: p.name.clone(),
+                ..typed.unwrap_or_else(|| unknown(&p.name))
+            }
+        })
+        .collect();
+    let outputs = def
+        .outputs
+        .iter()
+        .map(|p| {
+            let typed = interface_port(file, &def.blocks, Some(&p.from), false, registry, 0);
+            Port {
+                name: p.name.clone(),
+                ..typed.unwrap_or_else(|| unknown(&p.name))
+            }
+        })
+        .collect();
+    Node {
+        name: b.name.clone(),
+        kind: NodeKind::Subsystem,
+        type_name: b.type_name.clone(),
+        method: "subsystem".into(),
+        inputs,
+        outputs,
+        at: b.at.unwrap_or_default(),
+        placed: b.at.is_some(),
+        error: None,
+    }
+}
+
+fn boundary(
+    name: &str,
+    kind: NodeKind,
+    port: &str,
+    typed: Option<Port>,
+    at: Option<[f64; 2]>,
+) -> Node {
+    let p = Port {
+        name: port.into(),
+        ..typed.unwrap_or(Port {
+            name: String::new(),
+            unit: String::new(),
+            shape: Shape::Scalar,
+        })
+    };
+    let (inputs, outputs, type_name) = match kind {
+        NodeKind::Input => (Vec::new(), vec![p], "input"),
+        _ => (vec![p], Vec::new(), "output"),
+    };
+    Node {
+        name: name.into(),
+        kind,
+        type_name: type_name.into(),
+        method: String::new(),
+        inputs,
+        outputs,
+        at: at.unwrap_or_default(),
+        placed: at.is_some(),
+        error: None,
     }
 }
 
@@ -233,6 +549,13 @@ fn layout(nodes: &mut [Node], wires: &[Wire]) {
             }
         }
     }
+    // A subsystem's outputs go in the last column.
+    let last = column.iter().max().copied().unwrap_or(0);
+    for (v, node) in nodes.iter().enumerate() {
+        if node.kind == NodeKind::Output {
+            column[v] = last.max(1);
+        }
+    }
     let columns = column.iter().max().map_or(0, |c| c + 1);
     let mut rank = vec![0.0f64; n];
     let left = nodes
@@ -274,34 +597,27 @@ fn layout(nodes: &mut [Node], wires: &[Wire]) {
     }
 }
 
-/// A change the canvas makes to the model.
+/// A change the canvas makes to the model, at one level.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Edit {
-    /// Only the layout: never restarts the run.
-    Move {
-        block: String,
-        at: [f64; 2],
-    },
-    Add {
-        type_name: String,
-        at: [f64; 2],
-    },
-    Delete {
-        block: String,
-    },
-    Rename {
-        from: String,
-        to: String,
-    },
-    /// `"block.port"` to `"block.port"`; replaces whatever fed the input.
-    Connect {
-        from: String,
-        to: String,
-    },
+    /// Only the layout: never restarts the run. Also moves port nodes.
+    Move { block: String, at: [f64; 2] },
+    /// A registered type or one of the file's subsystems.
+    Add { type_name: String, at: [f64; 2] },
+    /// A block, or a port node (removing the port).
+    Delete { block: String },
+    /// A block, or a port node (renaming the port).
+    Rename { from: String, to: String },
+    /// `"node.port"` to `"node.port"`; replaces whatever fed the input.
+    Connect { from: String, to: String },
     /// Remove the wire into this input.
-    Disconnect {
-        to: String,
-    },
+    Disconnect { to: String },
+    /// Inside a subsystem: a new input or output port.
+    AddPort { input: bool, at: [f64; 2] },
+    /// Move these blocks into a new subsystem and use it in their place.
+    Group { blocks: Vec<String> },
+    /// Rename a subsystem (its uses follow).
+    RenameSubsystem { from: String, to: String },
 }
 
 impl Edit {
@@ -311,115 +627,416 @@ impl Edit {
     }
 }
 
-/// Apply an edit to a model file. Returns a note for the log. The file
-/// may still fail to load (e.g. a wire between mismatched units); loading
-/// reports that.
+/// Apply an edit at the model level; see [`apply_in`].
 pub fn apply(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result<String, String> {
-    let has = |file: &ModelFile, name: &str| file.blocks.iter().any(|b| b.name == name);
+    apply_in(file, &Scope::Model, registry, edit)
+}
+
+/// Apply an edit at one level of a model file. Returns a note for the
+/// log. The file may still fail to load (e.g. a wire between mismatched
+/// units); loading reports that.
+pub fn apply_in(
+    file: &mut ModelFile,
+    scope: &Scope,
+    registry: &Registry,
+    edit: &Edit,
+) -> Result<String, String> {
+    if let Edit::RenameSubsystem { from, to } = edit {
+        return rename_subsystem(file, from, to);
+    }
+    if let Edit::Group { blocks } = edit {
+        return group(file, scope, blocks);
+    }
+    match scope {
+        Scope::Model => {
+            let mut def = Subsystem {
+                blocks: std::mem::take(&mut file.blocks),
+                connections: std::mem::take(&mut file.connections),
+                ..Subsystem::default()
+            };
+            let result = edit_level(&mut def, file, registry, edit, false);
+            file.blocks = def.blocks;
+            file.connections = def.connections;
+            let note = result?;
+            // References outside the level: sweeps, controls, groups.
+            match edit {
+                Edit::Delete { block } => forget_block(file, block),
+                Edit::Rename { from, to } => rename_refs_in_file(file, from, to)?,
+                _ => {}
+            }
+            Ok(note)
+        }
+        Scope::Subsystem(name) => {
+            let mut def = file
+                .subsystems
+                .remove(name)
+                .ok_or_else(|| format!("no subsystem '{name}'"))?;
+            let result = edit_level(&mut def, file, registry, edit, true);
+            file.subsystems.insert(name.clone(), def);
+            let note = result?;
+            match edit {
+                // Wires to a removed or renamed port, wherever it is used.
+                Edit::Delete { block } if block.starts_with("in:") || block.starts_with("out:") => {
+                    let port = &block[block.find(':').unwrap() + 1..];
+                    for_each_level(file, |blocks, conns| {
+                        let users: Vec<String> = blocks
+                            .iter()
+                            .filter(|b| &b.type_name == name)
+                            .map(|b| format!("{}.{port}", b.name))
+                            .collect();
+                        conns.retain(|c| !users.contains(&c.from) && !users.contains(&c.to));
+                    });
+                }
+                Edit::Rename { from, to }
+                    if from.starts_with("in:") || from.starts_with("out:") =>
+                {
+                    let old = &from[from.find(':').unwrap() + 1..];
+                    for_each_level(file, |blocks, conns| {
+                        for b in blocks.iter().filter(|b| &b.type_name == name) {
+                            let (o, n) = (format!("{}.{old}", b.name), format!("{}.{to}", b.name));
+                            for c in conns.iter_mut() {
+                                if c.from == o {
+                                    c.from = n.clone();
+                                }
+                                if c.to == o {
+                                    c.to = n.clone();
+                                }
+                            }
+                        }
+                    });
+                }
+                Edit::Rename { from, to } => {
+                    // Flat names of its blocks in controls: `inst/old.` →
+                    // `inst/new.` (any block of that name inside an
+                    // instance).
+                    let mut c = serde_json::to_value(&file.controls).map_err(|e| e.to_string())?;
+                    replace_in(&mut c, &format!("/{from}."), &format!("/{to}."));
+                    file.controls = serde_json::from_value(c).map_err(|e| e.to_string())?;
+                }
+                _ => {}
+            }
+            Ok(note)
+        }
+    }
+}
+
+/// Run `f` on the blocks and wires of every level: the model and each
+/// subsystem.
+fn for_each_level(
+    file: &mut ModelFile,
+    mut f: impl FnMut(&[BlockEntry], &mut Vec<ConnectionEntry>),
+) {
+    f(&file.blocks, &mut file.connections);
+    for def in file.subsystems.values_mut() {
+        f(&def.blocks, &mut def.connections);
+    }
+}
+
+fn replace_in(v: &mut Value, from: &str, to: &str) {
+    match v {
+        Value::String(s) => *s = s.replace(from, to),
+        Value::Array(items) => items.iter_mut().for_each(|i| replace_in(i, from, to)),
+        Value::Object(map) => {
+            let entries: Vec<(String, Value)> = std::mem::take(map).into_iter().collect();
+            for (k, mut item) in entries {
+                replace_in(&mut item, from, to);
+                map.insert(k.replace(from, to), item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Edit one level's blocks, wires and (inside a subsystem) ports.
+fn edit_level(
+    l: &mut Subsystem,
+    file: &ModelFile,
+    registry: &Registry,
+    edit: &Edit,
+    inside: bool,
+) -> Result<String, String> {
+    let has = |l: &Subsystem, name: &str| l.blocks.iter().any(|b| b.name == name);
+    let port_of = |node: &str| -> Option<(bool, String)> {
+        let (kind, rest) = node.split_once(':')?;
+        Some((kind == "in", rest.to_string()))
+    };
     match edit {
         Edit::Move { block, at } => {
-            let b = file
-                .blocks
-                .iter_mut()
-                .find(|b| &b.name == block)
-                .ok_or_else(|| format!("no block '{block}'"))?;
-            b.at = Some(at.map(tidy));
+            let at = Some(at.map(tidy));
+            match port_of(block) {
+                Some((true, p)) => {
+                    let q = l
+                        .inputs
+                        .iter_mut()
+                        .find(|q| q.name == p)
+                        .ok_or("no such input")?;
+                    q.at = at;
+                }
+                Some((false, p)) => {
+                    let q = l
+                        .outputs
+                        .iter_mut()
+                        .find(|q| q.name == p)
+                        .ok_or("no such output")?;
+                    q.at = at;
+                }
+                None => {
+                    let b = l
+                        .blocks
+                        .iter_mut()
+                        .find(|b| &b.name == block)
+                        .ok_or_else(|| format!("no block '{block}'"))?;
+                    b.at = at;
+                }
+            }
             Ok(String::new())
         }
         Edit::Add { type_name, at } => {
-            let info = registry
-                .info(type_name)
-                .ok_or_else(|| format!("unknown block type '{type_name}'"))?;
-            let base = type_name.rsplit('.').next().unwrap_or(type_name);
-            let name = (1..)
-                .map(|k| format!("{base}{k}"))
-                .find(|n| !has(file, n))
-                .expect("some name is free");
-            let method = info
-                .methods
-                .first()
-                .map(|(m, _)| m.clone())
-                .ok_or_else(|| format!("'{type_name}' lists no method"))?;
-            file.blocks.push(BlockEntry {
-                name: name.clone(),
-                type_name: type_name.clone(),
-                method: simsandbox_file::MethodEntry {
-                    name: method,
-                    options: BTreeMap::new(),
-                },
-                update: None,
-                equations: info.definition.clone().unwrap_or_default(),
-                params: BTreeMap::new(),
-                at: Some(at.map(tidy)),
-                start: None,
-            });
-            Ok(format!("Added {name} ({type_name})"))
+            let entry = if file.subsystems.contains_key(type_name) {
+                let base = type_name.to_lowercase();
+                let name = free_name(&base, |n| has(l, n));
+                BlockEntry {
+                    at: Some(at.map(tidy)),
+                    ..BlockEntry::instance(&name, type_name)
+                }
+            } else {
+                let info = registry
+                    .info(type_name)
+                    .ok_or_else(|| format!("unknown block type '{type_name}'"))?;
+                let base = type_name.rsplit('.').next().unwrap_or(type_name);
+                let name = free_name(base, |n| has(l, n));
+                let method = info
+                    .methods
+                    .first()
+                    .map(|(m, _)| m.clone())
+                    .ok_or_else(|| format!("'{type_name}' lists no method"))?;
+                BlockEntry {
+                    name,
+                    type_name: type_name.clone(),
+                    method: simsandbox_file::MethodEntry {
+                        name: method,
+                        options: BTreeMap::new(),
+                    },
+                    equations: info.definition.clone().unwrap_or_default(),
+                    at: Some(at.map(tidy)),
+                    ..Default::default()
+                }
+            };
+            let note = format!("Added {} ({type_name})", entry.name);
+            l.blocks.push(entry);
+            Ok(note)
         }
         Edit::Delete { block } => {
-            if !has(file, block) {
+            if let Some((input, p)) = port_of(block) {
+                if input {
+                    l.inputs.retain(|q| q.name != p);
+                } else {
+                    l.outputs.retain(|q| q.name != p);
+                }
+                return Ok(format!(
+                    "Removed the {} {p}",
+                    if input { "input" } else { "output" }
+                ));
+            }
+            if !has(l, block) {
                 return Err(format!("no block '{block}'"));
             }
             let mine = |key: &str| key.split_once('.').is_some_and(|(b, _)| b == block);
-            file.blocks.retain(|b| &b.name != block);
-            file.connections.retain(|c| !mine(&c.from) && !mine(&c.to));
-            for g in &mut file.groups {
-                g.blocks.retain(|b| b != block);
+            l.blocks.retain(|b| &b.name != block);
+            l.connections.retain(|c| !mine(&c.from) && !mine(&c.to));
+            for q in &mut l.inputs {
+                q.to.retain(|t| !mine(t));
             }
-            file.groups.retain(|g| g.blocks.len() > 1);
-            file.controls.params.retain(|k, _| !mine(k));
-            if let Some(s) = &mut file.sample {
-                s.params.retain(|p| !mine(&p.param));
+            // An output whose source is gone waits for a new one.
+            for q in &mut l.outputs {
+                if mine(&q.from) {
+                    q.from.clear();
+                }
             }
-            if file.sample.as_ref().is_some_and(|s| s.params.is_empty()) {
-                file.sample = None;
-            }
-            // Views and filters that used it are dropped with a warning
-            // when the model opens.
             Ok(format!("Deleted {block}"))
         }
         Edit::Rename { from, to } => {
-            if !has(file, from) {
-                return Err(format!("no block '{from}'"));
-            }
-            if to.is_empty()
-                || to.contains('.')
-                || !to.chars().all(|c| c.is_alphanumeric() || c == '_')
-            {
+            if !simsandbox_file::subsystems::valid_name(to) {
                 return Err(format!(
-                    "'{to}': names are letters, digits and '_' (no '.' or spaces)"
+                    "'{to}': names are letters, digits and '_' (no '.', '/' or spaces)"
                 ));
             }
-            if has(file, to) {
+            if let Some((input, p)) = port_of(from) {
+                let taken = if input {
+                    l.inputs.iter().any(|q| &q.name == to)
+                } else {
+                    l.outputs.iter().any(|q| &q.name == to)
+                };
+                if taken {
+                    return Err(format!("there is already a port named '{to}'"));
+                }
+                if input {
+                    if let Some(q) = l.inputs.iter_mut().find(|q| q.name == p) {
+                        q.name = to.clone();
+                    }
+                } else if let Some(q) = l.outputs.iter_mut().find(|q| q.name == p) {
+                    q.name = to.clone();
+                }
+                return Ok(format!("Renamed the port {p} to {to}"));
+            }
+            if !has(l, from) {
+                return Err(format!("no block '{from}'"));
+            }
+            if has(l, to) {
                 return Err(format!("there is already a block named '{to}'"));
             }
-            rename(file, from, to)?;
+            for b in &mut l.blocks {
+                if &b.name == from {
+                    b.name = to.clone();
+                }
+            }
+            for c in &mut l.connections {
+                c.from = rename_refs(&c.from, from, to);
+                c.to = rename_refs(&c.to, from, to);
+            }
+            for q in &mut l.inputs {
+                for t in &mut q.to {
+                    *t = rename_refs(t, from, to);
+                }
+            }
+            for q in &mut l.outputs {
+                q.from = rename_refs(&q.from, from, to);
+            }
             Ok(format!("Renamed {from} to {to}"))
         }
         Edit::Connect { from, to } => {
-            for key in [from, to] {
-                let (b, _) = key
-                    .split_once('.')
-                    .ok_or_else(|| format!("'{key}' is not 'block.port'"))?;
-                if !has(file, b) {
-                    return Err(format!("no block '{b}'"));
+            let src = port_of(from.split_once('.').map_or(from.as_str(), |(n, _)| n));
+            let dst = port_of(to.split_once('.').map_or(to.as_str(), |(n, _)| n));
+            for (key, port) in [(from, &src), (to, &dst)] {
+                if port.is_none() {
+                    let (b, _) = key
+                        .split_once('.')
+                        .ok_or_else(|| format!("'{key}' is not 'block.port'"))?;
+                    if !has(l, b) {
+                        return Err(format!("no block '{b}'"));
+                    }
                 }
             }
-            file.connections.retain(|c| &c.to != to);
-            file.connections.push(ConnectionEntry {
-                from: from.clone(),
-                to: to.clone(),
-            });
-            Ok(format!("Connected {from} → {to}"))
+            match (src, dst) {
+                (Some(_), Some(_)) => {
+                    Err("a subsystem's input cannot feed its output directly".into())
+                }
+                (Some((true, p)), None) => {
+                    unfeed(l, to);
+                    let q = l
+                        .inputs
+                        .iter_mut()
+                        .find(|q| q.name == p)
+                        .ok_or("no such input")?;
+                    q.to.push(to.clone());
+                    Ok(format!("Connected input {p} → {to}"))
+                }
+                (None, Some((false, p))) => {
+                    let q = l
+                        .outputs
+                        .iter_mut()
+                        .find(|q| q.name == p)
+                        .ok_or("no such output")?;
+                    q.from = from.clone();
+                    Ok(format!("Connected {from} → output {p}"))
+                }
+                (None, None) => {
+                    unfeed(l, to);
+                    l.connections.push(ConnectionEntry {
+                        from: from.clone(),
+                        to: to.clone(),
+                    });
+                    Ok(format!("Connected {from} → {to}"))
+                }
+                _ => Err("wires run from an output to an input".into()),
+            }
         }
         Edit::Disconnect { to } => {
-            let before = file.connections.len();
-            file.connections.retain(|c| &c.to != to);
-            if file.connections.len() == before {
+            if let Some((false, p)) = port_of(to.split_once('.').map_or(to.as_str(), |(n, _)| n)) {
+                let q = l
+                    .outputs
+                    .iter_mut()
+                    .find(|q| q.name == p)
+                    .ok_or("no such output")?;
+                q.from.clear();
+                return Ok(format!("Disconnected output {p}"));
+            }
+            if !unfeed(l, to) {
                 return Err(format!("nothing is connected to '{to}'"));
             }
             Ok(format!("Disconnected {to}"))
         }
+        Edit::AddPort { input, at } => {
+            if !inside {
+                return Err("only a subsystem has inputs and outputs".into());
+            }
+            let base = if *input { "in" } else { "out" };
+            let name = if *input {
+                free_name(base, |n| l.inputs.iter().any(|q| q.name == n))
+            } else {
+                free_name(base, |n| l.outputs.iter().any(|q| q.name == n))
+            };
+            let at = Some(at.map(tidy));
+            if *input {
+                l.inputs.push(InputPort {
+                    name: name.clone(),
+                    to: Vec::new(),
+                    at,
+                });
+            } else {
+                l.outputs.push(OutputPort {
+                    name: name.clone(),
+                    from: String::new(),
+                    at,
+                });
+            }
+            Ok(format!(
+                "Added the {} {name}",
+                if *input { "input" } else { "output" }
+            ))
+        }
+        Edit::Group { .. } | Edit::RenameSubsystem { .. } => unreachable!("handled before"),
     }
+}
+
+/// Remove whatever feeds an input at this level. Returns whether anything
+/// did.
+fn unfeed(l: &mut Subsystem, to: &str) -> bool {
+    let before = l.connections.len() + l.inputs.iter().map(|q| q.to.len()).sum::<usize>();
+    l.connections.retain(|c| c.to != to);
+    for q in &mut l.inputs {
+        q.to.retain(|t| t != to);
+    }
+    let after = l.connections.len() + l.inputs.iter().map(|q| q.to.len()).sum::<usize>();
+    after < before
+}
+
+fn free_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    (1..)
+        .map(|k| format!("{base}{k}"))
+        .find(|n| !taken(n))
+        .expect("some name is free")
+}
+
+/// Drop a deleted model-level block from sweeps, controls and groups.
+fn forget_block(file: &mut ModelFile, block: &str) {
+    let mine = |key: &str| {
+        key.split_once('.').is_some_and(|(b, _)| b == block)
+            || key.split_once('/').is_some_and(|(b, _)| b == block)
+    };
+    for g in &mut file.groups {
+        g.blocks.retain(|b| b != block);
+    }
+    file.groups.retain(|g| g.blocks.len() > 1);
+    file.controls.params.retain(|k, _| !mine(k));
+    if let Some(s) = &mut file.sample {
+        s.params.retain(|p| !mine(&p.param));
+    }
+    if file.sample.as_ref().is_some_and(|s| s.params.is_empty()) {
+        file.sample = None;
+    }
+    // Views and filters that used it are dropped with a warning when the
+    // model opens.
 }
 
 /// Positions are saved to a tenth of a unit.
@@ -427,25 +1044,15 @@ fn tidy(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }
 
-/// Rename a block everywhere the file names it: connections, groups,
-/// sweeps, controls, views and filters (`old.` becomes `new.` wherever
-/// a reference starts). Equations name only their own quantities.
-fn rename(file: &mut ModelFile, from: &str, to: &str) -> Result<(), String> {
+/// Rename a model-level block in sweeps, controls (sliders, views,
+/// filters) and groups: `old.` and `old/` become `new.` and `new/`
+/// wherever a reference starts.
+fn rename_refs_in_file(file: &mut ModelFile, from: &str, to: &str) -> Result<(), String> {
     let mut value: Value = serde_json::from_str(&file.to_json()).map_err(|e| e.to_string())?;
     let obj = value.as_object_mut().ok_or("a model file is an object")?;
     for (key, v) in obj.iter_mut() {
-        match key.as_str() {
-            "blocks" => {
-                for b in v.as_array_mut().into_iter().flatten() {
-                    if b["name"] == from {
-                        b["name"] = Value::String(to.into());
-                    }
-                }
-            }
-            "connections" | "groups" | "sample" | "controls" => {
-                rename_in(v, from, to);
-            }
-            _ => {}
+        if matches!(key.as_str(), "groups" | "sample" | "controls") {
+            rename_in(v, from, to);
         }
     }
     let (renamed, _) = ModelFile::from_json(&value.to_string()).map_err(|e| e.to_string())?;
@@ -468,33 +1075,282 @@ fn rename_in(v: &mut Value, from: &str, to: &str) {
     }
 }
 
-/// Replace references `from.` by `to.` where `from` is a whole name: at
-/// the start or after a character that cannot be part of a name.
+/// Replace references `from.` (and `from/`, a block inside it) by `to.`
+/// (`to/`) where `from` is a whole name: at the start or after a
+/// character that cannot be part of a name.
 pub fn rename_refs(s: &str, from: &str, to: &str) -> String {
-    let pattern = format!("{from}.");
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     let mut prev: Option<char> = None;
-    while let Some(i) = rest.find(&pattern) {
+    loop {
+        let next = [".", "/"]
+            .iter()
+            .filter_map(|sep| rest.find(&format!("{from}{sep}")).map(|i| (i, *sep)))
+            .min();
+        let Some((i, sep)) = next else {
+            break;
+        };
         let before = rest[..i].chars().last().or(prev);
         out.push_str(&rest[..i]);
-        if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') {
-            out.push_str(&pattern);
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '/') {
+            out.push_str(from);
         } else {
             out.push_str(to);
-            out.push('.');
         }
-        prev = Some('.');
-        rest = &rest[i + pattern.len()..];
+        out.push_str(sep);
+        prev = Some(sep.chars().next().unwrap());
+        rest = &rest[i + from.len() + 1..];
     }
     out.push_str(rest);
     out
 }
 
+/// Rename a subsystem, and every use of it.
+fn rename_subsystem(file: &mut ModelFile, from: &str, to: &str) -> Result<String, String> {
+    if !simsandbox_file::subsystems::valid_name(to) {
+        return Err(format!("'{to}': names are letters, digits and '_'"));
+    }
+    if file.subsystems.contains_key(to) {
+        return Err(format!("there is already a subsystem named '{to}'"));
+    }
+    let def = file
+        .subsystems
+        .remove(from)
+        .ok_or_else(|| format!("no subsystem '{from}'"))?;
+    file.subsystems.insert(to.into(), def);
+    let fix = |blocks: &mut Vec<BlockEntry>| {
+        for b in blocks.iter_mut().filter(|b| b.type_name == from) {
+            b.type_name = to.into();
+        }
+    };
+    fix(&mut file.blocks);
+    for d in file.subsystems.values_mut() {
+        fix(&mut d.blocks);
+    }
+    Ok(format!("Renamed the subsystem {from} to {to}"))
+}
+
+/// Move `names` (blocks of one level) into a new subsystem and use it in
+/// their place. Wires crossing the boundary become its ports; declared
+/// parameters the moved formulas use are passed in as its parameters.
+fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String, String> {
+    if names.is_empty() {
+        return Err("select the blocks to group".into());
+    }
+    let def_name = free_name("group", |n| file.subsystems.contains_key(n));
+    // The level's blocks and wires, and the parameters in scope there.
+    let (mut l, scope_params): (Subsystem, BTreeMap<String, f64>) = match scope {
+        Scope::Model => (
+            Subsystem {
+                blocks: std::mem::take(&mut file.blocks),
+                connections: std::mem::take(&mut file.connections),
+                ..Subsystem::default()
+            },
+            file.params
+                .iter()
+                .map(|(k, d)| (k.clone(), d.value))
+                .collect(),
+        ),
+        Scope::Subsystem(s) => {
+            let d = file
+                .subsystems
+                .remove(s)
+                .ok_or_else(|| format!("no subsystem '{s}'"))?;
+            let p = d.params.iter().map(|(k, d)| (k.clone(), d.value)).collect();
+            (d, p)
+        }
+    };
+    let result = (|| {
+        for n in names {
+            if !l.blocks.iter().any(|b| &b.name == n) {
+                return Err(format!("no block '{n}' here"));
+            }
+        }
+        let inside = |key: &str| {
+            key.split_once('.')
+                .is_some_and(|(b, _)| names.iter().any(|n| n == b))
+        };
+        let instance = if l.blocks.iter().any(|b| b.name == def_name) {
+            free_name(&def_name, |n| l.blocks.iter().any(|b| b.name == n))
+        } else {
+            def_name.clone()
+        };
+        let moved: Vec<BlockEntry> = l
+            .blocks
+            .iter()
+            .filter(|b| names.contains(&b.name))
+            .cloned()
+            .collect();
+        // Where the instance goes: the moved blocks' top-left.
+        let at = moved
+            .iter()
+            .filter_map(|b| b.at)
+            .fold(None, |m: Option<[f64; 2]>, p| {
+                Some(m.map_or(p, |m| [m[0].min(p[0]), m[1].min(p[1])]))
+            });
+        let mut def = Subsystem {
+            description: None,
+            blocks: moved,
+            ..Subsystem::default()
+        };
+        let mut outer = Vec::new();
+        let unique = |taken: &dyn Fn(&str) -> bool, base: &str| {
+            if !taken(base) {
+                base.to_string()
+            } else {
+                free_name(base, taken)
+            }
+        };
+        for c in std::mem::take(&mut l.connections) {
+            match (inside(&c.from), inside(&c.to)) {
+                (true, true) => def.connections.push(c),
+                (false, false) => outer.push(c),
+                (false, true) => {
+                    // One input per outside source.
+                    let existing = def.inputs.iter_mut().find(|q| {
+                        outer.iter().any(|o: &ConnectionEntry| {
+                            o.from == c.from && o.to == format!("{instance}.{}", q.name)
+                        })
+                    });
+                    match existing {
+                        Some(q) => q.to.push(c.to.clone()),
+                        None => {
+                            let base = c.to.split_once('.').map_or("in", |(_, p)| p).to_string();
+                            let name =
+                                unique(&|n: &str| def.inputs.iter().any(|q| q.name == n), &base);
+                            def.inputs.push(InputPort {
+                                name: name.clone(),
+                                to: vec![c.to.clone()],
+                                at: None,
+                            });
+                            outer.push(ConnectionEntry {
+                                from: c.from.clone(),
+                                to: format!("{instance}.{name}"),
+                            });
+                        }
+                    }
+                }
+                (true, false) => {
+                    // One output per inside source.
+                    let name = match def.outputs.iter().find(|q| q.from == c.from) {
+                        Some(q) => q.name.clone(),
+                        None => {
+                            let base = c.from.split_once('.').map_or("out", |(_, p)| p).to_string();
+                            let name =
+                                unique(&|n: &str| def.outputs.iter().any(|q| q.name == n), &base);
+                            def.outputs.push(OutputPort {
+                                name: name.clone(),
+                                from: c.from.clone(),
+                                at: None,
+                            });
+                            name
+                        }
+                    };
+                    outer.push(ConnectionEntry {
+                        from: format!("{instance}.{name}"),
+                        to: c.to.clone(),
+                    });
+                }
+            }
+        }
+        // Ports of the level itself that fed moved blocks now feed the
+        // instance; outputs that showed a moved block show the instance.
+        for q in &mut l.inputs {
+            let (into, rest): (Vec<String>, Vec<String>) = q.to.drain(..).partition(|t| inside(t));
+            q.to = rest;
+            if !into.is_empty() {
+                let base = into[0].split_once('.').map_or("in", |(_, p)| p).to_string();
+                let name = unique(&|n: &str| def.inputs.iter().any(|p| p.name == n), &base);
+                def.inputs.push(InputPort {
+                    name: name.clone(),
+                    to: into,
+                    at: None,
+                });
+                q.to.push(format!("{instance}.{name}"));
+            }
+        }
+        for q in &mut l.outputs {
+            if inside(&q.from) {
+                let base = q.from.split_once('.').map_or("out", |(_, p)| p).to_string();
+                let name = unique(&|n: &str| def.outputs.iter().any(|p| p.name == n), &base);
+                def.outputs.push(OutputPort {
+                    name: name.clone(),
+                    from: q.from.clone(),
+                    at: None,
+                });
+                q.from = format!("{instance}.{name}");
+            }
+        }
+        // Parameters the moved formulas use come in as the subsystem's own.
+        let mut entry = BlockEntry {
+            at,
+            ..BlockEntry::instance(&instance, &def_name)
+        };
+        for b in &def.blocks {
+            for v in b.params.values() {
+                let ParamValue::Formula(text) = v else {
+                    continue;
+                };
+                let Ok(ast) = simsandbox_expr::parse(text) else {
+                    continue;
+                };
+                for (name, _) in ast.names() {
+                    if let Some(&value) = scope_params.get(&name) {
+                        def.params.entry(name.clone()).or_insert(ParamDecl {
+                            value,
+                            unit: String::new(),
+                            description: String::new(),
+                            range: None,
+                        });
+                        entry.params.insert(name.clone(), ParamValue::Formula(name));
+                    }
+                }
+            }
+        }
+        l.blocks.retain(|b| !names.contains(&b.name));
+        l.blocks.push(entry);
+        l.connections = outer;
+        Ok((instance, def))
+    })();
+    // Put the level back, changed or not.
+    match scope {
+        Scope::Model => {
+            file.blocks = l.blocks;
+            file.connections = l.connections;
+        }
+        Scope::Subsystem(s) => {
+            file.subsystems.insert(s.clone(), l);
+        }
+    }
+    let (instance, def) = result?;
+    let count = def.blocks.len();
+    file.subsystems.insert(def_name.clone(), def);
+    if *scope == Scope::Model {
+        // Flat names change: `car.v` is now `group1/car.v`.
+        for n in names {
+            let mut c = serde_json::to_value(&file.controls).map_err(|e| e.to_string())?;
+            rename_in(&mut c, n, &format!("{instance}/{n}"));
+            file.controls = serde_json::from_value(c).map_err(|e| e.to_string())?;
+            if let Some(s) = &mut file.sample {
+                for p in &mut s.params {
+                    p.param = rename_refs(&p.param, n, &format!("{instance}/{n}"));
+                }
+            }
+            for g in &mut file.groups {
+                g.blocks.retain(|b| b != n);
+            }
+        }
+        file.groups.retain(|g| g.blocks.len() > 1);
+    }
+    Ok(format!(
+        "Grouped {count} blocks into the subsystem {def_name} (used as {instance})"
+    ))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::examples::{registry, EXAMPLES};
+    use simsandbox_file::ParamValue;
 
     fn file(part: &str) -> ModelFile {
         let e = EXAMPLES.iter().find(|e| e.name.contains(part)).unwrap();
@@ -693,6 +1549,200 @@ mod tests {
         assert_eq!(rename_refs("grid.a.x", "a", "b"), "grid.a.x");
         assert_eq!(rename_refs("2*a.x", "a", "q"), "2*q.x");
         assert_eq!(rename_refs("t", "a", "b"), "t");
+        assert_eq!(
+            rename_refs("car1/car.v + car10/car.v", "car1", "lead"),
+            "lead/car.v + car10/car.v"
+        );
+    }
+
+    /// The final value of a recorded signal after `t` seconds.
+    fn final_value(f: &ModelFile, signal: &str, t: f64) -> f64 {
+        let r = crate::run::run(&f.to_json(), &registry(), Some(t), None).unwrap();
+        let (block, port) = signal.split_once('.').unwrap();
+        let _ = block;
+        let o = r
+            .outputs
+            .iter()
+            .find(|o| o.name == signal)
+            .unwrap_or_else(|| panic!("no {signal} ({port})"));
+        *o.values.last().unwrap()
+    }
+
+    #[test]
+    fn subsystems_show_as_one_node_and_open_to_their_inside() {
+        let r = registry();
+        let f = file("Platoon");
+        let d = Diagram::new(&f, &r);
+        let car1 = &d.nodes[d.node("car1").unwrap()];
+        assert_eq!(car1.kind, NodeKind::Subsystem);
+        assert_eq!(car1.type_name, "follower");
+        assert_eq!(car1.inputs[0].name, "lead");
+        assert_eq!(car1.outputs[0].name, "v");
+        // Typed equations are dimensionless.
+        assert_eq!(car1.outputs[0].unit, "1");
+        assert_eq!((d.wires.len(), d.dangling.len()), (3, 0));
+        assert_eq!(d.subsystems, ["follower"]);
+
+        let inside = Diagram::of(&f, &Scope::Subsystem("follower".into()), &r);
+        let names: Vec<&str> = inside.nodes.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["car", "control", "in:lead", "out:v"]);
+        assert_eq!((inside.wires.len(), inside.dangling.len()), (4, 0));
+        assert_eq!(inside.used_by, ["car1", "car2", "car3"]);
+        let out = &inside.nodes[inside.node("out:v").unwrap()];
+        assert!(out.at[0] > inside.nodes[0].at[0], "outputs go right");
+    }
+
+    #[test]
+    fn edits_inside_a_subsystem_change_every_use() {
+        let r = registry();
+        let mut f = file("Platoon");
+        let inside = Scope::Subsystem("follower".into());
+        let loads = |f: &ModelFile| crate::Session::load("t", &f.to_json(), &r).map(|_| ());
+        // Rename an input: wires to it everywhere follow.
+        apply_in(
+            &mut f,
+            &inside,
+            &r,
+            &Edit::Rename {
+                from: "in:lead".into(),
+                to: "ahead".into(),
+            },
+        )
+        .unwrap();
+        assert!(f.connections.iter().any(|c| c.to == "car2.ahead"));
+        loads(&f).unwrap();
+        // A new output, fed from the controller's force.
+        apply_in(
+            &mut f,
+            &inside,
+            &r,
+            &Edit::AddPort {
+                input: false,
+                at: [400.0, 0.0],
+            },
+        )
+        .unwrap();
+        loads(&f).unwrap_err();
+        apply_in(
+            &mut f,
+            &inside,
+            &r,
+            &Edit::Connect {
+                from: "control.F".into(),
+                to: "out:out1.out1".into(),
+            },
+        )
+        .unwrap();
+        loads(&f).unwrap();
+        let d = Diagram::new(&f, &r);
+        assert_eq!(d.nodes[d.node("car3").unwrap()].outputs.len(), 2);
+        // Rename an inner block: its flat names in views follow.
+        apply_in(
+            &mut f,
+            &inside,
+            &r,
+            &Edit::Rename {
+                from: "car".into(),
+                to: "body".into(),
+            },
+        )
+        .unwrap();
+        let views = serde_json::to_string(&f.controls.views).unwrap();
+        assert!(views.contains("car2/body.v"), "{views}");
+        loads(&f).unwrap();
+        // Remove the input: the wires into its uses go too, and the inner
+        // input it fed is open.
+        apply_in(
+            &mut f,
+            &inside,
+            &r,
+            &Edit::Delete {
+                block: "in:ahead".into(),
+            },
+        )
+        .unwrap();
+        assert!(!f.connections.iter().any(|c| c.to.ends_with(".ahead")));
+        assert!(loads(&f).unwrap_err().contains("lead"));
+        assert!(apply_in(
+            &mut f,
+            &Scope::Model,
+            &r,
+            &Edit::AddPort {
+                input: true,
+                at: [0.0, 0.0]
+            }
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn grouping_blocks_keeps_the_model_and_its_numbers() {
+        let r = registry();
+        let before = file("Cruise");
+        let v = final_value(&before, "car.v", 5.0);
+        // The controller alone: wires crossing the boundary become ports.
+        let mut f = before.clone();
+        let note = apply(
+            &mut f,
+            &r,
+            &Edit::Group {
+                blocks: vec!["cruise".into()],
+            },
+        )
+        .unwrap();
+        assert!(note.contains("group1"), "{note}");
+        let def = &f.subsystems["group1"];
+        assert_eq!(def.inputs[0].name, "v");
+        assert_eq!(def.outputs[0].name, "F");
+        assert!(f
+            .connections
+            .iter()
+            .any(|c| c.from == "car.v" && c.to == "group1.v"));
+        assert!(f.controls.params.contains_key("group1/cruise.kp"));
+        assert_eq!(final_value(&f, "car.v", 5.0), v);
+        // Both blocks: no ports, the same numbers.
+        let mut f = before.clone();
+        apply(
+            &mut f,
+            &r,
+            &Edit::Group {
+                blocks: vec!["car".into(), "cruise".into()],
+            },
+        )
+        .unwrap();
+        assert!(f.connections.is_empty());
+        assert_eq!(final_value(&f, "group1/car.v", 5.0), v);
+        // Instances whose parameters are formulas of the model's: they
+        // come in as the new subsystem's parameters.
+        let mut p = file("Platoon");
+        let v3 = final_value(&p, "car3/car.v", 5.0);
+        apply(
+            &mut p,
+            &r,
+            &Edit::Group {
+                blocks: vec!["car1".into(), "car2".into()],
+            },
+        )
+        .unwrap();
+        let def = &p.subsystems["group1"];
+        assert!(def.params.contains_key("kp") && def.params.contains_key("ki"));
+        assert_eq!(
+            p.blocks.last().unwrap().params["kp"],
+            ParamValue::Formula("kp".into())
+        );
+        assert_eq!(final_value(&p, "car3/car.v", 5.0), v3);
+        // And a subsystem can be renamed.
+        apply(
+            &mut p,
+            &r,
+            &Edit::RenameSubsystem {
+                from: "follower".into(),
+                to: "chaser".into(),
+            },
+        )
+        .unwrap();
+        assert!(p.blocks.iter().any(|b| b.type_name == "chaser"));
+        assert_eq!(final_value(&p, "car3/car.v", 5.0), v3);
     }
 
     #[test]
