@@ -146,6 +146,12 @@ pub trait View {
 
     /// Draw transposed from now on, or back (for [`Swap::Transpose`]).
     fn transpose(&mut self) {}
+
+    /// The signal the user clicked since last asked (a curve), so the app
+    /// can show where it comes from (ADR 0053).
+    fn picked(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// What a model offers views: its recorded signals by kind and its block
@@ -394,7 +400,7 @@ impl ViewRegistry {
 
 /// What a view of type `t` draws from: its bindings resolved in `history`;
 /// bindings to signals that no longer exist are skipped.
-fn view_input<'a>(
+pub(crate) fn view_input<'a>(
     bind: &'a Bindings,
     style: &'a BTreeMap<String, f64>,
     t: &'a ViewType,
@@ -484,6 +490,11 @@ impl ViewState {
 
     pub fn camera(&self) -> Option<[f64; 3]> {
         self.view.camera()
+    }
+
+    /// The signal clicked in the view since last asked.
+    pub fn picked(&mut self) -> Option<String> {
+        self.view.picked()
     }
 
     /// The "swap axes" button: exchange two slots' bindings, or transpose.

@@ -264,6 +264,13 @@ pub(crate) fn series_colour(k: usize) -> egui::Color32 {
 struct Xy {
     /// Drawn with the `y` signals across and `x` up ("swap axes").
     transposed: bool,
+    /// The curve last clicked, until the app asks.
+    picked: Option<String>,
+}
+
+/// A curve's id in the plot, by its signal's name.
+fn curve_id(name: &str) -> egui::Id {
+    egui::Id::new(("curve", name))
 }
 
 impl View for Xy {
@@ -318,7 +325,8 @@ impl View for Xy {
         if let Some([lo, hi]) = up_range.and_then(widened) {
             plot = plot.include_y(lo).include_y(hi);
         }
-        plot.show(ui, |plot| {
+        let shown: Vec<String> = ys.iter().map(|&y| h.name(y).to_string()).collect();
+        let response = plot.show(ui, |plot| {
             scroll_to_zoom(plot);
             let points = |y: SignalRef, from: usize, to: usize| {
                 finite_runs((from..to).map(|k| at(h.value(x, k), h.value(y, k))))
@@ -342,6 +350,7 @@ impl View for Xy {
                         let pts = markers(y, &mut (first..n));
                         plot.points(
                             Points::new(h.name(y).to_string(), pts)
+                                .id(curve_id(h.name(y)))
                                 .radius(2.0)
                                 .color(series_colour(k)),
                         );
@@ -369,11 +378,19 @@ impl View for Xy {
                                 && first == 0
                                 && h.points(i).iter().all(|p| p.y.is_finite()) =>
                         {
-                            plot.line(Line::new(name, h.points(i)).color(colour));
+                            plot.line(
+                                Line::new(name.clone(), h.points(i))
+                                    .id(curve_id(&name))
+                                    .color(colour),
+                            );
                         }
                         _ if n > first + 1 => {
                             for run in points(y, first, n) {
-                                plot.line(Line::new(name.clone(), run).color(colour));
+                                plot.line(
+                                    Line::new(name.clone(), run)
+                                        .id(curve_id(&name))
+                                        .color(colour),
+                                );
                             }
                         }
                         _ => {}
@@ -395,6 +412,18 @@ impl View for Xy {
                 }
             }
         });
+        // A click on a curve picks its signal; with one curve (drawn in
+        // colour segments that cannot be hovered), a click anywhere does.
+        if response.response.clicked() {
+            let hit = response
+                .hovered_plot_item
+                .and_then(|id| shown.iter().find(|n| curve_id(n) == id).cloned());
+            self.picked = hit.or_else(|| (shown.len() == 1).then(|| shown[0].clone()));
+        }
+    }
+
+    fn picked(&mut self) -> Option<String> {
+        self.picked.take()
     }
 
     fn transpose(&mut self) {
@@ -496,5 +525,58 @@ mod tests {
         assert!(zoom_factor(50.0) > 1.0);
         assert!(zoom_factor(-50.0) < 1.0);
         assert_eq!(zoom_factor(0.0), 1.0);
+    }
+
+    #[test]
+    fn clicking_a_curve_picks_its_signal() {
+        let reg = crate::ViewRegistry::builtin();
+        let t = reg.get("plot.xy").unwrap();
+        let mut h = History::new(vec!["low".into(), "high".into()]);
+        for k in 0..=20 {
+            h.push(k as f64 * 0.05, &[0.0, 1.0]);
+        }
+        let bind: crate::Bindings = [
+            ("x".to_string(), vec!["t".to_string()]),
+            ("y".to_string(), vec!["low".to_string(), "high".to_string()]),
+        ]
+        .into();
+        let style = Default::default();
+        let input = crate::view::view_input(&bind, &style, t, &h);
+        let ctx = egui::Context::default();
+        let mut view = Xy::default();
+        let mut frame = |events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 300.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| view.show(ui, &input));
+            out.textures_delta.clear();
+            view.picked()
+        };
+        let button = |p, pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(Vec::new());
+        // Click down the middle, top to bottom: the high curve, then the
+        // low one.
+        let mut seen = Vec::new();
+        for y in (0..300).step_by(3) {
+            let p = egui::pos2(200.0, y as f32);
+            frame(vec![egui::Event::PointerMoved(p)]);
+            frame(vec![button(p, true)]);
+            if let Some(s) = frame(vec![button(p, false)]) {
+                if seen.last() != Some(&s) {
+                    seen.push(s);
+                }
+            }
+        }
+        assert_eq!(seen, ["high", "low"]);
     }
 }

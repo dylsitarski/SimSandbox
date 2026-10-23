@@ -74,6 +74,12 @@ pub struct SimApp {
     focus: Option<Focus>,
     /// The inspector's search text.
     inspect_query: String,
+    /// What the inspector shows as selected: the subsystem it is inside
+    /// (`None` on the model level) and the block, picked on the diagram or
+    /// by clicking a curve.
+    picked: Option<(Option<String>, String)>,
+    /// The diagram's selection when last looked at, to tell a new pick.
+    last_canvas: Option<simsandbox_session::canvas::Selection>,
     /// List values formulas set too.
     show_computed: bool,
     diagram: DiagramTab,
@@ -116,6 +122,8 @@ impl SimApp {
             dock: Dock::standard(&[]),
             focus: None,
             inspect_query: String::new(),
+            picked: None,
+            last_canvas: None,
             show_computed: false,
             diagram: DiagramTab::default(),
             started: Instant::now(),
@@ -872,6 +880,7 @@ impl SimApp {
                     self.dock.tile_all(&tiles);
                 }
                 DockAction::Select(t) => self.views.selected = Some(t),
+                DockAction::Inspect(signal) => self.inspect_signal(&signal),
             }
         }
     }
@@ -1246,6 +1255,9 @@ impl SimApp {
                         }
                         slot_editors(ui, t, &mut tile.state, &available, &history);
                         tile.state.show(ui, t, &history);
+                        if let Some(signal) = tile.state.picked() {
+                            actions.push(DockAction::Inspect(signal));
+                        }
                     });
             });
         }
@@ -1278,6 +1290,33 @@ impl SimApp {
                     Err(e) => c.error(format!("{}: {e}", row.key)),
                 }
             });
+        }
+    }
+
+    /// A curve was clicked: show the block it comes from in the inspector,
+    /// and select it on the diagram when that shows the model level
+    /// (`car1/car.v` comes from the use `car1`; a sweep's `grid.spring.x`
+    /// from `spring`). Signals of filters have no block.
+    fn inspect_signal(&mut self, signal: &str) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let m = live.model();
+        let base = signal.strip_prefix("grid.").unwrap_or(signal);
+        let Some((node, _)) = base.split_once('.') else {
+            self.log
+                .info(format!("{signal} is computed by a filter: see Data…"));
+            return;
+        };
+        let top = node.split('/').next().unwrap_or(node);
+        if !m.file.blocks.iter().any(|b| b.name == top) {
+            return;
+        }
+        self.picked = Some((None, top.to_string()));
+        if self.diagram.scope == simsandbox_session::diagram::Scope::Model {
+            let selection = simsandbox_session::canvas::Selection::Block(top.to_string());
+            self.diagram.canvas.selected = Some(selection.clone());
+            self.last_canvas = Some(selection);
         }
     }
 
@@ -1422,19 +1461,20 @@ impl SimApp {
                     });
                 ui.add_space(6.0);
             }
-            // What is selected on the diagram (ADR 0053).
-            let scope = match &self.diagram.scope {
-                simsandbox_session::diagram::Scope::Model => None,
-                simsandbox_session::diagram::Scope::Subsystem(s) => Some(s.clone()),
-            };
-            let picked = self
-                .diagram
-                .canvas
-                .selected
-                .as_ref()
-                .and_then(|s| s.blocks().into_iter().next())
-                .filter(|n| !n.contains(':'));
-            if let Some(name) = picked {
+            // What was picked last, on the diagram or in a plot (ADR 0053).
+            let canvas = self.diagram.canvas.selected.clone();
+            if canvas != self.last_canvas {
+                self.last_canvas = canvas.clone();
+                let scope = match &self.diagram.scope {
+                    simsandbox_session::diagram::Scope::Model => None,
+                    simsandbox_session::diagram::Scope::Subsystem(s) => Some(s.clone()),
+                };
+                self.picked = canvas
+                    .and_then(|s| s.blocks().into_iter().next())
+                    .filter(|n| !n.contains(':'))
+                    .map(|n| (scope, n));
+            }
+            if let Some((scope, name)) = self.picked.clone() {
                 if let Some(t) =
                     crate::inspector::selected(&m.params, &m.file, scope.as_deref(), &name)
                 {
@@ -1989,6 +2029,8 @@ enum DockAction {
     IntoGroup(u64),
     TileAll,
     Select(u64),
+    /// Show where a clicked curve comes from.
+    Inspect(String),
 }
 
 /// A tab in its own window, by what it shows (tiles are renumbered when
@@ -3489,6 +3531,37 @@ mod tests {
         assert_eq!(row.value, 1500.0);
         // No restart.
         assert!(live.status().time > 1.9);
+    }
+
+    #[test]
+    fn a_clicked_curve_selects_its_block_until_the_diagram_picks_another() {
+        use simsandbox_session::canvas::Selection;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        inspect(&mut app);
+        // A curve inside a subsystem use selects the use.
+        app.inspect_signal("car2/car.v");
+        assert_eq!(app.picked, Some((None, "car2".to_string())));
+        assert_eq!(
+            app.diagram.canvas.selected,
+            Some(Selection::Block("car2".into()))
+        );
+        inspect(&mut app);
+        assert_eq!(app.picked, Some((None, "car2".to_string())));
+        // Selecting on the diagram takes over.
+        app.diagram.canvas.selected = Some(Selection::Block("leader".into()));
+        inspect(&mut app);
+        assert_eq!(app.picked, Some((None, "leader".to_string())));
+        // A sweep's grid comes from the swept block; a filter's signal has
+        // none.
+        app.inspect_signal("grid.leader.v");
+        assert_eq!(app.picked, Some((None, "leader".to_string())));
+        app.inspect_signal("energy");
+        assert_eq!(app.picked, Some((None, "leader".to_string())));
     }
 
     #[test]
