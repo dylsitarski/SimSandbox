@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-10-23: stateless blocks in fused groups ([ADR 0051](../decisions/0051-stateless-blocks-join-fused-groups.md)): `Model::is_fusable` admits stateless `Equations` blocks, `Model::is_algebraic`; formula `ExplicitBlock`s and `Convert` expose `Equations`; the file's union-find carries each set's method so a stateless bridge never merges two methods. `at` → `canvas` ([ADR 0052](../decisions/0052-canvas-for-every-node-place.md)): fields renamed (compiler-driven), `alias = "at"`, `ModelFile::converted` reported by `load`, fixture `adr-0052-places-at`.
 - 2026-10-23: data layer and canvas undo ([ADR 0050](../decisions/0050-data-layer-and-canvas-undo.md)): `observers.rs` (data nodes and wires from flat signals, data edits, promotion with unit-carrying inputs, `map_names`), `undo.rs` (`canvas_state`, `change`, `copy_layout`), canvas drawing (dashed), promote offer, new requests; app: live data edits (`set_filters` only when filters change, `Views::set_entries` keeps unchanged tiles), `Session::place_filter`, undo/redo; `canvas` places; `render --no-data`, Python `promote`. Checked by tests (a promoted filter feeding the car gives bit-identical results with fusion off), headless images and an app screenshot.
 - 2026-10-23: `state` declarations and rate units ([ADR 0049](../decisions/0049-state-declarations-and-rate-units.md)): `symbolic.rs` parses `state x [unit] = value` (unit, and `x0`'s default), keeps a rate's unit separate and derives its state's (times s; SI when unnamed), checks agreement; `state`/`param`/`input` followed by `=` stay equations. Examples' results checked identical with units stripped.
 - 2026-10-23: unit vocabulary ([ADR 0047](../decisions/0047-unit-vocabulary.md)): `units.rs` parser rewritten as a small recursive-descent grammar over a `SYMBOLS` table with `PREFIXES`; display names from a cached table so every shown unit reads back; callers report the parser's message; `describe::units`; tests pin exact imperial factors and the only whole-symbol/prefix overlap (`ft`).
@@ -53,6 +54,7 @@
 
 ## Decided
 
+- Formula and conversion blocks join fused groups (2026-10-23, answering the owner's question; [ADR 0051](../decisions/0051-stateless-blocks-join-fused-groups.md)). `canvas` for every node's place (owner, 2026-10-23; [ADR 0052](../decisions/0052-canvas-for-every-node-place.md)).
 - Data layer and undo (owner, 2026-10-23; [ADR 0050](../decisions/0050-data-layer-and-canvas-undo.md)): observers at model level only; a filter on a block input is refused with "Promote and connect"; undo for canvas edits. Places are `canvas`, not `at`, because cut filters use `at` (decided in the session).
 - State declarations and line units (owner, 2026-10-23; [ADR 0049](../decisions/0049-state-declarations-and-rate-units.md)): a unit at the end of a line belongs to its left side as written; `state x [m] = 0` declares a state; no conversion for the same-day old meaning.
 - Units of outside data (owner, 2026-10-23, adopting the Q31 recommendation; [ADR 0048](../decisions/0048-units-of-external-data.md)): declared where data enters, `units.convert` for fixed factors, typed equations to scale by a reference quantity. The owner asked whether `units.convert` is then redundant (values on wires are in their port's unit, so it does real work) and decided to keep it as it is; carrying SI on every wire with display units only was considered and not taken.
@@ -92,6 +94,7 @@
 
 ## Notes for the next session
 
+- Fusion compares blocks' `method` entries as written, so a typed block with no method and one with `rk4` written out do not fuse although both run RK4; normalising methods before comparing would fix it.
 - Cut filters use `at` for their cut positions inside the flattened filter entry, so filter and view places are `canvas`. A promoted block between two fused blocks separates them, so results change slightly unless fusion is off.
 - A bare `0` is dimensionless, so `dx/dt = 0 [m]` is refused; write the rate as a parameter with a unit. Consider letting a literal zero take any dimension if this proves tedious.
 - `cargo test --workspace` stops at the first failing test binary; use `--no-fail-fast` to see every failure at once.

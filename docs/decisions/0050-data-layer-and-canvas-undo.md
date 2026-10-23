@@ -1,6 +1,6 @@
 # 0050 — The canvas's data layer, promotion, and undo
 
-- **Status:** Accepted
+- **Status:** Accepted; the note that a promoted block separates fused neighbours is amended by [0051](0051-stateless-blocks-join-fused-groups.md)
 - **Date:** 2026-10-23
 
 ## Context

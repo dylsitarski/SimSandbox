@@ -867,6 +867,11 @@ impl Block for ExplicitBlock {
             .outputs(t, io.state, io.inputs, io.params, io.outputs);
         Ok(())
     }
+
+    /// Formulas can join a fused group (ADR 0051); maps step on their own.
+    fn as_equations(&self) -> Option<&dyn Equations> {
+        (self.set.kind == Kind::Formulas).then_some(&self.set as &dyn Equations)
+    }
 }
 
 #[cfg(test)]

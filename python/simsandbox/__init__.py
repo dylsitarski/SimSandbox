@@ -142,7 +142,7 @@ class Model:
         equations: Iterable[str] | str | None = None,
         params: dict[str, float] | None = None,
         update: str | None = None,
-        at: tuple[float, float] | None = None,
+        canvas: tuple[float, float] | None = None,
         settings: dict[str, str] | None = None,
     ) -> "Model":
         """Add a block. ``method`` is a name (``"rk4"``) or a dict with its
@@ -150,7 +150,7 @@ class Model:
         type's first method (see :func:`describe`), or for ``eq.equations``
         the one its equations call for. ``equations`` are the
         lines of an ``eq.equations`` block (a string is split into
-        lines). ``at`` places it on the node canvas (laid out automatically
+        lines). ``canvas`` places it on the node canvas (laid out automatically
         if absent). ``settings`` are a type's text settings, e.g.
         ``{"from": "mm", "to": "m"}`` for ``units.convert``."""
         if any(b["name"] == name for b in self.data.get("blocks", [])):
@@ -168,8 +168,8 @@ class Model:
             block["params"] = {k: float(v) for k, v in params.items()}
         if update is not None:
             block["update"] = update
-        if at is not None:
-            block["at"] = [float(at[0]), float(at[1])]
+        if canvas is not None:
+            block["canvas"] = [float(canvas[0]), float(canvas[1])]
         if settings:
             block["settings"] = {k: str(v) for k, v in settings.items()}
         self.data.setdefault("blocks", []).append(block)

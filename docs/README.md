@@ -121,6 +121,8 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0048-units-of-external-data.md](decisions/0048-units-of-external-data.md) | Decision record | How data from files and outside solvers gets its units |
 | [decisions/0049-state-declarations-and-rate-units.md](decisions/0049-state-declarations-and-rate-units.md) | Decision record | `state` declarations; a line's unit belongs to its left side |
 | [decisions/0050-data-layer-and-canvas-undo.md](decisions/0050-data-layer-and-canvas-undo.md) | Decision record | Filters and views on the canvas; promoting filters to blocks; undo |
+| [decisions/0051-stateless-blocks-join-fused-groups.md](decisions/0051-stateless-blocks-join-fused-groups.md) | Decision record | Formula and conversion blocks join fused groups |
+| [decisions/0052-canvas-for-every-node-place.md](decisions/0052-canvas-for-every-node-place.md) | Decision record | `canvas` names every node's place |
 
 ### Guides
 

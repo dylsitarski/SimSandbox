@@ -52,7 +52,7 @@ Dependency rule: domain crates depend on `simsandbox-core`; the kernel depends o
 5. `Simulator::restart` re-initialises every Block from the current parameter values, so changed initial conditions take effect; a Block with a saved start (`Model::set_start`, a model file's `start` entry) then takes that state and those table rows instead ([ADR 0042](../decisions/0042-node-canvas.md)).
 6. Snapshots copy time, all states, outputs and parameter values; `restore` rewinds to one, so a rewind also undoes parameter changes made after the snapshot.
 
-Same-domain fusion: the master advances fused groups of equation Blocks as one system with one method; model files form them automatically ([ADR 0023](../decisions/0023-automatic-fusion.md)). In code, `EquationGroup` can also build a composite `FusedSystem` wrapped in one `OdeBlock`. See [block contract](block-contract.md).
+Same-domain fusion: the master advances fused groups of equation Blocks as one system with one method; model files form them automatically ([ADR 0023](../decisions/0023-automatic-fusion.md)), with stateless equation Blocks (formulas, unit conversions) joining the group they connect ([ADR 0051](../decisions/0051-stateless-blocks-join-fused-groups.md)). In code, `EquationGroup` can also build a composite `FusedSystem` wrapped in one `OdeBlock`. See [block contract](block-contract.md).
 
 ## Tech stack
 

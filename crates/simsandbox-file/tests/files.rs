@@ -796,16 +796,16 @@ fn legacy_sweeps_become_samples_leniently() {
 #[test]
 fn block_positions_are_optional_and_round_trip() {
     let (mut file, _) = ModelFile::from_json(CRUISE).unwrap();
-    assert!(file.blocks.iter().all(|b| b.at.is_none()));
-    file.blocks[0].at = Some([120.0, -40.5]);
+    assert!(file.blocks.iter().all(|b| b.canvas.is_none()));
+    file.blocks[0].canvas = Some([120.0, -40.5]);
     let text = file.to_json();
     assert!(
-        text.contains("\"at\": [\n        120.0,\n        -40.5\n      ]"),
+        text.contains("\"canvas\": [\n        120.0,\n        -40.5\n      ]"),
         "{text}"
     );
     let (again, _) = ModelFile::from_json(&text).unwrap();
-    assert_eq!(again.blocks[0].at, Some([120.0, -40.5]));
-    assert_eq!(again.blocks[1].at, None);
+    assert_eq!(again.blocks[0].canvas, Some([120.0, -40.5]));
+    assert_eq!(again.blocks[1].canvas, None);
     load(&text, &registry()).unwrap();
     let bad = text.replace("-40.5", "\"up\"");
     assert!(load(&bad, &registry()).is_err());
@@ -839,4 +839,37 @@ fn filters_and_views_keep_their_place_on_the_canvas() {
     assert_eq!(f.controls.views[0].canvas, Some([600.0, 0.0]));
     let (again, _) = ModelFile::from_json(&f.to_json()).unwrap();
     assert_eq!(again, f);
+}
+
+#[test]
+fn stateless_blocks_join_the_group_they_connect_but_never_merge_methods() {
+    // a → c (a conversion) → b: c joins a and b when they share a method,
+    // and keeps apart blocks that do not (ADR 0051).
+    let text = |method_b: &str| {
+        format!(
+            r#"{{"format": 1, "run": {{"dt": 0.01}}, "blocks": [
+              {{"name": "a", "type": "eq.equations", "method": {{"name": "rk4"}},
+               "equations": ["dx/dt = -x"]}},
+              {{"name": "c", "type": "units.convert"}},
+              {{"name": "f", "type": "eq.equations", "equations": ["input u", "y = 2*u"]}},
+              {{"name": "b", "type": "eq.equations", "method": {{"name": "{method_b}"}},
+               "equations": ["input u", "dx/dt = u - x"]}}
+            ], "connections": [
+              {{"from": "a.x", "to": "c.u"}}, {{"from": "c.y", "to": "f.u"}},
+              {{"from": "f.y", "to": "b.u"}}
+            ]}}"#
+        )
+    };
+    let loaded = load(&text("rk4"), &registry()).unwrap();
+    let blocks: Vec<&str> = loaded.groups[0].blocks.iter().map(String::as_str).collect();
+    assert_eq!((loaded.groups.len(), blocks), (1, vec!["a", "c", "f", "b"]));
+    let loaded = load(&text("dopri5"), &registry()).unwrap();
+    assert!(loaded.groups.is_empty(), "{:?}", loaded.groups);
+    // A group of only stateless blocks is refused when asked for.
+    let explicit = text("rk4").replace(
+        r#""connections""#,
+        r#""groups": [{"blocks": ["c", "f"], "method": {"name": "rk4"}}], "connections""#,
+    );
+    let err = load(&explicit, &registry()).err().unwrap().to_string();
+    assert!(err.contains("block with states"), "{err}");
 }

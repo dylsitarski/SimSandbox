@@ -53,6 +53,23 @@ pub const EXTENSION: &str = ".ssbx.json";
 /// The JSON Schema describing the format.
 pub const SCHEMA: &str = include_str!("../model.schema.json");
 
+/// Whether a file gives block or subsystem port places as `at`, the
+/// spelling before ADR 0052.
+fn places_written_at(v: &Value) -> bool {
+    let has_at = |list: Option<&Value>| {
+        list.and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|b| b.get("at").is_some()))
+    };
+    has_at(v.get("blocks"))
+        || v.get("subsystems")
+            .and_then(Value::as_object)
+            .is_some_and(|defs| {
+                defs.values().any(|d| {
+                    has_at(d.get("blocks")) || has_at(d.get("inputs")) || has_at(d.get("outputs"))
+                })
+            })
+}
+
 /// A model file as written on disk.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ModelFile {
@@ -83,6 +100,10 @@ pub struct ModelFile {
     pub groups: Vec<GroupEntry>,
     #[serde(skip_serializing_if = "Controls::is_empty")]
     pub controls: Controls,
+    /// Older spellings converted as the file was read (ADR 0044); never
+    /// written.
+    #[serde(skip)]
+    pub converted: Vec<String>,
 }
 
 /// Automatic fusion of equation blocks (ADR 0023).
@@ -395,9 +416,10 @@ pub struct BlockEntry {
     pub params: BTreeMap<String, ParamValue>,
     /// Where the block sits on the node canvas, `[x, y]` in canvas units,
     /// y downwards (ADR 0042). Blocks without one are laid out
-    /// automatically.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<[f64; 2]>,
+    /// automatically. Written `canvas`, like every node's place (ADR 0052);
+    /// the older `at` is read and converted.
+    #[serde(default, alias = "at", skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<[f64; 2]>,
     /// The state the block starts from instead of the one its parameters
     /// give, e.g. a steady state reached before (ADR 0042).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -995,7 +1017,7 @@ pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
     }
     let groups = flat.fuse(&mut model, &ids, registry)?;
     flat.controls = file.controls.clone();
-    let mut conversions = Vec::new();
+    let mut conversions = file.converted.clone();
     warnings.extend(flat.check_controls(&model, &ids, &params, &mut conversions));
     file.controls = flat.controls.clone();
     let plan = flat.plan(&model, &ids)?;
@@ -1078,6 +1100,7 @@ impl ModelFile {
             fusion: Fusion::Auto,
             groups: Vec::new(),
             controls: Controls::default(),
+            converted: Vec::new(),
         }
     }
 
@@ -1085,11 +1108,19 @@ impl ModelFile {
     /// section, which is replaced by empty controls.
     pub fn from_json(text: &str) -> Result<(Self, Vec<String>), FileError> {
         // The format number first: a newer file may not parse as this one.
+        let mut converted = Vec::new();
         if let Ok(v) = serde_json::from_str::<Value>(text) {
             if let Some(n) = v.get("format").and_then(Value::as_u64) {
                 if n > FORMAT_VERSION as u64 {
                     return Err(FileError::UnsupportedFormat(n as u32));
                 }
+            }
+            if places_written_at(&v) {
+                converted.push(
+                    "block and subsystem port places 'at' became 'canvas', like every node's \
+                     (ADR 0052)"
+                        .to_string(),
+                );
             }
         }
         let raw: RawFile = serde_json::from_str(text).map_err(|e| {
@@ -1150,6 +1181,7 @@ impl ModelFile {
                 fusion: raw.fusion,
                 groups: raw.groups,
                 controls,
+                converted,
             },
             warnings,
         ))
@@ -1213,9 +1245,12 @@ impl ModelFile {
                     ),
                 ));
             }
-            if entry.at.is_some_and(|p| !p.iter().all(|v| v.is_finite())) {
+            if entry
+                .canvas
+                .is_some_and(|p| !p.iter().all(|v| v.is_finite()))
+            {
                 return Err(invalid(
-                    format!("{path}.at"),
+                    format!("{path}.canvas"),
                     "positions must be finite numbers",
                 ));
             }
@@ -1351,14 +1386,27 @@ impl ModelFile {
         if self.fusion == Fusion::Off {
             return Ok(fused);
         }
-        // Automatic: union connected candidates, then fuse each set of two
-        // or more.
+        // Automatic: union connected candidates, then fuse each set with
+        // two or more blocks with states. Stateless equation blocks
+        // (formulas, conversions) join the set they connect, whatever its
+        // method, but never merge two sets with different methods
+        // (ADR 0051).
         let candidate = |i: usize| {
             let e = &self.blocks[i];
             !taken.contains(&e.name.as_str()) && model.is_fusable(ids[&e.name])
         };
+        let stateless: Vec<bool> = self
+            .blocks
+            .iter()
+            .map(|b| model.is_algebraic(ids[&b.name]))
+            .collect();
+        let algebraic = |i: usize| stateless[i];
         let index = |name: &str| self.blocks.iter().position(|b| b.name == name);
         let mut parent: Vec<usize> = (0..self.blocks.len()).collect();
+        // Each set's method (by root): that of its blocks with states.
+        let mut method: Vec<Option<&MethodEntry>> = (0..self.blocks.len())
+            .map(|i| (!algebraic(i)).then_some(&self.blocks[i].method))
+            .collect();
         fn root(parent: &mut [usize], mut i: usize) -> usize {
             while parent[i] != i {
                 parent[i] = parent[parent[i]];
@@ -1371,30 +1419,40 @@ impl ModelFile {
             let (Some(a), Some(b)) = (block_of(&c.from), block_of(&c.to)) else {
                 continue;
             };
-            let same = |i: usize, j: usize| {
-                let domain = |k: usize| {
-                    model
-                        .block(ids[&self.blocks[k].name])
-                        .map(|x| x.spec().domain)
-                        .ok()
-                };
-                self.blocks[i].method == self.blocks[j].method && domain(i) == domain(j)
+            let domain = |k: usize| {
+                model
+                    .block(ids[&self.blocks[k].name])
+                    .map(|x| x.spec().domain)
+                    .ok()
             };
-            if a != b && candidate(a) && candidate(b) && same(a, b) {
-                let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
-                parent[ra.max(rb)] = ra.min(rb);
+            if a == b || !candidate(a) || !candidate(b) || domain(a) != domain(b) {
+                continue;
             }
+            let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+            if ra == rb {
+                continue;
+            }
+            let joined = match (method[ra], method[rb]) {
+                (Some(x), Some(y)) if x != y => continue,
+                (x, y) => x.or(y),
+            };
+            let (keep, gone) = (ra.min(rb), ra.max(rb));
+            parent[gone] = keep;
+            method[keep] = joined;
         }
         let mut sets: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for i in (0..self.blocks.len()).filter(|&i| candidate(i)) {
             let r = root(&mut parent, i);
             sets.entry(r).or_default().push(i);
         }
-        for set in sets.into_values().filter(|s| s.len() > 1) {
-            let first = &self.blocks[set[0]];
+        for set in sets
+            .into_values()
+            .filter(|s| s.iter().filter(|&&i| !algebraic(i)).count() > 1)
+        {
+            let first = *set.iter().find(|&&i| !algebraic(i)).expect("filtered");
             let members = set.iter().map(|&i| ids[&self.blocks[i].name]).collect();
-            let path = format!("blocks[{}]", set[0]);
-            let method = make(model, members, &first.method, &path)?;
+            let path = format!("blocks[{first}]");
+            let method = make(model, members, &self.blocks[first].method, &path)?;
             fused.push(FusedGroup {
                 blocks: set.iter().map(|&i| self.blocks[i].name.clone()).collect(),
                 method,

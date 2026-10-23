@@ -111,7 +111,7 @@ def test_every_example_loads_runs_briefly_and_round_trips():
 
 
 def test_the_diagram_renders_even_for_a_model_that_cannot_run(tmp_path):
-    m = ss.Model().add_block("a", "eq.equations", "rk4", equations="input u\ndx/dt = u - x", at=(0, 0))
+    m = ss.Model().add_block("a", "eq.equations", "rk4", equations="input u\ndx/dt = u - x", canvas=(0, 0))
     assert not m.check()["ok"], "a.u is not connected"
     png = m.render(tmp_path / "d.png", diagram=True, width=300, height=200)
     assert png[1:4] == b"PNG"

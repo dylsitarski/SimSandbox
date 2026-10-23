@@ -77,17 +77,17 @@ fn carried(now: &[BlockEntry], target: &[BlockEntry]) -> Vec<BlockEntry> {
 fn unplaced(f: &ModelFile) -> ModelFile {
     let mut f = f.clone();
     for b in &mut f.blocks {
-        b.at = None;
+        b.canvas = None;
     }
     for def in f.subsystems.values_mut() {
         for b in &mut def.blocks {
-            b.at = None;
+            b.canvas = None;
         }
         for p in &mut def.inputs {
-            p.at = None;
+            p.canvas = None;
         }
         for p in &mut def.outputs {
-            p.at = None;
+            p.canvas = None;
         }
     }
     for x in &mut f.controls.filters {
@@ -121,7 +121,7 @@ pub fn change(now: &ModelFile, next: &ModelFile) -> Change {
 pub fn copy_layout(from: &ModelFile, to: &mut ModelFile) {
     let place = |src: &[BlockEntry], dst: &mut [BlockEntry]| {
         for b in dst {
-            b.at = src.iter().find(|s| s.name == b.name).and_then(|s| s.at);
+            b.canvas = src.iter().find(|s| s.name == b.name).and_then(|s| s.canvas);
         }
     };
     place(&from.blocks, &mut to.blocks);
@@ -129,18 +129,18 @@ pub fn copy_layout(from: &ModelFile, to: &mut ModelFile) {
         if let Some(src) = from.subsystems.get(name) {
             place(&src.blocks, &mut def.blocks);
             for p in &mut def.inputs {
-                p.at = src
+                p.canvas = src
                     .inputs
                     .iter()
                     .find(|q| q.name == p.name)
-                    .and_then(|q| q.at);
+                    .and_then(|q| q.canvas);
             }
             for p in &mut def.outputs {
-                p.at = src
+                p.canvas = src
                     .outputs
                     .iter()
                     .find(|q| q.name == p.name)
-                    .and_then(|q| q.at);
+                    .and_then(|q| q.canvas);
             }
         }
     }
@@ -192,6 +192,6 @@ mod tests {
         // Layouts copy level by level.
         let mut back = moved.clone();
         copy_layout(&before, &mut back);
-        assert_eq!(back.blocks[0].at, before.blocks[0].at);
+        assert_eq!(back.blocks[0].canvas, before.blocks[0].canvas);
     }
 }

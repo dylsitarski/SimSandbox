@@ -221,7 +221,7 @@ impl Diagram {
                 NodeKind::Input,
                 &p.name,
                 port,
-                p.at,
+                p.canvas,
             ));
         }
         for p in l.outputs {
@@ -231,7 +231,7 @@ impl Diagram {
                 NodeKind::Output,
                 &p.name,
                 port,
-                p.at,
+                p.canvas,
             ));
         }
         let index: BTreeMap<String, usize> = nodes
@@ -409,8 +409,8 @@ fn node(b: &BlockEntry, registry: &Registry) -> Node {
         method,
         inputs,
         outputs,
-        at: b.at.unwrap_or_default(),
-        placed: b.at.is_some(),
+        at: b.canvas.unwrap_or_default(),
+        placed: b.canvas.is_some(),
         error,
         unreached: Vec::new(),
     }
@@ -509,8 +509,8 @@ fn instance_node(file: &ModelFile, b: &BlockEntry, registry: &Registry) -> Node 
         method: "subsystem".into(),
         inputs,
         outputs,
-        at: b.at.unwrap_or_default(),
-        placed: b.at.is_some(),
+        at: b.canvas.unwrap_or_default(),
+        placed: b.canvas.is_some(),
         error: None,
         unreached: Vec::new(),
     }
@@ -862,7 +862,7 @@ fn edit_level(
                         .iter_mut()
                         .find(|q| q.name == p)
                         .ok_or("no such input")?;
-                    q.at = at;
+                    q.canvas = at;
                 }
                 Some((false, p)) => {
                     let q = l
@@ -870,7 +870,7 @@ fn edit_level(
                         .iter_mut()
                         .find(|q| q.name == p)
                         .ok_or("no such output")?;
-                    q.at = at;
+                    q.canvas = at;
                 }
                 None => {
                     let b = l
@@ -878,7 +878,7 @@ fn edit_level(
                         .iter_mut()
                         .find(|b| &b.name == block)
                         .ok_or_else(|| format!("no block '{block}'"))?;
-                    b.at = at;
+                    b.canvas = at;
                 }
             }
             Ok(String::new())
@@ -888,7 +888,7 @@ fn edit_level(
                 let base = type_name.to_lowercase();
                 let name = free_name(&base, |n| has(l, n));
                 BlockEntry {
-                    at: Some(at.map(tidy)),
+                    canvas: Some(at.map(tidy)),
                     ..BlockEntry::instance(&name, type_name)
                 }
             } else {
@@ -910,7 +910,7 @@ fn edit_level(
                         options: BTreeMap::new(),
                     },
                     equations: info.definition.clone().unwrap_or_default(),
-                    at: Some(at.map(tidy)),
+                    canvas: Some(at.map(tidy)),
                     ..Default::default()
                 }
             };
@@ -1073,13 +1073,13 @@ fn edit_level(
                 l.inputs.push(InputPort {
                     name: name.clone(),
                     to: Vec::new(),
-                    at,
+                    canvas: at,
                 });
             } else {
                 l.outputs.push(OutputPort {
                     name: name.clone(),
                     from: String::new(),
-                    at,
+                    canvas: at,
                 });
             }
             Ok(format!(
@@ -1280,7 +1280,7 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
         // Where the instance goes: the moved blocks' top-left.
         let at = moved
             .iter()
-            .filter_map(|b| b.at)
+            .filter_map(|b| b.canvas)
             .fold(None, |m: Option<[f64; 2]>, p| {
                 Some(m.map_or(p, |m| [m[0].min(p[0]), m[1].min(p[1])]))
             });
@@ -1317,7 +1317,7 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                             def.inputs.push(InputPort {
                                 name: name.clone(),
                                 to: vec![c.to.clone()],
-                                at: None,
+                                canvas: None,
                             });
                             outer.push(ConnectionEntry {
                                 from: c.from.clone(),
@@ -1337,7 +1337,7 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                             def.outputs.push(OutputPort {
                                 name: name.clone(),
                                 from: c.from.clone(),
-                                at: None,
+                                canvas: None,
                             });
                             name
                         }
@@ -1360,7 +1360,7 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                 def.inputs.push(InputPort {
                     name: name.clone(),
                     to: into,
-                    at: None,
+                    canvas: None,
                 });
                 q.to.push(format!("{instance}.{name}"));
             }
@@ -1372,14 +1372,14 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                 def.outputs.push(OutputPort {
                     name: name.clone(),
                     from: q.from.clone(),
-                    at: None,
+                    canvas: None,
                 });
                 q.from = format!("{instance}.{name}");
             }
         }
         // Parameters the moved formulas use come in as the subsystem's own.
         let mut entry = BlockEntry {
-            at,
+            canvas: at,
             ..BlockEntry::instance(&instance, &def_name)
         };
         for b in &def.blocks {
@@ -1480,7 +1480,7 @@ mod tests {
             .unwrap();
             let last = f.blocks.last_mut().unwrap();
             last.name = name.into();
-            last.at = None;
+            last.canvas = None;
             last.equations = vec!["input u".into(), "dx/dt = u - x".into()];
         }
         for (from, to) in [("a.x", "b.u"), ("b.x", "c.u")] {
@@ -1502,7 +1502,7 @@ mod tests {
         assert_ne!(y("a"), y("d"));
 
         // Saved positions are kept; new blocks go to their right.
-        f.blocks[0].at = Some([500.0, 100.0]);
+        f.blocks[0].canvas = Some([500.0, 100.0]);
         let d = Diagram::new(&f, &r);
         assert_eq!(d.nodes[0].at, [500.0, 100.0]);
         assert!(d.nodes[1..].iter().all(|n| n.at[0] > 500.0));
@@ -1612,7 +1612,7 @@ mod tests {
         )
         .unwrap();
         assert!(note.contains("lorenz1"));
-        assert_eq!(f.blocks.last().unwrap().at, Some([12.3, 0.0]));
+        assert_eq!(f.blocks.last().unwrap().canvas, Some([12.3, 0.0]));
         loads(&f).unwrap();
 
         apply(

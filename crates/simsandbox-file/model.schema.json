@@ -242,14 +242,14 @@
           },
           "description": "Method name plus numeric options, e.g. {\"name\": \"rk4\", \"substeps\": 4}. Left out, the type's first method (for 'eq.equations', the one its equations call for)."
         },
-        "at": {
+        "canvas": {
           "type": "array",
           "items": {
             "type": "number"
           },
           "minItems": 2,
           "maxItems": 2,
-          "description": "Where the block sits on the node canvas, [x, y] in canvas units with y downwards (ADR 0042). Optional: blocks without one are laid out left to right by signal flow."
+          "description": "Where the block sits on the node canvas, [x, y] in canvas units with y downwards (ADR 0042; written 'at' before ADR 0052, still read). Optional: blocks without one are laid out left to right by signal flow."
         },
         "start": {
           "type": "object",
@@ -691,7 +691,7 @@
                 },
                 "description": "Inner inputs it feeds."
               },
-              "at": {
+              "canvas": {
                 "type": "array",
                 "items": {
                   "type": "number"
@@ -719,7 +719,7 @@
                 "$ref": "#/$defs/ref",
                 "description": "The inner output it shows."
               },
-              "at": {
+              "canvas": {
                 "type": "array",
                 "items": {
                   "type": "number"

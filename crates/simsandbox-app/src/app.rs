@@ -3031,7 +3031,7 @@ mod tests {
         let live = app.session.as_ref().unwrap();
         live.sync();
         assert!(live.status().time > 4.9);
-        assert_eq!(live.model().file.blocks[0].at, Some([10.0, 20.0]));
+        assert_eq!(live.model().file.blocks[0].canvas, Some([10.0, 20.0]));
 
         // Removing a wire leaves an input open: kept as a draft, the run
         // goes on.
@@ -3066,9 +3066,9 @@ mod tests {
                 .value,
             900.0
         );
-        assert_eq!(m.file.blocks[0].at, Some([10.0, 20.0]));
+        assert_eq!(m.file.blocks[0].canvas, Some([10.0, 20.0]));
         assert!(
-            m.file.blocks.iter().all(|b| b.at.is_some()),
+            m.file.blocks.iter().all(|b| b.canvas.is_some()),
             "the layout is fixed"
         );
     }

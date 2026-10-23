@@ -4,8 +4,8 @@
 //! `m/s`; they must measure the same kind of quantity.
 
 use simsandbox_core::block::{
-    AccuracyClass, Block, BlockSpec, Domain, MethodLabels, MethodSpec, PortSpec, Shape, SpeedClass,
-    StepContext, StepIo, TimeSemantics,
+    AccuracyClass, Block, BlockSpec, Domain, Equations, MethodLabels, MethodSpec, PortSpec, Shape,
+    SpeedClass, StepContext, StepIo, TimeSemantics,
 };
 use simsandbox_core::registry::BlockConfig;
 use simsandbox_core::units::Unit;
@@ -112,5 +112,18 @@ impl Block for Convert {
     fn compute_outputs(&self, _t: f64, io: StepIo<'_>) -> Result<()> {
         io.outputs[0] = self.factor * io.inputs[0];
         Ok(())
+    }
+
+    /// A conversion joins a fused group it sits in (ADR 0051).
+    fn as_equations(&self) -> Option<&dyn Equations> {
+        Some(self)
+    }
+}
+
+impl Equations for Convert {
+    fn rhs(&self, _t: f64, _x: &[f64], _u: &[f64], _p: &[f64], _dx: &mut [f64]) {}
+
+    fn outputs(&self, _t: f64, _x: &[f64], u: &[f64], _p: &[f64], y: &mut [f64]) {
+        y[0] = self.factor * u[0];
     }
 }

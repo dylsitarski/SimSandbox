@@ -55,7 +55,9 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0047](0047-unit-vocabulary.md) | SI prefixes, common non-SI and exact US/imperial units; left-to-right grammar with groups; `a/b*c` and °C/°F refused | Accepted | 2026-10-23 |
 | [0048](0048-units-of-external-data.md) | Outside data: units declared where it enters; `units.convert` for fixed factors; typed equations to scale by a reference quantity | Accepted | 2026-10-23 |
 | [0049](0049-state-declarations-and-rate-units.md) | `state x [m] = 0` declares a state; a unit at the end of a line is its left side's (`dv/dt = F/m [m/s^2]`) | Accepted | 2026-10-23 |
-| [0050](0050-data-layer-and-canvas-undo.md) | Filters and views on the canvas (model level), applied live; a filter on a block input offers "Promote and connect"; undo for canvas edits | Accepted | 2026-10-23 |
+| [0050](0050-data-layer-and-canvas-undo.md) | Filters and views on the canvas (model level), applied live; a filter on a block input offers "Promote and connect"; undo for canvas edits | Accepted, amended by 0051 | 2026-10-23 |
+| [0051](0051-stateless-blocks-join-fused-groups.md) | Formula and conversion blocks join the fused group they connect, taking its method; never merging two methods | Accepted | 2026-10-23 |
+| [0052](0052-canvas-for-every-node-place.md) | Every node's place is `canvas` (blocks and ports too); `at` still read and converted | Accepted | 2026-10-23 |
 
 ## When to write one
 

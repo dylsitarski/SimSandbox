@@ -73,9 +73,10 @@ pub struct InputPort {
     /// Inner inputs, `"block.port"`.
     #[serde(default)]
     pub to: Vec<String>,
-    /// Where its node sits on the subsystem's canvas.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<[f64; 2]>,
+    /// Where its node sits on the subsystem's canvas (`at` before
+    /// ADR 0052).
+    #[serde(default, alias = "at", skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<[f64; 2]>,
 }
 
 /// A subsystem's output: which inner output it shows.
@@ -85,8 +86,10 @@ pub struct OutputPort {
     pub name: String,
     /// An inner output, `"block.port"`.
     pub from: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<[f64; 2]>,
+    /// Where its node sits on the subsystem's canvas (`at` before
+    /// ADR 0052).
+    #[serde(default, alias = "at", skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<[f64; 2]>,
 }
 
 /// A subsystem: blocks and wires with parameters and ports of their own.

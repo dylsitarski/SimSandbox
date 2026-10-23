@@ -743,7 +743,7 @@ fn promote(
         name: block.clone(),
         type_name: "eq.equations".into(),
         equations,
-        at: f.canvas,
+        canvas: f.canvas,
         ..Default::default()
     });
     for (source, input, _) in &inputs {
@@ -950,9 +950,8 @@ mod tests {
     fn a_filter_cannot_feed_the_model_until_it_is_promoted() {
         let r = registry();
         let mut f = file("Cruise");
-        // Co-simulated, so a block between car and controller does not
-        // change how they are solved.
-        f.fusion = simsandbox_file::Fusion::Off;
+        // Car and controller are solved together; the promoted block joins
+        // them (ADR 0051), so the run is the same.
         f.controls
             .filters
             .push(FilterEntry::expression("push", "cruise.F", Vec::new()));

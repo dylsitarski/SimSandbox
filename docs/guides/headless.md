@@ -82,7 +82,7 @@ settled = m.start_from(10.0)                     # starts from the state at t = 
 ```
 
 - Units ([ADR 0045](../decisions/0045-units-in-typed-equations.md)): write them in the equations (`input F [N]`, `param m [kg] = 2`, `state x [m] = 0`, `dv/dt = F/m [m/s^2]`; a unit at the end of a line is its left side's, [ADR 0049](../decisions/0049-state-declarations-and-rate-units.md)); `check` then reports lines that do not balance, and each parameter's `unit`. Connections need the same unit; convert with `m.add_block("to_m", "units.convert", settings={"from": "mm", "to": "m"})`.
-- `Model.add_block(..., at=(x, y))` places a block on the canvas (laid out automatically otherwise). `Model.connect("a.y", "b.u")` wires blocks; `Model.sweep(("spring.w", 0, 3, 600))` evaluates a model with no states over parameter values.
+- `Model.add_block(..., canvas=(x, y))` places a block on the canvas (laid out automatically otherwise). `Model.connect("a.y", "b.u")` wires blocks; `Model.sweep(("spring.w", 0, 3, 600))` evaluates a model with no states over parameter values.
 - `Results.outputs` shapes: scalar `(rows,)`, vector `(rows, n)`, grid `(rows, ny, nx)`, points `(rows, count, dim)`; `Results.populations[name]` is a list of `(n, dim)` arrays.
 - Problems raise `simsandbox.ModelError`, listing every error `check` finds.
 

@@ -227,9 +227,10 @@ impl Model {
     }
 
     /// Solve these Blocks together as one system with `solver` (ADR 0023).
-    /// Each must be a continuous equation Block (it implements `Equations`)
-    /// in no other group; connections between members are then resolved
-    /// inside every right-hand-side evaluation instead of once per step.
+    /// Each must be an equation Block (it implements `Equations`), continuous
+    /// or stateless (ADR 0051), in no other group, and at least one must be
+    /// continuous; connections between members are then resolved inside
+    /// every right-hand-side evaluation instead of once per step.
     pub fn fuse(&mut self, members: &[BlockId], solver: Box<dyn GroupSolver>) -> Result<()> {
         if members.is_empty() {
             return Err(SimError::CannotFuse(
@@ -249,9 +250,14 @@ impl Model {
             }
             if !self.is_fusable(id) {
                 return Err(SimError::CannotFuse(format!(
-                    "'{name}' is not a continuous equation block"
+                    "'{name}' is not a continuous or stateless equation block"
                 )));
             }
+        }
+        if members.iter().all(|&id| self.is_algebraic(id)) {
+            return Err(SimError::CannotFuse(
+                "a group needs a block with states to solve".into(),
+            ));
         }
         self.groups.push(Group {
             members: members.to_vec(),
@@ -260,10 +266,25 @@ impl Model {
         Ok(())
     }
 
-    /// Whether a Block can join a fused group: a continuous equation Block.
+    /// Whether a Block can join a fused group: an equation Block,
+    /// continuous or stateless (ADR 0051).
     pub fn is_fusable(&self, id: BlockId) -> bool {
+        self.block(id).is_ok_and(|b| {
+            b.as_equations().is_some()
+                && matches!(
+                    b.spec().time,
+                    TimeSemantics::Continuous | TimeSemantics::Stateless
+                )
+        })
+    }
+
+    /// Whether a Block is a stateless equation Block (a formula, a unit
+    /// conversion): in a fused group it is evaluated inside every
+    /// right-hand-side evaluation, and it does not decide the group's
+    /// method (ADR 0051).
+    pub fn is_algebraic(&self, id: BlockId) -> bool {
         self.block(id)
-            .is_ok_and(|b| b.as_equations().is_some() && b.spec().time == TimeSemantics::Continuous)
+            .is_ok_and(|b| b.as_equations().is_some() && b.spec().time == TimeSemantics::Stateless)
     }
 
     /// The fused groups, in the order they were made.
