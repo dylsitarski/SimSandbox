@@ -1269,7 +1269,7 @@ pub fn loop_notes(sim: &Simulator) -> Vec<String> {
         .map(|l| {
             format!(
                 "algebraic loop {}: solved at every step by '{method}' (run.loops)",
-                l.join(" → ")
+                l.join(" -> ")
             )
         })
         .collect()

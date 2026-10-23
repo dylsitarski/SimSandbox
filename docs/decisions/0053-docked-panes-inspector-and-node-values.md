@@ -1,6 +1,6 @@
 # 0053 — Docked panes, an inspector, and values on nodes
 
-- **Status:** Accepted
+- **Status:** Accepted; the Controls, pins and values on nodes are amended by [0054](0054-controls-pane-pins-and-node-toggles.md)
 - **Date:** 2026-10-23
 
 ## Context

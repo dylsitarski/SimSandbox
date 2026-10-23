@@ -96,6 +96,11 @@ impl DiagramTab {
         self.cache = None;
     }
 
+    /// The edited file that does not load yet, if any.
+    pub fn draft_file(&self) -> Option<&ModelFile> {
+        self.draft.as_ref().map(|(f, _)| f)
+    }
+
     /// The draft that does not load yet, if any.
     pub fn draft_problem(&self) -> Option<&str> {
         self.draft.as_ref().map(|(_, p)| p.as_str())
@@ -168,7 +173,15 @@ impl DiagramTab {
                     self.canvas.refit();
                 }
                 ui.label("›");
-                ui.strong(&s);
+                ui.strong(&s).on_hover_text(if uses.is_empty() {
+                    "Blocks and wires drawn here apply to every use of this subsystem".to_string()
+                } else {
+                    format!(
+                        "Blocks and wires drawn here apply to every use ({}); each use keeps \
+                         its own values, set in the inspector",
+                        uses.join(", ")
+                    )
+                });
                 let field =
                     ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(100.0));
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -178,11 +191,9 @@ impl DiagramTab {
                         to: self.rename.trim().to_string(),
                     });
                 }
-                let text = match uses.len() {
-                    0 => "not used yet".to_string(),
-                    _ => format!("used by {}: editing changes every use", uses.join(", ")),
-                };
-                ui.add(egui::Label::new(egui::RichText::new(text).weak()).truncate());
+                if uses.is_empty() {
+                    ui.weak("not used yet");
+                }
             });
         }
         if self.cache.as_ref().is_some_and(|d| d.scope != self.scope) {
@@ -248,10 +259,6 @@ impl DiagramTab {
             if ui.button("Fit").on_hover_text("Show every block").clicked() {
                 self.canvas.refit();
             }
-            ui.checkbox(&mut self.canvas.show_values, "Values")
-                .on_hover_text(
-                    "Parameter values on the blocks; zoom in and double-click one to change it",
-                );
             if ui
                 .checkbox(&mut self.hide_data, "Hide data")
                 .on_hover_text(
@@ -298,8 +305,21 @@ impl DiagramTab {
                     out.push(Outcome::ShowView(k));
                     continue;
                 }
+                // While edits wait as a draft, values go into it: the
+                // running model may not have the block yet.
                 Request::SetValue { key, value } => {
-                    out.push(Outcome::SetValue { key, value });
+                    match (&self.draft, key.split_once('.')) {
+                        (Some(_), Some((block, param))) => edits.push(Edit::SetParam {
+                            block: block.into(),
+                            param: param.into(),
+                            value,
+                        }),
+                        _ => out.push(Outcome::SetValue { key, value }),
+                    }
+                    continue;
+                }
+                Request::SetSetting { block, key, text } => {
+                    edits.push(Edit::SetSetting { block, key, text });
                     continue;
                 }
             };
@@ -536,10 +556,16 @@ impl DiagramTab {
                 Err(err) => out.push(Outcome::Error(err)),
             }
         }
-        if matches!(
-            self.canvas.selected,
-            Some(Selection::Block(_) | Selection::Many(_))
-        ) {
+        // A value or setting changed: the blocks are still there.
+        let kept = changes
+            .iter()
+            .all(|e| matches!(e, Edit::SetParam { .. } | Edit::SetSetting { .. }));
+        if !kept
+            && matches!(
+                self.canvas.selected,
+                Some(Selection::Block(_) | Selection::Many(_))
+            )
+        {
             self.canvas.selected = None;
         }
         self.cache = None;

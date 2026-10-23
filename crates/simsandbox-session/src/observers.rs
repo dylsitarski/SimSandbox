@@ -177,6 +177,8 @@ impl Diagram {
                 error: None,
                 unreached: Vec::new(),
                 values: Vec::new(),
+                open: false,
+                settings: Default::default(),
             });
             reads.push((i, filter_reads(f)));
         }
@@ -235,6 +237,8 @@ impl Diagram {
                     .then(|| format!("no view type '{}' in this build", v.type_name)),
                 unreached: Vec::new(),
                 values: Vec::new(),
+                open: false,
+                settings: Default::default(),
             });
         }
         // Data wires: what each filter input and view slot reads.
@@ -792,10 +796,7 @@ mod tests {
         let n = &d.nodes[energy];
         assert_eq!(n.kind, NodeKind::Filter);
         assert_eq!(n.inputs.len(), 4);
-        assert!(n
-            .inputs
-            .iter()
-            .any(|p| p.name == "a.v" && p.unit == "m·s^-1"));
+        assert!(n.inputs.iter().any(|p| p.name == "a.v" && p.unit == "m/s"));
         let into = |i: usize| d.wires.iter().filter(move |w| w.to.0 == i);
         assert_eq!(into(energy).count(), 4);
         assert!(into(energy).all(|w| w.is_data() && d.nodes[w.from.0].kind == NodeKind::Block));
@@ -989,9 +990,7 @@ mod tests {
         let b = f.blocks.iter().find(|b| b.name == "push").unwrap();
         assert_eq!(b.type_name, "eq.equations");
         assert!(
-            b.equations
-                .iter()
-                .any(|l| l == "input cruise_F [m·kg·s^-2]"),
+            b.equations.iter().any(|l| l == "input cruise_F [kg·m/s^2]"),
             "{:?}",
             b.equations
         );

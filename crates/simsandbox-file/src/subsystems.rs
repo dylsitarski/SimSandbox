@@ -805,7 +805,10 @@ impl Ctx<'_> {
         if self.stack.contains(ty) {
             return Err(invalid(
                 format!("{epath}.type"),
-                format!("'{ty}' contains itself ({} → {ty})", self.stack.join(" → ")),
+                format!(
+                    "'{ty}' contains itself ({} -> {ty})",
+                    self.stack.join(" -> ")
+                ),
             ));
         }
         let extra = [

@@ -184,7 +184,7 @@ def test_units_are_checked_and_converted_explicitly():
     assert units["shaker.A"] == "mm"
     # Lines that do not balance are reported with the units.
     bad = ss.Model().add_block("b", "eq.equations", equations="input F [N]\nstate x [m]\ndx/dt = F")
-    assert "dx/dt is in m·s^-1 but the right side is in" in str(bad.check()["errors"])
+    assert "dx/dt is in m/s but the right side is in" in str(bad.check()["errors"])
 
 
 def test_the_unit_vocabulary_is_described():

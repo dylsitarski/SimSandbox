@@ -129,7 +129,7 @@ fn parameter_formulas_are_checked_and_computed_in_si() {
     let (_, message) = error(&sized("m", "size^2"));
     assert!(message.contains("is in m^2"), "{message}");
     let (_, message) = error(&sized("m", "size + 1/size"));
-    assert!(message.contains("cannot add m and m^-1"), "{message}");
+    assert!(message.contains("cannot add m and 1/m"), "{message}");
     // A unit that is not one.
     let (path, _) = error(&sized("paces", "size"));
     assert_eq!(path, "params.size.unit");

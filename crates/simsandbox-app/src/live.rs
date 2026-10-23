@@ -152,9 +152,11 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Shared {
+    /// Ask for a frame, at most 120 a second: without vsync (a tab popped
+    /// out) a fast model would otherwise redraw without pause.
     fn repaint(&self) {
         if let Some(ctx) = lock(&self.repaint).as_ref() {
-            ctx.request_repaint();
+            ctx.request_repaint_after(Duration::from_micros(8_333));
         }
     }
 }

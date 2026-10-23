@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-10-23: owner review worked through ([ADR 0054](../decisions/0054-controls-pane-pins-and-node-toggles.md)). Files: `ParamControl::pinned`/`set_pinned`; `layout::Pane::CONTROLS`; app `Pane::Controls` (`Dock::add_controls`, split above the inspector at 0.3), `controls_panel`, `param_row(.., Place, used_by, ..)` with `pin_button`, `apply_edits`; `picked: Vec<..>`; `block_entry`, `unit_fields`, `draft_rows`; `SimApp::edit_at(scope, Edit)` runs one edit through `DiagramTab::handle` (undoable; drafts). Session: `Edit::SetParam`/`SetSetting`; `Node::open`/`settings`; `Canvas::open` (by name), `all_open()` for headless, `expander`, `unit_rect`/`unit_under`, editing key `unit:block:setting`, `Request::SetSetting`; `MAX_VALUES` and `show_values` removed. Core `Unit` Display with a slash, mass first. Dock keeps the first Views tab even when empty. App switches the wgpu present mode to `AutoNoVsync` while any tab is popped out; `live.rs` caps worker repaints at 120/s. Tests: dock (controls added to old layouts, empty Views tab), canvas (expander, unit typed beside a port), app (draft blocks edited, multi-selection), units display round trip.
 - 2026-10-23: curve picking ([ADR 0053](../decisions/0053-docked-panes-inspector-and-node-values.md)): `View::picked` (default `None`), plot.xy gives curves ids (`("curve", name)`) and records the clicked one from `hovered_plot_item`; app `DockAction::Inspect` → `SimApp::inspect_signal` (strips `grid.`, node before the first `.`, top level before `/`); the inspector shows `picked`, replaced when the canvas selection changes (`last_canvas`). Tests: `clicking_a_curve_picks_its_signal`, `a_clicked_curve_selects_its_block_until_the_diagram_picks_another`.
 - 2026-10-23: values on nodes ([ADR 0053](../decisions/0053-docked-panes-inspector-and-node-values.md)): `NodeValue`, `Node::values`/`value_rows`/`value_at` (height grows), filled from the file in `node()`/`instance_node()`, cleared inside subsystems, `Diagram::live_values` from the session's rows; canvas draws them (zoom ≥ 0.55), edits in place (zoom ≥ 0.75) via `Request::SetValue`; app `Outcome::SetValue` through the shared `apply_changes`.
 - 2026-10-23: inspector ([ADR 0053](../decisions/0053-docked-panes-inspector-and-node-values.md)): app `inspector.rs` (`organise`, `search`, `selected`, `used_by` from formulas by scope; tested on the platoon), `param_panel` rewritten around it, `uses_table`, pin in `param_row`'s context menu (`ParamControl::pin`), `solving_menu`, `style_editor` on tiles.
@@ -59,6 +60,7 @@
 
 ## Decided
 
+- 2026-10-23: pins decide the Controls, a pane of their own; sliders only for pinned values; nodes open per node; drafts editable through `SetParam`/`SetSetting` ([ADR 0054](../decisions/0054-controls-pane-pins-and-node-toggles.md)). Answered: values inside a subsystem are per use, never shared; only blocks and wires drawn inside apply to every use ("Set every use" copies a value explicitly).
 - App layout (owner, 2026-10-23; [ADR 0053](../decisions/0053-docked-panes-inspector-and-node-values.md)): dockable tabs with pop-out; the arrangement saved in the model file; an inspector for model scope and selection; node values editable in place.
 - Formula and conversion blocks join fused groups (2026-10-23, answering the owner's question; [ADR 0051](../decisions/0051-stateless-blocks-join-fused-groups.md)). `canvas` for every node's place (owner, 2026-10-23; [ADR 0052](../decisions/0052-canvas-for-every-node-place.md)).
 - Data layer and undo (owner, 2026-10-23; [ADR 0050](../decisions/0050-data-layer-and-canvas-undo.md)): observers at model level only; a filter on a block input is refused with "Promote and connect"; undo for canvas edits. Places are `canvas`, not `at`, because cut filters use `at` (decided in the session).
@@ -100,6 +102,8 @@
 
 ## Notes for the next session
 
+- Pop-out stall (owner, Linux): reproduced only as a slowdown under Xvfb (frame rate fell by about two thirds with a tab popped out; the main window kept drawing). `--screenshot` never finishes while a tab is popped out (the screenshot event does not come back), so pop-out cannot be checked that way. If vsync off does not fix Wayland, try deferred viewports ([Q33](../open-questions.md)).
+- egui's default fonts lack `→` (U+2192): it draws as a box. Use "to" or `->` in anything the app shows.
 - Cut filters use `at` for their cut positions inside the flattened filter entry, so filter and view places are `canvas`. A promoted block between two fused blocks separates them, so results change slightly unless fusion is off.
 - A bare `0` is dimensionless, so `dx/dt = 0 [m]` is refused; write the rate as a parameter with a unit. Consider letting a literal zero take any dimension if this proves tedious.
 - `cargo test --workspace` stops at the first failing test binary; use `--no-fail-fast` to see every failure at once.

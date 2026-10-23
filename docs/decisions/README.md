@@ -58,7 +58,8 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0050](0050-data-layer-and-canvas-undo.md) | Filters and views on the canvas (model level), applied live; a filter on a block input offers "Promote and connect"; undo for canvas edits | Accepted, amended by 0051 | 2026-10-23 |
 | [0051](0051-stateless-blocks-join-fused-groups.md) | Formula and conversion blocks join the fused group they connect, taking its method; never merging two methods | Accepted | 2026-10-23 |
 | [0052](0052-canvas-for-every-node-place.md) | Every node's place is `canvas` (blocks and ports too); `at` still read and converted | Accepted | 2026-10-23 |
-| [0053](0053-docked-panes-inspector-and-node-values.md) | Inspector, diagram and views as dockable tabs, poppable into windows; arrangement saved as `controls.layout`; an inspector and editable values on nodes next | Accepted | 2026-10-23 |
+| [0053](0053-docked-panes-inspector-and-node-values.md) | Inspector, diagram and views as dockable tabs, poppable into windows; arrangement saved as `controls.layout`; an inspector and editable values on nodes next | Accepted; amended by 0054 | 2026-10-23 |
+| [0054](0054-controls-pane-pins-and-node-toggles.md) | Pins decide a Controls pane (sliders only for pinned values); every selected block in the inspector; drafts editable; values opened per node; units with a slash | Accepted | 2026-10-23 |
 
 ## When to write one
 

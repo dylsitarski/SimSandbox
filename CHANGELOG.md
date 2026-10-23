@@ -6,6 +6,9 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- A Controls pane (ADR 0054): pin any value with 📌 in the inspector (or right-click its name) to keep it there; a pinned value can have a slider, whose range you set by right-clicking its name. Click 📌 again to unpin. Files whose values have sliders open with them pinned.
+- Nodes on the diagram open and close their values with a triangle in their header. Conversion blocks show their units beside their ports; double-click one to change it.
+- Selecting several blocks shows each in the inspector. Blocks added on the diagram that cannot run yet (for example a conversion with nothing wired in) show in the inspector as "not running yet", and their values and units can be set there or on their nodes.
 - Click a curve in a plot to select where it comes from: its block (or subsystem use) is shown in the inspector and selected on the diagram.
 - Values on the diagram (ADR 0053): blocks and subsystem uses show their parameter values under their ports; zoom in and double-click a value to type a new one, applied at once. "Values" in the Diagram toolbar hides them; they also hide when zoomed out.
 - Inspector (ADR 0053), replacing the parameter panel: a search box; Controls (parameters with sliders, and any you pin by right-clicking a name); what you select on the diagram; the model's own parameters; one table per subsystem used several times, a column per use, with "Set every use"; each block's parameters with starting values last. Values set by formulas are listed once, at their source ("used by 3"); tick "computed" to see them all. "Solving…" moved to the toolbar, and each view's style to its "style" menu.
@@ -66,11 +69,19 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- Turning the only plot into a tab of its own no longer removes the Views tab, so the plot can be tiled back after closing its tab.
+- Popping out a tab no longer waits for vsync, which could stall the main window on Linux (Wayland).
+- A value typed on a block that was not running yet was ignored; it now goes into the pending edits.
+- An arrow that the app's font lacks showed as a box in conversion labels and some messages.
 - Numbers in model files are read back exactly as written; before, some values came back one unit in the last place off, so a saved model could differ slightly from the one that was saved.
 - App: a sweep that reaches an infinite value (the resonance example swept over `spring.c` from 0) no longer crashes; plots leave a gap at infinite or NaN values. Choosing a sweep parameter uses its slider range when it has one.
 
 ### Changed
 
+- Units are shown with a slash: `m/s`, `kg·m/s^2`, `1/s` instead of `m·s^-1`.
+- The inspector lists starting values last, each marked ↻, without the "starts at" and "used by" lines; hover a name to see which formulas read it. The "Unit conversions" section moved into each conversion block's entry.
+- The log lists the newest message last.
+- Values that formulas set no longer appear on diagram nodes; the global "Values" switch is replaced by each node's own toggle.
 - Blocks fuse by the method they actually run: a block that leaves its method out (its type's default) now fuses with a connected block that names the same method and options, e.g. `rk4` with one substep.
 - Formula blocks and unit conversions join the fused group they connect (ADR 0051): a conversion or a promoted filter between two blocks solved together no longer splits them, and a formula driving a fused block is evaluated at every solver stage. Results of such models change slightly (more accurate).
 - Block and subsystem port places are written `canvas`, like filters' and views' (ADR 0052); files with `at` still open, and the log says it was converted. Python `Model.add_block` takes `canvas=`.

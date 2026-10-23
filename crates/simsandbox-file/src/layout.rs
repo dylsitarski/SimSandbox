@@ -1,6 +1,6 @@
 //! How the app's panes are arranged (ADR 0053): `controls.layout`, a tree
-//! of splits whose leaves are stacks of tabs. A tab is the inspector, the
-//! diagram, one view (`view:K`, its place in `controls.views`), or several
+//! of splits whose leaves are stacks of tabs. A tab is the controls (pinned
+//! parameters), the inspector, the diagram, one view (`view:K`, its place in `controls.views`), or several
 //! views tiled together (`{"views": [0, 2]}`). Like all of `controls` it
 //! never changes results, and what cannot be used is dropped with a
 //! warning.
@@ -45,13 +45,14 @@ pub enum SplitKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Pane {
-    /// `"inspector"`, `"diagram"` or `"view:K"`.
+    /// `"controls"`, `"inspector"`, `"diagram"` or `"view:K"`.
     Named(String),
     /// Views tiled together in one tab.
     Views { views: Vec<usize> },
 }
 
 impl Pane {
+    pub const CONTROLS: &'static str = "controls";
     pub const INSPECTOR: &'static str = "inspector";
     pub const DIAGRAM: &'static str = "diagram";
 
@@ -144,7 +145,10 @@ impl Layout {
                 let mut kept = Vec::new();
                 for pane in tabs {
                     let pane = match pane {
-                        Pane::Named(n) if n == Pane::INSPECTOR || n == Pane::DIAGRAM => {
+                        Pane::Named(n)
+                            if [Pane::CONTROLS, Pane::INSPECTOR, Pane::DIAGRAM]
+                                .contains(&n.as_str()) =>
+                        {
                             Some(Pane::Named(n))
                         }
                         Pane::Named(n) => match n.strip_prefix("view:").map(str::parse::<usize>) {
@@ -159,8 +163,8 @@ impl Layout {
                             },
                             _ => {
                                 warnings.push(format!(
-                                    "controls.layout: unknown tab '{n}' (expected inspector, \
-                                     diagram or view:K); dropped"
+                                    "controls.layout: unknown tab '{n}' (expected controls, \
+                                     inspector, diagram or view:K); dropped"
                                 ));
                                 None
                             }

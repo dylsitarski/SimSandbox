@@ -484,29 +484,48 @@ fn names() -> &'static [(String, Unit)] {
 }
 
 impl fmt::Display for Unit {
+    /// Named units by name (`km/h`); others as SI base units with positive
+    /// powers first and negative ones after a slash (`m/s^2`,
+    /// `kg/(m·s^2)`), which [`Unit::parse`] reads back.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.scale != 1.0 {
             if let Some((name, _)) = names().iter().find(|(_, u)| u.same_as(self)) {
                 return write!(f, "{name}");
             }
-            write!(f, "{}·", self.scale)?;
         }
-        let parts: Vec<String> = BASE_SYMBOLS
-            .iter()
-            .zip(self.dim.0)
-            .filter(|(_, e)| *e != 0)
-            .map(|(s, e)| {
-                if e == 1 {
-                    s.to_string()
-                } else {
-                    format!("{s}^{e}")
-                }
-            })
+        let power = |s: &str, e: i8| {
+            if e == 1 {
+                s.to_string()
+            } else {
+                format!("{s}^{e}")
+            }
+        };
+        // Mass first, as in kg·m^2.
+        let base = || {
+            [1, 0, 2, 3, 4, 5, 6]
+                .into_iter()
+                .map(|k| (BASE_SYMBOLS[k], self.dim.0[k]))
+        };
+        let mut num: Vec<String> = base()
+            .filter(|(_, e)| *e > 0)
+            .map(|(s, e)| power(s, e))
             .collect();
-        if parts.is_empty() {
-            write!(f, "1")
+        let den: Vec<String> = base()
+            .filter(|(_, e)| *e < 0)
+            .map(|(s, e)| power(s, -e))
+            .collect();
+        if self.scale != 1.0 {
+            num.insert(0, self.scale.to_string());
+        }
+        let top = if num.is_empty() {
+            "1".to_string()
         } else {
-            write!(f, "{}", parts.join("·"))
+            num.join("·")
+        };
+        match den.len() {
+            0 => write!(f, "{top}"),
+            1 => write!(f, "{top}/{}", den[0]),
+            _ => write!(f, "{top}/({})", den.join("·")),
         }
     }
 }
@@ -555,7 +574,18 @@ mod tests {
         let force = Unit::parse("N").unwrap();
         assert!(Unit::parse(&force.to_string()).unwrap().same_as(&force));
         assert_eq!(Unit::parse("g").unwrap().to_string(), "g");
-        assert_eq!(ms.to_string(), "m·s^-1");
+        assert_eq!(ms.to_string(), "m/s");
+        for (text, shown) in [
+            ("m/s^2", "m/s^2"),
+            ("kg/(m*s^2)", "kg/(m·s^2)"),
+            ("1/s", "1/s"),
+            ("kg*m^2", "kg·m^2"),
+            ("N*s/m", "kg/s"),
+        ] {
+            let u = Unit::parse(text).unwrap();
+            assert_eq!(u.to_string(), shown);
+            assert!(Unit::parse(shown).unwrap().same_as(&u));
+        }
         assert!((kmh.conversion_to(&ms).unwrap() - 1.0 / 3.6).abs() < 1e-15);
     }
 

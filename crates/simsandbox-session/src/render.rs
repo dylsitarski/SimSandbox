@@ -102,7 +102,8 @@ pub fn render_diagram(
     if o.data {
         d.observe(file, &crate::examples::view_registry());
     }
-    let mut canvas = crate::canvas::Canvas::default();
+    // Every node shows its values.
+    let mut canvas = crate::canvas::Canvas::all_open();
     Ok(paint(o, |ui| {
         canvas.show(ui, &mut d, registry, false);
     }))

@@ -1072,7 +1072,7 @@ mod tests {
         // The old meaning (the state's unit on its rate) no longer balances.
         let e = error(&["input v [m/s]", "dx/dt = v [m]"]);
         assert!(
-            e.contains("dx/dt is in m but the right side is in m·s^-1"),
+            e.contains("dx/dt is in m but the right side is in m/s"),
             "{e}"
         );
         // Declarations need dynamics, and are not formulas.
@@ -1094,7 +1094,7 @@ mod tests {
     fn equations_must_balance() {
         let e = error(&["state x [m]", "dx/dt = v", "dv/dt = -x [m/s^2]"]);
         assert!(
-            e.contains("line 3") && e.contains("dv/dt is in m·s^-2 but the right side is in m"),
+            e.contains("line 3") && e.contains("dv/dt is in m/s^2 but the right side is in m"),
             "{e}"
         );
         let e = error(&["input F [N]", "dx/dt = F - x [m/s]"]);

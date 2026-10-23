@@ -898,16 +898,31 @@ impl ViewControl {
 /// Presentation of one parameter.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ParamControl {
-    /// Show a slider in addition to the typed entry field.
+    /// Show a slider in addition to the typed entry field, among the
+    /// Controls. A slider in older files pins the parameter too.
     #[serde(default)]
     pub slider: bool,
     /// Slider range `[min, max]`; the parameter's suggested range if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<[f64; 2]>,
-    /// Shown among the inspector's Controls, with those that have sliders
-    /// (ADR 0053).
+    /// Shown among the Controls (ADR 0053).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pin: bool,
+}
+
+impl ParamControl {
+    /// Shown among the Controls: pinned, or with a slider (older files).
+    pub fn pinned(&self) -> bool {
+        self.pin || self.slider
+    }
+
+    /// Pin or unpin; unpinning removes the slider too, keeping its range.
+    pub fn set_pinned(&mut self, pinned: bool) {
+        self.pin = pinned;
+        if !pinned {
+            self.slider = false;
+        }
+    }
 }
 
 /// Why a file could not be loaded.

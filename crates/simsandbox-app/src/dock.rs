@@ -1,5 +1,5 @@
-//! The app's panes as dockable tabs (ADR 0053): the inspector, the
-//! diagram, and views — each alone in a tab, or several tiled together in
+//! The app's panes as dockable tabs (ADR 0053): the controls, the
+//! inspector, the diagram, and views — each alone in a tab, or several tiled together in
 //! one. Tabs can be dragged, stacked and split (egui_dock), and popped out
 //! into their own windows. The arrangement is saved in the model file as
 //! `controls.layout`, views by their place in `controls.views`; popped-out
@@ -11,6 +11,8 @@ use simsandbox_file::layout::{Layout, Pane as FilePane, SplitKind};
 /// One tab.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Pane {
+    /// The pinned parameters.
+    Controls,
     Inspector,
     Diagram,
     /// One view, by its tile's id.
@@ -42,9 +44,9 @@ pub struct Dock {
 }
 
 impl Dock {
-    /// The arrangement a model without one opens with: the inspector on the
-    /// left; on the right the views tiled together, with the diagram as a
-    /// second tab.
+    /// The arrangement a model without one opens with: the controls above
+    /// the inspector on the left; on the right the views tiled together,
+    /// with the diagram as a second tab.
     pub fn standard(tiles: &[u64]) -> Self {
         let mut d = Self {
             state: DockState::new(vec![Pane::Inspector]),
@@ -55,7 +57,28 @@ impl Dock {
         d.state
             .main_surface_mut()
             .split_right(NodeIndex::root(), 0.3, vec![group, Pane::Diagram]);
+        d.add_controls();
         d
+    }
+
+    /// Put the controls above the inspector (or in the first stack).
+    fn add_controls(&mut self) {
+        let leaf = self
+            .find(|p| *p == Pane::Inspector)
+            .filter(|path| path.surface.is_main())
+            .map(|path| path.node_path().node);
+        match leaf {
+            Some(at) => {
+                self.state.main_surface_mut().split(
+                    at,
+                    Split::Above,
+                    // The new (upper) part's share.
+                    0.3,
+                    Node::leaf_with(vec![Pane::Controls]),
+                );
+            }
+            None => self.state.push_to_first_leaf(Pane::Controls),
+        }
     }
 
     /// A new tab of views tiled together.
@@ -79,6 +102,7 @@ impl Dock {
         };
         let pane = |d: &mut Self, p: &FilePane| -> Option<Pane> {
             match p {
+                FilePane::Named(n) if n == FilePane::CONTROLS => Some(Pane::Controls),
                 FilePane::Named(n) if n == FilePane::INSPECTOR => Some(Pane::Inspector),
                 FilePane::Named(n) if n == FilePane::DIAGRAM => Some(Pane::Diagram),
                 p => {
@@ -161,6 +185,9 @@ impl Dock {
         if d.find(|p| *p == Pane::Diagram).is_none() {
             d.state.push_to_first_leaf(Pane::Diagram);
         }
+        if d.find(|p| *p == Pane::Controls).is_none() {
+            d.add_controls();
+        }
         d.sync(all);
         d
     }
@@ -170,6 +197,7 @@ impl Dock {
     pub fn to_layout(&self, index: &dyn Fn(u64) -> Option<usize>) -> Option<Layout> {
         let pane = |p: &Pane| -> Option<FilePane> {
             match p {
+                Pane::Controls => Some(FilePane::Named(FilePane::CONTROLS.into())),
                 Pane::Inspector => Some(FilePane::Named(FilePane::INSPECTOR.into())),
                 Pane::Diagram => Some(FilePane::Named(FilePane::DIAGRAM.into())),
                 Pane::View(t) => index(*t).map(FilePane::view),
@@ -286,36 +314,39 @@ impl Dock {
             .copied()
             .filter(|t| !shown.contains(t))
             .collect();
-        if missing.is_empty() {
-            return;
-        }
         let first_group = self.state.iter_all_tabs_mut().find_map(|(_, p)| match p {
             Pane::Views { tiles, .. } => Some(tiles),
             _ => None,
         });
         match first_group {
             Some(v) => v.extend(missing),
+            None if self.popped.iter().any(|p| matches!(p, Pane::Views { .. }))
+                && missing.is_empty() => {}
+            // There is always a tab of views, empty if every view has a tab
+            // of its own, so views can be tiled again.
             None => {
                 let group = self.group(missing);
-                match self.find(|p| *p == Pane::Diagram) {
-                    Some(path) => {
-                        if let Some(leaf) = self
-                            .state
-                            .main_surface_mut()
-                            .iter_mut()
-                            .nth(path.node_path().node.0)
-                            .and_then(|n| n.get_leaf_mut())
-                        {
-                            leaf.tabs.insert(0, group);
-                            leaf.active = TabIndex(0);
-                            return;
-                        }
-                        self.state.push_to_first_leaf(group);
-                    }
-                    None => self.state.push_to_first_leaf(group),
-                }
+                self.beside_diagram(group);
             }
         }
+    }
+
+    /// Add a tab in front of the diagram's stack (or to the first stack).
+    fn beside_diagram(&mut self, pane: Pane) {
+        if let Some(path) = self.find(|p| *p == Pane::Diagram) {
+            if let Some(leaf) = self
+                .state
+                .main_surface_mut()
+                .iter_mut()
+                .nth(path.node_path().node.0)
+                .and_then(|n| n.get_leaf_mut())
+            {
+                leaf.tabs.insert(0, pane);
+                leaf.active = TabIndex(0);
+                return;
+            }
+        }
+        self.state.push_to_first_leaf(pane);
     }
 
     /// Show a tab: bring it to the front of its stack (or of its window).
@@ -380,9 +411,16 @@ impl Dock {
         self.sync(tiles);
     }
 
+    /// Close empty tabs of views but the first.
     fn drop_empty_groups(&mut self) {
-        self.state
-            .retain_tabs(|p| !matches!(p, Pane::Views { tiles, .. } if tiles.is_empty()));
+        let first = self.state.iter_all_tabs().find_map(|(_, p)| match p {
+            Pane::Views { id, .. } => Some(*id),
+            _ => None,
+        });
+        self.state.retain_tabs(|p| match p {
+            Pane::Views { id, tiles } => !tiles.is_empty() || Some(*id) == first,
+            _ => true,
+        });
     }
 
     /// Show a tab in its own window.
@@ -419,7 +457,7 @@ mod tests {
     fn arrangements_round_trip_through_the_dock() {
         let l = layout(
             r#"{"split": "left_right", "fraction": 0.3,
-                "first": {"tabs": ["inspector"]},
+                "first": {"tabs": ["inspector", "controls"]},
                 "second": {"split": "top_bottom", "fraction": 0.6,
                     "first": {"tabs": [{"views": [0, 2]}, "diagram"], "active": 1},
                     "second": {"tabs": ["view:1"]}}}"#,
@@ -429,6 +467,20 @@ mod tests {
         let d = Dock::from_layout(&l, &tile, &[10, 11, 12]);
         let index = |t: u64| Some((t - 10) as usize);
         assert_eq!(d.to_layout(&index), Some(l));
+        // An arrangement saved before the controls had a pane gets them
+        // above the inspector.
+        let old = layout(
+            r#"{"split": "left_right", "fraction": 0.3,
+            "first": {"tabs": ["inspector"]}, "second": {"tabs": ["diagram"]}}"#,
+        );
+        let d = Dock::from_layout(&old, &tile, &[]);
+        let expected = layout(
+            r#"{"split": "left_right", "fraction": 0.3,
+                "first": {"split": "top_bottom", "fraction": 0.3,
+                    "first": {"tabs": ["controls"]}, "second": {"tabs": ["inspector"]}},
+                "second": {"tabs": ["diagram"]}}"#,
+        );
+        assert_eq!(d.to_layout(&index), Some(expected));
     }
 
     #[test]
@@ -443,6 +495,21 @@ mod tests {
         assert_eq!(d.to_layout(&index).unwrap().views(), [0, 2, 1]);
         d.tile_back(2);
         assert!(!d.panes().contains(&Pane::View(2)));
+        // Every view in a tab of its own: the tab of views stays, empty,
+        // and comes back after the arrangement is saved and read.
+        let mut alone = Dock::standard(&[7]);
+        alone.own_tab(7);
+        let groups = |d: &Dock| {
+            d.panes()
+                .into_iter()
+                .filter(|p| matches!(p, Pane::Views { .. }))
+                .count()
+        };
+        assert_eq!(groups(&alone), 1);
+        alone.sync(&[]);
+        assert_eq!(groups(&alone), 1);
+        let saved = alone.to_layout(&|_| Some(0)).unwrap();
+        assert_eq!(groups(&Dock::from_layout(&saved, &|_| Some(7), &[7])), 1);
         // A tile closed elsewhere leaves; a new one joins the views.
         d.own_tab(3);
         d.sync(&[1, 2, 4]);

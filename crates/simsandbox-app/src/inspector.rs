@@ -3,7 +3,8 @@
 //! value they come from says what uses it. A subsystem used several times
 //! on the model level is one table, a column per use. Starting values
 //! (initial conditions) come after a block's other parameters. Pinned
-//! parameters and those with sliders form the Controls.
+//! parameters form the Controls, a pane of their own; they stay in the tree
+//! too.
 
 use simsandbox_file::ModelFile;
 use simsandbox_session::session::ParamRow;
@@ -12,7 +13,7 @@ use std::collections::BTreeMap;
 /// The parameters, organised.
 #[derive(Debug, Default)]
 pub struct Organised {
-    /// Pinned, or with a slider.
+    /// Pinned (a slider in older files pins too).
     pub controls: Vec<ParamRow>,
     /// The model's own parameters.
     pub model: Vec<ParamRow>,
@@ -104,19 +105,12 @@ pub fn organise(rows: &[ParamRow], file: &ModelFile, show_computed: bool) -> Org
     o.computed = rows.len() - shown.len();
     o.controls = rows
         .iter()
-        .filter(|r| {
-            file.controls
-                .params
-                .get(&r.key)
-                .is_some_and(|c| c.slider || c.pin)
-        })
+        .filter(|r| file.controls.params.get(&r.key).is_some_and(|c| c.pinned()))
         .cloned()
         .collect();
-    // A control is listed there only.
-    let control = |r: &ParamRow| o.controls.iter().any(|c| c.key == r.key);
     o.model = shown
         .iter()
-        .filter(|r| r.owner.is_empty() && !control(r))
+        .filter(|r| r.owner.is_empty())
         .map(|r| (*r).clone())
         .collect();
     // Uses by subsystem, on the model level.
@@ -133,7 +127,7 @@ pub fn organise(rows: &[ParamRow], file: &ModelFile, show_computed: bool) -> Org
         let instance = file.subsystems.contains_key(&b.type_name);
         let mine: Vec<(String, ParamRow)> = shown
             .iter()
-            .filter(|r| !r.owner.is_empty() && top(r) == b.name && !control(r))
+            .filter(|r| !r.owner.is_empty() && top(r) == b.name)
             .map(|r| (relative(r), (*r).clone()))
             .collect();
         let shared = instance && uses.get(b.type_name.as_str()).is_some_and(|u| u.len() > 1);
@@ -283,8 +277,9 @@ mod tests {
         let o = organise(&rows, &s.file, false);
         // Fifteen values are set by formulas: not listed.
         assert_eq!(o.computed, 15);
-        // ki and kp have sliders: listed among the controls only.
-        assert!(o.model.is_empty());
+        // ki and kp have sliders, so they are controls; in the tree too.
+        let model: Vec<&str> = o.model.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(model, ["ki", "kp"]);
         // kp is read by each use's kp.
         assert_eq!(o.used_by["kp"], ["car1.kp", "car2.kp", "car3.kp"]);
         assert_eq!(o.used_by["car1.kp"], ["car1/control.kp"]);
@@ -302,13 +297,12 @@ mod tests {
         assert_eq!(mass, [1000.0, 1500.0, 2500.0]);
         assert_eq!(o.groups.len(), 1);
         let leader: Vec<&str> = o.groups[0].rows.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(leader, ["T", "v0"]);
+        assert_eq!(leader, ["T", "target", "v0"]);
         // Sliders are the controls.
         let controls: Vec<&str> = o.controls.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(controls, ["ki", "kp", "leader.target"]);
-        // 3 controls + 4 × 3 + 2 = 17 values to edit, as 3 + 4 + 2 lines.
-        let shown =
-            o.controls.len() + o.model.len() + o.tables[0].rows.len() * 3 + o.groups[0].rows.len();
+        // 2 + 4 × 3 + 3 = 17 values to edit, as 2 + 4 + 3 lines.
+        let shown = o.model.len() + o.tables[0].rows.len() * 3 + o.groups[0].rows.len();
         assert_eq!(shown, 17);
         // Everything, computed values too.
         assert_eq!(organise(&rows, &s.file, true).computed, 0);

@@ -7,11 +7,12 @@ use crate::live::{Event, Live, Model};
 use crate::log::{Kind as LogKind, Log};
 use eframe::egui;
 use simsandbox_core::registry::Registry;
+use simsandbox_session::diagram::{Diagram, Edit, Scope};
 use simsandbox_session::examples::{registry, EXAMPLES};
 use simsandbox_session::session::{ParamRow, Session};
 use simsandbox_session::views::Views;
 use simsandbox_views::{Available, History, ViewState, ViewType};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -74,10 +75,10 @@ pub struct SimApp {
     focus: Option<Focus>,
     /// The inspector's search text.
     inspect_query: String,
-    /// What the inspector shows as selected: the subsystem it is inside
-    /// (`None` on the model level) and the block, picked on the diagram or
-    /// by clicking a curve.
-    picked: Option<(Option<String>, String)>,
+    /// What the inspector shows as selected: for each block, the subsystem
+    /// it is inside (`None` on the model level) and its name; picked on the
+    /// diagram or by clicking a curve.
+    picked: Vec<(Option<String>, String)>,
     /// The diagram's selection when last looked at, to tell a new pick.
     last_canvas: Option<simsandbox_session::canvas::Selection>,
     /// List values formulas set too.
@@ -122,7 +123,7 @@ impl SimApp {
             dock: Dock::standard(&[]),
             focus: None,
             inspect_query: String::new(),
-            picked: None,
+            picked: Vec::new(),
             last_canvas: None,
             show_computed: false,
             diagram: DiagramTab::default(),
@@ -412,6 +413,7 @@ impl SimApp {
                 };
                 for p in popped {
                     let pane = match p {
+                        Popped::Controls => Some(Pane::Controls),
                         Popped::Inspector => Some(Pane::Inspector),
                         Popped::Diagram => Some(Pane::Diagram),
                         Popped::View(k) => tile(k).map(Pane::View),
@@ -757,8 +759,9 @@ impl SimApp {
                         }
                         egui::ScrollArea::vertical()
                             .max_height(320.0)
+                            .stick_to_bottom(true)
                             .show(ui, |ui| {
-                                for e in log.entries().iter().rev() {
+                                for e in log.entries() {
                                     let colour = log_colour(&visuals, e.kind, true);
                                     let ago = e.at.elapsed().as_secs();
                                     ui.horizontal_wrapped(|ui| {
@@ -773,7 +776,7 @@ impl SimApp {
                         }
                     })
                     .response
-                    .on_hover_text("Every notice, warning and error, newest first");
+                    .on_hover_text("Every notice, warning and error, newest last");
                     if let Some(e) = self.log.latest() {
                         let standing = e.kind == LogKind::Error && self.error.is_some();
                         let colour = log_colour(&visuals, e.kind, standing || e.is_fresh());
@@ -802,6 +805,7 @@ impl SimApp {
             .popped
             .iter()
             .filter_map(|p| match p {
+                Pane::Controls => Some(Popped::Controls),
                 Pane::Inspector => Some(Popped::Inspector),
                 Pane::Diagram => Some(Popped::Diagram),
                 p => p.tiles().first().and_then(|&t| index(t)).map(Popped::View),
@@ -888,6 +892,7 @@ impl SimApp {
     /// A tab's title.
     fn pane_title(&self, pane: &Pane) -> String {
         match pane {
+            Pane::Controls => "Controls".into(),
             Pane::Inspector => "Inspector".into(),
             Pane::Diagram => match self.diagram.draft_problem() {
                 Some(_) => "Diagram ⚠".into(),
@@ -908,6 +913,11 @@ impl SimApp {
     /// What a tab shows.
     fn pane_ui(&mut self, ui: &mut egui::Ui, pane: &Pane, actions: &mut Vec<DockAction>) {
         match pane {
+            Pane::Controls => {
+                egui::ScrollArea::both().id_salt("controls").show(ui, |ui| {
+                    self.controls_panel(ui);
+                });
+            }
             Pane::Inspector => {
                 egui::ScrollArea::both()
                     .id_salt("inspector")
@@ -919,6 +929,25 @@ impl SimApp {
             Pane::View(t) => self.view_tiles(ui, &[*t], false, actions),
             Pane::Views { tiles, .. } => self.view_tiles(ui, tiles, true, actions),
         }
+    }
+
+    /// Make an edit through the diagram, as if on the canvas at `scope`:
+    /// it can be undone, and a model that does not load yet keeps it as a
+    /// draft.
+    fn edit_at(&mut self, scope: Scope, edit: Edit) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let m = live.model();
+        let (speed, views, layout) = (self.speed, self.views.entries(), self.layout());
+        let current = || {
+            let (views, layout) = (views.clone(), layout.clone());
+            live.call(move |s, _| s.save_json_with(speed, Some(views), Some(layout)))?
+        };
+        let here = std::mem::replace(&mut self.diagram.scope, scope);
+        let outcomes = self.diagram.handle(vec![edit], &self.registry, &current);
+        self.diagram.scope = here;
+        self.diagram_outcomes(&m, outcomes);
     }
 
     /// The node canvas (ADR 0042), and what its edits ask for.
@@ -1165,7 +1194,12 @@ impl SimApp {
             .filter_map(|id| views.tiles.iter().position(|t| t.id == *id))
             .collect();
         if shown.is_empty() {
-            ui.centered_and_justified(|ui| ui.label("No views: add one from \"More views…\"."));
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    "No views here: add one from \"More views…\", or choose \"tile\" on a \
+                     view in a tab of its own.",
+                )
+            });
             return;
         }
         let (cols, rows) = simsandbox_session::views::grid(shown.len());
@@ -1312,7 +1346,7 @@ impl SimApp {
         if !m.file.blocks.iter().any(|b| b.name == top) {
             return;
         }
-        self.picked = Some((None, top.to_string()));
+        self.picked = vec![(None, top.to_string())];
         if self.diagram.scope == simsandbox_session::diagram::Scope::Model {
             let selection = simsandbox_session::canvas::Selection::Block(top.to_string());
             self.diagram.canvas.selected = Some(selection.clone());
@@ -1380,8 +1414,72 @@ impl SimApp {
         }
     }
 
-    /// Typed entry for every parameter, plus opt-in sliders (ADR 0011) whose
-    /// choices are saved in `controls` (ADR 0012).
+    /// New values, and pin and slider choices (saved in `controls`, ADR
+    /// 0012).
+    fn apply_edits(
+        &mut self,
+        changes: Vec<(ParamRow, f64)>,
+        controls: Vec<(String, simsandbox_file::ParamControl)>,
+    ) {
+        if let Some(live) = self.session.as_ref() {
+            for (key, control) in controls {
+                live.send(None, move |s, _| {
+                    s.file.controls.params.insert(key, control);
+                });
+            }
+        }
+        self.apply_changes(changes);
+    }
+
+    /// The Controls pane (ADR 0053): the pinned parameters, each with an
+    /// optional slider (ADR 0011).
+    fn controls_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(live) = self.session.as_ref() else {
+            return;
+        };
+        let m = live.model();
+        let mut changes: Vec<(ParamRow, f64)> = Vec::new();
+        let mut controls: Vec<(String, simsandbox_file::ParamControl)> = Vec::new();
+        let pinned: Vec<&ParamRow> = m
+            .params
+            .iter()
+            .filter(|r| {
+                m.file
+                    .controls
+                    .params
+                    .get(&r.key)
+                    .is_some_and(|c| c.pinned())
+            })
+            .collect();
+        if pinned.is_empty() {
+            ui.weak(
+                "Nothing pinned. Pin a value with 📌 in the inspector to keep it here, \
+                 with a slider if you like.",
+            );
+        }
+        ui.spacing_mut().slider_width = 90.0;
+        egui::Grid::new("controls")
+            .num_columns(4)
+            .spacing([6.0, 4.0])
+            .show(ui, |ui| {
+                for row in pinned {
+                    let mut r = row.clone();
+                    r.name = r.key.clone();
+                    let edits = Edits {
+                        changes: &mut changes,
+                        controls: &mut controls,
+                        text: &mut self.param_edits,
+                        pending: &mut self.pending,
+                        error: &mut self.error,
+                    };
+                    param_row(ui, &m, &r, Place::Controls, None, edits);
+                }
+            });
+        self.apply_edits(changes, controls);
+    }
+
+    /// The inspector (ADR 0053): search, what is selected, and every
+    /// parameter where it is set.
     fn param_panel(&mut self, ui: &mut egui::Ui) {
         let Some(live) = self.session.as_ref() else {
             return;
@@ -1391,6 +1489,9 @@ impl SimApp {
         let mut changes: Vec<(ParamRow, f64)> = Vec::new();
         let mut controls: Vec<(String, simsandbox_file::ParamControl)> = Vec::new();
         let mut open_editor: Option<(String, String)> = None;
+        // Edits that go through the diagram (a conversion's units, a new
+        // block's values), at the level they apply to.
+        let mut canvas_edits: Vec<(Scope, Edit)> = Vec::new();
         macro_rules! edits {
             () => {
                 Edits {
@@ -1427,75 +1528,88 @@ impl SimApp {
                     for row in found {
                         let mut r = row.clone();
                         r.name = r.key.clone();
-                        param_row(ui, &m, &r, edits!());
+                        param_row(ui, &m, &r, Place::Tree, None, edits!());
                     }
                 });
         } else {
             let o = crate::inspector::organise(&m.params, &m.file, self.show_computed);
-            let used_by = |ui: &mut egui::Ui, key: &str| {
-                if let Some(v) = o.used_by.get(key) {
-                    ui.label("");
-                    let n = match v.len() {
-                        1 => fit_text(&v[0], 14),
-                        n => format!("{n}"),
-                    };
-                    ui.weak(format!("used by {n}"))
-                        .on_hover_text(format!("Formulas read it: {}", v.join(", ")));
-                    ui.end_row();
-                }
-            };
-            if !o.controls.is_empty() {
-                ui.heading("Controls").on_hover_text(
-                    "Parameters with sliders, and those pinned (right-click a parameter's name)",
-                );
-                egui::Grid::new("controls")
-                    .num_columns(4)
-                    .spacing([6.0, 4.0])
-                    .show(ui, |ui| {
-                        for row in &o.controls {
-                            let mut r = row.clone();
-                            r.name = r.key.clone();
-                            param_row(ui, &m, &r, edits!());
-                            used_by(ui, &row.key);
-                        }
-                    });
-                ui.add_space(6.0);
-            }
             // What was picked last, on the diagram or in a plot (ADR 0053).
             let canvas = self.diagram.canvas.selected.clone();
             if canvas != self.last_canvas {
                 self.last_canvas = canvas.clone();
                 let scope = match &self.diagram.scope {
-                    simsandbox_session::diagram::Scope::Model => None,
-                    simsandbox_session::diagram::Scope::Subsystem(s) => Some(s.clone()),
+                    Scope::Model => None,
+                    Scope::Subsystem(s) => Some(s.clone()),
                 };
                 self.picked = canvas
-                    .and_then(|s| s.blocks().into_iter().next())
+                    .map(|s| s.blocks())
+                    .unwrap_or_default()
+                    .into_iter()
                     .filter(|n| !n.contains(':'))
-                    .map(|n| (scope, n));
+                    .map(|n| (scope.clone(), n))
+                    .collect();
             }
-            if let Some((scope, name)) = self.picked.clone() {
-                if let Some(t) =
-                    crate::inspector::selected(&m.params, &m.file, scope.as_deref(), &name)
-                {
-                    let title = match &scope {
-                        Some(s) => format!("Selected: {name} in {s}"),
-                        None => format!("Selected: {name}"),
-                    };
-                    egui::CollapsingHeader::new(egui::RichText::new(title).strong())
-                        .id_salt("selected")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            uses_table(
-                                ui,
-                                &t,
-                                &mut changes,
-                                &mut self.param_edits,
-                                &mut self.error,
-                            );
-                        });
-                    ui.add_space(6.0);
-                }
+            let picked = self.picked.clone();
+            if !picked.is_empty() {
+                let title = match picked.as_slice() {
+                    [(Some(s), name)] => format!("Selected: {name} in {s}"),
+                    [(None, name)] => format!("Selected: {name}"),
+                    many => format!("Selected: {} blocks", many.len()),
+                };
+                let draft = self.diagram.draft_file().cloned();
+                egui::CollapsingHeader::new(egui::RichText::new(title).strong())
+                    .id_salt("selected")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for (scope, name) in &picked {
+                            let at = scope.clone().map_or(Scope::Model, Scope::Subsystem);
+                            if picked.len() > 1 {
+                                ui.strong(name);
+                            }
+                            let running = block_entry(&m.file, scope.as_deref(), name);
+                            let drafted = draft
+                                .as_ref()
+                                .and_then(|f| block_entry(f, scope.as_deref(), name));
+                            let mut shown = false;
+                            if let Some(b) = running {
+                                if let Some(t) = crate::inspector::selected(
+                                    &m.params,
+                                    &m.file,
+                                    scope.as_deref(),
+                                    name,
+                                ) {
+                                    uses_table(ui, &t, &m.file.controls.params, edits!());
+                                    shown = true;
+                                }
+                                for e in unit_fields(ui, b, &mut self.param_edits) {
+                                    canvas_edits.push((at.clone(), e));
+                                    shown = true;
+                                }
+                                shown |= b.type_name == simsandbox_eq::convert::CONVERT;
+                            } else if let (Some(b), Some(f)) = (drafted, &draft) {
+                                ui.weak(
+                                    "Not in the running model yet: it joins when the model loads",
+                                )
+                                .on_hover_text(self.diagram.draft_problem().unwrap_or_default());
+                                let d = Diagram::of(f, &at, &self.registry);
+                                if let Some(n) = d.nodes.iter().find(|n| n.name == *name) {
+                                    for e in
+                                        draft_rows(ui, n, &mut self.param_edits, &mut self.error)
+                                    {
+                                        canvas_edits.push((at.clone(), e));
+                                    }
+                                }
+                                for e in unit_fields(ui, b, &mut self.param_edits) {
+                                    canvas_edits.push((at.clone(), e));
+                                }
+                                shown = true;
+                            }
+                            if !shown {
+                                ui.weak("Nothing to set");
+                            }
+                        }
+                    });
+                ui.add_space(6.0);
             }
             let small = m.params.len() <= 16;
             if !o.model.is_empty() {
@@ -1508,8 +1622,8 @@ impl SimApp {
                             .spacing([6.0, 4.0])
                             .show(ui, |ui| {
                                 for row in &o.model {
-                                    param_row(ui, &m, row, edits!());
-                                    used_by(ui, &row.key);
+                                    let used = o.used_by.get(&row.key);
+                                    param_row(ui, &m, row, Place::Tree, used, edits!());
                                 }
                             });
                     })
@@ -1522,7 +1636,7 @@ impl SimApp {
                     .id_salt(("uses", &t.subsystem))
                     .default_open(small || t.rows.len() <= 6)
                     .show(ui, |ui| {
-                        uses_table(ui, t, &mut changes, &mut self.param_edits, &mut self.error);
+                        uses_table(ui, t, &m.file.controls.params, edits!());
                     })
                     .header_response
                     .on_hover_text(format!(
@@ -1537,6 +1651,7 @@ impl SimApp {
                     .filter(|b| b.type_name == simsandbox_eq::registry::EQUATIONS)
                     .map(|b| b.equations.join("\n"));
                 let agents = entry.filter(|b| b.type_name.starts_with("agents."));
+                let convert = entry.filter(|b| b.type_name == simsandbox_eq::convert::CONVERT);
                 let kind = if g.instance {
                     format!("subsystem {}", g.type_name)
                 } else {
@@ -1547,62 +1662,98 @@ impl SimApp {
                     .id_salt(("group", &g.name))
                     .default_open(small || g.rows.len() <= 4)
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if let Some(b) = agents {
-                                // The update order is part of the model
-                                // (ADR 0034).
-                                let now =
-                                    simsandbox_agents::Update::from_setting(b.update.as_deref())
-                                        .unwrap_or_default();
-                                egui::ComboBox::from_id_salt(("update", &g.name))
-                                    .selected_text(now.name())
-                                    .show_ui(ui, |ui| {
-                                        for u in simsandbox_agents::Update::ALL {
-                                            if ui
-                                                .selectable_label(u == now, u.name())
-                                                .on_hover_text(u.description())
-                                                .clicked()
-                                                && u != now
-                                            {
-                                                update = Some((g.name.clone(), u));
+                        if agents.is_some() || typed.is_some() {
+                            ui.horizontal(|ui| {
+                                if let Some(b) = agents {
+                                    // The update order is part of the model
+                                    // (ADR 0034).
+                                    let now = simsandbox_agents::Update::from_setting(
+                                        b.update.as_deref(),
+                                    )
+                                    .unwrap_or_default();
+                                    egui::ComboBox::from_id_salt(("update", &g.name))
+                                        .selected_text(now.name())
+                                        .show_ui(ui, |ui| {
+                                            for u in simsandbox_agents::Update::ALL {
+                                                if ui
+                                                    .selectable_label(u == now, u.name())
+                                                    .on_hover_text(u.description())
+                                                    .clicked()
+                                                    && u != now
+                                                {
+                                                    update = Some((g.name.clone(), u));
+                                                }
                                             }
-                                        }
-                                    })
-                                    .response
-                                    .on_hover_text(
-                                        "The order agents act in each step; it changes \
+                                        })
+                                        .response
+                                        .on_hover_text(
+                                            "The order agents act in each step; it changes \
                                          results. Changing it restarts the run.",
-                                    );
-                            }
-                            if let Some(text) = &typed {
-                                if ui
-                                    .small_button("Edit equations…")
-                                    .on_hover_text("Change this block's equations")
-                                    .clicked()
-                                {
-                                    open_editor = Some((g.name.clone(), text.clone()));
+                                        );
                                 }
+                                if let Some(text) = &typed {
+                                    if ui
+                                        .small_button("Edit equations…")
+                                        .on_hover_text("Change this block's equations")
+                                        .clicked()
+                                    {
+                                        open_editor = Some((g.name.clone(), text.clone()));
+                                    }
+                                }
+                            });
+                        }
+                        if let Some(b) = convert {
+                            for e in unit_fields(ui, b, &mut self.param_edits) {
+                                canvas_edits.push((Scope::Model, e));
                             }
-                        });
+                        }
                         egui::Grid::new(("params", &g.name))
                             .num_columns(4)
                             .spacing([6.0, 4.0])
                             .show(ui, |ui| {
-                                let mut starting = false;
+                                // Starting values come last, each marked ↻.
                                 for (name, row) in &g.rows {
-                                    if row.initial_condition && !starting {
-                                        starting = true;
-                                        ui.weak("starts at ↻")
-                                            .on_hover_text("Initial values: they apply on Restart");
-                                        ui.end_row();
-                                    }
                                     let mut r = row.clone();
                                     r.name = name.clone();
-                                    param_row(ui, &m, &r, edits!());
-                                    used_by(ui, &row.key);
+                                    let used = o.used_by.get(&row.key);
+                                    param_row(ui, &m, &r, Place::Tree, used, edits!());
                                 }
                             });
                     });
+            }
+            // Blocks added on the diagram that wait, as a draft, for the
+            // model to load.
+            if let Some(f) = self.diagram.draft_file().cloned() {
+                let d = Diagram::of(&f, &Scope::Model, &self.registry);
+                for n in d
+                    .nodes
+                    .iter()
+                    .filter(|n| n.is_block() && !m.file.blocks.iter().any(|b| b.name == n.name))
+                {
+                    let header = egui::RichText::new(format!(
+                        "{}  ({}, not running yet)",
+                        n.name, n.type_name
+                    ))
+                    .strong();
+                    egui::CollapsingHeader::new(header)
+                        .id_salt(("draft", &n.name))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            for e in draft_rows(ui, n, &mut self.param_edits, &mut self.error) {
+                                canvas_edits.push((Scope::Model, e));
+                            }
+                            if let Some(b) = f.blocks.iter().find(|b| b.name == n.name) {
+                                for e in unit_fields(ui, b, &mut self.param_edits) {
+                                    canvas_edits.push((Scope::Model, e));
+                                }
+                            }
+                        })
+                        .header_response
+                        .on_hover_text(format!(
+                            "Added on the diagram; it joins the run once the model loads: {}",
+                            self.diagram.draft_problem().unwrap_or_default()
+                        ));
+                }
             }
             if o.computed > 0 && !self.show_computed {
                 ui.add_space(4.0);
@@ -1620,16 +1771,9 @@ impl SimApp {
             });
         }
 
-        let conversion = conversions_section(ui, &m, &mut self.param_edits);
-
-        for (key, control) in controls {
-            live.send(None, move |s, _| {
-                s.file.controls.params.insert(key, control);
-            });
-        }
-        self.apply_changes(changes);
-        if let Some((block, key, text)) = conversion {
-            self.set_conversion(&block, &key, &text);
+        self.apply_edits(changes, controls);
+        for (scope, e) in canvas_edits {
+            self.edit_at(scope, e);
         }
         if let Some((block, u)) = update {
             self.rebuild(
@@ -1841,19 +1985,6 @@ impl SimApp {
         );
     }
 
-    /// Change a unit of a conversion block (ADR 0045), restarting the run.
-    fn set_conversion(&mut self, block: &str, key: &str, text: &str) {
-        let note = format!("{block}: {key} is now {text}; restarted");
-        self.rebuild(
-            |file| {
-                if let Some(b) = file.blocks.iter_mut().find(|b| b.name == block) {
-                    b.settings.insert(key.into(), text.into());
-                }
-            },
-            &note,
-        );
-    }
-
     /// Change the open model's file with `edit` and open it again from t = 0,
     /// keeping its path and whether it runs.
     fn rebuild(&mut self, edit: impl FnOnce(&mut simsandbox_file::ModelFile), note: &str) {
@@ -1988,8 +2119,23 @@ impl SimApp {
 }
 
 impl eframe::App for SimApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Popped-out tabs are drawn in the same pass as the main window, so
+        // waiting for vsync on a window the compositor is not showing
+        // (Wayland) would stall both: vsync is off while any tab is popped
+        // out, and the worker's repaints are capped instead (live.rs).
+        if let Some(mut c) = frame.wgpu_surface_config() {
+            let want = if self.dock.popped.is_empty() {
+                eframe::wgpu::PresentMode::AutoVsync
+            } else {
+                eframe::wgpu::PresentMode::AutoNoVsync
+            };
+            if c.present_mode != want {
+                c.present_mode = want;
+                frame.set_wgpu_surface_config(c);
+            }
+        }
         self.handle_dropped_files(&ctx);
         self.poll(&ctx);
         self.equation_editor(&ctx);
@@ -2036,6 +2182,7 @@ enum DockAction {
 /// A tab in its own window, by what it shows (tiles are renumbered when
 /// the model is rebuilt).
 enum Popped {
+    Controls,
     Inspector,
     Diagram,
     /// The tab showing this view (by place among the views).
@@ -2045,6 +2192,7 @@ enum Popped {
 /// A tab's stable key, for ids.
 fn pane_key(p: &Pane) -> String {
     match p {
+        Pane::Controls => "controls".into(),
         Pane::Inspector => "inspector".into(),
         Pane::Diagram => "diagram".into(),
         Pane::View(t) => format!("view:{t}"),
@@ -2187,10 +2335,16 @@ struct Edits<'a> {
 fn uses_table(
     ui: &mut egui::Ui,
     t: &crate::inspector::UsesTable,
-    changes: &mut Vec<(ParamRow, f64)>,
-    text: &mut HashMap<String, String>,
-    error: &mut Option<String>,
+    pins: &BTreeMap<String, simsandbox_file::ParamControl>,
+    edits: Edits<'_>,
 ) {
+    let Edits {
+        changes,
+        controls,
+        text,
+        error,
+        ..
+    } = edits;
     egui::Grid::new(("uses-table", &t.subsystem, t.uses.join(",")))
         .num_columns(t.uses.len() + 2)
         .spacing([8.0, 4.0])
@@ -2224,22 +2378,35 @@ fn uses_table(
                     .flatten()
                     .find(|r| r.formula.is_none())
                     .map(|r| r.value);
-                let response = ui.label(label).on_hover_text(hover);
-                if t.uses.len() > 1 {
-                    if let Some(v) = first_value {
-                        response.context_menu(|ui| {
-                            if ui
-                                .button(format!("Set every use to {}", format_value(v)))
-                                .clicked()
-                            {
-                                for r in cells.iter().flatten().filter(|r| r.formula.is_none()) {
-                                    changes.push((r.clone(), v));
-                                }
-                                ui.close();
+                let response = ui
+                    .label(label)
+                    .on_hover_text(format!("{hover}\nRight-click to pin or set every use"));
+                response.context_menu(|ui| {
+                    if let Some(v) = first_value.filter(|_| t.uses.len() > 1) {
+                        if ui
+                            .button(format!("Set every use to {}", format_value(v)))
+                            .clicked()
+                        {
+                            for r in cells.iter().flatten().filter(|r| r.formula.is_none()) {
+                                changes.push((r.clone(), v));
                             }
-                        });
+                            ui.close();
+                        }
                     }
-                }
+                    for r in cells.iter().flatten() {
+                        let mut c = pins.get(&r.key).cloned().unwrap_or_default();
+                        let pinned = c.pinned();
+                        let label = match pinned {
+                            true => format!("Unpin {} from the Controls", r.key),
+                            false => format!("Pin {} to the Controls", r.key),
+                        };
+                        if ui.button(label).clicked() {
+                            c.set_pinned(!pinned);
+                            controls.push((r.key.clone(), c));
+                            ui.close();
+                        }
+                    }
+                });
                 ui.weak(first.map_or("", |r| r.unit.as_str()));
                 for cell in cells {
                     match cell {
@@ -2310,9 +2477,26 @@ fn style_editor(
         });
 }
 
-/// One parameter: name, typed entry, unit, slider toggle; then the
-/// slider and its range when enabled.
-fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
+/// Where a parameter row is drawn.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// The inspector's tree: a pin button.
+    Tree,
+    /// The Controls: the slider toggle and the pin button.
+    Controls,
+}
+
+/// One parameter: name, typed entry, unit (↻ for a starting value), the
+/// slider toggle among the Controls and a pin button; then the slider and
+/// its range when enabled. `used_by` lists the formulas that read it.
+fn param_row(
+    ui: &mut egui::Ui,
+    m: &Model,
+    row: &ParamRow,
+    place: Place,
+    used_by: Option<&Vec<String>>,
+    edits: Edits<'_>,
+) {
     let mut control = m
         .file
         .controls
@@ -2320,6 +2504,7 @@ fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
         .get(&row.key)
         .cloned()
         .unwrap_or_default();
+    let before = control.clone();
     let mut hover = format!(
         "{}\nValue: {}\nSuggested range: {} to {}",
         row.description, row.value, row.suggested[0], row.suggested[1]
@@ -2330,15 +2515,34 @@ fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
     if let Some(f) = &row.formula {
         hover.push_str(&format!("\nComputed: {f}"));
     }
-    hover.push_str("\nRight-click to pin it to the Controls");
+    if let Some(v) = used_by {
+        hover.push_str(&format!("\nRead by formulas: {}", v.join(", ")));
+    }
+    if place == Place::Controls && control.slider {
+        hover.push_str("\nRight-click to set the slider's range");
+    }
     ui.label(&row.name).on_hover_text(hover).context_menu(|ui| {
-        let label = if control.pin {
+        if place == Place::Controls && control.slider {
+            // The slider's range.
+            let [mut lo, mut hi] = control.range.unwrap_or(row.suggested);
+            ui.horizontal(|ui| {
+                ui.label("Slider from");
+                let a = ui.add(egui::DragValue::new(&mut lo).speed(0.1));
+                ui.label("to");
+                let b = ui.add(egui::DragValue::new(&mut hi).speed(0.1));
+                if (a.changed() || b.changed()) && lo < hi {
+                    control.range = Some([lo, hi]);
+                }
+            });
+        }
+        let label = if control.pinned() {
             "Unpin from the Controls"
         } else {
             "Pin to the Controls"
         };
         if ui.button(label).clicked() {
-            control.pin = !control.pin;
+            let pinned = control.pinned();
+            control.set_pinned(!pinned);
             ui.close();
         }
     });
@@ -2352,8 +2556,11 @@ fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
             ui.weak(format!("= {}", fit_text(f, 18)))
                 .on_hover_text(format!("Set by the formula {f}"));
         });
-        ui.label("");
+        pin_button(ui, &mut control);
         ui.end_row();
+        if control != before {
+            edits.controls.push((row.key.clone(), control));
+        }
         return;
     }
 
@@ -2376,30 +2583,28 @@ fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
                 .on_hover_text("Swept: its own value is not used while sweeping");
         }
     });
-    let before = control.clone();
-    ui.checkbox(&mut control.slider, "slider");
+    ui.horizontal(|ui| {
+        if place == Place::Controls {
+            ui.checkbox(&mut control.slider, "")
+                .on_hover_text("A slider under the value; right-click the name for its range");
+        }
+        pin_button(ui, &mut control);
+    });
     ui.end_row();
 
-    if control.slider {
-        let [mut lo, mut hi] = control.range.unwrap_or(row.suggested);
+    if place == Place::Controls && control.slider {
+        let [lo, hi] = control.range.unwrap_or(row.suggested);
         ui.label("");
         let mut v = edits.pending.get(&row.key).copied().unwrap_or(row.value);
-        let r = ui.add(egui::Slider::new(&mut v, lo..=hi).show_value(false));
+        let r = ui
+            .add(egui::Slider::new(&mut v, lo..=hi).show_value(false))
+            .on_hover_text(format!("{} to {}", format_value(lo), format_value(hi)));
         if apply_now(m.real_time, r.changed(), r.dragged(), r.drag_stopped()) {
             edits.pending.remove(&row.key);
             edits.changes.push((row.clone(), v));
         } else if r.changed() {
             edits.pending.insert(row.key.clone(), v);
         }
-        ui.weak("range");
-        ui.horizontal(|ui| {
-            let a = ui.add(egui::DragValue::new(&mut lo).speed(0.1));
-            ui.weak("to");
-            let b = ui.add(egui::DragValue::new(&mut hi).speed(0.1));
-            if (a.changed() || b.changed()) && lo < hi {
-                control.range = Some([lo, hi]);
-            }
-        });
         ui.end_row();
     }
     if control != before {
@@ -2407,59 +2612,124 @@ fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
     }
 }
 
-/// The unit conversion blocks (ADR 0045), each with its `from` and `to`
-/// units as text fields. Returns a changed unit: block, setting and text.
-fn conversions_section(
-    ui: &mut egui::Ui,
-    m: &crate::live::Model,
-    edits: &mut HashMap<String, String>,
-) -> Option<(String, String, String)> {
-    let blocks: Vec<_> = m
-        .file
-        .blocks
-        .iter()
-        .filter(|b| b.type_name == simsandbox_eq::convert::CONVERT)
-        .collect();
-    if blocks.is_empty() {
-        return None;
+/// The pin: highlighted while the value is among the Controls.
+fn pin_button(ui: &mut egui::Ui, control: &mut simsandbox_file::ParamControl) {
+    let pinned = control.pinned();
+    let text = if pinned {
+        egui::RichText::new("📌")
+    } else {
+        egui::RichText::new("📌").weak()
+    };
+    let hover = if pinned {
+        "Pinned: shown in the Controls. Click to unpin."
+    } else {
+        "Pin to the Controls, where it can also have a slider"
+    };
+    if ui
+        .add(
+            egui::Button::new(text)
+                .small()
+                .frame(pinned)
+                .selected(pinned),
+        )
+        .on_hover_text(hover)
+        .clicked()
+    {
+        control.set_pinned(!pinned);
     }
-    ui.add_space(8.0);
-    ui.heading("Unit conversions")
-        .on_hover_text("Connections need the same unit on both ends; these blocks convert");
-    let mut changed = None;
-    egui::Grid::new("conversions")
-        .num_columns(4)
+}
+
+/// The block named `name` in a file, on the model level or inside a
+/// subsystem.
+fn block_entry<'a>(
+    file: &'a simsandbox_file::ModelFile,
+    scope: Option<&str>,
+    name: &str,
+) -> Option<&'a simsandbox_file::BlockEntry> {
+    let blocks = match scope {
+        None => &file.blocks,
+        Some(s) => &file.subsystems.get(s)?.blocks,
+    };
+    blocks.iter().find(|b| b.name == name)
+}
+
+/// A conversion block's `from` and `to` units (ADR 0045) as text fields;
+/// a changed one is an edit, which restarts the run. Nothing for other
+/// blocks.
+fn unit_fields(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    edits: &mut HashMap<String, String>,
+) -> Vec<Edit> {
+    let mut out = Vec::new();
+    if b.type_name != simsandbox_eq::convert::CONVERT {
+        return out;
+    }
+    ui.horizontal(|ui| {
+        ui.label("converts")
+            .on_hover_text("Connections need the same unit on both ends; this block converts");
+        for (k, key) in ["from", "to"].into_iter().enumerate() {
+            if k == 1 {
+                ui.label("to");
+            }
+            let now = b.settings.get(key).cloned().unwrap_or_else(|| "1".into());
+            let id = format!("convert:{}:{key}", b.name);
+            let mut text = edits.get(&id).cloned().unwrap_or_else(|| now.clone());
+            let r = ui
+                .add(egui::TextEdit::singleline(&mut text).desired_width(70.0))
+                .on_hover_text("A unit, e.g. km/h, m/s, mm, N*s/m; changing it restarts the run");
+            if r.has_focus() {
+                edits.insert(id.clone(), text.clone());
+            }
+            if r.lost_focus() {
+                edits.remove(&id);
+                let typed = text.trim().to_string();
+                if !typed.is_empty() && typed != now {
+                    out.push(Edit::SetSetting {
+                        block: b.name.clone(),
+                        key: key.to_string(),
+                        text: typed,
+                    });
+                }
+            }
+        }
+    });
+    out
+}
+
+/// The values of a block not in the running model yet (the diagram's
+/// draft), typed into the draft.
+fn draft_rows(
+    ui: &mut egui::Ui,
+    n: &simsandbox_session::diagram::Node,
+    text: &mut HashMap<String, String>,
+    error: &mut Option<String>,
+) -> Vec<Edit> {
+    let mut out = Vec::new();
+    egui::Grid::new(("draft-rows", &n.name))
+        .num_columns(3)
         .spacing([6.0, 4.0])
         .show(ui, |ui| {
-            for b in blocks {
-                ui.label(&b.name);
-                for (k, key) in ["from", "to"].into_iter().enumerate() {
-                    if k == 1 {
-                        ui.weak("→");
-                    }
-                    let now = b.settings.get(key).cloned().unwrap_or_else(|| "1".into());
-                    let id = format!("convert:{}:{key}", b.name);
-                    let mut text = edits.get(&id).cloned().unwrap_or_else(|| now.clone());
-                    let r = ui
-                        .add(egui::TextEdit::singleline(&mut text).desired_width(70.0))
-                        .on_hover_text(
-                            "A unit, e.g. km/h, m/s, mm, N*s/m; changing it restarts the run",
-                        );
-                    if r.has_focus() {
-                        edits.insert(id.clone(), text.clone());
-                    }
-                    if r.lost_focus() {
-                        edits.remove(&id);
-                        let typed = text.trim().to_string();
-                        if !typed.is_empty() && typed != now {
-                            changed = Some((b.name.clone(), key.to_string(), typed));
-                        }
-                    }
+            for v in &n.values {
+                let label = if v.initial {
+                    format!("{} ↻", v.name)
+                } else {
+                    v.name.clone()
+                };
+                ui.label(label);
+                let key = format!("draft:{}", v.key);
+                if let Some(x) = number_entry(ui, &key, v.value, text, error) {
+                    out.push(Edit::SetParam {
+                        block: n.name.clone(),
+                        param: v.name.clone(),
+                        value: x,
+                    });
                 }
+                ui.label(&v.unit);
                 ui.end_row();
             }
         });
-    changed
+    out
 }
 
 /// Whether a slider's value applies now (ADR 0037): on every change for a
@@ -3534,6 +3804,58 @@ mod tests {
     }
 
     #[test]
+    fn blocks_added_on_the_diagram_are_set_in_the_inspector_before_they_run() {
+        use simsandbox_session::canvas::Selection;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        // A conversion with nothing wired in does not load: a draft.
+        for type_name in ["units.convert", "eq.pendulum"] {
+            let add = Edit::Add {
+                type_name: type_name.into(),
+                at: [0.0, 0.0],
+            };
+            app.edit_at(Scope::Model, add);
+        }
+        assert!(app.diagram.draft_problem().is_some());
+        // Its units and the new pendulum's values go into the draft.
+        app.edit_at(
+            Scope::Model,
+            Edit::SetSetting {
+                block: "convert1".into(),
+                key: "from".into(),
+                text: "km/h".into(),
+            },
+        );
+        app.edit_at(
+            Scope::Model,
+            Edit::SetParam {
+                block: "pendulum1".into(),
+                param: "L".into(),
+                value: 2.0,
+            },
+        );
+        let draft = app.diagram.draft_file().unwrap();
+        let block = |name: &str| draft.blocks.iter().find(|b| b.name == name).unwrap();
+        assert_eq!(block("convert1").settings["from"], "km/h");
+        assert_eq!(
+            block("pendulum1").params["L"],
+            simsandbox_file::ParamValue::Number(2.0)
+        );
+        // Both selected: the inspector shows each, from the draft.
+        app.diagram.canvas.selected = Some(Selection::Many(vec![
+            "convert1".into(),
+            "pendulum1".into(),
+            "leader".into(),
+        ]));
+        inspect(&mut app);
+        assert_eq!(app.picked.len(), 3);
+    }
+
+    #[test]
     fn a_clicked_curve_selects_its_block_until_the_diagram_picks_another() {
         use simsandbox_session::canvas::Selection;
         let mut app = SimApp::new(None, None, None, None);
@@ -3545,23 +3867,23 @@ mod tests {
         inspect(&mut app);
         // A curve inside a subsystem use selects the use.
         app.inspect_signal("car2/car.v");
-        assert_eq!(app.picked, Some((None, "car2".to_string())));
+        assert_eq!(app.picked, [(None, "car2".to_string())]);
         assert_eq!(
             app.diagram.canvas.selected,
             Some(Selection::Block("car2".into()))
         );
         inspect(&mut app);
-        assert_eq!(app.picked, Some((None, "car2".to_string())));
+        assert_eq!(app.picked, [(None, "car2".to_string())]);
         // Selecting on the diagram takes over.
         app.diagram.canvas.selected = Some(Selection::Block("leader".into()));
         inspect(&mut app);
-        assert_eq!(app.picked, Some((None, "leader".to_string())));
+        assert_eq!(app.picked, [(None, "leader".to_string())]);
         // A sweep's grid comes from the swept block; a filter's signal has
         // none.
         app.inspect_signal("grid.leader.v");
-        assert_eq!(app.picked, Some((None, "leader".to_string())));
+        assert_eq!(app.picked, [(None, "leader".to_string())]);
         app.inspect_signal("energy");
-        assert_eq!(app.picked, Some((None, "leader".to_string())));
+        assert_eq!(app.picked, [(None, "leader".to_string())]);
     }
 
     #[test]
@@ -3850,16 +4172,22 @@ mod tests {
                 .settings[port]
                 .clone()
         };
-        app.set_conversion("b_cm", "to", "mm");
+        let set = |app: &mut SimApp, text: &str| {
+            let e = Edit::SetSetting {
+                block: "b_cm".into(),
+                key: "to".into(),
+                text: text.into(),
+            };
+            app.edit_at(Scope::Model, e);
+        };
+        set(&mut app, "mm");
         assert!(app.error.is_none(), "{:?}", app.error);
         assert_eq!(unit(&app, "to"), "mm");
-        // A different kind of quantity is refused, and the model stays.
-        app.set_conversion("b_cm", "to", "kg");
-        assert!(app
-            .error
-            .take()
-            .unwrap()
-            .contains("measure different things"));
+        // A different kind of quantity does not load: the edit waits as a
+        // draft, and the running model stays.
+        set(&mut app, "kg");
+        let problem = app.diagram.draft_problem().unwrap();
+        assert!(problem.contains("measure different things"), "{problem}");
         assert_eq!(unit(&app, "to"), "mm");
     }
 

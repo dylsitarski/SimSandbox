@@ -16,12 +16,11 @@
 //!   on a view's slot shows that signal there; a filter dropped on a block
 //!   input is refused with an offer to promote it to a block and connect.
 
-use crate::diagram::{
-    Diagram, Edit, Node, NodeKind, Scope, HEADER, MAX_VALUES, NODE_WIDTH, VALUE_ROW,
-};
+use crate::diagram::{Diagram, Edit, Node, NodeKind, Scope, HEADER, NODE_WIDTH, ROW, VALUE_ROW};
 use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use simsandbox_core::block::{Causality, Shape};
 use simsandbox_core::registry::Registry;
+use std::collections::BTreeSet;
 
 /// What is selected.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +55,13 @@ pub enum Request {
     ShowView(usize),
     /// A value typed on a node (ADR 0053): `"block.param"` and the value.
     SetValue { key: String, value: f64 },
+    /// A conversion's unit typed beside its port (ADR 0045): the block,
+    /// `from` or `to`, and the unit.
+    SetSetting {
+        block: String,
+        key: String,
+        text: String,
+    },
 }
 
 /// Values show on nodes from this zoom up, and can be edited from this one.
@@ -94,9 +100,12 @@ pub struct Canvas {
     /// A filter dropped on a model input: the filter, the input and where
     /// to offer promoting it.
     offer: Option<(String, String, Pos2)>,
-    /// Show parameter values on nodes (ADR 0053).
-    pub show_values: bool,
-    /// The value being typed on a node: its key and the text so far.
+    /// Nodes whose values are shown (ADR 0053), by name.
+    pub open: BTreeSet<String>,
+    /// Show every node's values.
+    open_all: bool,
+    /// The value being typed on a node: its key (`unit:block:from` for a
+    /// conversion's unit) and the text so far.
     editing: Option<(String, String)>,
 }
 
@@ -114,7 +123,8 @@ impl Default for Canvas {
             menu: None,
             rename: String::new(),
             offer: None,
-            show_values: true,
+            open: BTreeSet::new(),
+            open_all: false,
             editing: None,
         }
     }
@@ -125,6 +135,14 @@ const DOT: f32 = 4.5;
 const REACH: f32 = 9.0;
 
 impl Canvas {
+    /// A canvas showing every node's values (headless diagrams).
+    pub fn all_open() -> Self {
+        Self {
+            open_all: true,
+            ..Self::default()
+        }
+    }
+
     /// Fit the diagram to the panel on the next frame.
     pub fn refit(&mut self) {
         self.fitted = None;
@@ -173,6 +191,9 @@ impl Canvas {
         } else {
             Sense::hover()
         };
+        for n in &mut d.nodes {
+            n.open = !n.values.is_empty() && (self.open_all || self.open.contains(&n.name));
+        }
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), sense);
         let origin = rect.min;
         let resized = self.fitted.is_some_and(|s| s != rect.size()) && !self.user_moved;
@@ -245,16 +266,28 @@ impl Canvas {
                 let r = self.node_rect(origin, n);
                 if let Some(p) = pointer.filter(|p| r.expand(REACH).contains(*p)) {
                     let value = self.value_under(d, origin, p).filter(|&(k, _)| k == i);
+                    let unit = self.unit_under(d, origin, p).filter(|&(k, _)| k == i);
                     let tip = if let Some(e) = &n.error {
                         Some(e.clone())
+                    } else if self.expander(origin, n).is_some_and(|r| r.contains(p)) {
+                        Some(if n.open {
+                            "Hide its values".to_string()
+                        } else {
+                            format!("Show its values ({})", n.values.len())
+                        })
                     } else if let Some((_, k)) = value {
                         let v = &n.values[k];
-                        Some(match &v.formula {
-                            Some(f) => format!("{}: set by the formula {f}", v.key),
-                            None if self.zoom >= EDIT_VALUES => {
-                                format!("{}: double-click to change it", v.key)
-                            }
-                            None => format!("{}: zoom in to change it here", v.key),
+                        Some(if self.zoom >= EDIT_VALUES {
+                            format!("{}: double-click to change it", v.key)
+                        } else {
+                            format!("{}: zoom in to change it here", v.key)
+                        })
+                    } else if let Some((_, c)) = unit {
+                        let setting = unit_setting(n, c).unwrap_or_default();
+                        Some(if self.zoom >= EDIT_VALUES {
+                            format!("The unit it converts {setting}: double-click to change it")
+                        } else {
+                            format!("The unit it converts {setting}: zoom in to change it here")
                         })
                     } else if n.is_observer() && self.port_under(d, origin, p).is_none() {
                         Some(observer_help(n))
@@ -491,7 +524,25 @@ impl Canvas {
                             format!("{} · {}", p.name, more.join(", "))
                         }
                     }
-                    _ => p.name.clone(),
+                    // A conversion shows its units (ADR 0045).
+                    _ => match unit_setting(n, c).filter(|_| k == 0) {
+                        Some(setting) => {
+                            let unit = n.settings.get(setting).unwrap_or(&p.unit);
+                            if self
+                                .editing
+                                .as_ref()
+                                .is_some_and(|(key, _)| *key == unit_key(&n.name, setting))
+                            {
+                                p.name.clone()
+                            } else {
+                                match c {
+                                    Causality::Input => format!("{} [{unit}]", p.name),
+                                    Causality::Output => format!("[{unit}] {}", p.name),
+                                }
+                            }
+                        }
+                        None => p.name.clone(),
+                    },
                 };
                 painter.text(
                     at + offset,
@@ -502,12 +553,94 @@ impl Canvas {
                 );
             }
         }
+        if let Some(e) = self.expander(origin, n) {
+            // A triangle: right while closed, down while open, after how
+            // many values there are.
+            let c = e.center();
+            let h = 4.0 * z;
+            let points = if n.open {
+                vec![
+                    c + Vec2::new(-h, -h * 0.6),
+                    c + Vec2::new(h, -h * 0.6),
+                    c + Vec2::new(0.0, h * 0.8),
+                ]
+            } else {
+                vec![
+                    c + Vec2::new(-h * 0.6, -h),
+                    c + Vec2::new(h * 0.8, 0.0),
+                    c + Vec2::new(-h * 0.6, h),
+                ]
+            };
+            painter.add(egui::Shape::convex_polygon(points, text, Stroke::NONE));
+            if !n.open {
+                painter.text(
+                    Pos2::new(e.min.x, c.y),
+                    egui::Align2::RIGHT_CENTER,
+                    n.values.len().to_string(),
+                    FontId::proportional(10.5 * z),
+                    weak,
+                );
+            }
+        }
         self.values(painter, visuals, origin, n);
+    }
+
+    /// Where a node's values are opened and closed: the top-right corner
+    /// of its header, on nodes with values, when they can be shown.
+    fn expander(&self, origin: Pos2, n: &Node) -> Option<Rect> {
+        if n.values.is_empty() || self.zoom < SHOW_VALUES {
+            return None;
+        }
+        let r = self.node_rect(origin, n);
+        let s = 18.0 * self.zoom;
+        Some(Rect::from_min_size(
+            Pos2::new(r.max.x - s - 4.0 * self.zoom, r.min.y + 4.0 * self.zoom),
+            Vec2::splat(s),
+        ))
+    }
+
+    /// The conversion unit label under `p`: node and which port.
+    fn unit_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, Causality)> {
+        d.nodes.iter().enumerate().rev().find_map(|(i, n)| {
+            [Causality::Input, Causality::Output]
+                .into_iter()
+                .find(|&c| {
+                    unit_setting(n, c).is_some()
+                        && self.unit_rect(origin, n, c).is_some_and(|r| r.contains(p))
+                })
+                .map(|c| (i, c))
+        })
+    }
+
+    /// Where a conversion's unit is written beside port 0.
+    fn unit_rect(&self, origin: Pos2, n: &Node, c: Causality) -> Option<Rect> {
+        let count = match c {
+            Causality::Input => n.inputs.len(),
+            Causality::Output => n.outputs.len(),
+        };
+        if count == 0 {
+            return None;
+        }
+        let z = self.zoom;
+        let at = self.to_screen(origin, n.port_at(c, 0));
+        let half = NODE_WIDTH as f32 * z / 2.0;
+        let pad = 8.0 * z;
+        let h = ROW as f32 * z;
+        Some(match c {
+            Causality::Input => Rect::from_min_size(
+                Pos2::new(at.x + pad, at.y - h / 2.0),
+                Vec2::new(half - pad, h),
+            ),
+            Causality::Output => Rect::from_min_size(
+                Pos2::new(at.x - half, at.y - h / 2.0),
+                Vec2::new(half - pad, h),
+            ),
+        })
     }
 
     /// A node's parameter values, below its ports (ADR 0053).
     fn values(&self, painter: &egui::Painter, visuals: &egui::Visuals, origin: Pos2, n: &Node) {
-        if n.values.is_empty() || !self.show_values || self.zoom < SHOW_VALUES {
+        if !n.open || self.zoom < SHOW_VALUES {
             return;
         }
         let z = self.zoom;
@@ -521,7 +654,7 @@ impl Canvas {
             Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
         );
         let font = FontId::proportional(11.0 * z);
-        for (k, v) in n.values.iter().take(MAX_VALUES).enumerate() {
+        for (k, v) in n.values.iter().enumerate() {
             if self.editing.as_ref().is_some_and(|(key, _)| *key == v.key) {
                 continue;
             }
@@ -539,42 +672,24 @@ impl Canvas {
                 font.clone(),
                 visuals.weak_text_color(),
             );
-            let shown = match &v.formula {
-                Some(f) => format!("= {}", fit(f, 10)),
-                None => format!("{} {}", format_number(v.value), v.unit),
-            };
-            let colour = if v.formula.is_some() {
-                visuals.weak_text_color()
-            } else {
-                visuals.text_color()
-            };
+            let shown = format!("{} {}", format_number(v.value), v.unit);
             painter.text(
                 Pos2::new(top.x + NODE_WIDTH as f32 * z - pad, y),
                 egui::Align2::RIGHT_CENTER,
                 fit(shown.trim(), 16),
                 font.clone(),
-                colour,
-            );
-        }
-        if n.values.len() > MAX_VALUES {
-            let y = self.to_screen(origin, n.value_at(MAX_VALUES)).y + VALUE_ROW as f32 * z / 2.0;
-            painter.text(
-                Pos2::new(top.x + pad, y),
-                egui::Align2::LEFT_CENTER,
-                format!("+{} more in the inspector", n.values.len() - MAX_VALUES),
-                font,
-                visuals.weak_text_color(),
+                visuals.text_color(),
             );
         }
     }
 
     /// The value row under `p`: node and value.
     fn value_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, usize)> {
-        if !self.show_values || self.zoom < SHOW_VALUES {
+        if self.zoom < SHOW_VALUES {
             return None;
         }
         d.nodes.iter().enumerate().rev().find_map(|(i, n)| {
-            (0..n.values.len().min(MAX_VALUES)).find_map(|k| {
+            (0..n.value_rows()).find_map(|k| {
                 let r = Rect::from_min_size(
                     self.to_screen(origin, n.value_at(k)),
                     Vec2::new(NODE_WIDTH as f32, VALUE_ROW as f32) * self.zoom,
@@ -596,22 +711,49 @@ impl Canvas {
         let Some((key, mut text)) = self.editing.take() else {
             return;
         };
-        let Some((i, k)) = d.nodes.iter().enumerate().find_map(|(i, n)| {
-            n.values
-                .iter()
-                .take(MAX_VALUES)
-                .position(|v| v.key == key)
-                .map(|k| (i, k))
-        }) else {
-            return;
-        };
-        let n = &d.nodes[i];
         let z = self.zoom;
-        let at = self.to_screen(origin, n.value_at(k));
-        let rect = Rect::from_min_size(
-            at + Vec2::new(NODE_WIDTH as f32 * z * 0.45, 0.0),
-            Vec2::new(NODE_WIDTH as f32 * z * 0.5, VALUE_ROW as f32 * z),
-        );
+        // A conversion's unit, or a value.
+        let unit = key
+            .strip_prefix("unit:")
+            .and_then(|rest| rest.rsplit_once(':'))
+            .map(|(block, setting)| (block.to_string(), setting.to_string()));
+        let rect = match &unit {
+            Some((block, setting)) => {
+                let c = match setting.as_str() {
+                    "from" => Causality::Input,
+                    _ => Causality::Output,
+                };
+                let Some(r) = d
+                    .node(block)
+                    .and_then(|i| self.unit_rect(origin, &d.nodes[i], c))
+                else {
+                    return;
+                };
+                // Beside the port's name.
+                match c {
+                    Causality::Input => Rect::from_min_max(r.min + Vec2::new(14.0 * z, 0.0), r.max),
+                    Causality::Output => {
+                        Rect::from_min_max(r.min, r.max - Vec2::new(14.0 * z, 0.0))
+                    }
+                }
+            }
+            None => {
+                let Some((i, k)) = d.nodes.iter().enumerate().find_map(|(i, n)| {
+                    n.values
+                        .iter()
+                        .take(n.value_rows())
+                        .position(|v| v.key == key)
+                        .map(|k| (i, k))
+                }) else {
+                    return;
+                };
+                let at = self.to_screen(origin, d.nodes[i].value_at(k));
+                Rect::from_min_size(
+                    at + Vec2::new(NODE_WIDTH as f32 * z * 0.45, 0.0),
+                    Vec2::new(NODE_WIDTH as f32 * z * 0.5, VALUE_ROW as f32 * z),
+                )
+            }
+        };
         let r = ui.put(
             rect,
             egui::TextEdit::singleline(&mut text)
@@ -632,8 +774,17 @@ impl Canvas {
         }
         if r.lost_focus() {
             if enter {
-                match text.trim().parse::<f64>() {
-                    Ok(value) if value.is_finite() => {
+                match (unit, text.trim().parse::<f64>()) {
+                    (Some((block, setting)), _) => {
+                        if !text.trim().is_empty() {
+                            requests.push(Request::SetSetting {
+                                block,
+                                key: setting,
+                                text: text.trim().to_string(),
+                            });
+                        }
+                    }
+                    (None, Ok(value)) if value.is_finite() => {
                         requests.push(Request::SetValue { key, value })
                     }
                     _ => {}
@@ -862,6 +1013,22 @@ impl Canvas {
                 }
             }
         }
+        let on_expander = |p: Pos2| {
+            d.nodes
+                .iter()
+                .rev()
+                .find(|n| self.expander(origin, n).is_some_and(|r| r.contains(p)))
+                .map(|n| n.name.clone())
+        };
+        if response.clicked() {
+            // The triangle opens or closes a node's values.
+            if let Some(name) = response.interact_pointer_pos().and_then(on_expander) {
+                if !self.open.remove(&name) {
+                    self.open.insert(name);
+                }
+                return;
+            }
+        }
         if response.clicked() {
             if let Some(p) = response.interact_pointer_pos() {
                 let shift = ui.input(|i| i.modifiers.shift);
@@ -896,8 +1063,15 @@ impl Canvas {
             if let Some((i, k)) = p.and_then(|p| self.value_under(d, origin, p)) {
                 // A value: typed in place when zoomed in (ADR 0053).
                 let v = &d.nodes[i].values[k];
-                if v.formula.is_none() && self.zoom >= EDIT_VALUES {
+                if self.zoom >= EDIT_VALUES {
                     self.editing = Some((v.key.clone(), format_number(v.value)));
+                }
+            } else if let Some((i, c)) = p.and_then(|p| self.unit_under(d, origin, p)) {
+                // A conversion's unit (ADR 0045).
+                let n = &d.nodes[i];
+                if let (Some(setting), true) = (unit_setting(n, c), self.zoom >= EDIT_VALUES) {
+                    let now = n.settings.get(setting).cloned().unwrap_or_default();
+                    self.editing = Some((unit_key(&n.name, setting), now));
                 }
             } else if let Some(i) = p.and_then(|p| self.node_under(d, origin, p)) {
                 requests.push(open_request(&d.nodes[i]));
@@ -1243,6 +1417,23 @@ fn port_help(block: &str, p: &crate::diagram::Port, c: Causality) -> String {
 }
 
 /// A compact display of a value: up to 6 significant digits.
+/// The setting a conversion block's port shows its unit from (ADR 0045):
+/// `from` beside its input, `to` beside its output.
+fn unit_setting(n: &Node, c: Causality) -> Option<&'static str> {
+    if n.type_name != simsandbox_eq::convert::CONVERT || n.error.is_some() {
+        return None;
+    }
+    Some(match c {
+        Causality::Input => "from",
+        Causality::Output => "to",
+    })
+}
+
+/// The editing key of a conversion's unit.
+fn unit_key(block: &str, setting: &str) -> String {
+    format!("unit:{block}:{setting}")
+}
+
 pub fn format_number(v: f64) -> String {
     if v == 0.0 {
         "0".into()
@@ -1541,6 +1732,22 @@ mod tests {
         // Fitted at this size the zoom is high enough to edit; make sure.
         c.zoom = c.zoom.max(1.0);
         frame(&ctx, &mut c, &mut d, vec![]);
+        // Closed: no values until its triangle is clicked.
+        assert_eq!(d.nodes[n].value_rows(), 0);
+        let e = c.expander(Pos2::ZERO, &d.nodes[n]).unwrap().center();
+        for events in [
+            vec![egui::Event::PointerMoved(e)],
+            vec![press(e, true), press(e, false)],
+            vec![],
+        ] {
+            frame(&ctx, &mut c, &mut d, events);
+        }
+        assert!(c.open.contains("car"));
+        assert_eq!(d.nodes[n].value_rows(), 3);
+        // Clicking it selected nothing.
+        assert_eq!(c.selected, None);
+        // (A new context, so that click does not count towards a double.)
+        let ctx = egui::Context::default();
         let at = d.nodes[n].value_at(0);
         let p = c.to_screen(Pos2::ZERO, [at[0] + 100.0, at[1] + 8.0]);
         let click = |pressed| press(p, pressed);
@@ -1577,6 +1784,57 @@ mod tests {
         // Zoomed out, values are not shown or edited.
         c.zoom = 0.4;
         assert!(c.value_under(&d, Pos2::ZERO, p).is_none());
+    }
+
+    #[test]
+    fn a_conversions_units_are_typed_beside_its_ports() {
+        let r = registry();
+        let e = EXAMPLES.iter().find(|e| e.name.contains("nits")).unwrap();
+        let f = simsandbox_file::ModelFile::from_json(e.text).unwrap().0;
+        let mut d = Diagram::new(&f, &r);
+        let mut c = Canvas::default();
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut c, &mut d, vec![]);
+        let n = d.node("b_cm").unwrap();
+        // Zoomed in, with the conversion in view.
+        c.zoom = 1.0;
+        let at = d.nodes[n].at;
+        c.pan = Vec2::new(100.0 - at[0] as f32, 100.0 - at[1] as f32);
+        frame(&ctx, &mut c, &mut d, vec![]);
+        let p = c
+            .unit_rect(Pos2::ZERO, &d.nodes[n], Causality::Output)
+            .unwrap()
+            .center();
+        for events in [
+            vec![egui::Event::PointerMoved(p)],
+            vec![press(p, true)],
+            vec![press(p, false)],
+            vec![press(p, true)],
+            vec![press(p, false)],
+            vec![],
+        ] {
+            frame(&ctx, &mut c, &mut d, events);
+        }
+        let now = d.nodes[n].settings["to"].clone();
+        assert_eq!(c.editing, Some(("unit:b_cm:to".into(), now)));
+        c.editing = Some(("unit:b_cm:to".into(), "mm".into()));
+        frame(&ctx, &mut c, &mut d, vec![]);
+        let enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        let (_, requests) = frame(&ctx, &mut c, &mut d, vec![enter]);
+        assert_eq!(
+            requests,
+            [Request::SetSetting {
+                block: "b_cm".into(),
+                key: "to".into(),
+                text: "mm".into()
+            }]
+        );
     }
 
     #[test]

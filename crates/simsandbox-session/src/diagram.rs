@@ -19,8 +19,6 @@ pub const HEADER: f64 = 40.0;
 pub const ROW: f64 = 20.0;
 /// A parameter value's row on a node (ADR 0053).
 pub const VALUE_ROW: f64 = 16.0;
-/// At most this many values on a node; the rest are in the inspector.
-pub const MAX_VALUES: usize = 4;
 /// Space between automatically placed nodes.
 const GAP_X: f64 = 90.0;
 const GAP_Y: f64 = 40.0;
@@ -87,8 +85,13 @@ pub struct Node {
     /// (`t`, parameters, signals inside subsystems), as `slot: signal`.
     pub unreached: Vec<String>,
     /// On the model level: its parameter values (a use's own parameters),
-    /// other values first, starting values last (ADR 0053).
+    /// other values first, starting values last; not those set by formulas
+    /// (ADR 0053).
     pub values: Vec<NodeValue>,
+    /// Its values are shown, below its ports (opened on the canvas).
+    pub open: bool,
+    /// The block's text settings, such as a conversion's units.
+    pub settings: BTreeMap<String, String>,
 }
 
 /// A parameter value shown on a node.
@@ -114,14 +117,12 @@ impl Node {
         }
     }
 
-    /// Rows of values drawn: up to [`MAX_VALUES`], plus one saying how many
-    /// more there are.
+    /// Rows of values drawn: all of them while the node is open.
     pub fn value_rows(&self) -> usize {
-        let n = self.values.len();
-        if n > MAX_VALUES {
-            MAX_VALUES + 1
+        if self.open {
+            self.values.len()
         } else {
-            n
+            0
         }
     }
 
@@ -320,7 +321,7 @@ impl Diagram {
                     to_name: to,
                     signal: String::new(),
                 }),
-                _ => dangling.push(format!("{from} → {to}")),
+                _ => dangling.push(format!("{from} -> {to}")),
             }
         }
         if *scope != Scope::Model {
@@ -444,7 +445,8 @@ fn node(b: &BlockEntry, registry: &Registry) -> Node {
             for p in &block.spec().params {
                 let (value, formula) = match b.params.get(&p.name) {
                     Some(ParamValue::Number(v)) => (*v, None),
-                    Some(ParamValue::Formula(f)) => (f64::NAN, Some(f.clone())),
+                    // Set by a formula: not listed.
+                    Some(ParamValue::Formula(_)) => continue,
                     None => (p.default, None),
                 };
                 values.push(NodeValue {
@@ -467,7 +469,7 @@ fn node(b: &BlockEntry, registry: &Registry) -> Node {
     };
     // A conversion says what it converts (ADR 0045).
     if let (Some(from), Some(to)) = (b.settings.get("from"), b.settings.get("to")) {
-        method = format!("{from} → {to}");
+        method = format!("{from} to {to}");
     }
     Node {
         name: b.name.clone(),
@@ -481,6 +483,8 @@ fn node(b: &BlockEntry, registry: &Registry) -> Node {
         error,
         unreached: Vec::new(),
         values,
+        open: false,
+        settings: b.settings.clone(),
     }
 }
 
@@ -501,10 +505,15 @@ impl Diagram {
             return;
         }
         for n in self.nodes.iter_mut().filter(|n| n.is_block()) {
+            // Values formulas set are not listed.
+            n.values.retain(|v| {
+                rows.iter()
+                    .find(|r| r.key == v.key)
+                    .is_none_or(|r| r.formula.is_none())
+            });
             for v in &mut n.values {
                 if let Some(r) = rows.iter().find(|r| r.key == v.key) {
                     v.value = r.value;
-                    v.formula = r.formula.clone();
                 }
             }
         }
@@ -602,20 +611,21 @@ fn instance_node(file: &ModelFile, b: &BlockEntry, registry: &Registry) -> Node 
     let values = def
         .params
         .iter()
-        .map(|(name, d)| {
+        .filter_map(|(name, d)| {
             let (value, formula) = match b.params.get(name) {
                 Some(ParamValue::Number(v)) => (*v, None),
-                Some(ParamValue::Formula(f)) => (f64::NAN, Some(f.clone())),
+                // Set by a formula: not listed.
+                Some(ParamValue::Formula(_)) => return None,
                 None => (d.value, None),
             };
-            NodeValue {
+            Some(NodeValue {
                 key: format!("{}.{name}", b.name),
                 name: name.clone(),
                 value,
                 formula,
                 unit: d.unit.clone(),
                 initial: false,
-            }
+            })
         })
         .collect();
     Node {
@@ -630,6 +640,8 @@ fn instance_node(file: &ModelFile, b: &BlockEntry, registry: &Registry) -> Node 
         error: None,
         unreached: Vec::new(),
         values,
+        open: false,
+        settings: BTreeMap::new(),
     }
 }
 
@@ -664,6 +676,8 @@ fn boundary(
         error: None,
         unreached: Vec::new(),
         values: Vec::new(),
+        open: false,
+        settings: BTreeMap::new(),
     }
 }
 
@@ -808,6 +822,20 @@ pub enum Edit {
     Promote { filter: String },
     /// Promote a filter and connect its block to a model input.
     PromoteConnect { filter: String, to: String },
+    /// A block's parameter value, written in the file (for a block not yet
+    /// in the running model; running values change without an edit).
+    SetParam {
+        block: String,
+        param: String,
+        value: f64,
+    },
+    /// A block's text setting, such as a conversion's `from` or `to` unit
+    /// (ADR 0045).
+    SetSetting {
+        block: String,
+        key: String,
+        text: String,
+    },
 }
 
 impl Edit {
@@ -971,6 +999,31 @@ fn edit_level(
         Some((kind == "in", rest.to_string()))
     };
     match edit {
+        Edit::SetParam {
+            block,
+            param,
+            value,
+        } => {
+            let b = l
+                .blocks
+                .iter_mut()
+                .find(|b| b.name == *block)
+                .ok_or_else(|| format!("no block '{block}'"))?;
+            b.params.insert(param.clone(), ParamValue::Number(*value));
+            Ok(format!(
+                "{block}.{param} is now {}",
+                crate::canvas::format_number(*value)
+            ))
+        }
+        Edit::SetSetting { block, key, text } => {
+            let b = l
+                .blocks
+                .iter_mut()
+                .find(|b| b.name == *block)
+                .ok_or_else(|| format!("no block '{block}'"))?;
+            b.settings.insert(key.clone(), text.trim().to_string());
+            Ok(format!("{block}: {key} is now {}", text.trim()))
+        }
         Edit::Move { block, at } => {
             let at = Some(at.map(tidy));
             match port_of(block) {
@@ -1139,7 +1192,7 @@ fn edit_level(
                         .find(|q| q.name == p)
                         .ok_or("no such input")?;
                     q.to.push(to.clone());
-                    Ok(format!("Connected input {p} → {to}"))
+                    Ok(format!("Connected input {p} -> {to}"))
                 }
                 (None, Some((false, p))) => {
                     let q = l
@@ -1148,7 +1201,7 @@ fn edit_level(
                         .find(|q| q.name == p)
                         .ok_or("no such output")?;
                     q.from = from.clone();
-                    Ok(format!("Connected {from} → output {p}"))
+                    Ok(format!("Connected {from} -> output {p}"))
                 }
                 (None, None) => {
                     unfeed(l, to);
@@ -1156,7 +1209,7 @@ fn edit_level(
                         from: from.clone(),
                         to: to.clone(),
                     });
-                    Ok(format!("Connected {from} → {to}"))
+                    Ok(format!("Connected {from} -> {to}"))
                 }
                 _ => Err("wires run from an output to an input".into()),
             }
@@ -1583,13 +1636,19 @@ mod tests {
             (car.values[0].value, car.values[0].unit.as_str()),
             (1000.0, "kg")
         );
-        // A use shows its own parameters, formulas as written.
+        // A use shows its own parameters, not those formulas set.
         let f = file("Platoon");
-        let d = Diagram::new(&f, &r);
+        let mut d = Diagram::new(&f, &r);
         let car1 = &d.nodes[d.node("car1").unwrap()];
-        let kp = car1.values.iter().find(|v| v.name == "kp").unwrap();
-        assert_eq!(kp.formula.as_deref(), Some("kp"));
+        let names: Vec<&str> = car1.values.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names, ["mass"]);
+        // Closed, a node is as tall as its ports; open, its values add rows.
+        let closed: Vec<f64> = d.nodes.iter().map(Node::height).collect();
+        for n in &mut d.nodes {
+            n.open = true;
+        }
         assert!(d.height_check());
+        assert!(d.nodes.iter().zip(closed).all(|(n, h)| n.height() >= h));
         // Inside a subsystem they differ by use: none.
         let inside = Diagram::of(&f, &Scope::Subsystem("follower".into()), &r);
         assert!(inside.nodes.iter().all(|n| n.values.is_empty()));
@@ -1853,7 +1912,7 @@ mod tests {
         assert_eq!(car1.inputs[0].name, "lead");
         assert_eq!(car1.outputs[0].name, "v");
         // The port carries the unit of the inner port it shows.
-        assert_eq!(car1.outputs[0].unit, "m·s^-1");
+        assert_eq!(car1.outputs[0].unit, "m/s");
         assert_eq!((d.wires.len(), d.dangling.len()), (3, 0));
         assert_eq!(d.subsystems, ["follower"]);
 
