@@ -873,3 +873,39 @@ fn stateless_blocks_join_the_group_they_connect_but_never_merge_methods() {
     let err = load(&explicit, &registry()).err().unwrap().to_string();
     assert!(err.contains("block with states"), "{err}");
 }
+
+#[test]
+fn blocks_fuse_by_the_method_they_run_not_how_it_is_written() {
+    // `a` leaves its method out (RK4, 1 substep, for typed equations); `b`
+    // names it.
+    let text = |method_b: &str| {
+        format!(
+            r#"{{"format": 1, "run": {{"dt": 0.01}}, "blocks": [
+              {{"name": "a", "type": "eq.equations", "equations": ["dx/dt = -x"]}},
+              {{"name": "b", "type": "eq.equations", "method": {method_b},
+               "equations": ["input u", "dx/dt = u - x"]}}
+            ], "connections": [{{"from": "a.x", "to": "b.u"}}]}}"#
+        )
+    };
+    for (method_b, fused) in [
+        (r#"{"name": "rk4"}"#, true),
+        (r#"{"name": "rk4", "substeps": 1}"#, true),
+        (r#"{"name": "rk4", "substeps": 4}"#, false),
+        (r#"{"name": "dopri5"}"#, false),
+    ] {
+        let loaded = load(&text(method_b), &registry()).unwrap();
+        assert_eq!(
+            !loaded.groups.is_empty(),
+            fused,
+            "{method_b}: {:?}",
+            loaded.groups
+        );
+        if fused {
+            assert_eq!(loaded.groups[0].method, "RK4 (1 substeps)");
+        }
+    }
+    // Both left out: the type's default.
+    let both = text(r#"{"name": "rk4"}"#).replace(r#""method": {"name": "rk4"},"#, "");
+    let loaded = load(&both, &registry()).unwrap();
+    assert_eq!(loaded.groups[0].method, "RK4 (1 substeps)");
+}

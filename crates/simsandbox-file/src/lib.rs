@@ -1403,9 +1403,21 @@ impl ModelFile {
         let algebraic = |i: usize| stateless[i];
         let index = |name: &str| self.blocks.iter().position(|b| b.name == name);
         let mut parent: Vec<usize> = (0..self.blocks.len()).collect();
-        // Each set's method (by root): that of its blocks with states.
-        let mut method: Vec<Option<&MethodEntry>> = (0..self.blocks.len())
-            .map(|i| (!algebraic(i)).then_some(&self.blocks[i].method))
+        // Each set's method (by root): that of its blocks with states, as
+        // built, so a block whose method is left out (its type's default)
+        // matches one that names it, options included (`RK4 (1 substeps)`).
+        let resolved: Vec<String> = self
+            .blocks
+            .iter()
+            .map(|b| {
+                model
+                    .block(ids[&b.name])
+                    .map(|x| x.method().name.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let mut method: Vec<Option<&String>> = (0..self.blocks.len())
+            .map(|i| (!algebraic(i)).then_some(&resolved[i]))
             .collect();
         fn root(parent: &mut [usize], mut i: usize) -> usize {
             while parent[i] != i {
@@ -1452,7 +1464,22 @@ impl ModelFile {
             let first = *set.iter().find(|&&i| !algebraic(i)).expect("filtered");
             let members = set.iter().map(|&i| ids[&self.blocks[i].name]).collect();
             let path = format!("blocks[{first}]");
-            let method = make(model, members, &self.blocks[first].method, &path)?;
+            // The method as written by a member that names it, else the
+            // type's default (its first), which those left out run.
+            let written = set
+                .iter()
+                .filter(|&&i| !algebraic(i))
+                .map(|&i| &self.blocks[i])
+                .find(|b| !b.method.name.is_empty())
+                .map(|b| b.method.clone());
+            let entry = written.unwrap_or_else(|| MethodEntry {
+                name: registry
+                    .info(&self.blocks[first].type_name)
+                    .and_then(|t| t.methods.first().map(|(m, _)| m.clone()))
+                    .unwrap_or_default(),
+                options: BTreeMap::new(),
+            });
+            let method = make(model, members, &entry, &path)?;
             fused.push(FusedGroup {
                 blocks: set.iter().map(|&i| self.blocks[i].name.clone()).collect(),
                 method,

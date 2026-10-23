@@ -67,6 +67,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Blocks fuse by the method they actually run: a block that leaves its method out (its type's default) now fuses with a connected block that names the same method and options, e.g. `rk4` with one substep.
 - Formula blocks and unit conversions join the fused group they connect (ADR 0051): a conversion or a promoted filter between two blocks solved together no longer splits them, and a formula driving a fused block is evaluated at every solver stage. Results of such models change slightly (more accurate).
 - Block and subsystem port places are written `canvas`, like filters' and views' (ADR 0052); files with `at` still open, and the log says it was converted. Python `Model.add_block` takes `canvas=`.
 - Connections need the same unit at both ends (ADR 0045): a `cm` output no longer feeds an `m` input silently; put a `units.convert` block between them. The cruise-control example now gives its equations units.
