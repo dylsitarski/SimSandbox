@@ -54,7 +54,7 @@ impl Dock {
         let group = d.group(tiles.to_vec());
         d.state
             .main_surface_mut()
-            .split_right(NodeIndex::root(), 0.24, vec![group, Pane::Diagram]);
+            .split_right(NodeIndex::root(), 0.3, vec![group, Pane::Diagram]);
         d
     }
 

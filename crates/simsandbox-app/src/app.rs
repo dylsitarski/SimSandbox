@@ -72,6 +72,10 @@ pub struct SimApp {
     dock: Dock,
     /// A tab to bring to the front.
     focus: Option<Focus>,
+    /// The inspector's search text.
+    inspect_query: String,
+    /// List values formulas set too.
+    show_computed: bool,
     diagram: DiagramTab,
     started: Instant,
     /// The open model as saved or opened, to tell unsaved changes.
@@ -111,6 +115,8 @@ impl SimApp {
             views: Views::new(simsandbox_session::examples::view_registry()),
             dock: Dock::standard(&[]),
             focus: None,
+            inspect_query: String::new(),
+            show_computed: false,
             diagram: DiagramTab::default(),
             started: Instant::now(),
             baseline: None,
@@ -499,6 +505,7 @@ impl SimApp {
             if has_model {
                 ui.separator();
                 self.view_menus(ui);
+                self.solving_menu(ui);
             }
             ui.separator();
             match &self.path {
@@ -893,11 +900,10 @@ impl SimApp {
     fn pane_ui(&mut self, ui: &mut egui::Ui, pane: &Pane, actions: &mut Vec<DockAction>) {
         match pane {
             Pane::Inspector => {
-                egui::ScrollArea::vertical()
+                egui::ScrollArea::both()
                     .id_salt("inspector")
                     .show(ui, |ui| {
                         self.param_panel(ui);
-                        self.style_panel(ui);
                     });
             }
             Pane::Diagram => self.diagram_tab(ui),
@@ -1138,6 +1144,7 @@ impl SimApp {
         let history = live.history();
         let available = m.available(&history);
         let views = &mut self.views;
+        let (text, error) = (&mut self.param_edits, &mut self.error);
         let area = ui.available_rect_before_wrap();
         let shown: Vec<usize> = ids
             .iter()
@@ -1210,6 +1217,12 @@ impl SimApp {
                                     if ui.small_button(label).on_hover_text(hint).clicked() {
                                         actions.push(action);
                                     }
+                                    let id = tile.id;
+                                    ui.menu_button("style", |ui| {
+                                        style_editor(ui, t, &mut tile.state, &history, id, text, error);
+                                    })
+                                    .response
+                                    .on_hover_text("How this view draws: trails, scales and what it picks");
                                     if t.swap.is_some()
                                         && ui
                                             .small_button("swap axes")
@@ -1234,47 +1247,22 @@ impl SimApp {
         ui.allocate_rect(area, egui::Sense::hover());
     }
 
-    /// Style properties of the selected view, edited like parameters
-    /// (ADR 0015).
-    fn style_panel(&mut self, ui: &mut egui::Ui) {
-        let tile = self.views.selected.unwrap_or_default();
-        let Some((t, state)) = self.views.selected_mut() else {
-            return;
-        };
+    /// "Solving…": how blocks are solved together (ADR 0023).
+    fn solving_menu(&mut self, ui: &mut egui::Ui) {
         let Some(live) = self.session.as_ref() else {
             return;
         };
-        let history = live.history();
-        // Only the properties that mean something here (ADR 0025).
-        let context = simsandbox_views::Context {
-            history: &history,
-            bind: &state.bind,
-        };
-        let shown: Vec<_> = t.style.iter().filter(|p| (p.applies)(&context)).collect();
-        ui.add_space(10.0);
-        ui.heading(format!("View: {}", t.label));
-        // The view's own picks, such as profile cuts (ADR 0029).
-        state.edit_selection(ui, t, &history);
-        egui::Grid::new(("style", t.name))
-            .num_columns(3)
-            .spacing([6.0, 4.0])
-            .show(ui, |ui| {
-                for p in shown {
-                    ui.label(p.name).on_hover_text(format!(
-                        "{}\nSuggested range: {} to {}",
-                        p.description, p.suggested[0], p.suggested[1]
-                    ));
-                    let key = format!("style.{tile}.{}", p.name);
-                    let value = state.style_value(p);
-                    if let Some(v) =
-                        number_entry(ui, &key, value, &mut self.param_edits, &mut self.error)
-                    {
-                        state.style.insert(p.name.into(), v);
-                    }
-                    ui.label(p.unit);
-                    ui.end_row();
-                }
-            });
+        let m = live.model();
+        let mut fusion = None;
+        ui.menu_button("Solving…", |ui| {
+            ui.set_max_width(340.0);
+            fusion = solving_section(ui, &m);
+        })
+        .response
+        .on_hover_text("Which blocks are solved together, and with what method");
+        if let Some(on) = fusion {
+            self.set_fusion(on);
+        }
     }
 
     fn save_to(&mut self, path: &Path) {
@@ -1326,110 +1314,236 @@ impl SimApp {
             return;
         };
         let m = live.model();
-        let mut fusion = None;
         let mut update: Option<(String, simsandbox_agents::Update)> = None;
-        if m.file.blocks.len() > 1 {
-            fusion = solving_section(ui, &m);
-        }
-        ui.heading("Parameters");
         let mut changes: Vec<(ParamRow, f64)> = Vec::new();
         let mut controls: Vec<(String, simsandbox_file::ParamControl)> = Vec::new();
-        {
-            let mut blocks: Vec<(String, Vec<ParamRow>)> = Vec::new();
-            for row in m.params.iter().cloned() {
-                let name = row.owner.clone();
-                match blocks.last_mut() {
-                    Some((b, list)) if *b == name => list.push(row),
-                    _ => blocks.push((name, vec![row])),
+        let mut open_editor: Option<(String, String)> = None;
+        macro_rules! edits {
+            () => {
+                Edits {
+                    changes: &mut changes,
+                    controls: &mut controls,
+                    text: &mut self.param_edits,
+                    pending: &mut self.pending,
+                    error: &mut self.error,
                 }
-            }
-            for (block_name, rows) in blocks {
-                ui.add_space(6.0);
-                let typed = m
-                    .file
-                    .blocks
-                    .iter()
-                    .find(|b| b.name == block_name)
-                    .filter(|b| b.type_name == simsandbox_eq::registry::EQUATIONS)
-                    .map(|b| b.equations.join("\n"));
-                let entry = m.file.blocks.iter().find(|b| b.name == block_name);
-                let agents = entry.filter(|b| b.type_name.starts_with("agents."));
-                ui.horizontal(|ui| {
-                    // The model's own parameters (ADR 0043), a subsystem
-                    // use, or a block (inside one: `car1/car`).
-                    let sub = entry.filter(|b| m.file.subsystems.contains_key(&b.type_name));
-                    match (block_name.as_str(), sub) {
-                        ("", _) => {
-                            ui.strong("Model").on_hover_text(
-                                "Parameters of the model itself, used by formulas in blocks",
-                            );
-                        }
-                        (_, Some(b)) => {
-                            ui.strong(&block_name);
-                            ui.weak(format!("({})", b.type_name));
-                        }
-                        _ => {
-                            ui.strong(&block_name);
-                        }
-                    }
-                    if let Some(b) = agents {
-                        // The update order is part of the model (ADR 0034).
-                        let now = simsandbox_agents::Update::from_setting(b.update.as_deref())
-                            .unwrap_or_default();
-                        egui::ComboBox::from_id_salt(("update", &block_name))
-                            .selected_text(now.name())
-                            .show_ui(ui, |ui| {
-                                for u in simsandbox_agents::Update::ALL {
-                                    if ui
-                                        .selectable_label(u == now, u.name())
-                                        .on_hover_text(u.description())
-                                        .clicked()
-                                        && u != now
-                                    {
-                                        update = Some((block_name.clone(), u));
-                                    }
-                                }
-                            })
-                            .response
-                            .on_hover_text(
-                                "The order agents act in each step; it changes results. \
-                                 Changing it restarts the run.",
-                            );
-                    }
-                    if let Some(text) = typed {
-                        if ui
-                            .small_button("Edit equations…")
-                            .on_hover_text("Change this block's equations")
-                            .clicked()
-                        {
-                            self.editor = Some(Editor {
-                                block: Some(block_name.clone()),
-                                text,
-                                error: None,
-                            });
-                        }
+            };
+        }
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - 100.0).max(80.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.inspect_query)
+                    .hint_text("Search parameters")
+                    .desired_width(width),
+            );
+            ui.checkbox(&mut self.show_computed, "computed")
+                .on_hover_text("Also list the values formulas set (shown, not edited)");
+        });
+        let query = self.inspect_query.trim().to_string();
+        if !query.is_empty() {
+            let found = crate::inspector::search(&m.params, &query);
+            ui.weak(match found.len() {
+                0 => "Nothing matches".to_string(),
+                1 => "1 parameter".to_string(),
+                n => format!("{n} parameters"),
+            });
+            egui::Grid::new("found")
+                .num_columns(4)
+                .spacing([6.0, 4.0])
+                .show(ui, |ui| {
+                    for row in found {
+                        let mut r = row.clone();
+                        r.name = r.key.clone();
+                        param_row(ui, &m, &r, edits!());
                     }
                 });
-                egui::Grid::new(("params", &block_name))
+        } else {
+            let o = crate::inspector::organise(&m.params, &m.file, self.show_computed);
+            let used_by = |ui: &mut egui::Ui, key: &str| {
+                if let Some(v) = o.used_by.get(key) {
+                    ui.label("");
+                    let n = match v.len() {
+                        1 => fit_text(&v[0], 14),
+                        n => format!("{n}"),
+                    };
+                    ui.weak(format!("used by {n}"))
+                        .on_hover_text(format!("Formulas read it: {}", v.join(", ")));
+                    ui.end_row();
+                }
+            };
+            if !o.controls.is_empty() {
+                ui.heading("Controls").on_hover_text(
+                    "Parameters with sliders, and those pinned (right-click a parameter's name)",
+                );
+                egui::Grid::new("controls")
                     .num_columns(4)
                     .spacing([6.0, 4.0])
                     .show(ui, |ui| {
-                        for row in rows {
-                            param_row(
-                                ui,
-                                &m,
-                                &row,
-                                Edits {
-                                    changes: &mut changes,
-                                    controls: &mut controls,
-                                    text: &mut self.param_edits,
-                                    pending: &mut self.pending,
-                                    error: &mut self.error,
-                                },
-                            );
+                        for row in &o.controls {
+                            let mut r = row.clone();
+                            r.name = r.key.clone();
+                            param_row(ui, &m, &r, edits!());
+                            used_by(ui, &row.key);
                         }
                     });
+                ui.add_space(6.0);
             }
+            // What is selected on the diagram (ADR 0053).
+            let scope = match &self.diagram.scope {
+                simsandbox_session::diagram::Scope::Model => None,
+                simsandbox_session::diagram::Scope::Subsystem(s) => Some(s.clone()),
+            };
+            let picked = self
+                .diagram
+                .canvas
+                .selected
+                .as_ref()
+                .and_then(|s| s.blocks().into_iter().next())
+                .filter(|n| !n.contains(':'));
+            if let Some(name) = picked {
+                if let Some(t) =
+                    crate::inspector::selected(&m.params, &m.file, scope.as_deref(), &name)
+                {
+                    let title = match &scope {
+                        Some(s) => format!("Selected: {name} in {s}"),
+                        None => format!("Selected: {name}"),
+                    };
+                    egui::CollapsingHeader::new(egui::RichText::new(title).strong())
+                        .id_salt("selected")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            uses_table(
+                                ui,
+                                &t,
+                                &mut changes,
+                                &mut self.param_edits,
+                                &mut self.error,
+                            );
+                        });
+                    ui.add_space(6.0);
+                }
+            }
+            let small = m.params.len() <= 16;
+            if !o.model.is_empty() {
+                egui::CollapsingHeader::new(egui::RichText::new("Model").strong())
+                    .id_salt("model-params")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        egui::Grid::new("model")
+                            .num_columns(4)
+                            .spacing([6.0, 4.0])
+                            .show(ui, |ui| {
+                                for row in &o.model {
+                                    param_row(ui, &m, row, edits!());
+                                    used_by(ui, &row.key);
+                                }
+                            });
+                    })
+                    .header_response
+                    .on_hover_text("Parameters of the model itself, used by formulas in blocks");
+            }
+            for t in &o.tables {
+                let title = format!("{} × {}", t.subsystem, t.uses.len());
+                egui::CollapsingHeader::new(egui::RichText::new(title).strong())
+                    .id_salt(("uses", &t.subsystem))
+                    .default_open(small || t.rows.len() <= 6)
+                    .show(ui, |ui| {
+                        uses_table(ui, t, &mut changes, &mut self.param_edits, &mut self.error);
+                    })
+                    .header_response
+                    .on_hover_text(format!(
+                        "The subsystem {} is used {} times: a column per use",
+                        t.subsystem,
+                        t.uses.len()
+                    ));
+            }
+            for g in &o.groups {
+                let entry = m.file.blocks.iter().find(|b| b.name == g.name);
+                let typed = entry
+                    .filter(|b| b.type_name == simsandbox_eq::registry::EQUATIONS)
+                    .map(|b| b.equations.join("\n"));
+                let agents = entry.filter(|b| b.type_name.starts_with("agents."));
+                let kind = if g.instance {
+                    format!("subsystem {}", g.type_name)
+                } else {
+                    g.type_name.clone()
+                };
+                let header = egui::RichText::new(format!("{}  ({kind})", g.name)).strong();
+                egui::CollapsingHeader::new(header)
+                    .id_salt(("group", &g.name))
+                    .default_open(small || g.rows.len() <= 4)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if let Some(b) = agents {
+                                // The update order is part of the model
+                                // (ADR 0034).
+                                let now =
+                                    simsandbox_agents::Update::from_setting(b.update.as_deref())
+                                        .unwrap_or_default();
+                                egui::ComboBox::from_id_salt(("update", &g.name))
+                                    .selected_text(now.name())
+                                    .show_ui(ui, |ui| {
+                                        for u in simsandbox_agents::Update::ALL {
+                                            if ui
+                                                .selectable_label(u == now, u.name())
+                                                .on_hover_text(u.description())
+                                                .clicked()
+                                                && u != now
+                                            {
+                                                update = Some((g.name.clone(), u));
+                                            }
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text(
+                                        "The order agents act in each step; it changes \
+                                         results. Changing it restarts the run.",
+                                    );
+                            }
+                            if let Some(text) = &typed {
+                                if ui
+                                    .small_button("Edit equations…")
+                                    .on_hover_text("Change this block's equations")
+                                    .clicked()
+                                {
+                                    open_editor = Some((g.name.clone(), text.clone()));
+                                }
+                            }
+                        });
+                        egui::Grid::new(("params", &g.name))
+                            .num_columns(4)
+                            .spacing([6.0, 4.0])
+                            .show(ui, |ui| {
+                                let mut starting = false;
+                                for (name, row) in &g.rows {
+                                    if row.initial_condition && !starting {
+                                        starting = true;
+                                        ui.weak("starts at ↻")
+                                            .on_hover_text("Initial values: they apply on Restart");
+                                        ui.end_row();
+                                    }
+                                    let mut r = row.clone();
+                                    r.name = name.clone();
+                                    param_row(ui, &m, &r, edits!());
+                                    used_by(ui, &row.key);
+                                }
+                            });
+                    });
+            }
+            if o.computed > 0 && !self.show_computed {
+                ui.add_space(4.0);
+                ui.weak(format!(
+                    "{} values set by formulas are not listed (tick \"computed\")",
+                    o.computed
+                ));
+            }
+        }
+        if let Some((block, text)) = open_editor {
+            self.editor = Some(Editor {
+                block: Some(block),
+                text,
+                error: None,
+            });
         }
 
         let conversion = conversions_section(ui, &m, &mut self.param_edits);
@@ -1460,9 +1574,6 @@ impl SimApp {
                     Err(e) => c.error(format!("{}: {e}", row.key)),
                 }
             });
-        }
-        if let Some(on) = fusion {
-            self.set_fusion(on);
         }
         if let Some((block, key, text)) = conversion {
             self.set_conversion(&block, &key, &text);
@@ -2015,6 +2126,135 @@ struct Edits<'a> {
     error: &'a mut Option<String>,
 }
 
+/// Parameters side by side for several uses of a subsystem (or one use):
+/// a row per parameter, a column per use. Values formulas set are shown,
+/// not edited; right-click a name to give every use the first one's value.
+fn uses_table(
+    ui: &mut egui::Ui,
+    t: &crate::inspector::UsesTable,
+    changes: &mut Vec<(ParamRow, f64)>,
+    text: &mut HashMap<String, String>,
+    error: &mut Option<String>,
+) {
+    egui::Grid::new(("uses-table", &t.subsystem, t.uses.join(",")))
+        .num_columns(t.uses.len() + 2)
+        .spacing([8.0, 4.0])
+        .striped(true)
+        .show(ui, |ui| {
+            if t.uses.len() > 1 {
+                ui.label("");
+                ui.label("");
+                for u in &t.uses {
+                    ui.strong(u);
+                }
+                ui.end_row();
+            }
+            for (name, cells) in &t.rows {
+                let first = cells.iter().flatten().next();
+                let starting = first.is_some_and(|r| r.initial_condition);
+                let label = if starting {
+                    format!("{name} ↻")
+                } else {
+                    name.clone()
+                };
+                let hover = first.map_or(String::new(), |r| {
+                    let mut h = r.description.clone();
+                    if starting {
+                        h.push_str("\nSets the initial state: applies on Restart");
+                    }
+                    h
+                });
+                let first_value = cells
+                    .iter()
+                    .flatten()
+                    .find(|r| r.formula.is_none())
+                    .map(|r| r.value);
+                let response = ui.label(label).on_hover_text(hover);
+                if t.uses.len() > 1 {
+                    if let Some(v) = first_value {
+                        response.context_menu(|ui| {
+                            if ui
+                                .button(format!("Set every use to {}", format_value(v)))
+                                .clicked()
+                            {
+                                for r in cells.iter().flatten().filter(|r| r.formula.is_none()) {
+                                    changes.push((r.clone(), v));
+                                }
+                                ui.close();
+                            }
+                        });
+                    }
+                }
+                ui.weak(first.map_or("", |r| r.unit.as_str()));
+                for cell in cells {
+                    match cell {
+                        Some(r) => match &r.formula {
+                            Some(f) => {
+                                ui.weak(format!("= {}", fit_text(f, 12)))
+                                    .on_hover_text(format!(
+                                        "{} = {f}: set by a formula",
+                                        format_value(r.value)
+                                    ));
+                            }
+                            None => {
+                                let key = format!("cell:{}", r.key);
+                                if let Some(v) = number_entry(ui, &key, r.value, text, error) {
+                                    changes.push((r.clone(), v));
+                                }
+                            }
+                        },
+                        None => {
+                            ui.weak("—");
+                        }
+                    }
+                }
+                ui.end_row();
+            }
+        });
+}
+
+/// A view's style properties (ADR 0015), only those that mean something
+/// for what it shows (ADR 0025), and its own picks such as profile cuts
+/// (ADR 0029).
+fn style_editor(
+    ui: &mut egui::Ui,
+    t: &ViewType,
+    state: &mut ViewState,
+    history: &History,
+    tile: u64,
+    text: &mut HashMap<String, String>,
+    error: &mut Option<String>,
+) {
+    let context = simsandbox_views::Context {
+        history,
+        bind: &state.bind,
+    };
+    let shown: Vec<_> = t.style.iter().filter(|p| (p.applies)(&context)).collect();
+    state.edit_selection(ui, t, history);
+    if shown.is_empty() {
+        ui.weak("Nothing to set for this view");
+        return;
+    }
+    egui::Grid::new(("style", t.name, tile))
+        .num_columns(3)
+        .spacing([6.0, 4.0])
+        .show(ui, |ui| {
+            for p in shown {
+                ui.label(p.name).on_hover_text(format!(
+                    "{}\nSuggested range: {} to {}",
+                    p.description, p.suggested[0], p.suggested[1]
+                ));
+                let key = format!("style.{tile}.{}", p.name);
+                let value = state.style_value(p);
+                if let Some(v) = number_entry(ui, &key, value, text, error) {
+                    state.style.insert(p.name.into(), v);
+                }
+                ui.label(p.unit);
+                ui.end_row();
+            }
+        });
+}
+
 /// One parameter: name, typed entry, unit, slider toggle; then the
 /// slider and its range when enabled.
 fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
@@ -2035,7 +2275,18 @@ fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
     if let Some(f) = &row.formula {
         hover.push_str(&format!("\nComputed: {f}"));
     }
-    ui.label(&row.name).on_hover_text(hover);
+    hover.push_str("\nRight-click to pin it to the Controls");
+    ui.label(&row.name).on_hover_text(hover).context_menu(|ui| {
+        let label = if control.pin {
+            "Unpin from the Controls"
+        } else {
+            "Pin to the Controls"
+        };
+        if ui.button(label).clicked() {
+            control.pin = !control.pin;
+            ui.close();
+        }
+    });
 
     // A value a formula sets is shown, not edited (ADR 0043).
     if let Some(f) = &row.formula {
@@ -3199,6 +3450,42 @@ mod tests {
         assert!(app.dock.popped.is_empty());
         assert!(app.dock.panes().iter().any(|p| matches!(p, Pane::View(_))));
         assert!(app.dock.panes().contains(&Pane::Diagram));
+    }
+
+    /// Draw one frame of the inspector.
+    fn inspect(app: &mut SimApp) {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(500.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.param_panel(ui));
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn the_inspector_draws_selection_search_and_computed_values() {
+        use simsandbox_session::canvas::Selection;
+        use simsandbox_session::diagram::Scope;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        inspect(&mut app);
+        app.diagram.canvas.selected = Some(Selection::Block("car2".into()));
+        inspect(&mut app);
+        app.diagram.scope = Scope::Subsystem("follower".into());
+        app.diagram.canvas.selected = Some(Selection::Block("control".into()));
+        inspect(&mut app);
+        app.show_computed = true;
+        app.inspect_query = "mass".into();
+        inspect(&mut app);
+        assert!(app.error.is_none(), "{:?}", app.error);
     }
 
     #[test]

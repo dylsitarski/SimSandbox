@@ -86,7 +86,7 @@ struct FieldSource {
 }
 
 /// One parameter as the panel shows it.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ParamRow {
     /// `"block.param"`, the key used in `controls.params`; for a declared
     /// parameter (ADR 0043) `"name"` (the model's) or `"instance.name"`.

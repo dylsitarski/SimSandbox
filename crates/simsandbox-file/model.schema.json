@@ -380,6 +380,10 @@
                 },
                 "minItems": 2,
                 "maxItems": 2
+              },
+              "pin": {
+                "type": "boolean",
+                "description": "Show it among the inspector's Controls (ADR 0053); parameters with sliders are shown there too."
               }
             }
           }

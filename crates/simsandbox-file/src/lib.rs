@@ -904,6 +904,10 @@ pub struct ParamControl {
     /// Slider range `[min, max]`; the parameter's suggested range if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<[f64; 2]>,
+    /// Shown among the inspector's Controls, with those that have sliders
+    /// (ADR 0053).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pin: bool,
 }
 
 /// Why a file could not be loaded.
