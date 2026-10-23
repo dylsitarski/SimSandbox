@@ -16,7 +16,9 @@
 //!   on a view's slot shows that signal there; a filter dropped on a block
 //!   input is refused with an offer to promote it to a block and connect.
 
-use crate::diagram::{Diagram, Edit, Node, NodeKind, Scope, HEADER, NODE_WIDTH, ROW};
+use crate::diagram::{
+    Diagram, Edit, Node, NodeKind, Scope, HEADER, MAX_VALUES, NODE_WIDTH, VALUE_ROW,
+};
 use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use simsandbox_core::block::{Causality, Shape};
 use simsandbox_core::registry::Registry;
@@ -52,7 +54,13 @@ pub enum Request {
     EditData(String),
     /// Show a view's tile, by its place among the views.
     ShowView(usize),
+    /// A value typed on a node (ADR 0053): `"block.param"` and the value.
+    SetValue { key: String, value: f64 },
 }
+
+/// Values show on nodes from this zoom up, and can be edited from this one.
+const SHOW_VALUES: f32 = 0.55;
+const EDIT_VALUES: f32 = 0.75;
 
 /// A wire being drawn: from a port, to the pointer.
 #[derive(Clone, Debug)]
@@ -86,6 +94,10 @@ pub struct Canvas {
     /// A filter dropped on a model input: the filter, the input and where
     /// to offer promoting it.
     offer: Option<(String, String, Pos2)>,
+    /// Show parameter values on nodes (ADR 0053).
+    pub show_values: bool,
+    /// The value being typed on a node: its key and the text so far.
+    editing: Option<(String, String)>,
 }
 
 impl Default for Canvas {
@@ -102,6 +114,8 @@ impl Default for Canvas {
             menu: None,
             rename: String::new(),
             offer: None,
+            show_values: true,
+            editing: None,
         }
     }
 }
@@ -230,8 +244,18 @@ impl Canvas {
                 // Hover help: the error, or a port's unit and shape.
                 let r = self.node_rect(origin, n);
                 if let Some(p) = pointer.filter(|p| r.expand(REACH).contains(*p)) {
+                    let value = self.value_under(d, origin, p).filter(|&(k, _)| k == i);
                     let tip = if let Some(e) = &n.error {
                         Some(e.clone())
+                    } else if let Some((_, k)) = value {
+                        let v = &n.values[k];
+                        Some(match &v.formula {
+                            Some(f) => format!("{}: set by the formula {f}", v.key),
+                            None if self.zoom >= EDIT_VALUES => {
+                                format!("{}: double-click to change it", v.key)
+                            }
+                            None => format!("{}: zoom in to change it here", v.key),
+                        })
                     } else if n.is_observer() && self.port_under(d, origin, p).is_none() {
                         Some(observer_help(n))
                     } else {
@@ -282,6 +306,7 @@ impl Canvas {
         }
 
         if interactive {
+            self.value_editor(ui, d, origin, &mut requests);
             self.context_menu(&response, d, registry, &mut edits, &mut requests);
             self.promote_offer(ui, &mut edits);
         }
@@ -477,6 +502,146 @@ impl Canvas {
                 );
             }
         }
+        self.values(painter, visuals, origin, n);
+    }
+
+    /// A node's parameter values, below its ports (ADR 0053).
+    fn values(&self, painter: &egui::Painter, visuals: &egui::Visuals, origin: Pos2, n: &Node) {
+        if n.values.is_empty() || !self.show_values || self.zoom < SHOW_VALUES {
+            return;
+        }
+        let z = self.zoom;
+        let pad = 8.0 * z;
+        let top = self.to_screen(origin, n.value_at(0));
+        painter.line_segment(
+            [
+                top + Vec2::new(pad, 0.0),
+                top + Vec2::new(NODE_WIDTH as f32 * z - pad, 0.0),
+            ],
+            Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
+        );
+        let font = FontId::proportional(11.0 * z);
+        for (k, v) in n.values.iter().take(MAX_VALUES).enumerate() {
+            if self.editing.as_ref().is_some_and(|(key, _)| *key == v.key) {
+                continue;
+            }
+            let y = self.to_screen(origin, n.value_at(k)).y + VALUE_ROW as f32 * z / 2.0;
+            let left = Pos2::new(top.x + pad, y);
+            let name = if v.initial {
+                format!("{} ↻", v.name)
+            } else {
+                v.name.clone()
+            };
+            painter.text(
+                left,
+                egui::Align2::LEFT_CENTER,
+                fit(&name, 12),
+                font.clone(),
+                visuals.weak_text_color(),
+            );
+            let shown = match &v.formula {
+                Some(f) => format!("= {}", fit(f, 10)),
+                None => format!("{} {}", format_number(v.value), v.unit),
+            };
+            let colour = if v.formula.is_some() {
+                visuals.weak_text_color()
+            } else {
+                visuals.text_color()
+            };
+            painter.text(
+                Pos2::new(top.x + NODE_WIDTH as f32 * z - pad, y),
+                egui::Align2::RIGHT_CENTER,
+                fit(shown.trim(), 16),
+                font.clone(),
+                colour,
+            );
+        }
+        if n.values.len() > MAX_VALUES {
+            let y = self.to_screen(origin, n.value_at(MAX_VALUES)).y + VALUE_ROW as f32 * z / 2.0;
+            painter.text(
+                Pos2::new(top.x + pad, y),
+                egui::Align2::LEFT_CENTER,
+                format!("+{} more in the inspector", n.values.len() - MAX_VALUES),
+                font,
+                visuals.weak_text_color(),
+            );
+        }
+    }
+
+    /// The value row under `p`: node and value.
+    fn value_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, usize)> {
+        if !self.show_values || self.zoom < SHOW_VALUES {
+            return None;
+        }
+        d.nodes.iter().enumerate().rev().find_map(|(i, n)| {
+            (0..n.values.len().min(MAX_VALUES)).find_map(|k| {
+                let r = Rect::from_min_size(
+                    self.to_screen(origin, n.value_at(k)),
+                    Vec2::new(NODE_WIDTH as f32, VALUE_ROW as f32) * self.zoom,
+                );
+                r.contains(p).then_some((i, k))
+            })
+        })
+    }
+
+    /// The field a value is typed into, where it is drawn. Enter sets it;
+    /// Escape or clicking away leaves it.
+    fn value_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        d: &Diagram,
+        origin: Pos2,
+        requests: &mut Vec<Request>,
+    ) {
+        let Some((key, mut text)) = self.editing.take() else {
+            return;
+        };
+        let Some((i, k)) = d.nodes.iter().enumerate().find_map(|(i, n)| {
+            n.values
+                .iter()
+                .take(MAX_VALUES)
+                .position(|v| v.key == key)
+                .map(|k| (i, k))
+        }) else {
+            return;
+        };
+        let n = &d.nodes[i];
+        let z = self.zoom;
+        let at = self.to_screen(origin, n.value_at(k));
+        let rect = Rect::from_min_size(
+            at + Vec2::new(NODE_WIDTH as f32 * z * 0.45, 0.0),
+            Vec2::new(NODE_WIDTH as f32 * z * 0.5, VALUE_ROW as f32 * z),
+        );
+        let r = ui.put(
+            rect,
+            egui::TextEdit::singleline(&mut text)
+                .font(FontId::proportional(11.0 * z))
+                .margin(Vec2::new(2.0, 0.0)),
+        );
+        if !r.has_focus() && !r.lost_focus() {
+            r.request_focus();
+        }
+        let (enter, escape) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if escape {
+            return;
+        }
+        if r.lost_focus() {
+            if enter {
+                match text.trim().parse::<f64>() {
+                    Ok(value) if value.is_finite() => {
+                        requests.push(Request::SetValue { key, value })
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+        self.editing = Some((key, text));
     }
 
     /// The port under `p`: (node, port, causality).
@@ -727,10 +892,14 @@ impl Canvas {
             }
         }
         if response.double_clicked() {
-            if let Some(i) = response
-                .interact_pointer_pos()
-                .and_then(|p| self.node_under(d, origin, p))
-            {
+            let p = response.interact_pointer_pos();
+            if let Some((i, k)) = p.and_then(|p| self.value_under(d, origin, p)) {
+                // A value: typed in place when zoomed in (ADR 0053).
+                let v = &d.nodes[i].values[k];
+                if v.formula.is_none() && self.zoom >= EDIT_VALUES {
+                    self.editing = Some((v.key.clone(), format_number(v.value)));
+                }
+            } else if let Some(i) = p.and_then(|p| self.node_under(d, origin, p)) {
                 requests.push(open_request(&d.nodes[i]));
             }
         }
@@ -1073,6 +1242,23 @@ fn port_help(block: &str, p: &crate::diagram::Port, c: Causality) -> String {
     format!("{block}.{} ({dir}): {shape}, {unit}", p.name)
 }
 
+/// A compact display of a value: up to 6 significant digits.
+pub fn format_number(v: f64) -> String {
+    if v == 0.0 {
+        "0".into()
+    } else if (1e-4..1e6).contains(&v.abs()) {
+        let digits = (5 - v.abs().log10().floor() as i32).clamp(0, 9) as usize;
+        let s = format!("{v:.digits$}");
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            s
+        }
+    } else {
+        format!("{v:e}")
+    }
+}
+
 /// Shorten text to `max` characters with an ellipsis.
 fn fit(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -1137,9 +1323,9 @@ fn segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
     (a + ab * t).distance(p)
 }
 
-/// Rows of a node, for tests and layout: header plus ports.
+/// Port rows of a node, for tests and layout.
 pub fn rows(n: &Node) -> usize {
-    ((n.height() - HEADER) / ROW).round() as usize
+    n.inputs.len().max(n.outputs.len()).max(1)
 }
 
 #[cfg(test)]
@@ -1346,6 +1532,51 @@ mod tests {
                 .any(|e| matches!(e, Edit::Unbind { signal, .. } if signal == "cruise.F")),
             "{edits:?}"
         );
+    }
+
+    #[test]
+    fn values_on_nodes_are_typed_in_place_when_zoomed_in() {
+        let (mut d, mut c, ctx) = cruise();
+        let n = d.node("car").unwrap();
+        // Fitted at this size the zoom is high enough to edit; make sure.
+        c.zoom = c.zoom.max(1.0);
+        frame(&ctx, &mut c, &mut d, vec![]);
+        let at = d.nodes[n].value_at(0);
+        let p = c.to_screen(Pos2::ZERO, [at[0] + 100.0, at[1] + 8.0]);
+        let click = |pressed| press(p, pressed);
+        for events in [
+            vec![egui::Event::PointerMoved(p)],
+            vec![click(true)],
+            vec![click(false)],
+            vec![click(true)],
+            vec![click(false)],
+            vec![],
+        ] {
+            frame(&ctx, &mut c, &mut d, events);
+        }
+        assert_eq!(c.editing.as_ref().map(|(k, _)| k.as_str()), Some("car.m"));
+        // Replace the text and press Enter.
+        c.editing = Some(("car.m".into(), "1500".into()));
+        frame(&ctx, &mut c, &mut d, vec![]);
+        let enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        let (_, requests) = frame(&ctx, &mut c, &mut d, vec![enter]);
+        assert_eq!(
+            requests,
+            [Request::SetValue {
+                key: "car.m".into(),
+                value: 1500.0
+            }]
+        );
+        assert!(c.editing.is_none());
+        // Zoomed out, values are not shown or edited.
+        c.zoom = 0.4;
+        assert!(c.value_under(&d, Pos2::ZERO, p).is_none());
     }
 
     #[test]

@@ -17,6 +17,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const NODE_WIDTH: f64 = 170.0;
 pub const HEADER: f64 = 40.0;
 pub const ROW: f64 = 20.0;
+/// A parameter value's row on a node (ADR 0053).
+pub const VALUE_ROW: f64 = 16.0;
+/// At most this many values on a node; the rest are in the inspector.
+pub const MAX_VALUES: usize = 4;
 /// Space between automatically placed nodes.
 const GAP_X: f64 = 90.0;
 const GAP_Y: f64 = 40.0;
@@ -82,11 +86,49 @@ pub struct Node {
     /// On the data layer: what it reads that has no port on this level
     /// (`t`, parameters, signals inside subsystems), as `slot: signal`.
     pub unreached: Vec<String>,
+    /// On the model level: its parameter values (a use's own parameters),
+    /// other values first, starting values last (ADR 0053).
+    pub values: Vec<NodeValue>,
+}
+
+/// A parameter value shown on a node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeValue {
+    /// `"block.param"`, or a use's `"use.param"`, as parameter keys go.
+    pub key: String,
+    pub name: String,
+    pub value: f64,
+    /// The formula setting it, if one does: shown, not edited.
+    pub formula: Option<String>,
+    pub unit: String,
+    /// A starting value (applies on Restart).
+    pub initial: bool,
 }
 
 impl Node {
     pub fn height(&self) -> f64 {
-        HEADER + ROW * self.inputs.len().max(self.outputs.len()).max(1) as f64
+        let ports = HEADER + ROW * self.inputs.len().max(self.outputs.len()).max(1) as f64;
+        match self.value_rows() {
+            0 => ports,
+            n => ports + 4.0 + VALUE_ROW * n as f64,
+        }
+    }
+
+    /// Rows of values drawn: up to [`MAX_VALUES`], plus one saying how many
+    /// more there are.
+    pub fn value_rows(&self) -> usize {
+        let n = self.values.len();
+        if n > MAX_VALUES {
+            MAX_VALUES + 1
+        } else {
+            n
+        }
+    }
+
+    /// Where value row `k` starts (its top), in canvas units.
+    pub fn value_at(&self, k: usize) -> [f64; 2] {
+        let ports = HEADER + ROW * self.inputs.len().max(self.outputs.len()).max(1) as f64;
+        [self.at[0], self.at[1] + ports + 2.0 + VALUE_ROW * k as f64]
     }
 
     /// Where a port's wire attaches, in canvas units.
@@ -281,6 +323,13 @@ impl Diagram {
                 _ => dangling.push(format!("{from} → {to}")),
             }
         }
+        if *scope != Scope::Model {
+            // Inside a subsystem values differ by use: the inspector shows
+            // them side by side.
+            for n in &mut nodes {
+                n.values.clear();
+            }
+        }
         layout(&mut nodes, &wires);
         let used_by = match scope {
             Scope::Model => Vec::new(),
@@ -385,11 +434,29 @@ fn build(
 
 fn node(b: &BlockEntry, registry: &Registry) -> Node {
     let mut method = b.method.name.clone();
+    let mut values = Vec::new();
     let (inputs, outputs, error) = match build(b, registry) {
         Ok(block) => {
             if method.is_empty() {
                 method = block.method().name.clone();
             }
+            // Its parameters as the file gives them, else their defaults.
+            for p in &block.spec().params {
+                let (value, formula) = match b.params.get(&p.name) {
+                    Some(ParamValue::Number(v)) => (*v, None),
+                    Some(ParamValue::Formula(f)) => (f64::NAN, Some(f.clone())),
+                    None => (p.default, None),
+                };
+                values.push(NodeValue {
+                    key: format!("{}.{}", b.name, p.name),
+                    name: p.name.clone(),
+                    value,
+                    formula,
+                    unit: unit_text(&p.unit),
+                    initial: p.initial_condition,
+                });
+            }
+            values.sort_by_key(|v| v.initial);
             (
                 ports(block.spec(), Causality::Input),
                 ports(block.spec(), Causality::Output),
@@ -413,6 +480,34 @@ fn node(b: &BlockEntry, registry: &Registry) -> Node {
         placed: b.canvas.is_some(),
         error,
         unreached: Vec::new(),
+        values,
+    }
+}
+
+/// A unit as nodes show it: none for dimensionless.
+fn unit_text(u: &simsandbox_core::units::Unit) -> String {
+    if *u == simsandbox_core::units::Unit::DIMENSIONLESS {
+        String::new()
+    } else {
+        u.to_string()
+    }
+}
+
+impl Diagram {
+    /// Show these current values (as the inspector lists them, ADR 0053)
+    /// on the model level's nodes in place of the file's.
+    pub fn live_values(&mut self, rows: &[crate::session::ParamRow]) {
+        if self.scope != Scope::Model {
+            return;
+        }
+        for n in self.nodes.iter_mut().filter(|n| n.is_block()) {
+            for v in &mut n.values {
+                if let Some(r) = rows.iter().find(|r| r.key == v.key) {
+                    v.value = r.value;
+                    v.formula = r.formula.clone();
+                }
+            }
+        }
     }
 }
 
@@ -502,6 +597,27 @@ fn instance_node(file: &ModelFile, b: &BlockEntry, registry: &Registry) -> Node 
             }
         })
         .collect();
+    // The use's own parameters: given in its entry, else the subsystem's
+    // defaults.
+    let values = def
+        .params
+        .iter()
+        .map(|(name, d)| {
+            let (value, formula) = match b.params.get(name) {
+                Some(ParamValue::Number(v)) => (*v, None),
+                Some(ParamValue::Formula(f)) => (f64::NAN, Some(f.clone())),
+                None => (d.value, None),
+            };
+            NodeValue {
+                key: format!("{}.{name}", b.name),
+                name: name.clone(),
+                value,
+                formula,
+                unit: d.unit.clone(),
+                initial: false,
+            }
+        })
+        .collect();
     Node {
         name: b.name.clone(),
         kind: NodeKind::Subsystem,
@@ -513,6 +629,7 @@ fn instance_node(file: &ModelFile, b: &BlockEntry, registry: &Registry) -> Node 
         placed: b.canvas.is_some(),
         error: None,
         unreached: Vec::new(),
+        values,
     }
 }
 
@@ -546,6 +663,7 @@ fn boundary(
         placed: at.is_some(),
         error: None,
         unreached: Vec::new(),
+        values: Vec::new(),
     }
 }
 
@@ -1449,6 +1567,56 @@ mod tests {
     fn file(part: &str) -> ModelFile {
         let e = EXAMPLES.iter().find(|e| e.name.contains(part)).unwrap();
         ModelFile::from_json(e.text).unwrap().0
+    }
+
+    #[test]
+    fn nodes_carry_their_values_on_the_model_level() {
+        let r = registry();
+        let f = file("Cruise");
+        let d = Diagram::new(&f, &r);
+        let car = &d.nodes[d.node("car").unwrap()];
+        let names: Vec<&str> = car.values.iter().map(|v| v.name.as_str()).collect();
+        // Starting values last.
+        assert_eq!(names, ["m", "c", "v0"]);
+        assert!(car.values[2].initial);
+        assert_eq!(
+            (car.values[0].value, car.values[0].unit.as_str()),
+            (1000.0, "kg")
+        );
+        // A use shows its own parameters, formulas as written.
+        let f = file("Platoon");
+        let d = Diagram::new(&f, &r);
+        let car1 = &d.nodes[d.node("car1").unwrap()];
+        let kp = car1.values.iter().find(|v| v.name == "kp").unwrap();
+        assert_eq!(kp.formula.as_deref(), Some("kp"));
+        assert!(d.height_check());
+        // Inside a subsystem they differ by use: none.
+        let inside = Diagram::of(&f, &Scope::Subsystem("follower".into()), &r);
+        assert!(inside.nodes.iter().all(|n| n.values.is_empty()));
+        // The running values replace the file's.
+        let s = crate::Session::load("p", &f.to_json(), &r).unwrap();
+        let mut rows = s.params();
+        rows.iter_mut()
+            .find(|r| r.key == "car2.mass")
+            .unwrap()
+            .value = 1234.0;
+        let mut d = Diagram::new(&f, &r);
+        d.live_values(&rows);
+        let car2 = &d.nodes[d.node("car2").unwrap()];
+        assert_eq!(
+            car2.values.iter().find(|v| v.name == "mass").unwrap().value,
+            1234.0
+        );
+    }
+
+    impl Diagram {
+        /// Nodes with values are taller by their value rows.
+        fn height_check(&self) -> bool {
+            self.nodes.iter().all(|n| {
+                let ports = HEADER + ROW * n.inputs.len().max(n.outputs.len()).max(1) as f64;
+                (n.height() > ports) == !n.values.is_empty()
+            })
+        }
     }
 
     #[test]

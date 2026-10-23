@@ -176,6 +176,7 @@ impl Diagram {
                 placed: f.canvas.is_some(),
                 error: None,
                 unreached: Vec::new(),
+                values: Vec::new(),
             });
             reads.push((i, filter_reads(f)));
         }
@@ -233,6 +234,7 @@ impl Diagram {
                     .is_none()
                     .then(|| format!("no view type '{}' in this build", v.type_name)),
                 unreached: Vec::new(),
+                values: Vec::new(),
             });
         }
         // Data wires: what each filter input and view slot reads.

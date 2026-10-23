@@ -1006,6 +1006,11 @@ impl SimApp {
                 Outcome::EditData(_) => {
                     self.signals_editor = Some(SignalsEditor::new(m));
                 }
+                Outcome::SetValue { key, value } => {
+                    if let Some(row) = m.params.iter().find(|r| r.key == key) {
+                        self.apply_changes(vec![(row.clone(), value)]);
+                    }
+                }
                 Outcome::ShowView(k) => {
                     if let Some(t) = self.views.tiles.get(k) {
                         self.views.selected = Some(t.id);
@@ -1245,6 +1250,35 @@ impl SimApp {
             });
         }
         ui.allocate_rect(area, egui::Sense::hover());
+    }
+
+    /// Apply typed or dragged parameter values to the running model.
+    fn apply_changes(&self, changes: Vec<(ParamRow, f64)>) {
+        let Some(live) = self.session.as_ref() else {
+            return;
+        };
+        for (row, v) in changes {
+            let key = row.key.clone();
+            live.send(Some(&format!("param:{key}")), move |s, c| {
+                match s.set_param_key(&row.key, v) {
+                    Ok(()) => {
+                        // A typed value outside the slider range widens it (ADR 0011).
+                        if let Some(ctl) = s.file.controls.params.get_mut(&row.key) {
+                            if ctl.slider {
+                                let [lo, hi] = ctl.range.unwrap_or(row.suggested);
+                                if v < lo || v > hi {
+                                    ctl.range = Some([lo.min(v), hi.max(v)]);
+                                }
+                            }
+                        }
+                        if row.initial_condition && s.time() > 0.0 {
+                            c.info(format!("{} changed: press Restart to apply it", row.key));
+                        }
+                    }
+                    Err(e) => c.error(format!("{}: {e}", row.key)),
+                }
+            });
+        }
     }
 
     /// "Solving…": how blocks are solved together (ADR 0023).
@@ -1553,28 +1587,7 @@ impl SimApp {
                 s.file.controls.params.insert(key, control);
             });
         }
-        for (row, v) in changes {
-            let key = row.key.clone();
-            live.send(Some(&format!("param:{key}")), move |s, c| {
-                match s.set_param_key(&row.key, v) {
-                    Ok(()) => {
-                        // A typed value outside the slider range widens it (ADR 0011).
-                        if let Some(ctl) = s.file.controls.params.get_mut(&row.key) {
-                            if ctl.slider {
-                                let [lo, hi] = ctl.range.unwrap_or(row.suggested);
-                                if v < lo || v > hi {
-                                    ctl.range = Some([lo.min(v), hi.max(v)]);
-                                }
-                            }
-                        }
-                        if row.initial_condition && s.time() > 0.0 {
-                            c.info(format!("{} changed: press Restart to apply it", row.key));
-                        }
-                    }
-                    Err(e) => c.error(format!("{}: {e}", row.key)),
-                }
-            });
-        }
+        self.apply_changes(changes);
         if let Some((block, key, text)) = conversion {
             self.set_conversion(&block, &key, &text);
         }
@@ -3111,19 +3124,7 @@ fn fit_text(s: &str, max: usize) -> String {
 
 /// A compact display of a value: up to 6 significant digits.
 fn format_value(v: f64) -> String {
-    if v == 0.0 {
-        "0".into()
-    } else if (1e-4..1e6).contains(&v.abs()) {
-        let digits = (5 - v.abs().log10().floor() as i32).clamp(0, 9) as usize;
-        let s = format!("{v:.digits$}");
-        if s.contains('.') {
-            s.trim_end_matches('0').trim_end_matches('.').to_string()
-        } else {
-            s
-        }
-    } else {
-        format!("{v:e}")
-    }
+    simsandbox_session::canvas::format_number(v)
 }
 
 /// Write an image as binary PPM (no image dependency needed).
@@ -3464,6 +3465,30 @@ mod tests {
         };
         let mut out = ctx.run_ui(input, |ui| app.param_panel(ui));
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn a_value_typed_on_a_node_applies_to_the_running_model() {
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES.iter().find(|e| e.name.contains("Cruise")).unwrap();
+        app.open_text(e.name, e.text);
+        let live = app.session.as_ref().unwrap();
+        live.call(|s, _| s.run_until(2.0)).unwrap().unwrap();
+        let m = live.model();
+        app.diagram_outcomes(
+            &m,
+            vec![Outcome::SetValue {
+                key: "car.m".into(),
+                value: 1500.0,
+            }],
+        );
+        let live = app.session.as_ref().unwrap();
+        live.sync();
+        let m = live.model();
+        let row = m.params.iter().find(|r| r.key == "car.m").unwrap();
+        assert_eq!(row.value, 1500.0);
+        // No restart.
+        assert!(live.status().time > 1.9);
     }
 
     #[test]

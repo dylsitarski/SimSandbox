@@ -51,6 +51,11 @@ pub enum Outcome {
     EditData(String),
     /// Show a view's tile.
     ShowView(usize),
+    /// Set a parameter typed on a node (ADR 0053).
+    SetValue {
+        key: String,
+        value: f64,
+    },
     /// Open a block's definition: `"block"`, or inside a subsystem
     /// `"subsystem::block"`.
     Open(String),
@@ -210,6 +215,10 @@ impl DiagramTab {
             }
             d
         });
+        // The running values on the nodes (ADR 0053).
+        if !draft {
+            built.live_values(&model.params);
+        }
         // What the toolbar needs, so it can borrow the tab.
         let (subsystems, bounds) = (built.subsystems.clone(), built.bounds());
         let mut step = None;
@@ -239,6 +248,10 @@ impl DiagramTab {
             if ui.button("Fit").on_hover_text("Show every block").clicked() {
                 self.canvas.refit();
             }
+            ui.checkbox(&mut self.canvas.show_values, "Values")
+                .on_hover_text(
+                    "Parameter values on the blocks; zoom in and double-click one to change it",
+                );
             if ui
                 .checkbox(&mut self.hide_data, "Hide data")
                 .on_hover_text(
@@ -283,6 +296,10 @@ impl DiagramTab {
                 }
                 Request::ShowView(k) => {
                     out.push(Outcome::ShowView(k));
+                    continue;
+                }
+                Request::SetValue { key, value } => {
+                    out.push(Outcome::SetValue { key, value });
                     continue;
                 }
             };

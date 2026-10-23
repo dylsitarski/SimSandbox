@@ -24,10 +24,11 @@ _Last updated: 2026-10-23_
 - Subsystems and declared parameters ([ADR 0043](decisions/0043-subsystems.md)): model files define subsystems used by name and the model's own parameters; block parameters may be formulas; the Diagram tab opens a subsystem to edit it and makes one from a selection; the panel shows model, use and formula-set parameters.
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
-- 266 tests in the workspace plus 15 Python tests, including verification against analytic solutions and convergence order.
+- 269 tests in the workspace plus 15 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-10-23: values on nodes ([ADR 0053](decisions/0053-docked-panes-inspector-and-node-values.md)): model-level blocks and subsystem uses show their parameter values below their ports (up to four, starting values last, formulas as `= kp`), the running values in the app and the file's in headless diagrams; double-click one when zoomed in to type a new value (applies at once, like the inspector); hidden when zoomed out or with "Values" off. This completes ADR 0053.
 - 2026-10-23: the inspector ([ADR 0053](decisions/0053-docked-panes-inspector-and-node-values.md)): search; Controls (sliders and pinned, `controls.params.*.pin`, right-click a name); what is selected on the diagram, across every use when inside a subsystem; the model's parameters; a table per subsystem used more than once (a column per use, "Set every use"); one group per block with starting values last; values set by formulas noted at their source ("used by"), listed with "computed"; Solving moved to a toolbar menu, view style onto each view ("style"). The platoon shows 17 editable values in 9 lines instead of 32 rows.
 - 2026-10-23: docked panes ([ADR 0053](decisions/0053-docked-panes-inspector-and-node-values.md)), at the owner's request: the inspector, diagram and views are tabs to drag, stack and split; a view alone or tiled with others; "Pop out" into native windows; "More views…" and "Data…" in the toolbar; the arrangement saved as `controls.layout` (lenient, renumbered when views are dropped) and followed by headless rendering.
 - 2026-10-23: fusion compares the methods blocks run as built (name and options), so a block with its method left out fuses with one naming the same default (owner's request).
@@ -82,13 +83,13 @@ _Last updated: 2026-10-23_
 
 ## In progress
 
-- The app's layout ([ADR 0053](decisions/0053-docked-panes-inspector-and-node-values.md)): docking and the inspector are built; editable values on nodes come next. Selecting from a plot (a curve) does not feed the inspector yet.
+- Nothing.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Plan Phase 2** (the Phase 1 gate was confirmed on Linux and Windows on 2026-10-23) ([roadmap](roadmap.md#phase-2--breadth)) as Phase 1 was planned ([ADR 0033](decisions/0033-phase-1-plan.md)). Each new feature meets [ADR 0039](decisions/0039-ai-agent-access.md). First, the owner tries the data layer and undo ([ADR 0050](decisions/0050-data-layer-and-canvas-undo.md)) on Windows and Linux (checked here by tests, headless images and a window screenshot).
+1. **Plan Phase 2** (the Phase 1 gate was confirmed on Linux and Windows on 2026-10-23; first the owner tries the docked layout, inspector and node values of [ADR 0053](decisions/0053-docked-panes-inspector-and-node-values.md), especially pop-out windows on Windows and Wayland) ([roadmap](roadmap.md#phase-2--breadth)) as Phase 1 was planned ([ADR 0033](decisions/0033-phase-1-plan.md)). Each new feature meets [ADR 0039](decisions/0039-ai-agent-access.md). First, the owner tries the data layer and undo ([ADR 0050](decisions/0050-data-layer-and-canvas-undo.md)) on Windows and Linux (checked here by tests, headless images and a window screenshot).
 2. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
