@@ -25,11 +25,15 @@
 //!   condition. `t` is time; `pi` and the function names are reserved.
 //! - Every state and defined quantity is an output port of the same name.
 //! - Blank lines and lines starting with `#` are ignored.
+//! - `state x [m] = 0` declares a state with its unit and initial value
+//!   (the default of `x0`); its dynamics are still a `dx/dt` or `x[n+1]`
+//!   line (ADR 0049). Declaring is optional.
 //! - Units (ADR 0045) go in brackets where a name is introduced:
-//!   `dx/dt = v [m]` (the state `x` is in m), `E = m*v^2/2 [J]`,
-//!   `input F [N], v [m/s]`, and `param k [N/m] = 4` for a parameter with
-//!   a unit and a default. Names without a unit are dimensionless; `t` is
-//!   in s. Every equation must balance: terms added share a dimension,
+//!   `state x [m]`, `input F [N], v [m/s]`, `param k [N/m] = 4`, and at
+//!   the end of an equation for its left side as written: `E = m*v^2/2
+//!   [J]`, `dv/dt = F/m [m/s^2]` (so `v` is in m/s: the rate's unit times
+//!   s, or SI when that has no name; ADR 0049). Names without a unit are
+//!   dimensionless; `t` is in s. Every equation must balance: terms added share a dimension,
 //!   `dx/dt` has `x`'s unit per second, and functions such as `sin` and
 //!   `exp` take dimensionless arguments. Values are computed in SI, so
 //!   `km` and `m` mix correctly inside a block; ports carry the declared
@@ -182,13 +186,66 @@ impl EquationSet {
         // with their defaults.
         let mut units: std::collections::HashMap<String, Unit> = Default::default();
         let mut declared: Vec<(String, f64, usize)> = Vec::new();
+        // `state` declarations (ADR 0049): name and line.
+        let mut state_decls: Vec<(String, usize)> = Vec::new();
+        // Units given for a rate, `dx/dt = … [m/s]`: unit, line, column.
+        let mut rates: Vec<(String, Unit, usize, usize)> = Vec::new();
+        // `param = 2` and the like are equations defining such a name.
+        let keyword = |line: &str, word: &str| -> Option<String> {
+            let rest = line.strip_prefix(word)?.strip_prefix(' ')?;
+            (!rest.trim_start().starts_with('=')).then(|| rest.to_string())
+        };
         for (k, text) in lines.iter().enumerate() {
             let number = k + 1;
             let trimmed = text.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
-            if let Some(rest) = trimmed.strip_prefix("param ") {
+            if let Some(rest) = keyword(trimmed, "state") {
+                // `state x [m] = 0`, `state x [m]`, `state x = 0`.
+                let (head, value) = match rest.split_once('=') {
+                    Some((h, v)) => {
+                        let v = v.trim().parse::<f64>().map_err(|_| {
+                            definition_error(number, 1, format!("'{}' is not a number", v.trim()))
+                        })?;
+                        (h, Some(v))
+                    }
+                    None => (rest.as_str(), None),
+                };
+                let (n, unit) = name_and_unit(head);
+                if !is_name(&n) || n == "t" || is_reserved(&n) {
+                    return Err(definition_error(
+                        number,
+                        1,
+                        format!("'{n}' cannot be a state name"),
+                    ));
+                }
+                if state_decls.iter().any(|d| d.0 == n) {
+                    return Err(definition_error(
+                        number,
+                        1,
+                        format!("'{n}' is declared twice"),
+                    ));
+                }
+                if let Some(u) = unit {
+                    units.insert(n.clone(), read_unit(&u, number, 1)?);
+                }
+                if let Some(v) = value {
+                    let p = format!("{n}0");
+                    if declared.iter().any(|d| d.0 == p) {
+                        return Err(definition_error(
+                            number,
+                            1,
+                            format!("{p} is declared twice (here as the initial value of {n})"),
+                        ));
+                    }
+                    declared.push((p, v, number));
+                }
+                state_decls.push((n, number));
+                continue;
+            }
+            if let Some(rest) = keyword(trimmed, "param") {
+                let rest = rest.as_str();
                 // `param k [N/m] = 4`, `param k [N/m]`, `param k = 4`.
                 let (head, value) = match rest.split_once('=') {
                     Some((h, v)) => {
@@ -207,12 +264,18 @@ impl EquationSet {
                         format!("'{n}' cannot be a parameter name"),
                     ));
                 }
-                if declared.iter().any(|d| d.0 == n) {
-                    return Err(definition_error(
-                        number,
-                        1,
-                        format!("'{n}' is declared twice"),
-                    ));
+                if let Some(d) = declared.iter().find(|d| d.0 == n) {
+                    let state = n
+                        .strip_suffix('0')
+                        .filter(|x| state_decls.iter().any(|s| s.0 == *x));
+                    let why = match state {
+                        Some(x) => format!(
+                            "{n} is declared twice (line {} gives it as the initial value of {x})",
+                            d.2
+                        ),
+                        None => format!("'{n}' is declared twice"),
+                    };
+                    return Err(definition_error(number, 1, why));
                 }
                 if let Some(u) = unit {
                     units.insert(n.clone(), read_unit(&u, number, 1)?);
@@ -220,7 +283,8 @@ impl EquationSet {
                 declared.push((n, value, number));
                 continue;
             }
-            if let Some(names) = trimmed.strip_prefix("input ") {
+            if let Some(names) = keyword(trimmed, "input") {
+                let names = names.as_str();
                 for item in names.split(',').filter(|n| !n.trim().is_empty()) {
                     let (item, unit) = name_and_unit(item);
                     // Names may also be separated by spaces (no units then).
@@ -272,10 +336,21 @@ impl EquationSet {
             let offset = lhs.chars().count() + 1;
             let (rhs, unit) = split_unit(rhs);
             if let Some((u, col)) = unit {
-                let n = match &lhs_kind {
-                    Lhs::State(n) | Lhs::Map(n) | Lhs::Defined(n) => n.clone(),
-                };
-                units.insert(n, read_unit(&u, number, offset + col)?);
+                // The unit of the left side as written (ADR 0049).
+                let unit = read_unit(&u, number, offset + col)?;
+                match &lhs_kind {
+                    Lhs::State(n) => rates.push((n.clone(), unit, number, offset + col)),
+                    Lhs::Map(n) | Lhs::Defined(n) => {
+                        if let Some(d) = units.get(n).filter(|d| d.dim != unit.dim) {
+                            return Err(definition_error(
+                                number,
+                                offset + col,
+                                format!("{n} is declared in {d}, not {unit}"),
+                            ));
+                        }
+                        units.entry(n.clone()).or_insert(unit);
+                    }
+                }
             }
             sides.push((number, offset, lhs_kind, rhs));
         }
@@ -341,6 +416,46 @@ impl EquationSet {
             match &line.lhs {
                 Lhs::State(_) | Lhs::Map(_) => states.push(n.clone()),
                 Lhs::Defined(_) => defined.push(n.clone()),
+            }
+        }
+        // Every declared state has dynamics, and a rate's unit gives its
+        // state's (ADR 0049).
+        for (n, number) in &state_decls {
+            if !states.contains(n) {
+                let how = if defined.contains(n) {
+                    format!("'{n}' is defined by '{n} = …', so it is not a state")
+                } else {
+                    format!("{n} is declared as a state but no line gives d{n}/dt or {n}[n+1]")
+                };
+                return Err(definition_error(*number, 1, how));
+            }
+        }
+        for (n, rate, number, column) in &rates {
+            let from_rate = *rate * Unit::SECOND;
+            match units.get(n) {
+                Some(x) if x.dim != from_rate.dim => {
+                    return Err(definition_error(
+                        *number,
+                        *column,
+                        format!(
+                            "d{n}/dt is in {rate}, so {n} would be in {}, but {n} is in {x}",
+                            Unit::new(from_rate.dim.0, 1.0)
+                        ),
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    // A unit without a name (km/h times s) becomes SI.
+                    let named = !from_rate
+                        .to_string()
+                        .starts_with(|c: char| c.is_ascii_digit());
+                    let x = if named {
+                        from_rate
+                    } else {
+                        Unit::new(from_rate.dim.0, 1.0)
+                    };
+                    units.insert(n.clone(), x);
+                }
             }
         }
         // Declared parameters, then every other name in order of first use.
@@ -903,8 +1018,9 @@ mod tests {
             "input F [N]",
             "param m [kg] = 1000",
             "param c [N*s/m] = 50",
-            "dx/dt = v [m]",
-            "dv/dt = (F - c*v)/m [m/s]",
+            "state x [m] = 2",
+            "dx/dt = v",
+            "dv/dt = (F - c*v)/m [m/s^2]",
             "E = m*v^2/2",
         ])
         .unwrap();
@@ -920,13 +1036,60 @@ mod tests {
             (1000.0, Unit::KILOGRAM)
         );
         assert!(param("x0").unit.same_as(&Unit::METER) && param("x0").initial_condition);
+        // The state's declaration gives x0 its default; v0 stays 1.
+        assert_eq!((param("x0").default, param("v0").default), (2.0, 1.0));
+        assert!(param("v0").unit.same_as(&unit("m/s")));
+    }
+
+    #[test]
+    fn a_rate_s_unit_is_its_own_and_states_can_be_declared() {
+        // [m/s] on dx/dt labels the rate: x is in m.
+        let s = set(&["input v [m/s]", "dx/dt = v [m/s]"]).unwrap();
+        let x = s.spec.ports.iter().find(|p| p.name == "x").unwrap().unit;
+        assert!(x.same_as(&Unit::METER));
+        // A rate in mm/s gives mm; one in km/h, whose product with s has
+        // no name, gives SI.
+        let port = |lines: &[&str], n: &str| {
+            let s = set(lines).unwrap();
+            s.spec.ports.iter().find(|p| p.name == n).unwrap().unit
+        };
+        assert!(port(&["param u [mm/s] = 1", "dx/dt = u [mm/s]"], "x").same_as(&unit("mm")));
+        assert!(port(&["param u [km/h] = 1", "dx/dt = u [km/h]"], "x").same_as(&Unit::METER));
+        // A declared state's unit wins, and the rate must agree with it.
+        assert!(
+            port(&["state x [km]", "param u [m/s] = 1", "dx/dt = u"], "x").same_as(&unit("km"))
+        );
+        let e = error(&["state x [m]", "param u [m/s] = 1", "dx/dt = u [m]"]);
+        assert!(
+            e.contains("dx/dt is in m, so x would be in m·s, but x is in m"),
+            "{e}"
+        );
+        // The old meaning (the state's unit on its rate) no longer balances.
+        let e = error(&["input v [m/s]", "dx/dt = v [m]"]);
+        assert!(
+            e.contains("dx/dt is in m but the right side is in m·s^-1"),
+            "{e}"
+        );
+        // Declarations need dynamics, and are not formulas.
+        let e = error(&["state y [m]", "dx/dt = 1"]);
+        assert!(e.contains("no line gives dy/dt"), "{e}");
+        let e = error(&["state y [m]", "y = 2 [m]"]);
+        assert!(e.contains("not a state"), "{e}");
+        let e = error(&["state x = 1", "param x0 = 2", "dx/dt = -x"]);
+        assert!(e.contains("x0 is declared twice"), "{e}");
+        // Maps declare states too.
+        let s = set(&["state x [m] = 0.5", "param r = 2", "x[n+1] = r*x[n]"]).unwrap();
+        let x0 = s.spec.params.iter().find(|p| p.name == "x0").unwrap();
+        assert_eq!(x0.default, 0.5);
+        // 'state', 'param' and 'input' are still names on a left side.
+        set(&["state = 2", "param = 3", "input = state*param"]).unwrap();
     }
 
     #[test]
     fn equations_must_balance() {
-        let e = error(&["dx/dt = v [m]", "dv/dt = -x [m/s]"]);
+        let e = error(&["state x [m]", "dx/dt = v", "dv/dt = -x [m/s^2]"]);
         assert!(
-            e.contains("line 2") && e.contains("dv/dt is in m·s^-2 but the right side is in m"),
+            e.contains("line 3") && e.contains("dv/dt is in m·s^-2 but the right side is in m"),
             "{e}"
         );
         let e = error(&["input F [N]", "dx/dt = F - x [m/s]"]);
@@ -959,9 +1122,8 @@ mod tests {
         s.outputs(0.0, &[], &[], &[2.0, 1.0], &mut y);
         assert_eq!(y[0], 2000.0);
         assert!((y[1] - 2000.0 / 60.0).abs() < 1e-12);
-        // dx/dt in km/h from a speed in m/s: x in km grows 3.6 per hour of
-        // 1 m/s.
-        let s = set(&["input v [m/s]", "dx/dt = v [km]"]).unwrap();
+        // x in km from a speed in m/s: 1 m/s is 1e-3 km per second.
+        let s = set(&["input v [m/s]", "state x [km]", "dx/dt = v"]).unwrap();
         let mut dx = vec![0.0];
         s.rhs(0.0, &[0.0], &[1.0], &[0.0], &mut dx);
         assert!((dx[0] - 1e-3).abs() < 1e-15, "km per second: {}", dx[0]);

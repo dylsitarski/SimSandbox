@@ -2451,6 +2451,9 @@ struct Editor {
 /// What "New model…" starts with: a damped oscillator that moves at once.
 const NEW_MODEL: &str = "\
 # A spring with friction. Change anything, then press Apply.
+# x and v are states: where they start, then how they change.
+state x = 1
+state v = 0
 dx/dt = v
 dv/dt = -k*x - c*v
 # a quantity computed from the states, plotted like them
@@ -2463,10 +2466,12 @@ One equation per line:
   E = ...                         a quantity computed from the states
   input u, F                      u and F are inputs, set by connected blocks
   param k = 2                     a parameter with its default value
+  state x = 0                     x is a state starting at 0 (optional)
 Every other name is a parameter (default 1) you can change in the side panel.
 Each state x also gets an initial value x0 (default 1).
 Units go in brackets where a name appears: input F [N], param m [kg] = 2,
-dx/dt = v [m]. Units take SI prefixes (kN, MPa, µs, mL) and include
+state x [m] = 0; at the end of a line they are the unit of its left side:
+E = m*v^2/2 [J], dv/dt = F/m [m/s^2]. Units take SI prefixes (kN, MPa, µs, mL) and include
 min, h, L, bar, deg, %, ft, in, mi, lb, lbf, psi, mph and more; temperatures
 use K. Then every line is checked to balance; names without a unit
 are dimensionless. Connections need the same unit on both ends: put a

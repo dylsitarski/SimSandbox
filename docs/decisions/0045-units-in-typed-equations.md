@@ -1,6 +1,6 @@
 # 0045 — Units in typed equations; explicit conversion blocks
 
-- **Status:** Accepted
+- **Status:** Accepted; the meaning of a unit at the end of a `dx/dt` line amended by [0049](0049-state-declarations-and-rate-units.md)
 - **Date:** 2026-10-23
 
 ## Context

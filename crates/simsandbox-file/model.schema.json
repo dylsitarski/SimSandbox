@@ -292,7 +292,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Equations of an 'eq.equations' block, one per line: 'dx/dt = ...' (or \"x' = ...\") for a state, 'name = ...' for a defined quantity (ADR 0017); 'input F [N]', 'param m [kg] = 2' and a trailing '[unit]' on an equation give units, and then every line must balance (ADR 0045)."
+          "description": "Equations of an 'eq.equations' block, one per line: 'dx/dt = ...' (or \"x' = ...\") for a state, 'name = ...' for a defined quantity (ADR 0017); 'input F [N]', 'param m [kg] = 2', 'state x [m] = 0' and a trailing '[unit]' for a line's left side ('dv/dt = F/m [m/s^2]') give units, and then every line must balance (ADR 0045, ADR 0049)."
         },
         "settings": {
           "type": "object",

@@ -18,7 +18,8 @@
         "input F [N]",
         "param m [kg] = 1000",
         "param c [N*s/m] = 50",
-        "dv/dt = (F - c*v)/m [m/s]"
+        "state v [m/s]",
+        "dv/dt = (F - c*v)/m"
       ],
       "params": {
         "c": 50.0,
@@ -40,7 +41,8 @@
         "param kp [N*s/m] = 400",
         "param ki [N/m] = 40",
         "e = target - v",
-        "dI/dt = e [m]",
+        "state I [m]",
+        "dI/dt = e",
         "F = kp*e + ki*I [N]"
       ],
       "params": {

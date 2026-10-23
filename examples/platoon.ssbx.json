@@ -34,14 +34,14 @@
           "name": "car",
           "type": "eq.equations",
           "method": {"name": "rk4"},
-          "equations": ["# a car pushed by force F against drag c*v (mass m)", "input F [N]", "param m [kg] = 1000", "param c [N*s/m] = 50", "dv/dt = (F - c*v)/m [m/s]"],
+          "equations": ["# a car pushed by force F against drag c*v (mass m)", "input F [N]", "param m [kg] = 1000", "param c [N*s/m] = 50", "state v [m/s]", "dv/dt = (F - c*v)/m"],
           "params": {"c": 50.0, "m": "mass", "v0": 0.0}
         },
         {
           "name": "control",
           "type": "eq.equations",
           "method": {"name": "rk4"},
-          "equations": ["# PI control towards the speed of the car ahead", "input lead [m/s], v [m/s]", "param kp [N*s/m] = 400", "param ki [N/m] = 40", "e = lead - v", "dI/dt = e [m]", "F = kp*e + ki*I [N]"],
+          "equations": ["# PI control towards the speed of the car ahead", "input lead [m/s], v [m/s]", "param kp [N*s/m] = 400", "param ki [N/m] = 40", "e = lead - v", "state I [m]", "dI/dt = e", "F = kp*e + ki*I [N]"],
           "params": {"kp": "kp", "ki": "ki", "I0": 0.0}
         }
       ],
@@ -56,7 +56,7 @@
       "name": "leader",
       "type": "eq.equations",
       "method": {"name": "rk4"},
-      "equations": ["# the lead car speeds up towards its target, then holds it", "param T [s] = 5", "param target [m/s] = 25", "dv/dt = (target - v)/T [m/s]"],
+      "equations": ["# the lead car speeds up towards its target, then holds it", "param T [s] = 5", "param target [m/s] = 25", "dv/dt = (target - v)/T [m/s^2]"],
       "params": {"T": 5.0, "target": 25.0, "v0": 0.0}
     },
     {"name": "car1", "type": "follower", "params": {"kp": "kp", "ki": "ki", "mass": 1000.0}},

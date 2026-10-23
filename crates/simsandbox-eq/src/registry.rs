@@ -119,10 +119,12 @@ fn describe(r: &mut Registry) -> Result<()> {
         TypeInfo::new(
             "Equations typed as lines (ADR 0017): 'dx/dt = ...' for states (an ODE method), \
              'x[n+1] = ...' for a map (method iterate), only 'name = ...' for formulas (method \
-             evaluate); 'input u, F' declares inputs, 'param k = 2' a parameter with its default; \
-             every other name is a parameter. Units in brackets where a name appears ('input F \
-             [N]', 'param m [kg] = 2', 'dx/dt = v [m]', ADR 0045) make every line checked; \
-             names without one are dimensionless. The method may be left out.",
+             evaluate); 'input u, F' declares inputs, 'param k = 2' a parameter with its default, \
+             'state x = 0' a state with its initial value (ADR 0049); every other name is a \
+             parameter. Units in brackets where a name appears ('input F [N]', 'param m [kg] = \
+             2', 'state x [m]') or at the end of a line for its left side ('E = m*v^2/2 [J]', \
+             'dv/dt = F/m [m/s^2]') make every line checked (ADR 0045); names without one are \
+             dimensionless. The method may be left out.",
         )
         .method("rk4", &["substeps"])
         .method("euler", &["substeps"])
