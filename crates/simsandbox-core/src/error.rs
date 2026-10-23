@@ -5,7 +5,8 @@ use std::fmt;
 pub enum SimError {
     /// A unit string could not be parsed.
     UnitParse(String),
-    /// Two ports were connected whose units have different dimensions.
+    /// Two ports were connected whose units differ (ADR 0045: units must
+    /// match exactly; converting is explicit).
     UnitMismatch { from: String, to: String },
     /// Two ports were connected whose shapes differ.
     ShapeMismatch { from: String, to: String },
@@ -42,7 +43,11 @@ impl fmt::Display for SimError {
         match self {
             SimError::UnitParse(s) => write!(f, "cannot parse unit '{s}'"),
             SimError::UnitMismatch { from, to } => {
-                write!(f, "unit mismatch: cannot connect [{from}] to [{to}]")
+                write!(
+                    f,
+                    "unit mismatch: cannot connect [{from}] to [{to}]; units must match \
+                     exactly, so convert between them explicitly (block type units.convert)"
+                )
             }
             SimError::ShapeMismatch { from, to } => {
                 write!(f, "shape mismatch: cannot connect {from} to {to}")

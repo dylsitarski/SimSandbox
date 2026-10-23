@@ -42,6 +42,9 @@ pub struct BlockConfig {
     /// The order agents act in within a step (ADR 0034), for agent types:
     /// e.g. `random_order`. `None` takes the type's default.
     pub update: Option<String>,
+    /// Named text settings, e.g. a unit conversion's `from` and `to`
+    /// (ADR 0045). A type rejects settings it does not have.
+    pub settings: BTreeMap<String, String>,
 }
 
 /// What a block type is and how it is configured, for discovery by people
@@ -143,6 +146,7 @@ impl Registry {
             method,
             definition: info.definition.clone().unwrap_or_default(),
             update: None,
+            ..Default::default()
         };
         self.build(type_name, "example", &config)
     }
@@ -158,6 +162,18 @@ impl Registry {
             .factories
             .get(type_name)
             .ok_or_else(|| SimError::UnknownBlockType(type_name.into()))?;
+        // No method given: the type's default, its first (ADR 0045). Types
+        // defined by lines choose from what the lines describe.
+        if config.method.name.is_empty() {
+            let fixed = self.info(type_name).filter(|i| i.definition.is_none());
+            if let Some((m, _)) = fixed.and_then(|i| i.methods.first()) {
+                let config = BlockConfig {
+                    method: MethodSettings::new(m),
+                    ..config.clone()
+                };
+                return factory(name, &config);
+            }
+        }
         factory(name, config)
     }
 

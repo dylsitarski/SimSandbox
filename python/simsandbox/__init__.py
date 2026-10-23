@@ -142,25 +142,21 @@ class Model:
         params: dict[str, float] | None = None,
         update: str | None = None,
         at: tuple[float, float] | None = None,
+        settings: dict[str, str] | None = None,
     ) -> "Model":
         """Add a block. ``method`` is a name (``"rk4"``) or a dict with its
         options (``{"name": "dopri5", "rtol": 1e-9}``); without one, the
-        type's first method (see :func:`describe`). ``equations`` are the
+        type's first method (see :func:`describe`), or for ``eq.equations``
+        the one its equations call for. ``equations`` are the
         lines of an ``eq.equations`` block (a string is split into
         lines). ``at`` places it on the node canvas (laid out automatically
-        if absent)."""
+        if absent). ``settings`` are a type's text settings, e.g.
+        ``{"from": "mm", "to": "m"}`` for ``units.convert``."""
         if any(b["name"] == name for b in self.data.get("blocks", [])):
             raise ModelError(f"there is already a block named {name!r}")
-        if method is None:
-            methods = describe(type).get("methods", [])
-            if not methods:
-                raise ModelError(f"unknown block type {type!r}")
-            method = methods[0]["name"]
-        block: dict[str, Any] = {
-            "name": name,
-            "type": type,
-            "method": {"name": method} if isinstance(method, str) else dict(method),
-        }
+        block: dict[str, Any] = {"name": name, "type": type}
+        if method is not None:
+            block["method"] = {"name": method} if isinstance(method, str) else dict(method)
         if equations is not None:
             block["equations"] = (
                 equations.strip().splitlines()
@@ -173,6 +169,8 @@ class Model:
             block["update"] = update
         if at is not None:
             block["at"] = [float(at[0]), float(at[1])]
+        if settings:
+            block["settings"] = {k: str(v) for k, v in settings.items()}
         self.data.setdefault("blocks", []).append(block)
         return self
 

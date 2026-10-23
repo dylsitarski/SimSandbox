@@ -34,6 +34,12 @@ pub fn register(registry: &mut Registry) -> Result<()> {
                 "{GRAZERS} has built-in rules and takes no definition lines"
             )));
         }
+        if let Some(k) = c.settings.keys().next() {
+            return Err(SimError::InvalidSetting {
+                setting: format!("settings.{k}"),
+                reason: format!("{GRAZERS} has no settings besides 'update'"),
+            });
+        }
         let update = Update::from_setting(c.update.as_deref())?;
         Ok(Box::new(Grazers::new(name, update)))
     })?;

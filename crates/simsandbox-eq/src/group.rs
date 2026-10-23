@@ -58,13 +58,13 @@ impl EquationGroup {
                 to: format!("{:?}", inp.shape),
             });
         }
-        let factor = out
-            .unit
-            .conversion_to(&inp.unit)
-            .ok_or(SimError::UnitMismatch {
+        if !out.unit.same_as(&inp.unit) {
+            return Err(SimError::UnitMismatch {
                 from: out.unit.to_string(),
                 to: inp.unit.to_string(),
-            })?;
+            });
+        }
+        let factor = 1.0;
         self.routes.push(Route {
             from_member: from.0,
             from_offset: fo,

@@ -1,8 +1,9 @@
 //! SI units with dimension checking.
 //!
 //! A [`Unit`] is a dimension (exponents of the seven SI base units) plus a
-//! scale factor to SI. Connecting two ports requires equal dimensions; the
-//! kernel then applies the scale ratio automatically.
+//! scale factor to SI. Connecting two ports requires the same unit, scale
+//! included: converting is always explicit, with a conversion Block
+//! (ADR 0045).
 
 use crate::{Result, SimError};
 use std::fmt;
@@ -90,6 +91,11 @@ impl Unit {
         self.dim == other.dim
     }
 
+    /// The same unit: dimension and scale (to rounding).
+    pub fn same_as(&self, other: &Unit) -> bool {
+        self.dim == other.dim && (self.scale / other.scale - 1.0).abs() < 1e-12
+    }
+
     /// Factor `k` such that `value_in_other = k * value_in_self`.
     pub fn conversion_to(&self, other: &Unit) -> Option<f64> {
         self.compatible(other).then(|| self.scale / other.scale)
@@ -160,9 +166,21 @@ impl Div for Unit {
     }
 }
 
+/// Units shown by name when they are not SI (scale 1).
+const NAMED: [&str; 18] = [
+    "cm", "mm", "km", "g", "ms", "min", "h", "km/h", "km/s", "cm/s", "mm/s", "g/s", "kg/h", "km^2",
+    "cm^2", "mm^2", "cm^3", "mm^3",
+];
+
 impl fmt::Display for Unit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.scale != 1.0 {
+            if let Some(name) = NAMED
+                .iter()
+                .find(|n| Unit::parse(n).is_ok_and(|u| u.same_as(self)))
+            {
+                return write!(f, "{name}");
+            }
             write!(f, "{}·", self.scale)?;
         }
         let parts: Vec<String> = BASE_SYMBOLS
@@ -214,5 +232,19 @@ mod tests {
             .is_none());
         assert!(Unit::parse("furlong").is_err());
         assert!(Unit::parse("m//s").is_err());
+    }
+
+    #[test]
+    fn units_match_only_when_the_same_and_scaled_ones_show_their_names() {
+        let kmh = Unit::parse("km/h").unwrap();
+        let ms = Unit::parse("m/s").unwrap();
+        assert!(kmh.compatible(&ms) && !kmh.same_as(&ms));
+        assert!(Unit::parse("N*s/m")
+            .unwrap()
+            .same_as(&Unit::parse("kg/s").unwrap()));
+        assert_eq!(kmh.to_string(), "km/h");
+        assert_eq!(Unit::parse("g").unwrap().to_string(), "g");
+        assert_eq!(ms.to_string(), "m·s^-1");
+        assert!((kmh.conversion_to(&ms).unwrap() - 1.0 / 3.6).abs() < 1e-15);
     }
 }

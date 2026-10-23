@@ -78,6 +78,7 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
                 method: MethodSettings::new(m),
                 definition: info.definition.clone().unwrap_or_default(),
                 update: None,
+                ..Default::default()
             };
             let labels = r
                 .build(name, "example", &config)

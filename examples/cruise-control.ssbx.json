@@ -15,8 +15,10 @@
       },
       "equations": [
         "# a car pushed by force F against drag c*v (mass m)",
-        "input F",
-        "dv/dt = (F - c*v)/m"
+        "input F [N]",
+        "param m [kg] = 1000",
+        "param c [N*s/m] = 50",
+        "dv/dt = (F - c*v)/m [m/s]"
       ],
       "params": {
         "c": 50.0,
@@ -33,10 +35,13 @@
       },
       "equations": [
         "# PI control towards the target speed",
-        "input v",
+        "input v [m/s]",
+        "param target [m/s] = 25",
+        "param kp [N*s/m] = 400",
+        "param ki [N/m] = 40",
         "e = target - v",
-        "dI/dt = e",
-        "F = kp*e + ki*I"
+        "dI/dt = e [m]",
+        "F = kp*e + ki*I [N]"
       ],
       "params": {
         "I0": 0.0,

@@ -144,8 +144,17 @@ fn model(seed: u64) -> (Model, [simsandbox_core::graph::BlockId; 2]) {
     let mut m = Model::new();
     m.set_seed(seed);
     let w = m.add(Box::new(Walkers::new()));
-    // Read in centimetres: the population is converted like any signal.
-    let c = m.add(Box::new(Census::new(Unit::parse("cm").unwrap(), 1)));
+    // Units must match exactly (ADR 0045): centimetres are refused.
+    let mut other = Model::new();
+    let (w2, cm) = (
+        other.add(Box::new(Walkers::new())),
+        other.add(Box::new(Census::new(Unit::parse("cm").unwrap(), 1))),
+    );
+    assert!(matches!(
+        other.connect((w2, "x"), (cm, "x")),
+        Err(simsandbox_core::SimError::UnitMismatch { .. })
+    ));
+    let c = m.add(Box::new(Census::new(Unit::METER, 1)));
     m.connect((w, "x"), (c, "x")).unwrap();
     (m, [w, c])
 }
@@ -177,12 +186,11 @@ fn populations_grow_shrink_and_reach_other_blocks() {
     for _ in 0..200 {
         let before = sim.output(w, "x").unwrap().to_vec();
         sim.step(1.0).unwrap();
-        // The census sees this step's walkers (exchanged after the step),
-        // converted to centimetres.
+        // The census sees this step's walkers (exchanged after the step).
         let x = sim.output(w, "x").unwrap();
         assert_eq!(sim.output(c, "n").unwrap()[0], before.len() as f64);
         let sum: f64 = before.iter().sum();
-        assert!((sim.output(c, "sum").unwrap()[0] - 100.0 * sum).abs() < 1e-9 * (1.0 + sum.abs()));
+        assert!((sim.output(c, "sum").unwrap()[0] - sum).abs() < 1e-9 * (1.0 + sum.abs()));
         assert_eq!(sim.output(w, "count").unwrap()[0], x.len() as f64);
         sizes.push(x.len());
     }

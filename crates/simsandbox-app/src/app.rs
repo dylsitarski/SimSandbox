@@ -1165,6 +1165,8 @@ impl SimApp {
             }
         }
 
+        let conversion = conversions_section(ui, &m, &mut self.param_edits);
+
         for (key, control) in controls {
             live.send(None, move |s, _| {
                 s.file.controls.params.insert(key, control);
@@ -1194,6 +1196,9 @@ impl SimApp {
         }
         if let Some(on) = fusion {
             self.set_fusion(on);
+        }
+        if let Some((block, key, text)) = conversion {
+            self.set_conversion(&block, &key, &text);
         }
         if let Some((block, u)) = update {
             self.rebuild(
@@ -1393,6 +1398,19 @@ impl SimApp {
             } else {
                 "Each block is solved on its own (co-simulated); the run restarted"
             },
+        );
+    }
+
+    /// Change a unit of a conversion block (ADR 0045), restarting the run.
+    fn set_conversion(&mut self, block: &str, key: &str, text: &str) {
+        let note = format!("{block}: {key} is now {text}; restarted");
+        self.rebuild(
+            |file| {
+                if let Some(b) = file.blocks.iter_mut().find(|b| b.name == block) {
+                    b.settings.insert(key.into(), text.into());
+                }
+            },
+            &note,
         );
     }
 
@@ -1716,6 +1734,61 @@ fn param_row(ui: &mut egui::Ui, m: &Model, row: &ParamRow, edits: Edits<'_>) {
     if control != before {
         edits.controls.push((row.key.clone(), control));
     }
+}
+
+/// The unit conversion blocks (ADR 0045), each with its `from` and `to`
+/// units as text fields. Returns a changed unit: block, setting and text.
+fn conversions_section(
+    ui: &mut egui::Ui,
+    m: &crate::live::Model,
+    edits: &mut HashMap<String, String>,
+) -> Option<(String, String, String)> {
+    let blocks: Vec<_> = m
+        .file
+        .blocks
+        .iter()
+        .filter(|b| b.type_name == simsandbox_eq::convert::CONVERT)
+        .collect();
+    if blocks.is_empty() {
+        return None;
+    }
+    ui.add_space(8.0);
+    ui.heading("Unit conversions")
+        .on_hover_text("Connections need the same unit on both ends; these blocks convert");
+    let mut changed = None;
+    egui::Grid::new("conversions")
+        .num_columns(4)
+        .spacing([6.0, 4.0])
+        .show(ui, |ui| {
+            for b in blocks {
+                ui.label(&b.name);
+                for (k, key) in ["from", "to"].into_iter().enumerate() {
+                    if k == 1 {
+                        ui.weak("→");
+                    }
+                    let now = b.settings.get(key).cloned().unwrap_or_else(|| "1".into());
+                    let id = format!("convert:{}:{key}", b.name);
+                    let mut text = edits.get(&id).cloned().unwrap_or_else(|| now.clone());
+                    let r = ui
+                        .add(egui::TextEdit::singleline(&mut text).desired_width(70.0))
+                        .on_hover_text(
+                            "A unit, e.g. km/h, m/s, mm, N*s/m; changing it restarts the run",
+                        );
+                    if r.has_focus() {
+                        edits.insert(id.clone(), text.clone());
+                    }
+                    if r.lost_focus() {
+                        edits.remove(&id);
+                        let typed = text.trim().to_string();
+                        if !typed.is_empty() && typed != now {
+                            changed = Some((b.name.clone(), key.to_string(), typed));
+                        }
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    changed
 }
 
 /// Whether a slider's value applies now (ADR 0037): on every change for a
@@ -2389,8 +2462,13 @@ One equation per line:
   dx/dt = ...    (or x' = ...)   x is a state that changes over time
   E = ...                         a quantity computed from the states
   input u, F                      u and F are inputs, set by connected blocks
+  param k = 2                     a parameter with its default value
 Every other name is a parameter (default 1) you can change in the side panel.
 Each state x also gets an initial value x0 (default 1).
+Units go in brackets where a name appears: input F [N], param m [kg] = 2,
+dx/dt = v [m]. Then every line is checked to balance; names without a unit
+are dimensionless. Connections need the same unit on both ends: put a
+units.convert block between different ones (e.g. mm to m).
 t is time. Operators: + - * / ^ and parentheses; write 2*x, not 2x.
 Functions: sin cos tan asin acos atan atan2 sinh cosh tanh exp ln log10
 sqrt abs sign floor ceil min max pow. pi is 3.14159…
@@ -2713,12 +2791,12 @@ mod tests {
         let problem = app.diagram.draft_problem().unwrap().to_string();
         assert!(problem.contains("car.F"), "{problem}");
         assert!(app.session.as_ref().unwrap().status().time > 4.9);
-        // Wiring it again (from elsewhere) applies, restarting at t = 0
+        // Wiring it again applies, restarting at t = 0
         // with the parameter values and layout kept.
         canvas_edits(
             &mut app,
             vec![Edit::Connect {
-                from: "cruise.e".into(),
+                from: "cruise.F".into(),
                 to: "car.F".into(),
             }],
         );
@@ -2731,7 +2809,7 @@ mod tests {
             .file
             .connections
             .iter()
-            .any(|c| c.from == "cruise.e" && c.to == "car.F"));
+            .any(|c| c.from == "cruise.F" && c.to == "car.F"));
         assert_eq!(
             m.params
                 .iter()
@@ -2801,11 +2879,43 @@ mod tests {
         // And the equation editor works on a block inside it.
         app.open_block(&m, "group1::body");
         let ed = app.editor.as_mut().unwrap();
-        ed.text = ed.text.replace("(F - c*v)/m", "(F - c*v - drag2*v^2)/m");
+        ed.text = ed.text.replace("(F - c*v)/m", "(F - drag2*c*v)/m");
         app.apply_equations();
         assert!(app.error.is_none(), "{:?}", app.error);
         let m = app.session.as_ref().unwrap().model();
         assert!(m.params.iter().any(|r| r.key == "group1/body.drag2"));
+    }
+
+    #[test]
+    fn conversions_change_their_units_from_the_panel() {
+        let mut app = SimApp::new(None, None, None, None);
+        let k = EXAMPLES
+            .iter()
+            .position(|e| e.name.starts_with("Units"))
+            .unwrap();
+        app.open_example(k);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let unit = |app: &SimApp, port: &str| {
+            let m = app.session.as_ref().unwrap().model();
+            m.file
+                .blocks
+                .iter()
+                .find(|b| b.name == "b_cm")
+                .unwrap()
+                .settings[port]
+                .clone()
+        };
+        app.set_conversion("b_cm", "to", "mm");
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(unit(&app, "to"), "mm");
+        // A different kind of quantity is refused, and the model stays.
+        app.set_conversion("b_cm", "to", "kg");
+        assert!(app
+            .error
+            .take()
+            .unwrap()
+            .contains("measure different things"));
+        assert_eq!(unit(&app, "to"), "mm");
     }
 
     #[test]
@@ -2870,7 +2980,7 @@ mod tests {
             vec![
                 simsandbox_session::diagram::Edit::Disconnect { to: "car.F".into() },
                 simsandbox_session::diagram::Edit::Connect {
-                    from: "cruise.e".into(),
+                    from: "cruise.F".into(),
                     to: "car.F".into(),
                 },
             ],

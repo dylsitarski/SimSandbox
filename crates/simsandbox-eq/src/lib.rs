@@ -12,6 +12,7 @@
 //!
 //! [`Block`]: simsandbox_core::block::Block
 
+pub mod convert;
 pub mod fields;
 pub mod group;
 pub mod integrators;

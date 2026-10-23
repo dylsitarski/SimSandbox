@@ -67,7 +67,7 @@ Measured effect (test `cosimulation_adds_coupling_error`): two coupled oscillato
 | Signal (causal) | Output drives input; any domain; across domains through the master | Yes |
 | Physical (acausal) | Across/through pairs (voltage–current, force–velocity); only between equation Blocks, compiled into the fused system; crossing a domain boundary requires choosing a causality | No |
 | Field coupling | Always cross-domain, explicit mesh mapping, conservative interpolation where required | No |
-| Checks | Direction, shape and unit dimension checked at connect time; compatible scales converted automatically; each input connected at most once | Yes |
+| Checks | Direction, shape and unit checked at connect time: both ends need the same unit (dimension and scale); converting is a visible `units.convert` block ([ADR 0045](../decisions/0045-units-in-typed-equations.md)); each input connected at most once | Yes |
 
 ## Composition
 
@@ -78,4 +78,4 @@ Measured effect (test `cosimulation_adds_coupling_error`): two coupled oscillato
 ## Current restrictions
 
 - Direct feedthrough ([ADR 0040](../decisions/0040-feedthrough-and-algebraic-loops.md)): an output lists the inputs it depends on at the same instant (`PortSpec::depends_on`). The master evaluates such outputs in dependency order at every communication point, fused groups at every right-hand-side evaluation, and algebraic loops are solved as `run.loops` says (Newton by default). Population ports cannot feed through yet; code-built `EquationGroup`s refuse members that do.
-- `Shape` supports scalars, vectors, grids (`Grid { nx, ny }`, row-major) and point sets (`Points { count, dim }`) and populations (`Population { dim }`: points whose number varies from step to step, [ADR 0034](../decisions/0034-agent-domain.md)). Population ports take no room in the fixed input and output arrays: they are `StepIo::population_inputs`/`population_outputs` (one vector per such port), routed and unit-converted like other connections, and connect only to populations of the same `dim`. Tensors and meshes come with their domains.
+- `Shape` supports scalars, vectors, grids (`Grid { nx, ny }`, row-major) and point sets (`Points { count, dim }`) and populations (`Population { dim }`: points whose number varies from step to step, [ADR 0034](../decisions/0034-agent-domain.md)). Population ports take no room in the fixed input and output arrays: they are `StepIo::population_inputs`/`population_outputs` (one vector per such port), routed like other connections, and connect only to populations of the same `dim`. Tensors and meshes come with their domains.

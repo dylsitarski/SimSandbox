@@ -164,3 +164,24 @@ def test_older_files_open_and_upgrade():
     assert any("signals" in c for c in conversions)
     assert "signals" not in m.data["controls"]
     assert ss.upgrade(m)[1] == []
+
+
+def test_units_are_checked_and_converted_explicitly():
+    m = ss.Model()
+    m.add_block("shaker", "eq.equations", equations="param A [mm] = 50\nparam w [Hz] = 2\nx = A*sin(w*t) [mm]")
+    m.add_block("spring", "eq.coupled_oscillator")
+    m.connect("shaker.x", "spring.neighbor_x")
+    report = m.check()
+    assert not report["ok"]
+    assert "unit mismatch" in str(report["errors"]) and "units.convert" in str(report["errors"])
+    m.data["connections"] = []
+    m.add_block("to_m", "units.convert", settings={"from": "mm", "to": "m"})
+    m.connect("shaker.x", "to_m.u").connect("to_m.y", "spring.neighbor_x")
+    m.set_run(dt=0.01, t_end=1.0)
+    r = m.run()
+    assert abs(r["to_m.y"][-1] - r["shaker.x"][-1] / 1000) < 1e-12
+    units = {p["key"]: p["unit"] for p in m.check()["params"]}
+    assert units["shaker.A"] == "mm"
+    # Lines that do not balance are reported with the units.
+    bad = ss.Model().add_block("b", "eq.equations", equations="input F [N]\ndx/dt = F [m]")
+    assert "dx/dt is in m·s^-1 but the right side is in" in str(bad.check()["errors"])

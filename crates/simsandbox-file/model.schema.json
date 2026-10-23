@@ -240,7 +240,7 @@
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Method name plus numeric options, e.g. {\"name\": \"rk4\", \"substeps\": 4}."
+          "description": "Method name plus numeric options, e.g. {\"name\": \"rk4\", \"substeps\": 4}. Left out, the type's first method (for 'eq.equations', the one its equations call for)."
         },
         "at": {
           "type": "array",
@@ -292,7 +292,14 @@
           "items": {
             "type": "string"
           },
-          "description": "Equations of an 'eq.equations' block, one per line: 'dx/dt = ...' (or \"x' = ...\") for a state, 'name = ...' for a defined quantity (ADR 0017)."
+          "description": "Equations of an 'eq.equations' block, one per line: 'dx/dt = ...' (or \"x' = ...\") for a state, 'name = ...' for a defined quantity (ADR 0017); 'input F [N]', 'param m [kg] = 2' and a trailing '[unit]' on an equation give units, and then every line must balance (ADR 0045)."
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Text settings of a block type ('simsandbox describe TYPE' lists them), e.g. 'from' and 'to' units of 'units.convert' (ADR 0045)."
         },
         "params": {
           "type": "object",

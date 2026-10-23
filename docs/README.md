@@ -115,6 +115,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0042-node-canvas.md](decisions/0042-node-canvas.md) | Decision record | The node canvas, block positions, edits to a running model, starting from a reached state |
 | [decisions/0043-subsystems.md](decisions/0043-subsystems.md) | Decision record | Subsystems, declared parameters and formulas |
 | [decisions/0044-unsaved-changes-and-older-files.md](decisions/0044-unsaved-changes-and-older-files.md) | Decision record | Unsaved changes; the rule for older files and format versions |
+| [decisions/0045-units-in-typed-equations.md](decisions/0045-units-in-typed-equations.md) | Decision record | Units in typed equations; explicit unit conversion blocks |
 
 ### Guides
 

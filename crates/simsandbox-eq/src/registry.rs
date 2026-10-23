@@ -60,10 +60,22 @@ pub fn register(registry: &mut Registry) -> Result<()> {
     registry.register(EQUATIONS, |name, c| {
         no_update(c)?;
         let set = EquationSet::parse(name, &c.definition)?;
+        // No method given: the one the equations call for.
+        let c = &BlockConfig {
+            method: if c.method.name.is_empty() {
+                set.kind().default_method()
+            } else {
+                c.method.clone()
+            },
+            ..c.clone()
+        };
         match set.kind() {
             Kind::Continuous => ode_block(set, c),
             Kind::Map | Kind::Formulas => Ok(Box::new(ExplicitBlock::new(set, &c.method)?)),
         }
+    })?;
+    registry.register(crate::convert::CONVERT, |name, c| {
+        Ok(Box::new(crate::convert::Convert::from_config(name, c)?))
     })?;
     describe(registry)
 }
@@ -107,7 +119,10 @@ fn describe(r: &mut Registry) -> Result<()> {
         TypeInfo::new(
             "Equations typed as lines (ADR 0017): 'dx/dt = ...' for states (an ODE method), \
              'x[n+1] = ...' for a map (method iterate), only 'name = ...' for formulas (method \
-             evaluate); 'input u, F' declares inputs; every other name is a parameter.",
+             evaluate); 'input u, F' declares inputs, 'param k = 2' a parameter with its default; \
+             every other name is a parameter. Units in brackets where a name appears ('input F \
+             [N]', 'param m [kg] = 2', 'dx/dt = v [m]', ADR 0045) make every line checked; \
+             names without one are dimensionless. The method may be left out.",
         )
         .method("rk4", &["substeps"])
         .method("euler", &["substeps"])
@@ -115,11 +130,28 @@ fn describe(r: &mut Registry) -> Result<()> {
         .method(crate::symbolic::ITERATE, &[])
         .method(crate::symbolic::EVALUATE, &[])
         .definition(&["input u", "dx/dt = -k*x + u", "E = x^2/2"]),
+    )?;
+    r.describe(
+        crate::convert::CONVERT,
+        TypeInfo::new(
+            "A signal from one unit to another (ADR 0045): input u in 'from', output y in 'to' \
+             (settings, e.g. from 'km/h' to 'm/s'). Connections need equal units, so every \
+             conversion is one of these.",
+        )
+        .method(crate::convert::EXACT, &[])
+        .setting("from", &[])
+        .setting("to", &[]),
     )
 }
 
 /// Equation blocks have no agents, so no update order (ADR 0034).
 fn no_update(c: &BlockConfig) -> Result<()> {
+    if let Some(k) = c.settings.keys().next() {
+        return Err(SimError::InvalidSetting {
+            setting: format!("settings.{k}"),
+            reason: "this type has no settings".into(),
+        });
+    }
     match c.update {
         None => Ok(()),
         Some(_) => Err(SimError::InvalidSetting {

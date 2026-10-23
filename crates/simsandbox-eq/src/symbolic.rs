@@ -25,7 +25,15 @@
 //!   condition. `t` is time; `pi` and the function names are reserved.
 //! - Every state and defined quantity is an output port of the same name.
 //! - Blank lines and lines starting with `#` are ignored.
-//! - All quantities are dimensionless for now.
+//! - Units (ADR 0045) go in brackets where a name is introduced:
+//!   `dx/dt = v [m]` (the state `x` is in m), `E = m*v^2/2 [J]`,
+//!   `input F [N], v [m/s]`, and `param k [N/m] = 4` for a parameter with
+//!   a unit and a default. Names without a unit are dimensionless; `t` is
+//!   in s. Every equation must balance: terms added share a dimension,
+//!   `dx/dt` has `x`'s unit per second, and functions such as `sin` and
+//!   `exp` take dimensionless arguments. Values are computed in SI, so
+//!   `km` and `m` mix correctly inside a block; ports carry the declared
+//!   unit, and connections need equal units (convert with `units.convert`).
 
 use crate::ode::OdeSystem;
 use simsandbox_core::block::{
@@ -90,6 +98,208 @@ struct Line {
     ast: Ast,
 }
 
+/// Split a trailing unit annotation, ` [unit]`, off the right-hand side
+/// of an equation. `[n]` (a map's current value) is not a unit. Returns
+/// the text without it and the unit's text and column.
+fn split_unit(rhs: &str) -> (String, Option<(String, usize)>) {
+    let trimmed = rhs.trim_end();
+    if let (Some(open), true) = (trimmed.rfind('['), trimmed.ends_with(']')) {
+        let inside = &trimmed[open + 1..trimmed.len() - 1];
+        let spaced = trimmed[..open].ends_with(char::is_whitespace);
+        let index = matches!(inside.trim(), "n" | "n+1");
+        if spaced && !index {
+            let col = trimmed[..open].chars().count() + 2;
+            return (
+                trimmed[..open].to_string(),
+                Some((inside.trim().to_string(), col)),
+            );
+        }
+    }
+    (rhs.to_string(), None)
+}
+
+/// A name with an optional unit: `F`, `F [N]`, `F[N]`.
+fn name_and_unit(item: &str) -> (String, Option<String>) {
+    match item.split_once('[') {
+        Some((n, rest)) => (
+            n.trim().to_string(),
+            Some(rest.trim_end().trim_end_matches(']').trim().to_string()),
+        ),
+        None => (item.trim().to_string(), None),
+    }
+}
+
+fn read_unit(text: &str, line: usize, column: usize) -> Result<Unit> {
+    Unit::parse(text).map_err(|_| {
+        definition_error(
+            line,
+            column,
+            format!(
+                "unknown unit '{text}' (units are products of m, cm, mm, km, kg, g, s, ms, min, h, \
+                 A, K, mol, cd, Hz, N, Pa, J, W, V, Ohm, rad with ^powers, e.g. 'N*s/m', 'm/s^2')"
+            ),
+        )
+    })
+}
+
+type Dim = [i8; 7];
+const NO_DIM: Dim = [0; 7];
+
+fn dim_text(d: Dim) -> String {
+    Unit::new(d, 1.0).to_string()
+}
+
+/// The dimension of an expression, given each name's; an error says
+/// what does not balance, with the column of a name involved.
+fn dimension(ast: &Ast, of: &dyn Fn(&str) -> Dim) -> std::result::Result<Dim, (usize, String)> {
+    let first_column = |a: &Ast| a.names().first().map_or(1, |(_, c)| *c);
+    let dimensionless = |a: &Ast, what: &str| -> std::result::Result<(), (usize, String)> {
+        let d = dimension(a, of)?;
+        if d == NO_DIM {
+            Ok(())
+        } else {
+            Err((
+                first_column(a),
+                format!("{what} must be dimensionless, not {}", dim_text(d)),
+            ))
+        }
+    };
+    let constant = |a: &Ast| -> Option<f64> {
+        match a {
+            Ast::Num(v) => Some(*v),
+            Ast::Neg(b) => match &**b {
+                Ast::Num(v) => Some(-v),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let power = |base: &Ast, exp: &Ast| -> std::result::Result<Dim, (usize, String)> {
+        let d = dimension(base, of)?;
+        if d == NO_DIM {
+            dimensionless(exp, "an exponent")?;
+            return Ok(NO_DIM);
+        }
+        match constant(exp) {
+            Some(n) if n.fract() == 0.0 && n.abs() < 64.0 => Ok(d.map(|e| e * n as i8)),
+            Some(n) if (2.0 * n).fract() == 0.0 && d.iter().all(|e| e % 2 == 0) => {
+                Ok(d.map(|e| (e / 2) * (2.0 * n) as i8))
+            }
+            _ => Err((
+                first_column(base),
+                format!(
+                    "{} can only be raised to a constant whole power",
+                    dim_text(d)
+                ),
+            )),
+        }
+    };
+    Ok(match ast {
+        Ast::Num(_) => NO_DIM,
+        Ast::Name(n, _) => of(n),
+        Ast::Neg(a) => dimension(a, of)?,
+        Ast::Bin(op, a, b) => {
+            use simsandbox_expr::Op;
+            match op {
+                Op::Add | Op::Sub => {
+                    let (da, db) = (dimension(a, of)?, dimension(b, of)?);
+                    if da != db {
+                        let verb = if *op == Op::Add { "add" } else { "subtract" };
+                        return Err((
+                            first_column(b),
+                            format!("cannot {verb} {} and {}", dim_text(da), dim_text(db)),
+                        ));
+                    }
+                    da
+                }
+                Op::Mul => {
+                    let (da, db) = (dimension(a, of)?, dimension(b, of)?);
+                    std::array::from_fn(|i| da[i] + db[i])
+                }
+                Op::Div => {
+                    let (da, db) = (dimension(a, of)?, dimension(b, of)?);
+                    std::array::from_fn(|i| da[i] - db[i])
+                }
+                Op::Pow => power(a, b)?,
+            }
+        }
+        Ast::Call(f, args) => {
+            use simsandbox_expr::Func;
+            match f {
+                Func::Sqrt => {
+                    let d = dimension(&args[0], of)?;
+                    if d.iter().any(|e| e % 2 != 0) {
+                        return Err((
+                            first_column(&args[0]),
+                            format!("sqrt of {} has no unit", dim_text(d)),
+                        ));
+                    }
+                    d.map(|e| e / 2)
+                }
+                Func::Abs | Func::Floor | Func::Ceil => dimension(&args[0], of)?,
+                Func::Min | Func::Max | Func::Atan2 => {
+                    let (da, db) = (dimension(&args[0], of)?, dimension(&args[1], of)?);
+                    if da != db {
+                        return Err((
+                            first_column(&args[1]),
+                            format!(
+                                "the two arguments are in {} and {}",
+                                dim_text(da),
+                                dim_text(db)
+                            ),
+                        ));
+                    }
+                    if *f == Func::Atan2 {
+                        NO_DIM
+                    } else {
+                        da
+                    }
+                }
+                Func::Sign => {
+                    dimension(&args[0], of)?;
+                    NO_DIM
+                }
+                Func::Pow => power(&args[0], &args[1])?,
+                _ => {
+                    dimensionless(&args[0], "a function's argument")?;
+                    NO_DIM
+                }
+            }
+        }
+    })
+}
+
+/// The expression with each variable converted to SI (`v * scale`).
+fn in_si(e: Expr, scales: &[f64]) -> Expr {
+    use simsandbox_expr::Op;
+    match e {
+        Expr::Var(i) if scales[i] != 1.0 => Expr::Bin(
+            Op::Mul,
+            Box::new(Expr::Var(i)),
+            Box::new(Expr::Num(scales[i])),
+        ),
+        Expr::Neg(a) => Expr::Neg(Box::new(in_si(*a, scales))),
+        Expr::Bin(op, a, b) => {
+            Expr::Bin(op, Box::new(in_si(*a, scales)), Box::new(in_si(*b, scales)))
+        }
+        Expr::Call(f, args) => Expr::Call(f, args.into_iter().map(|a| in_si(a, scales)).collect()),
+        other => other,
+    }
+}
+
+/// An SI value expressed in a unit of scale `scale`.
+fn from_si(e: Expr, scale: f64) -> Expr {
+    if scale == 1.0 {
+        e
+    } else {
+        Expr::Bin(
+            simsandbox_expr::Op::Div,
+            Box::new(e),
+            Box::new(Expr::Num(scale)),
+        )
+    }
+}
+
 enum Lhs {
     State(String),
     Map(String),
@@ -134,29 +344,80 @@ impl EquationSet {
         // the inputs.
         let mut sides = Vec::new();
         let mut inputs: Vec<String> = Vec::new();
+        // Units by name, as declared (ADR 0045), and declared parameters
+        // with their defaults.
+        let mut units: std::collections::HashMap<String, Unit> = Default::default();
+        let mut declared: Vec<(String, f64, usize)> = Vec::new();
         for (k, text) in lines.iter().enumerate() {
             let number = k + 1;
             let trimmed = text.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
+            if let Some(rest) = trimmed.strip_prefix("param ") {
+                // `param k [N/m] = 4`, `param k [N/m]`, `param k = 4`.
+                let (head, value) = match rest.split_once('=') {
+                    Some((h, v)) => {
+                        let v = v.trim().parse::<f64>().map_err(|_| {
+                            definition_error(number, 1, format!("'{}' is not a number", v.trim()))
+                        })?;
+                        (h, v)
+                    }
+                    None => (rest, 1.0),
+                };
+                let (n, unit) = name_and_unit(head);
+                if !is_name(&n) || n == "t" || is_reserved(&n) {
+                    return Err(definition_error(
+                        number,
+                        1,
+                        format!("'{n}' cannot be a parameter name"),
+                    ));
+                }
+                if declared.iter().any(|d| d.0 == n) {
+                    return Err(definition_error(
+                        number,
+                        1,
+                        format!("'{n}' is declared twice"),
+                    ));
+                }
+                if let Some(u) = unit {
+                    units.insert(n.clone(), read_unit(&u, number, 1)?);
+                }
+                declared.push((n, value, number));
+                continue;
+            }
             if let Some(names) = trimmed.strip_prefix("input ") {
-                for n in names.split([',', ' ']).filter(|n| !n.is_empty()) {
-                    if !is_name(n) || n == "t" || is_reserved(n) {
-                        return Err(definition_error(
-                            number,
-                            1,
-                            format!("'{n}' cannot be an input name"),
-                        ));
+                for item in names.split(',').filter(|n| !n.trim().is_empty()) {
+                    let (item, unit) = name_and_unit(item);
+                    // Names may also be separated by spaces (no units then).
+                    let parts: Vec<&str> = item.split(' ').filter(|n| !n.is_empty()).collect();
+                    if let Some(u) = unit {
+                        if parts.len() != 1 {
+                            return Err(definition_error(
+                                number,
+                                1,
+                                "separate inputs with commas when giving units: 'input F [N], v [m/s]'",
+                            ));
+                        }
+                        units.insert(item.clone(), read_unit(&u, number, 1)?);
                     }
-                    if inputs.iter().any(|i| i == n) {
-                        return Err(definition_error(
-                            number,
-                            1,
-                            format!("'{n}' is an input twice"),
-                        ));
+                    for n in parts {
+                        if !is_name(n) || n == "t" || is_reserved(n) {
+                            return Err(definition_error(
+                                number,
+                                1,
+                                format!("'{n}' cannot be an input name"),
+                            ));
+                        }
+                        if inputs.iter().any(|i| i == n) {
+                            return Err(definition_error(
+                                number,
+                                1,
+                                format!("'{n}' is an input twice"),
+                            ));
+                        }
+                        inputs.push(n.to_string());
                     }
-                    inputs.push(n.to_string());
                 }
                 continue;
             }
@@ -174,7 +435,15 @@ impl EquationSet {
                     format!("'{}' is not 'dx/dt', 'x'', 'x[n+1]' or a name", lhs.trim()),
                 )
             })?;
-            sides.push((number, lhs.chars().count() + 1, lhs_kind, rhs));
+            let offset = lhs.chars().count() + 1;
+            let (rhs, unit) = split_unit(rhs);
+            if let Some((u, col)) = unit {
+                let n = match &lhs_kind {
+                    Lhs::State(n) | Lhs::Map(n) | Lhs::Defined(n) => n.clone(),
+                };
+                units.insert(n, read_unit(&u, number, offset + col)?);
+            }
+            sides.push((number, offset, lhs_kind, rhs));
         }
         if sides.is_empty() {
             return Err(SimError::InvalidDefinition(
@@ -202,7 +471,7 @@ impl EquationSet {
             let rhs = if kind == Kind::Map {
                 rhs.replace("[n]", "   ")
             } else {
-                rhs.to_string()
+                rhs
             };
             let ast =
                 parse(&rhs).map_err(|e| definition_error(number, offset + e.column, e.message))?;
@@ -240,8 +509,18 @@ impl EquationSet {
                 Lhs::Defined(_) => defined.push(n.clone()),
             }
         }
-        // Every other name is a parameter, in order of first use.
+        // Declared parameters, then every other name in order of first use.
         let mut params: Vec<String> = Vec::new();
+        for (n, _, number) in &declared {
+            if states.contains(n) || defined.contains(n) || inputs.contains(n) {
+                return Err(definition_error(
+                    *number,
+                    1,
+                    format!("'{n}' is defined twice"),
+                ));
+            }
+            params.push(n.clone());
+        }
         for line in &parsed {
             for (n, _) in line.ast.names() {
                 let known =
@@ -276,8 +555,98 @@ impl EquationSet {
             initial.push(i);
         }
 
+        // Units (ADR 0045). A block that declares none is dimensionless
+        // throughout, `t` included, as typed equations were before units.
+        let checked = !units.is_empty();
+        for (s, &i) in states.iter().zip(&initial) {
+            let x = units.get(s).copied().unwrap_or(Unit::DIMENSIONLESS);
+            let p = &params[i];
+            match units.get(p) {
+                Some(u) if u.dim != x.dim => {
+                    let number = declared.iter().find(|d| &d.0 == p).map_or(1, |d| d.2);
+                    return Err(definition_error(
+                        number,
+                        1,
+                        format!("{p} is the initial value of {s}, so it is in {x}, not {u}"),
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    units.insert(p.clone(), x);
+                }
+            }
+        }
+        let time = if checked {
+            Unit::SECOND
+        } else {
+            Unit::DIMENSIONLESS
+        };
+        // Defined quantities without a unit take their right side's.
+        for line in &parsed {
+            let Lhs::Defined(n) = &line.lhs else {
+                continue;
+            };
+            if !checked || units.contains_key(n) {
+                continue;
+            }
+            let of = |m: &str| {
+                if m == "t" {
+                    time.dim.0
+                } else {
+                    units.get(m).map_or(NO_DIM, |u| u.dim.0)
+                }
+            };
+            if let Ok(d) = dimension(&line.ast, &of) {
+                units.insert(n.clone(), Unit::new(d, 1.0));
+            }
+        }
+        let unit_of = |n: &str| -> Unit {
+            if n == "t" {
+                time
+            } else {
+                units.get(n).copied().unwrap_or(Unit::DIMENSIONLESS)
+            }
+        };
+        // Every equation balances.
+        if checked {
+            for line in &parsed {
+                let of = |m: &str| unit_of(m).dim.0;
+                let got = dimension(&line.ast, &of)
+                    .map_err(|(c, m)| definition_error(line.number, line.offset + c, m))?;
+                let (what, want) = match &line.lhs {
+                    Lhs::State(n) => {
+                        let x = unit_of(n).dim.0;
+                        (
+                            format!("d{n}/dt"),
+                            std::array::from_fn(|i| x[i] - Unit::SECOND.dim.0[i]),
+                        )
+                    }
+                    Lhs::Map(n) => (format!("{n}[n+1]"), unit_of(n).dim.0),
+                    Lhs::Defined(n) => (n.clone(), unit_of(n).dim.0),
+                };
+                if got != want {
+                    return Err(definition_error(
+                        line.number,
+                        line.offset + 1,
+                        format!(
+                            "{what} is in {} but the right side is in {}",
+                            dim_text(want),
+                            dim_text(got)
+                        ),
+                    ));
+                }
+            }
+        }
+
         // Slots: t, states, inputs, parameters, defined quantities.
         let (ns, ni, np) = (states.len(), inputs.len(), params.len());
+        // Values are kept in each name's unit and computed in SI.
+        let scales: Vec<f64> = std::iter::once(time.scale)
+            .chain(states.iter().map(|n| unit_of(n).scale))
+            .chain(inputs.iter().map(|n| unit_of(n).scale))
+            .chain(params.iter().map(|n| unit_of(n).scale))
+            .chain(defined.iter().map(|n| unit_of(n).scale))
+            .collect();
         let slot_of = |n: &str, defined_so_far: usize| -> Option<usize> {
             if n == "t" {
                 return Some(0);
@@ -319,22 +688,23 @@ impl EquationSet {
             match &line.lhs {
                 Lhs::State(n) | Lhs::Map(n) => {
                     let i = states.iter().position(|s| s == n).expect("state listed");
-                    rhs[i] = Some(resolve(defined.len())?);
+                    let e = in_si(resolve(defined.len())?, &scales);
+                    rhs[i] = Some(from_si(e, unit_of(n).scale));
                 }
-                Lhs::Defined(_) => {
+                Lhs::Defined(n) => {
                     let visible = defined_exprs.len();
-                    defined_exprs.push(resolve(visible)?);
+                    let e = in_si(resolve(visible)?, &scales);
+                    defined_exprs.push(from_si(e, unit_of(n).scale));
                 }
             }
         }
 
-        let one = Unit::DIMENSIONLESS;
         let mut param_specs: Vec<ParamSpec> = params
             .iter()
             .map(|p| ParamSpec {
                 name: p.clone(),
-                unit: one,
-                default: 1.0,
+                unit: unit_of(p),
+                default: declared.iter().find(|d| &d.0 == p).map_or(1.0, |d| d.1),
                 suggested_min: 0.0,
                 suggested_max: 10.0,
                 description: "Parameter of the equations".into(),
@@ -370,15 +740,15 @@ impl EquationSet {
         }
         let ports = inputs
             .iter()
-            .map(|n| PortSpec::input(n, one, Shape::Scalar))
+            .map(|n| PortSpec::input(n, unit_of(n), Shape::Scalar))
             .chain(
                 states
                     .iter()
-                    .map(|n| PortSpec::output(n, one, Shape::Scalar)),
+                    .map(|n| PortSpec::output(n, unit_of(n), Shape::Scalar)),
             )
             .chain(defined.iter().zip(&uses).map(|(n, u)| {
                 let u: Vec<&str> = u.iter().map(String::as_str).collect();
-                PortSpec::output(n, one, Shape::Scalar).depends_on(&u)
+                PortSpec::output(n, unit_of(n), Shape::Scalar).depends_on(&u)
             }))
             .collect();
         let slots = 1 + ns + ni + np + defined.len();
@@ -687,5 +1057,90 @@ mod tests {
         assert!(error(&["# only a comment"]).contains("no equations"));
         assert!(error(&["dx/dt = 1", "y[n+1] = y"]).contains("not both"));
         assert!(error(&["x[n+1] = x + n"]).contains("step number"));
+    }
+
+    fn unit(text: &str) -> Unit {
+        Unit::parse(text).unwrap()
+    }
+
+    #[test]
+    fn units_are_declared_where_names_appear() {
+        let s = set(&[
+            "input F [N]",
+            "param m [kg] = 1000",
+            "param c [N*s/m] = 50",
+            "dx/dt = v [m]",
+            "dv/dt = (F - c*v)/m [m/s]",
+            "E = m*v^2/2",
+        ])
+        .unwrap();
+        let port = |n: &str| s.spec.ports.iter().find(|p| p.name == n).unwrap().unit;
+        assert!(port("F").same_as(&Unit::NEWTON));
+        assert!(port("x").same_as(&Unit::METER));
+        assert!(port("v").same_as(&unit("m/s")));
+        // A defined quantity without a unit takes its right side's: J.
+        assert!(port("E").same_as(&unit("J")));
+        let param = |n: &str| s.spec.params.iter().find(|p| p.name == n).unwrap();
+        assert_eq!(
+            (param("m").default, param("m").unit),
+            (1000.0, Unit::KILOGRAM)
+        );
+        assert!(param("x0").unit.same_as(&Unit::METER) && param("x0").initial_condition);
+    }
+
+    #[test]
+    fn equations_must_balance() {
+        let e = error(&["dx/dt = v [m]", "dv/dt = -x [m/s]"]);
+        assert!(
+            e.contains("line 2") && e.contains("dv/dt is in m·s^-2 but the right side is in m"),
+            "{e}"
+        );
+        let e = error(&["input F [N]", "dx/dt = F - x [m/s]"]);
+        assert!(e.contains("cannot subtract"), "{e}");
+        let e = error(&["param L [m] = 1", "y = sin(L)"]);
+        assert!(e.contains("dimensionless"), "{e}");
+        let e = error(&["param L [m] = 1", "y = sqrt(L)"]);
+        assert!(e.contains("sqrt"), "{e}");
+        assert!(error(&["dx/dt = 1 [furlong]"]).contains("unknown unit 'furlong'"));
+        // Names without a unit are dimensionless, which can be what is meant.
+        set(&["param L [m] = 2", "param k = 3", "y = k*L [m]"]).unwrap();
+        set(&[
+            "param A [m^2] = 4",
+            "side = sqrt(A) [m]",
+            "theta = atan2(side, side)",
+        ])
+        .unwrap();
+    }
+
+    #[test]
+    fn values_are_computed_in_si_across_scales() {
+        let s = set(&[
+            "param d [km] = 2",
+            "param t_go [min] = 1",
+            "y = d [m]",
+            "speed = d/t_go [m/s]",
+        ])
+        .unwrap();
+        let mut y = vec![0.0; 2];
+        s.outputs(0.0, &[], &[], &[2.0, 1.0], &mut y);
+        assert_eq!(y[0], 2000.0);
+        assert!((y[1] - 2000.0 / 60.0).abs() < 1e-12);
+        // dx/dt in km/h from a speed in m/s: x in km grows 3.6 per hour of
+        // 1 m/s.
+        let s = set(&["input v [m/s]", "dx/dt = v [km]"]).unwrap();
+        let mut dx = vec![0.0];
+        s.rhs(0.0, &[0.0], &[1.0], &[0.0], &mut dx);
+        assert!((dx[0] - 1e-3).abs() < 1e-15, "km per second: {}", dx[0]);
+    }
+
+    #[test]
+    fn maps_and_models_without_units_are_as_before() {
+        // `[n]` is the current value, not a unit.
+        set(&["x[n+1] = r*x[n]"]).unwrap();
+        set(&["x[n+1] = r*x[n] [m]", "param r = 2"]).unwrap();
+        // No units anywhere: dimensionless, time included, unchecked.
+        let s = set(&["dx/dt = -k*x + t"]).unwrap();
+        assert!(s.spec.ports.iter().all(|p| p.unit == Unit::DIMENSIONLESS));
+        assert!(error(&["input u v [m]", "y = u"]).contains("commas"));
     }
 }

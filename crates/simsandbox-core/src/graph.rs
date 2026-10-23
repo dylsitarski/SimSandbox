@@ -182,7 +182,7 @@ impl Model {
     }
 
     /// Connect an output port to an input port, checking direction, shape and
-    /// unit dimension. Compatible units with different scales are converted.
+    /// unit: the units must be the same, scale included (ADR 0045).
     pub fn connect(&mut self, from: (BlockId, &str), to: (BlockId, &str)) -> Result<()> {
         let out = self.port(from.0, from.1)?.clone();
         let inp = self.port(to.0, to.1)?.clone();
@@ -198,13 +198,13 @@ impl Model {
                 to: format!("{:?}", inp.shape),
             });
         }
-        let factor = out
-            .unit
-            .conversion_to(&inp.unit)
-            .ok_or(SimError::UnitMismatch {
+        if !out.unit.same_as(&inp.unit) {
+            return Err(SimError::UnitMismatch {
                 from: out.unit.to_string(),
                 to: inp.unit.to_string(),
-            })?;
+            });
+        }
+        let factor = 1.0;
         let to_ref = PortRef {
             block: to.0,
             port: to.1.into(),

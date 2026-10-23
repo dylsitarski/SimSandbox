@@ -652,6 +652,7 @@ impl Ctx<'_> {
             (!entry.method.name.is_empty(), "method"),
             (!entry.equations.is_empty(), "equations"),
             (entry.update.is_some(), "update"),
+            (!entry.settings.is_empty(), "settings"),
             (entry.start.is_some(), "start"),
         ];
         if let Some((_, what)) = extra.iter().find(|(set, _)| *set) {

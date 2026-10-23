@@ -1,0 +1,116 @@
+{
+  "format": 1,
+  "description": "Units between blocks: a shaker typed in millimetres moves the wall of two coupled springs measured in metres. Connections need the same unit, so the shaker's output goes through an explicit conversion (mm to m), shown on the diagram; a second one shows the far mass in centimetres. Change the shaker's amplitude A (mm) or frequency f (Hz) and watch the springs follow or lag.",
+  "run": {
+    "dt": 0.02,
+    "t_end": 40.0
+  },
+  "blocks": [
+    {
+      "name": "shaker",
+      "type": "eq.equations",
+      "method": {
+        "name": "evaluate"
+      },
+      "equations": [
+        "# a wall moved back and forth, A millimetres at f hertz",
+        "param A [mm] = 50",
+        "param f [Hz] = 0.15",
+        "x = A*sin(2*pi*f*t) [mm]"
+      ]
+    },
+    {
+      "name": "to_m",
+      "type": "units.convert",
+      "settings": {
+        "from": "mm",
+        "to": "m"
+      }
+    },
+    {
+      "name": "a",
+      "type": "eq.coupled_oscillator",
+      "method": {
+        "name": "rk4"
+      },
+      "params": {
+        "x0": 0.0
+      }
+    },
+    {
+      "name": "b",
+      "type": "eq.coupled_oscillator",
+      "method": {
+        "name": "rk4"
+      },
+      "params": {
+        "x0": 0.0
+      }
+    },
+    {
+      "name": "b_cm",
+      "type": "units.convert",
+      "settings": {
+        "from": "m",
+        "to": "cm"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "shaker.x",
+      "to": "to_m.u"
+    },
+    {
+      "from": "to_m.y",
+      "to": "a.neighbor_x"
+    },
+    {
+      "from": "a.x",
+      "to": "b.neighbor_x"
+    },
+    {
+      "from": "b.x",
+      "to": "b_cm.u"
+    }
+  ],
+  "controls": {
+    "params": {
+      "shaker.A": {
+        "slider": true,
+        "range": [
+          0.0,
+          200.0
+        ]
+      },
+      "shaker.f": {
+        "slider": true,
+        "range": [
+          0.0,
+          0.5
+        ]
+      }
+    },
+    "speed": 2.0,
+    "views": [
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": [
+            "to_m.y",
+            "a.x",
+            "b.x"
+          ]
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "b_cm.y"
+        }
+      }
+    ]
+  }
+}

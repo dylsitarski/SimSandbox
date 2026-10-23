@@ -338,6 +338,7 @@ fn build(
         method: (&b.method).into(),
         definition: b.equations.clone(),
         update: b.update.clone(),
+        settings: b.settings.clone(),
     };
     registry
         .build(&b.type_name, &b.name, &config)
@@ -345,19 +346,29 @@ fn build(
 }
 
 fn node(b: &BlockEntry, registry: &Registry) -> Node {
+    let mut method = b.method.name.clone();
     let (inputs, outputs, error) = match build(b, registry) {
-        Ok(block) => (
-            ports(block.spec(), Causality::Input),
-            ports(block.spec(), Causality::Output),
-            None,
-        ),
+        Ok(block) => {
+            if method.is_empty() {
+                method = block.method().name.clone();
+            }
+            (
+                ports(block.spec(), Causality::Input),
+                ports(block.spec(), Causality::Output),
+                None,
+            )
+        }
         Err(e) => (Vec::new(), Vec::new(), Some(e)),
     };
+    // A conversion says what it converts (ADR 0045).
+    if let (Some(from), Some(to)) = (b.settings.get("from"), b.settings.get("to")) {
+        method = format!("{from} → {to}");
+    }
     Node {
         name: b.name.clone(),
         kind: NodeKind::Block,
         type_name: b.type_name.clone(),
-        method: b.method.name.clone(),
+        method,
         inputs,
         outputs,
         at: b.at.unwrap_or_default(),
@@ -1459,6 +1470,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(f.connections.iter().filter(|c| c.to == "car.F").count(), 1);
+        // A speed into a force is refused when loading (ADR 0045); put the
+        // force back.
+        assert!(loads(&f).unwrap_err().contains("unit mismatch"));
+        apply(
+            &mut f,
+            &r,
+            &Edit::Connect {
+                from: "cruise.F".into(),
+                to: "car.F".into(),
+            },
+        )
+        .unwrap();
 
         apply(
             &mut f,
@@ -1469,7 +1492,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(f.connections.iter().any(|c| c.from == "pid.e"));
+        assert!(f.connections.iter().any(|c| c.from == "pid.F"));
         assert!(f.controls.params.contains_key("pid.kp"));
         let bound = serde_json::to_string(&f.controls.views).unwrap();
         assert!(

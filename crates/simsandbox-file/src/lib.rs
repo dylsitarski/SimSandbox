@@ -371,13 +371,18 @@ pub struct BlockEntry {
     /// A registered block type, or a subsystem of this file (ADR 0043).
     #[serde(rename = "type")]
     pub type_name: String,
-    /// Absent for a subsystem, whose blocks have their own.
+    /// Absent for a subsystem, whose blocks have their own; for a block,
+    /// absent means the type's default method.
     #[serde(default, skip_serializing_if = "MethodEntry::is_empty")]
     pub method: MethodEntry,
     /// Agent blocks: the order agents act in within a step (ADR 0034),
     /// e.g. `random_order`; the type's default if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update: Option<String>,
+    /// Text settings of the type, e.g. `{"from": "km/h", "to": "m/s"}` for
+    /// `units.convert` (ADR 0045); see `simsandbox describe TYPE`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub settings: BTreeMap<String, String>,
     /// The equations of an `eq.equations` block, one per line (ADR 0017),
     /// e.g. `"dx/dt = sigma*(y - x)"`. Absent for types with built-in
     /// equations.
@@ -1181,15 +1186,6 @@ impl ModelFile {
         let mut ids = BTreeMap::new();
         for (bi, entry) in self.blocks.iter().enumerate() {
             let path = format!("blocks[{bi}]");
-            if entry.method.name.is_empty() {
-                return Err(invalid(
-                    format!("{path}.method"),
-                    format!(
-                        "'{}' needs a method (see simsandbox describe {})",
-                        entry.type_name, entry.type_name
-                    ),
-                ));
-            }
             if entry.name.is_empty() || entry.name.contains('.') {
                 return Err(invalid(
                     format!("{path}.name"),
@@ -1226,6 +1222,7 @@ impl ModelFile {
                 method: (&entry.method).into(),
                 definition: entry.equations.clone(),
                 update: entry.update.clone(),
+                settings: entry.settings.clone(),
             };
             let block = registry
                 .build(&entry.type_name, &entry.name, &config)
