@@ -195,3 +195,21 @@ def test_the_unit_vocabulary_is_described():
     m.add_block("a", "eq.equations", equations="param p [psi] = 100\nparam A [in^2] = 2\nF = p*A [lbf]\nparam v [m/s] = 0\nstate x [m] = 0\ndx/dt = v")
     # A state, so the model runs in time rather than as a sweep.
     assert abs(m.run(t_end=0.1, dt=0.1)["a.F"][0] - 200.0) < 1e-9
+
+
+def test_filters_become_blocks_when_promoted(tmp_path):
+    m = ss.Model.example("cruise")
+    m.data["fusion"] = "off"
+    m.data["controls"]["filters"] = [{"name": "push", "type": "expression", "expr": "cruise.F"}]
+    before = m.run(t_end=5.0)["car.v"][-1]
+    m.data["connections"] = [c for c in m.data["connections"] if c["to"] != "car.F"]
+    note = m.promote("push", to="car.F")
+    assert "push" in note
+    assert any(b["name"] == "push" for b in m.data["blocks"])
+    assert m.run(t_end=5.0)["car.v"][-1] == before
+    # The diagram shows the data layer, or not.
+    with_data = m.render(diagram=True)
+    without = m.render(diagram=True, data=False)
+    assert with_data != without
+    with pytest.raises(ss.ModelError, match="no filter"):
+        m.promote("nothing")

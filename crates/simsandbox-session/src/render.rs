@@ -22,6 +22,9 @@ pub struct RenderOptions {
     /// For the diagram: a subsystem's inside instead of the model
     /// (ADR 0043).
     pub subsystem: Option<String>,
+    /// For the model's diagram: draw the data layer, its filters and views
+    /// (ADR 0050).
+    pub data: bool,
 }
 
 impl Default for RenderOptions {
@@ -33,6 +36,7 @@ impl Default for RenderOptions {
             view: None,
             light: false,
             subsystem: None,
+            data: true,
         }
     }
 }
@@ -90,6 +94,9 @@ pub fn render_diagram(
         }
     };
     let mut d = crate::diagram::Diagram::of(file, &scope, registry);
+    if o.data {
+        d.observe(file, &crate::examples::view_registry());
+    }
     let mut canvas = crate::canvas::Canvas::default();
     Ok(paint(o, |ui| {
         canvas.show(ui, &mut d, registry, false);
@@ -249,6 +256,7 @@ mod tests {
             view: Some(0),
             light: true,
             subsystem: None,
+            data: false,
         };
         let (img, _) = render(&s, view_registry(), &o).unwrap();
         assert_eq!((img.width, img.height), (400, 200));

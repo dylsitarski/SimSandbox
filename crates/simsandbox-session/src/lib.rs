@@ -22,10 +22,12 @@ pub mod describe;
 pub mod diagram;
 pub mod examples;
 pub mod filters;
+pub mod observers;
 pub mod raster;
 pub mod render;
 pub mod run;
 pub mod session;
+pub mod undo;
 pub mod views;
 
 pub use session::Session;

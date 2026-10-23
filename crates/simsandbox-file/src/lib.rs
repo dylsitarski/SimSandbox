@@ -556,6 +556,10 @@ pub struct FilterEntry {
     pub type_name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
+    /// Where its node sits on the canvas's data layer (ADR 0050); not
+    /// `at`, which cut filters use for their cuts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<[f64; 2]>,
     /// Settings of the filter's type.
     #[serde(flatten)]
     pub settings: BTreeMap<String, Value>,
@@ -567,6 +571,7 @@ impl FilterEntry {
             name: name.into(),
             type_name: "expression".into(),
             inputs,
+            canvas: None,
             settings: [("expr".to_string(), Value::String(expr.into()))].into(),
         }
     }
@@ -643,6 +648,7 @@ fn cut_filter_from_selection(name: &str, grid: &str, selection: &Value) -> Optio
         name: name.into(),
         type_name: "cut".into(),
         inputs: vec![grid.into()],
+        canvas: None,
         settings,
     })
 }
@@ -668,6 +674,10 @@ pub struct ViewEntry {
     /// checked by the view type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<Value>,
+    /// Where its node sits on the canvas's data layer (ADR 0050); not
+    /// `at`, which cut filters use for their cuts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<[f64; 2]>,
 }
 
 impl ViewEntry {
@@ -843,6 +853,7 @@ impl ViewControl {
             style: BTreeMap::new(),
             camera: self.camera,
             selection: None,
+            canvas: None,
         }
     }
 

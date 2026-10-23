@@ -823,3 +823,20 @@ fn numbers_read_back_exactly_as_written() {
         assert_eq!(again.blocks[0].params[&format!("p{k}")].number(), Some(*v));
     }
 }
+
+#[test]
+fn filters_and_views_keep_their_place_on_the_canvas() {
+    // A cut's own `at` (where it cuts) stays a setting; `canvas` is where
+    // its node sits (ADR 0050).
+    let text = r#"{"format": 1, "blocks": [], "controls": {
+      "filters": [{"name": "c", "type": "cut", "inputs": ["g"], "mode": "along_x",
+                   "at": [0.1, 0.2, 0.3], "canvas": [400.0, 20.0]}],
+      "views": [{"type": "plot.xy", "bind": {"x": "t"}, "canvas": [600.0, 0.0]}]}}"#;
+    let (f, _) = ModelFile::from_json(text).unwrap();
+    let cut = &f.controls.filters[0];
+    assert_eq!(cut.canvas, Some([400.0, 20.0]));
+    assert_eq!(cut.settings["at"], serde_json::json!([0.1, 0.2, 0.3]));
+    assert_eq!(f.controls.views[0].canvas, Some([600.0, 0.0]));
+    let (again, _) = ModelFile::from_json(&f.to_json()).unwrap();
+    assert_eq!(again, f);
+}

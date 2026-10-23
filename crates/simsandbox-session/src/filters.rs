@@ -321,6 +321,7 @@ mod tests {
             name: "c".into(),
             type_name: "cut".into(),
             inputs: vec![input.into()],
+            canvas: None,
             settings: serde_json::from_value(settings).unwrap(),
         };
         let good = cut(

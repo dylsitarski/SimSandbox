@@ -57,6 +57,10 @@ pub enum NodeKind {
     /// A subsystem's input or output, seen from inside.
     Input,
     Output,
+    /// A filter on the data layer (ADR 0050): reads recorded data.
+    Filter,
+    /// A view on the data layer: where data is shown.
+    View,
 }
 
 /// One node.
@@ -75,6 +79,9 @@ pub struct Node {
     pub placed: bool,
     /// Why the block cannot be built, if it cannot.
     pub error: Option<String>,
+    /// On the data layer: what it reads that has no port on this level
+    /// (`t`, parameters, signals inside subsystems), as `slot: signal`.
+    pub unreached: Vec<String>,
 }
 
 impl Node {
@@ -96,6 +103,11 @@ impl Node {
     pub fn is_block(&self) -> bool {
         matches!(self.kind, NodeKind::Block | NodeKind::Subsystem)
     }
+
+    /// Whether it is on the data layer (ADR 0050).
+    pub fn is_observer(&self) -> bool {
+        matches!(self.kind, NodeKind::Filter | NodeKind::View)
+    }
 }
 
 /// A connection, by node and port index.
@@ -106,6 +118,26 @@ pub struct Wire {
     /// `"node.port"` as the canvas names it.
     pub from_name: String,
     pub to_name: String,
+    /// On the data layer: the recorded signal it carries (empty for a
+    /// model wire, which carries current values each step).
+    pub signal: String,
+}
+
+impl Wire {
+    /// Whether it reads recorded data (ADR 0050).
+    pub fn is_data(&self) -> bool {
+        !self.signal.is_empty()
+    }
+
+    /// How a selection names it: the input for a model wire (one per
+    /// input), the input and signal for a data wire.
+    pub fn key(&self) -> String {
+        if self.is_data() {
+            format!("{}<{}", self.to_name, self.signal)
+        } else {
+            self.to_name.clone()
+        }
+    }
 }
 
 /// One level of the graph.
@@ -121,6 +153,10 @@ pub struct Diagram {
     /// Inside a subsystem: the blocks using it (`"car1"`, nested
     /// `"farm/pasture"` as flat names).
     pub used_by: Vec<String>,
+    /// View types that can be added on the data layer: name and label.
+    pub view_types: Vec<(String, String)>,
+    /// Data-layer slots that take several signals, as `view:K.slot`.
+    pub many: BTreeSet<String>,
 }
 
 /// The blocks and wires of one level, and its ports inside a subsystem.
@@ -240,6 +276,7 @@ impl Diagram {
                     to: t,
                     from_name: from,
                     to_name: to,
+                    signal: String::new(),
                 }),
                 _ => dangling.push(format!("{from} → {to}")),
             }
@@ -256,6 +293,7 @@ impl Diagram {
             dangling,
             subsystems: file.subsystems.keys().cloned().collect(),
             used_by,
+            ..Self::default()
         }
     }
 
@@ -374,6 +412,7 @@ fn node(b: &BlockEntry, registry: &Registry) -> Node {
         at: b.at.unwrap_or_default(),
         placed: b.at.is_some(),
         error,
+        unreached: Vec::new(),
     }
 }
 
@@ -473,6 +512,7 @@ fn instance_node(file: &ModelFile, b: &BlockEntry, registry: &Registry) -> Node 
         at: b.at.unwrap_or_default(),
         placed: b.at.is_some(),
         error: None,
+        unreached: Vec::new(),
     }
 }
 
@@ -505,6 +545,7 @@ fn boundary(
         at: at.unwrap_or_default(),
         placed: at.is_some(),
         error: None,
+        unreached: Vec::new(),
     }
 }
 
@@ -629,12 +670,49 @@ pub enum Edit {
     Group { blocks: Vec<String> },
     /// Rename a subsystem (its uses follow).
     RenameSubsystem { from: String, to: String },
+    /// Data layer (ADR 0050): show the signal an output carries in a
+    /// view's slot (`to` is `view:K.slot`), added to the slot's signals if
+    /// it takes several (`many`), else in place of its signal.
+    Bind {
+        from: String,
+        to: String,
+        many: bool,
+    },
+    /// Data layer: stop a filter or view input reading a signal.
+    Unbind { to: String, signal: String },
+    /// Data layer: a new expression filter.
+    AddFilter { at: [f64; 2] },
+    /// Data layer: a new view of a type (bound from its first preset when
+    /// the app shows it).
+    AddView { type_name: String, at: [f64; 2] },
+    /// Turn an expression filter into a formula block, so it can feed the
+    /// model (ADR 0032).
+    Promote { filter: String },
+    /// Promote a filter and connect its block to a model input.
+    PromoteConnect { filter: String, to: String },
 }
 
 impl Edit {
     /// Whether the edit changes the model (and so rebuilds and restarts).
     pub fn changes_model(&self) -> bool {
-        !matches!(self, Edit::Move { .. })
+        !matches!(self, Edit::Move { .. }) && !self.data_only()
+    }
+
+    /// Whether the edit changes only filters and views, which apply to the
+    /// running model without a restart (ADR 0050).
+    pub fn data_only(&self) -> bool {
+        let observer = crate::observers::is_observer;
+        let node = |key: &str| key.split_once('.').map_or(key, |(n, _)| n).to_string();
+        match self {
+            Edit::Bind { .. }
+            | Edit::Unbind { .. }
+            | Edit::AddFilter { .. }
+            | Edit::AddView { .. } => true,
+            Edit::Connect { to, .. } | Edit::Disconnect { to } => observer(&node(to)),
+            Edit::Delete { block } => observer(block),
+            Edit::Rename { from, .. } => observer(from),
+            _ => false,
+        }
     }
 }
 
@@ -652,6 +730,9 @@ pub fn apply_in(
     registry: &Registry,
     edit: &Edit,
 ) -> Result<String, String> {
+    if let Some(result) = crate::observers::apply(file, scope, registry, edit) {
+        return result;
+    }
     if let Edit::RenameSubsystem { from, to } = edit {
         return rename_subsystem(file, from, to);
     }
@@ -1007,6 +1088,13 @@ fn edit_level(
             ))
         }
         Edit::Group { .. } | Edit::RenameSubsystem { .. } => unreachable!("handled before"),
+        // Data-layer edits are handled by `observers::apply` first.
+        Edit::Bind { .. }
+        | Edit::Unbind { .. }
+        | Edit::AddFilter { .. }
+        | Edit::AddView { .. }
+        | Edit::Promote { .. }
+        | Edit::PromoteConnect { .. } => unreachable!("handled before"),
     }
 }
 
@@ -1022,7 +1110,7 @@ fn unfeed(l: &mut Subsystem, to: &str) -> bool {
     after < before
 }
 
-fn free_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+pub(crate) fn free_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
     (1..)
         .map(|k| format!("{base}{k}"))
         .find(|n| !taken(n))
@@ -1051,7 +1139,7 @@ fn forget_block(file: &mut ModelFile, block: &str) {
 }
 
 /// Positions are saved to a tenth of a unit.
-fn tidy(v: f64) -> f64 {
+pub(crate) fn tidy(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }
 

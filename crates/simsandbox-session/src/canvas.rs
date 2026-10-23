@@ -11,6 +11,10 @@
 //!   moves the selection.
 //! - Delete removes the selection; right-click for block and canvas menus,
 //!   among them "Make subsystem" (ADR 0043).
+//! - The data layer (ADR 0050), when the diagram has one: filters and views
+//!   as nodes with dashed outlines, read by dashed wires. Dropping a wire
+//!   on a view's slot shows that signal there; a filter dropped on a block
+//!   input is refused with an offer to promote it to a block and connect.
 
 use crate::diagram::{Diagram, Edit, Node, NodeKind, Scope, HEADER, NODE_WIDTH, ROW};
 use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -44,6 +48,10 @@ pub enum Request {
     /// Open the block's definition (equations), settings or, for a
     /// subsystem, its inside.
     Open(String),
+    /// Edit a filter in the Data window.
+    EditData(String),
+    /// Show a view's tile, by its place among the views.
+    ShowView(usize),
 }
 
 /// A wire being drawn: from a port, to the pointer.
@@ -75,6 +83,9 @@ pub struct Canvas {
     /// Where a context menu was opened, in canvas units, and on what.
     menu: Option<([f64; 2], Option<usize>)>,
     rename: String,
+    /// A filter dropped on a model input: the filter, the input and where
+    /// to offer promoting it.
+    offer: Option<(String, String, Pos2)>,
 }
 
 impl Default for Canvas {
@@ -90,6 +101,7 @@ impl Default for Canvas {
             wiring: None,
             menu: None,
             rename: String::new(),
+            offer: None,
         }
     }
 }
@@ -170,10 +182,10 @@ impl Canvas {
                 .wiring
                 .as_ref()
                 .is_some_and(|g| g.lifted.as_deref() == Some(w.to_name.as_str()));
-            if lifted {
+            if lifted && !w.is_data() {
                 continue;
             }
-            let selected = self.selected == Some(Selection::Wire(w.to_name.clone()));
+            let selected = self.selected == Some(Selection::Wire(w.key()));
             let field = d.nodes[w.from.0].outputs[w.from.1].shape != Shape::Scalar;
             let width = if field { 3.5 } else { 2.0 } * self.zoom.sqrt();
             let colour = if selected {
@@ -182,7 +194,22 @@ impl Canvas {
                 visuals.widgets.inactive.fg_stroke.color
             };
             let path = self.wire_path(d, origin, w);
-            painter.add(egui::Shape::line(path, Stroke::new(width, colour)));
+            if w.is_data() {
+                // Recorded data, read after each step (ADR 0050).
+                let colour = if selected {
+                    colour
+                } else {
+                    visuals.hyperlink_color.gamma_multiply(0.8)
+                };
+                painter.extend(egui::Shape::dashed_line(
+                    &path,
+                    Stroke::new(width * 0.8, colour),
+                    6.0 * self.zoom,
+                    4.0 * self.zoom,
+                ));
+            } else {
+                painter.add(egui::Shape::line(path, Stroke::new(width, colour)));
+            }
         }
         if let (Some(g), Some(p)) = (&self.wiring, pointer) {
             let at = self.to_screen(origin, d.nodes[g.node].port_at(g.causality, g.port));
@@ -205,6 +232,8 @@ impl Canvas {
                 if let Some(p) = pointer.filter(|p| r.expand(REACH).contains(*p)) {
                     let tip = if let Some(e) = &n.error {
                         Some(e.clone())
+                    } else if n.is_observer() && self.port_under(d, origin, p).is_none() {
+                        Some(observer_help(n))
                     } else {
                         self.port_under(d, origin, p)
                             .filter(|&(k, _, _)| k == i)
@@ -254,6 +283,7 @@ impl Canvas {
 
         if interactive {
             self.context_menu(&response, d, registry, &mut edits, &mut requests);
+            self.promote_offer(ui, &mut edits);
         }
         (edits, requests)
     }
@@ -307,6 +337,8 @@ impl Canvas {
             NodeKind::Block => visuals.widgets.inactive.bg_fill,
             NodeKind::Subsystem => visuals.selection.bg_fill.gamma_multiply(0.45),
             NodeKind::Input | NodeKind::Output => visuals.warn_fg_color.gamma_multiply(0.25),
+            NodeKind::Filter => visuals.hyperlink_color.gamma_multiply(0.3),
+            NodeKind::View => visuals.hyperlink_color.gamma_multiply(0.15),
         };
         painter.rect_filled(
             header,
@@ -325,7 +357,29 @@ impl Canvas {
         } else {
             visuals.window_stroke
         };
-        painter.rect_stroke(r, radius, border, StrokeKind::Inside);
+        if n.is_observer() {
+            // Dashed: on the data layer, not part of the model.
+            let colour = if n.error.is_some() || selected {
+                border.color
+            } else {
+                visuals.hyperlink_color
+            };
+            let c = [
+                r.left_top(),
+                r.right_top(),
+                r.right_bottom(),
+                r.left_bottom(),
+                r.left_top(),
+            ];
+            painter.extend(egui::Shape::dashed_line(
+                &c,
+                Stroke::new(border.width.max(1.2), colour),
+                5.0 * z,
+                3.0 * z,
+            ));
+        } else {
+            painter.rect_stroke(r, radius, border, StrokeKind::Inside);
+        }
         if n.kind == NodeKind::Subsystem {
             // A second outline: there is more inside.
             painter.rect_stroke(
@@ -338,12 +392,7 @@ impl Canvas {
         let text = visuals.text_color();
         let weak = visuals.weak_text_color();
         let pad = 8.0 * z;
-        let title = match n.kind {
-            NodeKind::Input | NodeKind::Output => {
-                n.name[n.name.find(':').map_or(0, |i| i + 1)..].to_string()
-            }
-            _ => n.name.clone(),
-        };
+        let title = title(n);
         painter.text(
             r.min + Vec2::new(pad, 5.0 * z),
             egui::Align2::LEFT_TOP,
@@ -359,6 +408,8 @@ impl Canvas {
                 NodeKind::Subsystem => format!("{} · subsystem", n.type_name),
                 NodeKind::Input => "subsystem input".into(),
                 NodeKind::Output => "subsystem output".into(),
+                NodeKind::Filter => format!("filter · {}", n.method),
+                NodeKind::View => format!("view · {}", n.method),
             }
         };
         painter.text(
@@ -399,10 +450,28 @@ impl Canvas {
                 } else {
                     12
                 };
+                // A view's slot also names what it reads without a wire
+                // (`x · t`).
+                let label = match n.kind {
+                    NodeKind::View => {
+                        let head = format!("{}: ", p.name);
+                        let more: Vec<&str> = n
+                            .unreached
+                            .iter()
+                            .filter_map(|u| u.strip_prefix(&head))
+                            .collect();
+                        if more.is_empty() {
+                            p.name.clone()
+                        } else {
+                            format!("{} · {}", p.name, more.join(", "))
+                        }
+                    }
+                    _ => p.name.clone(),
+                };
                 painter.text(
                     at + offset,
                     align,
-                    fit(&p.name, max),
+                    fit(&label, max),
                     FontId::proportional(12.0 * z),
                     text,
                 );
@@ -463,7 +532,7 @@ impl Canvas {
                     .windows(2)
                     .any(|s| segment_distance(p, s[0], s[1]) < 5.0)
             })
-            .map(|w| w.to_name.clone())
+            .map(|w| w.key())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -498,7 +567,9 @@ impl Canvas {
                     let key = |n: usize, q: &str| format!("{}.{}", d.nodes[n].name, q);
                     // Dragging a connected input lifts its wire from the
                     // source end.
-                    let fed = (c == Causality::Input)
+                    // A data-layer input may read several signals: dragging
+                    // from it starts a new wire instead.
+                    let fed = (c == Causality::Input && !d.nodes[node].is_observer())
                         .then(|| d.wires.iter().find(|w| w.to == (node, port)))
                         .flatten();
                     self.wiring = Some(match fed {
@@ -598,7 +669,30 @@ impl Canvas {
                             edits.push(Edit::Connect { from, to });
                         }
                     }
-                    (None, Some((from, to))) => edits.push(Edit::Connect { from, to }),
+                    (None, Some((from, to))) => {
+                        let node = |key: &str| {
+                            key.split_once('.')
+                                .map_or(key.to_string(), |(n, _)| n.to_string())
+                        };
+                        let into = d.node(&node(&to)).map(|k| &d.nodes[k]);
+                        let out_of = d.node(&node(&from)).map(|k| &d.nodes[k]);
+                        match (out_of.map(|n| n.kind), into.map(|n| n.kind)) {
+                            // A view's slot shows the signal.
+                            (_, Some(NodeKind::View)) => edits.push(Edit::Bind {
+                                many: d.many.contains(&to),
+                                from,
+                                to,
+                            }),
+                            // A filter cannot feed the model: offer to
+                            // promote it.
+                            (Some(NodeKind::Filter), Some(k)) if !matches!(k, NodeKind::Filter) => {
+                                let name = node(&from).trim_start_matches("filter:").to_string();
+                                let at = pointer.unwrap_or(origin);
+                                self.offer = Some((name, to, at));
+                            }
+                            _ => edits.push(Edit::Connect { from, to }),
+                        }
+                    }
                     (None, None) => {}
                 }
             }
@@ -637,7 +731,7 @@ impl Canvas {
                 .interact_pointer_pos()
                 .and_then(|p| self.node_under(d, origin, p))
             {
-                requests.push(Request::Open(d.nodes[i].name.clone()));
+                requests.push(open_request(&d.nodes[i]));
             }
         }
         if response.secondary_clicked() {
@@ -658,7 +752,13 @@ impl Canvas {
         let typing = ui.ctx().egui_wants_keyboard_input();
         if delete && !typing && response.hovered() {
             match self.selected.take() {
-                Some(Selection::Wire(to)) => edits.push(Edit::Disconnect { to }),
+                Some(Selection::Wire(key)) => edits.push(match key.split_once('<') {
+                    Some((to, signal)) => Edit::Unbind {
+                        to: to.into(),
+                        signal: signal.into(),
+                    },
+                    None => Edit::Disconnect { to: key },
+                }),
                 Some(s) => {
                     for block in s.blocks() {
                         edits.push(Edit::Delete { block });
@@ -705,8 +805,34 @@ impl Canvas {
                         }
                     }
                     NodeKind::Input | NodeKind::Output => {}
+                    NodeKind::Filter => {
+                        if ui.button("Edit in Data…").on_hover_text("Its formula or cuts").clicked() {
+                            requests.push(open_request(n));
+                            ui.close();
+                        }
+                        if n.type_name == "expression"
+                            && ui
+                                .button("Promote to block")
+                                .on_hover_text(
+                                    "Make it a formula block that runs with the model and can \
+                                     feed other blocks (ADR 0032)",
+                                )
+                                .clicked()
+                        {
+                            edits.push(Edit::Promote {
+                                filter: shown.clone(),
+                            });
+                            ui.close();
+                        }
+                    }
+                    NodeKind::View => {
+                        if ui.button("Show tile").clicked() {
+                            requests.push(open_request(n));
+                            ui.close();
+                        }
+                    }
                 }
-                ui.horizontal(|ui| {
+                ui.add_enabled_ui(n.kind != NodeKind::View, |ui| ui.horizontal(|ui| {
                     let field = ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(110.0));
                     let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (ui.button("Rename").clicked() || enter) && self.rename != shown {
@@ -716,7 +842,7 @@ impl Canvas {
                         });
                         ui.close();
                     }
-                });
+                }));
                 if n.is_block() {
                     let group: Vec<String> = if selection.contains(&name) {
                         selection
@@ -760,6 +886,28 @@ impl Canvas {
                 if let Some(type_name) = type_menu(ui, registry, &d.subsystems) {
                     edits.push(Edit::Add { type_name, at });
                     ui.close();
+                }
+                if !d.view_types.is_empty() {
+                    ui.separator();
+                    if ui
+                        .button("Add filter")
+                        .on_hover_text("An expression over recorded signals; edit it in Data…")
+                        .clicked()
+                    {
+                        edits.push(Edit::AddFilter { at });
+                        ui.close();
+                    }
+                    ui.menu_button("Add view", |ui| {
+                        for (name, label) in &d.view_types {
+                            if ui.button(label).on_hover_text(name).clicked() {
+                                edits.push(Edit::AddView {
+                                    type_name: name.clone(),
+                                    at,
+                                });
+                                ui.close();
+                            }
+                        }
+                    });
                 }
                 if matches!(d.scope, Scope::Subsystem(_)) {
                     ui.separator();
@@ -816,6 +964,94 @@ pub fn type_menu(ui: &mut egui::Ui, registry: &Registry, subsystems: &[String]) 
     chosen
 }
 
+impl Canvas {
+    /// After a filter was dropped on a model input: say why that cannot
+    /// be, and offer to promote the filter and connect its block.
+    fn promote_offer(&mut self, ui: &egui::Ui, edits: &mut Vec<Edit>) {
+        let Some((filter, to, at)) = self.offer.clone() else {
+            return;
+        };
+        let mut done = false;
+        egui::Area::new(egui::Id::new("promote-offer"))
+            .fixed_pos(at + Vec2::new(8.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(320.0);
+                    ui.label(crate::observers::feeds_model(&filter));
+                    ui.horizontal(|ui| {
+                        if ui.button("Promote and connect").clicked() {
+                            edits.push(Edit::PromoteConnect {
+                                filter: filter.clone(),
+                                to: to.clone(),
+                            });
+                            done = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            done = true;
+                        }
+                    });
+                });
+            });
+        if done || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.offer = None;
+        }
+    }
+
+    /// The offer to promote a filter, if one is open: filter and input.
+    pub fn offered(&self) -> Option<(&str, &str)> {
+        self.offer
+            .as_ref()
+            .map(|(f, t, _)| (f.as_str(), t.as_str()))
+    }
+}
+
+/// What a node is called on the canvas.
+fn title(n: &Node) -> String {
+    match n.kind {
+        NodeKind::Input | NodeKind::Output | NodeKind::Filter => {
+            n.name[n.name.find(':').map_or(0, |i| i + 1)..].to_string()
+        }
+        NodeKind::View => {
+            let k = n.name["view:".len()..].parse::<usize>().unwrap_or(0);
+            format!("View {}", k + 1)
+        }
+        _ => n.name.clone(),
+    }
+}
+
+/// What double-clicking a node opens.
+fn open_request(n: &Node) -> Request {
+    match n.kind {
+        NodeKind::Filter => Request::EditData(title(n)),
+        NodeKind::View => Request::ShowView(n.name["view:".len()..].parse().unwrap_or(0)),
+        _ => Request::Open(n.name.clone()),
+    }
+}
+
+/// Hover help for a data-layer node: what it is and what it reads that
+/// has no wire.
+fn observer_help(n: &Node) -> String {
+    let what = match n.kind {
+        NodeKind::Filter => format!(
+            "Filter {} ({}): computed from recorded data after each step; it cannot feed the \
+             model. Double-click to edit it in Data…",
+            title(n),
+            n.method
+        ),
+        _ => format!(
+            "{} ({}): drop a signal on a slot to show it. Double-click to show the tile.",
+            title(n),
+            n.type_name
+        ),
+    };
+    if n.unreached.is_empty() {
+        what
+    } else {
+        format!("{what}\nAlso reads: {}", n.unreached.join(", "))
+    }
+}
+
 fn port_help(block: &str, p: &crate::diagram::Port, c: Causality) -> String {
     let dir = match c {
         Causality::Input => "input",
@@ -824,6 +1060,7 @@ fn port_help(block: &str, p: &crate::diagram::Port, c: Causality) -> String {
     let shape = match p.shape {
         Shape::Scalar => "a number".to_string(),
         Shape::Vector(n) => format!("{n} numbers"),
+        Shape::Grid { nx: 0, .. } => "a line field".to_string(),
         Shape::Grid { nx, ny } => format!("a {nx} × {ny} grid"),
         Shape::Points { count, dim } => format!("{count} points in {dim}D"),
         Shape::Population { dim } => format!("a population of points in {dim}D"),
@@ -1034,6 +1271,80 @@ mod tests {
             [Edit::Disconnect {
                 to: "cruise.v".into()
             }]
+        );
+    }
+
+    #[test]
+    fn data_wires_show_signals_in_views_and_filters_offer_promotion() {
+        let mut f = ModelFile::from_json(
+            EXAMPLES
+                .iter()
+                .find(|e| e.name.contains("Cruise"))
+                .unwrap()
+                .text,
+        )
+        .unwrap()
+        .0;
+        f.controls
+            .filters
+            .push(simsandbox_file::FilterEntry::expression(
+                "push",
+                "cruise.F",
+                Vec::new(),
+            ));
+        let mut d = Diagram::new(&f, &registry());
+        d.observe(&f, &crate::examples::view_registry());
+        let ctx = egui::Context::default();
+        let mut c = Canvas::default();
+        frame(&ctx, &mut c, &mut d, vec![]);
+        // An output dropped on a view's slot that takes several adds it.
+        let a = screen(&c, &d, "car", Causality::Output, "v");
+        let b = screen(&c, &d, "view:1", Causality::Input, "y");
+        let edits = drag(&ctx, &mut c, &mut d, a, b);
+        assert_eq!(
+            edits,
+            [Edit::Bind {
+                from: "car.v".into(),
+                to: "view:1.y".into(),
+                many: true
+            }]
+        );
+        // A filter dropped on a block input is not connected; promoting is
+        // offered instead.
+        let a = screen(&c, &d, "filter:push", Causality::Output, "push");
+        let b = screen(&c, &d, "car", Causality::Input, "F");
+        let edits = drag(&ctx, &mut c, &mut d, a, b);
+        assert!(edits.is_empty(), "{edits:?}");
+        assert_eq!(c.offered(), Some(("push", "car.F")));
+        // Data wires are selected by input and signal, and Delete unbinds.
+        let w = d
+            .wires
+            .iter()
+            .find(|w| w.signal == "cruise.F")
+            .unwrap()
+            .clone();
+        c.selected = Some(Selection::Wire(w.key()));
+        let p = c.to_screen(Pos2::ZERO, [0.0, 0.0]);
+        let (edits, _) = frame(
+            &ctx,
+            &mut c,
+            &mut d,
+            vec![
+                egui::Event::PointerMoved(p + Vec2::splat(5.0)),
+                egui::Event::Key {
+                    key: egui::Key::Delete,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        assert!(
+            edits
+                .iter()
+                .any(|e| matches!(e, Edit::Unbind { signal, .. } if signal == "cruise.F")),
+            "{edits:?}"
         );
     }
 

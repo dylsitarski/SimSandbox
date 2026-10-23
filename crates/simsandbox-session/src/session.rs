@@ -891,6 +891,18 @@ impl Session {
         result.map(|_| ())
     }
 
+    /// Where a filter's node sits on the data layer (ADR 0050): saved with
+    /// the filters, without evaluating them again.
+    pub fn place_filter(&mut self, name: &str, at: Option<[f64; 2]>) -> Result<(), String> {
+        let f = self
+            .filter_entries
+            .iter_mut()
+            .find(|f| f.name == name)
+            .ok_or_else(|| format!("no filter '{name}'"))?;
+        f.canvas = at.map(|p| p.map(|v| (v * 10.0).round() / 10.0));
+        Ok(())
+    }
+
     /// Whether any block starts from a saved state instead of its
     /// parameters.
     pub fn has_start_states(&self) -> bool {
@@ -1296,6 +1308,7 @@ pub fn default_cut(h: &History, name: &str, input: &str) -> FilterEntry {
         name: name.into(),
         type_name: "cut".into(),
         inputs: vec![input.into()],
+        canvas: None,
         settings: [
             ("mode".to_string(), serde_json::Value::from("along_x")),
             ("at".to_string(), serde_json::Value::from(at)),

@@ -285,6 +285,17 @@ class Model:
         self.data = json.loads(text)
         return note
 
+    def promote(self, filter: str, to: str | None = None) -> str:
+        """Turn the expression filter ``filter`` into a formula block that
+        runs with the model (ADR 0050): an input for each output it reads,
+        in that output's unit, wired from it. Views and filters that read
+        the filter then read the block. With ``to`` (``"car.F"``), its
+        output is also connected there; a filter itself can never feed
+        the model. Returns a note naming the block."""
+        text, note = _native.promote(self.to_json(), filter, to)
+        self.data = json.loads(text)
+        return note
+
     def start_from(self, t: float) -> "Model":
         """Run to ``t`` and return the model that starts from the state
         reached there, at time 0 (ADR 0042): e.g. a steady state from which
@@ -308,19 +319,21 @@ class Model:
         light: bool = False,
         diagram: bool = False,
         subsystem: str | None = None,
+        data: bool = True,
     ) -> bytes:
         """Run to ``t_end`` and draw the model's views (``controls.views``,
         or ``view`` alone) as a PNG, as the app shows them; with
         ``diagram``, draw its block diagram instead (no run needed), or
-        with ``subsystem`` too, that subsystem's inside. Writes it to
-        ``path`` if given; returns the PNG bytes."""
+        with ``subsystem`` too, that subsystem's inside. The model's diagram
+        includes its filters and views (ADR 0050) unless ``data`` is false.
+        Writes it to ``path`` if given; returns the PNG bytes."""
         if subsystem is not None and not diagram:
             raise ValueError("subsystem draws a subsystem's diagram: add diagram=True")
         if diagram:
             if t_end is not None or view is not None:
                 raise ValueError("t_end and view do not apply to a diagram")
             image = _native.render_diagram(
-                self.to_json(), float(width), float(height), float(scale), light, subsystem
+                self.to_json(), float(width), float(height), float(scale), light, subsystem, data
             )
             warnings = []
         else:

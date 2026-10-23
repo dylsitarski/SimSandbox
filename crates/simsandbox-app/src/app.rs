@@ -394,6 +394,9 @@ impl SimApp {
                 self.pending.clear();
                 self.diagram.reset();
                 if announce {
+                    // Opened, or rebuilt outside the canvas: canvas undo
+                    // starts afresh (ADR 0050).
+                    self.diagram.forget_history();
                     self.log.info(format!("Opened {title}"));
                 }
                 self.rewind_t = 0.0;
@@ -767,8 +770,17 @@ impl SimApp {
         };
         let m = live.model();
         let (speed, views) = (self.speed, self.views.entries());
-        let current = || live.call(move |s, _| s.save_json(speed, Some(views)))?;
-        let outcomes = self.diagram.show(ui, &m, &self.registry, current);
+        let current = || {
+            let views = views.clone();
+            live.call(move |s, _| s.save_json(speed, Some(views)))?
+        };
+        let outcomes = self.diagram.show(
+            ui,
+            &m,
+            &self.registry,
+            (&views, &self.views.registry),
+            &current,
+        );
         self.diagram_outcomes(&m, outcomes);
     }
 
@@ -803,7 +815,92 @@ impl SimApp {
                 }
                 Outcome::Open(name) => self.open_block(m, &name),
                 Outcome::Error(e) => self.error = Some(e),
+                Outcome::Placed { filters, views } => {
+                    let Some(live) = &self.session else {
+                        return;
+                    };
+                    for (name, at) in filters {
+                        live.send(Some(&format!("place:{name}")), move |s, c| {
+                            if let Err(e) = s.place_filter(&name, Some(at)) {
+                                c.error(e);
+                            }
+                        });
+                    }
+                    for (k, at) in views {
+                        if let Some(t) = self.views.tiles.get_mut(k) {
+                            t.canvas = Some(at.map(|v| (v * 10.0).round() / 10.0));
+                        }
+                    }
+                }
+                Outcome::Layout(file) => {
+                    let Some(live) = &self.session else {
+                        return;
+                    };
+                    for f in &file.controls.filters {
+                        let (name, at) = (f.name.clone(), f.canvas);
+                        live.send(None, move |s, _| {
+                            let _ = s.place_filter(&name, at);
+                        });
+                    }
+                    for (t, v) in self.views.tiles.iter_mut().zip(&file.controls.views) {
+                        t.canvas = v.canvas;
+                    }
+                    live.send(None, move |s, _| {
+                        simsandbox_session::undo::copy_layout(&file, &mut s.file);
+                    });
+                }
+                Outcome::Data {
+                    filters,
+                    views,
+                    notes,
+                } => self.apply_data(m, filters, views, notes),
+                Outcome::EditData(_) => {
+                    self.signals_editor = Some(SignalsEditor::new(m));
+                }
+                Outcome::ShowView(k) => {
+                    if let Some(t) = self.views.tiles.get(k) {
+                        self.views.selected = Some(t.id);
+                        self.central = Central::Views;
+                    }
+                }
             }
+        }
+    }
+
+    /// Apply filters and views edited on the canvas to the running model
+    /// (ADR 0050): filters are evaluated over the history again only if
+    /// they changed; tiles whose view is unchanged stay as they are.
+    fn apply_data(
+        &mut self,
+        m: &crate::live::Model,
+        filters: Vec<simsandbox_file::FilterEntry>,
+        views: Vec<simsandbox_file::ViewEntry>,
+        notes: Vec<String>,
+    ) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        if filters != m.filters {
+            match live.call(move |s, _| s.set_filters(filters)) {
+                Ok(Ok(())) => {}
+                Ok(Err(problems)) => {
+                    self.error = Some(problems.join("; "));
+                    return;
+                }
+                Err(e) => {
+                    self.error = Some(e);
+                    return;
+                }
+            }
+        }
+        let history = live.history();
+        let now = live.model();
+        let available = now.available(&history);
+        for w in self.views.set_entries(&views, &available) {
+            self.log.warn(w);
+        }
+        for n in notes.iter().filter(|n| !n.is_empty()) {
+            self.log.info(n.clone());
         }
     }
 
@@ -1291,7 +1388,16 @@ impl SimApp {
                 .iter()
                 .map(|f| f.name.clone())
                 .collect();
-            let entries = ed.entries();
+            let mut entries = ed.entries();
+            // Filters keep their place on the canvas (ADR 0050).
+            for e in &mut entries {
+                e.canvas = live
+                    .model()
+                    .filters
+                    .iter()
+                    .find(|f| f.name == e.name)
+                    .and_then(|f| f.canvas);
+            }
             match live.call(move |s, _| s.set_filters(entries)) {
                 Ok(Ok(())) => {
                     // A new cut filter opens a profile of its cuts.
@@ -2194,6 +2300,7 @@ impl CutEdit {
             name: self.name.trim().into(),
             type_name: "cut".into(),
             inputs: vec![self.input.clone()],
+            canvas: None,
             settings,
         }
     }
@@ -2761,9 +2868,143 @@ mod tests {
         let live = app.session.as_ref().unwrap();
         let m = live.model();
         let (speed, views) = (app.speed, app.views.entries());
-        let current = || live.call(move |s, _| s.save_json(speed, Some(views)))?;
-        let outcomes = app.diagram.handle(edits, &app.registry, current);
+        let current = || {
+            let views = views.clone();
+            live.call(move |s, _| s.save_json(speed, Some(views)))?
+        };
+        let outcomes = app.diagram.handle(edits, &app.registry, &current);
         app.diagram_outcomes(&m, outcomes);
+    }
+
+    /// Undo (`back`) or redo a canvas edit, as Ctrl+Z and Ctrl+Shift+Z do.
+    fn canvas_step(app: &mut SimApp, back: bool) {
+        let live = app.session.as_ref().unwrap();
+        let m = live.model();
+        let (speed, views) = (app.speed, app.views.entries());
+        let current = || {
+            let views = views.clone();
+            live.call(move |s, _| s.save_json(speed, Some(views)))?
+        };
+        let outcomes = app.diagram.step(back, &app.registry, &current);
+        app.diagram_outcomes(&m, outcomes);
+    }
+
+    #[test]
+    fn data_edits_apply_live_and_canvas_edits_undo() {
+        use simsandbox_session::diagram::Edit;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES.iter().find(|e| e.name.contains("Cruise")).unwrap();
+        app.open_text(e.name, e.text);
+        let live = app.session.as_ref().unwrap();
+        live.call(|s, _| s.run_until(5.0)).unwrap().unwrap();
+        let shown = |app: &SimApp| app.views.entries()[1].bind["y"].signals();
+
+        // A data edit: the second view also shows the speed; the run goes
+        // on.
+        canvas_edits(
+            &mut app,
+            vec![Edit::Bind {
+                from: "car.v".into(),
+                to: "view:1.y".into(),
+                many: true,
+            }],
+        );
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(shown(&app), ["cruise.F", "car.v"]);
+        assert!(app.session.as_ref().unwrap().status().time > 4.9);
+        // A filter added and moved on the canvas, kept with the model.
+        canvas_edits(&mut app, vec![Edit::AddFilter { at: [500.0, 300.0] }]);
+        canvas_edits(
+            &mut app,
+            vec![Edit::Move {
+                block: "filter:signal1".into(),
+                at: [520.0, 310.0],
+            }],
+        );
+        let live = app.session.as_ref().unwrap();
+        live.sync();
+        let filters = live.model().filters.clone();
+        assert_eq!(filters[0].name, "signal1");
+        let saved = app.saved_text().unwrap();
+        assert!(
+            saved.contains("\"canvas\": [\n            520.0") || saved.contains("520.0"),
+            "{saved}"
+        );
+        assert!(app.session.as_ref().unwrap().status().time > 4.9);
+
+        // Undo steps back through them without a restart.
+        canvas_step(&mut app, true); // the move
+        canvas_step(&mut app, true); // the filter
+        let live = app.session.as_ref().unwrap();
+        live.sync();
+        assert!(live.model().filters.is_empty());
+        canvas_step(&mut app, true); // the binding
+        assert_eq!(shown(&app), ["cruise.F"]);
+        assert!(app.session.as_ref().unwrap().status().time > 4.9);
+        canvas_step(&mut app, false); // redo the binding
+        assert_eq!(shown(&app), ["cruise.F", "car.v"]);
+
+        // A model edit that does not load waits as a draft; undoing it
+        // goes back to the running model.
+        canvas_edits(
+            &mut app,
+            vec![Edit::Delete {
+                block: "cruise".into(),
+            }],
+        );
+        // Removing cruise leaves car.F open: a draft, the run goes on.
+        assert!(app.diagram.draft_problem().is_some());
+        canvas_step(&mut app, true);
+        assert!(
+            app.diagram.draft_problem().is_none(),
+            "{:?}",
+            app.diagram.draft_problem()
+        );
+        let live = app.session.as_ref().unwrap();
+        assert!(live.model().file.blocks.iter().any(|b| b.name == "cruise"));
+        assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    #[test]
+    fn a_promoted_filter_becomes_a_block_feeding_the_model() {
+        use simsandbox_session::diagram::Edit;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES.iter().find(|e| e.name.contains("Cruise")).unwrap();
+        app.open_text(e.name, e.text);
+        canvas_edits(&mut app, vec![Edit::AddFilter { at: [500.0, 300.0] }]);
+        let live = app.session.as_ref().unwrap();
+        let entries = vec![simsandbox_file::FilterEntry::expression(
+            "push",
+            "cruise.F",
+            Vec::new(),
+        )];
+        live.call(move |s, _| s.set_filters(entries))
+            .unwrap()
+            .unwrap();
+        canvas_edits(
+            &mut app,
+            vec![
+                Edit::Disconnect { to: "car.F".into() },
+                Edit::PromoteConnect {
+                    filter: "push".into(),
+                    to: "car.F".into(),
+                },
+            ],
+        );
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(
+            app.diagram.draft_problem().is_none(),
+            "{:?}",
+            app.diagram.draft_problem()
+        );
+        let m = app.session.as_ref().unwrap().model();
+        assert!(m.file.blocks.iter().any(|b| b.name == "push"));
+        assert!(m
+            .file
+            .connections
+            .iter()
+            .any(|c| c.from == "push.push" && c.to == "car.F"));
+        assert!(m.filters.is_empty());
     }
 
     #[test]

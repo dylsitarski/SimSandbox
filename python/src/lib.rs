@@ -147,6 +147,7 @@ fn render<'py>(
                 view,
                 light,
                 subsystem: None,
+                data: false,
             };
             let (image, mut warnings) = render_views(&s, view_registry(), &o)?;
             warnings.splice(0..0, s.warnings.iter().cloned());
@@ -159,7 +160,8 @@ fn render<'py>(
 /// The block diagram of a model file as a PNG, as the node canvas shows
 /// it (ADR 0042); drawn even if the model cannot run.
 #[pyfunction]
-#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, subsystem=None))]
+#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, subsystem=None, data=true))]
+#[allow(clippy::too_many_arguments)]
 fn render_diagram<'py>(
     py: Python<'py>,
     text: &str,
@@ -168,6 +170,7 @@ fn render_diagram<'py>(
     scale: f32,
     light: bool,
     subsystem: Option<String>,
+    data: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let image = py
         .detach(|| -> Result<_, String> {
@@ -180,6 +183,7 @@ fn render_diagram<'py>(
                 view: None,
                 light,
                 subsystem,
+                data,
             };
             png(&simsandbox_session::render::render_diagram(
                 &file,
@@ -213,6 +217,23 @@ fn group(text: &str, blocks: Vec<String>, subsystem: Option<String>) -> PyResult
     Ok((file.to_json(), note))
 }
 
+/// Turn an expression filter into a formula block (ADR 0032, ADR 0050),
+/// connected to a model input if `to` is given. Returns the changed model
+/// file and a note.
+#[pyfunction]
+#[pyo3(signature = (text, filter, to=None))]
+fn promote(text: &str, filter: String, to: Option<String>) -> PyResult<(String, String)> {
+    use simsandbox_session::diagram::{apply, Edit};
+    let (mut file, _) = simsandbox_session::ModelFile::from_json(text)
+        .map_err(|e| ModelError::new_err(e.to_string()))?;
+    let edit = match to {
+        Some(to) => Edit::PromoteConnect { filter, to },
+        None => Edit::Promote { filter },
+    };
+    let note = apply(&mut file, &registry(), &edit).map_err(ModelError::new_err)?;
+    Ok((file.to_json(), note))
+}
+
 /// A model file in the current form (ADR 0044): the text, the older forms
 /// converted, and what was dropped as unusable.
 #[pyfunction]
@@ -224,6 +245,7 @@ fn upgrade(text: &str) -> PyResult<(String, Vec<String>, Vec<String>)> {
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ModelError", m.py().get_type::<ModelError>())?;
     m.add_function(wrap_pyfunction!(describe, m)?)?;
+    m.add_function(wrap_pyfunction!(promote, m)?)?;
     m.add_function(wrap_pyfunction!(schema, m)?)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(examples, m)?)?;

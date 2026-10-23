@@ -11,6 +11,8 @@ use simsandbox_views::{Available, Bindings, ViewRegistry, ViewState, ViewType};
 pub struct Tile {
     pub id: u64,
     pub state: ViewState,
+    /// Where its node sits on the canvas's data layer (ADR 0050).
+    pub canvas: Option<[f64; 2]>,
 }
 
 pub struct Views {
@@ -43,7 +45,8 @@ impl Views {
         for (i, entry) in saved.iter().enumerate() {
             match self.restore(entry, available) {
                 Ok(state) => {
-                    self.push(state);
+                    let id = self.push(state);
+                    self.tile_mut(id).canvas = entry.canvas;
                 }
                 Err(e) => warnings.push(format!("controls.views[{i}]: {e}; ignored")),
             }
@@ -91,8 +94,67 @@ impl Views {
     fn push(&mut self, state: ViewState) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.tiles.push(Tile { id, state });
+        self.tiles.push(Tile {
+            id,
+            state,
+            canvas: None,
+        });
         id
+    }
+
+    fn tile_mut(&mut self, id: u64) -> &mut Tile {
+        self.tiles
+            .iter_mut()
+            .find(|t| t.id == id)
+            .expect("a tile just added")
+    }
+
+    /// Make the tiles these entries, as canvas edits leave them (ADR 0050):
+    /// a tile whose entry is unchanged stays as it is (zoom and all); a new
+    /// entry with nothing bound starts from its type's first preset.
+    /// Returns warnings for entries that cannot be shown.
+    pub fn set_entries(&mut self, entries: &[ViewEntry], available: &Available<'_>) -> Vec<String> {
+        let old = self.entries();
+        let mut kept: Vec<Option<Tile>> = std::mem::take(&mut self.tiles)
+            .into_iter()
+            .map(Some)
+            .collect();
+        let mut warnings = Vec::new();
+        for (i, e) in entries.iter().enumerate() {
+            let same = old.iter().enumerate().position(|(k, o)| {
+                kept[k].is_some()
+                    && ViewEntry {
+                        canvas: e.canvas,
+                        ..o.clone()
+                    } == *e
+            });
+            if let Some(k) = same {
+                let mut tile = kept[k].take().expect("checked");
+                tile.canvas = e.canvas;
+                self.tiles.push(tile);
+                continue;
+            }
+            let state = match self.restore(e, available) {
+                Ok(s) => Ok(s),
+                Err(err) if e.bind.is_empty() => self
+                    .registry
+                    .get(&e.type_name)
+                    .and_then(|t| ViewState::from_preset(t, 0, available))
+                    .ok_or(err),
+                Err(err) => Err(err),
+            };
+            match state {
+                Ok(state) => {
+                    let id = self.push(state);
+                    self.tile_mut(id).canvas = e.canvas;
+                }
+                Err(err) => warnings.push(format!("view {}: {err}; not shown", i + 1)),
+            }
+        }
+        if !self.tiles.iter().any(|t| Some(t.id) == self.selected) {
+            self.selected = self.tiles.first().map(|t| t.id);
+        }
+        warnings
     }
 
     /// Whether a view type applies to the model and its preset can be
@@ -183,6 +245,7 @@ impl Views {
                         CameraControl { yaw, pitch, zoom }
                     }),
                     selection: s.selection(),
+                    canvas: tile.canvas,
                 }
             })
             .collect()
@@ -233,6 +296,7 @@ mod tests {
                 zoom: 2.0,
             }),
             selection: None,
+            canvas: None,
         }
     }
 

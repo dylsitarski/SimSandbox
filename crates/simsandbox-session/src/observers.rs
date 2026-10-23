@@ -1,0 +1,1057 @@
+//! The canvas's data layer (ADR 0032, ADR 0050): filters and views drawn
+//! as nodes beside the model's blocks, wired to the recorded signals they
+//! read. Filters are `filter:NAME` nodes, views `view:K` (their place in
+//! `controls.views`). Data wires carry recorded data, not current values,
+//! so a filter never feeds a model block: wiring one into a block's input
+//! is refused, and promoting the filter turns it into a formula block that
+//! can. Edits to filters and views change only `controls`; the app
+//! applies them without restarting the run.
+
+use crate::diagram::{
+    apply_in, free_name, tidy, Diagram, Edit, Node, NodeKind, Port, Scope, Wire, NODE_WIDTH,
+};
+use simsandbox_core::block::Shape;
+use simsandbox_core::registry::Registry;
+use simsandbox_file::{Binding, BlockEntry, ConnectionEntry, FilterEntry, ModelFile, ViewEntry};
+use simsandbox_views::ViewRegistry;
+use std::collections::BTreeMap;
+
+/// Space between data-layer nodes placed automatically.
+const GAP_X: f64 = 90.0;
+const GAP_Y: f64 = 30.0;
+
+pub fn filter_node(name: &str) -> String {
+    format!("filter:{name}")
+}
+
+pub fn view_node(index: usize) -> String {
+    format!("view:{index}")
+}
+
+/// Whether a node name is on the data layer.
+pub fn is_observer(node: &str) -> bool {
+    node.starts_with("filter:") || node.starts_with("view:")
+}
+
+/// The node of a `"node.port"` key.
+fn node_of(key: &str) -> &str {
+    key.split_once('.').map_or(key, |(n, _)| n)
+}
+
+/// The flat signal an output at a level carries: `car.v` stays, a
+/// subsystem use's `car1.v` becomes the inner `car1/car.v`.
+fn flat_output(
+    file: &ModelFile,
+    blocks: &[BlockEntry],
+    prefix: &str,
+    key: &str,
+    depth: usize,
+) -> Option<String> {
+    let (node, port) = key.split_once('.')?;
+    let b = blocks.iter().find(|b| b.name == node)?;
+    match file.subsystems.get(&b.type_name) {
+        None => Some(format!("{prefix}{node}.{port}")),
+        Some(def) if depth < 16 => {
+            let out = def.outputs.iter().find(|o| o.name == port)?;
+            flat_output(
+                file,
+                &def.blocks,
+                &format!("{prefix}{node}/"),
+                &out.from,
+                depth + 1,
+            )
+        }
+        _ => None,
+    }
+}
+
+/// The recorded signal a canvas output carries: a filter's output by its
+/// name, a model output by its flat name.
+fn signal_of(file: &ModelFile, from: &str) -> Result<String, String> {
+    if let Some(rest) = from.strip_prefix("filter:") {
+        return rest
+            .split_once('.')
+            .map(|(_, port)| port.to_string())
+            .ok_or_else(|| format!("'{from}' is not an output"));
+    }
+    flat_output(file, &file.blocks, "", from, 0)
+        .ok_or_else(|| format!("'{from}' is not an output on the model's level"))
+}
+
+/// Model outputs on the diagram by the signal they record.
+fn sources(file: &ModelFile, d: &Diagram) -> BTreeMap<String, (usize, usize)> {
+    let mut out = BTreeMap::new();
+    for (i, n) in d.nodes.iter().enumerate() {
+        if !n.is_block() {
+            continue;
+        }
+        for (k, p) in n.outputs.iter().enumerate() {
+            let key = format!("{}.{}", n.name, p.name);
+            if let Some(flat) = flat_output(file, &file.blocks, "", &key, 0) {
+                out.insert(flat, (i, k));
+            }
+        }
+    }
+    out
+}
+
+/// Where a recorded signal comes from: the output itself, or for an
+/// element (`lorenz.xyz[0]`) or a sweep's grid (`grid.spring.amplitude`)
+/// the output it is made from.
+fn resolve(sources: &BTreeMap<String, (usize, usize)>, signal: &str) -> Option<(usize, usize)> {
+    let base = signal.strip_prefix("grid.").unwrap_or(signal);
+    let whole = match base.rfind('[') {
+        Some(i) if base.ends_with(']') => &base[..i],
+        _ => base,
+    };
+    [signal, base, whole]
+        .into_iter()
+        .find_map(|s| sources.get(s).copied())
+}
+
+/// What a filter reads: its inputs as saved, or the names in its
+/// expression.
+fn filter_reads(f: &FilterEntry) -> Vec<String> {
+    if !f.inputs.is_empty() {
+        return f.inputs.clone();
+    }
+    f.expr()
+        .and_then(|e| simsandbox_expr::parse_signals(e).ok())
+        .map(|a| a.names().into_iter().map(|(n, _)| n).collect())
+        .unwrap_or_default()
+}
+
+impl Diagram {
+    /// Add the data layer to a model-level diagram: a node per filter and
+    /// view, wired from the outputs they read (ADR 0050). Nodes without a
+    /// `canvas` place go to the right of the model.
+    pub fn observe(&mut self, file: &ModelFile, views: &ViewRegistry) {
+        if self.scope != Scope::Model {
+            return;
+        }
+        self.view_types = views
+            .types()
+            .iter()
+            .map(|t| (t.name.to_string(), t.label.to_string()))
+            .collect();
+        let mut sources = sources(file, self);
+        let model_nodes = self.nodes.len();
+        // Filter nodes first, so filters reading filters find them.
+        let mut reads: Vec<(usize, Vec<String>)> = Vec::new();
+        for f in &file.controls.filters {
+            let i = self.nodes.len();
+            let field = f.type_name == "cut";
+            let outputs: Vec<Port> = f
+                .outputs()
+                .into_iter()
+                .map(|name| Port {
+                    name,
+                    unit: String::new(),
+                    shape: if field {
+                        Shape::Grid { nx: 0, ny: 1 }
+                    } else {
+                        Shape::Scalar
+                    },
+                })
+                .collect();
+            for (k, p) in outputs.iter().enumerate() {
+                sources.insert(p.name.clone(), (i, k));
+            }
+            let method = match f.type_name.as_str() {
+                "expression" => f.expr().unwrap_or_default().to_string(),
+                "cut" => {
+                    let mode = f.settings.get("mode").and_then(|m| m.as_str());
+                    format!("cut {}", mode.unwrap_or("along_x").replace('_', " "))
+                }
+                other => format!("unknown filter type '{other}'"),
+            };
+            self.nodes.push(Node {
+                name: filter_node(&f.name),
+                kind: NodeKind::Filter,
+                type_name: f.type_name.clone(),
+                method,
+                inputs: Vec::new(),
+                outputs,
+                at: f.canvas.unwrap_or_default(),
+                placed: f.canvas.is_some(),
+                error: None,
+                unreached: Vec::new(),
+            });
+            reads.push((i, filter_reads(f)));
+        }
+        for (i, signals) in reads {
+            let mut inputs = Vec::new();
+            for s in signals {
+                let (unit, shape) = match resolve(&sources, &s) {
+                    Some((n, k)) => {
+                        let p = &self.nodes[n].outputs[k];
+                        (p.unit.clone(), p.shape)
+                    }
+                    None => (String::new(), Shape::Scalar),
+                };
+                inputs.push(Port {
+                    name: s,
+                    unit,
+                    shape,
+                });
+            }
+            self.nodes[i].inputs = inputs;
+        }
+        for (k, v) in file.controls.views.iter().enumerate() {
+            let t = views.get(&v.type_name);
+            let name = view_node(k);
+            let mut slots: Vec<String> = t
+                .map(|t| t.slots.iter().map(|s| s.name.to_string()).collect())
+                .unwrap_or_default();
+            for s in v.bind.keys() {
+                if !slots.contains(s) {
+                    slots.push(s.clone());
+                }
+            }
+            if let Some(t) = t {
+                for s in t.slots.iter().filter(|s| s.many) {
+                    self.many.insert(format!("{name}.{}", s.name));
+                }
+            }
+            self.nodes.push(Node {
+                name,
+                kind: NodeKind::View,
+                type_name: v.type_name.clone(),
+                method: t.map_or("unknown view type".into(), |t| t.label.to_string()),
+                inputs: slots
+                    .into_iter()
+                    .map(|name| Port {
+                        name,
+                        unit: String::new(),
+                        shape: Shape::Scalar,
+                    })
+                    .collect(),
+                outputs: Vec::new(),
+                at: v.canvas.unwrap_or_default(),
+                placed: v.canvas.is_some(),
+                error: t
+                    .is_none()
+                    .then(|| format!("no view type '{}' in this build", v.type_name)),
+                unreached: Vec::new(),
+            });
+        }
+        // Data wires: what each filter input and view slot reads.
+        let mut wires = Vec::new();
+        for i in model_nodes..self.nodes.len() {
+            let n = &self.nodes[i];
+            let mut reads: Vec<(usize, String)> = Vec::new();
+            match n.kind {
+                NodeKind::Filter => reads.extend(
+                    n.inputs
+                        .iter()
+                        .enumerate()
+                        .map(|(k, p)| (k, p.name.clone())),
+                ),
+                _ => {
+                    let k = n.name["view:".len()..].parse::<usize>().unwrap_or(0);
+                    for (slot, b) in &file.controls.views[k].bind {
+                        let port = n.inputs.iter().position(|p| &p.name == slot);
+                        for s in b.signals() {
+                            reads.extend(port.map(|p| (p, s)));
+                        }
+                    }
+                }
+            }
+            for (port, signal) in reads {
+                match resolve(&sources, &signal) {
+                    Some(from) => wires.push(Wire {
+                        from,
+                        to: (i, port),
+                        from_name: format!(
+                            "{}.{}",
+                            self.nodes[from.0].name, self.nodes[from.0].outputs[from.1].name
+                        ),
+                        to_name: format!(
+                            "{}.{}",
+                            self.nodes[i].name, self.nodes[i].inputs[port].name
+                        ),
+                        signal,
+                    }),
+                    None => {
+                        let slot = self.nodes[i].inputs[port].name.clone();
+                        let entry = if self.nodes[i].kind == NodeKind::View {
+                            format!("{slot}: {signal}")
+                        } else {
+                            signal
+                        };
+                        self.nodes[i].unreached.push(entry);
+                    }
+                }
+            }
+        }
+        self.wires.extend(wires);
+        self.place_observers(model_nodes);
+    }
+
+    /// Place data-layer nodes without a saved place: filters in a column to
+    /// the right of the model, views in the next.
+    fn place_observers(&mut self, first: usize) {
+        let model = &self.nodes[..first];
+        let right = model
+            .iter()
+            .map(|n| n.at[0] + NODE_WIDTH)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let top = model.iter().map(|n| n.at[1]).fold(f64::INFINITY, f64::min);
+        let x0 = if right.is_finite() {
+            right + GAP_X
+        } else {
+            0.0
+        };
+        let y0 = if top.is_finite() { top } else { 0.0 };
+        let has_filters = self.nodes[first..]
+            .iter()
+            .any(|n| n.kind == NodeKind::Filter);
+        for (kind, x) in [
+            (NodeKind::Filter, x0),
+            (
+                NodeKind::View,
+                if has_filters {
+                    x0 + NODE_WIDTH + GAP_X
+                } else {
+                    x0
+                },
+            ),
+        ] {
+            let mut y = y0;
+            for n in self.nodes[first..].iter_mut().filter(|n| n.kind == kind) {
+                if !n.placed {
+                    n.at = [x, y];
+                }
+                y = y.max(n.at[1]) + n.height() + GAP_Y;
+            }
+        }
+    }
+}
+
+/// Why a filter cannot feed a model input.
+pub fn feeds_model(filter: &str) -> String {
+    format!(
+        "{filter} is a filter: it reads recorded data after each step, so it cannot feed the \
+         model; promote it to a block first (ADR 0032)"
+    )
+}
+
+/// Apply an edit that touches the data layer; `None` if it does not.
+pub fn apply(
+    file: &mut ModelFile,
+    scope: &Scope,
+    registry: &Registry,
+    edit: &Edit,
+) -> Option<Result<String, String>> {
+    let touches = match edit {
+        Edit::Move { block, .. } => is_observer(block),
+        Edit::Promote { .. } | Edit::PromoteConnect { .. } => true,
+        Edit::Connect { from, .. } if is_observer(node_of(from)) => true,
+        e => e.data_only(),
+    };
+    if !touches {
+        return None;
+    }
+    if *scope != Scope::Model {
+        return Some(Err(
+            "filters and views belong to the whole model: edit them on its level".into(),
+        ));
+    }
+    Some(apply_model(file, registry, edit))
+}
+
+fn filter_index(file: &ModelFile, node: &str) -> Result<usize, String> {
+    let name = node.strip_prefix("filter:").unwrap_or(node);
+    file.controls
+        .filters
+        .iter()
+        .position(|f| f.name == name)
+        .ok_or_else(|| format!("no filter '{name}'"))
+}
+
+fn view_index(file: &ModelFile, node: &str) -> Result<usize, String> {
+    node.strip_prefix("view:")
+        .and_then(|k| k.parse::<usize>().ok())
+        .filter(|&k| k < file.controls.views.len())
+        .ok_or_else(|| format!("no view '{node}'"))
+}
+
+fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result<String, String> {
+    match edit {
+        Edit::Move { block, at } => {
+            let at = Some(at.map(tidy));
+            if block.starts_with("filter:") {
+                let k = filter_index(file, block)?;
+                file.controls.filters[k].canvas = at;
+            } else {
+                let k = view_index(file, block)?;
+                file.controls.views[k].canvas = at;
+            }
+            Ok(String::new())
+        }
+        Edit::Connect { from, to } => {
+            if is_observer(node_of(from)) && !is_observer(node_of(to)) {
+                let name = node_of(from).trim_start_matches("filter:");
+                return Err(feeds_model(name));
+            }
+            if to.starts_with("view:") {
+                // Without the view registry: a slot holding several takes
+                // one more.
+                let k = view_index(file, node_of(to))?;
+                let slot = to.split_once('.').map_or("", |(_, s)| s);
+                let many = matches!(
+                    file.controls.views[k].bind.get(slot),
+                    Some(Binding::Many(_))
+                );
+                return apply_model(
+                    file,
+                    registry,
+                    &Edit::Bind {
+                        from: from.clone(),
+                        to: to.clone(),
+                        many,
+                    },
+                );
+            }
+            let k = filter_index(file, node_of(to))?;
+            let signal = signal_of(file, from)?;
+            let f = &mut file.controls.filters[k];
+            if f.type_name != "cut" {
+                return Err(format!(
+                    "{} reads the names in its formula: change it in Data…",
+                    f.name
+                ));
+            }
+            f.inputs = vec![signal.clone()];
+            Ok(format!("{} now cuts {signal}", f.name))
+        }
+        Edit::Bind { from, to, many } => {
+            let k = view_index(file, node_of(to))?;
+            let slot = to
+                .split_once('.')
+                .map(|(_, s)| s.to_string())
+                .ok_or("a view input is 'view:K.slot'")?;
+            let signal = signal_of(file, from)?;
+            let bind = &mut file.controls.views[k].bind;
+            let mut now = bind.get(&slot).map(Binding::signals).unwrap_or_default();
+            if *many {
+                if now.contains(&signal) {
+                    return Ok(format!("view {} already shows {signal}", k + 1));
+                }
+                now.push(signal.clone());
+            } else {
+                now = vec![signal.clone()];
+            }
+            bind.insert(slot.clone(), Binding::from(now));
+            Ok(format!("view {} shows {signal} as {slot}", k + 1))
+        }
+        Edit::Unbind { to, signal } => unbind(file, to, Some(signal)),
+        Edit::Disconnect { to } => unbind(file, to, None),
+        Edit::Delete { block } => {
+            if block.starts_with("filter:") {
+                let k = filter_index(file, block)?;
+                let f = file.controls.filters.remove(k);
+                let outputs = f.outputs();
+                for v in &mut file.controls.views {
+                    for b in v.bind.values_mut() {
+                        let kept: Vec<String> = b
+                            .signals()
+                            .into_iter()
+                            .filter(|s| !outputs.contains(s))
+                            .collect();
+                        *b = Binding::from(kept);
+                    }
+                    v.bind.retain(|_, b| !b.signals().is_empty());
+                }
+                Ok(format!("Deleted the filter {}", f.name))
+            } else {
+                let k = view_index(file, block)?;
+                file.controls.views.remove(k);
+                Ok(format!("Deleted view {}", k + 1))
+            }
+        }
+        Edit::Rename { from, to } => {
+            if from.starts_with("view:") {
+                return Err("views have no names; they are numbered in order".into());
+            }
+            let k = filter_index(file, from)?;
+            let old = file.controls.filters[k].name.clone();
+            crate::filters::plain_name(to)?;
+            let taken = file.controls.filters.iter().any(|f| &f.name == to)
+                || file.blocks.iter().any(|b| &b.name == to);
+            if taken {
+                return Err(format!("'{to}' is already used"));
+            }
+            rename_signal(file, &old, to);
+            file.controls.filters[k].name = to.clone();
+            Ok(format!("Renamed the filter {old} to {to}"))
+        }
+        Edit::AddFilter { at } => {
+            let name = free_name("signal", |n| {
+                file.controls.filters.iter().any(|f| f.name == n)
+                    || file.blocks.iter().any(|b| b.name == n)
+            });
+            let mut f = FilterEntry::expression(&name, "t", Vec::new());
+            f.canvas = Some(at.map(tidy));
+            file.controls.filters.push(f);
+            Ok(format!(
+                "Added the filter {name} (edit its formula in Data…)"
+            ))
+        }
+        Edit::AddView { type_name, at } => {
+            file.controls.views.push(ViewEntry {
+                type_name: type_name.clone(),
+                bind: BTreeMap::new(),
+                style: BTreeMap::new(),
+                camera: None,
+                selection: None,
+                canvas: Some(at.map(tidy)),
+            });
+            Ok(format!("Added a {type_name} view"))
+        }
+        Edit::Promote { filter } => {
+            let (block, _) = promote(file, registry, filter)?;
+            Ok(format!("Promoted the filter {filter} to the block {block}"))
+        }
+        Edit::PromoteConnect { filter, to } => {
+            let (block, output) = promote(file, registry, filter)?;
+            apply_in(
+                file,
+                &Scope::Model,
+                registry,
+                &Edit::Connect {
+                    from: output.clone(),
+                    to: to.clone(),
+                },
+            )?;
+            Ok(format!(
+                "Promoted the filter {filter} to the block {block} and connected {output} to {to}"
+            ))
+        }
+        _ => Err("not a data-layer edit".into()),
+    }
+}
+
+/// Stop a data-layer input reading `signal` (every signal if `None`).
+fn unbind(file: &mut ModelFile, to: &str, signal: Option<&String>) -> Result<String, String> {
+    let (node, slot) = to.split_once('.').ok_or("an input is 'node.port'")?;
+    if node.starts_with("view:") {
+        let k = view_index(file, node)?;
+        let bind = &mut file.controls.views[k].bind;
+        let now = bind.get(slot).map(Binding::signals).unwrap_or_default();
+        let kept: Vec<String> = match signal {
+            Some(s) => now.into_iter().filter(|x| x != s).collect(),
+            None => Vec::new(),
+        };
+        if kept.is_empty() {
+            bind.remove(slot);
+        } else {
+            bind.insert(slot.to_string(), Binding::from(kept));
+        }
+        return Ok(format!("view {} no longer shows that as {slot}", k + 1));
+    }
+    let k = filter_index(file, node)?;
+    let f = &mut file.controls.filters[k];
+    if f.type_name != "cut" {
+        return Err(format!(
+            "{} reads the names in its formula: change it in Data…",
+            f.name
+        ));
+    }
+    f.inputs.clear();
+    Ok(format!(
+        "{} cuts nothing until a grid is wired to it",
+        f.name
+    ))
+}
+
+/// Replace the names a filter's outputs go by (`old`, `old[k]`,
+/// `old.x`) in filters and views.
+fn rename_signal(file: &mut ModelFile, old: &str, new: &str) {
+    let map = |s: &str| -> Option<String> {
+        let rest = s.strip_prefix(old)?;
+        (rest.is_empty() || rest.starts_with('[') || rest.starts_with('.'))
+            .then(|| format!("{new}{rest}"))
+    };
+    for f in &mut file.controls.filters {
+        for i in &mut f.inputs {
+            if let Some(n) = map(i) {
+                *i = n;
+            }
+        }
+        if let Some(e) = f.expr().map(str::to_string) {
+            f.settings.insert(
+                "expr".into(),
+                serde_json::Value::String(map_names(&e, &map)),
+            );
+        }
+    }
+    for v in &mut file.controls.views {
+        for b in v.bind.values_mut() {
+            let renamed: Vec<String> = b
+                .signals()
+                .into_iter()
+                .map(|s| map(&s).unwrap_or(s))
+                .collect();
+            *b = Binding::from(renamed);
+        }
+    }
+}
+
+/// An expression with each (dotted, indexed) name passed through `f`;
+/// numbers and the rest are kept as written.
+pub fn map_names(expr: &str, f: &dyn Fn(&str) -> Option<String>) -> String {
+    let c: Vec<char> = expr.chars().collect();
+    let mut out = String::with_capacity(expr.len());
+    let mut i = 0;
+    while i < c.len() {
+        let ch = c[i];
+        if ch.is_ascii_digit() || (ch == '.' && c.get(i + 1).is_some_and(char::is_ascii_digit)) {
+            // A number, exponent included.
+            let start = i;
+            while i < c.len()
+                && (c[i].is_ascii_digit()
+                    || c[i] == '.'
+                    || matches!(c[i], 'e' | 'E')
+                    || (matches!(c[i], '+' | '-') && matches!(c[i - 1], 'e' | 'E')))
+            {
+                i += 1;
+            }
+            out.extend(&c[start..i]);
+        } else if ch.is_alphabetic() || ch == '_' {
+            // A name, as signal expressions read it: `a.v`, `lorenz.xyz[0]`.
+            let start = i;
+            let word = |i: &mut usize| {
+                while *i < c.len() && (c[*i].is_alphanumeric() || c[*i] == '_') {
+                    *i += 1;
+                }
+            };
+            word(&mut i);
+            while c.get(i) == Some(&'.')
+                && c.get(i + 1).is_some_and(|d| d.is_alphabetic() || *d == '_')
+            {
+                i += 1;
+                word(&mut i);
+            }
+            if c.get(i) == Some(&'[') {
+                let mut j = i + 1;
+                while c.get(j).is_some_and(char::is_ascii_digit) {
+                    j += 1;
+                }
+                if j > i + 1 && c.get(j) == Some(&']') {
+                    i = j + 1;
+                }
+            }
+            let name: String = c[start..i].iter().collect();
+            out.push_str(&f(&name).unwrap_or(name));
+        } else {
+            out.push(ch);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Turn an expression filter into a formula block (ADR 0032): an
+/// `eq.equations` block with an input (in the source's unit) for each
+/// output it reads, wired from there, defining the filter's name. Views
+/// and filters that read the filter then read the block. Returns the block
+/// and its output (`block.name`).
+fn promote(
+    file: &mut ModelFile,
+    registry: &Registry,
+    name: &str,
+) -> Result<(String, String), String> {
+    let k = filter_index(file, name)?;
+    let f = file.controls.filters[k].clone();
+    if f.type_name != "expression" {
+        return Err(format!(
+            "{name} is a {} filter; only expression filters can become blocks",
+            f.type_name
+        ));
+    }
+    let text = f
+        .expr()
+        .ok_or_else(|| format!("{name} has no formula"))?
+        .to_string();
+    let ast = simsandbox_expr::parse_signals(&text).map_err(|e| format!("{name}: {e}"))?;
+    let d = Diagram::of(file, &Scope::Model, registry);
+    let sources = sources(file, &d);
+    let filtered: Vec<String> = file
+        .controls
+        .filters
+        .iter()
+        .flat_map(FilterEntry::outputs)
+        .collect();
+    // (signal, input name, unit) for each output read.
+    let mut inputs: Vec<(String, String, String)> = Vec::new();
+    let read: Vec<String> = ast
+        .names()
+        .into_iter()
+        .map(|(n, _)| n)
+        .filter(|n| n != "t" && !simsandbox_expr::is_reserved(n))
+        .collect();
+    for n in &read {
+        if filtered.contains(n) {
+            return Err(format!("{name} reads the filter {n}: promote {n} first"));
+        }
+        let Some(&(i, p)) = sources.get(n) else {
+            return Err(format!(
+                "{name} reads {n}, which is not an output of a block on the model's level (an \
+                 element, a parameter or a sweep's value); a block cannot read it"
+            ));
+        };
+        let port = &d.nodes[i].outputs[p];
+        if port.shape != Shape::Scalar {
+            return Err(format!("{name} reads {n}, which is not a single number"));
+        }
+        let mut input = n.replace(['.', '/'], "_");
+        while input == name || inputs.iter().any(|(_, q, _)| *q == input) {
+            input.push('_');
+        }
+        // The block's input connects to where the signal comes from.
+        let source = format!("{}.{}", d.nodes[i].name, port.name);
+        inputs.push((source, input, port.unit.clone()));
+    }
+    let block = if file.blocks.iter().any(|b| b.name == name) {
+        free_name(name, |c| file.blocks.iter().any(|b| b.name == c))
+    } else {
+        name.to_string()
+    };
+    let rename: BTreeMap<String, String> = read
+        .into_iter()
+        .zip(inputs.iter())
+        .map(|(n, (_, input, _))| (n, input.clone()))
+        .collect();
+    let formula = map_names(&text, &|n: &str| rename.get(n).cloned());
+    let mut equations = vec![format!("# promoted from the filter {name}")];
+    if !inputs.is_empty() {
+        let list: Vec<String> = inputs
+            .iter()
+            .map(|(_, input, unit)| {
+                if unit.is_empty() || unit == "1" {
+                    input.clone()
+                } else {
+                    format!("{input} [{unit}]")
+                }
+            })
+            .collect();
+        equations.push(format!("input {}", list.join(", ")));
+    }
+    equations.push(format!("{name} = {formula}"));
+    file.blocks.push(BlockEntry {
+        name: block.clone(),
+        type_name: "eq.equations".into(),
+        equations,
+        at: f.canvas,
+        ..Default::default()
+    });
+    for (source, input, _) in &inputs {
+        file.connections.push(ConnectionEntry {
+            from: source.clone(),
+            to: format!("{block}.{input}"),
+        });
+    }
+    file.controls.filters.remove(k);
+    let output = format!("{block}.{name}");
+    rename_signal(file, name, &output);
+    Ok((block, output))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagram::apply;
+    use crate::examples::{registry, view_registry, EXAMPLES};
+
+    fn file(part: &str) -> ModelFile {
+        let e = EXAMPLES.iter().find(|e| e.name.contains(part)).unwrap();
+        ModelFile::from_json(e.text).unwrap().0
+    }
+
+    fn observed(f: &ModelFile) -> Diagram {
+        let mut d = Diagram::new(f, &registry());
+        d.observe(f, &view_registry());
+        d
+    }
+
+    /// The final value of a recorded signal after `t` seconds.
+    fn last(f: &ModelFile, signal: &str, t: f64) -> f64 {
+        let r = crate::run::run(&f.to_json(), &registry(), Some(t), None).unwrap();
+        let o = r.outputs.iter().find(|o| o.name == signal).unwrap();
+        *o.values.last().unwrap()
+    }
+
+    #[test]
+    fn filters_and_views_are_nodes_wired_from_what_they_read() {
+        let f = file("oscillators");
+        let d = observed(&f);
+        let energy = d.node("filter:energy").unwrap();
+        let n = &d.nodes[energy];
+        assert_eq!(n.kind, NodeKind::Filter);
+        assert_eq!(n.inputs.len(), 4);
+        assert!(n
+            .inputs
+            .iter()
+            .any(|p| p.name == "a.v" && p.unit == "m·s^-1"));
+        let into = |i: usize| d.wires.iter().filter(move |w| w.to.0 == i);
+        assert_eq!(into(energy).count(), 4);
+        assert!(into(energy).all(|w| w.is_data() && d.nodes[w.from.0].kind == NodeKind::Block));
+        // The third view plots the filter's output against t, which has no
+        // port: it is listed instead.
+        let v = d.node("view:2").unwrap();
+        let wires: Vec<_> = into(v).collect();
+        assert_eq!(wires.len(), 1);
+        assert_eq!(wires[0].from.0, energy);
+        assert_eq!(d.nodes[v].unreached, ["x: t"]);
+        assert!(d.many.contains("view:0.y") && !d.many.contains("view:0.x"));
+        // Placed to the right of the model, filters before views.
+        let right = d
+            .nodes
+            .iter()
+            .filter(|n| n.is_block())
+            .map(|n| n.at[0])
+            .fold(0.0, f64::max);
+        assert!(d.nodes[energy].at[0] > right && d.nodes[v].at[0] > d.nodes[energy].at[0]);
+        // A model-level diagram without the data layer is as before.
+        assert!(Diagram::new(&f, &registry())
+            .nodes
+            .iter()
+            .all(|n| !n.is_observer()));
+    }
+
+    #[test]
+    fn grids_elements_and_subsystem_outputs_find_their_ports() {
+        // A cut through a sweep's grid reads the swept block's output.
+        let d = observed(&file("Resonance map"));
+        let cut = d.node("filter:cuts1").unwrap();
+        let w = d.wires.iter().find(|w| w.to.0 == cut).unwrap();
+        assert_eq!(d.nodes[w.from.0].name, "spring");
+        assert_eq!(w.signal, "grid.spring.amplitude");
+        // Vector elements come from the vector; a use's inner signal from
+        // the use's port.
+        let d = observed(&file("Lorenz"));
+        assert!(d
+            .wires
+            .iter()
+            .any(|w| w.signal == "lorenz.xyz[0]" && d.nodes[w.from.0].name == "lorenz"));
+        let d = observed(&file("Platoon"));
+        let w = d.wires.iter().find(|w| w.signal == "car1/car.v").unwrap();
+        assert_eq!(w.from_name, "car1.v");
+    }
+
+    #[test]
+    fn data_edits_change_only_filters_and_views() {
+        let r = registry();
+        let mut f = file("oscillators");
+        let before = (f.blocks.clone(), f.connections.clone());
+        // A view slot that takes several gains one; one that takes one
+        // swaps it.
+        let bind = |to: &str, from: &str, many: bool| Edit::Bind {
+            from: from.into(),
+            to: to.into(),
+            many,
+        };
+        apply(&mut f, &r, &bind("view:0.y", "a.v", true)).unwrap();
+        assert_eq!(
+            f.controls.views[0].bind["y"].signals(),
+            ["a.x", "b.x", "a.v"]
+        );
+        apply(&mut f, &r, &bind("view:1.x", "filter:energy.energy", false)).unwrap();
+        assert_eq!(f.controls.views[1].bind["x"].signals(), ["energy"]);
+        apply(
+            &mut f,
+            &r,
+            &Edit::Unbind {
+                to: "view:0.y".into(),
+                signal: "a.x".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(f.controls.views[0].bind["y"].signals(), ["b.x", "a.v"]);
+        // Renaming a filter follows it into views.
+        apply(
+            &mut f,
+            &r,
+            &Edit::Rename {
+                from: "filter:energy".into(),
+                to: "total".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(f.controls.filters[0].name, "total");
+        assert_eq!(f.controls.views[2].bind["y"].signals(), ["total"]);
+        // Placing, adding and deleting.
+        apply(
+            &mut f,
+            &r,
+            &Edit::Move {
+                block: "view:2".into(),
+                at: [700.04, 10.0],
+            },
+        )
+        .unwrap();
+        assert_eq!(f.controls.views[2].canvas, Some([700.0, 10.0]));
+        apply(&mut f, &r, &Edit::AddFilter { at: [0.0, 300.0] }).unwrap();
+        assert_eq!(f.controls.filters[1].name, "signal1");
+        apply(
+            &mut f,
+            &r,
+            &Edit::AddView {
+                type_name: "plot.xy".into(),
+                at: [0.0, 0.0],
+            },
+        )
+        .unwrap();
+        assert_eq!(f.controls.views.len(), 4);
+        apply(
+            &mut f,
+            &r,
+            &Edit::Delete {
+                block: "filter:total".into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            !f.controls.views[2].bind.contains_key("y"),
+            "its views stop showing it"
+        );
+        apply(
+            &mut f,
+            &r,
+            &Edit::Delete {
+                block: "view:3".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(f.controls.views.len(), 3);
+        assert_eq!((f.blocks.clone(), f.connections.clone()), before);
+        // They are told apart from model edits.
+        assert!(bind("view:0.y", "a.v", true).data_only());
+        assert!(Edit::Delete {
+            block: "view:0".into()
+        }
+        .data_only());
+        assert!(!Edit::Delete { block: "a".into() }.data_only());
+        assert!(!Edit::Promote { filter: "x".into() }.data_only());
+        // Not inside a subsystem.
+        let mut p = file("Platoon");
+        let err = crate::diagram::apply_in(
+            &mut p,
+            &Scope::Subsystem("follower".into()),
+            &r,
+            &Edit::AddFilter { at: [0.0, 0.0] },
+        )
+        .unwrap_err();
+        assert!(err.contains("whole model"), "{err}");
+    }
+
+    #[test]
+    fn a_filter_cannot_feed_the_model_until_it_is_promoted() {
+        let r = registry();
+        let mut f = file("Cruise");
+        // Co-simulated, so a block between car and controller does not
+        // change how they are solved.
+        f.fusion = simsandbox_file::Fusion::Off;
+        f.controls
+            .filters
+            .push(FilterEntry::expression("push", "cruise.F", Vec::new()));
+        f.controls.views[1]
+            .bind
+            .insert("y".into(), Binding::One("push".into()));
+        let v = last(&f, "car.v", 5.0);
+        apply(&mut f, &r, &Edit::Disconnect { to: "car.F".into() }).unwrap();
+        let err = apply(
+            &mut f,
+            &r,
+            &Edit::Connect {
+                from: "filter:push.push".into(),
+                to: "car.F".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("cannot feed the model") && err.contains("promote"),
+            "{err}"
+        );
+        // Promoted and connected: a formula block with an input in N, and
+        // the run is the same.
+        apply(
+            &mut f,
+            &r,
+            &Edit::PromoteConnect {
+                filter: "push".into(),
+                to: "car.F".into(),
+            },
+        )
+        .unwrap();
+        let b = f.blocks.iter().find(|b| b.name == "push").unwrap();
+        assert_eq!(b.type_name, "eq.equations");
+        assert!(
+            b.equations
+                .iter()
+                .any(|l| l == "input cruise_F [m·kg·s^-2]"),
+            "{:?}",
+            b.equations
+        );
+        assert!(b.equations.iter().any(|l| l == "push = cruise_F"));
+        assert!(f.controls.filters.is_empty());
+        assert_eq!(f.controls.views[1].bind["y"].signals(), ["push.push"]);
+        assert_eq!(last(&f, "car.v", 5.0), v);
+        assert_eq!(last(&f, "push.push", 5.0), last(&f, "cruise.F", 5.0));
+    }
+
+    #[test]
+    fn what_cannot_become_a_block_says_why() {
+        let r = registry();
+        let mut f = file("oscillators");
+        // Reads parameters (a.kappa), which a block cannot.
+        let err = apply(
+            &mut f,
+            &r,
+            &Edit::Promote {
+                filter: "energy".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("a.omega0_sq") && err.contains("cannot read"),
+            "{err}"
+        );
+        f.controls
+            .filters
+            .push(FilterEntry::expression("e2", "2*energy", Vec::new()));
+        let err = apply(
+            &mut f,
+            &r,
+            &Edit::Promote {
+                filter: "e2".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("promote energy first"), "{err}");
+        let err = apply(
+            &mut f,
+            &r,
+            &Edit::Promote {
+                filter: "cuts".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("no filter"), "{err}");
+    }
+
+    #[test]
+    fn names_in_expressions_are_found_as_the_parser_reads_them() {
+        let map = |e: &str| {
+            map_names(e, &|n: &str| {
+                (n == "e" || n.starts_with("e[")).then(|| format!("blk.{n}"))
+            })
+        };
+        assert_eq!(
+            map("2*e + e2 - a.e + 1.5e3*e[1]"),
+            "2*blk.e + e2 - a.e + 1.5e3*blk.e[1]"
+        );
+        assert_eq!(map("sin(e)^2"), "sin(blk.e)^2");
+    }
+}

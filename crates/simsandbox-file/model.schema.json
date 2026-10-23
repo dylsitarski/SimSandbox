@@ -421,6 +421,15 @@
                   "type": "string"
                 }
               },
+              "canvas": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Where its node sits on the canvas's data layer (ADR 0050)."
+              },
               "expr": {
                 "type": "string",
                 "description": "expression: over recorded signals, other expressions, parameters ('block.param') and 't'."
@@ -525,6 +534,15 @@
                 "additionalProperties": {
                   "type": "number"
                 }
+              },
+              "canvas": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Where its node sits on the canvas's data layer (ADR 0050)."
               },
               "camera": {
                 "type": "object",

@@ -21,7 +21,7 @@ Build with `cargo build --release -p simsandbox-cli`; the binary is `target/rele
 | `simsandbox check FILE` | JSON report; exit status 1 if the model cannot run |
 | `simsandbox run FILE [--t-end S] [--dt S] [--format csv\|json]` | Every output at every step (or sweep sample) |
 | `simsandbox render FILE --out IMAGE.png [--t-end S] [--view N] [--width P] [--height P] [--scale S] [--light]` | PNG of the views after running to `t_end` |
-| `simsandbox render FILE --diagram [--subsystem NAME] --out IMAGE.png [--width P] [--height P] [--scale S] [--light]` | PNG of the block diagram, or a subsystem's inside, as the app's Diagram tab shows it (also for a file that cannot run) |
+| `simsandbox render FILE --diagram [--subsystem NAME] [--no-data] --out IMAGE.png [--width P] [--height P] [--scale S] [--light]` | PNG of the block diagram, or a subsystem's inside, as the app's Diagram tab shows it (also for a file that cannot run), with the filters and views as its data layer unless `--no-data` ([ADR 0050](../decisions/0050-data-layer-and-canvas-undo.md)) |
 | `simsandbox start-from FILE --t S [--out NEW.json]` | The model file that starts from the state reached at `t` ([ADR 0042](../decisions/0042-node-canvas.md)): initial-condition parameters where they say it exactly, else a `start` entry per block |
 | `simsandbox upgrade FILE [--out NEW.json]` | The file in the current form of the format; what was converted on standard error ([ADR 0044](../decisions/0044-unsaved-changes-and-older-files.md)) |
 
@@ -77,6 +77,7 @@ m.render("diagram.png", diagram=True)             # PNG of the block diagram
 m.declare("rate", 0.5)                            # a model parameter (ADR 0043)
 m.set("decay.k", "2*rate")                        # a block parameter as a formula of it
 m.group(["decay"])                                # make a subsystem of blocks
+m.promote("energy", to="spring.u")               # an expression filter becomes a block (ADR 0050)
 settled = m.start_from(10.0)                     # starts from the state at t = 10
 ```
 
