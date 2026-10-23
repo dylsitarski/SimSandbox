@@ -2679,6 +2679,9 @@ dependencies = [
 [[package]]
 name = "simsandbox-expr"
 version = "0.0.1"
+dependencies = [
+ "simsandbox-core",
+]
 
 [[package]]
 name = "simsandbox-file"

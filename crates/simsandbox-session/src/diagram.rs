@@ -1150,24 +1150,21 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
     }
     let def_name = free_name("group", |n| file.subsystems.contains_key(n));
     // The level's blocks and wires, and the parameters in scope there.
-    let (mut l, scope_params): (Subsystem, BTreeMap<String, f64>) = match scope {
+    let (mut l, scope_params): (Subsystem, BTreeMap<String, ParamDecl>) = match scope {
         Scope::Model => (
             Subsystem {
                 blocks: std::mem::take(&mut file.blocks),
                 connections: std::mem::take(&mut file.connections),
                 ..Subsystem::default()
             },
-            file.params
-                .iter()
-                .map(|(k, d)| (k.clone(), d.value))
-                .collect(),
+            file.params.clone(),
         ),
         Scope::Subsystem(s) => {
             let d = file
                 .subsystems
                 .remove(s)
                 .ok_or_else(|| format!("no subsystem '{s}'"))?;
-            let p = d.params.iter().map(|(k, d)| (k.clone(), d.value)).collect();
+            let p = d.params.clone();
             (d, p)
         }
     };
@@ -1306,13 +1303,11 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                     continue;
                 };
                 for (name, _) in ast.names() {
-                    if let Some(&value) = scope_params.get(&name) {
-                        def.params.entry(name.clone()).or_insert(ParamDecl {
-                            value,
-                            unit: String::new(),
-                            description: String::new(),
-                            range: None,
-                        });
+                    // With its unit, description and range (ADR 0045).
+                    if let Some(decl) = scope_params.get(&name) {
+                        def.params
+                            .entry(name.clone())
+                            .or_insert_with(|| decl.clone());
                         entry.params.insert(name.clone(), ParamValue::Formula(name));
                     }
                 }
@@ -1601,8 +1596,8 @@ mod tests {
         assert_eq!(car1.type_name, "follower");
         assert_eq!(car1.inputs[0].name, "lead");
         assert_eq!(car1.outputs[0].name, "v");
-        // Typed equations are dimensionless.
-        assert_eq!(car1.outputs[0].unit, "1");
+        // The port carries the unit of the inner port it shows.
+        assert_eq!(car1.outputs[0].unit, "m·s^-1");
         assert_eq!((d.wires.len(), d.dangling.len()), (3, 0));
         assert_eq!(d.subsystems, ["follower"]);
 

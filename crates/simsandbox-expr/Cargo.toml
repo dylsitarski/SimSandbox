@@ -8,5 +8,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+# Units of names, to check that expressions balance (ADR 0045).
+simsandbox-core = { path = "../simsandbox-core" }
+
 [lints]
 workspace = true

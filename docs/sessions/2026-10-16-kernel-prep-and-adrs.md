@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-10-23: units of declared parameters ([ADR 0046](../decisions/0046-units-of-declared-parameters.md)): the dimension rules moved from `symbolic.rs` to `simsandbox_expr::units` (simsandbox-expr now depends on simsandbox-core); `subsystems.rs` validates declared units, compiles formulas with a dimension and an SI form (`Formula::fit`, `unchecked`), fits instance parameters at once and block parameters after building (`ParamPlan::fit_blocks`, also for subsystems checked alone); grouping copies declarations; platoon with units. Tests in `crates/simsandbox-file/tests/units.rs`.
 - 2026-10-23: units in typed equations ([ADR 0045](../decisions/0045-units-in-typed-equations.md)): `symbolic.rs` reads `[unit]` after names (`split_unit`, `read_unit`), checks every line by dimension (`dimension`) and evaluates in SI (`in_si`/`from_si`); `Unit::same_as` and named scaled units; `graph.rs` and fused groups refuse different units; `units.convert` (`convert.rs`); `BlockConfig::settings` and `BlockEntry::settings`; empty methods default by type; the app's "Unit conversions" panel and diagram subtitles; Python `settings`; units example. Checked by tests (balance errors, SI across scales, conversions refused across kinds, a shaker in mm driving springs in m) and headless renders.
 - Reviewed code against STATUS; found that `Simulator` exposed no specs or parameter values, `set_param` accepted any value and misreported unknown names as `BadConnection`, and snapshots did not include parameters.
 - Added parameter access (`Model::param`, `Model::params`, `Model::block_ids`, `Simulator::model`, `Simulator::param`), finiteness checks with `SimError::UnknownParam` and `SimError::InvalidParam`, and parameters in snapshots. Tests in `crates/simsandbox-core/tests/params.rs`.
@@ -49,6 +50,7 @@
 
 ## Decided
 
+- Units of declared parameters (owner asked, 2026-10-23; rules chosen in the session, [ADR 0046](../decisions/0046-units-of-declared-parameters.md)): checked like typed equations; unit-less formulas and blocks stay unchecked so older files keep their meaning.
 - Units (owner, 2026-10-23; [ADR 0045](../decisions/0045-units-in-typed-equations.md)): brackets where names appear; every equation checked, names without a unit dimensionless; conversions only through an explicit `units.convert` block, also for display.
 - Unsaved changes and older files (2026-10-23, decided in the session within ADR 0038 item 8's scope; [ADR 0044](../decisions/0044-unsaved-changes-and-older-files.md)): unsaved means a save would write something different; older forms convert on reading, reported and pinned by fixtures; a new format version only when adding is impossible.
 - Subsystems (owner, 2026-10-23; [ADR 0043](../decisions/0043-subsystems.md)): defined in the file and used many times; declared parameters with formulas (resolving Q30); the canvas opens a subsystem to edit it and groups a selection; importing from other files later.
@@ -83,6 +85,7 @@
 
 ## Notes for the next session
 
+- `cargo test --workspace` stops at the first failing test binary; use `--no-fail-fast` to see every failure at once.
 - With units, `sin(t)` is an error because `t` is in seconds; the units example uses `param f [Hz]` and `sin(2*pi*f*t)`. Several app and diagram tests had wired `cruise.e` (m/s) into `car.F` (N); they now use `cruise.F`.
 - Feedthrough (`loops.rs`): `OutputPlan` nodes are feedthrough output ports; edges follow routes into the inputs they depend on; Tarjan components give the order (sources first) and the loops. `solve` evaluates a unit's whole `compute_outputs`/`Equations::outputs` and copies only the port being finalised, so ports of one Block can be ordered separately. Loop tolerance is relative 10⁻¹⁰, not machine precision. A group's right-hand side cannot return errors, so a failed loop fills `dx` with NaN and the error is returned after the step.
 - Grazing: the sheep eat from the grass they saw at the start of the step and report a grazing rate (fraction of a cell's grass eaten per second), which the grass applies over the next step; the books balance up to that one-step lag (test `grass_eaten_matches_energy_gained_to_first_order_in_the_step`). Competition for a cell happens only within a step, through `Update::share`. The example settles near G* = metabolism / (efficiency × c) = 0.4 kg/m² and about 380 sheep.

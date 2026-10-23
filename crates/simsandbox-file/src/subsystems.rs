@@ -11,9 +11,18 @@
 //! ports, so the kernel, fusion, loops and views see ordinary blocks. The
 //! declared parameters and formulas become a [`ParamPlan`] that interfaces
 //! re-evaluate when a value changes.
+//!
+//! Units (ADR 0045): a declared parameter's `unit` must be a unit. A
+//! formula that uses a declared parameter with a unit is checked like a
+//! typed equation: it must balance and give the unit of the parameter it
+//! sets (a name without a unit is dimensionless), and it is computed in SI,
+//! so `"length": "size"` with `size` in km gives 1000 for a length in m.
+//! A formula whose names have no units is not checked, as before.
 
 use crate::{invalid, BlockEntry, ConnectionEntry, FileError, ModelFile};
 use serde::{Deserialize, Serialize};
+use simsandbox_core::units::Unit;
+use simsandbox_expr::units::{dim_text, dimension, from_si, in_si, Dim, NO_DIM};
 use simsandbox_expr::Expr;
 use std::collections::BTreeMap;
 
@@ -101,8 +110,58 @@ pub struct Subsystem {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Formula {
     pub text: String,
-    /// Variables are indices into [`ParamPlan::declared`].
+    /// Variables are indices into [`ParamPlan::declared`]; in SI once the
+    /// formula has units.
     expr: Expr,
+    /// Its dimension, when a name in it has a unit; `None` for a formula
+    /// that is not checked.
+    dim: Option<Dim>,
+    /// As written, without conversion: for a block that gives no units.
+    raw: Expr,
+}
+
+impl Formula {
+    /// Make the formula give `what`'s unit, `target` (dimensionless if
+    /// `None`): an error at `path` if it measures something else.
+    fn fit(&mut self, target: Option<&Unit>, what: &str, path: &str) -> Result<(), FileError> {
+        let Some(dim) = self.dim else {
+            return Ok(());
+        };
+        let target = target.copied().unwrap_or(Unit::DIMENSIONLESS);
+        if dim != target.dim.0 {
+            let shown = |d: Dim| {
+                if d == NO_DIM {
+                    "dimensionless".to_string()
+                } else {
+                    format!("in {}", dim_text(d))
+                }
+            };
+            return Err(invalid(
+                path,
+                format!(
+                    "{what} is {} but '{}' is {}",
+                    shown(target.dim.0),
+                    self.text,
+                    shown(dim)
+                ),
+            ));
+        }
+        self.expr = from_si(
+            std::mem::replace(&mut self.expr, Expr::Num(0.0)),
+            target.scale,
+        );
+        // Fitted once: a formula is not converted twice.
+        self.dim = None;
+        Ok(())
+    }
+
+    /// Not checked: computed from the values as written, as before units
+    /// were checked (for a block that gives no units).
+    fn unchecked(&mut self) {
+        if self.dim.take().is_some() {
+            self.expr = self.raw.clone();
+        }
+    }
 }
 
 /// A declared parameter at run time.
@@ -133,6 +192,8 @@ pub struct Derived {
     pub block: String,
     pub param: String,
     pub formula: Formula,
+    /// Where it is written, e.g. `subsystems.field.blocks[0].params.K`.
+    pub path: String,
 }
 
 /// A parameter of a block inside an instance, with the value the
@@ -192,6 +253,49 @@ impl ParamPlan {
             .collect()
     }
 
+    /// Fit each block parameter's formula to the parameter's unit in the
+    /// built `model` (ADR 0045), then set the values formulas give.
+    pub(crate) fn fit_blocks(
+        &mut self,
+        model: &mut simsandbox_core::graph::Model,
+        ids: &BTreeMap<String, simsandbox_core::graph::BlockId>,
+    ) -> Result<(), FileError> {
+        for d in &mut self.derived {
+            let Some(&id) = ids.get(&d.block) else {
+                continue;
+            };
+            let spec = model.block(id).map_err(|e| invalid(&d.path, e))?.spec();
+            // A block that gives no units (typed equations without any) is
+            // not checked, like its equations.
+            let mut units = spec.params.iter().map(|p| p.unit);
+            let mut ports = spec.ports.iter().map(|p| p.unit);
+            if units.all(|u| u == Unit::DIMENSIONLESS) && ports.all(|u| u == Unit::DIMENSIONLESS) {
+                d.formula.unchecked();
+                continue;
+            }
+            let unit = spec
+                .params
+                .iter()
+                .find(|p| p.name == d.param)
+                .map(|p| p.unit);
+            let what = format!("{}.{}", d.block.trim_start_matches("check/"), d.param);
+            d.formula.fit(unit.as_ref(), &what, &d.path)?;
+        }
+        let paths: BTreeMap<(String, String), String> = self
+            .derived
+            .iter()
+            .map(|d| ((d.block.clone(), d.param.clone()), d.path.clone()))
+            .collect();
+        for (block, param, value) in self.evaluate() {
+            if let Some(&id) = ids.get(&block) {
+                model
+                    .set_param(id, &param, value)
+                    .map_err(|e| invalid(&paths[&(block.clone(), param.clone())], e))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Set a declared parameter and recompute. Returns the block parameters
     /// formulas set, to apply to the model.
     pub fn set(&mut self, key: &str, value: f64) -> Result<Vec<(String, String, f64)>, String> {
@@ -230,6 +334,8 @@ pub(crate) struct Check {
     pub connection_origins: Vec<String>,
     /// (path, flat port, is input) for each port of its interface.
     pub ports: Vec<(String, String, bool)>,
+    /// Its parameters with their defaults, to check formula units.
+    pub plan: ParamPlan,
 }
 
 /// What a name at one level of the model stands for.
@@ -297,6 +403,7 @@ impl ModelFile {
             if !d.value.is_finite() {
                 return Err(invalid(format!("{path}.value"), "must be a finite number"));
             }
+            declared_unit(&d.unit, &format!("{path}.unit"))?;
             scope.insert(name.clone(), ctx.plan.declared.len());
             ctx.plan.declared.push(Declared {
                 key: name.clone(),
@@ -356,6 +463,7 @@ impl ModelFile {
                 block_origins: check.block_origins,
                 connection_origins: check.connection_origins,
                 ports,
+                plan: check.plan,
             });
         }
         let file = ModelFile {
@@ -386,8 +494,44 @@ impl BlockEntry {
     }
 }
 
-fn compile(text: &str, scope: &BTreeMap<String, usize>, path: &str) -> Result<Formula, FileError> {
+/// A declared parameter's unit: `None` if it gives none, an error at
+/// `path` if it is not a unit.
+fn declared_unit(text: &str, path: &str) -> Result<Option<Unit>, FileError> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    Unit::parse(text).map(Some).map_err(|_| {
+        invalid(
+            path,
+            format!("'{text}' is not a unit (e.g. 'kg', 'm/s', 'N*s/m'; leave it out for none)"),
+        )
+    })
+}
+
+/// Compile a formula of the declared parameters in `scope`; checked and
+/// in SI when one of its names has a unit (ADR 0045).
+fn compile(
+    text: &str,
+    scope: &BTreeMap<String, usize>,
+    path: &str,
+    declared: &[Declared],
+) -> Result<Formula, FileError> {
     let ast = simsandbox_expr::parse(text).map_err(|e| invalid(path, format!("'{text}': {e}")))?;
+    // Validated where each was declared.
+    let units: Vec<Option<Unit>> = declared
+        .iter()
+        .map(|d| declared_unit(&d.unit, "").ok().flatten())
+        .collect();
+    let unit_of = |n: &str| scope.get(n).and_then(|&i| units[i]);
+    let checked = ast.names().iter().any(|(n, _)| unit_of(n).is_some());
+    let dim = if checked {
+        let of = |n: &str| unit_of(n).map_or(NO_DIM, |u| u.dim.0);
+        Some(dimension(&ast, &of).map_err(|(column, message)| {
+            invalid(path, format!("'{text}', column {column}: {message}"))
+        })?)
+    } else {
+        None
+    };
     let expr = ast.resolve(&|n: &str| scope.get(n).copied()).map_err(|e| {
         let known: Vec<&str> = scope.keys().map(String::as_str).collect();
         let names = if known.is_empty() {
@@ -397,9 +541,18 @@ fn compile(text: &str, scope: &BTreeMap<String, usize>, path: &str) -> Result<Fo
         };
         invalid(path, format!("'{text}': {e} ({names})"))
     })?;
+    let raw = expr.clone();
+    let expr = if checked {
+        let scales: Vec<f64> = units.iter().map(|u| u.map_or(1.0, |u| u.scale)).collect();
+        in_si(expr, &scales)
+    } else {
+        expr
+    };
     Ok(Formula {
         text: text.into(),
         expr,
+        dim,
+        raw,
     })
 }
 
@@ -527,11 +680,14 @@ impl Ctx<'_> {
             if !decl.value.is_finite() {
                 return Err(invalid(format!("{dpath}.value"), "must be a finite number"));
             }
+            let unit = declared_unit(&decl.unit, &format!("{dpath}.unit"))?;
             let (value, formula) = match entry.params.get(pname) {
                 None => (decl.value, None),
                 Some(ParamValue::Number(v)) => (*v, None),
                 Some(ParamValue::Formula(text)) => {
-                    let f = compile(text, outer, &format!("{epath}.params.{pname}"))?;
+                    let fpath = format!("{epath}.params.{pname}");
+                    let mut f = compile(text, outer, &fpath, &self.plan.declared)?;
+                    f.fit(unit.as_ref(), &format!("{}.{pname}", entry.name), &fpath)?;
                     let values: Vec<f64> = self.plan.declared.iter().map(|d| d.value).collect();
                     (f.expr.eval(&values), Some(f))
                 }
@@ -594,12 +750,16 @@ impl Ctx<'_> {
                     let values: Vec<f64> = self.plan.declared.iter().map(|d| d.value).collect();
                     for (k, v) in &mut b.params {
                         if let ParamValue::Formula(text) = v {
-                            let f = compile(text, scope, &format!("{epath}.params.{k}"))?;
+                            let path = format!("{epath}.params.{k}");
+                            let f = compile(text, scope, &path, &self.plan.declared)?;
+                            // Units are fitted once the block is built
+                            // (`ParamPlan::fit_blocks`).
                             *v = ParamValue::Number(f.expr.eval(&values));
                             self.plan.derived.push(Derived {
                                 block: flat.clone(),
                                 param: k.clone(),
                                 formula: f,
+                                path,
                             });
                         } else if !prefix.is_empty() {
                             self.plan.inner.push(Inner {
@@ -803,10 +963,11 @@ impl Check {
         &self,
         registry: &simsandbox_core::registry::Registry,
     ) -> Result<(), FileError> {
-        let (model, ids) = self
+        let (mut model, ids) = self
             .file
             .build(registry)
             .map_err(|e| crate::origin(e, &self.block_origins, &self.connection_origins))?;
+        self.plan.clone().fit_blocks(&mut model, &ids)?;
         for (path, port, input) in &self.ports {
             let (block, name) = port.split_once('.').expect("flat ports are block.port");
             let spec = model

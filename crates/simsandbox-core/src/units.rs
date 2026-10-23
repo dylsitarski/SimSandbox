@@ -69,7 +69,8 @@ impl Unit {
         let mut divide = false;
         let mut token = String::new();
         for c in cleaned.chars().chain(std::iter::once('*')) {
-            if c == '*' || c == '/' {
+            // '·' is how units are shown, so it reads back too.
+            if c == '*' || c == '·' || c == '/' {
                 if token.is_empty() {
                     return Err(SimError::UnitParse(text.to_string()));
                 }
@@ -243,6 +244,9 @@ mod tests {
             .unwrap()
             .same_as(&Unit::parse("kg/s").unwrap()));
         assert_eq!(kmh.to_string(), "km/h");
+        // Shown units read back.
+        let force = Unit::parse("N").unwrap();
+        assert!(Unit::parse(&force.to_string()).unwrap().same_as(&force));
         assert_eq!(Unit::parse("g").unwrap().to_string(), "g");
         assert_eq!(ms.to_string(), "m·s^-1");
         assert!((kmh.conversion_to(&ms).unwrap() - 1.0 / 3.6).abs() < 1e-15);

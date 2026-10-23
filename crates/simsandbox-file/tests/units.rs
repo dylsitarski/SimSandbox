@@ -91,3 +91,89 @@ fn conversions_keep_the_kind_of_quantity() {
     );
     assert_eq!(error(&bad).0, "blocks[1].settings.colour");
 }
+
+/// A model parameter `size` (in `size_unit`) setting a typed block's
+/// length `L [m]` by `formula`, inside a subsystem `pond` when `nested`.
+fn sized(size_unit: &str, formula: &str) -> String {
+    format!(
+        r#"{{"format": 1, "run": {{"dt": 0.1}},
+          "params": {{"size": {{"value": 2.0, "unit": "{size_unit}"}}}},
+          "blocks": [
+            {{"name": "tank", "type": "eq.equations",
+             "equations": ["param L [m] = 1", "area = L^2 [m^2]"],
+             "params": {{"L": "{formula}"}}}}
+          ]}}"#
+    )
+}
+
+fn param(text: &str, block: &str, name: &str) -> f64 {
+    let loaded = load(text, &registry()).unwrap();
+    loaded.model.param(loaded.ids[block], name).unwrap()
+}
+
+#[test]
+fn parameter_formulas_are_checked_and_computed_in_si() {
+    // 2 km is 2000 m; the same in metres stays 2.
+    assert_eq!(param(&sized("km", "size"), "tank", "L"), 2000.0);
+    assert_eq!(param(&sized("m", "size"), "tank", "L"), 2.0);
+    assert_eq!(param(&sized("km", "size/4"), "tank", "L"), 500.0);
+    // Changing it later keeps the conversion.
+    let mut loaded = load(&sized("km", "size"), &registry()).unwrap();
+    let set = loaded.params.set("size", 3.0).unwrap();
+    assert_eq!(set, vec![("tank".to_string(), "L".to_string(), 3000.0)]);
+    // A formula giving another kind of quantity is refused where it is
+    // written.
+    let (path, message) = error(&sized("kg", "size"));
+    assert_eq!(path, "blocks[0].params.L");
+    assert_eq!(message, "tank.L is in m but 'size' is in kg");
+    let (_, message) = error(&sized("m", "size^2"));
+    assert!(message.contains("is in m^2"), "{message}");
+    let (_, message) = error(&sized("m", "size + 1/size"));
+    assert!(message.contains("cannot add m and m^-1"), "{message}");
+    // A unit that is not one.
+    let (path, _) = error(&sized("paces", "size"));
+    assert_eq!(path, "params.size.unit");
+    // Without units on its names a formula is not checked (as before
+    // ADR 0045): 2 is taken as metres.
+    assert_eq!(param(&sized("", "size"), "tank", "L"), 2.0);
+}
+
+/// The model's `size` passed to a subsystem's parameter `side` (in
+/// `side_unit`), which sets the length of the block inside.
+fn nested(side_unit: &str, inner: &str) -> String {
+    format!(
+        r#"{{"format": 1, "run": {{"dt": 0.1}},
+          "params": {{"size": {{"value": 2.0, "unit": "km"}}}},
+          "subsystems": {{"pond": {{
+            "params": {{"side": {{"value": 1.0, "unit": "{side_unit}"}}}},
+            "blocks": [{{"name": "tank", "type": "eq.equations",
+              "equations": ["param L [m] = 1", "area = L^2 [m^2]"],
+              "params": {{"L": "{inner}"}}}}]
+          }}}},
+          "blocks": [{{"name": "p", "type": "pond", "params": {{"side": "size"}}}}]}}"#
+    )
+}
+
+#[test]
+fn subsystem_parameters_are_checked_on_the_way_in_and_out() {
+    // km → the subsystem's cm → the block's m.
+    let v = param(&nested("cm", "side"), "p/tank", "L");
+    assert!((v - 2000.0).abs() < 1e-9, "{v}");
+    // Into a subsystem parameter of another kind.
+    let (path, message) = error(&nested("s", "side"));
+    assert_eq!(path, "blocks[0].params.side");
+    assert_eq!(message, "p.side is in s but 'size' is in m");
+    // From a subsystem parameter into a block of another kind, also when
+    // the subsystem is checked on its own.
+    let (path, message) = error(&nested("m", "side*side"));
+    assert_eq!(path, "subsystems.pond.blocks[0].params.L");
+    assert!(message.contains("tank.L is in m"), "{message}");
+    let unused = nested("m", "side*side").replace(
+        r#""blocks": [{"name": "p", "type": "pond", "params": {"side": "size"}}]"#,
+        r#""blocks": []"#,
+    );
+    let (path, _) = error(&unused);
+    assert_eq!(path, "subsystems.pond.blocks[0].params.L");
+    let (path, _) = error(&nested("acres", "side"));
+    assert_eq!(path, "subsystems.pond.params.side.unit");
+}

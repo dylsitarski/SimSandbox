@@ -956,6 +956,13 @@ pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
     // Errors name the place in the file as written.
     let origin = |e: FileError| origin(e, &block_origins, &connection_origins);
     let (mut model, ids) = flat.build(registry).map_err(origin)?;
+    // Formulas give each block parameter in its unit (ADR 0045).
+    params.fit_blocks(&mut model, &ids)?;
+    for (block, param, value) in params.evaluate() {
+        if let Some(b) = flat.blocks.iter_mut().find(|b| b.name == block) {
+            b.params.insert(param, ParamValue::Number(value));
+        }
+    }
     // Every parameter of a block inside an instance has a base value (the
     // subsystem's, or the type's default), so saving writes only changes.
     for b in flat.blocks.iter().filter(|b| b.name.contains('/')) {

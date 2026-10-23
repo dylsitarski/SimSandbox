@@ -619,7 +619,8 @@
           "description": "The model's value, or a subsystem's default."
         },
         "unit": {
-          "type": "string"
+          "type": "string",
+          "description": "A unit such as 'kg', 'm/s' or 'N*s/m' (dimensionless if absent). Formulas using it are checked and computed in SI (ADR 0046)."
         },
         "description": {
           "type": "string"

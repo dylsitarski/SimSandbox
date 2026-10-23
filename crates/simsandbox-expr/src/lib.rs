@@ -15,6 +15,8 @@
 //!   names to slots in a value buffer and gives an [`Expr`] that evaluates
 //!   quickly. Errors carry a 1-based column.
 
+pub mod units;
+
 use std::fmt;
 
 /// A parse or name-resolution error at a 1-based character column.
