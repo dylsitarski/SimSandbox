@@ -20,6 +20,10 @@ pub struct Views {
     pub tiles: Vec<Tile>,
     /// The tile whose style properties the side panel shows.
     pub selected: Option<u64>,
+    /// For each view [`Views::open`] was given, the tile showing it
+    /// (`None` if it could not be shown), so a saved arrangement can find
+    /// its views (ADR 0053).
+    pub opened: Vec<Option<u64>>,
     next_id: u64,
 }
 
@@ -29,6 +33,7 @@ impl Views {
             registry,
             tiles: Vec::new(),
             selected: None,
+            opened: Vec::new(),
             next_id: 0,
         }
     }
@@ -41,14 +46,19 @@ impl Views {
     pub fn open(&mut self, available: &Available<'_>, saved: &[ViewEntry]) -> Vec<String> {
         self.tiles.clear();
         self.selected = None;
+        self.opened.clear();
         let mut warnings = Vec::new();
         for (i, entry) in saved.iter().enumerate() {
             match self.restore(entry, available) {
                 Ok(state) => {
                     let id = self.push(state);
                     self.tile_mut(id).canvas = entry.canvas;
+                    self.opened.push(Some(id));
                 }
-                Err(e) => warnings.push(format!("controls.views[{i}]: {e}; ignored")),
+                Err(e) => {
+                    warnings.push(format!("controls.views[{i}]: {e}; ignored"));
+                    self.opened.push(None);
+                }
             }
         }
         if self.tiles.is_empty() {

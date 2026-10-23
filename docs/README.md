@@ -123,6 +123,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0050-data-layer-and-canvas-undo.md](decisions/0050-data-layer-and-canvas-undo.md) | Decision record | Filters and views on the canvas; promoting filters to blocks; undo |
 | [decisions/0051-stateless-blocks-join-fused-groups.md](decisions/0051-stateless-blocks-join-fused-groups.md) | Decision record | Formula and conversion blocks join fused groups |
 | [decisions/0052-canvas-for-every-node-place.md](decisions/0052-canvas-for-every-node-place.md) | Decision record | `canvas` names every node's place |
+| [decisions/0053-docked-panes-inspector-and-node-values.md](decisions/0053-docked-panes-inspector-and-node-values.md) | Decision record | Dockable tabs and pop-out windows; saved arrangement; inspector and values on nodes |
 
 ### Guides
 

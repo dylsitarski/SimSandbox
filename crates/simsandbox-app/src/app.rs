@@ -2,6 +2,7 @@
 //! and watch it plot live.
 
 use crate::diagram::{DiagramTab, Outcome};
+use crate::dock::{Dock, Pane};
 use crate::live::{Event, Live, Model};
 use crate::log::{Kind as LogKind, Log};
 use eframe::egui;
@@ -24,11 +25,10 @@ pub struct ScreenshotRequest {
     pub after: f64,
 }
 
-/// The central area: the model's views or its block diagram (ADR 0042).
+/// A tab to bring to the front once the dock is drawn again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Central {
-    Views,
-    Diagram,
+enum Focus {
+    Tile(u64),
 }
 
 /// Something that replaces the open model, asked about first if it has
@@ -68,8 +68,10 @@ pub struct SimApp {
     signals_editor: Option<SignalsEditor>,
     rewind_t: f64,
     views: Views,
-    /// Which the central area shows: the views or the diagram.
-    central: Central,
+    /// The inspector, diagram and views as dockable tabs (ADR 0053).
+    dock: Dock,
+    /// A tab to bring to the front.
+    focus: Option<Focus>,
     diagram: DiagramTab,
     started: Instant,
     /// The open model as saved or opened, to tell unsaved changes.
@@ -107,7 +109,8 @@ impl SimApp {
             signals_editor: None,
             rewind_t: 0.0,
             views: Views::new(simsandbox_session::examples::view_registry()),
-            central: Central::Views,
+            dock: Dock::standard(&[]),
+            focus: None,
             diagram: DiagramTab::default(),
             started: Instant::now(),
             baseline: None,
@@ -128,7 +131,7 @@ impl SimApp {
         }
         // A --view flag overrides the view saved in the file.
         if view == Some("diagram") {
-            app.central = Central::Diagram;
+            app.dock.focus(|p| *p == Pane::Diagram);
         } else if let (Some(v), Some(live)) = (view, &app.session) {
             let (name, preset) = match v {
                 "phase" => ("plot.xy", 1),
@@ -299,10 +302,12 @@ impl SimApp {
         let (Some(live), Some(base)) = (&self.session, self.baseline.clone()) else {
             return;
         };
-        let (speed, views) = (self.speed, self.views.entries());
+        let (speed, views, layout) = (self.speed, self.views.entries(), self.layout());
         let flag = self.unsaved.clone();
         live.send(Some("unsaved-check"), move |s, _| {
-            let differs = s.save_json(speed, Some(views)).is_ok_and(|t| t != base);
+            let differs = s
+                .save_json_with(speed, Some(views), Some(layout))
+                .is_ok_and(|t| t != base);
             flag.store(differs, std::sync::atomic::Ordering::Relaxed);
         });
     }
@@ -372,11 +377,35 @@ impl SimApp {
         match Session::load_deferred(title, text, &self.registry) {
             Ok(mut s) => {
                 self.speed = s.file.controls.speed.unwrap_or(1.0);
+                // Tabs shown in their own windows stay there when the model
+                // is rebuilt (canvas edits).
+                let popped = if announce {
+                    Vec::new()
+                } else {
+                    self.popped_panes()
+                };
                 let w = {
                     let h = s.signals();
                     self.views.open(&s.available(&h), &s.file.controls.views)
                 };
                 s.warnings.extend(w);
+                let tiles = self.tile_ids();
+                let opened = self.views.opened.clone();
+                let tile = |k: usize| opened.get(k).copied().flatten();
+                self.dock = match &s.file.controls.layout {
+                    Some(l) => Dock::from_layout(l, &tile, &tiles),
+                    None => Dock::standard(&tiles),
+                };
+                for p in popped {
+                    let pane = match p {
+                        Popped::Inspector => Some(Pane::Inspector),
+                        Popped::Diagram => Some(Pane::Diagram),
+                        Popped::View(k) => tile(k).map(Pane::View),
+                    };
+                    if let Some(pane) = pane {
+                        self.dock.pop_out(&pane);
+                    }
+                }
                 for w in &s.warnings {
                     self.log.warn(format!("{title}: {w}"));
                 }
@@ -466,6 +495,10 @@ impl SimApp {
                 .clicked()
             {
                 self.save_as_dialog();
+            }
+            if has_model {
+                ui.separator();
+                self.view_menus(ui);
             }
             ui.separator();
             match &self.path {
@@ -742,24 +775,134 @@ impl SimApp {
             });
     }
 
-    /// The central area: tabs for the views and the diagram.
-    fn central(&mut self, ui: &mut egui::Ui) {
-        if self.session.is_some() {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.central, Central::Views, "Views")
-                    .on_hover_text("Plots of the run");
-                let diagram = match self.diagram.draft_problem() {
-                    Some(_) => "Diagram ⚠",
-                    None => "Diagram",
-                };
-                ui.selectable_value(&mut self.central, Central::Diagram, diagram)
-                    .on_hover_text("The blocks and how they are connected; edit the model here");
-            });
-            ui.separator();
+    /// The view tiles' ids, in order.
+    fn tile_ids(&self) -> Vec<u64> {
+        self.views.tiles.iter().map(|t| t.id).collect()
+    }
+
+    /// The tabs in their own windows, by what they show.
+    fn popped_panes(&self) -> Vec<Popped> {
+        let index = |id: u64| self.views.tiles.iter().position(|t| t.id == id);
+        self.dock
+            .popped
+            .iter()
+            .filter_map(|p| match p {
+                Pane::Inspector => Some(Popped::Inspector),
+                Pane::Diagram => Some(Popped::Diagram),
+                p => p.tiles().first().and_then(|&t| index(t)).map(Popped::View),
+            })
+            .collect()
+    }
+
+    /// The arrangement to save (ADR 0053), or `None` for the standard one.
+    fn layout(&self) -> Option<simsandbox_file::layout::Layout> {
+        let index = |id: u64| self.views.tiles.iter().position(|t| t.id == id);
+        let l = self.dock.to_layout(&index)?;
+        let standard = Dock::standard(&self.tile_ids()).to_layout(&index);
+        (Some(&l) != standard.as_ref()).then_some(l)
+    }
+
+    /// The docked tabs (ADR 0053), and the ones popped out into windows.
+    fn docked(&mut self, ui: &mut egui::Ui) {
+        if self.session.is_none() {
+            ui.centered_and_justified(|ui| ui.label("Open an example or a model file."));
+            return;
         }
-        match self.central {
-            Central::Views => self.plot(ui),
-            Central::Diagram => self.diagram_tab(ui),
+        let tiles = self.tile_ids();
+        self.dock.sync(&tiles);
+        if let Some(Focus::Tile(t)) = self.focus.take() {
+            self.dock.focus(|p| p.tiles().contains(&t));
+        }
+        let mut dock = std::mem::replace(&mut self.dock, Dock::standard(&[]));
+        let mut tabs = Tabs {
+            app: self,
+            actions: Vec::new(),
+        };
+        egui_dock::DockArea::new(&mut dock.state)
+            .id(egui::Id::new("dock"))
+            .style(egui_dock::Style::from_egui(ui.style()))
+            .show_leaf_collapse_buttons(false)
+            .show_leaf_close_all_buttons(false)
+            .show_inside(ui, &mut tabs);
+        let mut actions = tabs.actions;
+        for pane in dock.popped.clone() {
+            let title = self.pane_title(&pane);
+            let id = egui::ViewportId::from_hash_of(("popped", pane_key(&pane)));
+            let builder = egui::ViewportBuilder::default()
+                .with_title(format!("{title} — SimSandbox"))
+                .with_inner_size([760.0, 520.0]);
+            ui.ctx().show_viewport_immediate(id, builder, |ui, _| {
+                egui::Panel::top(egui::Id::new(("popped-bar", pane_key(&pane)))).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong(&title);
+                        if ui
+                            .small_button("Dock")
+                            .on_hover_text("Put it back among the tabs")
+                            .clicked()
+                        {
+                            actions.push(DockAction::DockBack(pane.clone()));
+                        }
+                    });
+                });
+                egui::CentralPanel::default().show(ui, |ui| {
+                    self.pane_ui(ui, &pane, &mut actions);
+                });
+                if ui.input(|i| i.viewport().close_requested()) {
+                    actions.push(DockAction::DockBack(pane.clone()));
+                }
+            });
+        }
+        self.dock = dock;
+        for a in actions {
+            match a {
+                DockAction::PopOut(p) => self.dock.pop_out(&p),
+                DockAction::DockBack(p) => self.dock.dock_back(&p),
+                DockAction::Close(t) => self.views.close(t),
+                DockAction::OwnTab(t) => self.dock.own_tab(t),
+                DockAction::IntoGroup(t) => self.dock.tile_back(t),
+                DockAction::TileAll => {
+                    let tiles = self.tile_ids();
+                    self.dock.tile_all(&tiles);
+                }
+                DockAction::Select(t) => self.views.selected = Some(t),
+            }
+        }
+    }
+
+    /// A tab's title.
+    fn pane_title(&self, pane: &Pane) -> String {
+        match pane {
+            Pane::Inspector => "Inspector".into(),
+            Pane::Diagram => match self.diagram.draft_problem() {
+                Some(_) => "Diagram ⚠".into(),
+                None => "Diagram".into(),
+            },
+            Pane::View(t) => self
+                .views
+                .tiles
+                .iter()
+                .find(|x| x.id == *t)
+                .and_then(|x| self.views.registry.get(&x.state.type_name))
+                .map_or("View".into(), |vt| vt.label.to_string()),
+            Pane::Views { tiles, .. } if tiles.len() == 1 => "Views".into(),
+            Pane::Views { tiles, .. } => format!("Views ({})", tiles.len()),
+        }
+    }
+
+    /// What a tab shows.
+    fn pane_ui(&mut self, ui: &mut egui::Ui, pane: &Pane, actions: &mut Vec<DockAction>) {
+        match pane {
+            Pane::Inspector => {
+                egui::ScrollArea::vertical()
+                    .id_salt("inspector")
+                    .show(ui, |ui| {
+                        self.param_panel(ui);
+                        self.style_panel(ui);
+                    });
+            }
+            Pane::Diagram => self.diagram_tab(ui),
+            Pane::View(t) => self.view_tiles(ui, &[*t], false, actions),
+            Pane::Views { tiles, .. } => self.view_tiles(ui, tiles, true, actions),
         }
     }
 
@@ -769,10 +912,10 @@ impl SimApp {
             return;
         };
         let m = live.model();
-        let (speed, views) = (self.speed, self.views.entries());
+        let (speed, views, layout) = (self.speed, self.views.entries(), self.layout());
         let current = || {
-            let views = views.clone();
-            live.call(move |s, _| s.save_json(speed, Some(views)))?
+            let (views, layout) = (views.clone(), layout.clone());
+            live.call(move |s, _| s.save_json_with(speed, Some(views), Some(layout)))?
         };
         let outcomes = self.diagram.show(
             ui,
@@ -860,7 +1003,7 @@ impl SimApp {
                 Outcome::ShowView(k) => {
                     if let Some(t) = self.views.tiles.get(k) {
                         self.views.selected = Some(t.id);
-                        self.central = Central::Views;
+                        self.focus = Some(Focus::Tile(t.id));
                     }
                 }
             }
@@ -929,11 +1072,65 @@ impl SimApp {
         }
     }
 
-    /// The model's views as tiles, each with its slot pickers, plus a "More
-    /// views…" menu for any other view that fits (ADR 0016).
-    fn plot(&mut self, ui: &mut egui::Ui) {
+    /// "More views…" and "Data…": add a view, edit the filters.
+    fn view_menus(&mut self, ui: &mut egui::Ui) {
         let Some(live) = &self.session else {
-            ui.centered_and_justified(|ui| ui.label("Open an example or a model file."));
+            return;
+        };
+        let m = live.model();
+        let history = live.history();
+        let available = m.available(&history);
+        let views = &mut self.views;
+        ui.menu_button("More views…", |ui| {
+            let presets: Vec<_> = views
+                .registry
+                .types()
+                .iter()
+                // Views for other kinds of blocks are not offered at all.
+                .filter(|t| t.applies(&available))
+                .flat_map(|t| {
+                    t.presets
+                        .iter()
+                        .enumerate()
+                        .map(move |(k, p)| (t.name, k, p.label, p.description))
+                })
+                .collect();
+            for (name, k, label, description) in presets {
+                let fits = views.fits(name, k, &available);
+                let r = ui
+                    .add_enabled(fits, egui::Button::new(label))
+                    .on_hover_text(description)
+                    .on_disabled_hover_text("This model records nothing this view can show");
+                if r.clicked() {
+                    views.add(name, k, &available);
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Add another view of this model");
+        if ui
+            .button("Data…")
+            .on_hover_text(
+                "Filters: signals computed from others (such as an energy), and cuts through 2D grids",
+            )
+            .clicked()
+        {
+            self.signals_editor = Some(SignalsEditor::new(&m));
+        }
+    }
+
+    /// Views as tiles in an automatic grid, each with its slot pickers, a
+    /// close button and a button to move it to a tab of its own (`grouped`)
+    /// or back among the others.
+    fn view_tiles(
+        &mut self,
+        ui: &mut egui::Ui,
+        ids: &[u64],
+        grouped: bool,
+        actions: &mut Vec<DockAction>,
+    ) {
+        let Some(live) = &self.session else {
             return;
         };
         let m = live.model();
@@ -941,53 +1138,19 @@ impl SimApp {
         let history = live.history();
         let available = m.available(&history);
         let views = &mut self.views;
-        ui.horizontal(|ui| {
-            ui.menu_button("More views…", |ui| {
-                let presets: Vec<_> = views
-                    .registry
-                    .types()
-                    .iter()
-                    // Views for other kinds of blocks are not offered at all.
-                    .filter(|t| t.applies(&available))
-                    .flat_map(|t| {
-                        t.presets
-                            .iter()
-                            .enumerate()
-                            .map(move |(k, p)| (t.name, k, p.label, p.description))
-                    })
-                    .collect();
-                for (name, k, label, description) in presets {
-                    let fits = views.fits(name, k, &available);
-                    let r = ui
-                        .add_enabled(fits, egui::Button::new(label))
-                        .on_hover_text(description)
-                        .on_disabled_hover_text("This model records nothing this view can show");
-                    if r.clicked() {
-                        views.add(name, k, &available);
-                        ui.close();
-                    }
-                }
-            })
-            .response
-            .on_hover_text("Add another view of this model");
-            if ui
-                .button("Data…")
-                .on_hover_text(
-                    "Filters: signals computed from others (such as an energy), and cuts through 2D grids",
-                )
-                .clicked()
-            {
-                self.signals_editor = Some(SignalsEditor::new(&m));
-            }
-            ui.weak("Click a view's name to edit its style in the side panel");
-        });
-
         let area = ui.available_rect_before_wrap();
-        let (cols, rows) = simsandbox_session::views::grid(views.tiles.len());
-        let mut close = None;
-        let mut select = None;
+        let shown: Vec<usize> = ids
+            .iter()
+            .filter_map(|id| views.tiles.iter().position(|t| t.id == *id))
+            .collect();
+        if shown.is_empty() {
+            ui.centered_and_justified(|ui| ui.label("No views: add one from \"More views…\"."));
+            return;
+        }
+        let (cols, rows) = simsandbox_session::views::grid(shown.len());
         let mut swap = false;
-        for (k, tile) in views.tiles.iter_mut().enumerate() {
+        for (k, &i) in shown.iter().enumerate() {
+            let tile = &mut views.tiles[i];
             let Some(t) = views.registry.get(&tile.state.type_name) else {
                 continue;
             };
@@ -1019,7 +1182,7 @@ impl SimApp {
                                 .on_hover_text(t.description)
                                 .clicked()
                             {
-                                select = Some(tile.id);
+                                actions.push(DockAction::Select(tile.id));
                             }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -1029,7 +1192,23 @@ impl SimApp {
                                         .on_hover_text("Close this view")
                                         .clicked()
                                     {
-                                        close = Some(tile.id);
+                                        actions.push(DockAction::Close(tile.id));
+                                    }
+                                    let (label, hint, action) = if grouped {
+                                        (
+                                            "own tab",
+                                            "Show it in a tab of its own, to move, stack or pop out",
+                                            DockAction::OwnTab(tile.id),
+                                        )
+                                    } else {
+                                        (
+                                            "tile",
+                                            "Tile it with the other views",
+                                            DockAction::IntoGroup(tile.id),
+                                        )
+                                    };
+                                    if ui.small_button(label).on_hover_text(hint).clicked() {
+                                        actions.push(action);
                                     }
                                     if t.swap.is_some()
                                         && ui
@@ -1053,15 +1232,6 @@ impl SimApp {
             });
         }
         ui.allocate_rect(area, egui::Sense::hover());
-        if let Some(id) = select {
-            views.selected = Some(id);
-        }
-        if let Some(id) = close {
-            views.close(id);
-        }
-        if views.tiles.is_empty() {
-            ui.centered_and_justified(|ui| ui.label("No views: add one from \"More views…\"."));
-        }
     }
 
     /// Style properties of the selected view, edited like parameters
@@ -1130,8 +1300,8 @@ impl SimApp {
     /// and views.
     fn saved_text(&self) -> Result<String, String> {
         let live = self.session.as_ref().ok_or("no model is open")?;
-        let (speed, views) = (self.speed, self.views.entries());
-        live.call(move |s, _| s.save_json(speed, Some(views)))?
+        let (speed, views, layout) = (self.speed, self.views.entries(), self.layout());
+        live.call(move |s, _| s.save_json_with(speed, Some(views), Some(layout)))?
     }
 
     fn shortcuts(&mut self, ui: &mut egui::Ui) {
@@ -1678,20 +1848,109 @@ impl eframe::App for SimApp {
             });
             ui.add_space(4.0);
         });
-        if self.session.is_some() {
-            egui::Panel::left("params")
-                .resizable(true)
-                .default_size(300.0)
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        self.param_panel(ui);
-                        self.style_panel(ui);
-                    });
-                });
-        }
-        egui::CentralPanel::default().show(ui, |ui| self.central(ui));
+        egui::CentralPanel::default().show(ui, |ui| self.docked(ui));
 
         self.handle_screenshot(&ctx);
+    }
+}
+
+/// What a tab asked for, carried out once the dock is drawn.
+#[derive(Clone, Debug)]
+enum DockAction {
+    PopOut(Pane),
+    DockBack(Pane),
+    /// Close a view.
+    Close(u64),
+    OwnTab(u64),
+    IntoGroup(u64),
+    TileAll,
+    Select(u64),
+}
+
+/// A tab in its own window, by what it shows (tiles are renumbered when
+/// the model is rebuilt).
+enum Popped {
+    Inspector,
+    Diagram,
+    /// The tab showing this view (by place among the views).
+    View(usize),
+}
+
+/// A tab's stable key, for ids.
+fn pane_key(p: &Pane) -> String {
+    match p {
+        Pane::Inspector => "inspector".into(),
+        Pane::Diagram => "diagram".into(),
+        Pane::View(t) => format!("view:{t}"),
+        Pane::Views { id, .. } => format!("views:{id}"),
+    }
+}
+
+/// The dock's view of the app: each tab drawn by the app.
+struct Tabs<'a> {
+    app: &'a mut SimApp,
+    actions: Vec<DockAction>,
+}
+
+impl egui_dock::TabViewer for Tabs<'_> {
+    type Tab = Pane;
+
+    fn id(&mut self, tab: &mut Pane) -> egui::Id {
+        egui::Id::new(("tab", pane_key(tab)))
+    }
+
+    fn title(&mut self, tab: &mut Pane) -> egui::WidgetText {
+        self.app.pane_title(tab).into()
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Pane) {
+        let pane = tab.clone();
+        self.app.pane_ui(ui, &pane, &mut self.actions);
+    }
+
+    fn context_menu(&mut self, ui: &mut egui::Ui, tab: &mut Pane, _path: egui_dock::NodePath) {
+        if ui
+            .button("Pop out")
+            .on_hover_text("Show it in a window of its own")
+            .clicked()
+        {
+            self.actions.push(DockAction::PopOut(tab.clone()));
+            ui.close();
+        }
+        match tab {
+            Pane::View(t) => {
+                if ui.button("Tile with the other views").clicked() {
+                    self.actions.push(DockAction::IntoGroup(*t));
+                    ui.close();
+                }
+            }
+            Pane::Views { .. }
+                if ui
+                    .button("Tile all views here")
+                    .on_hover_text("Bring every view back into one tab")
+                    .clicked() =>
+            {
+                self.actions.push(DockAction::TileAll);
+                ui.close();
+            }
+            _ => {}
+        }
+    }
+
+    fn is_closeable(&self, tab: &Pane) -> bool {
+        matches!(tab, Pane::View(_))
+    }
+
+    fn on_close(&mut self, tab: &mut Pane) -> egui_dock::widgets::tab_viewer::OnCloseResponse {
+        if let Pane::View(t) = tab {
+            self.actions.push(DockAction::Close(*t));
+        }
+        egui_dock::widgets::tab_viewer::OnCloseResponse::Close
+    }
+
+    fn allowed_in_windows(&self, _tab: &mut Pane) -> bool {
+        // Tabs leave the window with "Pop out", as windows of their own.
+        false
     }
 }
 
@@ -2867,10 +3126,10 @@ mod tests {
     fn canvas_edits(app: &mut SimApp, edits: Vec<simsandbox_session::diagram::Edit>) {
         let live = app.session.as_ref().unwrap();
         let m = live.model();
-        let (speed, views) = (app.speed, app.views.entries());
+        let (speed, views, layout) = (app.speed, app.views.entries(), app.layout());
         let current = || {
-            let views = views.clone();
-            live.call(move |s, _| s.save_json(speed, Some(views)))?
+            let (views, layout) = (views.clone(), layout.clone());
+            live.call(move |s, _| s.save_json_with(speed, Some(views), Some(layout)))?
         };
         let outcomes = app.diagram.handle(edits, &app.registry, &current);
         app.diagram_outcomes(&m, outcomes);
@@ -2880,13 +3139,66 @@ mod tests {
     fn canvas_step(app: &mut SimApp, back: bool) {
         let live = app.session.as_ref().unwrap();
         let m = live.model();
-        let (speed, views) = (app.speed, app.views.entries());
+        let (speed, views, layout) = (app.speed, app.views.entries(), app.layout());
         let current = || {
-            let views = views.clone();
-            live.call(move |s, _| s.save_json(speed, Some(views)))?
+            let (views, layout) = (views.clone(), layout.clone());
+            live.call(move |s, _| s.save_json_with(speed, Some(views), Some(layout)))?
         };
         let outcomes = app.diagram.step(back, &app.registry, &current);
         app.diagram_outcomes(&m, outcomes);
+    }
+
+    #[test]
+    fn the_arrangement_is_saved_and_survives_rebuilds() {
+        use simsandbox_session::diagram::Edit;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("oscillators"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        // The standard arrangement is not written.
+        assert!(!app.saved_text().unwrap().contains("\"layout\""));
+        let tiles = app.tile_ids();
+        assert_eq!(tiles.len(), 3);
+        // The second view in a tab of its own; the diagram in a window.
+        app.dock.own_tab(tiles[1]);
+        app.dock.pop_out(&Pane::Diagram);
+        let text = app.saved_text().unwrap();
+        let (f, _) = simsandbox_file::ModelFile::from_json(&text).unwrap();
+        let l = f.controls.layout.clone().expect("saved");
+        let panes: Vec<String> = l.panes().iter().map(|p| format!("{p:?}")).collect();
+        assert!(panes.iter().any(|p| p.contains("view:1")), "{panes:?}");
+        assert!(panes.iter().any(|p| p.contains("diagram")), "{panes:?}");
+        // Drawn, the popped-out diagram is a window of its own (here, with
+        // no native windows, one inside the app).
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.docked(ui));
+        out.textures_delta.clear();
+        assert_eq!(app.dock.popped, [Pane::Diagram]);
+        // A canvas edit rebuilds the model: the window and the tab stay.
+        canvas_edits(
+            &mut app,
+            vec![Edit::Rename {
+                from: "b".into(),
+                to: "c".into(),
+            }],
+        );
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(app.dock.popped, [Pane::Diagram]);
+        assert!(app.dock.panes().iter().any(|p| matches!(p, Pane::View(_))));
+        // Opened again, the view has its own tab and the diagram is docked.
+        app.open_text("again", &text);
+        assert!(app.dock.popped.is_empty());
+        assert!(app.dock.panes().iter().any(|p| matches!(p, Pane::View(_))));
+        assert!(app.dock.panes().contains(&Pane::Diagram));
     }
 
     #[test]

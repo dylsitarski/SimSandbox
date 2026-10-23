@@ -39,6 +39,7 @@ use simsandbox_core::SimError;
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub mod layout;
 pub mod subsystems;
 pub use subsystems::{
     Declared, Derived, InputPort, OutputPort, ParamDecl, ParamPlan, ParamValue, Subsystem,
@@ -535,6 +536,10 @@ pub struct Controls {
     /// The views the model opens with (ADR 0015); the app shows the first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<ViewEntry>,
+    /// How the app arranges its panes: inspector, diagram and views as
+    /// tabs, split and stacked (ADR 0053).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<layout::Layout>,
     /// Filters turning recorded data into new signals and fields
     /// (ADR 0030, ADR 0032): derived expressions, cuts. Checked by the app;
     /// invalid ones are dropped with a warning.
@@ -1789,6 +1794,8 @@ impl ModelFile {
         };
         derived.extend(keys.iter().cloned());
         let mut kept = Vec::new();
+        // Each view's new place, for the layout.
+        let mut moved: Vec<Option<usize>> = vec![None; c.views.len()];
         for (i, mut v) in std::mem::take(&mut c.views).into_iter().enumerate() {
             let before = v.type_name.clone();
             if v.upgrade() {
@@ -1822,9 +1829,14 @@ impl ModelFile {
                 ));
                 v.camera = None;
             }
+            moved[i] = Some(kept.len());
             kept.push(v);
         }
         c.views = kept;
+        if let Some(l) = c.layout.take() {
+            let map = |k: usize| moved.get(k).copied().flatten();
+            c.layout = l.checked(c.views.len(), &map, &mut warnings);
+        }
         warnings
     }
 }

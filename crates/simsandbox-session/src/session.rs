@@ -938,6 +938,20 @@ impl Session {
         speed: f64,
         views: Option<Vec<ViewEntry>>,
     ) -> Result<String, String> {
+        self.save_json_with(speed, views, None)
+    }
+
+    /// As [`Self::save_json`], with the app's arrangement of its panes
+    /// (ADR 0053) if given; otherwise the file's is kept.
+    pub fn save_json_with(
+        &mut self,
+        speed: f64,
+        views: Option<Vec<ViewEntry>>,
+        layout: Option<Option<simsandbox_file::layout::Layout>>,
+    ) -> Result<String, String> {
+        if let Some(l) = layout {
+            self.file.controls.layout = l;
+        }
         self.flat
             .capture_params(self.sim.model(), &self.ids)
             .map_err(|e| e.to_string())?;

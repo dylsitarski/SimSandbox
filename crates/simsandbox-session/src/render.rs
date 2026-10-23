@@ -65,7 +65,12 @@ pub fn render(
         views.tiles = vec![keep];
     }
 
-    let image = paint(o, |ui| tiles(ui, &mut views, &h));
+    // One view alone, or as the saved arrangement places them.
+    let layout = s.file.controls.layout.as_ref().filter(|_| o.view.is_none());
+    let image = paint(o, |ui| match layout {
+        Some(l) => arranged(ui, &mut views, &h, l),
+        None => tiles(ui, &mut views, &h),
+    });
     Ok((image, warnings))
 }
 
@@ -160,8 +165,114 @@ fn paint(o: &RenderOptions, mut draw: impl FnMut(&mut egui::Ui)) -> Image {
 /// app (without its controls).
 fn tiles(ui: &mut egui::Ui, views: &mut Views, history: &simsandbox_views::History) {
     let area = ui.available_rect_before_wrap();
-    let (cols, rows) = grid(views.tiles.len());
-    for (k, tile) in views.tiles.iter_mut().enumerate() {
+    let all: Vec<usize> = (0..views.tiles.len()).collect();
+    grid_in(ui, views, history, &all, area);
+    ui.allocate_rect(area, egui::Sense::hover());
+}
+
+/// Draw the views as the saved arrangement places them (ADR 0053): each
+/// stack shows its front tab, and parts without views (the inspector, the
+/// diagram) give their space to the rest.
+fn arranged(
+    ui: &mut egui::Ui,
+    views: &mut Views,
+    history: &simsandbox_views::History,
+    layout: &simsandbox_file::layout::Layout,
+) {
+    let area = ui.available_rect_before_wrap();
+    // Each saved view's place among the tiles.
+    let ids: Vec<u64> = views.tiles.iter().map(|t| t.id).collect();
+    let place: Vec<Option<usize>> = views
+        .opened
+        .iter()
+        .map(|id| id.and_then(|id| ids.iter().position(|t| *t == id)))
+        .collect();
+    for (shown, rect) in view_areas(layout, area) {
+        let tiles: Vec<usize> = shown
+            .into_iter()
+            .filter_map(|k| place.get(k).copied().flatten())
+            .collect();
+        grid_in(ui, views, history, &tiles, rect);
+    }
+    ui.allocate_rect(area, egui::Sense::hover());
+}
+
+/// The views each stack shows at the front, and where, in `area`.
+pub fn view_areas(
+    layout: &simsandbox_file::layout::Layout,
+    area: egui::Rect,
+) -> Vec<(Vec<usize>, egui::Rect)> {
+    use simsandbox_file::layout::{Layout, SplitKind};
+    fn front(l: &Layout) -> Vec<usize> {
+        match l {
+            Layout::Tabs { tabs, active } => {
+                tabs.get(*active).map(|p| p.views()).unwrap_or_default()
+            }
+            Layout::Split { first, second, .. } => {
+                let mut v = front(first);
+                v.extend(front(second));
+                v
+            }
+        }
+    }
+    match layout {
+        Layout::Tabs { .. } => {
+            let v = front(layout);
+            if v.is_empty() {
+                Vec::new()
+            } else {
+                vec![(v, area)]
+            }
+        }
+        Layout::Split {
+            split,
+            fraction,
+            first,
+            second,
+        } => match (front(first).is_empty(), front(second).is_empty()) {
+            (true, true) => Vec::new(),
+            (true, false) => view_areas(second, area),
+            (false, true) => view_areas(first, area),
+            (false, false) => {
+                let f = *fraction as f32;
+                let (a, b) = match split {
+                    SplitKind::LeftRight => {
+                        let x = area.min.x + area.width() * f;
+                        (
+                            egui::Rect::from_min_max(area.min, egui::pos2(x, area.max.y)),
+                            egui::Rect::from_min_max(egui::pos2(x, area.min.y), area.max),
+                        )
+                    }
+                    SplitKind::TopBottom => {
+                        let y = area.min.y + area.height() * f;
+                        (
+                            egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, y)),
+                            egui::Rect::from_min_max(egui::pos2(area.min.x, y), area.max),
+                        )
+                    }
+                };
+                let mut out = view_areas(first, a);
+                out.extend(view_areas(second, b));
+                out
+            }
+        },
+    }
+}
+
+/// Some tiles (by place) in an automatic grid filling `area`.
+fn grid_in(
+    ui: &mut egui::Ui,
+    views: &mut Views,
+    history: &simsandbox_views::History,
+    shown: &[usize],
+    area: egui::Rect,
+) {
+    if shown.is_empty() {
+        return;
+    }
+    let (cols, rows) = grid(shown.len());
+    for (k, &i) in shown.iter().enumerate() {
+        let tile = &mut views.tiles[i];
         let Some(t) = views.registry.get(&tile.state.type_name) else {
             continue;
         };
@@ -184,7 +295,6 @@ fn tiles(ui: &mut egui::Ui, views: &mut Views, history: &simsandbox_views::Histo
             });
         });
     }
-    ui.allocate_rect(area, egui::Sense::hover());
 }
 
 /// The image as PNG.
@@ -269,5 +379,28 @@ mod tests {
         assert!(render(&s, view_registry(), &o)
             .unwrap_err()
             .contains("no view 99"));
+    }
+
+    #[test]
+    fn the_arrangement_places_the_views_and_drops_the_rest() {
+        let l: simsandbox_file::layout::Layout = serde_json::from_str(
+            r#"{"split": "left_right", "fraction": 0.25,
+                "first": {"tabs": ["inspector"]},
+                "second": {"split": "top_bottom", "fraction": 0.5,
+                    "first": {"tabs": [{"views": [0, 2]}, "diagram"]},
+                    "second": {"tabs": ["diagram", "view:1"], "active": 1}}}"#,
+        )
+        .unwrap();
+        let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0));
+        let a = view_areas(&l, area);
+        // The inspector gives its quarter to the views.
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0].0, [0, 2]);
+        assert_eq!(
+            a[0].1,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(400.0, 100.0))
+        );
+        assert_eq!(a[1].0, [1]);
+        assert_eq!(a[1].1.min, egui::pos2(0.0, 100.0));
     }
 }

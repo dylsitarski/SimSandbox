@@ -12,6 +12,7 @@
 
 mod app;
 mod diagram;
+mod dock;
 mod live;
 mod log;
 mod pacing;

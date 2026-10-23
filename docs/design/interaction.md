@@ -35,7 +35,7 @@ Architecture: [visualization](../architecture/visualization.md) ([ADR 0015](../d
 
 ## Three ways to build, one model file
 
-1. Visual canvas: drag and wire Blocks (the app's Diagram tab, [ADR 0042](../decisions/0042-node-canvas.md); positions are saved in the model file, and edits rebuild and restart the run). Filters and views form a data layer on it, edited without a restart; Undo and Redo step through canvas edits ([ADR 0050](../decisions/0050-data-layer-and-canvas-undo.md)).
+1. Visual canvas: drag and wire Blocks (the app's Diagram tab, [ADR 0042](../decisions/0042-node-canvas.md); positions are saved in the model file, and edits rebuild and restart the run). Filters and views form a data layer on it, edited without a restart; Undo and Redo step through canvas edits ([ADR 0050](../decisions/0050-data-layer-and-canvas-undo.md)). The inspector, diagram and views are dockable tabs that can be popped out into windows, arranged as the model file saves ([ADR 0053](../decisions/0053-docked-panes-inspector-and-node-values.md)).
 2. Code: a Python (later Julia) API that produces the same graph.
 3. Natural language: an AI assistant drafts Blocks and equations; the result is ordinary, editable model code that passes the same unit and validation checks.
 

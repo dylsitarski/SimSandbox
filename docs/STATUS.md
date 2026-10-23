@@ -24,10 +24,11 @@ _Last updated: 2026-10-23_
 - Subsystems and declared parameters ([ADR 0043](decisions/0043-subsystems.md)): model files define subsystems used by name and the model's own parameters; block parameters may be formulas; the Diagram tab opens a subsystem to edit it and makes one from a selection; the panel shows model, use and formula-set parameters.
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
-- 258 tests in the workspace plus 15 Python tests, including verification against analytic solutions and convergence order.
+- 263 tests in the workspace plus 15 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-10-23: docked panes ([ADR 0053](decisions/0053-docked-panes-inspector-and-node-values.md)), at the owner's request: the inspector, diagram and views are tabs to drag, stack and split; a view alone or tiled with others; "Pop out" into native windows; "More views…" and "Data…" in the toolbar; the arrangement saved as `controls.layout` (lenient, renumbered when views are dropped) and followed by headless rendering.
 - 2026-10-23: fusion compares the methods blocks run as built (name and options), so a block with its method left out fuses with one naming the same default (owner's request).
 - 2026-10-23: formula and conversion blocks join the fused group they connect ([ADR 0051](decisions/0051-stateless-blocks-join-fused-groups.md)), at the owner's question: a promoted filter between car and controller now leaves the run bit-identical; every node's place is `canvas` ([ADR 0052](decisions/0052-canvas-for-every-node-place.md)), `at` read and converted with a fixture.
 - 2026-10-23: the canvas's data layer and undo ([ADR 0050](decisions/0050-data-layer-and-canvas-undo.md)), as the owner chose before Phase 2: filters and views as dashed nodes wired by dashed data wires from what they read, hidden with "Hide data"; binding, unbinding, adding, renaming, moving and deleting them applies to the running model without a restart; a filter dropped on a block input is refused with "Promote and connect"; promoting turns an expression filter into a formula block with unit-carrying inputs; Undo/Redo (Ctrl+Z, Ctrl+Shift+Z) keep parameter values changed since; `canvas` places in the file; `render --diagram` draws the layer (`--no-data`), Python `Model.promote`.
@@ -80,7 +81,7 @@ _Last updated: 2026-10-23_
 
 ## In progress
 
-- Nothing.
+- The app's layout ([ADR 0053](decisions/0053-docked-panes-inspector-and-node-values.md)): docking is built; the inspector (model scope, selection, search, each value once, a table of subsystem uses, Solving moved out) and then editable values on nodes come next.
 
 ## Next up
 

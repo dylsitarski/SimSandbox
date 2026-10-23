@@ -611,6 +611,10 @@
               }
             }
           }
+        },
+        "layout": {
+          "$ref": "#/$defs/layout",
+          "description": "How the app arranges its panes (ADR 0053): splits of stacks of tabs. Tabs: 'inspector', 'diagram', 'view:K' (a view of controls.views), or {\"views\": [K, ...]} for views tiled in one tab."
         }
       }
     },
@@ -743,6 +747,83 @@
           }
         }
       }
+    },
+    "layout": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "split",
+            "fraction",
+            "first",
+            "second"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "split": {
+              "enum": [
+                "left_right",
+                "top_bottom"
+              ]
+            },
+            "fraction": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1,
+              "description": "The first part's share."
+            },
+            "first": {
+              "$ref": "#/$defs/layout"
+            },
+            "second": {
+              "$ref": "#/$defs/layout"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "tabs"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tabs": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(inspector|diagram|view:[0-9]+)$"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "views"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "views": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "active": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The tab shown."
+            }
+          }
+        }
+      ]
     }
   }
 }
