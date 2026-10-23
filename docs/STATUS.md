@@ -2,7 +2,7 @@
 
 _Last updated: 2026-10-23_
 
-**Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0038](decisions/0038-phase-1-revised.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). **Gate met:** 2026-10-22, the grazing example (`eq.grass` and `agents.grazers`) runs live in the desktop app at 4× real time with about 400 sheep (checked headless in the cloud; to confirm on the owner's machines). **All eight Phase 1 items are built** (2026-10-23); the phase closes once the owner has tried them. Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
+**Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0038](decisions/0038-phase-1-revised.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). **Gate met:** 2026-10-22, the grazing example (`eq.grass` and `agents.grazers`) runs live in the desktop app at 4× real time with about 400 sheep (checked headless in the cloud); **confirmed by the owner on Linux and Windows on 2026-10-23**. **All eight Phase 1 items are built** (2026-10-23). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
 
 ## What works
 
@@ -28,6 +28,7 @@ _Last updated: 2026-10-23_
 
 ## Done recently
 
+- 2026-10-23: the owner confirmed the Phase 1 gate (the grazing model) on Linux and Windows.
 - 2026-10-23: `state x [m] = 0` declarations and a line's unit belonging to its left side ([ADR 0049](decisions/0049-state-declarations-and-rate-units.md)), at the owner's request: `dv/dt = F/m [m/s^2]` labels the rate; a declared state gives its unit and the default of `x0`; examples, starter model and help updated; the examples' results are unchanged with and without units.
 - 2026-10-23: unit vocabulary ([ADR 0047](decisions/0047-unit-vocabulary.md)): SI prefixes (kN, MPa, µs, mL), common non-SI units (min, h, d, L, t, bar, atm, eV, Wh, cal, deg, rev, rpm, %, ppm) and US/imperial units at exact definitions (in, ft, yd, mi, nmi, kn, mph, lb, oz, lbf, psi, gal, hp, BTU, slug); parentheses and number factors, so every shown unit reads back; `a/b*c` and °C/°F refused with reasons; `simsandbox describe units` and `describe("units")`. Q31 (external data and units) raised, then resolved the same day by the owner ([ADR 0048](decisions/0048-units-of-external-data.md)).
 - 2026-10-23: units of model and subsystem parameters ([ADR 0046](decisions/0046-units-of-declared-parameters.md)), at the owner's request: declared units must be units; formulas are checked by the typed-equation rules (now shared in `simsandbox_expr::units`) against the unit of what they set, and computed in SI (2 km gives 2000 for a length in m); unused subsystems are checked too; grouping keeps units; `Unit::parse` reads `·`; the platoon example carries units (its `ki` was labelled wrongly).
@@ -82,7 +83,7 @@ _Last updated: 2026-10-23_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Close Phase 1** with the owner: confirm the node canvas, subsystems and the unsaved-changes dialog on Windows and Linux (checked here only headless and by tests), then plan Phase 2 ([roadmap](roadmap.md#phase-2--breadth)) as Phase 1 was planned ([ADR 0033](decisions/0033-phase-1-plan.md)). Each new feature meets [ADR 0039](decisions/0039-ai-agent-access.md).
+1. **Plan Phase 2** (the Phase 1 gate was confirmed on Linux and Windows on 2026-10-23; the owner is deciding whether the observer layer, item 2, comes first) ([roadmap](roadmap.md#phase-2--breadth)) as Phase 1 was planned ([ADR 0033](decisions/0033-phase-1-plan.md)). Each new feature meets [ADR 0039](decisions/0039-ai-agent-access.md).
 2. The canvas's observer layer: filters and views on the diagram ([ADR 0032](decisions/0032-filters-as-a-graph.md)); undo for canvas edits.
 3. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
