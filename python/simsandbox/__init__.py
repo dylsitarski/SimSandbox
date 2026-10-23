@@ -35,6 +35,7 @@ __all__ = [
     "schema",
     "check",
     "examples",
+    "upgrade",
 ]
 
 
@@ -57,6 +58,14 @@ def check(model: "Model | dict | str | os.PathLike") -> dict:
     ``params``, what the model records and its views. Never raises for a
     bad model: read ``ok``."""
     return json.loads(_native.check(_text(model)))
+
+
+def upgrade(model: "Model | dict | str | os.PathLike") -> tuple["Model", list[str]]:
+    """The model in the current form of the file format, and the older
+    forms it was converted from (ADR 0044). Files in older forms open
+    anyway; this writes them as SimSandbox writes files today."""
+    text, conversions, _warnings = _native.upgrade(_text(model))
+    return Model.from_json(text), conversions
 
 
 def examples() -> list[str]:

@@ -15,6 +15,8 @@
 //!                   [--diagram [--subsystem NAME]]  (the block diagram instead of the views)
 //! simsandbox start-from FILE --t SECONDS [--out NEW.json]
 //!                                   (the model file that starts from the state at t)
+//! simsandbox upgrade FILE [--out NEW.json]
+//!                                   (the file in the current form; older forms converted)
 //! simsandbox lorenz [--t-end 20] [--dt 0.01] [--method euler|rk4|dopri5] [--rho 28]
 //! simsandbox --version
 //! ```
@@ -39,6 +41,7 @@ const USAGE: &str = "usage:
   simsandbox schema
   simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--width POINTS] [--height POINTS] [--scale S] [--light] [--diagram [--subsystem NAME]]
   simsandbox start-from FILE --t SECONDS [--out NEW.json]
+  simsandbox upgrade FILE [--out NEW.json]
   simsandbox lorenz [--t-end SECONDS] [--dt SECONDS] [--method euler|rk4|dopri5] [--rho VALUE]";
 
 /// Flags and their values; `--light` and `--diagram` take none.
@@ -281,6 +284,31 @@ fn start_from_file(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// Write a model file in the current form (ADR 0044): to `--out`, or
+/// standard output. What was converted or dropped goes to standard error.
+fn upgrade_file(args: &[String]) -> Result<(), String> {
+    let (path, rest) = args.split_first().ok_or(USAGE)?;
+    let flags = Flags::parse(rest, &["--out"])?;
+    let (text, conversions, warnings) =
+        describe::upgrade(&read(path)?, &registry()).map_err(|e| format!("{path}: {e}"))?;
+    if conversions.is_empty() {
+        eprintln!("note: {path} is already in the current form");
+    }
+    for c in conversions {
+        eprintln!("converted: {c}");
+    }
+    for w in warnings {
+        eprintln!("warning: {path}: {w}");
+    }
+    match flags.get("--out") {
+        Some(out) => std::fs::write(out, text).map_err(|e| format!("{out}: {e}")),
+        None => {
+            print!("{text}");
+            Ok(())
+        }
+    }
+}
+
 fn run_lorenz(args: &[String]) -> Result<(), String> {
     let flags = Flags::parse(args, &["--t-end", "--dt", "--method", "--rho"])?;
     let method = match flags.get("--method").unwrap_or("rk4") {
@@ -344,6 +372,7 @@ fn main() -> ExitCode {
         }
         Some("render") => render_file(rest),
         Some("start-from") => start_from_file(rest),
+        Some("upgrade") => upgrade_file(rest),
         Some("lorenz") => run_lorenz(rest),
         _ => Err(USAGE.to_string()),
     };

@@ -42,7 +42,7 @@ Goal: connect and reuse. Gate: an ODE model and an agent model run in one graph 
 - [x] 5. Headless interface for people and AI agents: Python API (PyO3) with results as numpy arrays; `simsandbox describe`, `check` and `render` ([ADR 0039](decisions/0039-ai-agent-access.md); built 2026-10-22, [ADR 0041](decisions/0041-headless-interface.md))
 - [x] 6. Visual node canvas: Diagram tab, block positions in the file, edits, start from a reached state, headless diagram images ([ADR 0042](decisions/0042-node-canvas.md); built 2026-10-22). Its observer layer for filters and views ([ADR 0032](decisions/0032-filters-as-a-graph.md)) follows
 - [x] 7. Subsystems collapsed into reusable Blocks: defined in the file, used by name, flattened on load; declared parameters with formulas ([ADR 0043](decisions/0043-subsystems.md); built 2026-10-23)
-- [ ] 8. Shareable model files: ask before discarding unsaved changes; a stated rule for converting older files (files are already self-contained)
+- [x] 8. Shareable model files: ask before discarding unsaved changes; a stated rule for older files, tested with fixtures ([ADR 0044](decisions/0044-unsaved-changes-and-older-files.md); built 2026-10-23)
 
 ## Phase 2 · Breadth
 

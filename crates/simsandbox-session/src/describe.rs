@@ -177,6 +177,13 @@ pub fn catalogue(r: &Registry, views: &ViewRegistry) -> Value {
     })
 }
 
+/// A model file rewritten in the current form (ADR 0044): the text, the
+/// older forms it converted and what it dropped as unusable.
+pub fn upgrade(text: &str, r: &Registry) -> Result<(String, Vec<String>, Vec<String>), String> {
+    let loaded = simsandbox_file::load(text, r).map_err(|e| e.to_string())?;
+    Ok((loaded.file.to_json(), loaded.conversions, loaded.warnings))
+}
+
 /// Check a model file: load it as the app does (building the model,
 /// evaluating its sweep) and report every problem found. `ok` is false
 /// when it cannot run.
@@ -203,6 +210,7 @@ pub fn check(text: &str, r: &Registry) -> Value {
                 "ok": true,
                 "errors": [],
                 "warnings": s.warnings,
+                "conversions": s.conversions,
                 "labels": labels.map(self::labels),
                 "swept": s.sweep().map(|sw| sw.keys().to_vec()),
                 "fused_groups": s.groups.iter().map(|g| json!({"blocks": g.blocks, "method": g.method.to_string()})).collect::<Vec<_>>(),

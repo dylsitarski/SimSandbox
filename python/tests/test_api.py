@@ -2,6 +2,7 @@
 run, sweep and render, with results checked against known answers."""
 
 import math
+import os
 import struct
 
 import numpy as np
@@ -154,3 +155,12 @@ def test_subsystems_and_model_parameters():
     assert g.data["subsystems"]["group1"]["params"]["size"]["value"] == 60
     assert g.check()["ok"]
     assert g.run(t_end=0.5).rows == 6
+
+
+def test_older_files_open_and_upgrade():
+    old = os.path.join(os.path.dirname(__file__), "../../crates/simsandbox-file/tests/old/adr-0030-derived-signals.json")
+    assert ss.check(old)["conversions"], "older forms are reported"
+    m, conversions = ss.upgrade(old)
+    assert any("signals" in c for c in conversions)
+    assert "signals" not in m.data["controls"]
+    assert ss.upgrade(m)[1] == []

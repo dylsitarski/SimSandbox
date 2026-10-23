@@ -49,6 +49,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0041](0041-headless-interface.md) | Headless interface: shared session crate, `describe`/`check`/`run --format json`/`render`, views rasterised on the CPU, Python package in its own workspace | Accepted | 2026-10-22 |
 | [0042](0042-node-canvas.md) | Node canvas as a Diagram tab; per-block `at`; edits rebuild and restart (drafts until they load); "Start from here" saves a reached state as the start | Accepted | 2026-10-22 |
 | [0043](0043-subsystems.md) | Subsystems defined in the file and flattened on load; declared parameters with formulas (resolves Q30); open and group on the canvas | Accepted | 2026-10-23 |
+| [0044](0044-unsaved-changes-and-older-files.md) | Ask before discarding unsaved changes; older files convert on reading, are reported and tested; a new format version only when adding is impossible | Accepted | 2026-10-23 |
 
 ## When to write one
 

@@ -114,12 +114,14 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0041-headless-interface.md](decisions/0041-headless-interface.md) | Decision record | Headless commands, CPU rendering of views, the Python package |
 | [decisions/0042-node-canvas.md](decisions/0042-node-canvas.md) | Decision record | The node canvas, block positions, edits to a running model, starting from a reached state |
 | [decisions/0043-subsystems.md](decisions/0043-subsystems.md) | Decision record | Subsystems, declared parameters and formulas |
+| [decisions/0044-unsaved-changes-and-older-files.md](decisions/0044-unsaved-changes-and-older-files.md) | Decision record | Unsaved changes; the rule for older files and format versions |
 
 ### Guides
 
 | Document | Type | What it covers |
 | --- | --- | --- |
 | [guides/development-setup.md](guides/development-setup.md) | Guide | Toolchain on Windows, macOS, Linux and WSL; commands |
+| [guides/changing-the-file-format.md](guides/changing-the-file-format.md) | Guide | Adding to or changing the model file format without breaking older files |
 | [guides/headless.md](guides/headless.md) | Guide | Describe, check, run and render models from the CLI and Python, with the JSON formats |
 | [guides/verification-policy.md](guides/verification-policy.md) | Guide | Rules and tests every numerical method must meet |
 | [guides/adding-an-integrator.md](guides/adding-an-integrator.md) | Guide | Worked steps for adding a method to the equation domain |

@@ -23,6 +23,7 @@ Build with `cargo build --release -p simsandbox-cli`; the binary is `target/rele
 | `simsandbox render FILE --out IMAGE.png [--t-end S] [--view N] [--width P] [--height P] [--scale S] [--light]` | PNG of the views after running to `t_end` |
 | `simsandbox render FILE --diagram [--subsystem NAME] --out IMAGE.png [--width P] [--height P] [--scale S] [--light]` | PNG of the block diagram, or a subsystem's inside, as the app's Diagram tab shows it (also for a file that cannot run) |
 | `simsandbox start-from FILE --t S [--out NEW.json]` | The model file that starts from the state reached at `t` ([ADR 0042](../decisions/0042-node-canvas.md)): initial-condition parameters where they say it exactly, else a `start` entry per block |
+| `simsandbox upgrade FILE [--out NEW.json]` | The file in the current form of the format; what was converted on standard error ([ADR 0044](../decisions/0044-unsaved-changes-and-older-files.md)) |
 
 Notes, warnings and labels go to standard error; data to standard output.
 
@@ -33,6 +34,7 @@ Notes, warnings and labels go to standard error; data to standard output.
 | `ok` | The model loads and can run |
 | `errors` | Each `{path, message}` (file structure) or `{line, column, message}` (JSON syntax) or `{message}` |
 | `warnings` | Problems that were worked around, e.g. a saved view that cannot be shown |
+| `conversions` | Older forms of the format the file was written in, converted on reading; `simsandbox upgrade` writes the current form |
 | `params` | Every parameter: `key` (`block.param`; a model parameter's `name`, a subsystem use's `instance.name`; blocks inside uses `instance/inner.param`), `value`, `formula` (set when a formula computes it), `unit`, `suggested` range, `initial_condition`, `description` |
 | `subsystems`, `blocks` | Each subsystem's parameters, ports and uses ([ADR 0043](../decisions/0043-subsystems.md)); every block after flattening, as signals and sliders name them |
 | `labels` | Speed and accuracy of the model's methods |

@@ -1,0 +1,61 @@
+{
+  "format": 1,
+  "description": "The Lorenz system. Slide rho through about 24.74 to watch steady convection turn chaotic.",
+  "run": {
+    "dt": 0.01
+  },
+  "blocks": [
+    {
+      "name": "lorenz",
+      "type": "eq.lorenz",
+      "method": {
+        "name": "rk4",
+        "substeps": 1.0
+      },
+      "params": {
+        "beta": 2.6666666666666665,
+        "rho": 28.0,
+        "sigma": 10.0,
+        "x0": 1.0,
+        "y0": 1.0,
+        "z0": 1.0
+      }
+    }
+  ],
+  "controls": {
+    "params": {
+      "lorenz.rho": {
+        "slider": true,
+        "range": [
+          0.0,
+          30.0
+        ]
+      },
+      "lorenz.sigma": {
+        "slider": true
+      }
+    },
+    "speed": 1.0,
+    "plots": [
+      "lorenz.xyz"
+    ],
+    "views": [
+      {
+        "type": "plot.time",
+        "bind": {
+          "y": [
+            "lorenz.xyz[0]",
+            "lorenz.xyz[1]"
+          ]
+        }
+      },
+      {
+        "type": "plot.phase",
+        "bind": {
+          "x": "lorenz.xyz[0]",
+          "y": "lorenz.xyz[2]"
+        }
+      }
+    ]
+  }
+}

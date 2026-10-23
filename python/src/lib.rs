@@ -212,6 +212,13 @@ fn group(text: &str, blocks: Vec<String>, subsystem: Option<String>) -> PyResult
     Ok((file.to_json(), note))
 }
 
+/// A model file in the current form (ADR 0044): the text, the older forms
+/// converted, and what was dropped as unusable.
+#[pyfunction]
+fn upgrade(text: &str) -> PyResult<(String, Vec<String>, Vec<String>)> {
+    catalogue::upgrade(text, &registry()).map_err(ModelError::new_err)
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ModelError", m.py().get_type::<ModelError>())?;
@@ -224,6 +231,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(render_diagram, m)?)?;
     m.add_function(wrap_pyfunction!(start_from, m)?)?;
     m.add_function(wrap_pyfunction!(group, m)?)?;
+    m.add_function(wrap_pyfunction!(upgrade, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

@@ -670,7 +670,9 @@ impl ViewEntry {
     /// (ADR 0018) — `plot.time` becomes `plot.xy` against `t`, `plot.phase`
     /// becomes `plot.xy` with its bindings and style kept — and the heat
     /// map's `position` and `time_axis` (ADR 0024).
-    pub fn upgrade(&mut self) {
+    /// Returns whether anything changed.
+    pub fn upgrade(&mut self) -> bool {
+        let before = self.clone();
         match self.type_name.as_str() {
             "plot.time" => {
                 self.type_name = "plot.xy".into();
@@ -700,6 +702,7 @@ impl ViewEntry {
             }
             _ => {}
         }
+        *self != before
     }
 }
 
@@ -883,9 +886,14 @@ impl fmt::Display for FileError {
                 column,
                 message,
             } => write!(f, "line {line}, column {column}: {message}"),
+            FileError::UnsupportedFormat(v) if *v > FORMAT_VERSION => write!(
+                f,
+                "format {v} comes from a newer SimSandbox; this build reads formats up to \
+                 {FORMAT_VERSION}: update SimSandbox to open it"
+            ),
             FileError::UnsupportedFormat(v) => write!(
                 f,
-                "unsupported format version {v} (this build reads version {FORMAT_VERSION})"
+                "unsupported format version {v} (this build reads formats 1 to {FORMAT_VERSION})"
             ),
             FileError::Invalid { path, message } => write!(f, "{path}: {message}"),
         }
@@ -917,6 +925,9 @@ pub struct Loaded {
     pub ids: BTreeMap<String, BlockId>,
     /// Problems that did not stop loading, e.g. dropped controls.
     pub warnings: Vec<String>,
+    /// Older forms the file was written in, converted as it was read;
+    /// saving writes the current form (ADR 0044).
+    pub conversions: Vec<String>,
     /// Blocks solved together (ADR 0023).
     pub groups: Vec<FusedGroup>,
     /// Where a model without states is evaluated (ADR 0027); `None` for one
@@ -961,13 +972,15 @@ pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
     }
     let groups = flat.fuse(&mut model, &ids, registry)?;
     flat.controls = file.controls.clone();
-    warnings.extend(flat.check_controls(&model, &ids, &params));
+    let mut conversions = Vec::new();
+    warnings.extend(flat.check_controls(&model, &ids, &params, &mut conversions));
     file.controls = flat.controls.clone();
     let plan = flat.plan(&model, &ids)?;
     // Older sweep controls become a `sample` section as the file is read.
     file.sample = flat.sample.clone();
     file.controls = flat.controls.clone();
     Ok(Loaded {
+        conversions,
         file,
         flat,
         params,
@@ -1048,10 +1061,29 @@ impl ModelFile {
     /// Parse without building. Returns warnings for a malformed `controls`
     /// section, which is replaced by empty controls.
     pub fn from_json(text: &str) -> Result<(Self, Vec<String>), FileError> {
-        let raw: RawFile = serde_json::from_str(text).map_err(|e| FileError::Syntax {
-            line: e.line(),
-            column: e.column(),
-            message: e.to_string(),
+        // The format number first: a newer file may not parse as this one.
+        if let Ok(v) = serde_json::from_str::<Value>(text) {
+            if let Some(n) = v.get("format").and_then(Value::as_u64) {
+                if n > FORMAT_VERSION as u64 {
+                    return Err(FileError::UnsupportedFormat(n as u32));
+                }
+            }
+        }
+        let raw: RawFile = serde_json::from_str(text).map_err(|e| {
+            let mut message = e.to_string();
+            if message.contains("unknown field") {
+                // ADR 0044: within a format, newer versions only add.
+                message.push_str(
+                    " (a field this build does not know: check its spelling against \
+                     `simsandbox schema`, or update SimSandbox if the file comes from a newer \
+                     version)",
+                );
+            }
+            FileError::Syntax {
+                line: e.line(),
+                column: e.column(),
+                message,
+            }
         })?;
         if raw.format != FORMAT_VERSION {
             return Err(FileError::UnsupportedFormat(raw.format));
@@ -1421,6 +1453,7 @@ impl ModelFile {
         model: &Model,
         ids: &BTreeMap<String, BlockId>,
         declared: &ParamPlan,
+        conversions: &mut Vec<String>,
     ) -> Vec<String> {
         let mut warnings = Vec::new();
         let c = &mut self.controls;
@@ -1465,6 +1498,7 @@ impl ModelFile {
             known
         });
         if let Some(v) = c.view.take() {
+            conversions.push("controls.view became the first of controls.views (ADR 0016)".into());
             match view_problem(&v, model, ids) {
                 Some(problem) => warnings.push(format!("controls.view: {problem}; ignored")),
                 // ADR 0014's single view becomes the first of `views`.
@@ -1475,6 +1509,11 @@ impl ModelFile {
         let c = &mut self.controls;
         // Derived signals as written before filters become expression
         // filters (ADR 0030); their inputs are filled in by the app.
+        if !c.signals.is_empty() {
+            conversions.push(
+                "controls.signals became expression filters in controls.filters (ADR 0030)".into(),
+            );
+        }
         for (name, expr) in std::mem::take(&mut c.signals) {
             if c.filters.iter().any(|f| f.name == name) {
                 warnings.push(format!(
@@ -1516,6 +1555,7 @@ impl ModelFile {
             let Some(sel) = v.selection.as_ref().filter(|s| s.get("cuts").is_some()) else {
                 continue;
             };
+            conversions.push("a profile's cuts became a cut filter (ADR 0031)".into());
             let grid = v.bind.get("y").and_then(|b| b.signals().into_iter().next());
             let mut k = 1;
             while c.filters.iter().any(|f| f.name == format!("cuts{k}")) {
@@ -1538,6 +1578,10 @@ impl ModelFile {
         // parameter, and two-parameter results read from their grids
         // (ADR 0028).
         let old_sweep = std::mem::take(&mut c.sweep);
+        if !old_sweep.is_empty() {
+            conversions
+                .push("controls.sweep became the sample section (ADR 0027, ADR 0028)".into());
+        }
         let stateless = self.blocks.iter().all(|b| {
             model
                 .block(ids[&b.name])
@@ -1646,7 +1690,10 @@ impl ModelFile {
         derived.extend(keys.iter().cloned());
         let mut kept = Vec::new();
         for (i, mut v) in std::mem::take(&mut c.views).into_iter().enumerate() {
-            v.upgrade();
+            let before = v.type_name.clone();
+            if v.upgrade() {
+                conversions.push(format!("controls.views[{i}]: the older {before} became today's form (ADR 0018, ADR 0024)"));
+            }
             let scalar =
                 |s: &str| derived.iter().any(|d| d == s) || output_element_exists(s, model, ids);
             let unknown = v.bind.values().flat_map(Binding::signals).find(|s| {

@@ -221,3 +221,20 @@ fn the_diagram_renders_and_start_from_writes_a_file_that_starts_there() {
     let last = before["rows"].as_u64().unwrap() as usize - 1;
     assert_eq!(v(&first, 0), v(&before, last));
 }
+
+#[test]
+fn upgrade_writes_the_current_form_of_an_older_file() {
+    let old = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../simsandbox-file/tests/old/adr-0014-single-view.json");
+    let out = simsandbox(&["upgrade", &old.to_string_lossy()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("converted: controls.view"));
+    let current = std::fs::read_to_string(old.with_extension("current.json")).unwrap();
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), current);
+    let report = json(&simsandbox(&["check", &old.to_string_lossy()]));
+    assert!(!report["conversions"].as_array().unwrap().is_empty());
+}

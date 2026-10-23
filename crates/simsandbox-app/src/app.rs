@@ -31,6 +31,18 @@ pub enum Central {
     Diagram,
 }
 
+/// Something that replaces the open model, asked about first if it has
+/// unsaved changes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Discard {
+    OpenPath(String),
+    OpenDialog,
+    Example(usize),
+    /// Apply the equation editor's new model.
+    NewModel,
+    Close,
+}
+
 pub struct SimApp {
     registry: Registry,
     /// The open model, running on its worker thread (ADR 0035).
@@ -60,6 +72,16 @@ pub struct SimApp {
     central: Central,
     diagram: DiagramTab,
     started: Instant,
+    /// The open model as saved or opened, to tell unsaved changes.
+    baseline: Option<String>,
+    /// Whether the model differs from `baseline`, as last checked on the
+    /// worker (for the toolbar's marker).
+    unsaved: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    last_unsaved_check: Instant,
+    /// Waiting for an answer: save, discard or cancel.
+    asking: Option<Discard>,
+    /// Set while doing what the person agreed to discard for.
+    discard_ok: bool,
     screenshot: Option<ScreenshotRequest>,
     screenshot_requested: bool,
 }
@@ -88,13 +110,21 @@ impl SimApp {
             central: Central::Views,
             diagram: DiagramTab::default(),
             started: Instant::now(),
+            baseline: None,
+            unsaved: Default::default(),
+            last_unsaved_check: Instant::now(),
+            asking: None,
+            discard_ok: false,
             screenshot,
             screenshot_requested: false,
         };
         // Hobbyists first (ADR 0009): a model runs as soon as it opens.
         match path {
             Some(p) => app.open_path(&p),
-            None => app.open_text(EXAMPLES[0].name, EXAMPLES[0].text),
+            None => {
+                app.open_text(EXAMPLES[0].name, EXAMPLES[0].text);
+                app.mark_saved();
+            }
         }
         // A --view flag overrides the view saved in the file.
         if view == Some("diagram") {
@@ -126,6 +156,9 @@ impl SimApp {
     }
 
     fn open_path(&mut self, path: &str) {
+        if self.ask_first(Discard::OpenPath(path.into())) {
+            return;
+        }
         match std::fs::read_to_string(path) {
             Ok(text) => {
                 let title = Path::new(path)
@@ -134,14 +167,151 @@ impl SimApp {
                 self.open_text(&title, &text);
                 if self.error.is_none() {
                     self.path = Some(path.into());
+                    self.mark_saved();
                 }
             }
             Err(e) => self.error = Some(format!("{path}: {e}")),
         }
     }
 
+    /// Open a built-in example.
+    fn open_example(&mut self, k: usize) {
+        if self.ask_first(Discard::Example(k)) {
+            return;
+        }
+        let e = &EXAMPLES[k];
+        self.open_text(e.name, e.text);
+        if self.error.is_none() {
+            self.path = None;
+            self.mark_saved();
+        }
+    }
+
+    /// The open model as it is now becomes the saved state.
+    fn mark_saved(&mut self) {
+        self.baseline = self.saved_text().ok();
+        self.unsaved
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the open model has changes a save would write: parameters,
+    /// edits, sliders, views, speed or step.
+    fn has_unsaved(&self) -> bool {
+        match (&self.session, &self.baseline) {
+            (Some(_), Some(b)) => self.saved_text().is_ok_and(|t| &t != b),
+            _ => false,
+        }
+    }
+
+    /// Before replacing the open model: if it has unsaved changes, ask
+    /// (Save, Don't save, Cancel) and return true; the action runs once
+    /// answered.
+    fn ask_first(&mut self, action: Discard) -> bool {
+        if self.discard_ok || !self.has_unsaved() {
+            return false;
+        }
+        self.asking = Some(action);
+        true
+    }
+
+    /// Do what was asked about, the changes saved or let go.
+    fn proceed(&mut self, ctx: &egui::Context, action: Discard) {
+        self.discard_ok = true;
+        match action {
+            Discard::OpenPath(p) => self.open_path(&p),
+            Discard::OpenDialog => self.open_dialog(),
+            Discard::Example(k) => self.open_example(k),
+            Discard::NewModel => self.apply_equations(),
+            Discard::Close => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                // Stay permissive: the window is closing.
+                return;
+            }
+        }
+        self.discard_ok = false;
+    }
+
+    /// The question about unsaved changes, while one is pending.
+    fn unsaved_dialog(&mut self, ctx: &egui::Context) {
+        let Some(action) = self.asking.clone() else {
+            return;
+        };
+        let title = self
+            .session
+            .as_ref()
+            .map(|l| l.model().title.clone())
+            .unwrap_or_default();
+        let mut answer = None;
+        egui::Modal::new(egui::Id::new("unsaved")).show(ctx, |ui| {
+            ui.heading("Unsaved changes");
+            ui.label(format!("Save the changes to {title} first?"));
+            ui.weak("Parameters, edits, sliders, views and speed that a save would write.");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    answer = Some(0);
+                }
+                if ui.button("Don't save").clicked() {
+                    answer = Some(1);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(2);
+                }
+            });
+        });
+        match answer {
+            Some(0) => {
+                self.asking = None;
+                self.save();
+                // A cancelled Save as leaves the changes: stop there.
+                if !self.has_unsaved() {
+                    self.proceed(ctx, action);
+                }
+            }
+            Some(1) => {
+                self.asking = None;
+                self.proceed(ctx, action);
+            }
+            Some(_) => self.asking = None,
+            None => {}
+        }
+    }
+
+    /// Ask before the window closes on unsaved changes.
+    fn guard_close(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.discard_ok
+            && self.asking.is_none()
+            && self.has_unsaved()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.asking = Some(Discard::Close);
+        }
+    }
+
+    /// Check now and then, on the worker, whether there are unsaved
+    /// changes, for the toolbar's marker.
+    fn check_unsaved(&mut self) {
+        if self.last_unsaved_check.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.last_unsaved_check = Instant::now();
+        let (Some(live), Some(base)) = (&self.session, self.baseline.clone()) else {
+            return;
+        };
+        let (speed, views) = (self.speed, self.views.entries());
+        let flag = self.unsaved.clone();
+        live.send(Some("unsaved-check"), move |s, _| {
+            let differs = s.save_json(speed, Some(views)).is_ok_and(|t| t != base);
+            flag.store(differs, std::sync::atomic::Ordering::Relaxed);
+        });
+    }
+
     /// Open a model chosen in the system file dialog.
     fn open_dialog(&mut self) {
+        if self.ask_first(Discard::OpenDialog) {
+            return;
+        }
         let mut dialog = rfd::FileDialog::new()
             .set_title("Open model")
             .add_filter("SimSandbox model", &["json"]);
@@ -210,6 +380,13 @@ impl SimApp {
                 for w in &s.warnings {
                     self.log.warn(format!("{title}: {w}"));
                 }
+                if announce {
+                    for c in &s.conversions {
+                        self.log.info(format!(
+                            "{title} was written in an older form: {c}; saving writes the current form"
+                        ));
+                    }
+                }
                 let running = running && s.sweep().is_none();
                 self.session = Some(Live::start(s, self.speed, running));
                 self.error = None;
@@ -246,12 +423,9 @@ impl SimApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.menu_button("Examples", |ui| {
-                for e in EXAMPLES {
+                for (k, e) in EXAMPLES.iter().enumerate() {
                     if ui.button(e.name).clicked() {
-                        self.open_text(e.name, e.text);
-                        if self.error.is_none() {
-                            self.path = None;
-                        }
+                        self.open_example(k);
                         ui.close();
                     }
                 }
@@ -296,6 +470,10 @@ impl SimApp {
                 None if has_model => ui.weak("built-in example: Save asks where to save it"),
                 None => ui.weak(""),
             };
+            if has_model && self.unsaved.load(std::sync::atomic::Ordering::Relaxed) {
+                ui.colored_label(ui.visuals().warn_fg_color, "● unsaved")
+                    .on_hover_text("Changes a save would write: parameters, edits, sliders, views, speed");
+            }
         });
         self.shortcuts(ui);
 
@@ -845,6 +1023,7 @@ impl SimApp {
                 self.error = None;
                 self.log.info(format!("Saved to {}", path.display()));
                 self.path = Some(path.to_path_buf());
+                self.mark_saved();
             }
             Err(e) => self.error = Some(format!("{}: {e}", path.display())),
         }
@@ -1146,6 +1325,10 @@ impl SimApp {
         };
         let lines: Vec<String> = editor.text.lines().map(str::to_string).collect();
         let block = editor.block.clone();
+        // A new model replaces the open one.
+        if block.is_none() && self.ask_first(Discard::NewModel) {
+            return;
+        }
         let result = match &block {
             None => {
                 let mut file = simsandbox_file::ModelFile::new();
@@ -1186,6 +1369,7 @@ impl SimApp {
             None => {
                 if block.is_none() {
                     self.path = None;
+                    self.mark_saved();
                 }
                 self.editor = None;
                 self.log.info("Equations applied");
@@ -1352,6 +1536,9 @@ impl eframe::App for SimApp {
         self.poll(&ctx);
         self.equation_editor(&ctx);
         self.signals_window(&ctx);
+        self.guard_close(&ctx);
+        self.unsaved_dialog(&ctx);
+        self.check_unsaved();
 
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.add_space(4.0);
@@ -2642,5 +2829,63 @@ mod tests {
                 .unwrap();
             assert_eq!((row.value, row.formula.as_deref()), (800.0, Some("kp")));
         }
+    }
+
+    #[test]
+    fn replacing_a_changed_model_asks_first() {
+        let mut app = SimApp::new(None, None, None, None);
+        assert!(!app.has_unsaved(), "a model just opened");
+        // Opening something else needs no question yet.
+        app.open_example(1);
+        assert!(app.asking.is_none());
+        let live = app.session.as_ref().unwrap();
+        let id = live.call(|s, _| s.ids["a"]).unwrap();
+        live.call(move |s, _| s.set_param(id, "kappa", 0.7))
+            .unwrap()
+            .unwrap();
+        assert!(app.has_unsaved());
+        // Now it asks, and nothing is replaced until answered.
+        let title = app.session.as_ref().unwrap().model().title.clone();
+        app.open_example(0);
+        assert_eq!(app.asking, Some(Discard::Example(0)));
+        assert_eq!(app.session.as_ref().unwrap().model().title, title);
+        // "Don't save": it goes ahead.
+        app.asking = None;
+        app.proceed(&egui::Context::default(), Discard::Example(0));
+        assert_ne!(app.session.as_ref().unwrap().model().title, title);
+        assert!(!app.has_unsaved());
+        assert!(!app.discard_ok);
+
+        // Saving clears the question; canvas edits make changes too.
+        let dir = std::env::temp_dir().join(format!("simsandbox-unsaved-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cruise.ssbx.json");
+        let k = EXAMPLES
+            .iter()
+            .position(|e| e.name.contains("Cruise"))
+            .unwrap();
+        app.open_example(k);
+        canvas_edits(
+            &mut app,
+            vec![
+                simsandbox_session::diagram::Edit::Disconnect { to: "car.F".into() },
+                simsandbox_session::diagram::Edit::Connect {
+                    from: "cruise.e".into(),
+                    to: "car.F".into(),
+                },
+            ],
+        );
+        assert!(app.has_unsaved(), "rewired");
+        app.save_to(&path);
+        assert!(!app.has_unsaved());
+        // The speed is saved with the model, so changing it counts.
+        app.speed = 2.0;
+        assert!(app.has_unsaved());
+        // A new model from the equation editor asks too.
+        app.editor = editor(None, NEW_MODEL);
+        app.apply_equations();
+        assert_eq!(app.asking, Some(Discard::NewModel));
+        assert!(app.editor.is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

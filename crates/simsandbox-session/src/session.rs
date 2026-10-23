@@ -165,6 +165,9 @@ pub struct Session {
     plan: ParamPlan,
     pub ids: BTreeMap<String, BlockId>,
     pub warnings: Vec<String>,
+    /// Older forms the file was written in, converted on reading
+    /// (ADR 0044).
+    pub conversions: Vec<String>,
     /// Blocks solved together as one system (ADR 0023).
     pub groups: Vec<FusedGroup>,
     pub dt: f64,
@@ -311,6 +314,7 @@ impl Session {
             description: loaded.file.description.clone(),
             dt: loaded.file.run.dt,
             stop_at: loaded.file.run.t_end,
+            conversions: loaded.conversions,
             file: loaded.file,
             flat: loaded.flat,
             plan: loaded.params,
