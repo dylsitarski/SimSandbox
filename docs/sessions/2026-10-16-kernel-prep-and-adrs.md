@@ -51,6 +51,7 @@
 
 ## Decided
 
+- Units of outside data (owner, 2026-10-23, adopting the Q31 recommendation; [ADR 0048](../decisions/0048-units-of-external-data.md)): declared where data enters, `units.convert` for fixed factors, typed equations to scale by a reference quantity. The owner asked whether `units.convert` is then redundant; answered in the session (values on wires are in their port's unit, so it does real work), not decided.
 - Unit vocabulary (owner asked, 2026-10-23; details chosen in the session, [ADR 0047](../decisions/0047-unit-vocabulary.md)): prefixes, curated non-SI and exact imperial units; `a/b*c` and offset temperatures refused.
 - Units of declared parameters (owner asked, 2026-10-23; rules chosen in the session, [ADR 0046](../decisions/0046-units-of-declared-parameters.md)): checked like typed equations; unit-less formulas and blocks stay unchecked so older files keep their meaning.
 - Units (owner, 2026-10-23; [ADR 0045](../decisions/0045-units-in-typed-equations.md)): brackets where names appear; every equation checked, names without a unit dimensionless; conversions only through an explicit `units.convert` block, also for display.
@@ -83,7 +84,6 @@
 
 ## Left open
 
-- [Q31](../open-questions.md): how external data (dimensionless CFD output, imperial files) enters with units; recommendation recorded, owner to confirm.
 - Q5 (algebraic loops) remains ([open questions](../open-questions.md)).
 
 ## Notes for the next session

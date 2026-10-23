@@ -118,6 +118,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0045-units-in-typed-equations.md](decisions/0045-units-in-typed-equations.md) | Decision record | Units in typed equations; explicit unit conversion blocks |
 | [decisions/0046-units-of-declared-parameters.md](decisions/0046-units-of-declared-parameters.md) | Decision record | Units of model and subsystem parameters and their formulas |
 | [decisions/0047-unit-vocabulary.md](decisions/0047-unit-vocabulary.md) | Decision record | The units files accept: prefixes, non-SI and imperial units, grammar |
+| [decisions/0048-units-of-external-data.md](decisions/0048-units-of-external-data.md) | Decision record | How data from files and outside solvers gets its units |
 
 ### Guides
 
