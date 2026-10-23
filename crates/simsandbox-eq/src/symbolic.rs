@@ -131,16 +131,7 @@ fn name_and_unit(item: &str) -> (String, Option<String>) {
 }
 
 fn read_unit(text: &str, line: usize, column: usize) -> Result<Unit> {
-    Unit::parse(text).map_err(|_| {
-        definition_error(
-            line,
-            column,
-            format!(
-                "unknown unit '{text}' (units are products of m, cm, mm, km, kg, g, s, ms, min, h, \
-                 A, K, mol, cd, Hz, N, Pa, J, W, V, Ohm, rad with ^powers, e.g. 'N*s/m', 'm/s^2')"
-            ),
-        )
-    })
+    Unit::parse(text).map_err(|e| definition_error(line, column, e))
 }
 
 enum Lhs {
@@ -944,7 +935,7 @@ mod tests {
         assert!(e.contains("dimensionless"), "{e}");
         let e = error(&["param L [m] = 1", "y = sqrt(L)"]);
         assert!(e.contains("sqrt"), "{e}");
-        assert!(error(&["dx/dt = 1 [furlong]"]).contains("unknown unit 'furlong'"));
+        assert!(error(&["dx/dt = 1 [furlong]"]).contains("unknown symbol 'furlong'"));
         // Names without a unit are dimensionless, which can be what is meant.
         set(&["param L [m] = 2", "param k = 3", "y = k*L [m]"]).unwrap();
         set(&[

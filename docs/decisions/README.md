@@ -52,6 +52,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0044](0044-unsaved-changes-and-older-files.md) | Ask before discarding unsaved changes; older files convert on reading, are reported and tested; a new format version only when adding is impossible | Accepted | 2026-10-23 |
 | [0045](0045-units-in-typed-equations.md) | Units in brackets in typed equations, every line checked; connections need the same unit; `units.convert` is the only conversion | Accepted | 2026-10-23 |
 | [0046](0046-units-of-declared-parameters.md) | Declared parameters' units are checked; formulas balance and give their target's unit, computed in SI | Accepted | 2026-10-23 |
+| [0047](0047-unit-vocabulary.md) | SI prefixes, common non-SI and exact US/imperial units; left-to-right grammar with groups; `a/b*c` and °C/°F refused | Accepted | 2026-10-23 |
 
 ## When to write one
 

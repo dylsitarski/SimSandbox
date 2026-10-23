@@ -177,3 +177,29 @@ fn subsystem_parameters_are_checked_on_the_way_in_and_out() {
     let (path, _) = error(&nested("acres", "side"));
     assert_eq!(path, "subsystems.pond.params.side.unit");
 }
+
+#[test]
+fn imperial_and_prefixed_units_convert_exactly() {
+    // A drive in feet through a conversion to metres equals the same drive
+    // in metres scaled by 0.3048 (the oscillator is linear).
+    let m = final_x(&driven("m", None));
+    let ft = final_x(&driven("ft", Some(("ft", "m"))));
+    assert!((ft / m - 0.3048).abs() < 1e-12, "{ft} vs {m}");
+    // Units in equations and parameters: a pressure in psi on an area in
+    // in^2 is a force in lbf, given here in kN.
+    let text = r#"{"format": 1, "run": {"dt": 0.1},
+      "params": {"p": {"value": 100.0, "unit": "psi"}},
+      "blocks": [{"name": "piston", "type": "eq.equations",
+        "equations": ["param P [psi] = 1", "param A [in^2] = 2", "F = P*A [kN]"],
+        "params": {"P": "p"}}]}"#;
+    let loaded = load(text, &registry()).unwrap();
+    let id = loaded.ids["piston"];
+    let sim = Simulator::new(loaded.model, 0.0).unwrap();
+    let f = sim.output(id, "F").unwrap()[0];
+    // 200 lbf.
+    assert!((f - 200.0 * 4.448_221_615_260_5e-3).abs() < 1e-12, "{f}");
+    // °C is refused with the reason.
+    let (path, message) = error(&driven("°C", None));
+    assert_eq!(path, "blocks[0].equations");
+    assert!(message.contains("offset"), "{message}");
+}

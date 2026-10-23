@@ -37,6 +37,7 @@ fn describe(name: Option<&str>) -> PyResult<String> {
     let views = view_registry();
     match name {
         None => Ok(json(&catalogue::catalogue(&r, &views))),
+        Some("units") => Ok(json(&catalogue::units())),
         Some(n) if r.info(n).is_some() => Ok(json(&catalogue::block_type(&r, n))),
         Some(n) => match views.get(n) {
             Some(t) => Ok(json(&catalogue::view_type(t))),

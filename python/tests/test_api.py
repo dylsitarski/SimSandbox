@@ -185,3 +185,13 @@ def test_units_are_checked_and_converted_explicitly():
     # Lines that do not balance are reported with the units.
     bad = ss.Model().add_block("b", "eq.equations", equations="input F [N]\ndx/dt = F [m]")
     assert "dx/dt is in m·s^-1 but the right side is in" in str(bad.check()["errors"])
+
+
+def test_the_unit_vocabulary_is_described():
+    units = ss.describe("units")
+    ft = next(u for u in units["symbols"] if u["symbol"] == "ft")
+    assert (ft["si"], ft["factor"]) == ("m", 0.3048)
+    m = ss.Model()
+    m.add_block("a", "eq.equations", equations="param p [psi] = 100\nparam A [in^2] = 2\nF = p*A [lbf]\nparam v [m/s] = 0\ndx/dt = v [m]")
+    # A state, so the model runs in time rather than as a sweep.
+    assert abs(m.run(t_end=0.1, dt=0.1)["a.F"][0] - 200.0) < 1e-9

@@ -42,7 +42,8 @@ __all__ = [
 def describe(type_name: str | None = None) -> dict:
     """Every block, view and filter type SimSandbox has (with ports, units,
     parameters, methods and their speed and accuracy labels), or one type
-    by name (e.g. ``"eq.equations"``, ``"plot.heatmap"``)."""
+    by name (e.g. ``"eq.equations"``, ``"plot.heatmap"``); ``"units"``
+    gives every unit symbol and prefix files accept."""
     return json.loads(_native.describe(type_name))
 
 

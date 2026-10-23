@@ -2466,7 +2466,9 @@ One equation per line:
 Every other name is a parameter (default 1) you can change in the side panel.
 Each state x also gets an initial value x0 (default 1).
 Units go in brackets where a name appears: input F [N], param m [kg] = 2,
-dx/dt = v [m]. Then every line is checked to balance; names without a unit
+dx/dt = v [m]. Units take SI prefixes (kN, MPa, µs, mL) and include
+min, h, L, bar, deg, %, ft, in, mi, lb, lbf, psi, mph and more; temperatures
+use K. Then every line is checked to balance; names without a unit
 are dimensionless. Connections need the same unit on both ends: put a
 units.convert block between different ones (e.g. mm to m).
 t is time. Operators: + - * / ^ and parentheses; write 2*x, not 2x.

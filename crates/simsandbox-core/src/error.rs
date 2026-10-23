@@ -41,7 +41,7 @@ pub enum SimError {
 impl fmt::Display for SimError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SimError::UnitParse(s) => write!(f, "cannot parse unit '{s}'"),
+            SimError::UnitParse(s) => write!(f, "{s}"),
             SimError::UnitMismatch { from, to } => {
                 write!(
                     f,

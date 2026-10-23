@@ -8,7 +8,7 @@
 //!                                   (default: the file's `run` section)
 //!                                   (a model with no states: one row per sample of its sweep)
 //! simsandbox check FILE             (JSON; exit status 1 if the model cannot run)
-//! simsandbox describe [TYPE]        (JSON: every block, view and filter type, or one)
+//! simsandbox describe [TYPE]        (JSON: every block, view and filter type and the units, or one; TYPE "units" lists the units)
 //! simsandbox schema                 (the model file's JSON Schema)
 //! simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N]
 //!                   [--width POINTS] [--height POINTS] [--scale S] [--light]
@@ -37,7 +37,7 @@ use std::process::ExitCode;
 const USAGE: &str = "usage:
   simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json]
   simsandbox check FILE
-  simsandbox describe [TYPE]
+  simsandbox describe [TYPE | units]
   simsandbox schema
   simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--width POINTS] [--height POINTS] [--scale S] [--light] [--diagram [--subsystem NAME]]
   simsandbox start-from FILE --t SECONDS [--out NEW.json]
@@ -161,7 +161,9 @@ fn describe_types(args: &[String]) -> Result<(), String> {
     match args {
         [] => print_json(&describe::catalogue(&r, &views)),
         [name] => {
-            if r.info(name).is_some() {
+            if name == "units" {
+                print_json(&describe::units())
+            } else if r.info(name).is_some() {
                 print_json(&describe::block_type(&r, name))
             } else if let Some(t) = views.get(name) {
                 print_json(&describe::view_type(t))

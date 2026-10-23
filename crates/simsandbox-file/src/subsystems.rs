@@ -500,12 +500,9 @@ fn declared_unit(text: &str, path: &str) -> Result<Option<Unit>, FileError> {
     if text.trim().is_empty() {
         return Ok(None);
     }
-    Unit::parse(text).map(Some).map_err(|_| {
-        invalid(
-            path,
-            format!("'{text}' is not a unit (e.g. 'kg', 'm/s', 'N*s/m'; leave it out for none)"),
-        )
-    })
+    Unit::parse(text)
+        .map(Some)
+        .map_err(|e| invalid(path, format!("{e}; leave it out for none")))
 }
 
 /// Compile a formula of the declared parameters in `scope`; checked and

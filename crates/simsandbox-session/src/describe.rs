@@ -168,12 +168,34 @@ pub fn filter_types() -> Value {
     ])
 }
 
+/// The units model files accept (ADR 0045, ADR 0047): every symbol with
+/// its name, SI dimension, factor to SI and whether SI prefixes apply.
+pub fn units() -> Value {
+    use simsandbox_core::units::{prefixes, symbols, Unit};
+    json!({
+        "grammar": "Symbols (with an SI prefix where 'prefixes' is true), positive numbers and \
+                    groups in parentheses, joined by '*', '·' or '/' and read left to right, each \
+                    with an optional whole power '^n': 'N*s/m', 'kg/(m*s^2)', '(m/s)^2', \
+                    '0.3048*m'. 'a/b*c' is refused as ambiguous. Temperatures with an offset (°C, \
+                    °F) are not units: use K.",
+        "symbols": symbols().map(|s| json!({
+            "symbol": s.symbol,
+            "name": s.name,
+            "si": Unit::new(s.unit.dim.0, 1.0).to_string(),
+            "factor": s.unit.scale,
+            "prefixes": s.prefixed,
+        })).collect::<Vec<_>>(),
+        "prefixes": prefixes().iter().map(|(p, f)| json!({"prefix": p, "factor": f})).collect::<Vec<_>>(),
+    })
+}
+
 /// Everything a model can be built from.
 pub fn catalogue(r: &Registry, views: &ViewRegistry) -> Value {
     json!({
         "block_types": r.type_names().map(|n| block_type(r, n)).collect::<Vec<_>>(),
         "view_types": views.types().iter().map(view_type).collect::<Vec<_>>(),
         "filter_types": filter_types(),
+        "units": units(),
         "file_schema": "simsandbox schema prints the model file's JSON Schema",
     })
 }
@@ -305,5 +327,23 @@ mod tests {
         assert_eq!(bad["errors"][0]["path"], "blocks[0].type");
         let syntax = check("{\n  \"format\": 1,,\n}", &r);
         assert_eq!(syntax["errors"][0]["line"], 2);
+    }
+
+    #[test]
+    fn units_are_listed_with_their_factors() {
+        let u = units();
+        let symbols = u["symbols"].as_array().unwrap();
+        let ft = symbols.iter().find(|s| s["symbol"] == "ft").unwrap();
+        assert_eq!(
+            (ft["si"].as_str(), ft["factor"].as_f64()),
+            (Some("m"), Some(0.3048))
+        );
+        let n = symbols.iter().find(|s| s["symbol"] == "N").unwrap();
+        assert_eq!(n["prefixes"], true);
+        assert!(u["prefixes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["prefix"] == "k"));
     }
 }

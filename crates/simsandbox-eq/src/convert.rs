@@ -83,9 +83,9 @@ impl Convert {
         }
         let unit = |key: &str| -> Result<Unit> {
             let text = c.settings.get(key).map_or("1", String::as_str);
-            Unit::parse(text).map_err(|_| SimError::InvalidSetting {
+            Unit::parse(text).map_err(|e| SimError::InvalidSetting {
                 setting: format!("settings.{key}"),
-                reason: format!("'{text}' is not a unit (e.g. 'km/h', 'N*s/m', 'g')"),
+                reason: e.to_string(),
             })
         };
         Self::new(name, unit("from")?, unit("to")?)

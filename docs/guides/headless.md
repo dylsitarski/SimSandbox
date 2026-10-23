@@ -16,7 +16,7 @@ Build with `cargo build --release -p simsandbox-cli`; the binary is `target/rele
 
 | Command | Output |
 | --- | --- |
-| `simsandbox describe [TYPE]` | JSON: `block_types`, `view_types`, `filter_types`; or one block or view type |
+| `simsandbox describe [TYPE]` | JSON: `block_types`, `view_types`, `filter_types`, `units`; or one block or view type; `describe units` lists every unit symbol, its SI form and factor, and the prefixes ([ADR 0047](../decisions/0047-unit-vocabulary.md)) |
 | `simsandbox schema` | The model file's JSON Schema |
 | `simsandbox check FILE` | JSON report; exit status 1 if the model cannot run |
 | `simsandbox run FILE [--t-end S] [--dt S] [--format csv\|json]` | Every output at every step (or sweep sample) |
