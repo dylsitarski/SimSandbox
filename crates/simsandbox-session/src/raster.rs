@@ -151,7 +151,7 @@ impl Canvas {
                 (clip.max.x.ceil().max(0.0) as usize).min(self.width),
                 (clip.max.y.ceil().max(0.0) as usize).min(self.height),
             ];
-            for tri in mesh.indices.chunks_exact(3) {
+            for tri in mesh.indices.as_chunks::<3>().0 {
                 let v = [0, 1, 2].map(|k| &mesh.vertices[tri[k] as usize]);
                 self.triangle(v, texture, pixels_per_point, clip);
             }

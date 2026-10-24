@@ -81,7 +81,7 @@ impl Unit {
         }
         let chars: Vec<char> = cleaned.chars().collect();
         let mut at = 0;
-        let unit = expression(&chars, &mut at).map_err(&fail)?;
+        let unit = expression(&chars, &mut at).map_err(fail)?;
         if at < chars.len() {
             return Err(fail(format!("unexpected '{}'", chars[at])));
         }
