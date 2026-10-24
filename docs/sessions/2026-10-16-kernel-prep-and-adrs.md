@@ -106,6 +106,7 @@
 
 ## Notes for the next session
 
+- 2026-10-24: PR #1 merged Phase 1 and the editor into main; CI's first run failed only on two clippy 1.99 lints that local 1.97 missed (fixed in `d008c54`). Lint with an up-to-date stable before pushing ([development setup](../guides/development-setup.md)). Typed equations run about 2× slower than built-in blocks ([Q35](../open-questions.md)).
 - Pop-out with deferred viewports: checked under Xvfb only (both windows draw, about 15 frames a second each on lavapipe). The owner's focus-dependent freeze needs checking on their desktop.
 - Pop-out stall (owner, Linux): reproduced only as a slowdown under Xvfb (frame rate fell by about two thirds with a tab popped out; the main window kept drawing). `--screenshot` never finishes while a tab is popped out (the screenshot event does not come back), so pop-out cannot be checked that way. If vsync off does not fix Wayland, try deferred viewports ([Q33](../open-questions.md)).
 - egui's default fonts lack `→` (U+2192): it draws as a box. Use "to" or `->` in anything the app shows.

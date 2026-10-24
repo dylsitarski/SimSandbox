@@ -53,7 +53,7 @@ wgpu runs on software drivers, so rendering and compute code can be tested on ma
 
 The app pins `eframe` and `egui_plot` to exact versions ([ADR 0008](../decisions/0008-native-egui-ui.md)); `egui_plot` version numbers run one ahead of the egui they use (`egui_plot` 0.37 uses egui 0.36), so upgrade them together.
 
-CI (`.github/workflows/ci.yml`) runs formatting, clippy and tests on Windows, macOS and Linux, the same for the Python package (with pytest), plus the docs check. The [headless guide](headless.md) covers the CLI's machine-readable commands and the Python API.
+CI (`.github/workflows/ci.yml`) uses the newest stable Rust, whose clippy can add lints that an older local toolchain does not flag: run `rustup update` (or `cargo +stable clippy ...` after it) before pushing. It runs formatting, clippy and tests on Windows, macOS and Linux, the same for the Python package (with pytest), plus the docs check. The [headless guide](headless.md) covers the CLI's machine-readable commands and the Python API.
 
 ## Dependencies
 
