@@ -322,6 +322,16 @@ impl DiagramTab {
                     }
                     continue;
                 }
+                Request::SetFormula { key, formula } => {
+                    if let Some((block, param)) = key.split_once('.') {
+                        edits.push(Edit::SetFormula {
+                            block: block.into(),
+                            param: param.into(),
+                            formula,
+                        });
+                    }
+                    continue;
+                }
                 Request::Opened(open) => {
                     out.push(Outcome::Opened(open));
                     continue;
@@ -540,7 +550,7 @@ impl DiagramTab {
         out: &mut Vec<Outcome>,
     ) {
         let scope = self.scope.clone();
-        self.draft = None;
+        let had_draft = self.draft.take().is_some();
         // Fix where every node of this level is, so the layout does not
         // jump.
         for n in Diagram::of(&file, &scope, registry).nodes {
@@ -564,6 +574,11 @@ impl DiagramTab {
                 Err(err) => out.push(Outcome::Error(err)),
             }
         }
+        // Nothing applied (and nothing waiting): no restart, no undo step.
+        if notes.is_empty() && !had_draft {
+            self.undo.pop();
+            return;
+        }
         // A value or setting changed: the blocks are still there.
         let kept = changes
             .iter()
@@ -578,8 +593,21 @@ impl DiagramTab {
         }
         self.cache = None;
         let text = file.to_json();
+        // A formula or parameter that does not work is refused, not kept
+        // as a draft (ADR 0056): it is a typo to fix where it was typed.
+        let refused = !had_draft
+            && changes.iter().all(|e| {
+                matches!(
+                    e,
+                    Edit::SetFormula { .. } | Edit::DeclareParam { .. } | Edit::RemoveParam { .. }
+                )
+            });
         match Session::load_deferred("check", &text, registry) {
             Ok(_) => out.push(Outcome::Apply { text, notes }),
+            Err(problem) if refused => {
+                self.undo.pop();
+                out.push(Outcome::Error(format!("Not applied: {problem}")));
+            }
             Err(problem) => self.draft = Some((file, problem)),
         }
     }

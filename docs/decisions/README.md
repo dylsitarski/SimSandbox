@@ -48,7 +48,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0040](0040-feedthrough-and-algebraic-loops.md) | Direct feedthrough per output and input; loops detected and solved by Newton (or as `run.loops` says); typed `input` lines | Accepted | 2026-10-22 |
 | [0041](0041-headless-interface.md) | Headless interface: shared session crate, `describe`/`check`/`run --format json`/`render`, views rasterised on the CPU, Python package in its own workspace | Accepted | 2026-10-22 |
 | [0042](0042-node-canvas.md) | Node canvas as a Diagram tab; per-block `at`; edits rebuild and restart (drafts until they load); "Start from here" saves a reached state as the start | Accepted | 2026-10-22 |
-| [0043](0043-subsystems.md) | Subsystems defined in the file and flattened on load; declared parameters with formulas (resolves Q30); open and group on the canvas | Accepted | 2026-10-23 |
+| [0043](0043-subsystems.md) | Subsystems defined in the file and flattened on load; declared parameters with formulas (resolves Q30); open and group on the canvas | Accepted; amended by 0056 | 2026-10-23 |
 | [0044](0044-unsaved-changes-and-older-files.md) | Ask before discarding unsaved changes; older files convert on reading, are reported and tested; a new format version only when adding is impossible | Accepted | 2026-10-23 |
 | [0045](0045-units-in-typed-equations.md) | Units in brackets in typed equations, every line checked; connections need the same unit; `units.convert` is the only conversion | Accepted, amended by 0049 | 2026-10-23 |
 | [0046](0046-units-of-declared-parameters.md) | Declared parameters' units are checked; formulas balance and give their target's unit, computed in SI | Accepted | 2026-10-23 |
@@ -61,6 +61,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0053](0053-docked-panes-inspector-and-node-values.md) | Inspector, diagram and views as dockable tabs, poppable into windows; arrangement saved as `controls.layout`; an inspector and editable values on nodes next | Accepted; amended by 0054 | 2026-10-23 |
 | [0054](0054-controls-pane-pins-and-node-toggles.md) | Pins decide a Controls pane (sliders only for pinned values); every selected block in the inspector; drafts editable; values opened per node; units with a slash | Accepted; amended by 0055 | 2026-10-23 |
 | [0055](0055-open-nodes-subsystem-values-deferred-windows.md) | Open nodes saved as `controls.open`; older sliders gain pins on reading; values inside subsystems as every use's default; popped-out tabs as deferred viewports | Accepted | 2026-10-24 |
+| [0056](0056-formulas-and-parameters-in-the-app.md) | `= expression` in any value field makes a formula; "+ parameter" declares the model's parameters; failing edits are refused | Accepted | 2026-10-24 |
 
 ## When to write one
 

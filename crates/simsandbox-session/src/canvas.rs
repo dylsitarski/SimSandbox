@@ -55,6 +55,9 @@ pub enum Request {
     ShowView(usize),
     /// A value typed on a node (ADR 0053): `"block.param"` and the value.
     SetValue { key: String, value: f64 },
+    /// `= expression` typed on a node (ADR 0056): `"block.param"` and the
+    /// formula.
+    SetFormula { key: String, formula: String },
     /// Nodes were opened or closed: every open node now, as
     /// `controls.open` lists them (ADR 0055).
     Opened(Vec<String>),
@@ -291,7 +294,11 @@ impl Canvas {
                     } else if let Some((_, k)) = value {
                         let v = &n.values[k];
                         let mut tip = if self.zoom >= EDIT_VALUES {
-                            format!("{}: double-click to change it", v.key)
+                            format!(
+                                "{}: double-click to change it (a number, or '= expression' \
+                                 of the parameters)",
+                                v.key
+                            )
                         } else {
                             format!("{}: zoom in to change it here", v.key)
                         };
@@ -814,6 +821,12 @@ impl Canvas {
                     }
                     (None, Ok(value)) if value.is_finite() => {
                         requests.push(Request::SetValue { key, value })
+                    }
+                    (None, _) if text.trim().starts_with('=') => {
+                        requests.push(Request::SetFormula {
+                            key,
+                            formula: text.trim()[1..].trim().to_string(),
+                        })
                     }
                     _ => {}
                 }
@@ -1813,7 +1826,7 @@ mod tests {
             repeat: false,
             modifiers: Default::default(),
         };
-        let (_, requests) = frame(&ctx, &mut c, &mut d, vec![enter]);
+        let (_, requests) = frame(&ctx, &mut c, &mut d, vec![enter.clone()]);
         assert_eq!(
             requests,
             [Request::SetValue {
@@ -1822,6 +1835,18 @@ mod tests {
             }]
         );
         assert!(c.editing.is_none());
+        // '= expression' asks for a formula.
+        frame(&ctx, &mut c, &mut d, vec![]);
+        c.editing = Some(("car.m".into(), "= 2*600".into()));
+        frame(&ctx, &mut c, &mut d, vec![]);
+        let (_, requests) = frame(&ctx, &mut c, &mut d, vec![enter]);
+        assert_eq!(
+            requests,
+            [Request::SetFormula {
+                key: "car.m".into(),
+                formula: "2*600".into()
+            }]
+        );
         // Zoomed out, values are not shown or edited.
         c.zoom = 0.4;
         assert!(c.value_under(&d, Pos2::ZERO, p).is_none());

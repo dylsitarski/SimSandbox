@@ -1,6 +1,6 @@
 # 0043 — Subsystems, and parameters with formulas
 
-- **Status:** Accepted
+- **Status:** Accepted; formulas are written in the app since [0056](0056-formulas-and-parameters-in-the-app.md)
 - **Date:** 2026-10-23
 
 ## Context

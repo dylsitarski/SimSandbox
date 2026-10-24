@@ -45,6 +45,8 @@ pub enum Discard {
 }
 
 pub struct SimApp {
+    /// The "+ parameter" fields: name, value, unit.
+    new_param: [String; 3],
     /// The app as shared with popped-out windows (set by `shared`).
     this: std::sync::Weak<std::sync::Mutex<SimApp>>,
     /// What popped-out windows asked for, carried out by the main window.
@@ -120,6 +122,7 @@ impl SimApp {
         screenshot: Option<ScreenshotRequest>,
     ) -> Self {
         let mut app = Self {
+            new_param: Default::default(),
             this: std::sync::Weak::new(),
             popped_actions: Vec::new(),
             registry: registry(),
@@ -1492,6 +1495,7 @@ impl SimApp {
         let m = live.model();
         let mut changes: Vec<(ParamRow, f64)> = Vec::new();
         let mut controls: Vec<(String, simsandbox_file::ParamControl)> = Vec::new();
+        let mut file_edits: Vec<(Scope, Edit)> = Vec::new();
         let pinned: Vec<&ParamRow> = m
             .params
             .iter()
@@ -1523,11 +1527,15 @@ impl SimApp {
                         text: &mut self.param_edits,
                         pending: &mut self.pending,
                         error: &mut self.error,
+                        file: &mut file_edits,
                     };
                     param_row(ui, &m, &r, Place::Controls, None, edits);
                 }
             });
         self.apply_edits(changes, controls);
+        for (scope, e) in file_edits {
+            self.edit_at(scope, e);
+        }
     }
 
     /// The inspector (ADR 0053): search, what is selected, and every
@@ -1552,6 +1560,7 @@ impl SimApp {
                     text: &mut self.param_edits,
                     pending: &mut self.pending,
                     error: &mut self.error,
+                    file: &mut canvas_edits,
                 }
             };
         }
@@ -1664,24 +1673,28 @@ impl SimApp {
                 ui.add_space(6.0);
             }
             let small = m.params.len() <= 16;
-            if !o.model.is_empty() {
-                egui::CollapsingHeader::new(egui::RichText::new("Model").strong())
-                    .id_salt("model-params")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        egui::Grid::new("model")
-                            .num_columns(4)
-                            .spacing([6.0, 4.0])
-                            .show(ui, |ui| {
-                                for row in &o.model {
-                                    let used = o.used_by.get(&row.key);
-                                    param_row(ui, &m, row, Place::Tree, used, edits!());
-                                }
-                            });
-                    })
-                    .header_response
-                    .on_hover_text("Parameters of the model itself, used by formulas in blocks");
-            }
+            egui::CollapsingHeader::new(egui::RichText::new("Model").strong())
+                .id_salt("model-params")
+                .default_open(true)
+                .show(ui, |ui| {
+                    egui::Grid::new("model")
+                        .num_columns(4)
+                        .spacing([6.0, 4.0])
+                        .show(ui, |ui| {
+                            for row in &o.model {
+                                let used = o.used_by.get(&row.key);
+                                param_row(ui, &m, row, Place::Tree, used, edits!());
+                            }
+                        });
+                    if let Some(e) = declare_form(ui, &mut self.new_param, &mut self.error) {
+                        canvas_edits.push((Scope::Model, e));
+                    }
+                })
+                .header_response
+                .on_hover_text(
+                    "Parameters of the model itself: block values read them with \
+                     '= expression'",
+                );
             for t in &o.tables {
                 let title = format!("{} × {}", t.subsystem, t.uses.len());
                 egui::CollapsingHeader::new(egui::RichText::new(title).strong())
@@ -2369,6 +2382,8 @@ struct Edits<'a> {
     /// Values of sliders being dragged that apply on release (ADR 0037).
     pending: &'a mut HashMap<String, f64>,
     error: &'a mut Option<String>,
+    /// Formulas, and numbers in place of them: file edits (ADR 0056).
+    file: &'a mut Vec<(Scope, Edit)>,
 }
 
 /// Parameters side by side for several uses of a subsystem (or one use):
@@ -2385,6 +2400,7 @@ fn uses_table(
         controls,
         text,
         error,
+        file,
         ..
     } = edits;
     egui::Grid::new(("uses-table", &t.subsystem, t.uses.join(",")))
@@ -2452,21 +2468,13 @@ fn uses_table(
                 ui.weak(first.map_or("", |r| r.unit.as_str()));
                 for cell in cells {
                     match cell {
-                        Some(r) => match &r.formula {
-                            Some(f) => {
-                                ui.weak(format!("= {}", fit_text(f, 12)))
-                                    .on_hover_text(format!(
-                                        "{} = {f}: set by a formula",
-                                        format_value(r.value)
-                                    ));
+                        Some(r) => {
+                            let key = format!("cell:{}", r.key);
+                            let f = r.formula.as_deref();
+                            if let Some(t) = value_entry(ui, &key, r.value, f, text, error) {
+                                apply_typed(r, t, changes, file, error);
                             }
-                            None => {
-                                let key = format!("cell:{}", r.key);
-                                if let Some(v) = number_entry(ui, &key, r.value, text, error) {
-                                    changes.push((r.clone(), v));
-                                }
-                            }
-                        },
+                        }
                         None => {
                             ui.weak("—");
                         }
@@ -2557,6 +2565,7 @@ fn param_row(
     if let Some(f) = &row.formula {
         hover.push_str(&format!("\nComputed: {f}"));
     }
+    hover.push_str("\nType a number, or '= expression' of the parameters for a formula");
     if let Some(v) = used_by {
         hover.push_str(&format!("\nRead by formulas: {}", v.join(", ")));
     }
@@ -2571,34 +2580,46 @@ fn param_row(
             control.set_pinned(!pinned);
             ui.close();
         }
+        // The model's own parameters can go (ADR 0056); formulas reading
+        // one keep it.
+        if row.owner.is_empty()
+            && row.block.is_none()
+            && ui
+                .button("Remove this parameter")
+                .on_hover_text("Refused while a formula reads it")
+                .clicked()
+        {
+            edits.file.push((
+                Scope::Model,
+                Edit::RemoveParam {
+                    name: row.key.clone(),
+                },
+            ));
+            ui.close();
+        }
     });
 
-    // A value a formula sets is shown, not edited (ADR 0043).
-    if let Some(f) = &row.formula {
-        ui.add_enabled(false, egui::Label::new(format_value(row.value)))
-            .on_disabled_hover_text(format!("= {f}"));
-        ui.horizontal(|ui| {
-            ui.label(&row.unit);
-            ui.weak(format!("= {}", fit_text(f, 18)))
-                .on_hover_text(format!("Set by the formula {f}"));
-        });
-        pin_button(ui, &mut control);
-        ui.end_row();
-        if control != before {
-            edits.controls.push((row.key.clone(), control));
+    // A value a formula sets shows the formula, which can be edited or
+    // replaced by a number (ADR 0056). While a slider is dragged on a model
+    // that is not real-time, its field shows the value that applies on
+    // release (ADR 0037).
+    let formula = row.formula.as_deref();
+    let typed = match edits.pending.get(&row.key) {
+        Some(p) => {
+            pending_field(ui, *p);
+            None
         }
-        return;
-    }
-
-    // While a slider is dragged on a model that is not real-time, its field
-    // shows the value that applies on release (ADR 0037).
-    if let Some(p) = edits.pending.get(&row.key) {
-        pending_field(ui, *p);
-    } else if let Some(v) = number_entry(ui, &row.key, row.value, edits.text, edits.error) {
-        edits.changes.push((row.clone(), v));
+        None => value_entry(ui, &row.key, row.value, formula, edits.text, edits.error),
+    };
+    if let Some(t) = typed {
+        apply_typed(row, t, edits.changes, edits.file, edits.error);
     }
 
     ui.horizontal(|ui| {
+        if formula.is_some() {
+            ui.weak(format_value(row.value))
+                .on_hover_text("Its value now, from the formula");
+        }
         ui.label(&row.unit);
         if row.initial_condition {
             ui.weak("↻")
@@ -2610,7 +2631,7 @@ fn param_row(
         }
     });
     ui.horizontal(|ui| {
-        if place == Place::Controls {
+        if place == Place::Controls && formula.is_none() {
             ui.checkbox(&mut control.slider, "")
                 .on_hover_text("A slider under the value, between the two ends of its range");
         }
@@ -2619,7 +2640,7 @@ fn param_row(
     ui.end_row();
 
     // The slider between its range's ends, which are typed in place.
-    if place == Place::Controls && control.slider {
+    if place == Place::Controls && control.slider && formula.is_none() {
         let [mut lo, mut hi] = control.range.unwrap_or(row.suggested);
         let a = ui
             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2754,12 +2775,19 @@ fn draft_rows(
                 };
                 ui.label(label);
                 let key = format!("draft:{}", v.key);
-                if let Some(x) = number_entry(ui, &key, v.value, text, error) {
-                    out.push(Edit::SetParam {
-                        block: n.name.clone(),
-                        param: v.name.clone(),
-                        value: x,
-                    });
+                let (block, param) = (n.name.clone(), v.name.clone());
+                match value_entry(ui, &key, v.value, None, text, error) {
+                    Some(Typed::Number(value)) => out.push(Edit::SetParam {
+                        block,
+                        param,
+                        value,
+                    }),
+                    Some(Typed::Formula(formula)) => out.push(Edit::SetFormula {
+                        block,
+                        param,
+                        formula,
+                    }),
+                    None => {}
                 }
                 ui.label(&v.unit);
                 ui.end_row();
@@ -2821,6 +2849,171 @@ fn number_entry(
             *error = Some(format!("{key}: '{typed}' is not a number"));
             None
         }
+    }
+}
+
+/// "+ parameter": a name, a value and a unit, declared as a parameter of
+/// the model (ADR 0056).
+fn declare_form(
+    ui: &mut egui::Ui,
+    form: &mut [String; 3],
+    error: &mut Option<String>,
+) -> Option<Edit> {
+    let mut add = false;
+    ui.horizontal(|ui| {
+        let [name, value, unit] = form;
+        for (field, hint, width) in [
+            (name, "name", 70.0),
+            (value, "value", 60.0),
+            (unit, "unit", 50.0),
+        ] {
+            let r = ui.add(
+                egui::TextEdit::singleline(field)
+                    .hint_text(hint)
+                    .desired_width(width),
+            );
+            add |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        }
+        add |= ui
+            .small_button("+ parameter")
+            .on_hover_text(
+                "Declare a parameter of the model; type '= name' in a block's value to use it",
+            )
+            .clicked();
+    });
+    if !add || form[0].trim().is_empty() {
+        return None;
+    }
+    let value = if form[1].trim().is_empty() {
+        Ok(0.0)
+    } else {
+        form[1].trim().parse::<f64>()
+    };
+    match value {
+        Ok(value) if value.is_finite() => {
+            let e = Edit::DeclareParam {
+                name: form[0].trim().to_string(),
+                value,
+                unit: form[2].trim().to_string(),
+            };
+            *form = Default::default();
+            Some(e)
+        }
+        _ => {
+            *error = Some(format!("'{}' is not a number", form[1].trim()));
+            None
+        }
+    }
+}
+
+/// What was typed into a parameter's field (ADR 0056).
+#[derive(Debug, Clone, PartialEq)]
+enum Typed {
+    Number(f64),
+    /// `= expression`, without the `=`.
+    Formula(String),
+}
+
+/// A parameter's field: a number, or `= expression` for a value a formula
+/// sets. Like [`number_entry`], it returns only what was typed anew.
+fn value_entry(
+    ui: &mut egui::Ui,
+    key: &str,
+    value: f64,
+    formula: Option<&str>,
+    edits: &mut HashMap<String, String>,
+    error: &mut Option<String>,
+) -> Option<Typed> {
+    let shown = match formula {
+        Some(f) => format!("= {f}"),
+        None => format_value(value),
+    };
+    let mut text = edits.get(key).cloned().unwrap_or_else(|| shown.clone());
+    let r = ui
+        .add(egui::TextEdit::singleline(&mut text).desired_width(90.0))
+        .on_hover_text("A number, or '= expression' of the model's parameters (e.g. '= 2*kp')");
+    if r.has_focus() {
+        edits.insert(key.into(), text.clone());
+    }
+    if !r.lost_focus() {
+        return None;
+    }
+    edits.remove(key);
+    let typed = text.trim();
+    if typed == shown {
+        return None;
+    }
+    if let Some(f) = typed.strip_prefix('=') {
+        let f = f.trim();
+        return (Some(f) != formula).then(|| Typed::Formula(f.to_string()));
+    }
+    match typed.parse::<f64>() {
+        Ok(v) if v.is_finite() => Some(Typed::Number(v)),
+        _ => {
+            *error = Some(format!(
+                "{key}: '{typed}' is not a number (or '= expression' for a formula)"
+            ));
+            None
+        }
+    }
+}
+
+/// Where a value's formula is written (ADR 0056): the block, or subsystem
+/// use, on the model level, and the parameter. The model's own parameters
+/// and values inside uses are numbers.
+fn formula_target(row: &ParamRow) -> Result<(String, String), String> {
+    if row.owner.is_empty() {
+        return Err(format!(
+            "{}: a parameter of the model is a number; formulas go in block values, which \
+             can read it",
+            row.key
+        ));
+    }
+    if row.owner.contains('/') {
+        return Err(format!(
+            "{}: a value inside a subsystem use is a number; open the subsystem to give every \
+             use a formula, or declare a subsystem parameter",
+            row.key
+        ));
+    }
+    let param = row
+        .key
+        .strip_prefix(&format!("{}.", row.owner))
+        .unwrap_or(&row.name);
+    Ok((row.owner.clone(), param.to_string()))
+}
+
+/// Carry out what was typed into a row: a number on a value without a
+/// formula applies at once; a formula, or a number in place of one,
+/// changes the file (and restarts).
+fn apply_typed(
+    row: &ParamRow,
+    typed: Typed,
+    changes: &mut Vec<(ParamRow, f64)>,
+    file: &mut Vec<(Scope, Edit)>,
+    error: &mut Option<String>,
+) {
+    if let (Typed::Number(v), None) = (&typed, &row.formula) {
+        changes.push((row.clone(), *v));
+        return;
+    }
+    match formula_target(row) {
+        Ok((block, param)) => file.push((
+            Scope::Model,
+            match typed {
+                Typed::Number(value) => Edit::SetParam {
+                    block,
+                    param,
+                    value,
+                },
+                Typed::Formula(formula) => Edit::SetFormula {
+                    block,
+                    param,
+                    formula,
+                },
+            },
+        )),
+        Err(e) => *error = Some(e),
     }
 }
 
@@ -3459,17 +3652,6 @@ Functions: sin cos tan asin acos atan atan2 sinh cosh tanh exp ln log10
 sqrt abs sign floor ceil min max pow. pi is 3.14159…
 Lines starting with # are comments.";
 
-/// Text cut to `max` characters with an ellipsis.
-fn fit_text(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut t: String = s.chars().take(max - 1).collect();
-        t.push('…');
-        t
-    }
-}
-
 /// A compact display of a value: up to 6 significant digits.
 fn format_value(v: f64) -> String {
     simsandbox_session::canvas::format_number(v)
@@ -3924,6 +4106,68 @@ mod tests {
             let row = m.params.iter().find(|r| r.key == key).unwrap();
             assert_eq!(row.value, 80.0, "{key}");
         }
+    }
+
+    #[test]
+    fn values_take_formulas_and_the_model_declares_parameters() {
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        let row = |app: &SimApp, key: &str| {
+            let m = app.session.as_ref().unwrap().model();
+            m.params.iter().find(|r| r.key == key).unwrap().clone()
+        };
+        // Type into a row as the inspector does, then carry out file edits.
+        let type_in = |app: &mut SimApp, key: &str, typed: Typed| {
+            let r = row(app, key);
+            let (mut changes, mut file) = (Vec::new(), Vec::new());
+            app.error = None;
+            apply_typed(&r, typed, &mut changes, &mut file, &mut app.error);
+            app.apply_changes(changes);
+            for (scope, e) in file {
+                app.edit_at(scope, e);
+            }
+            app.session.as_ref().unwrap().sync();
+        };
+        let declare = Edit::DeclareParam {
+            name: "tau".into(),
+            value: 8.0,
+            unit: "s".into(),
+        };
+        app.edit_at(Scope::Model, declare);
+        assert_eq!(row(&app, "tau").value, 8.0);
+        // A block's value reads it.
+        type_in(&mut app, "leader.T", Typed::Formula("tau / 2".into()));
+        let t = row(&app, "leader.T");
+        assert_eq!((t.value, t.formula.as_deref()), (4.0, Some("tau / 2")));
+        // A formula that does not work is refused; the model stays.
+        type_in(&mut app, "leader.T", Typed::Formula("kp".into()));
+        assert!(app.error.as_deref().unwrap().starts_with("Not applied"));
+        type_in(&mut app, "leader.T", Typed::Formula("nope".into()));
+        assert!(app.error.as_deref().unwrap().contains("nope"));
+        assert!(app.diagram.draft_problem().is_none());
+        assert_eq!(row(&app, "leader.T").formula.as_deref(), Some("tau / 2"));
+        // A use's own value takes a formula too; the model's parameters and
+        // values inside uses stay numbers.
+        type_in(&mut app, "car3.mass", Typed::Formula("2*1000".into()));
+        assert_eq!(row(&app, "car3.mass").value, 2000.0);
+        type_in(&mut app, "kp", Typed::Formula("2".into()));
+        assert!(app.error.as_deref().unwrap().contains("is a number"));
+        type_in(&mut app, "car1/car.c", Typed::Formula("kp".into()));
+        assert!(app.error.as_deref().unwrap().contains("open the subsystem"));
+        // A parameter a formula reads cannot go.
+        app.edit_at(Scope::Model, Edit::RemoveParam { name: "tau".into() });
+        assert!(app.error.take().is_some());
+        // A number replaces the formula; then the parameter can go.
+        type_in(&mut app, "leader.T", Typed::Number(6.0));
+        let t = row(&app, "leader.T");
+        assert_eq!((t.value, t.formula), (6.0, None));
+        app.edit_at(Scope::Model, Edit::RemoveParam { name: "tau".into() });
+        let m = app.session.as_ref().unwrap().model();
+        assert!(m.params.iter().all(|r| r.key != "tau"));
     }
 
     #[test]

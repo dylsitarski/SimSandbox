@@ -846,6 +846,22 @@ pub enum Edit {
         param: String,
         value: f64,
     },
+    /// A block's parameter set by a formula of the declared parameters in
+    /// scope (ADR 0043, ADR 0056).
+    SetFormula {
+        block: String,
+        param: String,
+        formula: String,
+    },
+    /// Declare a parameter of the model itself, for formulas to read
+    /// (ADR 0056).
+    DeclareParam {
+        name: String,
+        value: f64,
+        unit: String,
+    },
+    /// Remove a declared parameter of the model.
+    RemoveParam { name: String },
     /// A block's text setting, such as a conversion's `from` or `to` unit
     /// (ADR 0045).
     SetSetting {
@@ -908,6 +924,42 @@ pub fn apply_in(
     }
     if let Edit::Group { blocks } = edit {
         return group(file, scope, blocks);
+    }
+    match edit {
+        Edit::DeclareParam { name, value, unit } => {
+            let name = name.trim();
+            if !simsandbox_file::subsystems::valid_name(name) || simsandbox_expr::is_reserved(name)
+            {
+                return Err(format!(
+                    "'{name}': a parameter's name is letters, digits and '_', not a function \
+                     or 'pi'"
+                ));
+            }
+            if file.params.contains_key(name) {
+                return Err(format!("the model already has a parameter '{name}'"));
+            }
+            if !value.is_finite() {
+                return Err(format!("{name}: the value must be a finite number"));
+            }
+            file.params.insert(
+                name.to_string(),
+                ParamDecl {
+                    value: *value,
+                    unit: unit.trim().to_string(),
+                    description: String::new(),
+                    range: None,
+                },
+            );
+            return Ok(format!("Declared the parameter {name}"));
+        }
+        Edit::RemoveParam { name } => {
+            file.params
+                .remove(name)
+                .ok_or_else(|| format!("the model has no parameter '{name}'"))?;
+            file.controls.params.remove(name);
+            return Ok(format!("Removed the parameter {name}"));
+        }
+        _ => {}
     }
     // Which nodes are open follows renames and deletions (ADR 0055).
     let open = |file: &mut ModelFile| match edit {
@@ -1068,6 +1120,24 @@ fn edit_level(
                 "{block}.{param} is now {}",
                 crate::canvas::format_number(*value)
             ))
+        }
+        Edit::SetFormula {
+            block,
+            param,
+            formula,
+        } => {
+            let formula = formula.trim().trim_start_matches('=').trim();
+            if formula.is_empty() {
+                return Err("an empty formula: type a number or '= expression'".into());
+            }
+            let b = l
+                .blocks
+                .iter_mut()
+                .find(|b| b.name == *block)
+                .ok_or_else(|| format!("no block '{block}'"))?;
+            b.params
+                .insert(param.clone(), ParamValue::Formula(formula.to_string()));
+            Ok(format!("{block}.{param} = {formula}"))
         }
         Edit::SetSetting { block, key, text } => {
             let b = l
@@ -1312,7 +1382,10 @@ fn edit_level(
                 if *input { "input" } else { "output" }
             ))
         }
-        Edit::Group { .. } | Edit::RenameSubsystem { .. } => unreachable!("handled before"),
+        Edit::Group { .. }
+        | Edit::RenameSubsystem { .. }
+        | Edit::DeclareParam { .. }
+        | Edit::RemoveParam { .. } => unreachable!("handled before"),
         // Data-layer edits are handled by `observers::apply` first.
         Edit::Bind { .. }
         | Edit::Unbind { .. }

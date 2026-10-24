@@ -126,6 +126,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0053-docked-panes-inspector-and-node-values.md](decisions/0053-docked-panes-inspector-and-node-values.md) | Decision record | Dockable tabs and pop-out windows; saved arrangement; inspector and values on nodes |
 | [decisions/0054-controls-pane-pins-and-node-toggles.md](decisions/0054-controls-pane-pins-and-node-toggles.md) | Decision record | Controls pane and pins; multi-selection and drafts in the inspector; values opened per node; unit display |
 | [decisions/0055-open-nodes-subsystem-values-deferred-windows.md](decisions/0055-open-nodes-subsystem-values-deferred-windows.md) | Decision record | Open nodes saved; values inside subsystems; popped-out windows drawn on their own |
+| [decisions/0056-formulas-and-parameters-in-the-app.md](decisions/0056-formulas-and-parameters-in-the-app.md) | Decision record | Formulas typed as `= expression`; declaring and removing model parameters in the inspector |
 
 ### Guides
 

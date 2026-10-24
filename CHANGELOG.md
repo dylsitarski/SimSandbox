@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Formulas in the app: type `= expression` into any value field (for example `= 2*kp`) to compute it from the model's parameters; a computed value shows its formula and can be changed, or replaced by typing a number. The inspector's Model group declares new parameters ("+ parameter": name, value, unit) and removes them (right-click). A formula or parameter that would stop the model loading is refused with the reason.
 - Which nodes on the diagram show their values is saved with the model, and headless diagrams follow it; `simsandbox render --diagram --values` (Python: `render(diagram=True, values=True)`) shows them all.
 - Blocks inside a subsystem show their values: the default every use takes unless it sets its own (marked `*`).
 - The Controls show each slider's range ends beside it, editable in place.
