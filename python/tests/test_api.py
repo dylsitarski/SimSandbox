@@ -117,6 +117,13 @@ def test_the_diagram_renders_even_for_a_model_that_cannot_run(tmp_path):
     assert png[1:4] == b"PNG"
     with pytest.raises(ValueError):
         m.render(diagram=True, t_end=1.0)
+    # The nodes the file opens show their values; values=True opens all.
+    m.data.setdefault("controls", {})["open"] = ["a"]
+    opened = m.render(diagram=True, width=300, height=200)
+    every = m.render(diagram=True, width=300, height=200, values=True)
+    assert opened == every
+    with pytest.raises(ValueError):
+        m.render(values=True)
 
 
 def test_start_from_continues_from_a_reached_state():

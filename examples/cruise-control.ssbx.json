@@ -70,21 +70,24 @@
         "range": [
           0.0,
           400.0
-        ]
+        ],
+        "pin": true
       },
       "cruise.kp": {
         "slider": true,
         "range": [
           0.0,
           2000.0
-        ]
+        ],
+        "pin": true
       },
       "cruise.target": {
         "slider": true,
         "range": [
           0.0,
           40.0
-        ]
+        ],
+        "pin": true
       }
     },
     "speed": 4.0,

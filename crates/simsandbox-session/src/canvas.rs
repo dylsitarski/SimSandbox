@@ -55,6 +55,9 @@ pub enum Request {
     ShowView(usize),
     /// A value typed on a node (ADR 0053): `"block.param"` and the value.
     SetValue { key: String, value: f64 },
+    /// Nodes were opened or closed: every open node now, as
+    /// `controls.open` lists them (ADR 0055).
+    Opened(Vec<String>),
     /// A conversion's unit typed beside its port (ADR 0045): the block,
     /// `from` or `to`, and the unit.
     SetSetting {
@@ -100,7 +103,8 @@ pub struct Canvas {
     /// A filter dropped on a model input: the filter, the input and where
     /// to offer promoting it.
     offer: Option<(String, String, Pos2)>,
-    /// Nodes whose values are shown (ADR 0053), by name.
+    /// Nodes whose values are shown (ADR 0055): model-level names, and
+    /// `subsystem::block` inside a subsystem.
     pub open: BTreeSet<String>,
     /// Show every node's values.
     open_all: bool,
@@ -135,10 +139,18 @@ const DOT: f32 = 4.5;
 const REACH: f32 = 9.0;
 
 impl Canvas {
-    /// A canvas showing every node's values (headless diagrams).
+    /// A canvas showing every node's values.
     pub fn all_open() -> Self {
         Self {
             open_all: true,
+            ..Self::default()
+        }
+    }
+
+    /// A canvas showing the values of these nodes (`controls.open`).
+    pub fn opening(open: &[String]) -> Self {
+        Self {
+            open: open.iter().cloned().collect(),
             ..Self::default()
         }
     }
@@ -192,7 +204,8 @@ impl Canvas {
             Sense::hover()
         };
         for n in &mut d.nodes {
-            n.open = !n.values.is_empty() && (self.open_all || self.open.contains(&n.name));
+            let key = open_key(&d.scope, &n.name);
+            n.open = !n.values.is_empty() && (self.open_all || self.open.contains(&key));
         }
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), sense);
         let origin = rect.min;
@@ -277,11 +290,24 @@ impl Canvas {
                         })
                     } else if let Some((_, k)) = value {
                         let v = &n.values[k];
-                        Some(if self.zoom >= EDIT_VALUES {
+                        let mut tip = if self.zoom >= EDIT_VALUES {
                             format!("{}: double-click to change it", v.key)
                         } else {
                             format!("{}: zoom in to change it here", v.key)
-                        })
+                        };
+                        if d.scope != Scope::Model {
+                            tip.push_str(
+                                "\nThe default of every use of this subsystem; changing it \
+                                 restarts the run",
+                            );
+                            if !v.overridden.is_empty() {
+                                tip.push_str(&format!(
+                                    "\n* Set by its own value in {}",
+                                    v.overridden.join(", ")
+                                ));
+                            }
+                        }
+                        Some(tip)
                     } else if let Some((_, c)) = unit {
                         let setting = unit_setting(n, c).unwrap_or_default();
                         Some(if self.zoom >= EDIT_VALUES {
@@ -672,7 +698,9 @@ impl Canvas {
                 font.clone(),
                 visuals.weak_text_color(),
             );
-            let shown = format!("{} {}", format_number(v.value), v.unit);
+            // `*`: some uses of the subsystem set their own.
+            let mark = if v.overridden.is_empty() { "" } else { " *" };
+            let shown = format!("{} {}{mark}", format_number(v.value), v.unit);
             painter.text(
                 Pos2::new(top.x + NODE_WIDTH as f32 * z - pad, y),
                 egui::Align2::RIGHT_CENTER,
@@ -1018,14 +1046,15 @@ impl Canvas {
                 .iter()
                 .rev()
                 .find(|n| self.expander(origin, n).is_some_and(|r| r.contains(p)))
-                .map(|n| n.name.clone())
+                .map(|n| open_key(&d.scope, &n.name))
         };
         if response.clicked() {
             // The triangle opens or closes a node's values.
-            if let Some(name) = response.interact_pointer_pos().and_then(on_expander) {
-                if !self.open.remove(&name) {
-                    self.open.insert(name);
+            if let Some(key) = response.interact_pointer_pos().and_then(on_expander) {
+                if !self.open.remove(&key) {
+                    self.open.insert(key);
                 }
+                requests.push(Request::Opened(self.open.iter().cloned().collect()));
                 return;
             }
         }
@@ -1429,6 +1458,15 @@ fn unit_setting(n: &Node, c: Causality) -> Option<&'static str> {
     })
 }
 
+/// How `controls.open` names a node: by name on the model level,
+/// `subsystem::block` inside one.
+pub fn open_key(scope: &Scope, name: &str) -> String {
+    match scope {
+        Scope::Model => name.to_string(),
+        Scope::Subsystem(s) => format!("{s}::{name}"),
+    }
+}
+
 /// The editing key of a conversion's unit.
 fn unit_key(block: &str, setting: &str) -> String {
     format!("unit:{block}:{setting}")
@@ -1735,13 +1773,16 @@ mod tests {
         // Closed: no values until its triangle is clicked.
         assert_eq!(d.nodes[n].value_rows(), 0);
         let e = c.expander(Pos2::ZERO, &d.nodes[n]).unwrap().center();
+        let mut asked = Vec::new();
         for events in [
             vec![egui::Event::PointerMoved(e)],
             vec![press(e, true), press(e, false)],
             vec![],
         ] {
-            frame(&ctx, &mut c, &mut d, events);
+            asked.extend(frame(&ctx, &mut c, &mut d, events).1);
         }
+        // Saved in the file as `controls.open`.
+        assert_eq!(asked, [Request::Opened(vec!["car".into()])]);
         assert!(c.open.contains("car"));
         assert_eq!(d.nodes[n].value_rows(), 3);
         // Clicking it selected nothing.

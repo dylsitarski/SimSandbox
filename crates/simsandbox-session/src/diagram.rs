@@ -106,6 +106,9 @@ pub struct NodeValue {
     pub unit: String,
     /// A starting value (applies on Restart).
     pub initial: bool,
+    /// Inside a subsystem, where the value is every use's default: the
+    /// uses that set their own.
+    pub overridden: Vec<String>,
 }
 
 impl Node {
@@ -324,11 +327,23 @@ impl Diagram {
                 _ => dangling.push(format!("{from} -> {to}")),
             }
         }
-        if *scope != Scope::Model {
-            // Inside a subsystem values differ by use: the inspector shows
-            // them side by side.
+        if let Scope::Subsystem(name) = scope {
+            // Inside a subsystem a value is the default of every use; say
+            // which uses set their own (ADR 0055).
+            let entries: Vec<&BlockEntry> = file
+                .blocks
+                .iter()
+                .chain(file.subsystems.values().flat_map(|d| d.blocks.iter()))
+                .filter(|b| b.type_name == *name)
+                .collect();
             for n in &mut nodes {
-                n.values.clear();
+                for v in &mut n.values {
+                    v.overridden = entries
+                        .iter()
+                        .filter(|u| u.params.contains_key(&v.key))
+                        .map(|u| u.name.clone())
+                        .collect();
+                }
             }
         }
         layout(&mut nodes, &wires);
@@ -456,6 +471,7 @@ fn node(b: &BlockEntry, registry: &Registry) -> Node {
                     formula,
                     unit: unit_text(&p.unit),
                     initial: p.initial_condition,
+                    overridden: Vec::new(),
                 });
             }
             values.sort_by_key(|v| v.initial);
@@ -625,6 +641,7 @@ fn instance_node(file: &ModelFile, b: &BlockEntry, registry: &Registry) -> Node 
                 formula,
                 unit: d.unit.clone(),
                 initial: false,
+                overridden: Vec::new(),
             })
         })
         .collect();
@@ -880,11 +897,48 @@ pub fn apply_in(
         return result;
     }
     if let Edit::RenameSubsystem { from, to } = edit {
-        return rename_subsystem(file, from, to);
+        let note = rename_subsystem(file, from, to)?;
+        let (old, new) = (format!("{from}::"), format!("{to}::"));
+        for k in &mut file.controls.open {
+            if let Some(rest) = k.strip_prefix(&old) {
+                *k = format!("{new}{rest}");
+            }
+        }
+        return Ok(note);
     }
     if let Edit::Group { blocks } = edit {
         return group(file, scope, blocks);
     }
+    // Which nodes are open follows renames and deletions (ADR 0055).
+    let open = |file: &mut ModelFile| match edit {
+        Edit::Delete { block } => {
+            let key = crate::canvas::open_key(scope, block);
+            file.controls.open.retain(|k| *k != key);
+        }
+        Edit::Rename { from, to } => {
+            let key = crate::canvas::open_key(scope, from);
+            for k in &mut file.controls.open {
+                if *k == key {
+                    *k = crate::canvas::open_key(scope, to);
+                }
+            }
+        }
+        _ => {}
+    };
+    let result = apply_level(file, scope, registry, edit);
+    if result.is_ok() {
+        open(file);
+    }
+    result
+}
+
+/// [`apply_in`] for edits within one level.
+fn apply_level(
+    file: &mut ModelFile,
+    scope: &Scope,
+    registry: &Registry,
+    edit: &Edit,
+) -> Result<String, String> {
     match scope {
         Scope::Model => {
             let mut def = Subsystem {
@@ -1649,9 +1703,19 @@ mod tests {
         }
         assert!(d.height_check());
         assert!(d.nodes.iter().zip(closed).all(|(n, h)| n.height() >= h));
-        // Inside a subsystem they differ by use: none.
-        let inside = Diagram::of(&f, &Scope::Subsystem("follower".into()), &r);
-        assert!(inside.nodes.iter().all(|n| n.values.is_empty()));
+        // Inside a subsystem: every use's defaults, and which uses set
+        // their own.
+        let mut g = f.clone();
+        g.blocks[2].params.insert("car.c".into(), 70.0.into());
+        let inside = Diagram::of(&g, &Scope::Subsystem("follower".into()), &r);
+        let car = &inside.nodes[inside.node("car").unwrap()];
+        let c = car.values.iter().find(|v| v.name == "c").unwrap();
+        assert_eq!(
+            (c.value, c.overridden.clone()),
+            (50.0, vec!["car2".to_string()])
+        );
+        // `m` is set by a formula: not listed.
+        assert!(car.values.iter().all(|v| v.name != "m"));
         // The running values replace the file's.
         let s = crate::Session::load("p", &f.to_json(), &r).unwrap();
         let mut rows = s.params();
@@ -2006,6 +2070,38 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    #[test]
+    fn open_nodes_follow_renames_and_deletions() {
+        let r = registry();
+        let mut f = file("Platoon");
+        f.controls.open = vec!["car1".into(), "car2".into(), "follower::car".into()];
+        let rename = Edit::Rename {
+            from: "car1".into(),
+            to: "first".into(),
+        };
+        apply(&mut f, &r, &rename).unwrap();
+        apply(
+            &mut f,
+            &r,
+            &Edit::Delete {
+                block: "car2".into(),
+            },
+        )
+        .unwrap();
+        let inside = Scope::Subsystem("follower".into());
+        let rename = Edit::Rename {
+            from: "car".into(),
+            to: "body".into(),
+        };
+        apply_in(&mut f, &inside, &r, &rename).unwrap();
+        let rename = Edit::RenameSubsystem {
+            from: "follower".into(),
+            to: "car_pi".into(),
+        };
+        apply(&mut f, &r, &rename).unwrap();
+        assert_eq!(f.controls.open, ["first", "car_pi::body"]);
     }
 
     #[test]

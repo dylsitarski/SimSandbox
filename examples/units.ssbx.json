@@ -81,14 +81,16 @@
         "range": [
           0.0,
           200.0
-        ]
+        ],
+        "pin": true
       },
       "shaker.f": {
         "slider": true,
         "range": [
           0.0,
           0.5
-        ]
+        ],
+        "pin": true
       }
     },
     "speed": 2.0,

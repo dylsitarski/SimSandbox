@@ -1,6 +1,6 @@
 # Open questions
 
-_Last updated: 2026-10-23_
+_Last updated: 2026-10-24_
 
 Decisions not yet made. When one is resolved, write an ADR, link it in the **Resolved** table and remove the row from **Open**.
 
@@ -8,8 +8,7 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Options | Needed by | Notes |
 | --- | --- | --- | --- | --- |
-| Q33 | Whether popped-out tabs need deferred viewports | (a) Keep immediate viewports with vsync off while a tab is popped out ([ADR 0054](decisions/0054-controls-pane-pins-and-node-toggles.md)); (b) deferred viewports, drawing each window on its own, which needs the app's state shared across windows | When the owner has tried pop-out on Wayland after 2026-10-23 | Raised 2026-10-23: popping out stalled the main window on the owner's Linux desktop; under Xvfb it only drew more slowly |
-| Q32 | Whether which nodes are open on the diagram is saved | (a) Not saved (now); (b) saved in `controls`, like the arrangement of panes | When models with many nodes are shared | Raised 2026-10-23 with [ADR 0054](decisions/0054-controls-pane-pins-and-node-toggles.md); headless diagrams show every node open |
+| Q34 | How the app declares model parameters and writes formulas | (a) Type `= expression` into any value field to make it a formula, clear it to return to a number, and "+ parameter" in the inspector's Model group (name, value, unit); (b) a dialog per block listing its values with a number/formula choice; (c) only in the file and the Python API (now) | Before Phase 2 models with many shared values | Raised 2026-10-24 by the owner. Today the app edits values only: formulas and declared parameters are written in the file (`"m": "mass"`, top-level `params`) or with Python `Model.set("car1.m", "mass")` and `Model.declare(...)`; "Make subsystem" carries the declared parameters that grouped formulas read |
 | Q28 | How users define their own blocks without rebuilding SimSandbox | (a) Python, in process through PyO3; (b) WebAssembly plugins (sandboxed, any compiled language); (c) Julia, out of process; (d) extended typed languages only | After the typed agent rules (Q26) | Raised 2026-10-22 with [ADR 0038](decisions/0038-phase-1-revised.md), which deferred Python-defined blocks ([ADR 0036](decisions/0036-python-blocks.md)). Any choice keeps state in kernel memory and runs under the worker thread |
 | Q29 | When to add an MCP server and AI control of the running app | (a) With the headless interface; (b) after the node canvas, so an agent can build models in front of the user; (c) with the in-app AI assistant (Phase 3) | After Phase 1 item 5 | Raised 2026-10-22 with [ADR 0039](decisions/0039-ai-agent-access.md) |
 | Q27 | How the app finds Python | (a) The user's installed Python (minimum version to choose); (b) a Python shipped with the app (e.g. python-build-standalone), packages in an app-managed environment; (c) both, preferring the user's | Only if Q28 chooses Python | Raised 2026-10-19 with [ADR 0036](decisions/0036-python-blocks.md); settled by an embedding spike on Windows and Linux |
@@ -20,6 +19,8 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Resolution |
 | --- | --- | --- |
+| Q33 | Whether popped-out tabs need deferred viewports | Yes: popped-out tabs draw on their own ([ADR 0055](decisions/0055-open-nodes-subsystem-values-deferred-windows.md)) |
+| Q32 | Whether which nodes are open on the diagram is saved | Saved as `controls.open` ([ADR 0055](decisions/0055-open-nodes-subsystem-values-deferred-windows.md)) |
 | — | Rust core or Julia-first core | [ADR 0001](decisions/0001-rust-core.md) |
 | — | Shape of the Block contract | [ADR 0002](decisions/0002-layered-block-contract.md) |
 | — | Desktop-only or browser | [ADR 0003](decisions/0003-desktop-first.md) |

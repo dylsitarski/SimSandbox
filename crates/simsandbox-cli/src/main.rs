@@ -12,7 +12,7 @@
 //! simsandbox schema                 (the model file's JSON Schema)
 //! simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N]
 //!                   [--width POINTS] [--height POINTS] [--scale S] [--light]
-//!                   [--diagram [--subsystem NAME] [--no-data]]  (the block diagram instead of the views)
+//!                   [--diagram [--subsystem NAME] [--no-data] [--values]]  (the block diagram instead of the views)
 //! simsandbox start-from FILE --t SECONDS [--out NEW.json]
 //!                                   (the model file that starts from the state at t)
 //! simsandbox upgrade FILE [--out NEW.json]
@@ -39,7 +39,7 @@ const USAGE: &str = "usage:
   simsandbox check FILE
   simsandbox describe [TYPE | units]
   simsandbox schema
-  simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--width POINTS] [--height POINTS] [--scale S] [--light] [--diagram [--subsystem NAME] [--no-data]]
+  simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--width POINTS] [--height POINTS] [--scale S] [--light] [--diagram [--subsystem NAME] [--no-data] [--values]]
   simsandbox start-from FILE --t SECONDS [--out NEW.json]
   simsandbox upgrade FILE [--out NEW.json]
   simsandbox lorenz [--t-end SECONDS] [--dt SECONDS] [--method euler|rk4|dopri5] [--rho VALUE]";
@@ -56,7 +56,11 @@ impl Flags {
             if !allowed.contains(&flag.as_str()) {
                 return Err(format!("unknown flag '{flag}'\n{USAGE}"));
             }
-            let value = if flag == "--light" || flag == "--diagram" || flag == "--no-data" {
+            let value = if flag == "--light"
+                || flag == "--diagram"
+                || flag == "--no-data"
+                || flag == "--values"
+            {
                 String::new()
             } else {
                 it.next()
@@ -198,6 +202,7 @@ fn render_file(args: &[String]) -> Result<(), String> {
             "--diagram",
             "--subsystem",
             "--no-data",
+            "--values",
         ],
     )?;
     let out = flags.get("--out").ok_or("render needs --out IMAGE.png")?;
@@ -208,6 +213,9 @@ fn render_file(args: &[String]) -> Result<(), String> {
     };
     if flags.has("--subsystem") && !flags.has("--diagram") {
         return Err("--subsystem draws a subsystem's diagram: add --diagram".into());
+    }
+    if flags.has("--values") && !flags.has("--diagram") {
+        return Err("--values shows values on the diagram: add --diagram".into());
     }
     if flags.has("--diagram") {
         if flags.has("--t-end") || flags.has("--view") {
@@ -224,6 +232,7 @@ fn render_file(args: &[String]) -> Result<(), String> {
             light: flags.has("--light"),
             subsystem: flags.get("--subsystem").map(str::to_string),
             data: !flags.has("--no-data"),
+            values: flags.has("--values"),
         };
         let image = render_diagram(&file, &registry(), &o)?;
         return std::fs::write(out, png(&image)?).map_err(|e| format!("{out}: {e}"));
@@ -257,6 +266,7 @@ fn render_file(args: &[String]) -> Result<(), String> {
         light: flags.has("--light"),
         subsystem: None,
         data: false,
+        values: false,
     };
     let (image, warnings) = render(&s, view_registry(), &o)?;
     for w in warnings {

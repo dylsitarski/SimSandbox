@@ -152,11 +152,12 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Shared {
-    /// Ask for a frame, at most 120 a second: without vsync (a tab popped
-    /// out) a fast model would otherwise redraw without pause.
+    /// Ask the main window for a frame (it asks popped-out windows in
+    /// turn). Named, because from this thread the current viewport could
+    /// be any window's.
     fn repaint(&self) {
         if let Some(ctx) = lock(&self.repaint).as_ref() {
-            ctx.request_repaint_after(Duration::from_micros(8_333));
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
         }
     }
 }

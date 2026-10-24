@@ -6,6 +6,9 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Which nodes on the diagram show their values is saved with the model, and headless diagrams follow it; `simsandbox render --diagram --values` (Python: `render(diagram=True, values=True)`) shows them all.
+- Blocks inside a subsystem show their values: the default every use takes unless it sets its own (marked `*`).
+- The Controls show each slider's range ends beside it, editable in place.
 - A Controls pane (ADR 0054): pin any value with 📌 in the inspector (or right-click its name) to keep it there; a pinned value can have a slider, whose range you set by right-clicking its name. Click 📌 again to unpin. Files whose values have sliders open with them pinned.
 - Nodes on the diagram open and close their values with a triangle in their header. Conversion blocks show their units beside their ports; double-click one to change it.
 - Selecting several blocks shows each in the inspector. Blocks added on the diagram that cannot run yet (for example a conversion with nothing wired in) show in the inspector as "not running yet", and their values and units can be set there or on their nodes.
@@ -69,6 +72,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- Turning off a slider in a model saved before pins (such as the platoon) also unpinned the value. Such files now get their pins when opened, reported as a conversion.
+- A popped-out tab froze the main window while the main window had focus (Linux): popped-out tabs now draw on their own.
 - Turning the only plot into a tab of its own no longer removes the Views tab, so the plot can be tiled back after closing its tab.
 - Popping out a tab no longer waits for vsync, which could stall the main window on Linux (Wayland).
 - A value typed on a block that was not running yet was ignored; it now goes into the pending edits.

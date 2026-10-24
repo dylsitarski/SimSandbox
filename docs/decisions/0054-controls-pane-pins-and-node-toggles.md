@@ -1,6 +1,6 @@
 # 0054 — A Controls pane, pins, and values opened per node
 
-- **Status:** Accepted
+- **Status:** Accepted; older sliders, open nodes and pop-out windows are amended by [0055](0055-open-nodes-subsystem-values-deferred-windows.md)
 - **Date:** 2026-10-23
 
 ## Context

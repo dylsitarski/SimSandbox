@@ -24,10 +24,12 @@
   "controls": {
     "params": {
       "bob.L": {
-        "slider": true
+        "slider": true,
+        "pin": true
       },
       "bob.c": {
-        "slider": true
+        "slider": true,
+        "pin": true
       }
     },
     "speed": 1.0,

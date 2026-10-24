@@ -342,6 +342,22 @@ fn bad_controls_are_dropped_with_warnings() {
 }
 
 #[test]
+fn sliders_written_before_pins_pin_and_open_nodes_are_kept() {
+    // LORENZ gives lorenz.rho a slider and no pin.
+    let (mut file, _) = ModelFile::from_json(LORENZ).unwrap();
+    let rho = file.controls.params["lorenz.rho"].clone();
+    assert!(rho.slider && rho.pin);
+    // The slider can now go without unpinning.
+    let c = file.controls.params.get_mut("lorenz.rho").unwrap();
+    c.slider = false;
+    file.controls.open = vec!["lorenz".into()];
+    let (again, _) = ModelFile::from_json(&file.to_json()).unwrap();
+    let rho = &again.controls.params["lorenz.rho"];
+    assert!(!rho.slider && rho.pinned());
+    assert_eq!(again.controls.open, ["lorenz"]);
+}
+
+#[test]
 fn schema_is_valid_json_and_lists_the_file_fields() {
     let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
     let mut props: Vec<_> = schema["properties"]

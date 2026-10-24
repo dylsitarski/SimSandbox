@@ -24,10 +24,12 @@
   "controls": {
     "params": {
       "disc.GM": {
-        "slider": true
+        "slider": true,
+        "pin": true
       },
       "disc.speed": {
-        "slider": true
+        "slider": true,
+        "pin": true
       }
     },
     "speed": 1.0,

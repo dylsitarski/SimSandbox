@@ -45,6 +45,10 @@ pub enum Discard {
 }
 
 pub struct SimApp {
+    /// The app as shared with popped-out windows (set by `shared`).
+    this: std::sync::Weak<std::sync::Mutex<SimApp>>,
+    /// What popped-out windows asked for, carried out by the main window.
+    popped_actions: Vec<DockAction>,
     registry: Registry,
     /// The open model, running on its worker thread (ADR 0035).
     session: Option<Live>,
@@ -100,6 +104,15 @@ pub struct SimApp {
 }
 
 impl SimApp {
+    /// The app shared between the main window and popped-out ones.
+    pub fn shared(self) -> std::sync::Arc<std::sync::Mutex<SimApp>> {
+        std::sync::Arc::new_cyclic(|this| {
+            let mut app = self;
+            app.this = this.clone();
+            std::sync::Mutex::new(app)
+        })
+    }
+
     pub fn new(
         path: Option<String>,
         view: Option<&str>,
@@ -107,6 +120,8 @@ impl SimApp {
         screenshot: Option<ScreenshotRequest>,
     ) -> Self {
         let mut app = Self {
+            this: std::sync::Weak::new(),
+            popped_actions: Vec::new(),
             registry: registry(),
             session: None,
             speed: 1.0,
@@ -407,6 +422,7 @@ impl SimApp {
                 let tiles = self.tile_ids();
                 let opened = self.views.opened.clone();
                 let tile = |k: usize| opened.get(k).copied().flatten();
+                self.diagram.canvas.open = s.file.controls.open.iter().cloned().collect();
                 self.dock = match &s.file.controls.layout {
                     Some(l) => Dock::from_layout(l, &tile, &tiles),
                     None => Dock::standard(&tiles),
@@ -844,32 +860,31 @@ impl SimApp {
             .show_leaf_close_all_buttons(false)
             .show_inside(ui, &mut tabs);
         let mut actions = tabs.actions;
+        actions.append(&mut self.popped_actions);
+        // Popped-out tabs are deferred viewports: each window is drawn on
+        // its own, from the shared app, so one window never waits for
+        // another (ADR 0054).
         for pane in dock.popped.clone() {
             let title = self.pane_title(&pane);
-            let id = egui::ViewportId::from_hash_of(("popped", pane_key(&pane)));
+            let id = popped_viewport(&pane);
             let builder = egui::ViewportBuilder::default()
                 .with_title(format!("{title} — SimSandbox"))
                 .with_inner_size([760.0, 520.0]);
-            ui.ctx().show_viewport_immediate(id, builder, |ui, _| {
-                egui::Panel::top(egui::Id::new(("popped-bar", pane_key(&pane)))).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.strong(&title);
-                        if ui
-                            .small_button("Dock")
-                            .on_hover_text("Put it back among the tabs")
-                            .clicked()
-                        {
-                            actions.push(DockAction::DockBack(pane.clone()));
-                        }
-                    });
-                });
-                egui::CentralPanel::default().show(ui, |ui| {
-                    self.pane_ui(ui, &pane, &mut actions);
-                });
-                if ui.input(|i| i.viewport().close_requested()) {
-                    actions.push(DockAction::DockBack(pane.clone()));
-                }
+            let this = self.this.clone();
+            ui.ctx().show_viewport_deferred(id, builder, move |ui, _| {
+                let Some(app) = this.upgrade() else {
+                    return;
+                };
+                // Never held while another window draws; if it were,
+                // draw next frame instead of waiting.
+                let Ok(mut app) = app.try_lock() else {
+                    ui.ctx().request_repaint();
+                    return;
+                };
+                app.popped_ui(ui, &pane, &title);
             });
+            // Draw it whenever the main window draws (new data).
+            ui.ctx().request_repaint_of(id);
         }
         self.dock = dock;
         for a in actions {
@@ -887,6 +902,38 @@ impl SimApp {
                 DockAction::Inspect(signal) => self.inspect_signal(&signal),
             }
         }
+    }
+
+    /// A popped-out tab's window: its title bar with "Dock", and the tab.
+    /// What it asks for is carried out by the main window.
+    fn popped_ui(&mut self, ui: &mut egui::Ui, pane: &Pane, title: &str) {
+        if self.session.is_none() {
+            return;
+        }
+        let mut actions = Vec::new();
+        egui::Panel::top(egui::Id::new(("popped-bar", pane_key(pane)))).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong(title);
+                if ui
+                    .small_button("Dock")
+                    .on_hover_text("Put it back among the tabs")
+                    .clicked()
+                {
+                    actions.push(DockAction::DockBack(pane.clone()));
+                }
+            });
+        });
+        egui::CentralPanel::default().show(ui, |ui| {
+            self.pane_ui(ui, pane, &mut actions);
+        });
+        if ui.input(|i| i.viewport().close_requested()) {
+            actions.push(DockAction::DockBack(pane.clone()));
+        }
+        if !actions.is_empty() {
+            self.popped_actions.extend(actions);
+        }
+        // Edits made here show in the main window too.
+        ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
     }
 
     /// A tab's title.
@@ -1047,6 +1094,11 @@ impl SimApp {
                 Outcome::SetValue { key, value } => {
                     if let Some(row) = m.params.iter().find(|r| r.key == key) {
                         self.apply_changes(vec![(row.clone(), value)]);
+                    }
+                }
+                Outcome::Opened(open) => {
+                    if let Some(live) = &self.session {
+                        live.send(None, move |s, _| s.file.controls.open = open);
                     }
                 }
                 Outcome::ShowView(k) => {
@@ -2119,23 +2171,8 @@ impl SimApp {
 }
 
 impl eframe::App for SimApp {
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        // Popped-out tabs are drawn in the same pass as the main window, so
-        // waiting for vsync on a window the compositor is not showing
-        // (Wayland) would stall both: vsync is off while any tab is popped
-        // out, and the worker's repaints are capped instead (live.rs).
-        if let Some(mut c) = frame.wgpu_surface_config() {
-            let want = if self.dock.popped.is_empty() {
-                eframe::wgpu::PresentMode::AutoVsync
-            } else {
-                eframe::wgpu::PresentMode::AutoNoVsync
-            };
-            if c.present_mode != want {
-                c.present_mode = want;
-                frame.set_wgpu_surface_config(c);
-            }
-        }
         self.handle_dropped_files(&ctx);
         self.poll(&ctx);
         self.equation_editor(&ctx);
@@ -2187,6 +2224,11 @@ enum Popped {
     Diagram,
     /// The tab showing this view (by place among the views).
     View(usize),
+}
+
+/// The window of a popped-out tab.
+fn popped_viewport(p: &Pane) -> egui::ViewportId {
+    egui::ViewportId::from_hash_of(("popped", pane_key(p)))
 }
 
 /// A tab's stable key, for ids.
@@ -2518,23 +2560,7 @@ fn param_row(
     if let Some(v) = used_by {
         hover.push_str(&format!("\nRead by formulas: {}", v.join(", ")));
     }
-    if place == Place::Controls && control.slider {
-        hover.push_str("\nRight-click to set the slider's range");
-    }
     ui.label(&row.name).on_hover_text(hover).context_menu(|ui| {
-        if place == Place::Controls && control.slider {
-            // The slider's range.
-            let [mut lo, mut hi] = control.range.unwrap_or(row.suggested);
-            ui.horizontal(|ui| {
-                ui.label("Slider from");
-                let a = ui.add(egui::DragValue::new(&mut lo).speed(0.1));
-                ui.label("to");
-                let b = ui.add(egui::DragValue::new(&mut hi).speed(0.1));
-                if (a.changed() || b.changed()) && lo < hi {
-                    control.range = Some([lo, hi]);
-                }
-            });
-        }
         let label = if control.pinned() {
             "Unpin from the Controls"
         } else {
@@ -2586,24 +2612,34 @@ fn param_row(
     ui.horizontal(|ui| {
         if place == Place::Controls {
             ui.checkbox(&mut control.slider, "")
-                .on_hover_text("A slider under the value; right-click the name for its range");
+                .on_hover_text("A slider under the value, between the two ends of its range");
         }
         pin_button(ui, &mut control);
     });
     ui.end_row();
 
+    // The slider between its range's ends, which are typed in place.
     if place == Place::Controls && control.slider {
-        let [lo, hi] = control.range.unwrap_or(row.suggested);
-        ui.label("");
+        let [mut lo, mut hi] = control.range.unwrap_or(row.suggested);
+        let a = ui
+            .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(egui::DragValue::new(&mut lo).speed(0.1))
+                    .on_hover_text("The slider's lower end")
+            })
+            .inner;
         let mut v = edits.pending.get(&row.key).copied().unwrap_or(row.value);
-        let r = ui
-            .add(egui::Slider::new(&mut v, lo..=hi).show_value(false))
-            .on_hover_text(format!("{} to {}", format_value(lo), format_value(hi)));
+        let r = ui.add(egui::Slider::new(&mut v, lo..=hi).show_value(false));
         if apply_now(m.real_time, r.changed(), r.dragged(), r.drag_stopped()) {
             edits.pending.remove(&row.key);
             edits.changes.push((row.clone(), v));
         } else if r.changed() {
             edits.pending.insert(row.key.clone(), v);
+        }
+        let b = ui
+            .add(egui::DragValue::new(&mut hi).speed(0.1))
+            .on_hover_text("The slider's upper end");
+        if (a.changed() || b.changed()) && lo < hi {
+            control.range = Some([lo, hi]);
         }
         ui.end_row();
     }
@@ -3853,6 +3889,41 @@ mod tests {
         ]));
         inspect(&mut app);
         assert_eq!(app.picked.len(), 3);
+    }
+
+    #[test]
+    fn open_nodes_are_saved_and_inner_values_are_every_uses_default() {
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        let m = app.session.as_ref().unwrap().model();
+        let open = vec!["car1".to_string(), "follower::car".to_string()];
+        app.diagram_outcomes(&m, vec![Outcome::Opened(open.clone())]);
+        let text = app.saved_text().unwrap();
+        let (file, _) = simsandbox_file::ModelFile::from_json(&text).unwrap();
+        assert_eq!(file.controls.open, open);
+        // Opened again, the diagram opens the same nodes.
+        let mut again = SimApp::new(None, None, None, None);
+        again.open_text("again", &text);
+        assert_eq!(again.diagram.canvas.open, open.into_iter().collect());
+        // Inside the subsystem, a value is the default of every use.
+        let e = Edit::SetParam {
+            block: "car".into(),
+            param: "c".into(),
+            value: 80.0,
+        };
+        app.edit_at(Scope::Subsystem("follower".into()), e);
+        let live = app.session.as_ref().unwrap();
+        live.sync();
+        let m = live.model();
+        for car in ["car1", "car2", "car3"] {
+            let key = format!("{car}/car.c");
+            let row = m.params.iter().find(|r| r.key == key).unwrap();
+            assert_eq!(row.value, 80.0, "{key}");
+        }
     }
 
     #[test]

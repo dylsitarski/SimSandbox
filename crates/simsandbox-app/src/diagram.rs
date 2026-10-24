@@ -51,6 +51,8 @@ pub enum Outcome {
     EditData(String),
     /// Show a view's tile.
     ShowView(usize),
+    /// Which nodes show their values, to save (ADR 0055).
+    Opened(Vec<String>),
     /// Set a parameter typed on a node (ADR 0053).
     SetValue {
         key: String,
@@ -306,16 +308,22 @@ impl DiagramTab {
                     continue;
                 }
                 // While edits wait as a draft, values go into it: the
-                // running model may not have the block yet.
+                // running model may not have the block yet. Inside a
+                // subsystem a value is every use's default, in the file.
                 Request::SetValue { key, value } => {
-                    match (&self.draft, key.split_once('.')) {
-                        (Some(_), Some((block, param))) => edits.push(Edit::SetParam {
+                    let in_file = self.draft.is_some() || self.scope != Scope::Model;
+                    match (in_file, key.split_once('.')) {
+                        (true, Some((block, param))) => edits.push(Edit::SetParam {
                             block: block.into(),
                             param: param.into(),
                             value,
                         }),
                         _ => out.push(Outcome::SetValue { key, value }),
                     }
+                    continue;
+                }
+                Request::Opened(open) => {
+                    out.push(Outcome::Opened(open));
                     continue;
                 }
                 Request::SetSetting { block, key, text } => {

@@ -57,35 +57,40 @@
         "range": [
           0.0,
           1.0
-        ]
+        ],
+        "pin": true
       },
       "sheep.D": {
         "slider": true,
         "range": [
           0.0,
           10.0
-        ]
+        ],
+        "pin": true
       },
       "sheep.c": {
         "slider": true,
         "range": [
           0.0,
           2.0
-        ]
+        ],
+        "pin": true
       },
       "sheep.metabolism": {
         "slider": true,
         "range": [
           0.0,
           0.3
-        ]
+        ],
+        "pin": true
       },
       "size": {
         "slider": true,
         "range": [
           10.0,
           200.0
-        ]
+        ],
+        "pin": true
       }
     },
     "speed": 4.0,

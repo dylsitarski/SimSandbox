@@ -70,9 +70,9 @@
   ],
   "controls": {
     "params": {
-      "kp": {"slider": true, "range": [0.0, 2000.0]},
-      "ki": {"slider": true, "range": [0.0, 400.0]},
-      "leader.target": {"slider": true, "range": [0.0, 40.0]}
+      "kp": {"slider": true, "pin": true, "range": [0.0, 2000.0]},
+      "ki": {"slider": true, "pin": true, "range": [0.0, 400.0]},
+      "leader.target": {"slider": true, "pin": true, "range": [0.0, 40.0]}
     },
     "speed": 4.0,
     "views": [

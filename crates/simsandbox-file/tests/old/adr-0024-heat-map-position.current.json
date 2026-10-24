@@ -25,13 +25,16 @@
   "controls": {
     "params": {
       "rod.alpha": {
-        "slider": true
+        "slider": true,
+        "pin": true
       },
       "rod.left": {
-        "slider": true
+        "slider": true,
+        "pin": true
       },
       "rod.right": {
-        "slider": true
+        "slider": true,
+        "pin": true
       }
     },
     "speed": 1.0,

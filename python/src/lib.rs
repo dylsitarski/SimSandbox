@@ -148,6 +148,7 @@ fn render<'py>(
                 light,
                 subsystem: None,
                 data: false,
+                values: false,
             };
             let (image, mut warnings) = render_views(&s, view_registry(), &o)?;
             warnings.splice(0..0, s.warnings.iter().cloned());
@@ -160,7 +161,7 @@ fn render<'py>(
 /// The block diagram of a model file as a PNG, as the node canvas shows
 /// it (ADR 0042); drawn even if the model cannot run.
 #[pyfunction]
-#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, subsystem=None, data=true))]
+#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, subsystem=None, data=true, values=false))]
 #[allow(clippy::too_many_arguments)]
 fn render_diagram<'py>(
     py: Python<'py>,
@@ -171,6 +172,7 @@ fn render_diagram<'py>(
     light: bool,
     subsystem: Option<String>,
     data: bool,
+    values: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let image = py
         .detach(|| -> Result<_, String> {
@@ -184,6 +186,7 @@ fn render_diagram<'py>(
                 light,
                 subsystem,
                 data,
+                values,
             };
             png(&simsandbox_session::render::render_diagram(
                 &file,

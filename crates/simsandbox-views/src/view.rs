@@ -120,7 +120,7 @@ impl ViewInput<'_> {
 }
 
 /// Drawing behaviour of one view on screen.
-pub trait View {
+pub trait View: Send {
     fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>);
 
     /// Orientation to save, for views that have one: yaw, pitch, zoom.

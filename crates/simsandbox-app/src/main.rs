@@ -81,6 +81,20 @@ fn parse(args: &[String]) -> Result<Args, String> {
     })
 }
 
+/// The app, shared with the windows of popped-out tabs, which draw it
+/// on their own (ADR 0054).
+struct Shared(std::sync::Arc<std::sync::Mutex<SimApp>>);
+
+impl eframe::App for Shared {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let mut app = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        eframe::App::ui(&mut *app, ui, frame);
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args = match parse(&args) {
@@ -104,12 +118,13 @@ fn main() -> ExitCode {
         "SimSandbox",
         options,
         Box::new(move |_cc| {
-            Ok(Box::new(SimApp::new(
+            let app = SimApp::new(
                 args.path,
                 args.view.as_deref(),
                 args.window.as_deref(),
                 args.screenshot,
-            )))
+            );
+            Ok(Box::new(Shared(app.shared())))
         }),
     );
     match result {

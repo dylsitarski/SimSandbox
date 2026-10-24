@@ -320,20 +320,31 @@ class Model:
         diagram: bool = False,
         subsystem: str | None = None,
         data: bool = True,
+        values: bool = False,
     ) -> bytes:
         """Run to ``t_end`` and draw the model's views (``controls.views``,
         or ``view`` alone) as a PNG, as the app shows them; with
         ``diagram``, draw its block diagram instead (no run needed), or
         with ``subsystem`` too, that subsystem's inside. The model's diagram
         includes its filters and views (ADR 0050) unless ``data`` is false.
-        Writes it to ``path`` if given; returns the PNG bytes."""
+        A diagram shows the values of the nodes the file opens
+        (``controls.open``), or of every node with ``values``. Writes it to ``path`` if given; returns the PNG bytes."""
         if subsystem is not None and not diagram:
             raise ValueError("subsystem draws a subsystem's diagram: add diagram=True")
+        if values and not diagram:
+            raise ValueError("values shows values on a diagram: add diagram=True")
         if diagram:
             if t_end is not None or view is not None:
                 raise ValueError("t_end and view do not apply to a diagram")
             image = _native.render_diagram(
-                self.to_json(), float(width), float(height), float(scale), light, subsystem, data
+                self.to_json(),
+                float(width),
+                float(height),
+                float(scale),
+                light,
+                subsystem,
+                data,
+                values,
             )
             warnings = []
         else:

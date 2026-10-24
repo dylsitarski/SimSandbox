@@ -540,6 +540,10 @@ pub struct Controls {
     /// tabs, split and stacked (ADR 0053).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<layout::Layout>,
+    /// Diagram nodes whose values are shown (ADR 0055): model-level names,
+    /// and `subsystem::block` inside a subsystem. Unknown names are ignored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open: Vec<String>,
     /// Filters turning recorded data into new signals and fields
     /// (ADR 0030, ADR 0032): derived expressions, cuts. Checked by the app;
     /// invalid ones are dropped with a warning.
@@ -911,7 +915,8 @@ pub struct ParamControl {
 }
 
 impl ParamControl {
-    /// Shown among the Controls: pinned, or with a slider (older files).
+    /// Shown among the Controls. A slider in a file read before pins
+    /// existed pins its value on reading.
     pub fn pinned(&self) -> bool {
         self.pin || self.slider
     }
@@ -923,6 +928,19 @@ impl ParamControl {
             self.slider = false;
         }
     }
+}
+
+/// Whether a parameter control has a slider and no pin: written before
+/// pins decided the Controls (ADR 0054).
+fn slider_without_pin(v: &Value) -> bool {
+    v.pointer("/controls/params")
+        .and_then(Value::as_object)
+        .is_some_and(|params| {
+            params.values().any(|c| {
+                c.get("slider").and_then(Value::as_bool) == Some(true)
+                    && c.get("pin").and_then(Value::as_bool) != Some(true)
+            })
+        })
 }
 
 /// Why a file could not be loaded.
@@ -1139,6 +1157,13 @@ impl ModelFile {
                     return Err(FileError::UnsupportedFormat(n as u32));
                 }
             }
+            if slider_without_pin(&v) {
+                converted.push(
+                    "a slider now pins its value to the Controls, where the slider can be \
+                     turned off without unpinning (ADR 0054)"
+                        .to_string(),
+                );
+            }
             if places_written_at(&v) {
                 converted.push(
                     "block and subsystem port places 'at' became 'canvas', like every node's \
@@ -1185,13 +1210,18 @@ impl ModelFile {
             return Err(invalid("run.t_end", format!("must be positive, got {t}")));
         }
         let mut warnings = Vec::new();
-        let controls = match raw.controls {
+        let mut controls: Controls = match raw.controls {
             None => Controls::default(),
             Some(v) => serde_json::from_value(v).unwrap_or_else(|e| {
                 warnings.push(format!("controls: ignored, {e}"));
                 Controls::default()
             }),
         };
+        // A slider written before pins (ADR 0054) pins its value, so the
+        // two can then be changed apart.
+        for c in controls.params.values_mut() {
+            c.pin |= c.slider;
+        }
         Ok((
             Self {
                 format: raw.format,

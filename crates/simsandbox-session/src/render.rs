@@ -25,6 +25,9 @@ pub struct RenderOptions {
     /// For the model's diagram: draw the data layer, its filters and views
     /// (ADR 0050).
     pub data: bool,
+    /// For the diagram: show every node's values, not only those the file
+    /// opens (`controls.open`, ADR 0055).
+    pub values: bool,
 }
 
 impl Default for RenderOptions {
@@ -37,6 +40,7 @@ impl Default for RenderOptions {
             light: false,
             subsystem: None,
             data: true,
+            values: false,
         }
     }
 }
@@ -102,8 +106,12 @@ pub fn render_diagram(
     if o.data {
         d.observe(file, &crate::examples::view_registry());
     }
-    // Every node shows its values.
-    let mut canvas = crate::canvas::Canvas::all_open();
+    // The nodes the file opens, or all.
+    let mut canvas = if o.values {
+        crate::canvas::Canvas::all_open()
+    } else {
+        crate::canvas::Canvas::opening(&file.controls.open)
+    };
     Ok(paint(o, |ui| {
         canvas.show(ui, &mut d, registry, false);
     }))
@@ -368,6 +376,7 @@ mod tests {
             light: true,
             subsystem: None,
             data: false,
+            values: false,
         };
         let (img, _) = render(&s, view_registry(), &o).unwrap();
         assert_eq!((img.width, img.height), (400, 200));
