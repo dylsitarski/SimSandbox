@@ -1,6 +1,7 @@
 //! The model graph: Blocks, their parameter values, and unit-checked connections.
 
-use crate::block::{Block, Causality, PortSpec};
+use crate::block::{Block, BlockSpec, Causality, PortSpec, TimeSemantics};
+use crate::fusion::{Group, GroupSolver};
 use crate::{Result, SimError};
 
 /// Index of a Block within a [`Model`].
@@ -23,12 +24,46 @@ pub struct Connection {
     pub factor: f64,
 }
 
+/// The seed of a model that sets none ([`Model::set_seed`]).
+pub const DEFAULT_SEED: u64 = 1;
+
 /// A graph of Blocks and the connections between them.
-#[derive(Default)]
 pub struct Model {
     pub(crate) blocks: Vec<Box<dyn Block>>,
     pub(crate) params: Vec<Vec<f64>>,
     pub(crate) connections: Vec<Connection>,
+    pub(crate) groups: Vec<Group>,
+    pub(crate) seed: u64,
+    pub(crate) loops: crate::loops::LoopMethod,
+    /// Per Block, a state to start from instead of the one its parameters
+    /// give (ADR 0042).
+    pub(crate) starts: Vec<Option<Start>>,
+}
+
+/// A Block's state and table rows to start from, replacing what `init`
+/// and `init_tables` compute from its parameters: how a run continues
+/// from a state reached before (e.g. a steady state), reproducibly
+/// (ADR 0042).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Start {
+    /// One value per state, in `BlockSpec::states` order.
+    pub state: Vec<f64>,
+    /// Per table in `BlockSpec::tables` order, its rows.
+    pub tables: Vec<Vec<Vec<f64>>>,
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        Self {
+            blocks: Vec::new(),
+            params: Vec::new(),
+            connections: Vec::new(),
+            groups: Vec::new(),
+            seed: DEFAULT_SEED,
+            loops: crate::loops::LoopMethod::default(),
+            starts: Vec::new(),
+        }
+    }
 }
 
 impl Model {
@@ -36,27 +71,118 @@ impl Model {
         Self::default()
     }
 
+    /// The seed every random draw derives from (ADR 0034): the same seed
+    /// gives the same run.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.seed = seed;
+    }
+
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// How algebraic loops are solved (ADR 0040).
+    pub fn set_loop_method(&mut self, method: crate::loops::LoopMethod) {
+        self.loops = method;
+    }
+
+    pub fn loop_method(&self) -> crate::loops::LoopMethod {
+        self.loops
+    }
+
     /// Add a Block with its default parameter values.
     pub fn add(&mut self, block: Box<dyn Block>) -> BlockId {
         self.params.push(block.spec().default_params());
+        self.starts.push(None);
         self.blocks.push(block);
         BlockId(self.blocks.len() - 1)
     }
 
-    /// Set a parameter by name.
+    /// Set a parameter by name. Any finite value is accepted, including
+    /// values outside the suggested range.
     pub fn set_param(&mut self, block: BlockId, name: &str, value: f64) -> Result<()> {
-        let spec = self.block(block)?.spec();
-        let idx = spec
-            .params
-            .iter()
-            .position(|p| p.name == name)
-            .ok_or_else(|| SimError::BadConnection(format!("no parameter '{name}'")))?;
+        let idx = param_index(self.block(block)?.spec(), name)?;
+        if !value.is_finite() {
+            return Err(SimError::InvalidParam {
+                name: name.into(),
+                value,
+            });
+        }
         self.params[block.0][idx] = value;
         Ok(())
     }
 
+    /// Start a Block from `start` instead of its parameters' initial
+    /// state, or from its parameters again with `None`. Checked against
+    /// the Block's states and tables.
+    pub fn set_start(&mut self, block: BlockId, start: Option<Start>) -> Result<()> {
+        let spec = self.block(block)?.spec();
+        if let Some(s) = &start {
+            let bad = |reason: String| SimError::InvalidSetting {
+                setting: "start".into(),
+                reason,
+            };
+            if s.state.len() != spec.states.len() {
+                return Err(bad(format!(
+                    "{} has {} states, not {}",
+                    spec.name,
+                    spec.states.len(),
+                    s.state.len()
+                )));
+            }
+            if s.tables.len() != spec.tables.len() {
+                return Err(bad(format!(
+                    "{} has {} tables, not {}",
+                    spec.name,
+                    spec.tables.len(),
+                    s.tables.len()
+                )));
+            }
+            for (t, rows) in spec.tables.iter().zip(&s.tables) {
+                if let Some(r) = rows.iter().find(|r| r.len() != t.columns.len()) {
+                    return Err(bad(format!(
+                        "rows of {}.{} have {} values ({}), not {}",
+                        spec.name,
+                        t.name,
+                        t.columns.len(),
+                        t.columns.join(", "),
+                        r.len()
+                    )));
+                }
+            }
+            let values = s.state.iter().chain(s.tables.iter().flatten().flatten());
+            if values.into_iter().any(|v| !v.is_finite()) {
+                return Err(bad("values must be finite".into()));
+            }
+        }
+        self.starts[block.0] = start;
+        Ok(())
+    }
+
+    /// The state a Block starts from, if not its parameters'.
+    pub fn start(&self, block: BlockId) -> Option<&Start> {
+        self.starts.get(block.0)?.as_ref()
+    }
+
+    /// Current value of a parameter.
+    pub fn param(&self, block: BlockId, name: &str) -> Result<f64> {
+        let idx = param_index(self.block(block)?.spec(), name)?;
+        Ok(self.params[block.0][idx])
+    }
+
+    /// Current values of all parameters of a Block, in `BlockSpec::params` order.
+    pub fn params(&self, block: BlockId) -> Result<&[f64]> {
+        self.block(block)?;
+        Ok(&self.params[block.0])
+    }
+
+    /// Ids of all Blocks, in insertion order.
+    pub fn block_ids(&self) -> impl Iterator<Item = BlockId> {
+        (0..self.blocks.len()).map(BlockId)
+    }
+
     /// Connect an output port to an input port, checking direction, shape and
-    /// unit dimension. Compatible units with different scales are converted.
+    /// unit: the units must be the same, scale included (ADR 0045).
     pub fn connect(&mut self, from: (BlockId, &str), to: (BlockId, &str)) -> Result<()> {
         let out = self.port(from.0, from.1)?.clone();
         let inp = self.port(to.0, to.1)?.clone();
@@ -72,13 +198,13 @@ impl Model {
                 to: format!("{:?}", inp.shape),
             });
         }
-        let factor = out
-            .unit
-            .conversion_to(&inp.unit)
-            .ok_or(SimError::UnitMismatch {
+        if !out.unit.same_as(&inp.unit) {
+            return Err(SimError::UnitMismatch {
                 from: out.unit.to_string(),
                 to: inp.unit.to_string(),
-            })?;
+            });
+        }
+        let factor = 1.0;
         let to_ref = PortRef {
             block: to.0,
             port: to.1.into(),
@@ -98,6 +224,77 @@ impl Model {
             factor,
         });
         Ok(())
+    }
+
+    /// Solve these Blocks together as one system with `solver` (ADR 0023).
+    /// Each must be an equation Block (it implements `Equations`), continuous
+    /// or stateless (ADR 0051), in no other group, and at least one must be
+    /// continuous; connections between members are then resolved inside
+    /// every right-hand-side evaluation instead of once per step.
+    pub fn fuse(&mut self, members: &[BlockId], solver: Box<dyn GroupSolver>) -> Result<()> {
+        if members.is_empty() {
+            return Err(SimError::CannotFuse(
+                "a group needs at least one block".into(),
+            ));
+        }
+        for (k, &id) in members.iter().enumerate() {
+            let block = self.block(id)?;
+            let name = &block.spec().name;
+            if members[..k].contains(&id) {
+                return Err(SimError::CannotFuse(format!("'{name}' is listed twice")));
+            }
+            if self.group_of(id).is_some() {
+                return Err(SimError::CannotFuse(format!(
+                    "'{name}' is already in a group"
+                )));
+            }
+            if !self.is_fusable(id) {
+                return Err(SimError::CannotFuse(format!(
+                    "'{name}' is not a continuous or stateless equation block"
+                )));
+            }
+        }
+        if members.iter().all(|&id| self.is_algebraic(id)) {
+            return Err(SimError::CannotFuse(
+                "a group needs a block with states to solve".into(),
+            ));
+        }
+        self.groups.push(Group {
+            members: members.to_vec(),
+            solver,
+        });
+        Ok(())
+    }
+
+    /// Whether a Block can join a fused group: an equation Block,
+    /// continuous or stateless (ADR 0051).
+    pub fn is_fusable(&self, id: BlockId) -> bool {
+        self.block(id).is_ok_and(|b| {
+            b.as_equations().is_some()
+                && matches!(
+                    b.spec().time,
+                    TimeSemantics::Continuous | TimeSemantics::Stateless
+                )
+        })
+    }
+
+    /// Whether a Block is a stateless equation Block (a formula, a unit
+    /// conversion): in a fused group it is evaluated inside every
+    /// right-hand-side evaluation, and it does not decide the group's
+    /// method (ADR 0051).
+    pub fn is_algebraic(&self, id: BlockId) -> bool {
+        self.block(id)
+            .is_ok_and(|b| b.as_equations().is_some() && b.spec().time == TimeSemantics::Stateless)
+    }
+
+    /// The fused groups, in the order they were made.
+    pub fn groups(&self) -> &[Group] {
+        &self.groups
+    }
+
+    /// The index of the group a Block belongs to, if any.
+    pub fn group_of(&self, id: BlockId) -> Option<usize> {
+        self.groups.iter().position(|g| g.members.contains(&id))
     }
 
     pub fn block(&self, id: BlockId) -> Result<&dyn Block> {
@@ -126,6 +323,29 @@ impl Model {
             .find(|p| p.name == name)
             .ok_or_else(|| SimError::BadConnection(format!("'{}' has no port '{name}'", spec.name)))
     }
+}
+
+fn param_index(spec: &BlockSpec, name: &str) -> Result<usize> {
+    spec.params
+        .iter()
+        .position(|p| p.name == name)
+        .ok_or_else(|| SimError::UnknownParam {
+            block: spec.name.clone(),
+            name: name.into(),
+        })
+}
+
+/// Position of a named variable-length port (`Shape::Population`) among a
+/// Block's variable-length inputs or outputs.
+pub(crate) fn population_index(
+    ports: &[PortSpec],
+    causality: Causality,
+    name: &str,
+) -> Option<usize> {
+    ports
+        .iter()
+        .filter(|p| p.causality == causality && p.shape.is_variable())
+        .position(|p| p.name == name)
 }
 
 /// Offset of a named port within a Block's flattened inputs or outputs.

@@ -2,12 +2,14 @@
 //! the benchmark suite that every method must pass.
 
 use simsandbox_core::block::{AccuracyClass, SpeedClass};
+use simsandbox_core::graph::BlockId;
 use simsandbox_core::graph::Model;
 use simsandbox_core::sim::Simulator;
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
+use simsandbox_eq::integrators::GroupIntegrator;
 use simsandbox_eq::systems::{CoupledOscillator, Lorenz};
-use simsandbox_eq::{EquationGroup, Integrator, OdeBlock};
+use simsandbox_eq::{EquationGroup, EquationSet, Integrator, OdeBlock};
 
 const T_END: f64 = 10.0;
 const DT: f64 = 0.01;
@@ -72,6 +74,99 @@ fn fused_dopri5_matches_exact_solution() {
         atol: 1e-12,
     });
     assert!(e < 1e-8, "fused Dopri5 error {e}");
+}
+
+/// The two oscillators as separate Blocks, fused by the master (ADR 0023).
+fn master_fused(integrator: Integrator) -> (Simulator, BlockId, BlockId) {
+    let mut model = Model::new();
+    // The Blocks' own methods are ignored once fused.
+    let euler = Integrator::Euler { substeps: 1 };
+    let a = model.add(Box::new(OdeBlock::new(
+        CoupledOscillator::new("a", 1.0),
+        euler,
+    )));
+    let b = model.add(Box::new(OdeBlock::new(
+        CoupledOscillator::new("b", 0.0),
+        euler,
+    )));
+    model.connect((a, "x"), (b, "neighbor_x")).unwrap();
+    model.connect((b, "x"), (a, "neighbor_x")).unwrap();
+    model
+        .fuse(&[a, b], Box::new(GroupIntegrator::new(integrator)))
+        .unwrap();
+    (Simulator::new(model, 0.0).unwrap(), a, b)
+}
+
+#[test]
+fn master_fusion_matches_the_fused_system_bit_for_bit() {
+    let rk4 = Integrator::Rk4 { substeps: 1 };
+    let (mut sim, a, b) = master_fused(rk4);
+    let e = run(&mut sim, a, "x");
+    assert_eq!(e, fused_error(rk4));
+    assert!(e < 1e-7, "{e}");
+    // Members keep their own outputs, states and parameters.
+    assert_eq!(sim.state(b).len(), 2);
+    assert!(sim.output(b, "v").is_some());
+    assert_eq!(sim.param(a, "kappa").unwrap(), 0.5);
+    // The group's method sets the labels, not the members' Euler.
+    assert_eq!(sim.labels().unwrap().accuracy, AccuracyClass::Quantitative);
+}
+
+#[test]
+fn fused_runs_rewind_and_restart_like_any_other() {
+    let (mut sim, a, _) = master_fused(Integrator::Rk4 { substeps: 1 });
+    for _ in 0..100 {
+        sim.step(DT).unwrap();
+    }
+    let snap = sim.snapshot();
+    let x = |s: &Simulator| s.output(a, "x").unwrap()[0];
+    let reference: Vec<f64> = (0..50)
+        .map(|_| {
+            sim.step(DT).unwrap();
+            x(&sim)
+        })
+        .collect();
+    sim.restore(&snap);
+    let again: Vec<f64> = (0..50)
+        .map(|_| {
+            sim.step(DT).unwrap();
+            x(&sim)
+        })
+        .collect();
+    assert_eq!(reference, again);
+    sim.set_param(a, "x0", 0.5).unwrap();
+    sim.restart(0.0).unwrap();
+    assert_eq!(x(&sim), 0.5);
+}
+
+#[test]
+fn only_continuous_equation_blocks_fuse_once() {
+    let mut model = Model::new();
+    let rk4 = Integrator::Rk4 { substeps: 1 };
+    let a = model.add(Box::new(OdeBlock::new(Lorenz::new("a"), rk4)));
+    let map = model.add(Box::new(
+        simsandbox_eq::ExplicitBlock::new(
+            EquationSet::parse("m", &["x[n+1] = 0.5*x".to_string()]).unwrap(),
+            &simsandbox_core::registry::MethodSettings::new("iterate"),
+        )
+        .unwrap(),
+    ));
+    let solver = || Box::new(GroupIntegrator::new(rk4));
+    assert!(matches!(
+        model.fuse(&[a, map], solver()),
+        Err(SimError::CannotFuse(_))
+    ));
+    assert!(matches!(
+        model.fuse(&[a, a], solver()),
+        Err(SimError::CannotFuse(_))
+    ));
+    model.fuse(&[a], solver()).unwrap();
+    assert!(matches!(
+        model.fuse(&[a], solver()),
+        Err(SimError::CannotFuse(_))
+    ));
+    assert_eq!(model.group_of(a), Some(0));
+    assert_eq!(model.group_of(map), None);
 }
 
 /// The reason for the layered contract: the same equations split across two
@@ -162,4 +257,108 @@ fn snapshot_and_rewind_reproduce_the_run() {
         sim.step(DT).unwrap();
     }
     assert_eq!(first, sim.state(id));
+}
+
+fn typed(lines: &[&str], integrator: Integrator) -> (Simulator, BlockId) {
+    let lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    let mut model = Model::new();
+    let id = model.add(Box::new(OdeBlock::new(
+        EquationSet::parse("m", &lines).unwrap(),
+        integrator,
+    )));
+    (Simulator::new(model, 0.0).unwrap(), id)
+}
+
+#[test]
+fn typed_lorenz_matches_the_built_in_lorenz_exactly() {
+    let rk4 = Integrator::Rk4 { substeps: 1 };
+    let lines = [
+        "dx/dt = sigma*(y - x)",
+        "dy/dt = x*(rho - z) - y",
+        "dz/dt = x*y - beta*z",
+    ];
+    let (mut typed_sim, tid) = typed(&lines, rk4);
+    for (name, v) in [("sigma", 10.0), ("rho", 28.0), ("beta", 8.0 / 3.0)] {
+        typed_sim.set_param(tid, name, v).unwrap();
+    }
+    typed_sim.restart(0.0).unwrap();
+
+    let mut model = Model::new();
+    let bid = model.add(Box::new(OdeBlock::new(Lorenz::new("l"), rk4)));
+    let mut built_in = Simulator::new(model, 0.0).unwrap();
+
+    for _ in 0..2000 {
+        typed_sim.step(DT).unwrap();
+        built_in.step(DT).unwrap();
+    }
+    assert_eq!(typed_sim.state(tid), built_in.state(bid));
+}
+
+#[test]
+fn typed_decay_matches_the_exact_solution() {
+    let (mut sim, id) = typed(&["dx/dt = -k*x"], Integrator::Rk4 { substeps: 1 });
+    sim.set_param(id, "k", 0.7).unwrap();
+    sim.set_param(id, "x0", 2.0).unwrap();
+    sim.restart(0.0).unwrap();
+    for _ in 0..100 {
+        sim.step(DT).unwrap();
+    }
+    let exact = 2.0 * (-0.7f64 * sim.time()).exp();
+    let err = (sim.state(id)[0] - exact).abs();
+    assert!(err < 1e-10, "error {err}");
+}
+
+#[test]
+fn typed_predator_prey_conserves_its_invariant() {
+    // Lotka–Volterra conserves V = delta*x - gamma*ln(x) + beta*y - alpha*ln(y).
+    let lines = [
+        "dx/dt = alpha*x - beta*x*y",
+        "dy/dt = delta*x*y - gamma*y",
+        "V = delta*x - gamma*ln(x) + beta*y - alpha*ln(y)",
+    ];
+    let (mut sim, id) = typed(&lines, Integrator::Rk4 { substeps: 1 });
+    for (name, v) in [
+        ("alpha", 1.1),
+        ("beta", 0.4),
+        ("delta", 0.1),
+        ("gamma", 0.4),
+        ("x0", 10.0),
+        ("y0", 10.0),
+    ] {
+        sim.set_param(id, name, v).unwrap();
+    }
+    sim.restart(0.0).unwrap();
+    let v0 = sim.output(id, "V").unwrap()[0];
+    let mut drift = 0.0f64;
+    for _ in 0..3000 {
+        sim.step(DT).unwrap();
+        drift = drift.max((sim.output(id, "V").unwrap()[0] - v0).abs());
+    }
+    assert!(drift < 1e-6, "invariant drifted by {drift}");
+}
+
+#[test]
+fn typed_logistic_map_matches_its_exact_solution_at_r_4() {
+    // For r = 4, x[n] = sin²(2ⁿ·θ·π) when x[0] = sin²(θ·π).
+    use simsandbox_eq::{ExplicitBlock, Kind};
+    let lines = vec!["x[n+1] = r*x[n]*(1 - x[n])".to_string()];
+    let set = EquationSet::parse("m", &lines).unwrap();
+    let mut model = Model::new();
+    let id = model.add(Box::new(
+        ExplicitBlock::new(set, &Kind::Map.default_method()).unwrap(),
+    ));
+    let theta = 0.1234_f64;
+    let pi = std::f64::consts::PI;
+    model.set_param(id, "r", 4.0).unwrap();
+    model
+        .set_param(id, "x0", (theta * pi).sin().powi(2))
+        .unwrap();
+    let mut sim = Simulator::new(model, 0.0).unwrap();
+    // Chaos doubles rounding errors each step, so compare the first steps only.
+    for n in 1..=20 {
+        sim.step(1.0).unwrap();
+        let exact = (2f64.powi(n) * theta * pi).sin().powi(2);
+        let err = (sim.state(id)[0] - exact).abs();
+        assert!(err < 1e-8, "step {n}: error {err}");
+    }
 }

@@ -1,0 +1,86 @@
+{
+  "format": 1,
+  "description": "Two masses on springs, tied to walls and to each other. Energy sloshes from one to the other while the total energy (a derived signal) stays constant: the two blocks are solved together as one system. Untick \"Solve connected blocks together\" to step them separately instead; each then sees the other's position only once per step, and the total energy creeps up (coupling error: about 1 % after 10 s and 11 % after 100 s at this step).",
+  "run": {
+    "dt": 0.01
+  },
+  "blocks": [
+    {
+      "name": "a",
+      "type": "eq.coupled_oscillator",
+      "method": {
+        "name": "rk4",
+        "substeps": 4.0
+      },
+      "params": {
+        "kappa": 0.5,
+        "omega0_sq": 1.0,
+        "v0": 0.0,
+        "x0": 1.0
+      }
+    },
+    {
+      "name": "b",
+      "type": "eq.coupled_oscillator",
+      "method": {
+        "name": "rk4",
+        "substeps": 4.0
+      },
+      "params": {
+        "kappa": 0.5,
+        "omega0_sq": 1.0,
+        "v0": 0.0,
+        "x0": 0.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "a.x",
+      "to": "b.neighbor_x"
+    },
+    {
+      "from": "b.x",
+      "to": "a.neighbor_x"
+    }
+  ],
+  "controls": {
+    "speed": 1.0,
+    "plots": [
+      "a.x",
+      "a.v",
+      "b.x",
+      "b.v"
+    ],
+    "views": [
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": [
+            "a.x",
+            "b.x"
+          ]
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "colour": "t",
+          "x": "a.x",
+          "y": "b.x"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "energy"
+        }
+      }
+    ],
+    "signals": {
+      "energy": "0.5*(a.v^2 + b.v^2) + 0.5*a.omega0_sq*(a.x^2 + b.x^2) + 0.5*a.kappa*(a.x - b.x)^2"
+    }
+  }
+}

@@ -1,0 +1,833 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dylsitarski/SimSandbox/blob/main/crates/simsandbox-file/model.schema.json",
+  "title": "SimSandbox model file",
+  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md and docs/decisions/0023-automatic-fusion.md and docs/decisions/0028-sweeps-as-samples.md.",
+  "type": "object",
+  "required": [
+    "format",
+    "blocks"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "const": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "run": {
+      "$ref": "#/$defs/run"
+    },
+    "sample": {
+      "type": "object",
+      "description": "Where a model with no states is evaluated (ADR 0027, ADR 0028); without it such a model is swept over its first parameter. Each sample is recorded with the swept parameters as signals; a grid over two parameters also offers every signal as a grid named 'grid.<signal>'. At most 250000 samples. Invalid values are load errors.",
+      "required": [
+        "params"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "design": {
+          "enum": [
+            "grid",
+            "list",
+            "random",
+            "latin_hypercube",
+            "sobol"
+          ],
+          "default": "grid",
+          "description": "grid: every combination of evenly spaced values; list: the points in 'values'; random: independent uniform values; latin_hypercube: one value in each of 'count' slices of every parameter; sobol: the first 'count' points of the Sobol sequence (at most 10 parameters)."
+        },
+        "params": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The swept parameters. Range defaults to the slider's range, then the suggested range; points (grid only) to 400 for one parameter and 100 each for several.",
+          "items": {
+            "$ref": "#/$defs/sweepAxis"
+          }
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 250000,
+          "default": 1000,
+          "description": "random, latin_hypercube and sobol: how many samples."
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1,
+          "description": "random and latin_hypercube: the generator's seed."
+        },
+        "values": {
+          "type": "array",
+          "description": "list: the samples, one value per parameter each.",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    },
+    "params": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/paramDecl"
+      },
+      "description": "Parameters of the model itself, which block parameters can use in formulas, e.g. a field size shared by two blocks (ADR 0043). Sliders may name them."
+    },
+    "subsystems": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/subsystem"
+      },
+      "description": "Groups of blocks used like block types by name (ADR 0043)."
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/block"
+      }
+    },
+    "connections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/connection"
+      }
+    },
+    "fusion": {
+      "enum": [
+        "auto",
+        "off"
+      ],
+      "default": "auto",
+      "description": "auto: connected continuous equation blocks with identical methods are solved together as one system; off: only 'groups' are (ADR 0023)."
+    },
+    "groups": {
+      "type": "array",
+      "description": "Blocks solved together as one system with the given method, overriding their own (ADR 0023).",
+      "items": {
+        "type": "object",
+        "required": [
+          "blocks",
+          "method"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "blocks": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/$defs/name"
+            }
+          },
+          "method": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    },
+    "controls": {
+      "$ref": "#/$defs/controls"
+    }
+  },
+  "$defs": {
+    "run": {
+      "type": "object",
+      "description": "Settings that affect results (ADR 0013). Invalid values are load errors.",
+      "additionalProperties": false,
+      "properties": {
+        "dt": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 0.01,
+          "description": "Simulated seconds per communication step."
+        },
+        "t_end": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Where batch runs stop and where the app pauses."
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1,
+          "description": "The seed every random draw derives from (ADR 0034): the same file and seed give the same run."
+        },
+        "loops": {
+          "enum": [
+            "newton",
+            "fixed_point",
+            "refuse"
+          ],
+          "default": "newton",
+          "description": "How algebraic loops (outputs that depend on each other at the same instant, ADR 0040) are solved: newton (Newton's method, the default), fixed_point (repeat until settled; fails when the loop gain exceeds one) or refuse (a model with a loop does not run)."
+        }
+      }
+    },
+    "sweepAxis": {
+      "type": "object",
+      "required": [
+        "param"
+      ],
+      "properties": {
+        "param": {
+          "$ref": "#/$defs/ref"
+        },
+        "range": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "points": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 100000
+        }
+      }
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_]+$",
+      "description": "Unique name: letters, digits and '_' (no '.', '/' or spaces)."
+    },
+    "ref": {
+      "type": "string",
+      "pattern": "^[^.]+\\..+$",
+      "description": "'block.port' or 'block.param'."
+    },
+    "block": {
+      "type": "object",
+      "required": [
+        "name",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "type": {
+          "type": "string",
+          "description": "A registered block type, or the name of a subsystem in 'subsystems'."
+        },
+        "method": {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "Method name plus numeric options, e.g. {\"name\": \"rk4\", \"substeps\": 4}. Left out, the type's first method (for 'eq.equations', the one its equations call for)."
+        },
+        "canvas": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Where the block sits on the node canvas, [x, y] in canvas units with y downwards (ADR 0042; written 'at' before ADR 0052, still read). Optional: blocks without one are laid out left to right by signal flow."
+        },
+        "start": {
+          "type": "object",
+          "description": "The state the block starts from instead of the one its parameters give, e.g. a steady state reached before (ADR 0042). Written by 'Start from current state'.",
+          "properties": {
+            "state": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "description": "Every state, in the block's state order (see simsandbox describe)."
+            },
+            "tables": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              },
+              "description": "Rows of the block's tables by table name, each row one value per column (e.g. animals: [x, y, energy])."
+            }
+          },
+          "additionalProperties": false
+        },
+        "update": {
+          "enum": [
+            "random_order",
+            "synchronous",
+            "id_order"
+          ],
+          "default": "random_order",
+          "description": "Agent blocks: the order agents act in within a step, part of the model because it changes results (ADR 0034). random_order: one after another in a new random order each step; synchronous: all decide from the start of the step and share what they compete for; id_order: oldest first."
+        },
+        "equations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Equations of an 'eq.equations' block, one per line: 'dx/dt = ...' (or \"x' = ...\") for a state, 'name = ...' for a defined quantity (ADR 0017); 'input F [N]', 'param m [kg] = 2', 'state x [m] = 0' and a trailing '[unit]' for a line's left side ('dv/dt = F/m [m/s^2]') give units, and then every line must balance (ADR 0045, ADR 0049)."
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Text settings of a block type ('simsandbox describe TYPE' lists them), e.g. 'from' and 'to' units of 'units.convert' (ADR 0045)."
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/paramValue"
+          },
+          "description": "Values in each parameter's declared unit; omitted parameters take their defaults. A value may be a formula of the declared parameters in scope (the model's 'params', or inside a subsystem its own), e.g. \"2*capacity\". For a subsystem: its declared parameters, plus inner values for this instance only as 'block.param' (numbers)."
+        },
+        "starts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "description": "The state the block starts from instead of the one its parameters give, e.g. a steady state reached before (ADR 0042). Written by 'Start from current state'.",
+            "properties": {
+              "state": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "Every state, in the block's state order (see simsandbox describe)."
+              },
+              "tables": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "description": "Rows of the block's tables by table name, each row one value per column (e.g. animals: [x, y, energy])."
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "A subsystem's start states by inner block ('grass', nested 'field/grass'), written by 'Start from here'."
+        }
+      },
+      "description": "A block: a registered type (e.g. 'eq.equations', see simsandbox describe), which needs a method, or a subsystem of this file by name (ADR 0043), which has none."
+    },
+    "connection": {
+      "type": "object",
+      "required": [
+        "from",
+        "to"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/ref"
+        },
+        "to": {
+          "$ref": "#/$defs/ref"
+        }
+      }
+    },
+    "controls": {
+      "type": "object",
+      "description": "How the model is meant to be explored. Never affects results; invalid entries are ignored with a warning.",
+      "properties": {
+        "params": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/ref"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "slider": {
+                "type": "boolean"
+              },
+              "range": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "pin": {
+                "type": "boolean",
+                "description": "Show it among the inspector's Controls (ADR 0053); parameters with sliders are shown there too."
+              }
+            }
+          }
+        },
+        "speed": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Simulated seconds per wall-clock second."
+        },
+        "plots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ref"
+          }
+        },
+        "filters": {
+          "type": "array",
+          "description": "Filters turning recorded data into new signals and fields (ADR 0030, ADR 0032). Each names its inputs; order carries no meaning.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "type"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "type": {
+                "enum": [
+                  "expression",
+                  "cut"
+                ]
+              },
+              "inputs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "canvas": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Where its node sits on the canvas's data layer (ADR 0050)."
+              },
+              "expr": {
+                "type": "string",
+                "description": "expression: over recorded signals, other expressions, parameters ('block.param') and 't'."
+              },
+              "mode": {
+                "enum": [
+                  "along_x",
+                  "along_y",
+                  "free"
+                ],
+                "description": "cut (ADR 0031): along x at fixed y values, along y at fixed x values, or free lines."
+              },
+              "at": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "cut along x or y: the fixed values, one per cut."
+              },
+              "lines": {
+                "type": "array",
+                "description": "cut along free lines: end points [[x0, y0], [x1, y1]] per cut."
+              },
+              "whole": {
+                "type": "boolean",
+                "default": true,
+                "description": "cut: the whole field (along x or y) or lines extended to the grid's edges (free)."
+              },
+              "range": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "interpolation": {
+                "enum": [
+                  "bilinear",
+                  "nearest"
+                ],
+                "default": "bilinear"
+              }
+            }
+          }
+        },
+        "signals": {
+          "type": "object",
+          "description": "Derived signals as written before filters: name to expression. Still read; converted into expression filters (ADR 0030).",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "sweep": {
+          "description": "The sweep as written before 'sample': one parameter or a list of two. Still read, leniently, and converted into a grid 'sample' (ADR 0027); views bound to 't' are bound to the first parameter, and two-parameter heat maps and cuts to the 'grid.' signals.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sweepAxis"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sweepAxis"
+              },
+              "minItems": 1,
+              "maxItems": 2
+            }
+          ]
+        },
+        "views": {
+          "type": "array",
+          "description": "Views the model opens with; the app shows the first (ADR 0015).",
+          "items": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "Registered view type, e.g. 'plot.xy', 'plot.3d' ('plot.time' and 'plot.phase' are read and converted to 'plot.xy', ADR 0018)."
+              },
+              "bind": {
+                "type": "object",
+                "description": "Slot name to signal: 't', 'block.port' (scalar) or 'block.port[i]'; a list for slots that take several.",
+                "additionalProperties": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                }
+              },
+              "style": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number"
+                }
+              },
+              "canvas": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Where its node sits on the canvas's data layer (ADR 0050)."
+              },
+              "camera": {
+                "type": "object",
+                "required": [
+                  "yaw",
+                  "pitch",
+                  "zoom"
+                ],
+                "properties": {
+                  "yaw": {
+                    "type": "number"
+                  },
+                  "pitch": {
+                    "type": "number"
+                  },
+                  "zoom": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "view": {
+          "type": "object",
+          "description": "Deprecated single view (ADR 0014); read and converted into 'views', never written.",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "time",
+                "phase",
+                "3d"
+              ]
+            },
+            "axes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[^.]+\\..+$",
+                "description": "'block.port' for a scalar output, 'block.port[i]' for a vector element."
+              },
+              "description": "Two axes for 'phase', three for '3d', none for 'time'."
+            },
+            "camera": {
+              "type": "object",
+              "required": [
+                "yaw",
+                "pitch",
+                "zoom"
+              ],
+              "properties": {
+                "yaw": {
+                  "type": "number"
+                },
+                "pitch": {
+                  "type": "number"
+                },
+                "zoom": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            }
+          }
+        },
+        "layout": {
+          "$ref": "#/$defs/layout",
+          "description": "How the app arranges its panes (ADR 0053): splits of stacks of tabs. Tabs: 'inspector', 'diagram', 'view:K' (a view of controls.views), or {\"views\": [K, ...]} for views tiled in one tab."
+        }
+      }
+    },
+    "paramValue": {
+      "oneOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "string",
+          "description": "A formula of declared parameters, using + - * / ^, parentheses, pi and the functions of typed equations."
+        }
+      ]
+    },
+    "paramDecl": {
+      "type": "object",
+      "required": [
+        "value"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "number",
+          "description": "The model's value, or a subsystem's default."
+        },
+        "unit": {
+          "type": "string",
+          "description": "A unit such as 'kg', 'm/s' or 'N*s/m' (dimensionless if absent). Formulas using it are checked and computed in SI (ADR 0046)."
+        },
+        "description": {
+          "type": "string"
+        },
+        "range": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Suggested range for sliders."
+        }
+      }
+    },
+    "subsystem": {
+      "type": "object",
+      "required": [
+        "blocks"
+      ],
+      "additionalProperties": false,
+      "description": "Blocks and wires with parameters and ports of their own, used like a block type (ADR 0043). Loading expands each use into its blocks, named 'instance/inner'.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/paramDecl"
+          },
+          "description": "Parameters each use can set; inner block parameters use them in formulas."
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/name"
+              },
+              "to": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/ref"
+                },
+                "description": "Inner inputs it feeds."
+              },
+              "canvas": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "from"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/name"
+              },
+              "from": {
+                "$ref": "#/$defs/ref",
+                "description": "The inner output it shows."
+              },
+              "canvas": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        },
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/block"
+          }
+        },
+        "connections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/connection"
+          }
+        }
+      }
+    },
+    "layout": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "split",
+            "fraction",
+            "first",
+            "second"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "split": {
+              "enum": [
+                "left_right",
+                "top_bottom"
+              ]
+            },
+            "fraction": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1,
+              "description": "The first part's share."
+            },
+            "first": {
+              "$ref": "#/$defs/layout"
+            },
+            "second": {
+              "$ref": "#/$defs/layout"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "tabs"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tabs": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(inspector|diagram|view:[0-9]+)$"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "views"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "views": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "active": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The tab shown."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

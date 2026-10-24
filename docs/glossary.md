@@ -19,6 +19,7 @@ _Last updated: 2026-10-15_
 | Port | A typed, unit-aware input or output of a Block. |
 | Signal connection | A causal connection: an output drives an input. |
 | Physical connection | An acausal connection between across/through variable pairs (e.g. voltage and current); only within the equation domain. Not yet implemented. |
-| Direct feedthrough | An output that depends on the current input. Not allowed in v0 fused groups. |
+| Direct feedthrough | An output that depends on the current input, declared per output and input ([ADR 0040](decisions/0040-feedthrough-and-algebraic-loops.md)). |
+| Algebraic loop | Outputs that depend on each other through feedthrough at the same instant, with no state between them; solved together (Newton's method by default, `run.loops`). |
 | FMI / FMU | Functional Mock-up Interface, the industry standard for exchanging simulation models; an FMU is a packaged model. |
 | ADR | Architecture decision record, in `docs/decisions/`. |

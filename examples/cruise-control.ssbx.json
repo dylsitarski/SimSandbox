@@ -1,0 +1,111 @@
+{
+  "format": 1,
+  "description": "Cruise control: a car (drag and a driving force) and a PI controller that sets the force from the speed it reads, at the same instant: the force depends directly on the speed (direct feedthrough). The two blocks are solved together, so the controller adds no delay. Raise the target or the gains (kp, ki) and watch the speed settle, overshoot or ring.",
+  "run": {
+    "dt": 0.05,
+    "t_end": 60.0
+  },
+  "blocks": [
+    {
+      "name": "car",
+      "type": "eq.equations",
+      "method": {
+        "name": "rk4",
+        "substeps": 1.0
+      },
+      "equations": [
+        "# a car pushed by force F against drag c*v (mass m)",
+        "input F [N]",
+        "param m [kg] = 1000",
+        "param c [N*s/m] = 50",
+        "state v [m/s]",
+        "dv/dt = (F - c*v)/m"
+      ],
+      "params": {
+        "c": 50.0,
+        "m": 1000.0,
+        "v0": 0.0
+      }
+    },
+    {
+      "name": "cruise",
+      "type": "eq.equations",
+      "method": {
+        "name": "rk4",
+        "substeps": 1.0
+      },
+      "equations": [
+        "# PI control towards the target speed",
+        "input v [m/s]",
+        "param target [m/s] = 25",
+        "param kp [N*s/m] = 400",
+        "param ki [N/m] = 40",
+        "e = target - v",
+        "state I [m]",
+        "dI/dt = e",
+        "F = kp*e + ki*I [N]"
+      ],
+      "params": {
+        "I0": 0.0,
+        "ki": 40.0,
+        "kp": 400.0,
+        "target": 25.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "car.v",
+      "to": "cruise.v"
+    },
+    {
+      "from": "cruise.F",
+      "to": "car.F"
+    }
+  ],
+  "controls": {
+    "params": {
+      "cruise.ki": {
+        "slider": true,
+        "range": [
+          0.0,
+          400.0
+        ],
+        "pin": true
+      },
+      "cruise.kp": {
+        "slider": true,
+        "range": [
+          0.0,
+          2000.0
+        ],
+        "pin": true
+      },
+      "cruise.target": {
+        "slider": true,
+        "range": [
+          0.0,
+          40.0
+        ],
+        "pin": true
+      }
+    },
+    "speed": 4.0,
+    "views": [
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "car.v"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "cruise.F"
+        }
+      }
+    ]
+  }
+}

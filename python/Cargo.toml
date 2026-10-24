@@ -1,0 +1,33 @@
+# The Python package `simsandbox` (ADR 0038, ADR 0039): a thin extension
+# module over simsandbox-session, built with maturin. It is its own Cargo
+# workspace, outside the main one, because an extension module links
+# against Python only when Python loads it; see python/README.md.
+[package]
+name = "simsandbox-py"
+description = "Python bindings for SimSandbox: describe, check, run and render models headless"
+version = "0.0.1"
+edition = "2021"
+# Rendering (simsandbox-session) needs egui 0.36, so Rust 1.95.
+rust-version = "1.95"
+license = "Apache-2.0"
+repository = "https://github.com/dylsitarski/SimSandbox"
+authors = ["Dylan Sitarski"]
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+simsandbox-session = { path = "../crates/simsandbox-session" }
+serde_json = "1"
+# One wheel for every CPython from 3.10 on (the stable ABI).
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py310"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace]

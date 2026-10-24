@@ -1,0 +1,73 @@
+{
+  "format": 1,
+  "description": "Rabbits and foxes, typed as equations (Lotka-Volterra). Prey grow, predators eat them and starve without them, and the two populations chase each other in a cycle. Edit the equations with 'Edit equations...'.",
+  "run": {
+    "dt": 0.01
+  },
+  "blocks": [
+    {
+      "name": "ecosystem",
+      "type": "eq.equations",
+      "method": {
+        "name": "rk4",
+        "substeps": 1.0
+      },
+      "equations": [
+        "# prey grow at rate alpha and are eaten at rate beta",
+        "dprey/dt = alpha*prey - beta*prey*predators",
+        "# predators grow by eating (delta) and die off (gamma)",
+        "dpredators/dt = delta*prey*predators - gamma*predators",
+        "total = prey + predators"
+      ],
+      "params": {
+        "alpha": 1.1,
+        "beta": 0.4,
+        "delta": 0.1,
+        "gamma": 0.4,
+        "predators0": 10.0,
+        "prey0": 10.0
+      }
+    }
+  ],
+  "controls": {
+    "params": {
+      "ecosystem.alpha": {
+        "slider": true,
+        "range": [
+          0.0,
+          3.0
+        ],
+        "pin": true
+      },
+      "ecosystem.gamma": {
+        "slider": true,
+        "range": [
+          0.0,
+          2.0
+        ],
+        "pin": true
+      }
+    },
+    "speed": 2.0,
+    "views": [
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": [
+            "ecosystem.prey",
+            "ecosystem.predators"
+          ]
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "colour": "t",
+          "x": "ecosystem.prey",
+          "y": "ecosystem.predators"
+        }
+      }
+    ]
+  }
+}

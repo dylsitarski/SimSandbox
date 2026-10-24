@@ -31,3 +31,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/check_docs.py
+
+  python:
+    name: Python package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: cargo fmt -- --check
+        working-directory: python
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: python
+      - run: python -m pip install "./python[test]"
+      - run: python -m pytest python/tests

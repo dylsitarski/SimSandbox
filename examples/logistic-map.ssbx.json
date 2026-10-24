@@ -1,0 +1,49 @@
+{
+  "format": 1,
+  "description": "The logistic map: next year's population from this year's, with limited food. Slide r past about 3.57 and the steady population splits into cycles, then chaos.",
+  "run": {
+    "dt": 1.0
+  },
+  "blocks": [
+    {
+      "name": "population",
+      "type": "eq.equations",
+      "method": {
+        "name": "iterate"
+      },
+      "equations": [
+        "# x is the population as a fraction of the maximum; r is the growth rate",
+        "x[n+1] = r*x[n]*(1 - x[n])"
+      ],
+      "params": {
+        "r": 3.7,
+        "x0": 0.2
+      }
+    }
+  ],
+  "controls": {
+    "params": {
+      "population.r": {
+        "slider": true,
+        "range": [
+          2.5,
+          4.0
+        ],
+        "pin": true
+      }
+    },
+    "speed": 20.0,
+    "views": [
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "population.x"
+        },
+        "style": {
+          "trail_length": 100.0
+        }
+      }
+    ]
+  }
+}

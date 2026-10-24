@@ -1,0 +1,59 @@
+{
+  "format": 1,
+  "description": "Heat spreading along a 1 m rod whose ends are held at fixed temperatures (a grid field). Left: the rod over time, temperature as colour against position. Right: the temperature along the rod now. The hot spot spreads and fades towards the straight line between the end temperatures; change them while it runs. The rod is tracked at 50 points with RK4; a much larger diffusivity or a shorter rod needs more substeps to stay stable.",
+  "run": {
+    "dt": 0.05
+  },
+  "blocks": [
+    {
+      "name": "rod",
+      "type": "eq.heat_rod",
+      "method": {
+        "name": "rk4",
+        "substeps": 10.0
+      },
+      "params": {
+        "alpha": 0.01,
+        "left": 0.0,
+        "length": 1.0,
+        "peak": 100.0,
+        "right": 0.0,
+        "width": 0.1
+      }
+    }
+  ],
+  "controls": {
+    "params": {
+      "rod.alpha": {
+        "slider": true,
+        "pin": true
+      },
+      "rod.left": {
+        "slider": true,
+        "pin": true
+      },
+      "rod.right": {
+        "slider": true,
+        "pin": true
+      }
+    },
+    "speed": 1.0,
+    "views": [
+      {
+        "type": "plot.heatmap",
+        "bind": {
+          "field": "rod.temperature",
+          "x": "rod.position",
+          "y": "t"
+        }
+      },
+      {
+        "type": "plot.profile",
+        "bind": {
+          "x": "rod.position",
+          "y": "rod.temperature"
+        }
+      }
+    ]
+  }
+}

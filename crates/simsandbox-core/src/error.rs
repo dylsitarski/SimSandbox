@@ -5,7 +5,8 @@ use std::fmt;
 pub enum SimError {
     /// A unit string could not be parsed.
     UnitParse(String),
-    /// Two ports were connected whose units have different dimensions.
+    /// Two ports were connected whose units differ (ADR 0045: units must
+    /// match exactly; converting is explicit).
     UnitMismatch { from: String, to: String },
     /// Two ports were connected whose shapes differ.
     ShapeMismatch { from: String, to: String },
@@ -16,14 +17,37 @@ pub enum SimError {
     UnconnectedInput(String),
     /// A Block failed while initialising or stepping.
     Block(String),
+    /// A Block has no parameter with this name.
+    UnknownParam { block: String, name: String },
+    /// A parameter value is not finite (NaN or infinite).
+    InvalidParam { name: String, value: f64 },
+    /// No block type is registered under this name.
+    UnknownBlockType(String),
+    /// A block type was registered twice.
+    DuplicateBlockType(String),
+    /// Method settings name an unknown method or carry invalid options.
+    InvalidMethod(String),
+    /// A Block's definition (e.g. its equations) is invalid.
+    InvalidDefinition(String),
+    /// Blocks cannot be fused into one group (ADR 0023).
+    CannotFuse(String),
+    /// An algebraic loop (ADR 0040) is refused or could not be solved.
+    AlgebraicLoop(String),
+    /// A Block's setting (e.g. its `update` order) is unknown or does not
+    /// apply to its type.
+    InvalidSetting { setting: String, reason: String },
 }
 
 impl fmt::Display for SimError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SimError::UnitParse(s) => write!(f, "cannot parse unit '{s}'"),
+            SimError::UnitParse(s) => write!(f, "{s}"),
             SimError::UnitMismatch { from, to } => {
-                write!(f, "unit mismatch: cannot connect [{from}] to [{to}]")
+                write!(
+                    f,
+                    "unit mismatch: cannot connect [{from}] to [{to}]; units must match \
+                     exactly, so convert between them explicitly (block type units.convert)"
+                )
             }
             SimError::ShapeMismatch { from, to } => {
                 write!(f, "shape mismatch: cannot connect {from} to {to}")
@@ -31,6 +55,19 @@ impl fmt::Display for SimError {
             SimError::BadConnection(s) => write!(f, "bad connection: {s}"),
             SimError::UnconnectedInput(s) => write!(f, "input '{s}' is not connected"),
             SimError::Block(s) => write!(f, "block error: {s}"),
+            SimError::UnknownParam { block, name } => {
+                write!(f, "'{block}' has no parameter '{name}'")
+            }
+            SimError::InvalidParam { name, value } => {
+                write!(f, "parameter '{name}' must be finite, got {value}")
+            }
+            SimError::UnknownBlockType(s) => write!(f, "unknown block type '{s}'"),
+            SimError::DuplicateBlockType(s) => write!(f, "block type '{s}' is already registered"),
+            SimError::InvalidMethod(s) => write!(f, "invalid method: {s}"),
+            SimError::InvalidDefinition(s) => write!(f, "{s}"),
+            SimError::CannotFuse(s) => write!(f, "cannot fuse: {s}"),
+            SimError::AlgebraicLoop(s) => write!(f, "algebraic loop: {s}"),
+            SimError::InvalidSetting { setting, reason } => write!(f, "{setting}: {reason}"),
         }
     }
 }

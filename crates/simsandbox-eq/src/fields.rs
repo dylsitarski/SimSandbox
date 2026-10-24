@@ -1,0 +1,489 @@
+//! Built-in systems whose outputs are fields (ADR 0016): a grid of values
+//! and a set of points.
+
+use crate::ode::OdeSystem;
+use crate::systems::{initial, param};
+use simsandbox_core::block::{BlockSpec, Domain, Equations, PortSpec, Shape, TimeSemantics};
+use simsandbox_core::units::Unit;
+
+/// Heat flowing along a rod of length L, ∂T/∂t = α ∂²T/∂x², with the ends
+/// (x = 0 and x = L) held at fixed temperatures. The temperature is tracked
+/// at [`HeatRod::CELLS`] evenly spaced points inside the rod, h = L/(n + 1)
+/// apart (second-order central differences, the method of lines).
+///
+/// Outputs, both one-row grids: `temperature` at each point, and `position`,
+/// where each point lies along the rod, so views can plot temperature
+/// against position.
+///
+/// Explicit methods are only stable while the step stays below about
+/// h²/(2α) (Euler) or 0.7 h²/α (RK4); use substeps for larger α or a
+/// shorter rod.
+pub struct HeatRod {
+    spec: BlockSpec,
+}
+
+impl HeatRod {
+    pub const CELLS: usize = 50;
+
+    pub fn new(name: &str) -> Self {
+        let n = Self::CELLS;
+        let k = Unit::KELVIN;
+        Self {
+            spec: BlockSpec {
+                name: name.into(),
+                domain: Domain::Equations,
+                ports: vec![
+                    PortSpec::output("temperature", k, Shape::Grid { nx: n, ny: 1 }),
+                    PortSpec::output("position", Unit::METER, Shape::Grid { nx: n, ny: 1 })
+                        .coordinate_of("temperature", 0),
+                ],
+                params: vec![
+                    param(
+                        "alpha",
+                        Unit::parse("m^2/s").expect("valid unit"),
+                        0.01,
+                        0.0,
+                        0.05,
+                        "Thermal diffusivity",
+                    ),
+                    param("length", Unit::METER, 1.0, 0.1, 10.0, "Length of the rod"),
+                    param(
+                        "left",
+                        k,
+                        0.0,
+                        -100.0,
+                        100.0,
+                        "Temperature held at the left end",
+                    ),
+                    param(
+                        "right",
+                        k,
+                        0.0,
+                        -100.0,
+                        100.0,
+                        "Temperature held at the right end",
+                    ),
+                    initial(
+                        "peak",
+                        k,
+                        100.0,
+                        -100.0,
+                        100.0,
+                        "Initial hot spot at the middle, above the line between the ends",
+                    ),
+                    initial(
+                        "width",
+                        Unit::METER,
+                        0.1,
+                        0.01,
+                        0.5,
+                        "Initial hot spot width",
+                    ),
+                ],
+                states: (0..n).map(|i| format!("T{i}")).collect(),
+                tables: Vec::new(),
+                time: TimeSemantics::Continuous,
+            },
+        }
+    }
+
+    /// Spacing of the points: they are the interior points of n + 1 equal
+    /// intervals, with the held ends at x = 0 and x = `length`.
+    fn h(length: f64) -> f64 {
+        length / (Self::CELLS + 1) as f64
+    }
+}
+
+impl Equations for HeatRod {
+    fn rhs(&self, _t: f64, x: &[f64], _u: &[f64], p: &[f64], dx: &mut [f64]) {
+        let (alpha, left, right) = (p[0], p[2], p[3]);
+        let h = Self::h(p[1]);
+        let c = alpha / (h * h);
+        let n = x.len();
+        for i in 0..n {
+            let l = if i == 0 { left } else { x[i - 1] };
+            let r = if i + 1 == n { right } else { x[i + 1] };
+            dx[i] = c * (l - 2.0 * x[i] + r);
+        }
+    }
+
+    fn outputs(&self, _t: f64, x: &[f64], _u: &[f64], p: &[f64], y: &mut [f64]) {
+        let (temperature, position) = y.split_at_mut(x.len());
+        temperature.copy_from_slice(x);
+        let h = Self::h(p[1]);
+        for (i, v) in position.iter_mut().enumerate() {
+            *v = (i + 1) as f64 * h;
+        }
+    }
+}
+
+impl OdeSystem for HeatRod {
+    fn spec(&self) -> &BlockSpec {
+        &self.spec
+    }
+
+    fn initial_state(&self, p: &[f64], x0: &mut [f64]) {
+        let (length, left, right, peak, width) = (p[1], p[2], p[3], p[4], p[5]);
+        let h = Self::h(length);
+        for (i, v) in x0.iter_mut().enumerate() {
+            let x = (i + 1) as f64 * h;
+            let bump = ((x - 0.5 * length) / width).powi(2);
+            *v = left + (right - left) * x / length + peak * (-bump).exp();
+        }
+    }
+}
+
+/// Grass growing on a square field of side `size`, split into
+/// [`Grass::CELLS`] × [`Grass::CELLS`] cells. In each cell the grass density
+/// G (kg/m²) grows logistically towards the capacity K and is grazed at a
+/// per-cell rate p (1/s) given as an input:
+///
+/// dG/dt = r G (1 − G/K) − p G.
+///
+/// Grazing removes a fraction of what is there, so grass never goes below
+/// zero. Outputs: `grass` (a grid), `x` and `y` (each cell's centre, its
+/// coordinates along both axes) and `total` (the grass on the field, kg).
+/// It is the environment of the grazing model (ADR 0033, ADR 0034).
+pub struct Grass {
+    spec: BlockSpec,
+}
+
+impl Grass {
+    pub const CELLS: usize = 40;
+
+    pub fn new(name: &str) -> Self {
+        let n = Self::CELLS;
+        let grid = Shape::Grid { nx: n, ny: n };
+        let density = Unit::new([-2, 1, 0, 0, 0, 0, 0], 1.0);
+        let per_second = Unit::new([0, 0, -1, 0, 0, 0, 0], 1.0);
+        Self {
+            spec: BlockSpec {
+                name: name.into(),
+                domain: Domain::Equations,
+                ports: vec![
+                    PortSpec::input("grazing", per_second, grid),
+                    PortSpec::output("grass", density, grid),
+                    PortSpec::output("x", Unit::METER, grid).coordinate_of("grass", 0),
+                    PortSpec::output("y", Unit::METER, grid).coordinate_of("grass", 1),
+                    PortSpec::output("total", Unit::KILOGRAM, Shape::Scalar),
+                ],
+                params: vec![
+                    param(
+                        "r",
+                        per_second,
+                        0.2,
+                        0.0,
+                        2.0,
+                        "Growth rate of sparse grass",
+                    ),
+                    param(
+                        "K",
+                        density,
+                        1.0,
+                        0.1,
+                        5.0,
+                        "Capacity: the density grass grows towards",
+                    ),
+                    param(
+                        "size",
+                        Unit::METER,
+                        40.0,
+                        5.0,
+                        200.0,
+                        "Side of the square field (give the grazers the same size)",
+                    ),
+                    initial(
+                        "g0",
+                        density,
+                        0.5,
+                        0.0,
+                        5.0,
+                        "Initial grass density, the same everywhere",
+                    ),
+                ],
+                states: (0..n * n).map(|i| format!("G{i}")).collect(),
+                tables: Vec::new(),
+                time: TimeSemantics::Continuous,
+            },
+        }
+    }
+}
+
+impl Equations for Grass {
+    fn rhs(&self, _t: f64, x: &[f64], u: &[f64], p: &[f64], dx: &mut [f64]) {
+        let (r, k) = (p[0], p[1]);
+        for ((d, &g), &graze) in dx.iter_mut().zip(x).zip(u) {
+            *d = r * g * (1.0 - g / k) - graze * g;
+        }
+    }
+
+    fn outputs(&self, _t: f64, x: &[f64], _u: &[f64], p: &[f64], y: &mut [f64]) {
+        let n = Self::CELLS;
+        let cell = p[2] / n as f64;
+        let (grass, rest) = y.split_at_mut(n * n);
+        let (xs, rest) = rest.split_at_mut(n * n);
+        let (ys, total) = rest.split_at_mut(n * n);
+        grass.copy_from_slice(x);
+        for j in 0..n {
+            for i in 0..n {
+                xs[j * n + i] = (i as f64 + 0.5) * cell;
+                ys[j * n + i] = (j as f64 + 0.5) * cell;
+            }
+        }
+        total[0] = x.iter().sum::<f64>() * cell * cell;
+    }
+}
+
+impl OdeSystem for Grass {
+    fn spec(&self) -> &BlockSpec {
+        &self.spec
+    }
+
+    fn initial_state(&self, p: &[f64], x0: &mut [f64]) {
+        x0.fill(p[3]);
+    }
+}
+
+/// Test particles orbiting a central mass in a plane: each feels only the
+/// centre, r'' = −GM r / (|r|² + ε²)^(3/2), with softening ε. They start
+/// spread over a disc between `r_min` and `r_max`, moving at `speed` times
+/// the circular-orbit speed; below 1 the orbits are ellipses that precess
+/// at different rates, winding the disc into spirals.
+///
+/// The output is the positions as a point set, `[x0, y0, x1, y1, …]`.
+pub struct Orbits {
+    spec: BlockSpec,
+}
+
+impl Orbits {
+    pub const PARTICLES: usize = 200;
+
+    pub fn new(name: &str) -> Self {
+        let one = Unit::DIMENSIONLESS;
+        Self {
+            spec: BlockSpec {
+                name: name.into(),
+                domain: Domain::Equations,
+                ports: vec![PortSpec::output(
+                    "positions",
+                    one,
+                    Shape::Points {
+                        count: Self::PARTICLES,
+                        dim: 2,
+                    },
+                )],
+                params: vec![
+                    param("GM", one, 1.0, 0.0, 5.0, "Central mass times G"),
+                    param(
+                        "eps",
+                        one,
+                        0.05,
+                        0.0,
+                        0.5,
+                        "Softening length: keeps close passes finite",
+                    ),
+                    initial("r_min", one, 0.5, 0.05, 2.0, "Inner edge of the disc"),
+                    initial("r_max", one, 2.0, 0.1, 5.0, "Outer edge of the disc"),
+                    initial(
+                        "speed",
+                        one,
+                        0.8,
+                        0.0,
+                        1.5,
+                        "Starting speed as a fraction of the circular-orbit speed",
+                    ),
+                ],
+                states: (0..Self::PARTICLES)
+                    .flat_map(|i| {
+                        [
+                            format!("x{i}"),
+                            format!("y{i}"),
+                            format!("vx{i}"),
+                            format!("vy{i}"),
+                        ]
+                    })
+                    .collect(),
+                tables: Vec::new(),
+                time: TimeSemantics::Continuous,
+            },
+        }
+    }
+}
+
+/// r² + ε², raised to −3/2.
+fn inverse_cube(r2: f64, eps: f64) -> f64 {
+    (r2 + eps * eps).powf(-1.5)
+}
+
+impl Equations for Orbits {
+    fn rhs(&self, _t: f64, x: &[f64], _u: &[f64], p: &[f64], dx: &mut [f64]) {
+        let (gm, eps) = (p[0], p[1]);
+        for (s, d) in x.chunks_exact(4).zip(dx.chunks_exact_mut(4)) {
+            let a = -gm * inverse_cube(s[0] * s[0] + s[1] * s[1], eps);
+            d[0] = s[2];
+            d[1] = s[3];
+            d[2] = a * s[0];
+            d[3] = a * s[1];
+        }
+    }
+
+    fn outputs(&self, _t: f64, x: &[f64], _u: &[f64], _p: &[f64], y: &mut [f64]) {
+        for (s, out) in x.chunks_exact(4).zip(y.chunks_exact_mut(2)) {
+            out.copy_from_slice(&s[..2]);
+        }
+    }
+}
+
+impl OdeSystem for Orbits {
+    fn spec(&self) -> &BlockSpec {
+        &self.spec
+    }
+
+    fn initial_state(&self, p: &[f64], x0: &mut [f64]) {
+        let (gm, eps, r_min, r_max, speed) = (p[0], p[1], p[2], p[3], p[4]);
+        // The golden angle spreads the particles evenly without lining up.
+        let golden = std::f64::consts::PI * (3.0 - 5f64.sqrt());
+        let n = Self::PARTICLES as f64;
+        for (i, s) in x0.chunks_exact_mut(4).enumerate() {
+            let r = r_min + (r_max - r_min) * (i as f64 + 0.5) / n;
+            let (sin, cos) = (i as f64 * golden).sin_cos();
+            // Circular orbit: v²/r = GM r / (r² + ε²)^(3/2).
+            let v = speed * (gm * r * r * inverse_cube(r * r, eps)).sqrt();
+            s.copy_from_slice(&[r * cos, r * sin, -v * sin, v * cos]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Integrator, OdeBlock};
+    use simsandbox_core::graph::{BlockId, Model};
+    use simsandbox_core::sim::Simulator;
+
+    /// Run one system; returns the simulator and the block's id.
+    fn run(
+        system: impl OdeSystem + 'static,
+        params: &[(&str, f64)],
+        dt: f64,
+        steps: usize,
+    ) -> (Simulator, BlockId) {
+        let mut model = Model::new();
+        let id = model.add(Box::new(OdeBlock::new(
+            system,
+            Integrator::Rk4 { substeps: 1 },
+        )));
+        let mut sim = Simulator::new(model, 0.0).unwrap();
+        for &(name, v) in params {
+            sim.set_param(id, name, v).unwrap();
+        }
+        sim.restart(0.0).unwrap();
+        for _ in 0..steps {
+            sim.step(dt).unwrap();
+        }
+        (sim, id)
+    }
+
+    #[test]
+    fn a_sine_mode_of_the_rod_decays_at_its_discrete_rate() {
+        // With both ends at 0, T_i = sin(π x_i) is an eigenvector of the
+        // differenced equation, with rate α (4/h²) sin²(π h / 2).
+        let rod = HeatRod::new("rod");
+        let h = HeatRod::h(1.0);
+        let alpha = 0.01;
+        let p = [alpha, 1.0, 0.0, 0.0, 0.0, 0.1];
+        let x: Vec<f64> = (0..HeatRod::CELLS)
+            .map(|i| (std::f64::consts::PI * (i + 1) as f64 * h).sin())
+            .collect();
+        let mut dx = vec![0.0; x.len()];
+        rod.rhs(0.0, &x, &[], &p, &mut dx);
+        let rate = alpha * 4.0 / (h * h) * (std::f64::consts::PI * h / 2.0).sin().powi(2);
+        for (d, v) in dx.iter().zip(&x) {
+            assert!((d + rate * v).abs() < 1e-12, "{d} vs {}", -rate * v);
+        }
+        // And it is close to the continuous rate α π².
+        assert!((rate / (alpha * std::f64::consts::PI.powi(2)) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_rod_settles_to_a_straight_line_between_its_ends() {
+        let (sim, id) = run(
+            HeatRod::new("rod"),
+            &[
+                ("alpha", 0.2),
+                ("length", 2.0),
+                ("left", 20.0),
+                ("right", 80.0),
+            ],
+            0.002,
+            50_000,
+        );
+        let t = sim.output(id, "temperature").unwrap();
+        let x = sim.output(id, "position").unwrap();
+        assert_eq!(x.len(), t.len());
+        // The points lie evenly inside the 2 m rod, short of both ends.
+        assert!((x[0] - 2.0 / 51.0).abs() < 1e-15);
+        assert!((x[49] - 100.0 / 51.0).abs() < 1e-14);
+        for (i, (v, x)) in t.iter().zip(x).enumerate() {
+            assert!((v - (20.0 + 30.0 * x)).abs() < 1e-6, "point {i}: {v}");
+        }
+    }
+
+    #[test]
+    fn ungrazed_grass_grows_logistically_and_grazing_removes_a_fraction() {
+        let (r, k, g0) = (0.3, 2.0, 0.1);
+        let dt = 0.05;
+        let steps = 400;
+        // Integrated directly, with no grazing.
+        let grass = Grass::new("g");
+        let p = [r, k, 40.0, g0];
+        let n = Grass::CELLS * Grass::CELLS;
+        let mut x = vec![0.0; n];
+        grass.initial_state(&p, &mut x);
+        assert!(x.iter().all(|&v| v == g0));
+        let none = vec![0.0; n];
+        let integrator = Integrator::Rk4 { substeps: 1 };
+        for s in 0..steps {
+            let f = |t: f64, x: &[f64], dx: &mut [f64]| grass.rhs(t, x, &none, &p, dx);
+            integrator.advance(&f, s as f64 * dt, dt, &mut x).unwrap();
+        }
+        let t = steps as f64 * dt;
+        let exact = k / (1.0 + (k / g0 - 1.0) * (-r * t).exp());
+        assert!((x[0] - exact).abs() < 1e-7 * exact, "{} vs {exact}", x[0]);
+        // Grazing at rate p removes p G.
+        let mut dx = vec![0.0; n];
+        let graze = vec![0.5; n];
+        grass.rhs(0.0, &x, &graze, &p, &mut dx);
+        let logistic = r * x[0] * (1.0 - x[0] / k);
+        assert!((dx[0] - (logistic - 0.5 * x[0])).abs() < 1e-12);
+        // Cell centres and the total.
+        let mut y = vec![0.0; 3 * n + 1];
+        grass.outputs(0.0, &x, &[], &p, &mut y);
+        assert_eq!((y[n], y[2 * n]), (0.5, 0.5));
+        assert_eq!(y[2 * n - 1], 39.5);
+        assert!((y[3 * n] - x[0] * 1600.0).abs() < 1e-9 * y[3 * n]);
+    }
+
+    #[test]
+    fn circular_orbits_keep_their_radius() {
+        let dt = 0.002;
+        let steps = 5000;
+        let (start, id) = run(Orbits::new("o"), &[("speed", 1.0)], dt, 0);
+        let (end, _) = run(Orbits::new("o"), &[("speed", 1.0)], dt, steps);
+        let radius = |p: &[f64]| {
+            p.chunks_exact(2)
+                .map(|c| c[0].hypot(c[1]))
+                .collect::<Vec<_>>()
+        };
+        let r0 = radius(start.output(id, "positions").unwrap());
+        let r1 = radius(end.output(id, "positions").unwrap());
+        assert_eq!(r0.len(), Orbits::PARTICLES);
+        for (a, b) in r0.iter().zip(&r1) {
+            assert!((a - b).abs() < 1e-6 * a, "{a} became {b}");
+        }
+        // The innermost particle has gone round more than once.
+        let period = 2.0 * std::f64::consts::PI * r0[0]
+            / (r0[0] * r0[0] * inverse_cube(r0[0] * r0[0], 0.05)).sqrt();
+        assert!(dt * steps as f64 > period);
+    }
+}

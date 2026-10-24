@@ -1,6 +1,18 @@
 [workspace]
 resolver = "2"
-members = ["crates/simsandbox-core", "crates/simsandbox-eq", "crates/simsandbox-cli"]
+members = [
+    "crates/simsandbox-core",
+    "crates/simsandbox-expr",
+    "crates/simsandbox-eq",
+    "crates/simsandbox-agents",
+    "crates/simsandbox-file",
+    "crates/simsandbox-cli",
+    "crates/simsandbox-views",
+    "crates/simsandbox-session",
+    "crates/simsandbox-app",
+]
+# The Python package is its own workspace, built with maturin (python/README.md).
+exclude = ["python"]
 
 [workspace.package]
 version = "0.0.1"

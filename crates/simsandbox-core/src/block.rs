@@ -12,6 +12,7 @@
 //!   and saving work the same for every native Block.
 //! - Each Block runs one chosen *method*, labelled for speed and accuracy.
 
+use crate::table::{Table, TableSpec};
 use crate::units::Unit;
 use crate::Result;
 use std::time::Duration;
@@ -85,6 +86,24 @@ pub enum Causality {
 pub enum Shape {
     Scalar,
     Vector(usize),
+    /// A field on a regular grid, `nx` by `ny` values, stored row by row
+    /// (`ny` = 1 for a line of cells). Views show it as a whole (ADR 0015).
+    Grid {
+        nx: usize,
+        ny: usize,
+    },
+    /// `count` points of `dim` coordinates each, stored point by point.
+    Points {
+        count: usize,
+        dim: usize,
+    },
+    /// Points of `dim` values each whose number changes from step to step,
+    /// such as the positions of a population (ADR 0034). Such ports take no
+    /// room in the fixed input and output arrays; their values are in
+    /// [`StepIo::population_inputs`] and [`StepIo::population_outputs`].
+    Population {
+        dim: usize,
+    },
 }
 
 impl Shape {
@@ -92,7 +111,25 @@ impl Shape {
         match self {
             Shape::Scalar => 1,
             Shape::Vector(n) => *n,
+            Shape::Grid { nx, ny } => nx * ny,
+            Shape::Points { count, dim } => count * dim,
+            // Not in the fixed arrays.
+            Shape::Population { .. } => 0,
         }
+    }
+
+    /// Fields and point sets are recorded and shown as a whole, not as one
+    /// signal per element.
+    pub fn is_field(&self) -> bool {
+        matches!(
+            self,
+            Shape::Grid { .. } | Shape::Points { .. } | Shape::Population { .. }
+        )
+    }
+
+    /// The number of values changes from step to step.
+    pub fn is_variable(&self) -> bool {
+        matches!(self, Shape::Population { .. })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -108,6 +145,22 @@ pub struct PortSpec {
     pub causality: Causality,
     pub unit: Unit,
     pub shape: Shape,
+    /// Set when this output gives the positions of another output's cells
+    /// along one grid axis (ADR 0024), e.g. a rod's `position` for its
+    /// `temperature`.
+    pub coordinate: Option<CoordinateOf>,
+    /// For an output: the inputs of its Block it depends on at the same
+    /// instant (direct feedthrough, ADR 0040). Empty if it depends on state
+    /// and parameters only.
+    pub feedthrough: Vec<String>,
+}
+
+/// What an output is a coordinate of: another output of the same Block, of
+/// the same shape, along grid axis `axis` (0 = x, 1 = y).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoordinateOf {
+    pub port: String,
+    pub axis: usize,
 }
 
 impl PortSpec {
@@ -117,7 +170,26 @@ impl PortSpec {
             causality: Causality::Input,
             unit,
             shape,
+            coordinate: None,
+            feedthrough: Vec::new(),
         }
+    }
+
+    /// Declare that this output depends on these inputs at the same
+    /// instant (direct feedthrough, ADR 0040).
+    pub fn depends_on(mut self, inputs: &[&str]) -> Self {
+        self.feedthrough = inputs.iter().map(|i| i.to_string()).collect();
+        self
+    }
+
+    /// Declare this output a coordinate of output `port` along grid axis
+    /// `axis` (ADR 0024).
+    pub fn coordinate_of(mut self, port: &str, axis: usize) -> Self {
+        self.coordinate = Some(CoordinateOf {
+            port: port.into(),
+            axis,
+        });
+        self
     }
 
     pub fn output(name: &str, unit: Unit, shape: Shape) -> Self {
@@ -126,19 +198,28 @@ impl PortSpec {
             causality: Causality::Output,
             unit,
             shape,
+            coordinate: None,
+            feedthrough: Vec::new(),
         }
     }
 }
 
-/// A named, unit-aware parameter. These become sliders automatically.
+/// A named, unit-aware parameter. Interfaces generate an entry field for each
+/// one, plus an optional slider.
+///
+/// The suggested range is a hint for the slider's initial range, not a limit:
+/// any finite value is accepted (ADR 0011).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamSpec {
     pub name: String,
     pub unit: Unit,
     pub default: f64,
-    pub min: f64,
-    pub max: f64,
+    pub suggested_min: f64,
+    pub suggested_max: f64,
     pub description: String,
+    /// The parameter sets initial state, so a change takes effect when the
+    /// run restarts (`Simulator::restart`), not while it runs.
+    pub initial_condition: bool,
 }
 
 /// How a Block advances in time. Continuous time with events is the general
@@ -160,6 +241,8 @@ pub struct BlockSpec {
     pub params: Vec<ParamSpec>,
     /// Names of the kernel-owned state variables, in slice order.
     pub states: Vec<String>,
+    /// Kernel-owned populations of rows that grow and shrink (ADR 0034).
+    pub tables: Vec<TableSpec>,
     pub time: TimeSemantics,
 }
 
@@ -194,14 +277,24 @@ impl BlockSpec {
 pub struct StepContext {
     pub t: f64,
     pub dt: f64,
+    /// Steps taken since the run (re)started: 0 for the first.
+    pub step: u64,
+    /// The Block's random stream ([`crate::random`], ADR 0034).
+    pub seed: u64,
 }
 
-/// Data for one step. Inputs and outputs are flattened in port order.
+/// Data for one step. Inputs and outputs are flattened in port order;
+/// variable-length ports (`Shape::Population`) have one vector each, in port
+/// order among such ports.
 pub struct StepIo<'a> {
     pub params: &'a [f64],
     pub inputs: &'a [f64],
     pub state: &'a mut [f64],
     pub outputs: &'a mut [f64],
+    /// The Block's tables, in `BlockSpec::tables` order.
+    pub tables: &'a mut [Table],
+    pub population_inputs: &'a [Vec<f64>],
+    pub population_outputs: &'a mut [Vec<f64>],
 }
 
 /// The required contract. Enough for the master to step any Block as a black box.
@@ -213,6 +306,22 @@ pub trait Block: Send {
 
     /// Set initial state from parameters.
     fn init(&mut self, params: &[f64], state: &mut [f64]) -> Result<()>;
+
+    /// Fill the Block's tables, empty when called, with their first rows
+    /// (ADR 0034); `seed` is the Block's random stream. Blocks without
+    /// tables need not implement it.
+    fn init_tables(&mut self, params: &[f64], seed: u64, tables: &mut [Table]) -> Result<()> {
+        let _ = (params, seed, tables);
+        Ok(())
+    }
+
+    /// Parameter values whose initial state (`init`) is exactly `state`,
+    /// if the Block's initial-condition parameters can express it; `None`
+    /// otherwise, and then a start state is saved instead (ADR 0042).
+    fn initial_params(&self, state: &[f64], params: &[f64]) -> Option<Vec<f64>> {
+        let _ = (state, params);
+        None
+    }
 
     /// Advance from `ctx.t` to `ctx.t + ctx.dt`, then write outputs.
     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()>;
@@ -237,13 +346,14 @@ pub trait Block: Send {
 /// Capability: the Block can expose its equations, so the equation domain can
 /// fuse it with neighbours into one system solved by one integrator.
 ///
-/// v0 restriction: outputs depend on state and parameters only (no direct
-/// feedthrough from inputs), which rules out algebraic loops inside a group.
+/// Outputs may depend on the inputs `u` only where their ports declare it
+/// (`PortSpec::feedthrough`, ADR 0040); the kernel orders such outputs and
+/// solves loops between them.
 pub trait Equations {
     /// dx/dt = f(t, x, u, p)
     fn rhs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], dx: &mut [f64]);
-    /// y = g(t, x, p)
-    fn outputs(&self, t: f64, x: &[f64], p: &[f64], y: &mut [f64]);
+    /// y = g(t, x, u, p)
+    fn outputs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], y: &mut [f64]);
 }
 
 /// Capability: cheap undo of a rejected step (for external Blocks whose state

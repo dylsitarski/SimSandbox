@@ -16,6 +16,7 @@ This file is the entry point for any agent (or new human) working on SimSandbox.
 - Pick work from **Next up** in `docs/STATUS.md` unless the user says otherwise.
 - The kernel (`crates/simsandbox-core`) contains **no physics**. Solvers and domain logic belong in domain crates.
 - Keep the `Block` trait small; new behaviour goes into optional capability traits (see [block contract](docs/architecture/block-contract.md)).
+- Every feature stays usable by AI agents without the window: in the model file, discoverable and checkable from the CLI and Python API, runnable and renderable headless ([ADR 0039](docs/decisions/0039-ai-agent-access.md)).
 - Numerical code follows the [verification policy](docs/guides/verification-policy.md): every method ships with a test against a known solution, and honest speed/accuracy labels.
 - Before running commands, see [development setup](docs/guides/development-setup.md).
 
@@ -26,7 +27,7 @@ cargo test --workspace
 python3 scripts/check_docs.py
 ```
 
-All four run in CI and must stay green.
+All four run in CI and must stay green. Changes that touch the Python package or the crates it uses also run its checks ([`python/README.md`](python/README.md)), which CI runs too. To use SimSandbox headless (describe types, check, run and render models), see the [headless guide](docs/guides/headless.md).
 
 ## 3. Close the session (required)
 

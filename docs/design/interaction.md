@@ -1,20 +1,22 @@
 # Interaction, parameters and visualization
 
-_Last updated: 2026-10-15_
+_Last updated: 2026-10-22_
 
-Because parameters, ports and state are declared metadata, most of the interface can be generated rather than hand-built. Nothing in this document is implemented yet; the first pieces are scheduled in [STATUS.md](../STATUS.md).
+Because parameters, ports and state are declared metadata, most of the interface can be generated rather than hand-built. The desktop app implements run, pause, restart, rewind with branching, paced playback, live time-series, phase-portrait and 3D trajectory views, and the parameter panel and typed equations (an editor opened from "New model…" or "Edit equations…", [ADR 0017](../decisions/0017-typed-equations.md)), including discrete maps and formulas explored by sweeping a parameter ([ADR 0021](../decisions/0021-maps-formulas-and-sweeps.md)); everything else here is planned, in the order given in [STATUS.md](../STATUS.md).
 
 ## For fun
 
 - Live parameter changes while the simulation runs, with no restart (kernel support exists: `Simulator::set_param`).
 - Direct manipulation: drag bodies, paint obstacles into a flow, drop agents, inject a disturbance.
-- Pause, rewind and branch from any point (kernel support exists: snapshots).
+- Pause, rewind and branch from any point (implemented in the app: a rewind slider; snapshots also restore parameter values, and running on from a rewound point starts a new branch).
+- Start from here (implemented): the current state becomes where the run starts, saved with the model, e.g. a steady state from which to study a transient ([ADR 0042](../decisions/0042-node-canvas.md)).
 - Inputs from keyboard, gamepad and mouse; later sensors or MIDI.
 
 ## For learning
 
-- Control panels generated from `ParamSpec` (sliders with units and ranges).
-- Linked views: change a parameter and see the time series, phase portrait and 3D view update together.
+- Control panels generated from `ParamSpec` (implemented): a typed entry field with units for every parameter, and an opt-in slider with a user-set range (initially the suggested range), aimed at real-time models ([ADR 0011](../decisions/0011-parameter-entry.md)). Initial-condition parameters are marked ↻ and apply on Restart, or at once before the run starts. Slider choices and ranges, default speed, default plots and the opening view are saved with the model ([ADR 0012](../decisions/0012-controls-in-model-files.md)); window layout and plot zoom are app settings.
+- Playback paced by wall-clock time with a speed control; slow models run in slow motion with the achieved speed shown ([ADR 0010](../decisions/0010-live-loop-pacing.md)).
+- Linked views: change a parameter and see the time series, phase portrait and 3D view update together (implemented as three switchable views of the same run; side-by-side views are planned).
 - Equation view beside the running model, highlighting the term being changed.
 - Guided explorables: a model plus a short narrative and locked or unlocked parameters, shared as one file that opens in the app or the free player.
 
@@ -26,12 +28,14 @@ Because parameters, ports and state are declared metadata, most of the interface
 
 ## Visualization layer
 
+Architecture: [visualization](../architecture/visualization.md) ([ADR 0015](../decisions/0015-pluggable-views.md)).
+
 - 2D plots and phase space with GPU-accelerated plotting; 3D scenes and fields with native GPU rendering; graph views for networks and agents.
 - Large CFD fields stream decimated data to the viewer and hand off to ParaView for heavy post-processing.
 
 ## Three ways to build, one model file
 
-1. Visual canvas: drag and wire Blocks.
+1. Visual canvas: drag and wire Blocks (the app's Diagram tab, [ADR 0042](../decisions/0042-node-canvas.md); positions are saved in the model file, and edits rebuild and restart the run). Filters and views form a data layer on it, edited without a restart; Undo and Redo step through canvas edits ([ADR 0050](../decisions/0050-data-layer-and-canvas-undo.md)). The Controls (pinned values), inspector, diagram and views are dockable tabs that can be popped out into windows, arranged as the model file saves ([ADR 0053](../decisions/0053-docked-panes-inspector-and-node-values.md), [ADR 0054](../decisions/0054-controls-pane-pins-and-node-toggles.md)).
 2. Code: a Python (later Julia) API that produces the same graph.
 3. Natural language: an AI assistant drafts Blocks and equations; the result is ordinary, editable model code that passes the same unit and validation checks.
 
