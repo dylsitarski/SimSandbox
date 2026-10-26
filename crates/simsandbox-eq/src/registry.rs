@@ -77,6 +77,14 @@ pub fn register(registry: &mut Registry) -> Result<()> {
     registry.register(crate::convert::CONVERT, |name, c| {
         Ok(Box::new(crate::convert::Convert::from_config(name, c)?))
     })?;
+    registry.register(crate::input::VALUE, |name, c| {
+        let ty = crate::input::VALUE;
+        Ok(Box::new(crate::input::Input::from_config(ty, name, c)?))
+    })?;
+    registry.register(crate::input::POINTER, |name, c| {
+        let ty = crate::input::POINTER;
+        Ok(Box::new(crate::input::Input::from_config(ty, name, c)?))
+    })?;
     describe(registry)
 }
 
@@ -143,6 +151,32 @@ fn describe(r: &mut Registry) -> Result<()> {
         .method(crate::convert::EXACT, &[])
         .setting("from", &[])
         .setting("to", &[]),
+    )?;
+    r.describe(
+        crate::input::VALUE,
+        TypeInfo::new(
+            "A value set from outside the running model (ADR 0058): output y, its parameter, \
+             in the unit of the setting 'unit' (dimensionless if absent), suggested between \
+             'min' and 'max' (-1 and 1 if absent). Driven by a slider, keys (controls.inputs), \
+             a schedule (run.inputs) or a recorded run.",
+        )
+        .method(crate::input::HELD, &[])
+        .setting("unit", &[])
+        .setting("min", &[])
+        .setting("max", &[]),
+    )?;
+    r.describe(
+        crate::input::POINTER,
+        TypeInfo::new(
+            "A pointer in a view's coordinates (ADR 0058): outputs x and y in the setting \
+             'unit' (m if absent), and down (1 while pressed). A view that sends input feeds \
+             it (controls.inputs); the model turns it into what it does, e.g. a spring force \
+             towards the pointer.",
+        )
+        .method(crate::input::HELD, &[])
+        .setting("unit", &[])
+        .setting("min", &[])
+        .setting("max", &[]),
     )
 }
 

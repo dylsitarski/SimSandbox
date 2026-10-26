@@ -2,6 +2,7 @@
 //! as `simsandbox run` and the Python API do: every communication step of a
 //! timed model, or every sample of a swept one (ADR 0028).
 
+use crate::session::{set_key, InputEvent, Track};
 use serde_json::{json, Value};
 use simsandbox_core::block::{MethodLabels, Shape};
 use simsandbox_core::registry::Registry;
@@ -131,6 +132,30 @@ pub fn run(
     t_end: Option<f64>,
     dt: Option<f64>,
 ) -> Result<Results, String> {
+    run_with(text, registry, t_end, dt, Vec::new())
+}
+
+/// The hash a run file records of a model file (ADR 0059), with the
+/// built-in types.
+pub fn model_hash(text: &str) -> Result<String, String> {
+    let loaded =
+        simsandbox_file::load(text, &crate::examples::registry()).map_err(|e| e.to_string())?;
+    simsandbox_file::runs::loaded_hash(&loaded).map_err(|e| e.to_string())
+}
+
+/// The run file's JSON Schema.
+pub const RUN_SCHEMA: &str = simsandbox_file::runs::RUN_SCHEMA;
+
+/// [`run`] with recorded input (a run file's track, ADR 0059) applied
+/// along with the file's schedule (`run.inputs`, ADR 0058), each at the
+/// first step boundary at or after its time.
+pub fn run_with(
+    text: &str,
+    registry: &Registry,
+    t_end: Option<f64>,
+    dt: Option<f64>,
+    track: Vec<InputEvent>,
+) -> Result<Results, String> {
     for v in [t_end, dt].into_iter().flatten() {
         if !(v.is_finite() && v > 0.0) {
             return Err("the end time and step must be positive".into());
@@ -142,6 +167,22 @@ pub fn run(
     }
     let dt = dt.unwrap_or(loaded.file.run.dt);
     let t_end = t_end.or(loaded.file.run.t_end).unwrap_or(DEFAULT_T_END);
+    let schedule: Vec<InputEvent> = loaded
+        .file
+        .run
+        .inputs
+        .iter()
+        .map(|c| InputEvent {
+            t: c.t,
+            key: c.set.clone(),
+            value: c.to,
+        })
+        .collect();
+    if loaded.plan.is_some() && !(schedule.is_empty() && track.is_empty()) {
+        return Err("a swept model is not run in time, so it takes no inputs".into());
+    }
+    let mut events = Track::new(schedule, track);
+    let mut plan = loaded.params.clone();
 
     let mut fixed = Vec::new();
     let mut variable = Vec::new();
@@ -213,9 +254,25 @@ pub fn run(
         }
         r.index = index;
     } else {
+        let ids = &loaded.ids;
+        let mut apply = |sim: &mut Simulator| -> Result<bool, String> {
+            let now = sim.time();
+            let mut any = false;
+            while let Some(e) = events.take_due(now, 1e-9 * dt.max(now.abs())) {
+                set_key(sim, &mut plan, ids, &e.key, e.value)
+                    .map_err(|err| format!("input at t = {}: {err}", e.t))?;
+                any = true;
+            }
+            Ok(any)
+        };
+        // Input at t = 0 sets where the run starts.
+        if apply(&mut sim)? {
+            sim.restart(0.0).map_err(|e| e.to_string())?;
+        }
         let mut t = vec![sim.time()];
         record(&mut r, &sim);
         for _ in 0..(t_end / dt).round() as usize {
+            apply(&mut sim)?;
             sim.step(dt).map_err(|e| e.to_string())?;
             t.push(sim.time());
             record(&mut r, &sim);

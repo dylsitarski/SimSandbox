@@ -10,7 +10,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use simsandbox_session::examples::{registry, view_registry, EXAMPLES};
 use simsandbox_session::render::{png, render as render_views, RenderOptions};
-use simsandbox_session::run::run as run_model;
+use simsandbox_session::run::run_with as run_model;
+use simsandbox_session::session::InputEvent;
 use simsandbox_session::{describe as catalogue, Session};
 
 create_exception!(
@@ -69,6 +70,20 @@ fn check(py: Python<'_>, text: &str) -> String {
     py.detach(|| json(&catalogue::check(text, &registry())))
 }
 
+/// The hash a run file records of its model (ADR 0059): SHA-256 of the
+/// model with every parameter written out, leaving out `controls` and the
+/// settings a run records itself.
+#[pyfunction]
+fn model_hash(text: &str) -> PyResult<String> {
+    simsandbox_session::run::model_hash(text).map_err(ModelError::new_err)
+}
+
+/// The run file's JSON Schema.
+#[pyfunction]
+fn run_schema() -> &'static str {
+    simsandbox_session::run::RUN_SCHEMA
+}
+
 /// The built-in examples as (name, model file) pairs.
 #[pyfunction]
 fn examples() -> Vec<(&'static str, &'static str)> {
@@ -79,15 +94,22 @@ fn examples() -> Vec<(&'static str, &'static str)> {
 /// (name, shape, bytes), `populations` as (name, dim, [bytes per row]),
 /// and `labels`, `notes`, `warnings` as JSON text.
 #[pyfunction]
-#[pyo3(signature = (text, t_end=None, dt=None))]
+#[pyo3(signature = (text, t_end=None, dt=None, track=None))]
 fn run<'py>(
     py: Python<'py>,
     text: &str,
     t_end: Option<f64>,
     dt: Option<f64>,
+    track: Option<Vec<(f64, String, f64)>>,
 ) -> PyResult<Bound<'py, PyDict>> {
+    // Recorded input (ADR 0058), applied with the file's schedule.
+    let track: Vec<InputEvent> = track
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(t, key, value)| InputEvent { t, key, value })
+        .collect();
     let r = py
-        .detach(|| run_model(text, &registry(), t_end, dt))
+        .detach(|| run_model(text, &registry(), t_end, dt, track))
         .map_err(ModelError::new_err)?;
     let rows = r.rows();
     let d = PyDict::new(py);
@@ -253,6 +275,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(examples, m)?)?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
+    m.add_function(wrap_pyfunction!(model_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(run_schema, m)?)?;
     m.add_function(wrap_pyfunction!(render, m)?)?;
     m.add_function(wrap_pyfunction!(render_diagram, m)?)?;
     m.add_function(wrap_pyfunction!(start_from, m)?)?;

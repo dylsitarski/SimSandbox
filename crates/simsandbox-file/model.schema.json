@@ -175,6 +175,31 @@
           ],
           "default": "newton",
           "description": "How algebraic loops (outputs that depend on each other at the same instant, ADR 0040) are solved: newton (Newton's method, the default), fixed_point (repeat until settled; fails when the loop gain exceeds one) or refuse (a model with a loop does not run)."
+        },
+        "inputs": {
+          "type": "array",
+          "description": "The model's default schedule (ADR 0058, ADR 0059): values changed at set times in every run, each at the first step boundary at or after t. Recordings live in run files.",
+          "items": {
+            "type": "object",
+            "required": [
+              "t",
+              "set",
+              "to"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "t": {
+                "type": "number",
+                "minimum": 0
+              },
+              "set": {
+                "$ref": "#/$defs/ref"
+              },
+              "to": {
+                "type": "number"
+              }
+            }
+          }
         }
       }
     },
@@ -619,6 +644,35 @@
         "layout": {
           "$ref": "#/$defs/layout",
           "description": "How the app arranges its panes (ADR 0053): splits of stacks of tabs. Tabs: 'inspector', 'diagram', 'view:K' (a view of controls.views), or {\"views\": [K, ...]} for views tiled in one tab."
+        },
+        "inputs": {
+          "type": "object",
+          "description": "How keys and views drive input blocks, by block name (ADR 0058). Never affects results.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "keys": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Two keys moving an input.value down and up (egui key names, e.g. Left, Right, A, D)."
+              },
+              "rate": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "With keys: change per second while held; the value stays where let go. Without: the range's end while held, 0 when released."
+              },
+              "view": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "An input.pointer fed by this view, by its place in controls.views."
+              }
+            }
+          }
         }
       }
     },

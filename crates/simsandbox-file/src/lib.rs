@@ -40,6 +40,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub mod layout;
+pub mod runs;
 pub mod subsystems;
 pub use subsystems::{
     Declared, Derived, InputPort, OutputPort, ParamDecl, ParamPlan, ParamValue, Subsystem,
@@ -370,6 +371,10 @@ pub struct RunSettings {
     /// absent), `fixed_point` or `refuse`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loops: Option<String>,
+    /// The model's default schedule (ADR 0058, ADR 0059): values changed at
+    /// set times in every run. Recordings live in run files, never here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<ScheduledChange>,
 }
 
 impl Default for RunSettings {
@@ -379,8 +384,40 @@ impl Default for RunSettings {
             t_end: None,
             seed: None,
             loops: None,
+            inputs: Vec::new(),
         }
     }
+}
+
+/// A value changed at a set time (ADR 0058): `{"t": 10, "set": "car.F",
+/// "to": 500}`. It applies at the first step boundary at or after `t`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduledChange {
+    pub t: f64,
+    /// A parameter key: `"block.param"`, or a declared parameter.
+    pub set: String,
+    pub to: f64,
+}
+
+/// How keys and views drive an input block (ADR 0058), in
+/// `controls.inputs` by the block's name. Never affects results: a run
+/// records the values, not the keys.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputBinding {
+    /// Two keys moving an `input.value` down and up, e.g. `["Left",
+    /// "Right"]` (egui key names).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
+    /// With keys: how fast the value moves while a key is held, per
+    /// second; it stays where it is let go. Without a rate the value is
+    /// its range's end while a key is held and 0 when none is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate: Option<f64>,
+    /// An `input.pointer` fed by this view (its place in `controls.views`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<usize>,
 }
 
 /// One Block: a unique name, a registered type, a method and parameter
@@ -544,6 +581,9 @@ pub struct Controls {
     /// and `subsystem::block` inside a subsystem. Unknown names are ignored.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub open: Vec<String>,
+    /// Keys and views driving input blocks, by block name (ADR 0058).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, InputBinding>,
     /// Filters turning recorded data into new signals and fields
     /// (ADR 0030, ADR 0032): derived expressions, cuts. Checked by the app;
     /// invalid ones are dropped with a warning.
@@ -1192,6 +1232,20 @@ impl ModelFile {
             return Err(FileError::UnsupportedFormat(raw.format));
         }
         let positive = |v: f64| v.is_finite() && v > 0.0;
+        for (k, c) in raw.run.inputs.iter().enumerate() {
+            if !(c.t.is_finite() && c.t >= 0.0) {
+                return Err(invalid(
+                    format!("run.inputs[{k}].t"),
+                    format!("a time is 0 or more, got {}", c.t),
+                ));
+            }
+            if !c.to.is_finite() {
+                return Err(invalid(
+                    format!("run.inputs[{k}].to"),
+                    format!("must be a finite number, got {}", c.to),
+                ));
+            }
+        }
         if !positive(raw.run.dt) {
             return Err(invalid(
                 "run.dt",

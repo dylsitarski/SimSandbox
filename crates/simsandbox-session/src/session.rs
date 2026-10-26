@@ -8,6 +8,7 @@ use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::{Simulator, Snapshot};
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
+use simsandbox_file::runs::RunFile;
 use simsandbox_file::{
     Design, FilterEntry, FusedGroup, ModelFile, ParamPlan, Plan, Sampling, ViewEntry,
 };
@@ -212,6 +213,112 @@ pub struct Session {
     /// Filters compiled: expressions recorded after the output signals,
     /// cut fields after the recorded fields.
     filters: Filters,
+    /// The schedule and the recorded live input (ADR 0058).
+    track: Track,
+    /// The file as it was when the current run started (its parameters at
+    /// t = 0), which a run file is made with (ADR 0059).
+    start_file: ModelFile,
+}
+
+/// Set a value by its key on a running model: a declared parameter (the
+/// formulas it feeds follow, ADR 0043) or `"block.param"`, unless a formula
+/// sets it.
+pub(crate) fn set_key(
+    sim: &mut Simulator,
+    plan: &mut ParamPlan,
+    ids: &BTreeMap<String, BlockId>,
+    key: &str,
+    value: f64,
+) -> Result<(), String> {
+    if plan.declared(key).is_some() {
+        for (block, param, v) in plan.set(key, value)? {
+            sim.set_param(ids[&block], &param, v)
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    let (block, name) = key
+        .rsplit_once('.')
+        .ok_or_else(|| format!("'{key}' is not 'block.param'"))?;
+    let id = *ids
+        .get(block)
+        .ok_or_else(|| format!("no block '{block}'"))?;
+    if let Some(f) = plan.formula_of(block, name) {
+        return Err(format!("{key} is computed from '{}'", f.text));
+    }
+    sim.set_param(id, name, value).map_err(|e| e.to_string())
+}
+
+/// One change of a value during a run (ADR 0058): `key` is a parameter
+/// key (`"block.param"` or a declared parameter), applied at the first step
+/// boundary at or after `t`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputEvent {
+    pub t: f64,
+    pub key: String,
+    pub value: f64,
+}
+
+/// The input track: the schedule (kept by restarts) and the recorded live
+/// input (dropped by restarts, kept by rewinds and replayed), each with
+/// how much of it has been applied.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Track {
+    schedule: Vec<InputEvent>,
+    /// The model's own value of each key the schedule sets, which every
+    /// run starts from.
+    base: Vec<(String, f64)>,
+    recorded: Vec<InputEvent>,
+    next_schedule: usize,
+    next_recorded: usize,
+}
+
+impl Track {
+    /// A schedule and recorded input, each put in time order.
+    pub(crate) fn new(mut schedule: Vec<InputEvent>, mut recorded: Vec<InputEvent>) -> Self {
+        schedule.sort_by(|a, b| a.t.total_cmp(&b.t));
+        recorded.sort_by(|a, b| a.t.total_cmp(&b.t));
+        Self {
+            schedule,
+            recorded,
+            ..Self::default()
+        }
+    }
+
+    /// The next event due by `now`: the earlier of the two lists, the
+    /// schedule first at equal times (as it was applied live).
+    pub(crate) fn take_due(&mut self, now: f64, eps: f64) -> Option<InputEvent> {
+        let s = self
+            .schedule
+            .get(self.next_schedule)
+            .filter(|e| e.t <= now + eps);
+        let r = self
+            .recorded
+            .get(self.next_recorded)
+            .filter(|e| e.t <= now + eps);
+        match (s, r) {
+            (Some(a), Some(b)) if b.t < a.t - eps => {
+                self.next_recorded += 1;
+                Some(b.clone())
+            }
+            (Some(a), _) => {
+                self.next_schedule += 1;
+                Some(a.clone())
+            }
+            (None, Some(b)) => {
+                self.next_recorded += 1;
+                Some(b.clone())
+            }
+            (None, None) => None,
+        }
+    }
+
+    /// Start applying again from time `t`: events at `t` or later are
+    /// still ahead.
+    fn seek(&mut self, t: f64, eps: f64) {
+        self.next_schedule = self.schedule.partition_point(|e| e.t < t - eps);
+        self.next_recorded = self.recorded.partition_point(|e| e.t < t - eps);
+    }
 }
 
 impl Session {
@@ -306,6 +413,19 @@ impl Session {
             None => None,
         };
         let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
+        let mut schedule: Vec<InputEvent> = loaded
+            .file
+            .run
+            .inputs
+            .iter()
+            .map(|c| InputEvent {
+                t: c.t,
+                key: c.set.clone(),
+                value: c.to,
+            })
+            .collect();
+        schedule.sort_by(|a, b| a.t.total_cmp(&b.t));
+        let start_file = loaded.file.clone();
         let mut warnings = loaded.warnings;
         warnings.extend(loop_notes(&sim));
         let entries = loaded.file.controls.filters.clone();
@@ -341,7 +461,31 @@ impl Session {
             last_sweep: None,
             filter_entries: Vec::new(),
             filters: Filters::default(),
+            track: Track {
+                schedule,
+                ..Track::default()
+            },
+            start_file,
         };
+        session.check_events(
+            &session
+                .track
+                .schedule
+                .iter()
+                .map(|e| (e.key.clone(), e.value))
+                .collect::<Vec<_>>(),
+            "run.inputs",
+        )?;
+        let rows = session.params();
+        let mut base: Vec<(String, f64)> = Vec::new();
+        for e in &session.track.schedule {
+            if !base.iter().any(|(k, _)| *k == e.key) {
+                if let Some(r) = rows.iter().find(|r| r.key == e.key) {
+                    base.push((e.key.clone(), r.value));
+                }
+            }
+        }
+        session.track.base = base;
         let (filters, problems) = session.compile_filters(&entries);
         session.filter_entries = filters.entries(&entries);
         session.filters = filters;
@@ -354,9 +498,128 @@ impl Session {
             session.resample();
         } else {
             session.rebuild_history();
-            session.record();
+            // Scheduled changes at t = 0 set where the run starts.
+            session.restart().map_err(|e| e.to_string())?;
         }
         Ok(session)
+    }
+
+    /// Events must name parameters a person sets (not ones a formula
+    /// computes); values outside a parameter's suggested range are noted.
+    fn check_events(&mut self, events: &[(String, f64)], what: &str) -> Result<(), String> {
+        let rows = self.params();
+        for (k, (key, value)) in events.iter().enumerate() {
+            let Some(row) = rows.iter().find(|r| r.key == *key) else {
+                return Err(format!("{what}[{k}]: no parameter '{key}'"));
+            };
+            if row.formula.is_some() {
+                return Err(format!(
+                    "{what}[{k}]: {key} is set by a formula, so it cannot be changed"
+                ));
+            }
+            let [lo, hi] = row.suggested;
+            if *value < lo || *value > hi {
+                self.warnings.push(format!(
+                    "{what}[{k}]: {key} = {value} is outside its suggested range {lo} to {hi}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// How close two times must be to count as the same step boundary.
+    fn eps(&self) -> f64 {
+        1e-9 * self.dt.max(self.time().abs())
+    }
+
+    /// Apply every event due by now (ADR 0058). An event that no longer
+    /// applies is noted, not fatal.
+    fn apply_due(&mut self) {
+        let (now, eps) = (self.time(), self.eps());
+        while let Some(e) = self.track.take_due(now, eps) {
+            if let Err(err) = self.set_value(&e.key, e.value) {
+                self.warnings
+                    .push(format!("input at t = {}: {err}", short(e.t)));
+            }
+        }
+    }
+
+    /// The scheduled changes in effect (ADR 0058).
+    pub fn schedule(&self) -> &[InputEvent] {
+        &self.track.schedule
+    }
+
+    /// The live input recorded in this run, including any ahead of now
+    /// after a rewind (ADR 0058).
+    pub fn recorded(&self) -> &[InputEvent] {
+        &self.track.recorded
+    }
+
+    /// Recorded input lies ahead of now: running on replays it.
+    pub fn replaying(&self) -> bool {
+        self.track.next_recorded < self.track.recorded.len()
+    }
+
+    /// Restart and replay `track` as recorded live input (a run file's,
+    /// ADR 0059). Errors name the event that does not apply.
+    pub fn replay(&mut self, mut track: Vec<InputEvent>) -> Result<(), String> {
+        let events: Vec<(String, f64)> = track.iter().map(|e| (e.key.clone(), e.value)).collect();
+        self.check_events(&events, "track")?;
+        track.sort_by(|a, b| a.t.total_cmp(&b.t));
+        self.restart().map_err(|e| e.to_string())?;
+        self.track.recorded = track;
+        self.track.next_recorded = 0;
+        // Recorded input at t = 0 sets where the run starts, as live.
+        if self
+            .track
+            .recorded
+            .first()
+            .is_some_and(|e| e.t <= self.eps())
+        {
+            self.restart_keeping_recorded().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// The file as it was when the current run started.
+    pub fn start_file(&self) -> &ModelFile {
+        &self.start_file
+    }
+
+    /// This run as a run file (ADR 0059): the model hash of the file it
+    /// started from, its seed and settings, the schedule and the recorded
+    /// input. `model` is the model file's path relative to where the run
+    /// file goes.
+    pub fn run_file(&self, model: &str, name: &str, note: &str, created: &str) -> RunFile {
+        RunFile {
+            format: simsandbox_file::runs::RUN_FORMAT,
+            model: model.into(),
+            model_hash: simsandbox_file::runs::model_hash(&self.start_file),
+            name: name.into(),
+            note: note.into(),
+            created: created.into(),
+            seed: Some(self.file.run.seed.unwrap_or(1)),
+            run: Some(simsandbox_file::runs::RunOverrides {
+                dt: Some(self.dt),
+                t_end: self.file.run.t_end,
+            }),
+            inputs: self
+                .track
+                .schedule
+                .iter()
+                .map(|e| simsandbox_file::ScheduledChange {
+                    t: e.t,
+                    set: e.key.clone(),
+                    to: e.value,
+                })
+                .collect(),
+            track: self
+                .track
+                .recorded
+                .iter()
+                .map(|e| (e.t, e.key.clone(), e.value))
+                .collect(),
+        }
     }
 
     /// Names of the recorded grids, point sets, one-row grids and the
@@ -643,6 +906,7 @@ impl Session {
 
     /// Advance one communication step and record it.
     pub fn step(&mut self) -> Result<(), SimError> {
+        self.apply_due();
         self.sim.step(self.dt)?;
         self.record();
         self.steps_since_snapshot += 1;
@@ -739,37 +1003,54 @@ impl Session {
 
     /// Change a parameter by its key (`"block.param"`, or a declared
     /// parameter's), recomputing what formulas set from it (ADR 0043).
+    /// The change is live input: it is recorded in the run's input track
+    /// (ADR 0058), after any events due now, and drops recorded input
+    /// ahead (running on from a rewind with new input is a new branch).
     pub fn set_param_key(&mut self, key: &str, value: f64) -> Result<(), String> {
-        if self.plan.declared(key).is_some() {
-            let set = self.plan.set(key, value)?;
-            for (block, param, v) in set {
-                let id = self.ids[&block];
-                self.sim
-                    .set_param(id, &param, v)
-                    .map_err(|e| e.to_string())?;
+        let live = self.sweep.is_none();
+        if live {
+            self.apply_due();
+        }
+        self.set_value(key, value)?;
+        // Before the run starts, a value the schedule also sets is the
+        // model's own: the run starts from it.
+        if self.time() == 0.0 && self.snapshots.len() == 1 {
+            for (k, v) in &mut self.track.base {
+                if k == key {
+                    *v = value;
+                }
             }
-            return self.after_param_change();
         }
-        let (block, name) = key
-            .rsplit_once('.')
-            .ok_or_else(|| format!("'{key}' is not 'block.param'"))?;
-        let id = *self
-            .ids
-            .get(block)
-            .ok_or_else(|| format!("no block '{block}'"))?;
-        if let Some(f) = self.plan.formula_of(block, name) {
-            return Err(format!("{key} is computed from '{}'", f.text));
+        if live {
+            let t = self.time();
+            let ahead = self.track.next_recorded;
+            self.track.recorded.truncate(ahead);
+            self.track.recorded.push(InputEvent {
+                t,
+                key: key.to_string(),
+                value,
+            });
+            self.track.next_recorded = self.track.recorded.len();
         }
-        self.set_param(id, name, value)
+        self.after_param_change()
     }
 
-    /// Change a parameter while running. Initial conditions apply on
+    /// Set a value by key, not recorded.
+    fn set_value(&mut self, key: &str, value: f64) -> Result<(), String> {
+        set_key(&mut self.sim, &mut self.plan, &self.ids, key, value)
+    }
+
+    /// Change a parameter while running, as live input (recorded, like
+    /// [`Session::set_param_key`]). Initial conditions apply on
     /// [`Session::restart`], or at once if the run has not started.
     pub fn set_param(&mut self, block: BlockId, name: &str, value: f64) -> Result<(), String> {
-        self.sim
-            .set_param(block, name, value)
-            .map_err(|e| e.to_string())?;
-        self.after_param_change()
+        let flat = self
+            .ids
+            .iter()
+            .find(|(_, &id)| id == block)
+            .map(|(n, _)| n.clone())
+            .ok_or("no such block")?;
+        self.set_param_key(&format!("{flat}.{name}"), value)
     }
 
     fn after_param_change(&mut self) -> Result<(), String> {
@@ -787,6 +1068,27 @@ impl Session {
         if self.sweep.is_some() {
             self.resample();
             return Ok(());
+        }
+        // A new run: recorded input is dropped; what the schedule sets
+        // starts from the model's own values and is set again.
+        self.track.recorded.clear();
+        for (key, value) in self.track.base.clone() {
+            if let Err(e) = self.set_value(&key, value) {
+                self.warnings.push(e);
+            }
+        }
+        self.restart_keeping_recorded()
+    }
+
+    /// Restart at t = 0 with the events at t = 0 applied first, so they
+    /// set where the run starts, and the rest still ahead.
+    fn restart_keeping_recorded(&mut self) -> Result<(), SimError> {
+        self.track.seek(0.0, 0.0);
+        // Back to t = 0 so the events there are due.
+        self.sim.restart(0.0)?;
+        self.apply_due();
+        if let Err(e) = self.capture_start() {
+            self.warnings.push(e);
         }
         self.sim.restart(0.0)?;
         self.snapshots = vec![self.sim.snapshot()];
@@ -968,6 +1270,18 @@ impl Session {
         Ok(self.file.to_json())
     }
 
+    /// Keep the file as it is now, with the current parameters, as the
+    /// file this run starts from.
+    fn capture_start(&mut self) -> Result<(), String> {
+        self.flat
+            .capture_params(self.sim.model(), &self.ids)
+            .map_err(|e| e.to_string())?;
+        self.file.capture_from(&self.flat, &self.plan);
+        self.file.run.dt = self.dt;
+        self.start_file = self.file.clone();
+        Ok(())
+    }
+
     /// The sweep, if the model is swept instead of run.
     pub fn sweep(&self) -> Option<&Sweep> {
         self.sweep.as_deref()
@@ -1144,6 +1458,9 @@ impl Session {
         let snap = &self.snapshots[keep];
         self.sim.restore(snap);
         let t0 = snap.t;
+        // Input from then on is ahead again: running on replays it.
+        let eps = self.eps();
+        self.track.seek(t0, eps);
         self.stop_at = self.file.run.t_end.filter(|&end| end > t0);
         self.history_mut().truncate_after(t0);
         self.steps_since_snapshot = 0;
@@ -2133,5 +2450,219 @@ mod subsystem_tests {
         );
         let again = Session::load("again", &text, &registry()).unwrap();
         assert_eq!(again.sim.state(again.ids["car3/car"]), v);
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use crate::examples::registry;
+
+    /// A cart pushed by an input: dv/dt = F/m - c*v.
+    const CART: &str = r#"{"format": 1, "run": {"dt": 0.01},
+      "blocks": [
+        {"name": "push", "type": "input.value", "settings": {"unit": "N", "min": "-50", "max": "50"}},
+        {"name": "cart", "type": "eq.equations", "method": {"name": "rk4"},
+         "equations": ["input F [N]", "param m [kg] = 2", "param c [1/s] = 0.5",
+                       "state v [m/s]", "dv/dt = F/m - c*v"]}],
+      "connections": [{"from": "push.y", "to": "cart.F"}]}"#;
+
+    fn cart(text: &str) -> Session {
+        Session::load("cart", text, &registry()).unwrap()
+    }
+
+    /// Where two recordings first differ, for a readable failure.
+    fn same(a: &[Vec<(u64, u64)>], b: &[Vec<(u64, u64)>], names: &[String]) {
+        assert_eq!(a.len(), b.len(), "signal count");
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            let k = x.iter().zip(y).position(|(p, q)| p != q);
+            assert!(
+                k.is_none() && x.len() == y.len(),
+                "signal {} differs at sample {:?} (lengths {} and {}): {:?} vs {:?}",
+                names[i],
+                k,
+                x.len(),
+                y.len(),
+                k.map(|k| (f64::from_bits(x[k].0), f64::from_bits(x[k].1))),
+                k.map(|k| (f64::from_bits(y[k].0), f64::from_bits(y[k].1)))
+            );
+        }
+    }
+
+    /// Every recorded signal, as bits.
+    fn signals(s: &Session) -> Vec<Vec<(u64, u64)>> {
+        let h = s.signals();
+        (0..h.names().len())
+            .map(|i| {
+                h.points(i)
+                    .iter()
+                    .map(|p| (p.x.to_bits(), p.y.to_bits()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Steer by hand: push at 0.5 s, change the mass at 1.2 s, let go at
+    /// 2 s; run to 3 s.
+    fn steer(s: &mut Session) {
+        s.run_until(0.5).unwrap();
+        s.set_param_key("push.y", 40.0).unwrap();
+        s.run_until(1.2).unwrap();
+        s.set_param_key("cart.m", 4.0).unwrap();
+        s.run_until(2.0).unwrap();
+        s.set_param_key("push.y", 0.0).unwrap();
+        s.run_until(3.0).unwrap();
+    }
+
+    #[test]
+    fn live_input_is_recorded_and_replays_bit_for_bit() {
+        let mut s = cart(CART);
+        steer(&mut s);
+        let reference = signals(&s);
+        assert_eq!(s.recorded().len(), 3);
+        // The push moved the cart.
+        let v = s.signals().points(1).last().unwrap().y;
+        assert!(v > 1.0, "{v}");
+        // Rewind and run on: the recorded input is replayed.
+        s.rewind_to(0.3);
+        assert!(s.replaying());
+        s.run_until(3.0).unwrap();
+        assert!(!s.replaying());
+        same(&signals(&s), &reference, s.signals().names());
+        // Saved as a run file, it replays the same in a fresh session.
+        let run = s.run_file("cart.ssbx.json", "steer", "", "");
+        let (model, _) = ModelFile::from_json(CART).unwrap();
+        let loaded = simsandbox_file::load(CART, &registry()).unwrap();
+        assert!(run.fits(&loaded).unwrap());
+        // A different mass is a different model.
+        let heavier = CART.replace("param m [kg] = 2", "param m [kg] = 3");
+        let other = simsandbox_file::load(&heavier, &registry()).unwrap();
+        assert!(!run.fits(&other).unwrap());
+        let mut again = cart(&run.apply_to(&model).to_json());
+        let track = run
+            .track
+            .iter()
+            .map(|(t, key, value)| InputEvent {
+                t: *t,
+                key: key.clone(),
+                value: *value,
+            })
+            .collect();
+        again.replay(track).unwrap();
+        again.run_until(3.0).unwrap();
+        same(&signals(&again), &reference, s.signals().names());
+        // Headless, the same track gives the same values.
+        let track2 = run
+            .track
+            .iter()
+            .map(|(t, key, value)| InputEvent {
+                t: *t,
+                key: key.clone(),
+                value: *value,
+            })
+            .collect();
+        let text = run.apply_to(&model).to_json();
+        let r = crate::run::run_with(&text, &registry(), Some(3.0), None, track2).unwrap();
+        let v = r.outputs.iter().find(|o| o.name == "cart.v").unwrap();
+        let k = s
+            .signals()
+            .names()
+            .iter()
+            .position(|n| n == "cart.v")
+            .unwrap();
+        let live: Vec<u64> = s
+            .signals()
+            .points(k)
+            .iter()
+            .map(|p| p.y.to_bits())
+            .collect();
+        let headless: Vec<u64> = v.values.iter().map(|x| x.to_bits()).collect();
+        assert_eq!(headless, live);
+        // The run started from m = 2, not the 4 it ended with.
+        let start = &s.start_file().blocks[1].params;
+        assert_eq!(
+            start.get("m"),
+            Some(&simsandbox_file::ParamValue::Number(2.0))
+        );
+    }
+
+    #[test]
+    fn input_acts_in_the_next_step() {
+        let mut s = cart(CART);
+        s.run_until(0.5).unwrap();
+        let k = s
+            .signals()
+            .names()
+            .iter()
+            .position(|n| n == "cart.v")
+            .unwrap();
+        let before = s.signals().points(k).last().unwrap().y;
+        s.set_param_key("push.y", 40.0).unwrap();
+        s.step().unwrap();
+        let after = s.signals().points(k).last().unwrap().y;
+        // dv = F/m dt (less the drag): about 0.2 in one 0.01 s step.
+        assert!(after - before > 0.15, "{before} -> {after}");
+    }
+
+    #[test]
+    fn new_input_during_a_replay_starts_a_branch() {
+        let mut s = cart(CART);
+        steer(&mut s);
+        s.rewind_to(1.0);
+        s.run_until(1.5).unwrap();
+        // The mass change at 1.2 was replayed; now push the other way.
+        s.set_param_key("push.y", -20.0).unwrap();
+        assert!(!s.replaying());
+        let keys: Vec<(String, f64)> = s
+            .recorded()
+            .iter()
+            .map(|e| (e.key.clone(), e.value))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                ("push.y".to_string(), 40.0),
+                ("cart.m".to_string(), 4.0),
+                ("push.y".to_string(), -20.0)
+            ]
+        );
+        // A restart drops the recording.
+        s.restart().unwrap();
+        assert!(s.recorded().is_empty());
+    }
+
+    #[test]
+    fn scheduled_changes_apply_in_every_run_and_bad_ones_are_reported() {
+        let scheduled = CART.replace(
+            r#""run": {"dt": 0.01}"#,
+            r#""run": {"dt": 0.01, "inputs": [
+                {"t": 1, "set": "push.y", "to": 30},
+                {"t": 0, "set": "cart.v0", "to": 2}]}"#,
+        );
+        let mut s = cart(&scheduled);
+        // The start value at t = 0 set where the run starts.
+        let v0 = s.signals().points(1)[0].y;
+        assert_eq!(v0, 2.0);
+        s.run_until(2.0).unwrap();
+        let first = signals(&s);
+        assert!(s.recorded().is_empty());
+        // Kept by a restart: the second run is the same.
+        s.restart().unwrap();
+        s.run_until(2.0).unwrap();
+        same(&signals(&s), &first, s.signals().names());
+        // A change to something that does not exist is a load error.
+        let bad = scheduled.replace(r#""set": "push.y""#, r#""set": "push.z""#);
+        let err = Session::load("cart", &bad, &registry()).err().unwrap();
+        assert!(
+            err.contains("run.inputs[") && err.contains("push.z"),
+            "{err}"
+        );
+        // Out of range is noted, not refused.
+        let far = scheduled.replace(r#""to": 30"#, r#""to": 300"#);
+        let s = cart(&far);
+        assert!(s
+            .warnings
+            .iter()
+            .any(|w| w.contains("outside its suggested range")));
     }
 }

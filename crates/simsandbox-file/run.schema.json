@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dylsitarski/SimSandbox/run.schema.json",
+  "title": "SimSandbox run file",
+  "description": "One run of a model, kept beside it as <model>.<run>.run.json (ADR 0059): the events applied (schedule and recorded input, ADR 0058), the seed and settings used, and the model it was made with. Replaying it reproduces the run bit for bit.",
+  "type": "object",
+  "required": ["format", "model", "model_hash"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {"const": 1},
+    "model": {"type": "string", "description": "The model file, relative to the run file."},
+    "model_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "SHA-256 of the model as saved, with controls left out; a different hash means the model changed since the run was made."},
+    "name": {"type": "string"},
+    "note": {"type": "string"},
+    "created": {"type": "string", "description": "When it was saved, RFC 3339 (UTC)."},
+    "seed": {"type": "integer", "minimum": 0, "description": "Used in place of the model's run.seed."},
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Run settings used in place of the model's.",
+      "properties": {
+        "dt": {"type": "number", "exclusiveMinimum": 0},
+        "t_end": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "description": "The schedule in effect: values changed at set times, used in place of the model's run.inputs.",
+      "items": {"$ref": "#/$defs/change"}
+    },
+    "track": {
+      "type": "array",
+      "description": "Recorded live input, [t, key, value] in the order it happened; each applies at the first step boundary at or after t.",
+      "items": {
+        "type": "array",
+        "prefixItems": [{"type": "number", "minimum": 0}, {"type": "string"}, {"type": "number"}],
+        "minItems": 3,
+        "maxItems": 3
+      }
+    }
+  },
+  "$defs": {
+    "change": {
+      "type": "object",
+      "required": ["t", "set", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "t": {"type": "number", "minimum": 0},
+        "set": {"type": "string", "description": "A parameter key: block.param, or a declared parameter."},
+        "to": {"type": "number"}
+      }
+    }
+  }
+}

@@ -184,6 +184,9 @@ pub struct Simulator {
     t: f64,
     /// Steps taken since the run started.
     step: u64,
+    /// Blocks whose parameters changed since the last step: their outputs
+    /// are recomputed before the next one, so the change acts in it.
+    changed: Vec<usize>,
 }
 
 impl Simulator {
@@ -295,6 +298,7 @@ impl Simulator {
             seeds,
             t: t0,
             step: 0,
+            changed: Vec::new(),
         };
         sim.restart(t0)?;
         Ok(sim)
@@ -340,7 +344,34 @@ impl Simulator {
         }
         self.t = t0;
         self.step = 0;
+        self.changed.clear();
         self.resolve(t0)?;
+        self.exchange();
+        Ok(())
+    }
+
+    /// Recompute the outputs of Blocks whose parameters changed, then the
+    /// outputs that depend on their inputs, and pass them on: a parameter
+    /// changed between steps (a slider, an input block, ADR 0058) acts in
+    /// the next step rather than one step later.
+    fn refresh_changed(&mut self) -> Result<()> {
+        let t = self.t;
+        for bi in std::mem::take(&mut self.changed) {
+            let params = &self.model.params[bi];
+            self.model.blocks[bi].compute_outputs(
+                t,
+                StepIo {
+                    params,
+                    inputs: &self.inputs[bi],
+                    state: &mut self.states[bi],
+                    outputs: &mut self.outputs[bi],
+                    tables: &mut self.tables[bi],
+                    population_inputs: &self.population_inputs[bi],
+                    population_outputs: &mut self.population_outputs[bi],
+                },
+            )?;
+        }
+        self.resolve(t)?;
         self.exchange();
         Ok(())
     }
@@ -400,6 +431,9 @@ impl Simulator {
 
     /// Advance every Block by one communication step `dt`.
     pub fn step(&mut self, dt: f64) -> Result<()> {
+        if !self.changed.is_empty() {
+            self.refresh_changed()?;
+        }
         let base = StepContext {
             t: self.t,
             dt,
@@ -536,7 +570,11 @@ impl Simulator {
     /// Change a parameter while running (live sliders). Checked like
     /// [`Model::set_param`].
     pub fn set_param(&mut self, id: BlockId, name: &str, value: f64) -> Result<()> {
-        self.model.set_param(id, name, value)
+        self.model.set_param(id, name, value)?;
+        if !self.changed.contains(&id.0) {
+            self.changed.push(id.0);
+        }
+        Ok(())
     }
 
     /// Current value of a parameter.
@@ -571,6 +609,7 @@ impl Simulator {
     /// Rewind to a snapshot taken from this simulator, including the
     /// parameter values in effect when it was taken.
     pub fn restore(&mut self, snap: &Snapshot) {
+        self.changed.clear();
         self.t = snap.t;
         self.step = snap.step;
         self.states.clone_from(&snap.states);

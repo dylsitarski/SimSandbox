@@ -30,6 +30,7 @@ __version__ = _native.__version__
 __all__ = [
     "Model",
     "Results",
+    "Run",
     "ModelError",
     "describe",
     "schema",
@@ -242,18 +243,43 @@ class Model:
         """See :func:`check`."""
         return check(self)
 
-    def run(self, t_end: float | None = None, dt: float | None = None) -> "Results":
+    def run(
+        self,
+        t_end: float | None = None,
+        dt: float | None = None,
+        inputs: "Iterable[tuple[float, str, float]] | Run | None" = None,
+    ) -> "Results":
         """Run to ``t_end`` in steps of ``dt`` (each defaulting to the file's
-        ``run`` section), or through the model's sweep. Raises
-        :class:`ModelError` with every problem :func:`check` finds if it
-        cannot run."""
-        text = self.to_json()
+        ``run`` section), or through the model's sweep. ``inputs`` are
+        changes made during the run (ADR 0058): ``(t, key, value)``
+        tuples, each applied at the first step boundary at or after ``t``
+        along with the file's schedule (``run.inputs``); or a :class:`Run`,
+        whose schedule and recorded input are applied to this model.
+        Raises :class:`ModelError` with every problem :func:`check` finds
+        if it cannot run."""
+        model, track = self, []
+        if isinstance(inputs, Run):
+            model = self.copy()
+            model.data.setdefault("run", {})["inputs"] = copy.deepcopy(inputs.inputs)
+            track = list(inputs.track)
+        elif inputs is not None:
+            track = [(float(t), str(k), float(v)) for t, k, v in inputs]
+        text = model.to_json()
         try:
-            raw = _native.run(text, t_end, dt)
+            raw = _native.run(text, t_end, dt, track)
         except ModelError as e:
             report = json.loads(_native.check(text))
             raise ModelError(_errors(report) if not report["ok"] else str(e)) from None
         return Results(raw)
+
+    def schedule(self, t: float, key: str, value: float) -> "Model":
+        """Change ``key`` to ``value`` at time ``t`` in every run: the
+        model's default schedule (``run.inputs``, ADR 0058). For recorded
+        or one-off runs, use :class:`Run` instead."""
+        self.data.setdefault("run", {}).setdefault("inputs", []).append(
+            {"t": float(t), "set": key, "to": float(value)}
+        )
+        return self
 
     def declare(
         self,
@@ -363,6 +389,132 @@ class Model:
     def __repr__(self) -> str:
         names = [b["name"] for b in self.data.get("blocks", [])]
         return f"Model(blocks={names})"
+
+
+class Run:
+    """One run of a model (ADR 0059): the changes applied in it (a schedule
+    and recorded input), the seed and settings used, and the model it was
+    made with. Saved beside the model as ``<model>.<run>.run.json``;
+    replaying it reproduces the run bit for bit."""
+
+    def __init__(
+        self,
+        model: "Model",
+        inputs: Iterable[dict] | None = None,
+        track: Iterable[tuple[float, str, float]] | None = None,
+        seed: int | None = None,
+        dt: float | None = None,
+        t_end: float | None = None,
+        name: str = "",
+        note: str = "",
+        model_path: str | os.PathLike | None = None,
+    ):
+        run = model.data.get("run", {})
+        self.model = model.copy()
+        #: The schedule in effect: ``{"t", "set", "to"}`` dicts; the
+        #: model's own if not given.
+        self.inputs: list[dict] = (
+            [dict(c) for c in inputs] if inputs is not None else copy.deepcopy(run.get("inputs", []))
+        )
+        #: Recorded input: ``(t, key, value)`` in the order it happened.
+        self.track: list[tuple[float, str, float]] = [
+            (float(t), str(k), float(v)) for t, k, v in (track or [])
+        ]
+        self.seed = seed if seed is not None else run.get("seed", 1)
+        self.dt = dt if dt is not None else run.get("dt", 0.01)
+        self.t_end = t_end if t_end is not None else run.get("t_end")
+        self.name = name
+        self.note = note
+        self.created = ""
+        #: Where the model file is, if known; a saved run refers to it.
+        self.model_path = os.fspath(model_path) if model_path is not None else None
+        #: The model changed since the run was made (set by :meth:`load`).
+        self.stale = False
+
+    @classmethod
+    def load(cls, path: str | os.PathLike) -> "Run":
+        """Read a run file and the model it names (relative to it). Warns
+        if the model changed since the run was made."""
+        with open(path, encoding="utf-8") as f:
+            data = json.loads(f.read())
+        if data.get("format") != 1:
+            raise ModelError(f"{os.fspath(path)}: run file format {data.get('format')!r} is not 1")
+        model_path = os.path.join(os.path.dirname(os.fspath(path)), data["model"])
+        model = Model.load(model_path)
+        settings = data.get("run", {})
+        run = cls(
+            model,
+            inputs=data.get("inputs", []),
+            track=data.get("track", []),
+            seed=data.get("seed"),
+            dt=settings.get("dt"),
+            t_end=settings.get("t_end"),
+            name=data.get("name", ""),
+            note=data.get("note", ""),
+            model_path=model_path,
+        )
+        run.created = data.get("created", "")
+        run.stale = _native.model_hash(model.to_json()) != data["model_hash"]
+        if run.stale:
+            import warnings as _w
+
+            _w.warn(
+                f"{model_path} has changed since this run was recorded; replaying it anyway",
+                stacklevel=2,
+            )
+        return run
+
+    def replay(self, t_end: float | None = None) -> "Results":
+        """Run the model with this run's seed, settings, schedule and
+        recorded input."""
+        m = self.model.copy()
+        run = m.data.setdefault("run", {})
+        run["seed"] = self.seed
+        run["dt"] = self.dt
+        if self.t_end is not None:
+            run["t_end"] = self.t_end
+        run["inputs"] = copy.deepcopy(self.inputs)
+        return m.run(t_end=t_end, inputs=self.track)
+
+    def to_json(self, model_path: str | None = None) -> str:
+        """The run file's text; ``model_path`` is the model relative to
+        where the run file goes."""
+        target = model_path or (os.path.basename(self.model_path) if self.model_path else None)
+        if target is None:
+            raise ValueError("a run refers to its model file: save the model and pass model_path")
+        data: dict[str, Any] = {
+            "format": 1,
+            "model": target,
+            "model_hash": _native.model_hash(self.model.to_json()),
+        }
+        if self.name:
+            data["name"] = self.name
+        if self.note:
+            data["note"] = self.note
+        import datetime
+
+        data["created"] = self.created or datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        data["seed"] = self.seed
+        settings = {"dt": self.dt}
+        if self.t_end is not None:
+            settings["t_end"] = self.t_end
+        data["run"] = settings
+        if self.inputs:
+            data["inputs"] = self.inputs
+        if self.track:
+            data["track"] = [list(e) for e in self.track]
+        return json.dumps(data, indent=2)
+
+    def save(self, path: str | os.PathLike) -> None:
+        """Write the run file at ``path``. The model must be saved: the run
+        refers to it by its path relative to ``path``."""
+        if self.model_path is None:
+            raise ValueError("save the model first and give Run(model_path=...)")
+        rel = os.path.relpath(self.model_path, os.path.dirname(os.path.abspath(path)))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(self.to_json(rel) + "\n")
 
 
 def _split(key: str) -> tuple[str, str]:

@@ -220,3 +220,46 @@ def test_filters_become_blocks_when_promoted(tmp_path):
     assert with_data != without
     with pytest.raises(ss.ModelError, match="no filter"):
         m.promote("nothing")
+
+
+CART = {
+    "format": 1,
+    "run": {"dt": 0.01, "t_end": 2},
+    "blocks": [
+        {"name": "push", "type": "input.value", "settings": {"unit": "N", "min": "-50", "max": "50"}},
+        {
+            "name": "cart",
+            "type": "eq.equations",
+            "method": {"name": "rk4"},
+            "equations": ["input F [N]", "param m [kg] = 2", "state v [m/s]", "dv/dt = F/m"],
+        },
+    ],
+    "connections": [{"from": "push.y", "to": "cart.F"}],
+}
+
+
+def test_inputs_schedules_and_runs_replay_the_same(tmp_path):
+    m = ss.Model(CART)
+    # A change made during the run, and the same as the model's schedule.
+    by_hand = m.run(inputs=[(0.5, "push.y", 10.0)])
+    scheduled = m.copy().schedule(0.5, "push.y", 10.0).run()
+    assert np.array_equal(by_hand["cart.v"], scheduled["cart.v"])
+    # v = 1 until 0.5 s, then grows by F/m = 5 m/s^2.
+    assert by_hand["cart.v"][-1] == pytest.approx(1 + 5 * 1.5)
+    # Saved as a run beside the model, it replays bit for bit.
+    m.save(tmp_path / "cart.ssbx.json")
+    run = ss.Run(m, track=[(0.5, "push.y", 10.0)], name="push", model_path=tmp_path / "cart.ssbx.json")
+    run.save(tmp_path / "cart.push.run.json")
+    again = ss.Run.load(tmp_path / "cart.push.run.json")
+    assert not again.stale and again.name == "push"
+    assert np.array_equal(again.replay()["cart.v"], by_hand["cart.v"])
+    # A run's input applies to another model, e.g. a heavier cart.
+    heavy = ss.Model(CART).set("cart.m", 4.0)
+    assert heavy.run(inputs=again)["cart.v"][-1] == pytest.approx(1 + 2.5 * 1.5)
+    # Changing the model makes the run stale (with a warning).
+    heavy.save(tmp_path / "cart.ssbx.json")
+    with pytest.warns(UserWarning, match="changed since"):
+        assert ss.Run.load(tmp_path / "cart.push.run.json").stale
+    # A change to a parameter that does not exist is an error.
+    with pytest.raises(ss.ModelError, match="no parameter .z."):
+        m.run(inputs=[(0.5, "push.z", 1.0)])
