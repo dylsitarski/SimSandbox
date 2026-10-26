@@ -1,6 +1,6 @@
 # Status
 
-_Last updated: 2026-10-24_
+_Last updated: 2026-10-26_
 
 **Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0038](decisions/0038-phase-1-revised.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). **Gate met:** 2026-10-22, the grazing example (`eq.grass` and `agents.grazers`) runs live in the desktop app at 4× real time with about 400 sheep (checked headless in the cloud); **confirmed by the owner on Linux and Windows on 2026-10-23**. **All eight Phase 1 items are built** (2026-10-23). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
 
@@ -93,7 +93,7 @@ _Last updated: 2026-10-24_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Plan Phase 2** (the Phase 1 gate was confirmed on Linux and Windows on 2026-10-23; first the owner tries formulas and parameters in the app, [ADR 0056](decisions/0056-formulas-and-parameters-in-the-app.md)) ([roadmap](roadmap.md#phase-2--breadth)) as Phase 1 was planned ([ADR 0033](decisions/0033-phase-1-plan.md)). Each new feature meets [ADR 0039](decisions/0039-ai-agent-access.md). First, the owner tries the data layer and undo ([ADR 0050](decisions/0050-data-layer-and-canvas-undo.md)) on Windows and Linux (checked here by tests, headless images and a window screenshot).
+1. **Plan Phase 2** (the Phase 1 gate was confirmed on Linux and Windows on 2026-10-23; first the owner tries formulas and parameters in the app, [ADR 0056](decisions/0056-formulas-and-parameters-in-the-app.md)) ([roadmap](roadmap.md#phase-2--breadth), whose direction was agreed on 2026-10-26: interactive real-time models, heavy physics through typed equations, wrapped engines and plugins; [Q28](open-questions.md), [Q35](open-questions.md)–[Q37](open-questions.md)) as Phase 1 was planned ([ADR 0033](decisions/0033-phase-1-plan.md)). Each new feature meets [ADR 0039](decisions/0039-ai-agent-access.md). First, the owner tries the data layer and undo ([ADR 0050](decisions/0050-data-layer-and-canvas-undo.md)) on Windows and Linux (checked here by tests, headless images and a window screenshot).
 2. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations

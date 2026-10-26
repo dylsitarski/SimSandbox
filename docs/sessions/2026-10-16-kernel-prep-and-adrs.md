@@ -62,6 +62,7 @@
 
 ## Decided
 
+- 2026-10-26: Phase 2 direction (owner): interactive real-time models, not a game engine; order input blocks (Q36), arrays and compiled typed equations (Q35), one plugin interface for blocks and views (Q28, Q37, WebAssembly recommended), rigid bodies with a scene view. Recorded in the [roadmap](../roadmap.md#phase-2--breadth) and [open questions](../open-questions.md); the order is still to be planned.
 - 2026-10-24: `= expression` in any value field, "+ parameter" in the Model group; failing edits refused, not drafted ([ADR 0056](../decisions/0056-formulas-and-parameters-in-the-app.md)).
 - 2026-10-24: open nodes saved in `controls.open`; inner subsystem values are every use's defaults; popped-out tabs are deferred viewports ([ADR 0055](../decisions/0055-open-nodes-subsystem-values-deferred-windows.md)). Raised, not decided: how the app declares parameters and writes formulas ([Q34](../open-questions.md)).
 - 2026-10-23: pins decide the Controls, a pane of their own; sliders only for pinned values; nodes open per node; drafts editable through `SetParam`/`SetSetting` ([ADR 0054](../decisions/0054-controls-pane-pins-and-node-toggles.md)). Answered: values inside a subsystem are per use, never shared; only blocks and wires drawn inside apply to every use ("Set every use" copies a value explicitly).

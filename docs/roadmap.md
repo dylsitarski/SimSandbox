@@ -1,6 +1,6 @@
 # Roadmap
 
-_Last updated: 2026-10-23_
+_Last updated: 2026-10-26_
 
 Start with the equation sandbox: it exercises the whole Block contract, delivers all three pillars at small scale, and is useful on its own. Each gate is a working demo, not a feature count. If a gate fails, fix the Block contract before adding any new backend, because every later phase depends on it.
 
@@ -48,6 +48,17 @@ Goal: connect and reuse. Gate: an ODE model and an agent model run in one graph 
 
 Goal: many domains. Gate: the verification suite passes for every backend.
 
+**Direction (agreed 2026-10-26, order still to be planned):** make the real-time class interactive, so a model you compose can be played with like an open Algodoo, without becoming a game engine (no assets, audio, gameplay scripting or game export; mature engines are wrapped, not written). Heavy custom physics goes, in turn, into typed equations with arrays and compilation, wrapped engines, and plugins.
+
+1. Input from views and devices: input blocks, views that send input, input recorded for exact replay ([Q36](open-questions.md)).
+2. Arrays and grid stencils in typed equations, and faster evaluation ([Q35](open-questions.md)).
+3. User-defined blocks and views through one plugin interface, WebAssembly recommended ([Q28](open-questions.md), [Q37](open-questions.md)).
+4. Rigid bodies and a 2D/3D scene view whose bodies can be grabbed.
+
+- [ ] Input blocks and interactive views ([Q36](open-questions.md))
+- [ ] Arrays and grids in typed equations, compiled ([Q35](open-questions.md))
+- [ ] User-defined blocks and views without rebuilding ([Q28](open-questions.md), [Q37](open-questions.md))
+- [ ] Scene view (2D/3D) for bodies, with direct manipulation
 - [ ] Rigid-body domain (MuJoCo)
 - [ ] ML Blocks (ONNX Runtime)
 - [ ] FMI 3.0 import and export
