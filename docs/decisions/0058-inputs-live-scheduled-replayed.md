@@ -1,6 +1,6 @@
 # 0058 — Inputs: live, scheduled and replayed
 
-- **Status:** Accepted
+- **Status:** Accepted; where schedules and recordings are kept is amended by [0059](0059-run-files.md) (run files beside the model)
 - **Date:** 2026-10-26
 
 ## Context

@@ -20,7 +20,7 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Resolution |
 | --- | --- | --- |
-| Q36 | How views and devices send input to a running model | Input blocks, an input track recorded at step boundaries, replay after rewind, `run.inputs` ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) |
+| Q36 | How views and devices send input to a running model | Input blocks, an input track recorded at step boundaries, replay after rewind, an optional default schedule in `run.inputs` ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)); runs saved as run files ([ADR 0059](decisions/0059-run-files.md)) |
 | Q34 | How the app declares model parameters and writes formulas | `= expression` in any value field, "+ parameter" in the Model group ([ADR 0056](decisions/0056-formulas-and-parameters-in-the-app.md)) |
 | Q33 | Whether popped-out tabs need deferred viewports | Yes: popped-out tabs draw on their own ([ADR 0055](decisions/0055-open-nodes-subsystem-values-deferred-windows.md)) |
 | Q32 | Whether which nodes are open on the diagram is saved | Saved as `controls.open` ([ADR 0055](decisions/0055-open-nodes-subsystem-values-deferred-windows.md)) |

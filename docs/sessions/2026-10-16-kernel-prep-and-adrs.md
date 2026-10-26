@@ -62,6 +62,7 @@
 
 ## Decided
 
+- 2026-10-26: run files ([ADR 0059](../decisions/0059-run-files.md)), after the owner asked how several runs of one model are kept: `<model>.<run>.run.json` beside the model with path, SHA-256 of the model without `controls`, seed, settings, schedule and track; the model keeps `run.inputs` as an optional default schedule only.
 - 2026-10-26: inputs ([ADR 0058](../decisions/0058-inputs-live-scheduled-replayed.md)): input blocks (`input.value`, `input.pointer`, later `input.gamepad`) whose values are parameters; bindings in `controls.inputs`; every change during a run recorded as a track (time, key, value) applied at step boundaries; replay after rewind until live input takes over; `run.inputs` schedules; `--inputs` tracks headless.
 - 2026-10-26: Phase 2 plan ([ADR 0057](../decisions/0057-phase-2-plan.md)), the owner choosing every recommended option: the interactive cart-pole gate; order inputs → typed arrays and speed (with Q17) → rigid bodies and scene view → plugin interface; the rigid-body engine by a MuJoCo/Rapier spike; ML, FMI, GPU fluids, adaptive master and acausal connections after the gate.
 - 2026-10-26: Phase 2 direction (owner): interactive real-time models, not a game engine; order input blocks (Q36), arrays and compiled typed equations (Q35), one plugin interface for blocks and views (Q28, Q37, WebAssembly recommended), rigid bodies with a scene view. Recorded in the [roadmap](../roadmap.md#phase-2--breadth) and [open questions](../open-questions.md); the order is still to be planned.

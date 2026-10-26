@@ -63,7 +63,8 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0055](0055-open-nodes-subsystem-values-deferred-windows.md) | Open nodes saved as `controls.open`; older sliders gain pins on reading; values inside subsystems as every use's default; popped-out tabs as deferred viewports | Accepted | 2026-10-24 |
 | [0056](0056-formulas-and-parameters-in-the-app.md) | `= expression` in any value field makes a formula; "+ parameter" declares the model's parameters; failing edits are refused | Accepted | 2026-10-24 |
 | [0057](0057-phase-2-plan.md) | Phase 2: interactive cart-pole gate; inputs, typed arrays and speed, rigid bodies and a scene view, one plugin interface; the rest after the gate | Accepted | 2026-10-26 |
-| [0058](0058-inputs-live-scheduled-replayed.md) | Inputs: input blocks wired like any block; every change recorded as a track applied at step boundaries; replay after rewind; `run.inputs` schedules; headless tracks | Accepted | 2026-10-26 |
+| [0058](0058-inputs-live-scheduled-replayed.md) | Inputs: input blocks wired like any block; every change recorded as a track applied at step boundaries; replay after rewind; `run.inputs` schedules; headless tracks | Accepted; amended by 0059 | 2026-10-26 |
+| [0059](0059-run-files.md) | Run files beside the model: recorded tracks and scenarios with the model hash, seed and settings; the model keeps an optional default schedule | Accepted | 2026-10-26 |
 
 ## When to write one
 
