@@ -81,6 +81,9 @@ pub type Bindings = BTreeMap<String, Vec<String>>;
 pub struct ViewInput<'a> {
     pub history: &'a History,
     pub bind: &'a Bindings,
+    /// The view feeds an `input.pointer` (ADR 0058): dragging sends the
+    /// pointer instead of panning, through [`View::pointer`].
+    pub sends_pointer: bool,
     slots: BTreeMap<&'a str, Vec<SignalRef>>,
     style: &'a BTreeMap<String, f64>,
     view_type: &'a ViewType,
@@ -150,6 +153,13 @@ pub trait View: Send {
     /// The signal the user clicked since last asked (a curve), so the app
     /// can show where it comes from (ADR 0053).
     fn picked(&mut self) -> Option<String> {
+        None
+    }
+
+    /// While the view sends input ([`ViewInput::sends_pointer`]): the
+    /// pointer since last asked, `[x, y, down]` in the view's coordinates
+    /// (ADR 0058). Views that cannot send input return nothing.
+    fn pointer(&mut self) -> Option<[f64; 3]> {
         None
     }
 }
@@ -416,9 +426,41 @@ pub(crate) fn view_input<'a>(
     ViewInput {
         history,
         bind,
+        sends_pointer: false,
         slots,
         style,
         view_type: t,
+    }
+}
+
+/// A plot's pointer as input (ADR 0058): `[x, y, down]` in the plot's
+/// coordinates while the pointer is pressed on it, and once more when it is
+/// let go (`down` 0), else nothing.
+#[derive(Debug, Default)]
+pub struct PlotPointer {
+    last: Option<[f64; 2]>,
+    sent: Option<[f64; 3]>,
+}
+
+impl PlotPointer {
+    /// Read the pointer from a plot's response, to be taken by
+    /// [`PlotPointer::take`].
+    pub fn read<R>(&mut self, response: &egui_plot::PlotResponse<R>) {
+        let r = &response.response;
+        if r.is_pointer_button_down_on() {
+            if let Some(pos) = r.interact_pointer_pos() {
+                let v = response.transform.value_from_position(pos);
+                self.last = Some([v.x, v.y]);
+                self.sent = Some([v.x, v.y, 1.0]);
+            }
+        } else if let Some([x, y]) = self.last.take() {
+            self.sent = Some([x, y, 0.0]);
+        }
+    }
+
+    /// What was read since last asked.
+    pub fn take(&mut self) -> Option<[f64; 3]> {
+        self.sent.take()
     }
 }
 
@@ -428,6 +470,8 @@ pub struct ViewState {
     pub bind: Bindings,
     /// Style values that differ from or override the defaults.
     pub style: BTreeMap<String, f64>,
+    /// The view feeds an `input.pointer` (ADR 0058), set by the app.
+    pub sends_pointer: bool,
     view: Box<dyn View>,
 }
 
@@ -442,6 +486,7 @@ impl ViewState {
             type_name: t.name.into(),
             bind,
             style: BTreeMap::new(),
+            sends_pointer: false,
             view: (t.create)(),
         })
     }
@@ -463,6 +508,7 @@ impl ViewState {
             type_name: t.name.into(),
             bind,
             style,
+            sends_pointer: false,
             view,
         })
     }
@@ -484,8 +530,14 @@ impl ViewState {
     /// Draw from `history`. Bindings to signals that no longer exist are
     /// skipped.
     pub fn show(&mut self, ui: &mut egui::Ui, t: &ViewType, history: &History) {
-        let input = view_input(&self.bind, &self.style, t, history);
+        let mut input = view_input(&self.bind, &self.style, t, history);
+        input.sends_pointer = self.sends_pointer;
         self.view.show(ui, &input);
+    }
+
+    /// The pointer the view sent since last asked (ADR 0058).
+    pub fn pointer(&mut self) -> Option<[f64; 3]> {
+        self.view.pointer()
     }
 
     pub fn camera(&self) -> Option<[f64; 3]> {
@@ -672,6 +724,7 @@ mod tests {
             ViewInput {
                 history: h,
                 bind: &bind,
+                sends_pointer: false,
                 slots: BTreeMap::new(),
                 style: &style,
                 view_type: xy,

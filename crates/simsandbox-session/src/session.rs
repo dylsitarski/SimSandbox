@@ -1035,6 +1035,24 @@ impl Session {
         self.after_param_change()
     }
 
+    /// Live input from a device (keys, a view's pointer, ADR 0058): as
+    /// [`Session::set_param_key`], but nothing happens (and nothing is
+    /// recorded) when an input block's value is already `value`, so a held
+    /// pointer or key sends only changes. Returns whether it changed.
+    pub fn set_input(&mut self, key: &str, value: f64) -> Result<bool, String> {
+        if self.sweep.is_none() {
+            self.apply_due();
+        }
+        if let Some((block, name)) = key.rsplit_once('.') {
+            if let Some(&id) = self.ids.get(block) {
+                if self.sim.param(id, name).ok() == Some(value) {
+                    return Ok(false);
+                }
+            }
+        }
+        self.set_param_key(key, value).map(|()| true)
+    }
+
     /// Set a value by key, not recorded.
     fn set_value(&mut self, key: &str, value: f64) -> Result<(), String> {
         set_key(&mut self.sim, &mut self.plan, &self.ids, key, value)
@@ -1086,10 +1104,12 @@ impl Session {
         self.track.seek(0.0, 0.0);
         // Back to t = 0 so the events there are due.
         self.sim.restart(0.0)?;
-        self.apply_due();
+        // The model as it starts, before the events: a run's hash and the
+        // saved model agree, and replaying applies the events again.
         if let Err(e) = self.capture_start() {
             self.warnings.push(e);
         }
+        self.apply_due();
         self.sim.restart(0.0)?;
         self.snapshots = vec![self.sim.snapshot()];
         self.steps_since_snapshot = 0;

@@ -1,0 +1,109 @@
+{
+  "format": 1,
+  "description": "Drag the pendulum (ADR 0058): press on the left view and the bob is pulled towards the pointer by a damped spring (k, d) while the button is held; let go and it swings on. The hand is an input.pointer block fed by that view; what a drag does is written in the pendulum's equations (the spring k, only while down is 1). Rewind and run on: the drags are replayed exactly. Runs ▸ Save run… keeps them beside the model.",
+  "run": {
+    "dt": 0.005
+  },
+  "blocks": [
+    {
+      "name": "hand",
+      "type": "input.pointer",
+      "method": {
+        "name": "held"
+      },
+      "settings": {
+        "max": "1.5",
+        "min": "-1.5",
+        "unit": "m"
+      }
+    },
+    {
+      "name": "bob",
+      "type": "eq.equations",
+      "method": {
+        "name": "rk4",
+        "substeps": 1.0
+      },
+      "equations": [
+        "# a pendulum of length L, pulled towards the hand while it is down",
+        "input hx [m]",
+        "input hy [m]",
+        "input down",
+        "param L [m] = 1",
+        "param g [m/s^2] = 9.81",
+        "param c [1/s] = 0.2",
+        "param k [1/s^2] = 60",
+        "param d [1/s] = 12",
+        "state theta",
+        "state omega [1/s]",
+        "x = L*sin(theta) [m]",
+        "y = -L*cos(theta) [m]",
+        "# while held: a spring's pull along the swing (tangent cos, sin), damped by d",
+        "pull = down*(k*((hx - x)*cos(theta) + (hy - y)*sin(theta))/L - d*omega)",
+        "dtheta/dt = omega",
+        "domega/dt = -g/L*sin(theta) - c*omega + pull"
+      ],
+      "params": {
+        "theta0": 0.5
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "hand.x",
+      "to": "bob.hx"
+    },
+    {
+      "from": "hand.y",
+      "to": "bob.hy"
+    },
+    {
+      "from": "hand.down",
+      "to": "bob.down"
+    }
+  ],
+  "controls": {
+    "params": {
+      "bob.k": {
+        "slider": true,
+        "range": [
+          0.0,
+          200.0
+        ],
+        "pin": true
+      },
+      "bob.c": {
+        "slider": true,
+        "pin": true
+      }
+    },
+    "views": [
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "bob.x",
+          "y": "bob.y"
+        },
+        "style": {
+          "equal_scales": 1.0,
+          "reach": 1.2
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": [
+            "bob.theta",
+            "hand.down"
+          ]
+        }
+      }
+    ],
+    "inputs": {
+      "hand": {
+        "view": 0
+      }
+    }
+  }
+}

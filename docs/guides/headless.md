@@ -9,6 +9,7 @@ How people and AI agents describe, check, run and render models without the wind
 3. `simsandbox check FILE`: fix each error at its `path` (`blocks[0].method`) or `line`/`column`, until `"ok": true`.
 4. `simsandbox run FILE --format json` (or `Model.run()`): the numbers, with speed and accuracy labels and notes on algebraic loops.
 5. `simsandbox render FILE --out view.png`: the views the app would show.
+6. To act on a run (push, steer, drag), write the changes as events: a schedule in the model (`run.inputs`) or a run file beside it, and replay it with `simsandbox run RUN.run.json` (see [Inputs and run files](#inputs-and-run-files)).
 
 ## CLI
 
@@ -17,9 +18,9 @@ Build with `cargo build --release -p simsandbox-cli`; the binary is `target/rele
 | Command | Output |
 | --- | --- |
 | `simsandbox describe [TYPE]` | JSON: `block_types`, `view_types`, `filter_types`, `units`; or one block or view type; `describe units` lists every unit symbol, its SI form and factor, and the prefixes ([ADR 0047](../decisions/0047-unit-vocabulary.md)) |
-| `simsandbox schema` | The model file's JSON Schema |
-| `simsandbox check FILE` | JSON report; exit status 1 if the model cannot run |
-| `simsandbox run FILE [--t-end S] [--dt S] [--format csv\|json]` | Every output at every step (or sweep sample) |
+| `simsandbox schema [run]` | The model file's JSON Schema, or the [run file's](../../crates/simsandbox-file/run.schema.json) |
+| `simsandbox check FILE` | JSON report; exit status 1 if the model cannot run. For a run file: its model is found and checked with the run's settings and events, and a model changed since the run was made is a warning |
+| `simsandbox run FILE [--t-end S] [--dt S] [--format csv\|json] [--inputs RUN]` | Every output at every step (or sweep sample). `FILE` may be a run file, which is replayed; `--inputs RUN` applies a run's events to a model file. `render` takes `--inputs` too |
 | `simsandbox render FILE --out IMAGE.png [--t-end S] [--view N] [--width P] [--height P] [--scale S] [--light]` | PNG of the views after running to `t_end`, placed as the file's `controls.layout` arranges them ([ADR 0053](../decisions/0053-docked-panes-inspector-and-node-values.md)) or tiled in a grid |
 | `simsandbox render FILE --diagram [--subsystem NAME] [--no-data] [--values] --out IMAGE.png [--width P] [--height P] [--scale S] [--light]` | PNG of the block diagram, or a subsystem's inside, as the app's Diagram tab shows it (also for a file that cannot run), with the filters and views as its data layer unless `--no-data` ([ADR 0050](../decisions/0050-data-layer-and-canvas-undo.md)); the nodes `controls.open` lists show their values, every node with `--values` ([ADR 0055](../decisions/0055-open-nodes-subsystem-values-deferred-windows.md)) |
 | `simsandbox start-from FILE --t S [--out NEW.json]` | The model file that starts from the state reached at `t` ([ADR 0042](../decisions/0042-node-canvas.md)): initial-condition parameters where they say it exactly, else a `start` entry per block |
@@ -53,6 +54,16 @@ Notes, warnings and labels go to standard error; data to standard output.
 
 JSON has no infinities or NaN; they are written as `null`. CSV leaves populations out.
 
+## Inputs and run files
+
+Input blocks ([ADR 0058](../decisions/0058-inputs-live-scheduled-replayed.md)) are values set from outside a running model: `input.value` (one output `y`) and `input.pointer` (`x`, `y`, `down`), with settings `unit`, `min` and `max`. Their outputs are their own parameters, so they are wired like any block.
+
+A change during a run is an event `(t, key, value)`, applied at the first step boundary at or after `t` and held over the step. `key` is any parameter key (`push.y`, `cruise.kp`). Events come from:
+- the model's default schedule, `run.inputs`: `[{"t": 5, "set": "push.y", "to": 40}]` (Python `Model.schedule(5, "push.y", 40)`); every run applies it;
+- a run file `<model>.<run>.run.json` beside the model ([ADR 0059](../decisions/0059-run-files.md)): the schedule in effect (`inputs`) and recorded live input (`track`, `[[t, "key", value], ...]`), with the seed, `run` settings and `model_hash` of the model it was made with. The hash leaves out `controls`, the seed, `dt`, `t_end` and the schedule, and is taken over the model with every parameter written out, so saving from the app does not make a run stale.
+
+The same model, events and seed give the same run bit for bit, in the app (live, after a rewind, or from Runs ▸ a saved run) and headless. Bindings of keys and views to input blocks (`controls.inputs`) affect only the app.
+
 ## Python
 
 Install from a checkout (needs Rust and Python 3.10 or later):
@@ -79,6 +90,11 @@ m.set("decay.k", "2*rate")                        # a block parameter as a formu
 m.group(["decay"])                                # make a subsystem of blocks
 m.promote("energy", to="spring.u")               # an expression filter becomes a block (ADR 0050)
 settled = m.start_from(10.0)                     # starts from the state at t = 10
+m.schedule(5.0, "decay.k", 2.0)                  # a change at t = 5 in every run (run.inputs)
+r = m.run(inputs=[(1.0, "decay.k", 0.1)])        # one-off changes during this run
+run = ss.Run.load("cart-pole.push-test.run.json")  # a run file and its model
+r = run.replay()                                 # the same numbers as when it was recorded
+ss.Run(m, track=[(1.0, "decay.k", 0.1)], name="slow", model_path="decay.ssbx.json").save("decay.slow.run.json")
 ```
 
 - Units ([ADR 0045](../decisions/0045-units-in-typed-equations.md)): write them in the equations (`input F [N]`, `param m [kg] = 2`, `state x [m] = 0`, `dv/dt = F/m [m/s^2]`; a unit at the end of a line is its left side's, [ADR 0049](../decisions/0049-state-declarations-and-rate-units.md)); `check` then reports lines that do not balance, and each parameter's `unit`. Connections need the same unit; convert with `m.add_block("to_m", "units.convert", settings={"from": "mm", "to": "m"})`.

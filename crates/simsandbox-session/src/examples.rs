@@ -26,6 +26,10 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/cruise-control.ssbx.json"),
     },
     Example {
+        name: "Steer the car with keys (input)",
+        text: include_str!("../../../examples/cruise-steer.ssbx.json"),
+    },
+    Example {
         name: "Units (a shaker in mm drives springs in m)",
         text: include_str!("../../../examples/units.ssbx.json"),
     },
@@ -52,6 +56,10 @@ pub const EXAMPLES: &[Example] = &[
     Example {
         name: "Pendulum (with its own view)",
         text: include_str!("../../../examples/pendulum.ssbx.json"),
+    },
+    Example {
+        name: "Drag the bob (input from a view)",
+        text: include_str!("../../../examples/pendulum-drag.ssbx.json"),
     },
     Example {
         name: "Heat along a rod (a grid field)",

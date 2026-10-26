@@ -24,10 +24,12 @@ _Last updated: 2026-10-26_
 - Subsystems and declared parameters ([ADR 0043](decisions/0043-subsystems.md)): model files define subsystems used by name and the model's own parameters; block parameters may be formulas; the Diagram tab opens a subsystem to edit it and makes one from a selection; the panel shows model, use and formula-set parameters.
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
-- 277 tests in the workspace plus 15 Python tests, including verification against analytic solutions and convergence order.
+- Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
+- 285 tests in the workspace plus 16 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-10-26: Phase 2 item 1, inputs, built ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md), [ADR 0059](decisions/0059-run-files.md)): input blocks in `simsandbox-eq`; the input track, schedule, replay and run files in the session; a parameter change now acts in the next step (the kernel refreshes a changed block's outputs before stepping); keys and view pointers in the app, "Replaying input", the Runs menu; CLI and Python; two demos. Tests replay a run bit for bit after a rewind, from a run file, headless and from the app's saved run.
 - 2026-10-26: run files decided ([ADR 0059](decisions/0059-run-files.md), amending ADR 0058): recordings and scenarios live beside the model, any number per model, each with the model's hash (`controls` left out), seed and settings; the model keeps an optional default schedule.
 - 2026-10-26: inputs decided ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md), Q36): input blocks, an input track recorded at step boundaries and replayed after rewind, schedules in `run.inputs`, tracks headless.
 - 2026-10-26: Phase 2 planned ([ADR 0057](decisions/0057-phase-2-plan.md)): gate an interactive cart-pole replayed bit for bit; order inputs, typed arrays and speed (with implicit methods), rigid bodies and a scene view (engine by a MuJoCo/Rapier spike), one plugin interface for blocks and views; ML, FMI, GPU fluids, the adaptive master and acausal connections after the gate.
@@ -90,13 +92,13 @@ _Last updated: 2026-10-26_
 
 ## In progress
 
-- Nothing.
+- The owner tries inputs in the window: "Drag the bob", "Steer the car with keys" (hold Up or Down), rewind and replay, Runs ▸ Save run… and replaying it.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Phase 2, item 1: build inputs** as [ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md) decides: `input.value` and `input.pointer` blocks; bindings in `controls.inputs` (keys, sliders, views that send the pointer: `plot.xy` and the pendulum view first); the input track in the session, applied at step boundaries; replay after rewind with "Replaying input"; `run.inputs` as an optional default schedule; run files beside the model ([ADR 0059](decisions/0059-run-files.md): model hash without `controls`, seed, settings, schedule and track; "Save run…", a Runs menu, "Use as the model's schedule"); `simsandbox run RUN.run.json`, `--inputs RUN` for `run` and `render`, `check` and `schema` for run files; Python `Run` and `run(inputs=...)`; tests that a recorded run replays bit for bit, live and headless. Demos: dragging the pendulum, steering the cruise-control car. Before that, the owner tries formulas and parameters in the app ([ADR 0056](decisions/0056-formulas-and-parameters-in-the-app.md)).
+1. **Phase 2, item 2: typed equations with arrays, faster** ([ADR 0057](decisions/0057-phase-2-plan.md), [Q35](open-questions.md)): an ADR first (array states, parameters and ports; grid stencils; a compact instruction list; an implicit method for stiff grids, [Q17](open-questions.md); typed agent rules revisited, [Q26](open-questions.md)), then the heat equation against its analytic solution and a reaction–diffusion pattern. Start after the owner's check of inputs.
 2. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
@@ -122,6 +124,7 @@ In priority order. Each item should end with tests and updated docs.
 - Only models with no states can be swept; sweeping models with states (bifurcation diagrams) is a later feature. Maps have no step-number variable `n` yet.
 - Typed equations without units are dimensionless and unchecked; formulas feeding a block that gives no units are not checked ([ADR 0046](decisions/0046-units-of-declared-parameters.md)). There are no symbolic Jacobians yet ([ADR 0017](decisions/0017-typed-equations.md)). Applying edited equations restarts the run from t = 0.
 - Integer method options are written as numbers with a decimal point (`"substeps": 4.0`).
+- Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)): no `input.gamepad` yet; only `plot.xy` and the pendulum view send the pointer, and the pendulum view only for `eq.pendulum` models; keys drive `input.value` blocks only (two keys each). Input faster than one step is not seen. The rewind slider does not yet show where recorded input lies. Opening a saved run puts its seed, step and schedule into the open model, so Save would write them (the log says so when they differ). The Runs menu does not mark stale runs; opening one warns in the log.
 
 ## Blockers
 

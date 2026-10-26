@@ -93,6 +93,8 @@ pub struct Status {
     pub limited: bool,
     /// A sweep being evaluated: samples done and in all.
     pub sweep: Option<(usize, usize)>,
+    /// Recorded input lies ahead: running on replays it (ADR 0058).
+    pub replaying: bool,
 }
 
 /// Something for the log.
@@ -301,6 +303,7 @@ fn status(s: &Session, running: bool, achieved: f64, limited: bool) -> Status {
         achieved,
         limited,
         sweep: s.resampling(),
+        replaying: s.replaying(),
     }
 }
 

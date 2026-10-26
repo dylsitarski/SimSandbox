@@ -51,7 +51,7 @@ A run file sits beside its model and is named `<model>.<run>.run.json`, e.g. `ca
 ```
 
 - **`model`** is the model file's path, relative to the run file.
-- **`model_hash`** is a SHA-256 of the model as saved, leaving out `controls`. Controls never change results ([ADR 0012](0012-controls-in-model-files.md)), so rearranging panes or pinning values does not make a run stale.
+- **`model_hash`** is a SHA-256 of the model as saved, leaving out `controls`. Controls never change results ([ADR 0012](0012-controls-in-model-files.md)), so rearranging panes or pinning values does not make a run stale. As built (2026-10-26) it also leaves out the seed, `dt`, `t_end` and the schedule, which the run records itself, and is taken over the model with every parameter written out, so a file that leaves defaults implicit and the same model saved by the app hash alike.
 - **`inputs` and `track`** hold everything applied in the run: the schedule in effect (copied, so later edits to the model's default schedule do not change the run) and the recorded live input. Both are events of ADR 0058, applied at step boundaries.
 - **`seed` and `run`** hold the seed and the run settings that were used, overriding the model's.
 - **`name`, `note` and `created`** describe the run; they do not affect results.

@@ -34,6 +34,24 @@ const TRAIL_LENGTH: StyleProperty = StyleProperty {
     applies: over_time,
 };
 
+const REACH: StyleProperty = StyleProperty {
+    name: "reach",
+    default: 0.0,
+    suggested: [0.0, 10.0],
+    unit: "",
+    description: "Always show at least this far either side of 0 on both axes; 0 fits the data only. Gives a view that sends its pointer room to press in",
+    applies: always,
+};
+
+const EQUAL_SCALES: StyleProperty = StyleProperty {
+    name: "equal_scales",
+    default: 0.0,
+    suggested: [0.0, 1.0],
+    unit: "",
+    description: "1 draws both axes to the same scale, so shapes keep their proportions",
+    applies: always,
+};
+
 pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
     r.register(ViewType {
         name: "plot.xy",
@@ -60,7 +78,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             },
             COLOUR,
         ],
-        style: &[TRAIL_LENGTH],
+        style: &[TRAIL_LENGTH, REACH, EQUAL_SCALES],
         applies_to: &[],
         swap: Some(Swap::Transpose),
         presets: &[
@@ -266,6 +284,8 @@ struct Xy {
     transposed: bool,
     /// The curve last clicked, until the app asks.
     picked: Option<String>,
+    /// The pointer, when the view sends input (ADR 0058).
+    pointer: crate::view::PlotPointer,
 }
 
 /// A curve's id in the plot, by its signal's name.
@@ -297,7 +317,11 @@ impl View for Xy {
         } else {
             (Some(x_label), y_label)
         };
-        let mut plot = Plot::new("plot.xy").allow_scroll(false);
+        // Sending the pointer, a drag moves it instead of the plot.
+        let mut plot = Plot::new("plot.xy")
+            .allow_scroll(false)
+            .allow_drag(!input.sends_pointer)
+            .allow_boxed_zoom(!input.sends_pointer);
         if let Some(l) = across {
             plot = plot.x_axis_label(l);
         }
@@ -324,6 +348,17 @@ impl View for Xy {
         }
         if let Some([lo, hi]) = up_range.and_then(widened) {
             plot = plot.include_y(lo).include_y(hi);
+        }
+        let reach = input.style("reach");
+        if reach > 0.0 && reach.is_finite() {
+            plot = plot
+                .include_x(-reach)
+                .include_x(reach)
+                .include_y(-reach)
+                .include_y(reach);
+        }
+        if input.style("equal_scales") >= 0.5 {
+            plot = plot.data_aspect(1.0);
         }
         let shown: Vec<String> = ys.iter().map(|&y| h.name(y).to_string()).collect();
         let response = plot.show(ui, |plot| {
@@ -412,9 +447,14 @@ impl View for Xy {
                 }
             }
         });
+        if input.sends_pointer {
+            // The plot is drawn as (x, y) or transposed; the pointer is sent
+            // in the plot's own axes.
+            self.pointer.read(&response);
+        }
         // A click on a curve picks its signal; with one curve (drawn in
         // colour segments that cannot be hovered), a click anywhere does.
-        if response.response.clicked() {
+        if response.response.clicked() && !input.sends_pointer {
             let hit = response
                 .hovered_plot_item
                 .and_then(|id| shown.iter().find(|n| curve_id(n) == id).cloned());
@@ -424,6 +464,10 @@ impl View for Xy {
 
     fn picked(&mut self) -> Option<String> {
         self.picked.take()
+    }
+
+    fn pointer(&mut self) -> Option<[f64; 3]> {
+        self.pointer.take()
     }
 
     fn transpose(&mut self) {

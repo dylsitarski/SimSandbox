@@ -49,7 +49,7 @@ pub fn register_views(r: &mut ViewRegistry) -> Result<(), String> {
             description: "The pendulum swinging",
             bindings: pendulum_bindings,
         }],
-        create: || Box::new(PendulumView),
+        create: || Box::<PendulumView>::default(),
     })
 }
 
@@ -68,7 +68,11 @@ fn pendulum_bindings(a: &Available<'_>) -> Option<Bindings> {
     )
 }
 
-struct PendulumView;
+#[derive(Default)]
+struct PendulumView {
+    /// The pointer, when the view sends input (ADR 0058): drag the bob.
+    pointer: simsandbox_views::view::PlotPointer,
+}
 
 impl View for PendulumView {
     fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>) {
@@ -88,9 +92,11 @@ impl View for PendulumView {
         let reach = 1.15 * bob[0].hypot(bob[1]).max(1e-9);
         let first = trail_start(h.times(), input.style("trail_length"));
         let trail = finite_runs((first..n).map(|k| [h.value(x, k), h.value(y, k)]));
-        Plot::new("eq.pendulum")
+        let response = Plot::new("eq.pendulum")
             .data_aspect(1.0)
             .allow_scroll(false)
+            .allow_drag(!input.sends_pointer)
+            .allow_boxed_zoom(!input.sends_pointer)
             .include_x(-reach)
             .include_x(reach)
             .include_y(-reach)
@@ -116,6 +122,13 @@ impl View for PendulumView {
                 );
                 plot.points(Points::new("bob", vec![bob]).radius(9.0).color(HEAD));
             });
+        if input.sends_pointer {
+            self.pointer.read(&response);
+        }
+    }
+
+    fn pointer(&mut self) -> Option<[f64; 3]> {
+        self.pointer.take()
     }
 }
 

@@ -65,7 +65,7 @@ A model turns input into physics itself. To drag the pendulum, wire `input.point
 ### Bindings
 
 How keys, sliders and views feed input blocks is saved in `controls.inputs`, like the rest of `controls`, and never changes results ([ADR 0012](0012-controls-in-model-files.md)). Examples:
-- `{"steer.y": {"keys": ["Left", "Right"], "rate": 0.5}}`
+- `{"steer": {"keys": ["ArrowLeft", "ArrowRight"], "rate": 0.5}}` (keyed by the input block's name; built as such on 2026-10-26)
 - `{"hand": {"view": 2}}`
 
 A view that sends input declares it, and `plot.xy` and the pendulum view send the pointer first.

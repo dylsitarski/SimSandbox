@@ -51,6 +51,11 @@ pub struct SimApp {
     this: std::sync::Weak<std::sync::Mutex<SimApp>>,
     /// What popped-out windows asked for, carried out by the main window.
     popped_actions: Vec<DockAction>,
+    /// Values keys are driving (ADR 0058), by input block, while a key is
+    /// held or until its release is sent.
+    key_values: HashMap<String, f64>,
+    /// "Save run…" while open: the run's name and note.
+    run_dialog: Option<(String, String)>,
     registry: Registry,
     /// The open model, running on its worker thread (ADR 0035).
     session: Option<Live>,
@@ -125,6 +130,8 @@ impl SimApp {
             new_param: Default::default(),
             this: std::sync::Weak::new(),
             popped_actions: Vec::new(),
+            key_values: HashMap::new(),
+            run_dialog: None,
             registry: registry(),
             session: None,
             speed: 1.0,
@@ -193,6 +200,10 @@ impl SimApp {
 
     fn open_path(&mut self, path: &str) {
         if self.ask_first(Discard::OpenPath(path.into())) {
+            return;
+        }
+        if path.ends_with(".run.json") {
+            self.open_run(Path::new(path));
             return;
         }
         match std::fs::read_to_string(path) {
@@ -532,6 +543,9 @@ impl SimApp {
                 self.save_as_dialog();
             }
             if has_model {
+                ui.menu_button("Runs", |ui| self.runs_menu(ui))
+                    .response
+                    .on_hover_text("Save this run's input beside the model, and replay saved runs");
                 ui.separator();
                 self.view_menus(ui);
                 self.solving_menu(ui);
@@ -548,6 +562,7 @@ impl SimApp {
             }
         });
         self.shortcuts(ui);
+        self.key_inputs(ui);
 
         let Some(live) = self.session.as_ref() else {
             return;
@@ -679,6 +694,14 @@ impl SimApp {
                 }
                 ui.separator();
                 ui.monospace(format!("t = {:.3} s", st.time));
+                if st.replaying {
+                    ui.separator();
+                    ui.colored_label(ui.visuals().hyperlink_color, "Replaying input")
+                        .on_hover_text(
+                            "Recorded input lies ahead and is applied as the run goes on. \
+                             Any live input from here on takes over (a new branch).",
+                        );
+                }
             });
         }
         ui.horizontal(|ui| {
@@ -903,6 +926,11 @@ impl SimApp {
                 }
                 DockAction::Select(t) => self.views.selected = Some(t),
                 DockAction::Inspect(signal) => self.inspect_signal(&signal),
+                DockAction::Pointer(block, p) => {
+                    for (name, v) in ["x", "y", "down"].into_iter().zip(p) {
+                        self.send_input(format!("{block}.{name}"), v);
+                    }
+                }
             }
         }
     }
@@ -1257,6 +1285,17 @@ impl SimApp {
             });
             return;
         }
+        // Views feeding an `input.pointer` (ADR 0058), by tile.
+        let senders: HashMap<u64, String> = m
+            .file
+            .controls
+            .inputs
+            .iter()
+            .filter_map(|(block, b)| {
+                let tile = (*views.opened.get(b.view?)?)?;
+                Some((tile, block.clone()))
+            })
+            .collect();
         let (cols, rows) = simsandbox_session::views::grid(shown.len());
         let mut swap = false;
         for (k, &i) in shown.iter().enumerate() {
@@ -1343,14 +1382,32 @@ impl SimApp {
                             tile.state.swap(t);
                         }
                         slot_editors(ui, t, &mut tile.state, &available, &history);
+                        let sender = senders.get(&tile.id);
+                        tile.state.sends_pointer = sender.is_some();
                         tile.state.show(ui, t, &history);
                         if let Some(signal) = tile.state.picked() {
                             actions.push(DockAction::Inspect(signal));
+                        }
+                        if let (Some(block), Some(p)) = (sender, tile.state.pointer()) {
+                            actions.push(DockAction::Pointer(block.clone(), p));
                         }
                     });
             });
         }
         ui.allocate_rect(area, egui::Sense::hover());
+    }
+
+    /// Live input from keys or a view (ADR 0058): recorded when it changes
+    /// a value. A newer value for the same key replaces one not yet sent.
+    fn send_input(&self, key: String, value: f64) {
+        let Some(live) = self.session.as_ref() else {
+            return;
+        };
+        live.send(Some(&format!("input:{key}")), move |s, c| {
+            if let Err(e) = s.set_input(&key, value) {
+                c.error(format!("input {key}: {e}"));
+            }
+        });
     }
 
     /// Apply typed or dragged parameter values to the running model.
@@ -1446,6 +1503,285 @@ impl SimApp {
         }
     }
 
+    /// The Runs menu (ADR 0059): save this run, replay a saved run of
+    /// this model, or make a run the model's default schedule.
+    fn runs_menu(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .button("Save run…")
+            .on_hover_text("Write this run's schedule and recorded input beside the model, to replay it later or headless")
+            .clicked()
+        {
+            self.run_dialog = Some((String::new(), String::new()));
+            ui.close();
+        }
+        if ui
+            .button("Use this run as the model's schedule")
+            .on_hover_text("Its schedule and recorded input become run.inputs: every run of the model applies them")
+            .clicked()
+        {
+            match self.current_run("this run", "") {
+                Ok(run) => self.use_as_schedule(&run, "this run"),
+                Err(e) => self.error = Some(e),
+            }
+            ui.close();
+        }
+        ui.separator();
+        let Some(model) = self.path.clone() else {
+            ui.weak("Save the model to keep runs beside it.");
+            return;
+        };
+        let runs = runs_beside(&model);
+        if runs.is_empty() {
+            ui.weak("No saved runs of this model.");
+        }
+        for (path, run) in runs {
+            let name = if run.name.is_empty() {
+                path.file_name()
+                    .map_or(String::new(), |n| n.to_string_lossy().into_owned())
+            } else {
+                run.name.clone()
+            };
+            let mut hover = format!(
+                "{} events scheduled, {} recorded",
+                run.inputs.len(),
+                run.track.len()
+            );
+            if !run.created.is_empty() {
+                hover = format!("{}\n{hover}", run.created);
+            }
+            if !run.note.is_empty() {
+                hover = format!("{}\n{hover}", run.note);
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .button(&name)
+                    .on_hover_text(format!("Restart and replay it\n{hover}"))
+                    .clicked()
+                {
+                    self.open_run(&path);
+                    ui.close();
+                }
+                if ui
+                    .small_button("as schedule")
+                    .on_hover_text("Use its events as the model's schedule (run.inputs)")
+                    .clicked()
+                {
+                    self.use_as_schedule(&run, &name);
+                    ui.close();
+                }
+            });
+        }
+    }
+
+    /// This run as a run file (ADR 0059), its model named relative to the
+    /// model's folder.
+    fn current_run(
+        &self,
+        name: &str,
+        note: &str,
+    ) -> Result<simsandbox_file::runs::RunFile, String> {
+        let live = self.session.as_ref().ok_or("no model is open")?;
+        let model = self
+            .path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        let (name, note, created) = (name.to_string(), note.to_string(), utc_now());
+        live.call(move |s, _| s.run_file(&model, &name, &note, &created))
+    }
+
+    /// The name and note asked by "Save run…".
+    fn run_dialog(&mut self, ctx: &egui::Context) {
+        let Some((name, note)) = self.run_dialog.as_mut() else {
+            return;
+        };
+        let mut answer = None;
+        egui::Modal::new(egui::Id::new("save-run")).show(ctx, |ui| {
+            ui.heading("Save run");
+            ui.weak("The schedule and the input recorded so far, beside the model.");
+            ui.add_space(6.0);
+            egui::Grid::new("save-run-fields")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    ui.label("Name");
+                    ui.text_edit_singleline(name);
+                    ui.end_row();
+                    ui.label("Note");
+                    ui.text_edit_multiline(note);
+                    ui.end_row();
+                });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!name.trim().is_empty(), egui::Button::new("Save"))
+                    .clicked()
+                {
+                    answer = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        match answer {
+            Some(true) => {
+                let (name, note) = self.run_dialog.take().unwrap_or_default();
+                self.save_run(name.trim(), note.trim());
+            }
+            Some(false) => self.run_dialog = None,
+            None => {}
+        }
+    }
+
+    /// Write this run beside the model (ADR 0059), saving a model that has
+    /// never been saved first.
+    fn save_run(&mut self, name: &str, note: &str) {
+        if self.path.is_none() {
+            self.save_as_dialog();
+        }
+        let Some(model) = self.path.clone() else {
+            return;
+        };
+        let run = match self.current_run(name, note) {
+            Ok(run) => run,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        let model_name = model
+            .file_name()
+            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        let dir = model.parent().unwrap_or(Path::new(""));
+        let file = simsandbox_file::runs::run_file_name(&model_name, name);
+        let mut path = dir.join(&file);
+        let mut k = 2;
+        while path.exists() {
+            let stem = file.trim_end_matches(".run.json");
+            path = dir.join(format!("{stem}-{k}.run.json"));
+            k += 1;
+        }
+        if !run_fits_disk(&run, &model, &self.registry) {
+            self.log.warn(format!(
+                "{}: the model changed since this run started (unsaved or since saved); \
+                 the run opens with a warning. Save the model, restart and record again for one that fits",
+                path.display()
+            ));
+        }
+        match std::fs::write(&path, run.to_json()) {
+            Ok(()) => self.log.info(format!(
+                "Saved run '{name}' ({} scheduled, {} recorded) to {}",
+                run.inputs.len(),
+                run.track.len(),
+                path.display()
+            )),
+            Err(e) => self.error = Some(format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// Open a run file (ADR 0059): its model from disk with the run's
+    /// seed, settings and schedule, then restart and replay its input.
+    fn open_run(&mut self, path: &Path) {
+        let fail = |e: String| format!("{}: {e}", path.display());
+        let run = match std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| simsandbox_file::runs::RunFile::from_json(&t).map_err(|e| e.to_string()))
+        {
+            Ok(run) => run,
+            Err(e) => {
+                self.error = Some(fail(e));
+                return;
+            }
+        };
+        let model = path.parent().unwrap_or(Path::new("")).join(&run.model);
+        let file = match std::fs::read_to_string(&model)
+            .map_err(|e| format!("its model {}: {e}", model.display()))
+            .and_then(|t| {
+                simsandbox_file::ModelFile::from_json(&t)
+                    .map(|(f, _)| f)
+                    .map_err(|e| format!("its model {}: {e}", model.display()))
+            }) {
+            Ok(f) => f,
+            Err(e) => {
+                self.error = Some(fail(e));
+                return;
+            }
+        };
+        let replayed = run.apply_to(&file);
+        let differs = replayed.run != file.run;
+        let title = model
+            .file_name()
+            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        self.open_text(&title, &replayed.to_json());
+        if self.error.is_some() {
+            return;
+        }
+        self.path = Some(model.clone());
+        self.mark_saved();
+        if !run_fits_disk(&run, &model, &self.registry) {
+            self.log.warn(format!(
+                "{}: the model changed since this run was recorded; replaying it anyway",
+                path.display()
+            ));
+        }
+        let track: Vec<simsandbox_session::session::InputEvent> = run
+            .track
+            .iter()
+            .map(|(t, key, value)| simsandbox_session::session::InputEvent {
+                t: *t,
+                key: key.clone(),
+                value: *value,
+            })
+            .collect();
+        let replay = self
+            .session
+            .as_ref()
+            .map(|live| live.call(move |s, _| s.replay(track)));
+        match replay {
+            Some(Ok(Ok(()))) => {
+                let name = if run.name.is_empty() {
+                    "run"
+                } else {
+                    &run.name
+                };
+                self.log.info(format!(
+                    "Replaying {name} ({} recorded events)",
+                    run.track.len()
+                ));
+                if differs {
+                    self.log.info(
+                        "The run's seed, step or schedule differ from the model's and are in use; \
+                         saving the model would keep them",
+                    );
+                }
+            }
+            Some(Ok(Err(e)) | Err(e)) => self.error = Some(fail(e)),
+            None => {}
+        }
+    }
+
+    /// Make a run's events the model's default schedule (`run.inputs`).
+    fn use_as_schedule(&mut self, run: &simsandbox_file::runs::RunFile, name: &str) {
+        let mut events = run.inputs.clone();
+        events.extend(
+            run.track
+                .iter()
+                .map(|(t, key, value)| simsandbox_file::ScheduledChange {
+                    t: *t,
+                    set: key.clone(),
+                    to: *value,
+                }),
+        );
+        // Stable: at equal times the schedule stays before the recording,
+        // as they were applied.
+        events.sort_by(|a, b| a.t.total_cmp(&b.t));
+        let n = events.len();
+        self.rebuild(
+            move |f| f.run.inputs = events,
+            &format!("The model's schedule is now {name}'s {n} events"),
+        );
+    }
+
     /// The open model as a file, with the current parameters, step, speed
     /// and views.
     fn saved_text(&self) -> Result<String, String> {
@@ -1466,6 +1802,68 @@ impl SimApp {
             self.save();
         } else if ui.input_mut(|i| i.consume_shortcut(&open)) {
             self.open_dialog();
+        }
+    }
+
+    /// Keys bound to `input.value` blocks in `controls.inputs` (ADR 0058).
+    /// With a rate, the first key moves the value down and the second up
+    /// at that rate per second, and it stays where it is let go; without,
+    /// the value is its range's low or high end while a key is held and 0
+    /// when none is. Keys typed into a field are not input.
+    fn key_inputs(&mut self, ui: &mut egui::Ui) {
+        let Some(live) = self.session.as_ref() else {
+            return;
+        };
+        let m = live.model();
+        if m.file.controls.inputs.values().all(|b| b.keys.is_empty()) {
+            return;
+        }
+        let typing = ui.ctx().egui_wants_keyboard_input();
+        let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
+        let mut sends = Vec::new();
+        for (block, b) in &m.file.controls.inputs {
+            let [down, up] = match b.keys.as_slice() {
+                [d, u] => [d, u].map(|k| egui::Key::from_name(k)),
+                _ => continue,
+            };
+            let held =
+                |k: Option<egui::Key>| !typing && k.is_some_and(|k| ui.input(|i| i.key_down(k)));
+            let dir = held(up) as i32 - held(down) as i32;
+            let key = format!("{block}.y");
+            let Some(row) = m.params.iter().find(|r| r.key == key) else {
+                continue;
+            };
+            let [lo, hi] = row.suggested;
+            let value = match (b.rate, dir) {
+                (_, 0) if held(up) || held(down) => continue,
+                (Some(_), 0) => {
+                    self.key_values.remove(block);
+                    continue;
+                }
+                (None, 0) => match self.key_values.remove(block) {
+                    Some(_) => 0.0_f64.clamp(lo, hi),
+                    None => continue,
+                },
+                (Some(rate), d) => {
+                    let from = self.key_values.get(block).copied().unwrap_or(row.value);
+                    (from + d as f64 * rate * dt).clamp(lo, hi)
+                }
+                (None, d) => {
+                    if d > 0 {
+                        hi
+                    } else {
+                        lo
+                    }
+                }
+            };
+            if dir != 0 {
+                self.key_values.insert(block.clone(), value);
+                ui.ctx().request_repaint();
+            }
+            sends.push((key, value));
+        }
+        for (key, value) in sends {
+            self.send_input(key, value);
         }
     }
 
@@ -2192,6 +2590,7 @@ impl eframe::App for SimApp {
         self.signals_window(&ctx);
         self.guard_close(&ctx);
         self.unsaved_dialog(&ctx);
+        self.run_dialog(&ctx);
         self.check_unsaved();
 
         egui::Panel::top("toolbar").show(ui, |ui| {
@@ -2227,6 +2626,8 @@ enum DockAction {
     Select(u64),
     /// Show where a clicked curve comes from.
     Inspect(String),
+    /// A view's pointer for an `input.pointer` block: `[x, y, down]`.
+    Pointer(String, [f64; 3]),
 }
 
 /// A tab in its own window, by what it shows (tiles are renumbered when
@@ -3667,6 +4068,65 @@ fn write_ppm(path: &Path, image: &egui::ColorImage) -> std::io::Result<()> {
     std::fs::write(path, bytes)
 }
 
+/// The run files beside `model` that name it (ADR 0059), by name.
+fn runs_beside(model: &Path) -> Vec<(PathBuf, simsandbox_file::runs::RunFile)> {
+    let Some(model_name) = model.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return Vec::new();
+    };
+    let dir = match model.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut runs: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().ends_with(".run.json"))
+        .filter_map(|p| {
+            let text = std::fs::read_to_string(&p).ok()?;
+            let run = simsandbox_file::runs::RunFile::from_json(&text).ok()?;
+            (run.model == model_name).then_some((p, run))
+        })
+        .collect();
+    runs.sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.0.cmp(&b.0)));
+    runs
+}
+
+/// Whether the model saved at `model` is the one `run` was made with.
+fn run_fits_disk(run: &simsandbox_file::runs::RunFile, model: &Path, registry: &Registry) -> bool {
+    std::fs::read_to_string(model)
+        .ok()
+        .and_then(|t| simsandbox_file::load(&t, registry).ok())
+        .and_then(|l| run.fits(&l).ok())
+        .unwrap_or(false)
+}
+
+/// Now as RFC 3339 in UTC, to the second.
+fn utc_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs()) as i64;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4339,6 +4799,75 @@ mod tests {
             .iter()
             .any(|c| c.from == "push.push" && c.to == "car.F"));
         assert!(m.filters.is_empty());
+    }
+
+    #[test]
+    fn a_dragged_run_is_saved_beside_the_model_and_replayed() {
+        let dir = std::env::temp_dir().join(format!("simsandbox-runs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Drag the bob"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        let model = dir.join("drag.ssbx.json");
+        app.save_to(&model);
+        let live = app.session.as_ref().unwrap();
+        live.set_running(false);
+        live.call(|s, _| s.restart()).unwrap().unwrap();
+        live.call(|s, _| s.run_until(0.5)).unwrap().unwrap();
+        // The view's pointer, as the dock sends it; a repeat is not recorded.
+        for [x, y, down] in [[1.0, 0.0, 1.0], [1.0, 0.0, 1.0]] {
+            for (k, v) in [("x", x), ("y", y), ("down", down)] {
+                app.send_input(format!("hand.{k}"), v);
+            }
+            app.session.as_ref().unwrap().sync();
+        }
+        let live = app.session.as_ref().unwrap();
+        live.call(|s, _| s.run_until(1.0)).unwrap().unwrap();
+        app.send_input("hand.down".into(), 0.0);
+        let live = app.session.as_ref().unwrap();
+        live.call(|s, _| s.run_until(1.5)).unwrap().unwrap();
+        let theta = |app: &SimApp| {
+            app.session
+                .as_ref()
+                .unwrap()
+                .call(|s, _| {
+                    let h = s.signals();
+                    let k = h.names().iter().position(|n| n == "bob.theta").unwrap();
+                    h.points(k)
+                        .iter()
+                        .map(|p| p.y.to_bits())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        };
+        let reference = theta(&app);
+        assert_eq!(live.call(|s, _| s.recorded().len()).unwrap(), 3);
+
+        app.save_run("pull", "dragged right");
+        let runs = runs_beside(&model);
+        assert_eq!(runs.len(), 1);
+        let (path, run) = &runs[0];
+        assert!(path.ends_with("drag.pull.run.json"));
+        assert_eq!((run.name.as_str(), run.track.len()), ("pull", 3));
+        assert!(run_fits_disk(run, &model, &app.registry));
+        // Opening it replays the drag bit for bit.
+        app.open_run(path);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let live = app.session.as_ref().unwrap();
+        live.set_running(false);
+        assert!(live.call(|s, _| s.replaying()).unwrap());
+        live.call(|s, _| s.run_until(1.5)).unwrap().unwrap();
+        assert_eq!(theta(&app), reference);
+        // As the model's schedule, every run applies it.
+        let run = run.clone();
+        app.use_as_schedule(&run, "pull");
+        let m = app.session.as_ref().unwrap().model();
+        assert_eq!(m.file.run.inputs.len(), 3);
+        assert!(utc_now().ends_with('Z') && utc_now().len() == 20);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

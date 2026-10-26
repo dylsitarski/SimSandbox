@@ -1,16 +1,16 @@
 # Interaction, parameters and visualization
 
-_Last updated: 2026-10-22_
+_Last updated: 2026-10-26_
 
 Because parameters, ports and state are declared metadata, most of the interface can be generated rather than hand-built. The desktop app implements run, pause, restart, rewind with branching, paced playback, live time-series, phase-portrait and 3D trajectory views, and the parameter panel and typed equations (an editor opened from "New model…" or "Edit equations…", [ADR 0017](../decisions/0017-typed-equations.md)), including discrete maps and formulas explored by sweeping a parameter ([ADR 0021](../decisions/0021-maps-formulas-and-sweeps.md)); everything else here is planned, in the order given in [STATUS.md](../STATUS.md).
 
 ## For fun
 
 - Live parameter changes while the simulation runs, with no restart (kernel support exists: `Simulator::set_param`).
-- Direct manipulation: drag bodies, paint obstacles into a flow, drop agents, inject a disturbance.
-- Pause, rewind and branch from any point (implemented in the app: a rewind slider; snapshots also restore parameter values, and running on from a rewound point starts a new branch).
+- Direct manipulation: drag bodies, paint obstacles into a flow, drop agents, inject a disturbance. Implemented for views that send the pointer (`plot.xy`, the pendulum view) into an `input.pointer` block bound in `controls.inputs` ([ADR 0058](../decisions/0058-inputs-live-scheduled-replayed.md)): pressing on the view sends `x`, `y` and `down` instead of panning, and the model says what a drag does (the "Drag the bob" example pulls the bob with a spring).
+- Pause, rewind and branch from any point (implemented in the app: a rewind slider; snapshots also restore parameter values). Every change made during a run (keys, pointer, sliders, typed values) is recorded at a step boundary; after a rewind, running on replays it ("Replaying input" in the toolbar), and any new input from then on starts a new branch ([ADR 0058](../decisions/0058-inputs-live-scheduled-replayed.md)). Runs ▸ "Save run…" keeps a run beside the model, to replay from the Runs menu or headless, or to make the model's schedule ([ADR 0059](../decisions/0059-run-files.md)).
 - Start from here (implemented): the current state becomes where the run starts, saved with the model, e.g. a steady state from which to study a transient ([ADR 0042](../decisions/0042-node-canvas.md)).
-- Inputs from keyboard, gamepad and mouse; later sensors or MIDI.
+- Inputs from keyboard, gamepad and mouse; later sensors or MIDI. Implemented: two keys drive an `input.value` (to its range's ends while held, or at a `rate` per second), as in "Steer the car with keys"; keys typed into a field are not input. Gamepads come with the first demo that needs one.
 
 ## For learning
 

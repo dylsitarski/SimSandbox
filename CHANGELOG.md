@@ -6,6 +6,11 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Inputs (ADR 0058): `input.value` and `input.pointer` blocks are values set from outside a running model, wired like any block (settings `unit`, `min`, `max`). Bind them in `controls.inputs`: two keys drive a value (`{"driver": {"keys": ["ArrowDown", "ArrowUp"]}}`, optionally at a `rate` per second), and a view feeds a pointer (`{"hand": {"view": 0}}`): pressing on `plot.xy` or the pendulum view then sends `x`, `y` and `down` instead of panning. New examples: "Drag the bob" and "Steer the car with keys". `plot.xy` has two new styles: `reach` (always show at least that far either side of 0) and `equal_scales`.
+- Every change made during a run (keys, pointer, sliders, typed values) is recorded at a step boundary. After a rewind, running on replays it exactly ("Replaying input" in the toolbar); new input from then on starts a new branch. `run.inputs` in the model file is a default schedule of changes (`{"t": 5, "set": "push.y", "to": 40}`) applied in every run.
+- Run files (ADR 0059): Runs ▸ "Save run…" writes `<model>.<run>.run.json` beside the model with the run's schedule, recorded input, seed, settings and the model's hash. The Runs menu replays a saved run (warning if the model changed since) and can make a run, or the current one, the model's schedule. Opening a run file (or dropping one on the window) replays it.
+- Headless inputs: `simsandbox run RUN.run.json` replays a run; `run` and `render` take `--inputs RUN` to apply a run's events to a model; `simsandbox check` checks run files (missing model, changed model, unknown keys) and `simsandbox schema run` prints their schema. Python: `Model.run(inputs=[(t, key, value), ...])` or a `Run`, `Model.schedule(t, key, value)`, and `ss.Run` (`load`, `replay`, `save`).
+
 - Formulas in the app: type `= expression` into any value field (for example `= 2*kp`) to compute it from the model's parameters; a computed value shows its formula and can be changed, or replaced by typing a number. The inspector's Model group declares new parameters ("+ parameter": name, value, unit) and removes them (right-click). A formula or parameter that would stop the model loading is refused with the reason.
 - Which nodes on the diagram show their values is saved with the model, and headless diagrams follow it; `simsandbox render --diagram --values` (Python: `render(diagram=True, values=True)`) shows them all.
 - Blocks inside a subsystem show their values: the default every use takes unless it sets its own (marked `*`).
@@ -84,6 +89,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- A parameter changed while running now acts in the next step; before, a change to a block feeding others reached them one step later.
 - Units are shown with a slash: `m/s`, `kg·m/s^2`, `1/s` instead of `m·s^-1`.
 - The inspector lists starting values last, each marked ↻, without the "starts at" and "used by" lines; hover a name to see which formulas read it. The "Unit conversions" section moved into each conversion block's entry.
 - The log lists the newest message last.
