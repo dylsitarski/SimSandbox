@@ -62,6 +62,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0054](0054-controls-pane-pins-and-node-toggles.md) | Pins decide a Controls pane (sliders only for pinned values); every selected block in the inspector; drafts editable; values opened per node; units with a slash | Accepted; amended by 0055 | 2026-10-23 |
 | [0055](0055-open-nodes-subsystem-values-deferred-windows.md) | Open nodes saved as `controls.open`; older sliders gain pins on reading; values inside subsystems as every use's default; popped-out tabs as deferred viewports | Accepted | 2026-10-24 |
 | [0056](0056-formulas-and-parameters-in-the-app.md) | `= expression` in any value field makes a formula; "+ parameter" declares the model's parameters; failing edits are refused | Accepted | 2026-10-24 |
+| [0057](0057-phase-2-plan.md) | Phase 2: interactive cart-pole gate; inputs, typed arrays and speed, rigid bodies and a scene view, one plugin interface; the rest after the gate | Accepted | 2026-10-26 |
 
 ## When to write one
 

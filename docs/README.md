@@ -127,6 +127,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0054-controls-pane-pins-and-node-toggles.md](decisions/0054-controls-pane-pins-and-node-toggles.md) | Decision record | Controls pane and pins; multi-selection and drafts in the inspector; values opened per node; unit display |
 | [decisions/0055-open-nodes-subsystem-values-deferred-windows.md](decisions/0055-open-nodes-subsystem-values-deferred-windows.md) | Decision record | Open nodes saved; values inside subsystems; popped-out windows drawn on their own |
 | [decisions/0056-formulas-and-parameters-in-the-app.md](decisions/0056-formulas-and-parameters-in-the-app.md) | Decision record | Formulas typed as `= expression`; declaring and removing model parameters in the inspector |
+| [decisions/0057-phase-2-plan.md](decisions/0057-phase-2-plan.md) | Decision record | Phase 2 order, scope and gate |
 
 ### Guides
 
