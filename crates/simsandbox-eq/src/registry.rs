@@ -132,7 +132,12 @@ fn describe(r: &mut Registry) -> Result<()> {
              parameter. Units in brackets where a name appears ('input F [N]', 'param m [kg] = \
              2', 'state x [m]') or at the end of a line for its left side ('E = m*v^2/2 [J]', \
              'dv/dt = F/m [m/s^2]') make every line checked (ADR 0045); names without one are \
-             dimensionless. The method may be left out.",
+             dimensionless. Arrays (ADR 0060): 'grid x [m] = 0 .. length, 50' declares a line of \
+             cells; 'state T[x] [K] = expression' and 'input q[x]' have a value per cell; \
+             'edge T: x- = value, x+ gradient = 0' (or 'x periodic') sets the ends, insulated \
+             if not given; 'lap(T)' and 'ddx(T)' are stencils, 'sum', 'mean', 'minof', \
+             'maxof' and 'at(T, i)' give one value, 'spacing(x)' the cell width. The method \
+             may be left out.",
         )
         .method("rk4", &["substeps"])
         .method("euler", &["substeps"])

@@ -134,7 +134,7 @@ impl EquationGroup {
             for p in s.outputs() {
                 let mut q = p.clone();
                 q.name = format!("{}.{}", s.name, p.name);
-                if let Some(c) = &mut q.coordinate {
+                for c in &mut q.coordinate {
                     c.port = format!("{}.{}", s.name, c.port);
                 }
                 spec.ports.push(q);

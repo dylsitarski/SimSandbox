@@ -4,6 +4,7 @@
 
 use simsandbox_core::graph::Model;
 use simsandbox_core::sim::Simulator;
+use simsandbox_eq::fields::HeatRod;
 use simsandbox_eq::integrators::Integrator;
 use simsandbox_eq::ode::OdeBlock;
 use simsandbox_eq::symbolic::EquationSet;
@@ -25,6 +26,20 @@ const PENDULUM: &[&str] = &[
 
 /// Makes the `k`-th block of a case.
 type Make<'a> = &'a dyn Fn(usize) -> OdeBlock;
+
+/// The heat rod of `eq.heat_rod` as typed equations on a grid (ADR 0060).
+const HEAT_ROD: &[&str] = &[
+    "grid x [m] = 0 .. length, 50",
+    "param length [m] = 1",
+    "param alpha [m^2/s] = 0.01",
+    "param peak [K] = 100",
+    "param width [m] = 0.1",
+    "param left [K] = 0",
+    "param right [K] = 0",
+    "state T[x] [K] = peak*exp(-((x - length/2)/width)^2)",
+    "edge T: x- = left, x+ = right",
+    "dT/dt = alpha*lap(T)",
+];
 
 fn typed(name: &str, lines: &[&str]) -> OdeBlock {
     let lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
@@ -55,11 +70,16 @@ fn time(make: Make<'_>, blocks: usize) -> f64 {
 
 fn main() {
     let rk4 = || Integrator::Rk4 { substeps: 1 };
-    let cases: [(&str, Make<'_>, Make<'_>); 2] = [
+    let cases: [(&str, Make<'_>, Make<'_>); 3] = [
         (
             "Lorenz",
             &|k| OdeBlock::new(Lorenz::new(&format!("b{k}")), rk4()),
             &|k| typed(&format!("b{k}"), LORENZ),
+        ),
+        (
+            "heat rod",
+            &|k| OdeBlock::new(HeatRod::new(&format!("b{k}")), rk4()),
+            &|k| typed(&format!("b{k}"), HEAT_ROD),
         ),
         (
             "pendulum",

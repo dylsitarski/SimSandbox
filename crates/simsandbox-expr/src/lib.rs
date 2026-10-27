@@ -158,6 +158,53 @@ pub fn is_reserved(name: &str) -> bool {
     name == "pi" || Func::by_name(name).is_some()
 }
 
+/// Operations on arrays (ADR 0060), written like functions: stencils,
+/// reductions, one element, an axis's spacing. A derivative along an
+/// axis is `dd` and the axis name (`ddx`). Only typed equations with a
+/// grid give them a meaning ([`Ast::resolve_with`]).
+pub const ARRAY_OPS: &[&str] = &["lap", "sum", "mean", "minof", "maxof", "at", "spacing"];
+
+/// Whether `name(...)` is an array operation: one of [`ARRAY_OPS`] or
+/// `dd` followed by a name.
+pub fn is_array_op(name: &str) -> bool {
+    ARRAY_OPS.contains(&name)
+        || name
+            .strip_prefix("dd")
+            .is_some_and(|a| a.starts_with(|c: char| c.is_alphabetic() || c == '_'))
+}
+
+/// How a stencil finds the values beyond an end of a grid (ADR 0060).
+/// Registers are variables of the program.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Edge {
+    /// Held at a value (Dirichlet), at the face of the end cell.
+    Value(usize),
+    /// The outward derivative (Neumann); `None` is 0 (insulated).
+    Gradient(Option<usize>),
+    /// The far end continues the near one.
+    Periodic,
+}
+
+/// An array operation in an [`Expr`], resolved by typed equations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ArrayOp {
+    /// The cell centres of an axis of `n` cells; arguments the low end
+    /// and the spacing.
+    Axis(usize),
+    /// The second derivative along a line of cells (the Laplacian in 1D);
+    /// arguments the array and the spacing; edges low and high.
+    Lap([Edge; 2]),
+    /// The first derivative along a line (central differences);
+    /// arguments as for `Lap`.
+    Deriv([Edge; 2]),
+    Sum,
+    Mean,
+    MinOf,
+    MaxOf,
+    /// One element, 0-based.
+    At(usize),
+}
+
 /// A parsed expression that still refers to variables by name.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ast {
@@ -167,10 +214,17 @@ pub enum Ast {
     Neg(Box<Ast>),
     Bin(Op, Box<Ast>, Box<Ast>),
     Call(Func, Vec<Ast>),
+    /// An array operation ([`is_array_op`]) by name, with its arguments
+    /// and the column of its name.
+    Apply(String, Vec<Ast>, usize),
 }
 
+/// What an array operation means ([`Ast::resolve_with`]): from its name,
+/// its arguments as written and resolved, and its column.
+pub type ApplyOp<'a> = &'a dyn Fn(&str, &[Ast], Vec<Expr>, usize) -> Result<Expr, Error>;
+
 /// An expression with variables resolved to slots; evaluate with
-/// [`Expr::eval`].
+/// [`Expr::eval`], or as part of a [`Program`] when it uses arrays.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Num(f64),
@@ -178,6 +232,7 @@ pub enum Expr {
     Neg(Box<Expr>),
     Bin(Op, Box<Expr>, Box<Expr>),
     Call(Func, Vec<Expr>),
+    Array(ArrayOp, Vec<Expr>),
 }
 
 impl Ast {
@@ -201,29 +256,57 @@ impl Ast {
                 a.collect_names(out);
                 b.collect_names(out);
             }
-            Ast::Call(_, args) => args.iter().for_each(|a| a.collect_names(out)),
+            Ast::Call(_, args) | Ast::Apply(_, args, _) => {
+                args.iter().for_each(|a| a.collect_names(out))
+            }
         }
     }
 
     /// Map each name to a slot with `slot`; a name it does not know is an
-    /// error at that name's column.
+    /// error at that name's column. Array operations are an error: only
+    /// typed equations with a grid have arrays.
     pub fn resolve(&self, slot: &impl Fn(&str) -> Option<usize>) -> Result<Expr, Error> {
+        self.resolve_with(slot, &|name, _, _, column| {
+            err(
+                column,
+                format!("'{name}' works on arrays, which only typed equations with a grid have"),
+            )
+        })
+    }
+
+    /// As [`Ast::resolve`], with `apply` giving the meaning of an array
+    /// operation: its name, its arguments as written and resolved, and its
+    /// column.
+    pub fn resolve_with(
+        &self,
+        slot: &impl Fn(&str) -> Option<usize>,
+        apply: ApplyOp<'_>,
+    ) -> Result<Expr, Error> {
         Ok(match self {
             Ast::Num(v) => Expr::Num(*v),
             Ast::Name(n, c) => match slot(n) {
                 Some(i) => Expr::Var(i),
                 None => return err(*c, format!("unknown name '{n}'")),
             },
-            Ast::Neg(a) => Expr::Neg(Box::new(a.resolve(slot)?)),
-            Ast::Bin(op, a, b) => {
-                Expr::Bin(*op, Box::new(a.resolve(slot)?), Box::new(b.resolve(slot)?))
-            }
+            Ast::Neg(a) => Expr::Neg(Box::new(a.resolve_with(slot, apply)?)),
+            Ast::Bin(op, a, b) => Expr::Bin(
+                *op,
+                Box::new(a.resolve_with(slot, apply)?),
+                Box::new(b.resolve_with(slot, apply)?),
+            ),
             Ast::Call(f, args) => Expr::Call(
                 *f,
                 args.iter()
-                    .map(|a| a.resolve(slot))
+                    .map(|a| a.resolve_with(slot, apply))
                     .collect::<Result<_, _>>()?,
             ),
+            Ast::Apply(name, args, column) => {
+                let resolved = args
+                    .iter()
+                    .map(|a| a.resolve_with(slot, apply))
+                    .collect::<Result<_, _>>()?;
+                apply(name, args, resolved, *column)?
+            }
         })
     }
 }
@@ -250,6 +333,8 @@ impl Expr {
                 let b = args.get(1).map_or(0.0, |x| x.eval(vars));
                 f.apply(a, b)
             }
+            // Arrays are evaluated by programs only.
+            Expr::Array(..) => f64::NAN,
         }
     }
 }
@@ -431,6 +516,16 @@ impl Parser {
                 Ok(inner)
             }
             (Tok::Name(n), col) => {
+                if *self.peek() == Tok::Sym('(') && Func::by_name(&n).is_none() && is_array_op(&n) {
+                    self.next();
+                    let mut args = vec![self.expr()?];
+                    while *self.peek() == Tok::Sym(',') {
+                        self.next();
+                        args.push(self.expr()?);
+                    }
+                    self.expect(')')?;
+                    return Ok(Ast::Apply(n, args, col));
+                }
                 if *self.peek() == Tok::Sym('(') {
                     let Some(f) = Func::by_name(&n) else {
                         return err(col, format!("unknown function '{n}'"));
@@ -581,5 +676,23 @@ mod tests {
         let names: Vec<_> = ast.names().into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, ["sigma", "y", "x"]);
         assert!(is_reserved("pi") && is_reserved("sin") && !is_reserved("x"));
+    }
+
+    #[test]
+    fn array_operations_parse_and_need_typed_equations() {
+        let ast = parse("alpha*lap(T) - ddx(T) + at(T, 0)/sum(T)").unwrap();
+        let names: Vec<_> = ast.names().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["alpha", "T"]);
+        assert!(matches!(&ast, Ast::Bin(..)));
+        assert!(is_array_op("ddr") && is_array_op("spacing") && !is_array_op("dd"));
+        // Elsewhere (parameter formulas, filters) they are an error.
+        let e = parse("2*lap(T)")
+            .unwrap()
+            .resolve(&|_| Some(0))
+            .unwrap_err();
+        assert_eq!(e.column, 3);
+        assert!(e.message.contains("only typed equations with a grid"));
+        // Unknown functions are still refused when parsing.
+        assert!(error("foo(x)").message.contains("unknown function"));
     }
 }

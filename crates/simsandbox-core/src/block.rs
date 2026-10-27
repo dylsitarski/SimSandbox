@@ -145,10 +145,11 @@ pub struct PortSpec {
     pub causality: Causality,
     pub unit: Unit,
     pub shape: Shape,
-    /// Set when this output gives the positions of another output's cells
-    /// along one grid axis (ADR 0024), e.g. a rod's `position` for its
-    /// `temperature`.
-    pub coordinate: Option<CoordinateOf>,
+    /// The outputs whose cells this output gives the positions of, along
+    /// one grid axis (ADR 0024), e.g. a rod's `position` for its
+    /// `temperature`; an axis of typed equations (ADR 0060) for every
+    /// array on its grid.
+    pub coordinate: Vec<CoordinateOf>,
     /// For an output: the inputs of its Block it depends on at the same
     /// instant (direct feedthrough, ADR 0040). Empty if it depends on state
     /// and parameters only.
@@ -170,7 +171,7 @@ impl PortSpec {
             causality: Causality::Input,
             unit,
             shape,
-            coordinate: None,
+            coordinate: Vec::new(),
             feedthrough: Vec::new(),
         }
     }
@@ -183,9 +184,9 @@ impl PortSpec {
     }
 
     /// Declare this output a coordinate of output `port` along grid axis
-    /// `axis` (ADR 0024).
+    /// `axis` (ADR 0024); call again for each output it is a coordinate of.
     pub fn coordinate_of(mut self, port: &str, axis: usize) -> Self {
-        self.coordinate = Some(CoordinateOf {
+        self.coordinate.push(CoordinateOf {
             port: port.into(),
             axis,
         });
@@ -198,7 +199,7 @@ impl PortSpec {
             causality: Causality::Output,
             unit,
             shape,
-            coordinate: None,
+            coordinate: Vec::new(),
             feedthrough: Vec::new(),
         }
     }

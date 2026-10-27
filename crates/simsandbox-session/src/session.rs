@@ -368,7 +368,7 @@ impl Session {
                     Shape::Scalar | Shape::Vector(_) => None,
                 };
                 if let Some(shape) = field {
-                    if let Some(c) = &port.coordinate {
+                    for c in &port.coordinate {
                         coordinates.push(Coordinate {
                             name: key.clone(),
                             of: format!("{}.{}", entry.name, c.port),

@@ -25,10 +25,11 @@ _Last updated: 2026-10-27_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 287 tests in the workspace plus 16 Python tests, including verification against analytic solutions and convergence order.
+- 298 tests in the workspace plus 16 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-10-27: Phase 2 item 2, step 2: arrays in typed equations in 1D (`grid`, `state T[x]`, `input q[x]`, `edge`, `lap`, `ddx`, `sum`, `mean`, `minof`, `maxof`, `at`, `spacing`), unit-checked, as grid outputs with the axis as coordinate; array ports connect to typed and built-in grids and fuse. The typed rod runs at 1.0–1.1× the built-in `eq.heat_rod`'s time per step.
 - 2026-10-27: Phase 2 item 2, step 1: typed equations run on an instruction list (`simsandbox_expr::Program`: registers, constants folded, temporaries reused) instead of walking the expression tree. Measured with `cargo run --release -p simsandbox-eq --example typed_speed` (RK4, dt = 0.001): the Lorenz system 0.288 to 0.178 µs a step against 0.098 built in (3.1× to 1.8×), the pendulum 0.358 to 0.247 against 0.124 (3.0× to 2.0×), ten blocks alike. Results are unchanged bit for bit, except `x^2`, now `x*x`.
 - 2026-10-27: arrays in typed equations decided ([ADR 0060](decisions/0060-arrays-in-typed-equations.md), resolves Q35 and Q17): 1D and 2D grids, whole-array equations with stencils and declared edges, an instruction-list evaluator, one-step L-stable implicit methods; typed agent rules (Q26) after the gate. The owner first asked what arrays gain over wrappers, plugins or built-in blocks; the comparison is in the ADR.
 - 2026-10-27: the owner checked the input demos in the window (drag the bob, steer the car with keys, rewind and replay, saved runs): correct.
@@ -95,13 +96,13 @@ _Last updated: 2026-10-27_
 
 ## In progress
 
-- Phase 2 item 2, typed equations with arrays ([ADR 0060](decisions/0060-arrays-in-typed-equations.md)): step 2, grids, arrays, stencils, edges and units in 1D.
+- Phase 2 item 2, typed equations with arrays ([ADR 0060](decisions/0060-arrays-in-typed-equations.md)): step 3, the heat equation against its analytic solution and a typed heat-rod example.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Phase 2, item 2** as [ADR 0060](decisions/0060-arrays-in-typed-equations.md) decides, in order (step 1 done 2026-10-27): (2) `grid` axes, array states, inputs and quantities, `lap`/`ddx`/`ddy`, reductions, `edge` conditions and units, in 1D; (3) the heat equation against its analytic solution and a typed heat-rod example matching `eq.heat_rod`; (4) `backward_euler` and `trbdf2` with a sparse, coloured finite-difference Jacobian and a sparse LU (`faer`, after a build check on all three platforms); (5) 2D grids and a Gray–Scott example (target 128 × 128 live), settling [Q38](open-questions.md) on recording large grids.
+1. **Phase 2, item 2** as [ADR 0060](decisions/0060-arrays-in-typed-equations.md) decides, in order (steps 1 and 2 done 2026-10-27): (3) the heat equation against its analytic solution (a sine mode, second order in space) and a typed heat-rod example, both checked against the analytic solution (typed grids are cell-centred, `eq.heat_rod` node-based, so they do not match to rounding); (4) `backward_euler` and `trbdf2` with a sparse, coloured finite-difference Jacobian and a sparse LU (`faer`, after a build check on all three platforms); (5) 2D grids and a Gray–Scott example (target 128 × 128 live), settling [Q38](open-questions.md) on recording large grids.
 2. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations

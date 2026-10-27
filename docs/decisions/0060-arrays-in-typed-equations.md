@@ -145,7 +145,7 @@ dT/dt = alpha*lap(T)
 
 - **The heat equation against its analytic solution**: a sine mode decaying as `exp(−α π² t / L²)`, with second order in space and the method's order in time measured.
 - **Stability**: `backward_euler` and `trbdf2` stay bounded at steps far beyond the explicit limit; RK4 does not.
-- **The typed heat rod matches `eq.heat_rod`** to rounding on the same grid and method.
+- **The typed heat rod matches `eq.heat_rod`** to rounding on the same grid and method. Amended when built (2026-10-27): the two cannot share a grid. `eq.heat_rod` places its points at nodes with the end temperatures on the ends; typed grids are cell-centred with the edge value at the face. Both are checked against the analytic solution instead, and compared for speed.
 - **A reaction–diffusion example** (Gray–Scott on a 2D grid) forms its patterns, with a qualitative check (the pattern's spatial scale) and a speed measurement. Target: a 128 × 128 grid live at real-time speed on a desktop.
 - **Speed**: typed array blocks within 1.5× of an equivalent built-in block, measured and recorded.
 
@@ -154,6 +154,18 @@ dT/dt = alpha*lap(T)
 - The model file format: equations are text, as today. `simsandbox describe` lists the stencils, reductions and methods; `check` reports array shapes and units.
 - Rewind, snapshots, sliders, formulas, inputs and run files: array states are kernel state like any other.
 - Fused groups take array blocks; their states concatenate as now.
+
+### As built (step 2, 2026-10-27)
+
+Grids, arrays, stencils, edges and units in 1D are built, with these details settled while building:
+- **Plain numbers** written as a grid's end, an array's initial value or an edge value are in the unit of what they set: `grid x [cm] = 0 .. 4, 2` spans 0 to 4 cm, `state T[x] [K] = 0` and `edge T: x- = 0` are 0 K. Other expressions there must balance, as equations do.
+- **Stencils** (`lap`, `ddx`) take the name of an array, since the edges belong to it: `lap(2*T)` is refused with a hint to define `D = 2*T` first. Reductions and `at` take any array expression; `at`'s cell number is a whole number written in the equations.
+- **What each extra expression may use:** a grid's ends only parameters; an initial value parameters and the axis; an edge value parameters, scalar inputs and `t`.
+- **Parameters used only in initial values** are marked as initial conditions (they apply on restart), like the `x0` of scalar states.
+- **The axis** is an output port and the coordinate of every array output (`PortSpec::coordinate` became a list for this; `describe` writes `coordinate_of` as a list).
+- **Array state names** in the block's spec are `T[0]` … `T[n-1]`. "Start from here" saves array states as a `start` entry.
+- **Evaluation:** array instructions loop over cells inside one instruction, with a specialised loop per operand case. The stencil reads the interior straight from the cells and only the two end cells through the ghosts. The rates leave out steps they do not need, such as the cell centres.
+- **Speed** (`cargo run --release -p simsandbox-eq --example typed_speed`, RK4, dt = 0.001): the typed rod of 50 cells takes 0.48 µs a step against 0.48 for `eq.heat_rod` (1.0×), and 1.1× for ten rods. That is inside the 1.5× target.
 
 ## Consequences
 

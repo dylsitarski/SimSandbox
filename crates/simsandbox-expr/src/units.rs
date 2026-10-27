@@ -14,11 +14,32 @@ pub fn dim_text(d: Dim) -> String {
 }
 
 /// The dimension of an expression, given each name's; an error says
-/// what does not balance, with the column of a name involved.
+/// what does not balance, with the column of a name involved. Array
+/// operations are an error ([`dimension_with`] gives them meaning).
 pub fn dimension(ast: &Ast, of: &dyn Fn(&str) -> Dim) -> std::result::Result<Dim, (usize, String)> {
+    dimension_with(ast, of, &|name, _, column| {
+        Err((
+            column,
+            format!("'{name}' works on arrays, which only typed equations with a grid have"),
+        ))
+    })
+}
+
+/// The dimension of an array operation, from its name, its arguments as
+/// written with their dimensions, and its column.
+pub type ApplyDim<'a> =
+    &'a dyn Fn(&str, &[(&Ast, Dim)], usize) -> std::result::Result<Dim, (usize, String)>;
+
+/// As [`dimension`], with `apply` giving array operations their
+/// dimension (typed equations with a grid, ADR 0060).
+pub fn dimension_with(
+    ast: &Ast,
+    of: &dyn Fn(&str) -> Dim,
+    apply: ApplyDim<'_>,
+) -> std::result::Result<Dim, (usize, String)> {
     let first_column = |a: &Ast| a.names().first().map_or(1, |(_, c)| *c);
     let dimensionless = |a: &Ast, what: &str| -> std::result::Result<(), (usize, String)> {
-        let d = dimension(a, of)?;
+        let d = dimension_with(a, of, apply)?;
         if d == NO_DIM {
             Ok(())
         } else {
@@ -39,7 +60,7 @@ pub fn dimension(ast: &Ast, of: &dyn Fn(&str) -> Dim) -> std::result::Result<Dim
         }
     };
     let power = |base: &Ast, exp: &Ast| -> std::result::Result<Dim, (usize, String)> {
-        let d = dimension(base, of)?;
+        let d = dimension_with(base, of, apply)?;
         if d == NO_DIM {
             dimensionless(exp, "an exponent")?;
             return Ok(NO_DIM);
@@ -60,13 +81,20 @@ pub fn dimension(ast: &Ast, of: &dyn Fn(&str) -> Dim) -> std::result::Result<Dim
     };
     Ok(match ast {
         Ast::Num(_) => NO_DIM,
+        Ast::Apply(name, args, column) => {
+            let dims = args
+                .iter()
+                .map(|a| dimension_with(a, of, apply).map(|d| (a, d)))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            apply(name, &dims, *column)?
+        }
         Ast::Name(n, _) => of(n),
-        Ast::Neg(a) => dimension(a, of)?,
+        Ast::Neg(a) => dimension_with(a, of, apply)?,
         Ast::Bin(op, a, b) => {
             use crate::Op;
             match op {
                 Op::Add | Op::Sub => {
-                    let (da, db) = (dimension(a, of)?, dimension(b, of)?);
+                    let (da, db) = (dimension_with(a, of, apply)?, dimension_with(b, of, apply)?);
                     if da != db {
                         let verb = if *op == Op::Add { "add" } else { "subtract" };
                         return Err((
@@ -77,11 +105,11 @@ pub fn dimension(ast: &Ast, of: &dyn Fn(&str) -> Dim) -> std::result::Result<Dim
                     da
                 }
                 Op::Mul => {
-                    let (da, db) = (dimension(a, of)?, dimension(b, of)?);
+                    let (da, db) = (dimension_with(a, of, apply)?, dimension_with(b, of, apply)?);
                     std::array::from_fn(|i| da[i] + db[i])
                 }
                 Op::Div => {
-                    let (da, db) = (dimension(a, of)?, dimension(b, of)?);
+                    let (da, db) = (dimension_with(a, of, apply)?, dimension_with(b, of, apply)?);
                     std::array::from_fn(|i| da[i] - db[i])
                 }
                 Op::Pow => power(a, b)?,
@@ -91,7 +119,7 @@ pub fn dimension(ast: &Ast, of: &dyn Fn(&str) -> Dim) -> std::result::Result<Dim
             use crate::Func;
             match f {
                 Func::Sqrt => {
-                    let d = dimension(&args[0], of)?;
+                    let d = dimension_with(&args[0], of, apply)?;
                     if d.iter().any(|e| e % 2 != 0) {
                         return Err((
                             first_column(&args[0]),
@@ -100,9 +128,12 @@ pub fn dimension(ast: &Ast, of: &dyn Fn(&str) -> Dim) -> std::result::Result<Dim
                     }
                     d.map(|e| e / 2)
                 }
-                Func::Abs | Func::Floor | Func::Ceil => dimension(&args[0], of)?,
+                Func::Abs | Func::Floor | Func::Ceil => dimension_with(&args[0], of, apply)?,
                 Func::Min | Func::Max | Func::Atan2 => {
-                    let (da, db) = (dimension(&args[0], of)?, dimension(&args[1], of)?);
+                    let (da, db) = (
+                        dimension_with(&args[0], of, apply)?,
+                        dimension_with(&args[1], of, apply)?,
+                    );
                     if da != db {
                         return Err((
                             first_column(&args[1]),
@@ -120,7 +151,7 @@ pub fn dimension(ast: &Ast, of: &dyn Fn(&str) -> Dim) -> std::result::Result<Dim
                     }
                 }
                 Func::Sign => {
-                    dimension(&args[0], of)?;
+                    dimension_with(&args[0], of, apply)?;
                     NO_DIM
                 }
                 Func::Pow => power(&args[0], &args[1])?,
@@ -147,6 +178,29 @@ pub fn in_si(e: Expr, scales: &[f64]) -> Expr {
             Expr::Bin(op, Box::new(in_si(*a, scales)), Box::new(in_si(*b, scales)))
         }
         Expr::Call(f, args) => Expr::Call(f, args.into_iter().map(|a| in_si(a, scales)).collect()),
+        // A stencil reads its array and spacing as they are (in their units,
+        // with the array's edges) and is converted as a whole: its result is
+        // in the array's unit per spacing unit (squared for `Lap`).
+        // Reductions and elements take their argument in SI.
+        Expr::Array(op, args) => {
+            use crate::ArrayOp;
+            let scale = |k: usize| match args.get(k) {
+                Some(Expr::Var(i)) => scales[*i],
+                _ => 1.0,
+            };
+            let (factor, args) = match op {
+                ArrayOp::Lap(_) => (scale(0) / (scale(1) * scale(1)), args),
+                ArrayOp::Deriv(_) => (scale(0) / scale(1), args),
+                ArrayOp::Axis(_) => (1.0, args),
+                _ => (1.0, args.into_iter().map(|a| in_si(a, scales)).collect()),
+            };
+            let e = Expr::Array(op, args);
+            if factor == 1.0 {
+                e
+            } else {
+                Expr::Bin(Op::Mul, Box::new(e), Box::new(Expr::Num(factor)))
+            }
+        }
         other => other,
     }
 }

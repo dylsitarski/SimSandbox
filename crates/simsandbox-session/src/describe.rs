@@ -34,8 +34,13 @@ fn port(p: &PortSpec) -> Value {
     if !p.feedthrough.is_empty() {
         v["depends_on"] = json!(p.feedthrough);
     }
-    if let Some(c) = &p.coordinate {
-        v["coordinate_of"] = json!({"port": c.port, "axis": c.axis});
+    if !p.coordinate.is_empty() {
+        let of: Vec<Value> = p
+            .coordinate
+            .iter()
+            .map(|c| json!({"port": c.port, "axis": c.axis}))
+            .collect();
+        v["coordinate_of"] = json!(of);
     }
     v
 }
@@ -290,7 +295,7 @@ mod tests {
         let ports = grass["interface"]["ports"].as_array().unwrap();
         assert!(ports
             .iter()
-            .any(|p| p["name"] == "x" && p["coordinate_of"]["axis"] == 0));
+            .any(|p| p["name"] == "x" && p["coordinate_of"][0]["axis"] == 0));
         let typed = block_type(&r, "eq.equations");
         let e = typed["interface"]["ports"]
             .as_array()

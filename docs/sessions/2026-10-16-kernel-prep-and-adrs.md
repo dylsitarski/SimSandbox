@@ -5,6 +5,11 @@
 
 ## Done
 
+- 2026-10-27: ADR 0060 step 2, arrays in 1D.
+  - `simsandbox-expr`: `Ast::Apply` for array operations (`ARRAY_OPS`, `dd<axis>`), `Expr::Array(ArrayOp, args)` with `Edge`, `resolve_with` and `units::dimension_with` hooks; `in_si` scales a stencil's result, not its arguments.
+  - `program.rs`: `Program::with_layout(spans, size, steps)`; registers are `[variables][constants][temporaries]`, temporaries as wide as the longest array; `Ins::Arr` runs `ArrIns` (copy, negate, binary, calls, axis, stencil with ghosts, reductions). Constants are found in a first build so temporaries can follow them.
+  - `symbolic.rs`: `grid`, `edge`, `T[x]` declarations (`split_dims`), `check_array_ops`, the register `Layout`, three programs (outputs, rates, initial values), `needed` drops rate steps that are not read.
+  - Kernel: `PortSpec::coordinate` is a list. Tests: `simsandbox-file/tests/arrays.rs` (ports between typed and built-in blocks, fusion, a Gaussian source against its analytic heating).
 - 2026-10-27: ADR 0060 step 1. `simsandbox-expr/src/program.rs`: `Program::new(vars, steps)` compiles `(target register, Expr)` steps to instructions over one register buffer (`[variables][temporaries][constants]`); constant subtrees are folded, temporaries freed after each node, `x^2` becomes `Sqr`. `EquationSet` holds two programs (defined quantities only, for outputs; defined then rates, for the right-hand side) with a buffer each. Benchmark: `crates/simsandbox-eq/examples/typed_speed.rs`.
 - 2026-10-26: inputs built (Phase 2 item 1, ADRs 0058 and 0059).
   - `simsandbox-eq/src/input.rs`: `input.value`, `input.pointer` (method `held`, settings `unit`, `min`, `max`).
@@ -121,6 +126,7 @@
 
 ## Notes for the next session
 
+- 2026-10-27: typed grids are cell-centred (edge values at faces), `eq.heat_rod` node-based (end temperatures at the ends), so ADR 0060's "matches eq.heat_rod to rounding" was amended: step 3 checks both against the analytic solution.
 - 2026-10-26: inputs are checked by tests and headless only; the app's keys and dragging were not tried in a window. The pendulum view sends the pointer only for `eq.pendulum` models (its `applies_to`), so "Drag the bob" (typed equations) drags on a `plot.xy` of `bob.x` against `bob.y`, given the new `plot.xy` styles `reach` (always show ±reach around 0) and `equal_scales` so there is room to press beyond the swing.
 - 2026-10-24: PR #1 merged Phase 1 and the editor into main; CI's first run failed only on two clippy 1.99 lints that local 1.97 missed (fixed in `d008c54`). Lint with an up-to-date stable before pushing ([development setup](../guides/development-setup.md)). Typed equations run about 2× slower than built-in blocks ([Q35](../open-questions.md)).
 - Pop-out with deferred viewports: checked under Xvfb only (both windows draw, about 15 frames a second each on lavapipe). The owner's focus-dependent freeze needs checking on their desktop.
