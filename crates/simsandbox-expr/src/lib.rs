@@ -15,7 +15,10 @@
 //!   names to slots in a value buffer and gives an [`Expr`] that evaluates
 //!   quickly. Errors carry a 1-based column.
 
+pub mod program;
 pub mod units;
+
+pub use program::Program;
 
 use std::fmt;
 

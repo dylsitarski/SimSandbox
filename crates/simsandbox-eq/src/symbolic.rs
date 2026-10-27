@@ -48,7 +48,7 @@ use simsandbox_core::registry::MethodSettings;
 use simsandbox_core::units::Unit;
 use simsandbox_core::{Result, SimError};
 use simsandbox_expr::units::{dim_text, dimension, from_si, in_si, NO_DIM};
-use simsandbox_expr::{is_reserved, parse, Ast, Expr};
+use simsandbox_expr::{is_reserved, parse, Ast, Expr, Program};
 use std::cell::RefCell;
 
 /// What a set of typed equations describes (ADR 0019).
@@ -85,14 +85,19 @@ pub struct EquationSet {
     states: usize,
     inputs: usize,
     params: usize,
-    /// Defined quantities, evaluated in order.
-    defined: Vec<Expr>,
-    /// Right-hand side of each state's equation.
-    rhs: Vec<Expr>,
+    /// The number of defined quantities.
+    defined: usize,
+    /// Computes the defined quantities, in order (ADR 0060's instruction
+    /// list). Registers by slot: `t`, states, inputs, parameters, defined
+    /// quantities, then each state's rate.
+    outputs: Program,
+    /// Computes the defined quantities, then each state's right-hand side
+    /// into the slots after them.
+    rates: Program,
     /// For each state, the parameter holding its initial value.
     initial: Vec<usize>,
-    /// Values by slot: `t`, states, inputs, parameters, defined quantities.
-    scratch: RefCell<Vec<f64>>,
+    /// Register buffers of the two programs.
+    scratch: RefCell<(Vec<f64>, Vec<f64>)>,
 }
 
 struct Line {
@@ -701,6 +706,21 @@ impl EquationSet {
             }))
             .collect();
         let slots = 1 + ns + ni + np + defined.len();
+        let first = 1 + ns + ni + np;
+        let defined_steps: Vec<(usize, &Expr)> = defined_exprs
+            .iter()
+            .enumerate()
+            .map(|(k, e)| (first + k, e))
+            .collect();
+        let rhs: Vec<Expr> = rhs
+            .into_iter()
+            .map(|r| r.expect("one equation per state"))
+            .collect();
+        let mut rate_steps = defined_steps.clone();
+        rate_steps.extend(rhs.iter().enumerate().map(|(k, e)| (slots + k, e)));
+        let outputs = Program::new(slots + ns, &defined_steps);
+        let rates = Program::new(slots + ns, &rate_steps);
+        let scratch = RefCell::new((outputs.registers(), rates.registers()));
         Ok(Self {
             kind,
             spec: BlockSpec {
@@ -719,13 +739,11 @@ impl EquationSet {
             states: ns,
             inputs: ni,
             params: np,
-            defined: defined_exprs,
-            rhs: rhs
-                .into_iter()
-                .map(|r| r.expect("one equation per state"))
-                .collect(),
+            defined: defined_exprs.len(),
+            outputs,
+            rates,
             initial,
-            scratch: RefCell::new(vec![0.0; slots]),
+            scratch,
         })
     }
 
@@ -733,9 +751,8 @@ impl EquationSet {
         self.kind
     }
 
-    /// Fill the value buffer for time `t`, states `x`, inputs `u` and
-    /// parameters `p`, including the defined quantities. Missing inputs read
-    /// as 0.
+    /// Put time `t`, states `x`, inputs `u` and parameters `p` in the
+    /// registers `v`. Missing inputs read as 0.
     fn fill(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], v: &mut [f64]) {
         let (ns, ni, np) = (self.states, self.inputs, self.params);
         v[0] = t;
@@ -744,29 +761,27 @@ impl EquationSet {
             *slot = u.get(k).copied().unwrap_or(0.0);
         }
         v[1 + ns + ni..1 + ns + ni + np].copy_from_slice(&p[..np]);
-        let first = 1 + ns + ni + np;
-        for (k, e) in self.defined.iter().enumerate() {
-            v[first + k] = e.eval(v);
-        }
     }
 }
 
 impl Equations for EquationSet {
     fn rhs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], dx: &mut [f64]) {
-        let mut v = self.scratch.borrow_mut();
-        self.fill(t, x, u, p, &mut v);
-        for (d, e) in dx.iter_mut().zip(&self.rhs) {
-            *d = e.eval(&v);
-        }
+        let v = &mut self.scratch.borrow_mut().1;
+        self.fill(t, x, u, p, v);
+        self.rates.run(v);
+        let first = 1 + self.states + self.inputs + self.params + self.defined;
+        let n = dx.len().min(self.states);
+        dx[..n].copy_from_slice(&v[first..first + n]);
     }
 
     fn outputs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], y: &mut [f64]) {
-        let mut v = self.scratch.borrow_mut();
-        self.fill(t, x, u, p, &mut v);
+        let v = &mut self.scratch.borrow_mut().0;
+        self.fill(t, x, u, p, v);
+        self.outputs.run(v);
         let ns = self.states;
         y[..ns].copy_from_slice(&x[..ns]);
         let first = 1 + ns + self.inputs + self.params;
-        y[ns..].copy_from_slice(&v[first..first + self.defined.len()]);
+        y[ns..].copy_from_slice(&v[first..first + self.defined]);
     }
 }
 

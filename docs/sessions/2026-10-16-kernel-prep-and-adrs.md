@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-10-27: ADR 0060 step 1. `simsandbox-expr/src/program.rs`: `Program::new(vars, steps)` compiles `(target register, Expr)` steps to instructions over one register buffer (`[variables][temporaries][constants]`); constant subtrees are folded, temporaries freed after each node, `x^2` becomes `Sqr`. `EquationSet` holds two programs (defined quantities only, for outputs; defined then rates, for the right-hand side) with a buffer each. Benchmark: `crates/simsandbox-eq/examples/typed_speed.rs`.
 - 2026-10-26: inputs built (Phase 2 item 1, ADRs 0058 and 0059).
   - `simsandbox-eq/src/input.rs`: `input.value`, `input.pointer` (method `held`, settings `unit`, `min`, `max`).
   - Kernel: `Simulator::set_param` marks the block; `step` first refreshes changed blocks' outputs (`refresh_changed`), so a change acts in the next step.

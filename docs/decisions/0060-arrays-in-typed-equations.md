@@ -125,7 +125,7 @@ dT/dt = alpha*lap(T)
 
 - Equations are compiled at load to a compact instruction list: a register machine whose instructions loop over whole arrays (or one value for scalars), with constant parts folded.
 - Stencils, reductions and edges are single instructions written in Rust, so the per-cell work runs at compiled speed.
-- Scalar typed blocks use the same instruction list. The Lorenz benchmark of Q35 is measured again.
+- Scalar typed blocks use the same instruction list. The Lorenz benchmark of Q35 is measured again. As built (2026-10-27, `simsandbox_expr::Program`, measured by `cargo run --release -p simsandbox-eq --example typed_speed`): the typed Lorenz system went from 3.1× to 1.8× the built-in block's time per step, the pendulum from 3.0× to 2.0×.
 - Compiling to machine code (Q35 option (c)) is reconsidered only if measurements show the instruction list is too slow for a planned demo.
 
 ### Implicit methods (Q17)
