@@ -71,6 +71,7 @@
 
 ## Decided
 
+- 2026-10-27: arrays in typed equations ([ADR 0060](../decisions/0060-arrays-in-typed-equations.md)), the owner choosing the whole-array form after asking what arrays gain over a wrapper or other routes: 1D and 2D grids, `lap`/`ddx`/`ddy`, `edge` conditions, an instruction-list evaluator (Q35), `backward_euler` and `trbdf2` with a sparse Jacobian (Q17); Q26 after the gate; Q38 (recording large grids) raised.
 - 2026-10-26: run files ([ADR 0059](../decisions/0059-run-files.md)), after the owner asked how several runs of one model are kept: `<model>.<run>.run.json` beside the model with path, SHA-256 of the model without `controls`, seed, settings, schedule and track; the model keeps `run.inputs` as an optional default schedule only.
 - 2026-10-26: inputs ([ADR 0058](../decisions/0058-inputs-live-scheduled-replayed.md)): input blocks (`input.value`, `input.pointer`, later `input.gamepad`) whose values are parameters; bindings in `controls.inputs`; every change during a run recorded as a track (time, key, value) applied at step boundaries; replay after rewind until live input takes over; `run.inputs` schedules; `--inputs` tracks headless.
 - 2026-10-26: Phase 2 plan ([ADR 0057](../decisions/0057-phase-2-plan.md)), the owner choosing every recommended option: the interactive cart-pole gate; order inputs → typed arrays and speed (with Q17) → rigid bodies and scene view → plugin interface; the rigid-body engine by a MuJoCo/Rapier spike; ML, FMI, GPU fluids, adaptive master and acausal connections after the gate.

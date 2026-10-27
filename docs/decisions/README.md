@@ -65,6 +65,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0057](0057-phase-2-plan.md) | Phase 2: interactive cart-pole gate; inputs, typed arrays and speed, rigid bodies and a scene view, one plugin interface; the rest after the gate | Accepted | 2026-10-26 |
 | [0058](0058-inputs-live-scheduled-replayed.md) | Inputs: input blocks wired like any block; every change recorded as a track applied at step boundaries; replay after rewind; `run.inputs` schedules; headless tracks | Accepted; amended by 0059 | 2026-10-26 |
 | [0059](0059-run-files.md) | Run files beside the model: recorded tracks and scenarios with the model hash, seed and settings; the model keeps an optional default schedule | Accepted | 2026-10-26 |
+| [0060](0060-arrays-in-typed-equations.md) | Arrays in typed equations: 1D and 2D grids, whole-array equations with stencils and declared edges, an instruction-list evaluator, `backward_euler` and `trbdf2` with a sparse Jacobian | Accepted | 2026-10-27 |
 
 ## When to write one
 

@@ -29,6 +29,7 @@ _Last updated: 2026-10-27_
 
 ## Done recently
 
+- 2026-10-27: arrays in typed equations decided ([ADR 0060](decisions/0060-arrays-in-typed-equations.md), resolves Q35 and Q17): 1D and 2D grids, whole-array equations with stencils and declared edges, an instruction-list evaluator, one-step L-stable implicit methods; typed agent rules (Q26) after the gate. The owner first asked what arrays gain over wrappers, plugins or built-in blocks; the comparison is in the ADR.
 - 2026-10-27: the owner checked the input demos in the window (drag the bob, steer the car with keys, rewind and replay, saved runs): correct.
 - 2026-10-26: Phase 2 item 1, inputs, built ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md), [ADR 0059](decisions/0059-run-files.md)): input blocks in `simsandbox-eq`; the input track, schedule, replay and run files in the session; a parameter change now acts in the next step (the kernel refreshes a changed block's outputs before stepping); keys and view pointers in the app, "Replaying input", the Runs menu; CLI and Python; two demos. Tests replay a run bit for bit after a rewind, from a run file, headless and from the app's saved run.
 - 2026-10-26: run files decided ([ADR 0059](decisions/0059-run-files.md), amending ADR 0058): recordings and scenarios live beside the model, any number per model, each with the model's hash (`controls` left out), seed and settings; the model keeps an optional default schedule.
@@ -93,13 +94,13 @@ _Last updated: 2026-10-27_
 
 ## In progress
 
-- Phase 2 item 2: the ADR for typed equations with arrays. Decided by the owner on 2026-10-27: 1D and 2D rectangular grids, a one-step L-stable implicit method (Q17), typed agent rules (Q26) deferred past the gate. Open: how arrays are written, after the owner asked what arrays in typed equations gain over a wrapper or other route.
+- Phase 2 item 2, typed equations with arrays ([ADR 0060](decisions/0060-arrays-in-typed-equations.md)): step 1, the instruction-list evaluator for scalar equations and the Q35 benchmark.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Phase 2, item 2: typed equations with arrays, faster** ([ADR 0057](decisions/0057-phase-2-plan.md), [Q35](open-questions.md)): an ADR first (array states, parameters and ports; grid stencils; a compact instruction list; an implicit method for stiff grids, [Q17](open-questions.md); typed agent rules revisited, [Q26](open-questions.md)), then the heat equation against its analytic solution and a reaction–diffusion pattern.
+1. **Phase 2, item 2** as [ADR 0060](decisions/0060-arrays-in-typed-equations.md) decides, in order: (1) an instruction-list evaluator for typed equations, with the Q35 benchmark measured again; (2) `grid` axes, array states, inputs and quantities, `lap`/`ddx`/`ddy`, reductions, `edge` conditions and units, in 1D; (3) the heat equation against its analytic solution and a typed heat-rod example matching `eq.heat_rod`; (4) `backward_euler` and `trbdf2` with a sparse, coloured finite-difference Jacobian and a sparse LU (`faer`, after a build check on all three platforms); (5) 2D grids and a Gray–Scott example (target 128 × 128 live), settling [Q38](open-questions.md) on recording large grids.
 2. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations

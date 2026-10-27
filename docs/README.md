@@ -130,6 +130,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0057-phase-2-plan.md](decisions/0057-phase-2-plan.md) | Decision record | Phase 2 order, scope and gate |
 | [decisions/0058-inputs-live-scheduled-replayed.md](decisions/0058-inputs-live-scheduled-replayed.md) | Decision record | Input blocks, the input track, replay after rewind, scheduled changes |
 | [decisions/0059-run-files.md](decisions/0059-run-files.md) | Decision record | Run files: recordings and scenarios beside the model, with the model hash |
+| [decisions/0060-arrays-in-typed-equations.md](decisions/0060-arrays-in-typed-equations.md) | Decision record | Arrays, grids, stencils and implicit methods in typed equations |
 
 ### Guides
 
