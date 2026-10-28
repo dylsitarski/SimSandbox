@@ -369,3 +369,49 @@ fn the_built_in_rod_runs_implicitly_by_probing_its_structure() {
     // Steps of 0.5 s, 18 times RK4's limit; the peak is 33.3 K.
     assert!(error < 0.2, "{error}");
 }
+
+#[test]
+fn a_2d_mode_decays_at_the_exact_rate_with_second_order_in_space() {
+    // sin(πx)·sin(πy) on the unit square held at 0, decaying as
+    // exp(−2απ² t).
+    let t_end = 1.0;
+    let exact =
+        |x: f64, y: f64| (PI * x).sin() * (PI * y).sin() * (-2.0 * ALPHA * PI * PI * t_end).exp();
+    let errors: Vec<f64> = [8, 16, 32]
+        .into_iter()
+        .map(|cells| {
+            let lines: Vec<String> = [
+                format!("grid x [m] = 0 .. 1, {cells}"),
+                format!("grid y [m] = 0 .. 1, {cells}"),
+                format!("param alpha [m^2/s] = {ALPHA}"),
+                "param amp [K] = 1".into(),
+                "param l [m] = 1".into(),
+                "state T[x, y] [K] = amp*sin(pi*x/l)*sin(pi*y/l)".into(),
+                "edge T: x- = 0, x+ = 0, y- = 0, y+ = 0".into(),
+                "dT/dt = alpha*lap(T)".into(),
+            ]
+            .into();
+            let set = EquationSet::parse("plate", &lines).unwrap();
+            let mut m = Model::new();
+            let id = m.add(Box::new(OdeBlock::new(
+                set,
+                Integrator::Rk4 { substeps: 1 },
+            )));
+            let mut sim = Simulator::new(m, 0.0).unwrap();
+            run(&mut sim, t_end, 0.01);
+            let t = sim.output(id, "T").unwrap();
+            let (x, y) = (sim.output(id, "x").unwrap(), sim.output(id, "y").unwrap());
+            t.iter()
+                .zip(x.iter().zip(y))
+                .map(|(t, (x, y))| (t - exact(*x, *y)).abs())
+                .fold(0.0, f64::max)
+        })
+        .collect();
+    for w in errors.windows(2) {
+        let ratio = w[0] / w[1];
+        assert!(
+            (3.8..4.2).contains(&ratio),
+            "errors {errors:?}, ratio {ratio}"
+        );
+    }
+}

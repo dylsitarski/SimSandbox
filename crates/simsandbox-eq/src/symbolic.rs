@@ -49,7 +49,9 @@ use simsandbox_core::units::Unit;
 use simsandbox_core::{Result, SimError};
 use simsandbox_expr::program::Span;
 use simsandbox_expr::units::{dim_text, dimension_with, from_si, in_si, Dim, NO_DIM};
-use simsandbox_expr::{is_reserved, parse, ArrayOp, Ast, Edge, Expr, Op, Program};
+use simsandbox_expr::{
+    is_reserved, parse, ArrayOp, Ast, Edge, Expr, Line as GridLine, Op, Program,
+};
 use std::cell::RefCell;
 
 /// What a set of typed equations describes (ADR 0019).
@@ -142,6 +144,8 @@ struct EdgeLine {
     array: String,
     line: usize,
     column: usize,
+    /// Which axis of the grid, by place.
+    axis: usize,
     high: bool,
     kind: EdgeKind,
 }
@@ -331,8 +335,8 @@ fn read_grid(text: &str, rest: &str, line: usize) -> Result<(Axis, Option<String
 
 /// An `edge T: x- = left, x+ gradient = 0, x periodic` line (ADR 0060),
 /// `rest` after `edge`.
-fn read_edges(text: &str, rest: &str, line: usize, axis: Option<&str>) -> Result<Vec<EdgeLine>> {
-    let Some(axis) = axis else {
+fn read_edges(text: &str, rest: &str, line: usize, axes: &[&str]) -> Result<Vec<EdgeLine>> {
+    let Some(&first) = axes.first() else {
         return Err(definition_error(
             line,
             1,
@@ -343,26 +347,29 @@ fn read_edges(text: &str, rest: &str, line: usize, axis: Option<&str>) -> Result
         return Err(definition_error(
             line,
             1,
-            format!("write edges as 'edge T: {axis}- = value, {axis}+ gradient = 0' or 'edge T: {axis} periodic'"),
+            format!("write edges as 'edge T: {first}- = value, {first}+ gradient = 0' or 'edge T: {first} periodic'"),
         ));
     };
     let array = array.trim().to_string();
+    let all = axes.join(", ");
     let mut out = Vec::new();
     for item in split_top(items) {
         let item = item.trim();
         let column = column_of(text, item);
         let bad = |what: String| definition_error(line, column, what);
         if let Some(ax) = item.strip_suffix("periodic") {
-            if ax.trim() != axis {
+            let Some(axis) = axes.iter().position(|a| *a == ax.trim()) else {
                 return Err(bad(format!(
-                    "the grid's axis is {axis}: write '{axis} periodic'"
+                    "'{}' is not an axis of the grid ({all}): write e.g. '{first} periodic'",
+                    ax.trim()
                 )));
-            }
+            };
             for high in [false, true] {
                 out.push(EdgeLine {
                     array: array.clone(),
                     line,
                     column,
+                    axis,
                     high,
                     kind: EdgeKind::Periodic,
                 });
@@ -371,19 +378,25 @@ fn read_edges(text: &str, rest: &str, line: usize, axis: Option<&str>) -> Result
         }
         let Some((left, right)) = item.split_once('=') else {
             return Err(bad(format!(
-                "expected '{axis}- = value', '{axis}+ gradient = value' or '{axis} periodic'"
+                "expected '{first}- = value', '{first}+ gradient = value' or '{first} periodic'"
             )));
         };
         let words: Vec<&str> = left.split_whitespace().collect();
-        let high = match words.first() {
-            Some(w) if *w == format!("{axis}-") => false,
-            Some(w) if *w == format!("{axis}+") => true,
-            _ => {
-                return Err(bad(format!(
-                    "an end is '{axis}-' (low) or '{axis}+' (high), not '{}'",
-                    left.trim()
-                )))
-            }
+        let end = words.first().and_then(|w| {
+            let (name, high) = match (w.strip_suffix('-'), w.strip_suffix('+')) {
+                (Some(n), _) => (n, false),
+                (_, Some(n)) => (n, true),
+                _ => return None,
+            };
+            axes.iter()
+                .position(|a| *a == name)
+                .map(|axis| (axis, high))
+        });
+        let Some((axis, high)) = end else {
+            return Err(bad(format!(
+                "an end is an axis of the grid ({all}) with '-' (low) or '+' (high), e.g. '{first}-', not '{}'",
+                left.trim()
+            )));
         };
         let gradient = match &words[1..] {
             [] => false,
@@ -402,6 +415,7 @@ fn read_edges(text: &str, rest: &str, line: usize, axis: Option<&str>) -> Result
             array: array.clone(),
             line,
             column,
+            axis,
             high,
             kind: if gradient {
                 EdgeKind::Gradient(ast)
@@ -425,7 +439,7 @@ fn reads(e: &Expr, out: &mut Vec<usize>) {
         }
         Expr::Call(_, args) => args.iter().for_each(|a| reads(a, out)),
         Expr::Array(op, args) => {
-            if let ArrayOp::Lap(edges) | ArrayOp::Deriv(edges) = op {
+            if let ArrayOp::Second { edges, .. } | ArrayOp::First { edges, .. } = op {
                 for e in edges {
                     match e {
                         Edge::Value(v) | Edge::Gradient(Some(v)) => out.push(*v),
@@ -483,27 +497,28 @@ fn is_array(ast: &Ast, arrays: &[String]) -> bool {
 /// right arguments. `arrays` are the names with a value per cell.
 fn check_array_ops(
     ast: &Ast,
-    axis: Option<&Axis>,
+    grid: &[Axis],
     arrays: &[String],
 ) -> std::result::Result<(), (usize, String)> {
     let args = match ast {
         Ast::Num(_) | Ast::Name(..) => return Ok(()),
-        Ast::Neg(a) => return check_array_ops(a, axis, arrays),
+        Ast::Neg(a) => return check_array_ops(a, grid, arrays),
         Ast::Bin(_, a, b) => {
-            check_array_ops(a, axis, arrays)?;
-            return check_array_ops(b, axis, arrays);
+            check_array_ops(a, grid, arrays)?;
+            return check_array_ops(b, grid, arrays);
         }
         Ast::Call(_, args) => args,
         Ast::Apply(name, args, col) => {
             let col = *col;
-            let Some(axis) = axis else {
+            if grid.is_empty() {
                 return Err((
                     col,
                     format!("'{name}' works on arrays: declare a grid with 'grid x [m] = 0 .. length, 50'"),
                 ));
-            };
-            let ax = axis.name.as_str();
-            let want = if name == "at" { 2 } else { 1 };
+            }
+            let names: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
+            let all = names.join(", ");
+            let want = if name == "at" { 1 + grid.len() } else { 1 };
             if args.len() != want {
                 return Err((
                     col,
@@ -512,7 +527,7 @@ fn check_array_ops(
             }
             let named_array = |what: &str| -> std::result::Result<(), (usize, String)> {
                 match &args[0] {
-                    Ast::Name(n, _) if arrays.contains(n) && n != ax => Ok(()),
+                    Ast::Name(n, _) if arrays.contains(n) && !names.contains(&n.as_str()) => Ok(()),
                     _ => Err((
                         col,
                         format!("{what} takes the name of an array, e.g. {name}(T); define one above (D = k*T) for an expression"),
@@ -522,34 +537,41 @@ fn check_array_ops(
             match name.as_str() {
                 "lap" => named_array("'lap'")?,
                 d if d.starts_with("dd") => {
-                    if &d[2..] != ax {
-                        return Err((col, format!("'{d}' is a derivative along '{}', but the grid's axis is {ax}: write dd{ax}", &d[2..])));
+                    if !names.contains(&&d[2..]) {
+                        return Err((col, format!("'{d}' is a derivative along '{}', which is not an axis of the grid ({all}): write dd{}", &d[2..], names[0])));
                     }
                     named_array(&format!("'{d}'"))?
                 }
                 "spacing" => {
-                    if !matches!(&args[0], Ast::Name(n, _) if n == ax) {
-                        return Err((col, format!("'spacing' takes an axis: spacing({ax})")));
+                    if !matches!(&args[0], Ast::Name(n, _) if names.contains(&n.as_str())) {
+                        return Err((
+                            col,
+                            format!("'spacing' takes an axis: spacing({})", names[0]),
+                        ));
                     }
                 }
                 "at" => {
                     if !is_array(&args[0], arrays) {
+                        let cells = vec!["0"; grid.len()].join(", ");
                         return Err((
                             col,
-                            "'at' takes an array and a cell number, e.g. at(T, 0)".into(),
+                            format!("'at' takes an array and a cell number along each axis, e.g. at(T, {cells})"),
                         ));
                     }
-                    match &args[1] {
-                        Ast::Num(i)
-                            if i.fract() == 0.0 && *i >= 0.0 && (*i as usize) < axis.cells => {}
-                        _ => {
-                            return Err((
-                                col,
-                                format!(
-                                    "a cell number is a whole number from 0 to {}",
-                                    axis.cells - 1
-                                ),
-                            ))
+                    for (a, i) in grid.iter().zip(&args[1..]) {
+                        match i {
+                            Ast::Num(i)
+                                if i.fract() == 0.0 && *i >= 0.0 && (*i as usize) < a.cells => {}
+                            _ => {
+                                return Err((
+                                    col,
+                                    format!(
+                                        "a cell number along {} is a whole number from 0 to {}",
+                                        a.name,
+                                        a.cells - 1
+                                    ),
+                                ))
+                            }
                         }
                     }
                 }
@@ -563,7 +585,7 @@ fn check_array_ops(
         }
     };
     args.iter()
-        .try_for_each(|a| check_array_ops(a, axis, arrays))
+        .try_for_each(|a| check_array_ops(a, grid, arrays))
 }
 
 impl EquationSet {
@@ -577,29 +599,44 @@ impl EquationSet {
         // Units by name, as declared (ADR 0045).
         let mut units: std::collections::HashMap<String, Unit> = Default::default();
         // The grid first (ADR 0060): declarations further down refer to
-        // its axis wherever it is written.
-        let mut axis: Option<Axis> = None;
+        // its axes wherever they are written. The first axis is x (the
+        // fastest in the grid's cells), the second y.
+        let mut grid: Vec<Axis> = Vec::new();
         for (k, text) in lines.iter().enumerate() {
             let Some(rest) = keyword(text.trim(), "grid") else {
                 continue;
             };
             let (a, unit) = read_grid(text, &rest, k + 1)?;
-            if let Some(first) = &axis {
+            if grid.len() == 2 {
                 return Err(definition_error(
                     k + 1,
                     1,
-                    format!(
-                        "a block has one grid axis for now (line {} declares {}); 2D grids are coming",
-                        first.line, first.name
-                    ),
+                    "a grid has one or two axes (3D grids are not built yet)",
+                ));
+            }
+            if grid.iter().any(|g| g.name == a.name) {
+                return Err(definition_error(
+                    k + 1,
+                    1,
+                    format!("the axis {} is declared twice", a.name),
                 ));
             }
             if let Some(u) = unit {
                 units.insert(a.name.clone(), read_unit(&u, k + 1, 1)?);
             }
-            axis = Some(a);
+            grid.push(a);
         }
-        let axes: Vec<&str> = axis.iter().map(|a| a.name.as_str()).collect();
+        let axes: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
+        // How each axis runs through the cells, stored row by row.
+        let nx = grid.first().map_or(1, |a| a.cells);
+        let lines_of: Vec<GridLine> = grid
+            .iter()
+            .enumerate()
+            .map(|(i, a)| GridLine {
+                stride: if i == 0 { 1 } else { nx },
+                count: a.cells,
+            })
+            .collect();
 
         // Then the left-hand sides, which decide the kind of block, and
         // the declarations.
@@ -624,7 +661,7 @@ impl EquationSet {
                 continue;
             }
             if let Some(rest) = keyword(trimmed, "edge") {
-                edges.extend(read_edges(text, &rest, number, axes.first().copied())?);
+                edges.extend(read_edges(text, &rest, number, &axes)?);
                 continue;
             }
             if let Some(rest) = keyword(trimmed, "state") {
@@ -810,7 +847,7 @@ impl EquationSet {
             (None, Some(_)) => Kind::Map,
             (None, None) => Kind::Formulas,
         };
-        if let (Kind::Map, Some(a)) = (kind, &axis) {
+        if let (Kind::Map, Some(a)) = (kind, grid.first()) {
             return Err(definition_error(
                 a.line,
                 1,
@@ -921,7 +958,7 @@ impl EquationSet {
                 }
                 _ => {}
             }
-            check_array_ops(&line.ast, axis.as_ref(), &arrays)
+            check_array_ops(&line.ast, &grid, &arrays)
                 .map_err(|(c, m)| definition_error(line.number, line.offset + c, m))?;
         }
         // Array states' initial values, edge values and the grid's ends.
@@ -946,7 +983,7 @@ impl EquationSet {
             }
             if edges
                 .iter()
-                .filter(|f| f.array == e.array && f.high == e.high)
+                .filter(|f| f.array == e.array && f.axis == e.axis && f.high == e.high)
                 .count()
                 > 1
             {
@@ -954,9 +991,10 @@ impl EquationSet {
                     e.line,
                     e.column,
                     format!(
-                        "{}'s {} end has two conditions",
+                        "{}'s {}{} end has two conditions",
                         e.array,
-                        if e.high { "high" } else { "low" }
+                        axes[e.axis],
+                        if e.high { "+" } else { "-" }
                     ),
                 ));
             }
@@ -982,7 +1020,7 @@ impl EquationSet {
             params.push(n.clone());
         }
         let mut used: Vec<&Ast> = parsed.iter().map(|l| &l.ast).collect();
-        used.extend(axis.iter().flat_map(|a| [&a.lo, &a.hi]));
+        used.extend(grid.iter().flat_map(|a| [&a.lo, &a.hi]));
         used.extend(inits.iter().map(|i| &i.1));
         used.extend(edges.iter().filter_map(|e| match &e.kind {
             EdgeKind::Value(a) | EdgeKind::Gradient(a) => Some(a),
@@ -1012,7 +1050,7 @@ impl EquationSet {
             }
         };
         let is_param = |n: &str| params.iter().any(|p| p == n);
-        if let Some(a) = &axis {
+        for a in &grid {
             for end in [&a.lo, &a.hi] {
                 only(
                     end,
@@ -1024,14 +1062,14 @@ impl EquationSet {
             }
         }
         for (_, ast, line, col) in &inits {
-            check_array_ops(ast, axis.as_ref(), &arrays)
+            check_array_ops(ast, &grid, &arrays)
                 .map_err(|(c, m)| definition_error(*line, col + c - 1, m))?;
             only(
                 ast,
                 *line,
                 *col,
                 &|n| is_param(n) || axes.contains(&n),
-                "an initial value is written with parameters and the axis",
+                "an initial value is written with parameters and the axes",
             )?;
         }
         for e in &edges {
@@ -1107,10 +1145,15 @@ impl EquationSet {
         } else {
             Unit::DIMENSIONLESS
         };
-        let axis_dim = axis
-            .as_ref()
-            .and_then(|a| units.get(&a.name))
-            .map_or(NO_DIM, |u| u.dim.0);
+        let axis_dims: Vec<Dim> = grid
+            .iter()
+            .map(|a| units.get(&a.name).map_or(NO_DIM, |u| u.dim.0))
+            .collect();
+        let axis_dim_of = |name: &str| -> Dim {
+            axes.iter()
+                .position(|a| *a == name)
+                .map_or(NO_DIM, |i| axis_dims[i])
+        };
         // Array operations' units: a stencil divides by the axis unit.
         let apply_dim = |name: &str,
                          args: &[(&Ast, Dim)],
@@ -1118,11 +1161,28 @@ impl EquationSet {
          -> std::result::Result<Dim, (usize, String)> {
             let d = args.first().map_or(NO_DIM, |a| a.1);
             Ok(match name {
-                "lap" => std::array::from_fn(|i| d[i] - 2 * axis_dim[i]),
-                "spacing" => axis_dim,
-                n if n.starts_with("dd") => std::array::from_fn(|i| d[i] - axis_dim[i]),
+                "lap" => {
+                    if axis_dims.iter().any(|a| *a != axis_dims[0]) {
+                        return Err((
+                            col,
+                            format!(
+                                "lap adds second derivatives along {}, so the axes need the same unit",
+                                axes.join(" and ")
+                            ),
+                        ));
+                    }
+                    std::array::from_fn(|i| d[i] - 2 * axis_dims[0][i])
+                }
+                "spacing" => match args[0].0 {
+                    Ast::Name(n, _) => axis_dim_of(n),
+                    _ => NO_DIM,
+                },
+                n if n.starts_with("dd") => {
+                    let a = axis_dim_of(&n[2..]);
+                    std::array::from_fn(|i| d[i] - a[i])
+                }
                 "at" => {
-                    if args.get(1).is_some_and(|a| a.1 != NO_DIM) {
+                    if args[1..].iter().any(|a| a.1 != NO_DIM) {
                         return Err((col, "a cell number has no unit".into()));
                     }
                     d
@@ -1190,9 +1250,9 @@ impl EquationSet {
                 };
                 balance(&line.ast, want, &what, line.number, line.offset + 1)?;
             }
-            if let Some(a) = &axis {
+            for (a, dim) in grid.iter().zip(&axis_dims) {
                 for end in [&a.lo, &a.hi].into_iter().filter(|e| number(e).is_none()) {
-                    balance(end, axis_dim, &format!("the axis {}", a.name), a.line, 1)?;
+                    balance(end, *dim, &format!("the axis {}", a.name), a.line, 1)?;
                 }
             }
             for (n, ast, line, col) in inits.iter().filter(|i| number(&i.1).is_none()) {
@@ -1223,7 +1283,7 @@ impl EquationSet {
                     )?,
                     EdgeKind::Gradient(ast) => balance(
                         ast,
-                        std::array::from_fn(|i| d[i] - axis_dim[i]),
+                        std::array::from_fn(|i| d[i] - axis_dims[e.axis][i]),
                         &format!("{}'s edge gradient", e.array),
                         e.line,
                         e.column,
@@ -1236,7 +1296,7 @@ impl EquationSet {
         // Variables, laid out in the registers in this order: t, states,
         // inputs, parameters, defined quantities, the axis (these two read
         // as outputs), the grid's ends and spacing, edge values, rates.
-        let cells = axis.as_ref().map_or(1, |a| a.cells);
+        let cells: usize = grid.iter().map(|a| a.cells).product();
         let len_of = |n: &str| {
             if arrays.iter().any(|a| a == n) {
                 cells
@@ -1267,22 +1327,23 @@ impl EquationSet {
             .iter()
             .map(|n| add(len_of(n), unit_of(n).scale))
             .collect();
-        let axis_scale = axis.as_ref().map_or(1.0, |a| unit_of(&a.name).scale);
-        // The axis, its ends and spacing, all in the axis unit.
-        let grid_vars = axis.as_ref().map(|a| {
-            (
-                add(a.cells, axis_scale),
-                add(1, axis_scale),
-                add(1, axis_scale),
-                add(1, axis_scale),
-            )
-        });
+        let axis_scales: Vec<f64> = grid.iter().map(|a| unit_of(&a.name).scale).collect();
+        // Each axis's position of every cell (read as outputs, after the
+        // defined quantities), then its ends and spacing, all in its unit.
+        let axis_vars: Vec<usize> = axis_scales.iter().map(|&s| add(cells, s)).collect();
+        let grid_vars: Vec<(usize, usize, usize, usize)> = axis_vars
+            .iter()
+            .zip(&axis_scales)
+            .map(|(&x, &s)| (x, add(1, s), add(1, s), add(1, s)))
+            .collect();
         let edge_vars: Vec<Option<usize>> = edges
             .iter()
             .map(|e| match e.kind {
                 EdgeKind::Periodic => None,
                 EdgeKind::Value(_) => Some(add(1, unit_of(&e.array).scale)),
-                EdgeKind::Gradient(_) => Some(add(1, unit_of(&e.array).scale / axis_scale)),
+                EdgeKind::Gradient(_) => {
+                    Some(add(1, unit_of(&e.array).scale / axis_scales[e.axis]))
+                }
             })
             .collect();
         let rate_vars: Vec<usize> = states
@@ -1295,11 +1356,13 @@ impl EquationSet {
             params: params.len(),
             outputs_at: defined_vars
                 .first()
-                .copied()
-                .or(grid_vars.map(|g| g.0))
-                .map_or(0, |v| spans[v].at),
-            outputs_len: defined_vars.iter().map(|&v| spans[v].len).sum::<usize>()
-                + grid_vars.map_or(0, |g| spans[g.0].len),
+                .or(axis_vars.first())
+                .map_or(0, |&v| spans[v].at),
+            outputs_len: defined_vars
+                .iter()
+                .chain(&axis_vars)
+                .map(|&v| spans[v].len)
+                .sum::<usize>(),
             rates_at: rate_vars.first().map_or(size, |&v| spans[v].at),
         };
         let slot_of = |n: &str, defined_so_far: usize| -> Option<usize> {
@@ -1315,19 +1378,19 @@ impl EquationSet {
             if let Some(i) = params.iter().position(|p| p == n) {
                 return Some(param_vars[i]);
             }
-            if axes.contains(&n) {
-                return grid_vars.map(|g| g.0);
+            if let Some(i) = axes.iter().position(|a| *a == n) {
+                return Some(axis_vars[i]);
             }
             defined[..defined_so_far]
                 .iter()
                 .position(|d| d == n)
                 .map(|i| defined_vars[i])
         };
-        // An array's edges, insulated where none is given.
-        let edges_of = |array: &str| -> [Edge; 2] {
+        // An array's edges along an axis, insulated where none is given.
+        let edges_of = |array: &str, axis: usize| -> [Edge; 2] {
             let mut out = [Edge::Gradient(None); 2];
             for (e, v) in edges.iter().zip(&edge_vars) {
-                if e.array == array {
+                if e.array == array && e.axis == axis {
                     out[e.high as usize] = match (&e.kind, v) {
                         (EdgeKind::Periodic, _) => Edge::Periodic,
                         (EdgeKind::Value(_), Some(v)) => Edge::Value(*v),
@@ -1337,47 +1400,60 @@ impl EquationSet {
             }
             out
         };
-        let spacing = grid_vars.map_or(0, |g| g.3);
+        let spacing_of = |axis: usize| grid_vars[axis].3;
         let apply = |name: &str,
                      args: &[Ast],
                      resolved: Vec<Expr>,
                      _col: usize|
          -> std::result::Result<Expr, simsandbox_expr::Error> {
-            let var = |a: &Ast| match a {
-                Ast::Name(n, _) => slot_of(n, defined.len()),
-                _ => None,
+            let Some(Ast::Name(first_name, _)) = args.first() else {
+                unreachable!("checked: one argument at least")
             };
-            let stencil = |second: bool| {
-                let Ast::Name(n, _) = &args[0] else {
-                    unreachable!("checked: a stencil takes a name")
-                };
-                let a = var(&args[0]).expect("checked: an array");
-                let e = edges_of(n);
+            // A derivative of an array along one axis.
+            let along = |axis: usize, second: bool| {
+                let a = slot_of(first_name, defined.len()).expect("checked: an array");
+                let (line, edges) = (lines_of[axis], edges_of(first_name, axis));
                 let op = if second {
-                    ArrayOp::Lap(e)
+                    ArrayOp::Second { line, edges }
                 } else {
-                    ArrayOp::Deriv(e)
+                    ArrayOp::First { line, edges }
                 };
-                Expr::Array(op, vec![Expr::Var(a), Expr::Var(spacing)])
+                Expr::Array(op, vec![Expr::Var(a), Expr::Var(spacing_of(axis))])
             };
+            let axis_named = |n: &str| axes.iter().position(|a| *a == n).expect("checked: an axis");
+            if name == "lap" {
+                // The sum of the second derivatives along each axis.
+                return Ok((1..grid.len()).fold(along(0, true), |sum, i| {
+                    Expr::Bin(Op::Add, Box::new(sum), Box::new(along(i, true)))
+                }));
+            }
+            if name == "spacing" {
+                return Ok(Expr::Var(spacing_of(axis_named(first_name))));
+            }
+            if let Some(ax) = name.strip_prefix("dd") {
+                return Ok(along(axis_named(ax), false));
+            }
             let first = resolved
                 .into_iter()
                 .next()
                 .expect("checked: one argument at least");
             Ok(match name {
-                "lap" => stencil(true),
-                "spacing" => Expr::Var(spacing),
                 "sum" => Expr::Array(ArrayOp::Sum, vec![first]),
                 "mean" => Expr::Array(ArrayOp::Mean, vec![first]),
                 "minof" => Expr::Array(ArrayOp::MinOf, vec![first]),
                 "maxof" => Expr::Array(ArrayOp::MaxOf, vec![first]),
-                "at" => {
-                    let Ast::Num(i) = args[1] else {
-                        unreachable!("checked: a whole number")
-                    };
-                    Expr::Array(ArrayOp::At(i as usize), vec![first])
+                _ => {
+                    // at(T, i) or at(T, i, j): cell i + j·nx.
+                    let place = args[1..]
+                        .iter()
+                        .zip(&lines_of)
+                        .map(|(a, line)| match a {
+                            Ast::Num(i) => *i as usize * line.stride,
+                            _ => unreachable!("checked: a whole number"),
+                        })
+                        .sum();
+                    Expr::Array(ArrayOp::At(place), vec![first])
                 }
-                _ => stencil(false),
             })
         };
         let resolve = |ast: &Ast, visible: usize, line: usize, offset: usize| -> Result<Expr> {
@@ -1414,7 +1490,7 @@ impl EquationSet {
         }
         // The grid: its ends, spacing and cell centres.
         let mut grid_steps: Vec<(usize, Expr)> = Vec::new();
-        if let (Some(a), Some((x, lo, hi, h))) = (&axis, grid_vars) {
+        for ((a, &(x, lo, hi, h)), &line) in grid.iter().zip(&grid_vars).zip(&lines_of) {
             // A plain number is in the axis unit: `0 .. 4` in cm.
             for (end, var) in [(&a.lo, lo), (&a.hi, hi)] {
                 let e = match number(end) {
@@ -1434,7 +1510,10 @@ impl EquationSet {
             ));
             grid_steps.push((
                 x,
-                Expr::Array(ArrayOp::Axis(a.cells), vec![Expr::Var(lo), Expr::Var(h)]),
+                Expr::Array(
+                    ArrayOp::Axis { line, cells },
+                    vec![Expr::Var(lo), Expr::Var(h)],
+                ),
             ));
         }
         let mut edge_steps: Vec<(usize, Expr)> = Vec::new();
@@ -1517,8 +1596,8 @@ impl EquationSet {
             uses.push(u);
         }
         let shape = |n: &str| {
-            if axis.is_some() && arrays.iter().any(|a| a == n) {
-                Shape::Grid { nx: cells, ny: 1 }
+            if !grid.is_empty() && arrays.iter().any(|a| a == n) {
+                Shape::Grid { nx, ny: cells / nx }
             } else {
                 Shape::Scalar
             }
@@ -1536,11 +1615,11 @@ impl EquationSet {
                 PortSpec::output(n, unit_of(n), shape(n)).depends_on(&u)
             }))
             .collect();
-        if let Some(a) = &axis {
-            // The axis is the coordinate of every array output on it.
+        for (i, a) in grid.iter().enumerate() {
+            // Each axis is the coordinate of every array output on the grid.
             let mut x = PortSpec::output(&a.name, unit_of(&a.name), shape(&a.name));
             for n in states.iter().chain(&defined).filter(|n| arrays.contains(n)) {
-                x = x.coordinate_of(n, 0);
+                x = x.coordinate_of(n, i);
             }
             ports.push(x);
         }
@@ -1781,6 +1860,7 @@ impl Block for ExplicitBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::PI;
 
     fn set(lines: &[&str]) -> Result<EquationSet> {
         let lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
@@ -2242,10 +2322,19 @@ mod tests {
         assert!(
             with(&["dT/dt = k*T", "edge T: x- = 1, x- gradient = 0"]).contains("two conditions")
         );
-        assert!(with(&["dT/dt = k*T", "edge T: y- = 1"]).contains("'x-' (low)"));
+        assert!(
+            with(&["dT/dt = k*T", "edge T: y- = 1"]).contains("an end is an axis of the grid (x)")
+        );
         assert!(with(&["dT/dt = k*T", "s = sum(t)"]).contains("takes an array"));
         assert!(with(&["dT/dt = k*T", "state v", "dv/dt = T"]).contains("must be an array"));
-        assert!(with(&["dT/dt = k*T", "grid y [m] = 0 .. 1, 4"]).contains("one grid axis"));
+        // A second axis makes the grid 2D, so T[x] no longer covers it.
+        assert!(with(&["dT/dt = k*T", "grid y [m] = 0 .. 1, 4"]).contains("write T[x, y]"));
+        assert!(with(&[
+            "dT/dt = k*T",
+            "grid y [m] = 0 .. 1, 4",
+            "grid z [m] = 0 .. 1, 4"
+        ])
+        .contains("one or two axes"));
         assert!(
             with(&["dT/dt = lap(T)"]).contains("dT/dt is in K/s but the right side is in K/m^2")
         );
@@ -2257,5 +2346,112 @@ mod tests {
         assert!(error(&["y = lap(T)"]).contains("declare a grid"));
         // Without a grid, brackets after a name are a unit as before.
         assert!(set(&["input F[N]", "y = F"]).is_ok());
+    }
+
+    #[test]
+    fn two_axes_make_a_2d_grid() {
+        // 4 by 3 cells of 0.5 m by 1 m; u = cos(πx/2)·cos(πy/3), insulated
+        // everywhere, is a mode of the Laplacian on this grid.
+        let s = set(&[
+            "grid x [m] = 0 .. 2, 4",
+            "grid y [m] = 0 .. 3, 3",
+            "param a [1/s] = 1",
+            "param one [m^2] = 1",
+            "param amp [K] = 1",
+            "state u[x, y] [K] = amp*cos(pi*x/(2 [m]))",
+            "du/dt = a*one*lap(u)",
+            "corner = at(u, 3, 2)",
+            "slope = ddy(u)",
+        ]);
+        // Units are not written inside expressions.
+        assert!(s.is_err());
+        let s = set(&[
+            "grid x [m] = 0 .. lx, 4",
+            "grid y [m] = 0 .. ly, 3",
+            "param lx [m] = 2",
+            "param ly [m] = 3",
+            "param a [m^2/s] = 1",
+            "param amp [K] = 1",
+            "state u[x, y] [K] = amp*cos(pi*x/lx)*cos(pi*y/ly)",
+            "edge u: y+ = 0",
+            "du/dt = a*lap(u)",
+            "corner = at(u, 3, 2)",
+            "slope = ddy(u)",
+        ])
+        .unwrap();
+        let spec = s.spec();
+        let grid = Shape::Grid { nx: 4, ny: 3 };
+        let outs: Vec<(&str, Shape)> = spec.outputs().map(|p| (p.name.as_str(), p.shape)).collect();
+        assert_eq!(
+            outs,
+            [
+                ("u", grid),
+                ("corner", Shape::Scalar),
+                ("slope", grid),
+                ("x", grid),
+                ("y", grid)
+            ]
+        );
+        let y = spec.ports.iter().find(|p| p.name == "y").unwrap();
+        assert_eq!(y.coordinate[0].axis, 1);
+        let p = [2.0, 3.0, 1.0, 1.0];
+        let (u, du, out) = eval(&s, &p, &[]);
+        // Cell centres: x at 0.25, 0.75, 1.25, 1.75 (fastest); y at 0.5, 1.5, 2.5.
+        // Outputs: u (12), corner, slope (12), x (12), y (12).
+        assert_eq!(out[25..29], [0.25, 0.75, 1.25, 1.75]);
+        assert_eq!(out[33..37], [0.25, 0.75, 1.25, 1.75]);
+        assert_eq!(out[37..41], [0.5, 0.5, 0.5, 0.5]);
+        assert_eq!(out[45..49], [2.5, 2.5, 2.5, 2.5]);
+        let exact = |i: usize, j: usize| {
+            ((i as f64 + 0.5) * 0.5 * PI / 2.0).cos() * ((j as f64 + 0.5) * PI / 3.0).cos()
+        };
+        assert!((u[4 * 2 + 3] - exact(3, 2)).abs() < 1e-15);
+        assert_eq!(out[12], u[11]);
+        // Interior rows (j = 0, 1 are away from the held y+ edge) decay
+        // at the discrete rate of the mode along each axis.
+        let rate = |h: f64, k: f64| -4.0 / (h * h) * (k * h / 2.0).sin().powi(2);
+        let r = rate(0.5, PI / 2.0) + rate(1.0, PI / 3.0);
+        for k in 0..4 {
+            assert!(
+                (du[k] - r * u[k]).abs() < 1e-12,
+                "cell {k}: {} vs {}",
+                du[k],
+                r * u[k]
+            );
+        }
+        // The top row feels the edge held at 0 instead.
+        assert!((du[8] - r * u[8]).abs() > 1e-3);
+        // The structure: each cell depends on itself and its 4 neighbours
+        // (fewer at the edges).
+        use crate::ode::OdeSystem;
+        let rows = s.sparsity().unwrap();
+        assert_eq!(rows[5], [1, 4, 5, 6, 9]);
+        assert_eq!(rows[0], [0, 1, 4]);
+    }
+
+    #[test]
+    fn two_axes_need_the_same_unit_for_lap() {
+        let m = error(&[
+            "grid x [m] = 0 .. 1, 4",
+            "grid y [s] = 0 .. 1, 4",
+            "state u[x, y] = 0",
+            "du/dt = lap(u)",
+        ]);
+        assert!(m.contains("the axes need the same unit"), "{m}");
+        assert!(error(&[
+            "grid x [m] = 0 .. 1, 4",
+            "grid y [m] = 0 .. 1, 4",
+            "state u[x, y] = 0",
+            "du/dt = ddz(u)"
+        ])
+        .contains("not an axis of the grid (x, y)"));
+        assert!(error(&[
+            "grid x = 0 .. 1, 4",
+            "grid y = 0 .. 1, 3",
+            "state u[x, y] = 0",
+            "du/dt = u",
+            "c = at(u, 1, 3)"
+        ])
+        .contains("along y is a whole number from 0 to 2"));
     }
 }

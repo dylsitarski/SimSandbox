@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-10-28: ADR 0060 step 5, first part: 2D grids. `simsandbox_expr::Line` (stride, count) and `ArrayOp::{Axis, Second, First}` along one axis; `lap` is their sum; `EdgeLine::axis`; `at(T, i, j)`. Tests: 2D mode at its discrete rate and second order (`tests/heat.rs`), `two_axes_*` in `symbolic.rs`, `simsandbox-file/tests/gray_scott.rs` (spots split). `examples/gray-scott.ssbx.json` is not registered in the app's examples until memory is bounded (Q38). `crates/simsandbox-session/examples/grid_cost.rs` measures step time and memory.
 - 2026-10-28: ADR 0060 step 4, implicit methods. `implicit.rs` (`Scheme`, `Workspace`, `Structure` with colouring and `faer` `SymbolicLu`, `factorise`, Newton `stage`, `advance`); `Integrator::{BackwardEuler, TrBdf2}` and `advance_in(.., ws, structure)`; `OdeSystem::sparsity` (typed equations: `Program::dependencies`); `OdeBlock` and `GroupIntegrator` keep a `Workspace`. Tests in `integrators.rs`, `tests/heat.rs` (orders, stiff steps, replay after rewind, the probed built-in rod) and `simsandbox-file/tests/arrays.rs` (a fused group with TR-BDF2). Speed in `examples/typed_speed.rs`.
 - 2026-10-28: ADR 0060 step 3, the heat-equation reference. `simsandbox-eq/tests/heat.rs`: modes under each edge kind (second order in space), the stencil's discrete rates to 10⁻¹², RK4's fourth order against the discretised system's exact solution, the typed rod and `eq.heat_rod` against the Gaussian by images. Example `heat-rod-typed.ssbx.json`, checked from its file in `simsandbox-file/tests/arrays.rs`. The saved-form test now covers the input demos too; `pendulum-drag` had its controls out of order and was normalised.
 - 2026-10-27: ADR 0060 step 2, arrays in 1D.
@@ -129,6 +130,7 @@
 
 ## Notes for the next session
 
+- 2026-10-28: step 5 paused on Q38 and Q39. The owner asked whether history and replay could be part of a general probing and saving capability (canvas nodes that save chosen values at set intervals or times), with the user choosing memory budget, recording interval, and exactness against speed. TR-BDF2 is too slow on 128 × 128 grids (730 ms a step, mostly the LU's fill-in), a follow-up for the solver's ordering.
 - 2026-10-28: the owner asked why multithreading was turned off in `faer` without discussion; recorded as Q39 (parallelism without losing exact replay), to settle with measurements in step 5.
 - 2026-10-28: `faer` (implicit methods) is built and tested on Linux only. CI builds Windows and macOS on pull requests and pushes to main, so the next PR is its cross-platform check (ADR 0060 asked for one before relying on it).
 - 2026-10-27: typed grids are cell-centred (edge values at faces), `eq.heat_rod` node-based (end temperatures at the ends), so ADR 0060's "matches eq.heat_rod to rounding" was amended: step 3 checks both against the analytic solution.

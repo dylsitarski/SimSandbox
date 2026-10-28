@@ -12,7 +12,7 @@
 //! A program gives the same numbers as [`Expr::eval`], operation for
 //! operation, apart from `x^2`, which is computed as `x*x`.
 
-use crate::{ArrayOp, Edge, Expr, Func, Op};
+use crate::{ArrayOp, Edge, Expr, Func, Line, Op};
 
 /// Where a variable's values are in the register buffer: `len` registers
 /// from `at` (1 for a scalar).
@@ -107,20 +107,22 @@ enum ArrIns {
         b: Src,
         n: usize,
     },
-    /// Cell centres `lo + (k + 1/2)·h`.
+    /// Cell centres `lo + (j + 1/2)·h`, `j` the place along `line`.
     Axis {
         d: usize,
         lo: usize,
         h: usize,
         n: usize,
+        line: Line,
     },
-    /// Second (`second`) or first derivative along a line of cells.
+    /// Second (`second`) or first derivative along `line`.
     Stencil {
         second: bool,
         d: usize,
         a: usize,
         h: usize,
         n: usize,
+        line: Line,
         edges: [EdgeAt; 2],
     },
     /// A reduction to one value.
@@ -164,19 +166,22 @@ fn split(r: &mut [f64], a: usize, d: usize, n: usize) -> (&[f64], &mut [f64]) {
     }
 }
 
-/// The value beyond the low (`high` false) or high end of the line of `n`
-/// cells from `a`, with spacing `h`.
-fn ghost(edge: EdgeAt, r: &[f64], a: usize, n: usize, h: f64, high: bool) -> f64 {
-    let (end, far) = if high {
-        (r[a + n - 1], r[a])
-    } else {
-        (r[a], r[a + n - 1])
-    };
+/// An edge with its value read.
+#[derive(Debug, Clone, Copy)]
+enum EdgeValue {
+    Value(f64),
+    Gradient(f64),
+    Periodic,
+}
+
+/// The value beyond an end cell holding `end`, the line's far end
+/// holding `far`, with spacing `h`.
+fn ghost(edge: EdgeValue, end: f64, far: f64, h: f64) -> f64 {
     match edge {
         // The edge value is the mean of the end cell and the ghost.
-        EdgeAt::Value(v) => 2.0 * r[v] - end,
-        EdgeAt::Gradient(g) => end + g.map_or(0.0, |g| r[g]) * h,
-        EdgeAt::Periodic => far,
+        EdgeValue::Value(v) => 2.0 * v - end,
+        EdgeValue::Gradient(g) => end + g * h,
+        EdgeValue::Periodic => far,
     }
 }
 
@@ -198,9 +203,12 @@ impl ArrIns {
             ArrIns::Call2 { f, d, a, b, n } => {
                 (0..n).for_each(|k| r[d + k] = f.apply(a.get(r, k), b.get(r, k)))
             }
-            ArrIns::Axis { d, lo, h, n } => {
+            ArrIns::Axis { d, lo, h, n, line } => {
                 let (lo, h) = (r[lo], r[h]);
-                (0..n).for_each(|k| r[d + k] = lo + (k as f64 + 0.5) * h);
+                (0..n).for_each(|k| {
+                    let j = (k / line.stride) % line.count;
+                    r[d + k] = lo + (j as f64 + 0.5) * h;
+                });
             }
             ArrIns::Stencil {
                 second,
@@ -208,31 +216,41 @@ impl ArrIns {
                 a,
                 h,
                 n,
+                line,
                 edges,
             } => {
                 let h = r[h];
-                let low = ghost(edges[0], r, a, n, h, false);
-                let high = ghost(edges[1], r, a, n, h, true);
-                // Neighbours below and above each cell, the ends from the
-                // ghosts; the interior straight from the cells.
-                let below = |r: &[f64], k: usize| if k == 0 { low } else { r[a + k - 1] };
-                let above = |r: &[f64], k: usize| if k + 1 == n { high } else { r[a + k + 1] };
+                let edges = edges.map(|e| match e {
+                    EdgeAt::Value(v) => EdgeValue::Value(r[v]),
+                    EdgeAt::Gradient(g) => EdgeValue::Gradient(g.map_or(0.0, |g| r[g])),
+                    EdgeAt::Periodic => EdgeValue::Periodic,
+                });
                 let (src, dst) = split(r, a, d, n);
-                if second {
-                    let h2 = h * h;
-                    for k in 1..n.saturating_sub(1) {
-                        dst[k] = (src[k - 1] - 2.0 * src[k] + src[k + 1]) / h2;
-                    }
-                    for k in [0, n - 1] {
-                        r[d + k] = (below(r, k) - 2.0 * r[a + k] + above(r, k)) / h2;
-                    }
-                } else {
-                    let h2 = 2.0 * h;
-                    for k in 1..n.saturating_sub(1) {
-                        dst[k] = (src[k + 1] - src[k - 1]) / h2;
-                    }
-                    for k in [0, n - 1] {
-                        r[d + k] = (above(r, k) - below(r, k)) / h2;
+                let (s, c) = (line.stride, line.count);
+                for l in 0..n / c {
+                    // The cells of one line: base, base + s, ...
+                    let base = (l / s) * s * c + l % s;
+                    let at = |j: usize| base + j * s;
+                    let low = ghost(edges[0], src[at(0)], src[at(c - 1)], h);
+                    let high = ghost(edges[1], src[at(c - 1)], src[at(0)], h);
+                    let below = |j: usize| if j == 0 { low } else { src[at(j - 1)] };
+                    let above = |j: usize| if j + 1 == c { high } else { src[at(j + 1)] };
+                    if second {
+                        let h2 = h * h;
+                        for j in 1..c.saturating_sub(1) {
+                            dst[at(j)] = (src[at(j - 1)] - 2.0 * src[at(j)] + src[at(j + 1)]) / h2;
+                        }
+                        for j in [0, c - 1] {
+                            dst[at(j)] = (below(j) - 2.0 * src[at(j)] + above(j)) / h2;
+                        }
+                    } else {
+                        let h2 = 2.0 * h;
+                        for j in 1..c.saturating_sub(1) {
+                            dst[at(j)] = (src[at(j + 1)] - src[at(j - 1)]) / h2;
+                        }
+                        for j in [0, c - 1] {
+                            dst[at(j)] = (above(j) - below(j)) / h2;
+                        }
                     }
                 }
             }
@@ -274,35 +292,44 @@ impl ArrIns {
                     deps[d + k] = union(&[&src(deps, a, k), &src(deps, b, k)]);
                 }
             }
-            ArrIns::Axis { d, lo, h, n } => {
+            ArrIns::Axis { d, lo, h, n, .. } => {
                 let both = union(&[&deps[lo], &deps[h]]);
                 for k in 0..n {
                     deps[d + k] = both.clone();
                 }
             }
             ArrIns::Stencil {
-                d, a, h, n, edges, ..
+                d,
+                a,
+                h,
+                n,
+                line,
+                edges,
+                ..
             } => {
-                let ghost = |deps: &[Vec<usize>], edge: EdgeAt, high: bool| -> Vec<usize> {
-                    let (end, far) = if high { (a + n - 1, a) } else { (a, a + n - 1) };
-                    match edge {
-                        EdgeAt::Value(v) => union(&[&deps[v], &deps[end]]),
-                        EdgeAt::Gradient(g) => {
-                            let g = g.map(|g| deps[g].clone()).unwrap_or_default();
-                            union(&[&deps[end], &deps[h], &g])
+                let (s, c) = (line.stride, line.count);
+                let mut cells: Vec<Vec<usize>> = vec![Vec::new(); n];
+                for l in 0..n / c {
+                    let base = (l / s) * s * c + l % s;
+                    let at = |j: usize| a + base + j * s;
+                    let ghost = |edge: EdgeAt, end: usize, far: usize| -> Vec<usize> {
+                        match edge {
+                            EdgeAt::Value(v) => union(&[&deps[v], &deps[end]]),
+                            EdgeAt::Gradient(g) => {
+                                let g = g.map(|g| deps[g].clone()).unwrap_or_default();
+                                union(&[&deps[end], &deps[h], &g])
+                            }
+                            EdgeAt::Periodic => deps[far].clone(),
                         }
-                        EdgeAt::Periodic => deps[far].clone(),
+                    };
+                    let low = ghost(edges[0], at(0), at(c - 1));
+                    let high = ghost(edges[1], at(c - 1), at(0));
+                    for j in 0..c {
+                        let below = if j == 0 { &low } else { &deps[at(j - 1)] };
+                        let above = if j + 1 == c { &high } else { &deps[at(j + 1)] };
+                        cells[base + j * s] = union(&[below, &deps[at(j)], above, &deps[h]]);
                     }
-                };
-                let low = ghost(deps, edges[0], false);
-                let high = ghost(deps, edges[1], true);
-                let cells: Vec<Vec<usize>> = (0..n)
-                    .map(|k| {
-                        let below = if k == 0 { &low } else { &deps[a + k - 1] };
-                        let above = if k + 1 == n { &high } else { &deps[a + k + 1] };
-                        union(&[below, &deps[a + k], above, &deps[h]])
-                    })
-                    .collect();
+                }
                 for (k, c) in cells.into_iter().enumerate() {
                     deps[d + k] = c;
                 }
@@ -364,8 +391,8 @@ impl Builder<'_> {
             Expr::Bin(_, a, b) => self.len(a).max(self.len(b)),
             Expr::Call(_, args) => args.iter().map(|a| self.len(a)).max().unwrap_or(1),
             Expr::Array(op, args) => match op {
-                ArrayOp::Axis(n) => *n,
-                ArrayOp::Lap(_) | ArrayOp::Deriv(_) => self.len(&args[0]),
+                ArrayOp::Axis { cells, .. } => *cells,
+                ArrayOp::Second { .. } | ArrayOp::First { .. } => self.len(&args[0]),
                 _ => 1,
             },
         }
@@ -481,20 +508,22 @@ impl Builder<'_> {
                 };
                 let one = |k: usize| -> usize { srcs[k].at };
                 match *op {
-                    ArrayOp::Axis(cells) => self.array(ArrIns::Axis {
+                    ArrayOp::Axis { line, cells } => self.array(ArrIns::Axis {
                         d,
                         lo: one(0),
                         h: one(1),
                         n: cells,
+                        line,
                     }),
-                    ArrayOp::Lap(e) | ArrayOp::Deriv(e) => {
+                    ArrayOp::Second { line, edges: e } | ArrayOp::First { line, edges: e } => {
                         assert_ne!(srcs[0].at, d, "a stencil writes elsewhere than it reads");
                         self.array(ArrIns::Stencil {
-                            second: matches!(op, ArrayOp::Lap(_)),
+                            second: matches!(op, ArrayOp::Second { .. }),
                             d,
                             a: one(0),
                             h: one(1),
                             n: len,
+                            line,
                             edges: [edge(e[0], self.vars), edge(e[1], self.vars)],
                         })
                     }
@@ -766,7 +795,13 @@ mod tests {
 
     #[test]
     fn arrays_broadcast_scalars_and_loop_over_cells() {
-        let axis = Expr::Array(ArrayOp::Axis(4), vec![Expr::Var(0), Expr::Var(1)]);
+        let axis = Expr::Array(
+            ArrayOp::Axis {
+                line: Line::along(4),
+                cells: 4,
+            },
+            vec![Expr::Var(0), Expr::Var(1)],
+        );
         // result = 2*a + s*x, with the axis computed first.
         let e = Expr::Bin(
             Op::Add,
@@ -784,7 +819,15 @@ mod tests {
 
     #[test]
     fn stencils_use_the_edges() {
-        let lap = |edges| Expr::Array(ArrayOp::Lap(edges), vec![Expr::Var(5), Expr::Var(1)]);
+        let lap = |edges| {
+            Expr::Array(
+                ArrayOp::Second {
+                    line: Line::along(4),
+                    edges,
+                },
+                vec![Expr::Var(5), Expr::Var(1)],
+            )
+        };
         let a = [1.0, 2.0, 4.0, 8.0];
         // Insulated: the ghosts repeat the end cells. h = 0.5, h^2 = 0.25.
         let r = run_on(&[(6, &lap([Edge::Gradient(None); 2]))], a);
@@ -799,7 +842,10 @@ mod tests {
         assert_eq!(r[15], (4.0 - 16.0 + 1.0) / 0.25);
         // A gradient of 10 outward: ghost = end + 10*h.
         let d = Expr::Array(
-            ArrayOp::Deriv([Edge::Gradient(Some(2)), Edge::Gradient(Some(2))]),
+            ArrayOp::First {
+                line: Line::along(4),
+                edges: [Edge::Gradient(Some(2)), Edge::Gradient(Some(2))],
+            },
             vec![Expr::Var(5), Expr::Var(1)],
         );
         let r = run_on(&[(6, &d)], a);
@@ -833,7 +879,15 @@ mod tests {
         // The array (variable 5) is the input; results 6 (array), 7 (scalar).
         let (spans, size) = layout();
         let a = spans[5].at;
-        let lap = |edges| Expr::Array(ArrayOp::Lap(edges), vec![Expr::Var(5), Expr::Var(1)]);
+        let lap = |edges| {
+            Expr::Array(
+                ArrayOp::Second {
+                    line: Line::along(4),
+                    edges,
+                },
+                vec![Expr::Var(5), Expr::Var(1)],
+            )
+        };
         let deps = |e: &Expr, to: usize| {
             let p = Program::with_layout(&spans, size, &[(to, e)]);
             let s = spans[to];

@@ -190,6 +190,17 @@ The heat equation is the reference problem for arrays (`crates/simsandbox-eq/tes
   - `eq.heat_rod`, probed, at 0.5 s steps follows the exact Gaussian to 0.08 K of a 33.3 K peak;
   - per 0.05 s step of the typed rod: 50 cells, 0.02 ms (RK4 with the 3 substeps it needs: 0.003 ms); 200 cells, 0.064 ms (RK4, 40 substeps: 0.087 ms); 800 cells, 0.25 ms (RK4, 640 substeps: 5.0 ms, 20 times slower).
 
+### As built (step 5, 2D grids, 2026-10-28)
+
+- **Two `grid` lines make a 2D grid:** the first axis is x (fastest in the row-by-row cells), the second y; arrays are written `T[x, y]`, are `Grid {nx, ny}` ports, and each axis is an output (its position for every cell) that is the coordinate of every array along its axis. Three axes are refused.
+- **Stencils run along one axis** (`ArrayOp::Second`, `ArrayOp::First` with a `Line`: stride and count), so `lap(T)` is the sum of the second derivatives along each axis (the axes must share a unit), `ddx(T)` and `ddy(T)` are derivatives along one. Edges are per axis: `edge T: x periodic, y- = 0, y+ gradient = 0`. `at(T, i, j)` takes a cell number along each axis.
+- **Tests:** a 2D mode decays at its discrete rate along both axes to 10⁻¹² and is second order in space (8, 16, 32 cells); the Jacobian structure is the 5-point stencil.
+- **Gray–Scott** (`examples/gray-scott.ssbx.json`, 128 × 128, periodic, F = 0.035, k = 0.065): two seeds become 8 spots by t = 4000 s; the test runs a 64 × 64 version and checks that spots split (2 → 8, each 57–68 cells) and v stays in [0, 1].
+- **Measured** (`crates/simsandbox-session/examples/grid_cost.rs`, release, one thread):
+  - RK4 at 128 × 128: 2.4 ms a step stepping alone, 2.6 ms in a session (recording and snapshots add 9%): about 400 simulated seconds a wall second, so the example's speed of 200 runs live. At 64 × 64: 0.51 ms.
+  - TR-BDF2 at 128 × 128 (32 768 unknowns, 196 608 non-zeros): 730 ms a step, of which 600–675 ms factorising and about 150 ms in Newton's stages. The default ordering (COLAMD) fills in heavily on this 2D periodic pattern; implicit methods are not yet useful on 2D grids of this size. Gray–Scott at dt = 1 s is not stiff, so RK4 suits it.
+  - Memory: 0.47 MB a step until the history thins at 1000 samples (about 400 MB), then about 0.09 MB a step from rewind snapshots (1 MB each, every 10 steps) up to their cap of 10 000 (about 10 GB, some minutes of live play). The example is therefore not in the app's Examples menu until memory is bounded ([Q38](../open-questions.md)).
+
 ## Consequences
 
 - Q35 is resolved as option (b), with (c) kept for later measurement. Q17 is resolved as option (a) with one-step methods. Q26 stays open, revisited after the gate.

@@ -185,18 +185,45 @@ pub enum Edge {
     Periodic,
 }
 
+/// How one axis runs through the cells of a grid stored row by row
+/// (x fastest): cell `k` lies at place `(k / stride) % count` along it.
+/// The x axis of an `nx` by `ny` grid is `{stride: 1, count: nx}`, its y
+/// axis `{stride: nx, count: ny}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Line {
+    pub stride: usize,
+    pub count: usize,
+}
+
+impl Line {
+    /// A line of `count` cells, the only axis of its grid.
+    pub fn along(count: usize) -> Self {
+        Self { stride: 1, count }
+    }
+}
+
 /// An array operation in an [`Expr`], resolved by typed equations.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ArrayOp {
-    /// The cell centres of an axis of `n` cells; arguments the low end
-    /// and the spacing.
-    Axis(usize),
-    /// The second derivative along a line of cells (the Laplacian in 1D);
-    /// arguments the array and the spacing; edges low and high.
-    Lap([Edge; 2]),
-    /// The first derivative along a line (central differences);
-    /// arguments as for `Lap`.
-    Deriv([Edge; 2]),
+    /// The cell centres along an axis, for each of `cells` cells;
+    /// arguments the axis's low end and spacing.
+    Axis {
+        line: Line,
+        cells: usize,
+    },
+    /// The second derivative along an axis (central differences);
+    /// arguments the array and the spacing; edges at the low and high
+    /// ends. The Laplacian is their sum over the axes.
+    Second {
+        line: Line,
+        edges: [Edge; 2],
+    },
+    /// The first derivative along an axis (central differences);
+    /// arguments as for `Second`.
+    First {
+        line: Line,
+        edges: [Edge; 2],
+    },
     Sum,
     Mean,
     MinOf,

@@ -1,0 +1,85 @@
+{
+  "format": 1,
+  "description": "Gray–Scott reaction–diffusion (ADR 0060): two chemicals on a 2D grid, u fed in at rate F and v removed at rate F + k, react as u + 2v → 3v at rate r while both diffuse, v more slowly. From two small seeds, spots grow, split and fill the square. The whole model is two typed equations on a 128 × 128 periodic grid. Change F and k to get stripes, mazes or waves (Pearson, Science 1993).",
+  "run": {
+    "dt": 1.0
+  },
+  "blocks": [
+    {
+      "name": "gs",
+      "type": "eq.equations",
+      "method": {
+        "name": "rk4",
+        "substeps": 1.0
+      },
+      "equations": [
+        "# Gray–Scott on a square of side 'size', wrapping around at its edges",
+        "grid x [m] = 0 .. size, 128",
+        "grid y [m] = 0 .. size, 128",
+        "param size [m] = 1.25",
+        "param Du [m^2/s] = 2e-5",
+        "param Dv [m^2/s] = 1e-5",
+        "param F [1/s] = 0.035",
+        "param k [1/s] = 0.065",
+        "param r [1/s] = 1",
+        "param w [m] = 0.04",
+        "param ax [m] = 0.55",
+        "param ay [m] = 0.6",
+        "param bx [m] = 0.75",
+        "param by [m] = 0.7",
+        "state u[x, y] = 1 - 0.5*(exp(-((x - ax)^2 + (y - ay)^2)/w^2) + exp(-((x - bx)^2 + (y - by)^2)/w^2))",
+        "state v[x, y] = 0.25*(exp(-((x - ax)^2 + (y - ay)^2)/w^2) + exp(-((x - bx)^2 + (y - by)^2)/w^2))",
+        "edge u: x periodic, y periodic",
+        "edge v: x periodic, y periodic",
+        "reaction = r*u*v^2",
+        "du/dt = Du*lap(u) - reaction + F*(1 - u)",
+        "dv/dt = Dv*lap(v) + reaction - (F + k)*v",
+        "v_mean = mean(v)"
+      ]
+    }
+  ],
+  "controls": {
+    "params": {
+      "gs.F": {
+        "slider": true,
+        "range": [
+          0.0,
+          0.08
+        ],
+        "pin": true
+      },
+      "gs.k": {
+        "slider": true,
+        "range": [
+          0.03,
+          0.075
+        ],
+        "pin": true
+      }
+    },
+    "speed": 200.0,
+    "plots": [
+      "gs.v",
+      "gs.v_mean",
+      "gs.x",
+      "gs.y"
+    ],
+    "views": [
+      {
+        "type": "plot.heatmap",
+        "bind": {
+          "field": "gs.v",
+          "x": "gs.x",
+          "y": "gs.y"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "gs.v_mean"
+        }
+      }
+    ]
+  }
+}

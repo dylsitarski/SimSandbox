@@ -180,7 +180,7 @@ pub fn in_si(e: Expr, scales: &[f64]) -> Expr {
         Expr::Call(f, args) => Expr::Call(f, args.into_iter().map(|a| in_si(a, scales)).collect()),
         // A stencil reads its array and spacing as they are (in their units,
         // with the array's edges) and is converted as a whole: its result is
-        // in the array's unit per spacing unit (squared for `Lap`).
+        // in the array's unit per spacing unit (squared for `Second`).
         // Reductions and elements take their argument in SI.
         Expr::Array(op, args) => {
             use crate::ArrayOp;
@@ -189,9 +189,9 @@ pub fn in_si(e: Expr, scales: &[f64]) -> Expr {
                 _ => 1.0,
             };
             let (factor, args) = match op {
-                ArrayOp::Lap(_) => (scale(0) / (scale(1) * scale(1)), args),
-                ArrayOp::Deriv(_) => (scale(0) / scale(1), args),
-                ArrayOp::Axis(_) => (1.0, args),
+                ArrayOp::Second { .. } => (scale(0) / (scale(1) * scale(1)), args),
+                ArrayOp::First { .. } => (scale(0) / scale(1), args),
+                ArrayOp::Axis { .. } => (1.0, args),
                 _ => (1.0, args.into_iter().map(|a| in_si(a, scales)).collect()),
             };
             let e = Expr::Array(op, args);
