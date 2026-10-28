@@ -129,6 +129,7 @@
 
 ## Notes for the next session
 
+- 2026-10-28: the owner asked why multithreading was turned off in `faer` without discussion; recorded as Q39 (parallelism without losing exact replay), to settle with measurements in step 5.
 - 2026-10-28: `faer` (implicit methods) is built and tested on Linux only. CI builds Windows and macOS on pull requests and pushes to main, so the next PR is its cross-platform check (ADR 0060 asked for one before relying on it).
 - 2026-10-27: typed grids are cell-centred (edge values at faces), `eq.heat_rod` node-based (end temperatures at the ends), so ADR 0060's "matches eq.heat_rod to rounding" was amended: step 3 checks both against the analytic solution.
 - 2026-10-26: inputs are checked by tests and headless only; the app's keys and dragging were not tried in a window. The pendulum view sends the pointer only for `eq.pendulum` models (its `applies_to`), so "Drag the bob" (typed equations) drags on a `plot.xy` of `bob.x` against `bob.y`, given the new `plot.xy` styles `reach` (always show ±reach around 0) and `equal_scales` so there is room to press beyond the swing.

@@ -106,7 +106,7 @@ _Last updated: 2026-10-28_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Phase 2, item 2** as [ADR 0060](decisions/0060-arrays-in-typed-equations.md) decides, in order (steps 1–4 done 2026-10-27/28): (5) 2D grids and a Gray–Scott example (target 128 × 128 live), settling [Q38](open-questions.md) on recording large grids.
+1. **Phase 2, item 2** as [ADR 0060](decisions/0060-arrays-in-typed-equations.md) decides, in order (steps 1–4 done 2026-10-27/28): (5) 2D grids and a Gray–Scott example (target 128 × 128 live), measuring where several cores would help and settling [Q39](open-questions.md) (parallelism and exact replay) and [Q38](open-questions.md) on recording large grids.
 2. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
