@@ -131,6 +131,7 @@
 
 ## Notes for the next session
 
+- 2026-10-28: ADR 0062 (probes) is a draft (Proposed). Open for the owner: thin or forget by default; snapshots with or without outputs; recompute on demand in the first build or later; several cores for exact runs from the start; its place in the Phase 2 plan.
 - 2026-10-28: step 5 paused on Q38 and Q39. The owner asked whether history and replay could be part of a general probing and saving capability (canvas nodes that save chosen values at set intervals or times), with the user choosing memory budget, recording interval, and exactness against speed. TR-BDF2 is too slow on 128 × 128 grids (730 ms a step, mostly the LU's fill-in), a follow-up for the solver's ordering.
 - 2026-10-28: the owner asked why multithreading was turned off in `faer` without discussion; recorded as Q39 (parallelism without losing exact replay), to settle with measurements in step 5.
 - 2026-10-28: `faer` (implicit methods) is built and tested on Linux only. CI builds Windows and macOS on pull requests and pushes to main, so the next PR is its cross-platform check (ADR 0060 asked for one before relying on it).

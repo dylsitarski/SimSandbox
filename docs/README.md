@@ -132,6 +132,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0059-run-files.md](decisions/0059-run-files.md) | Decision record | Run files: recordings and scenarios beside the model, with the model hash |
 | [decisions/0060-arrays-in-typed-equations.md](decisions/0060-arrays-in-typed-equations.md) | Decision record | Arrays, grids, stencils and implicit methods in typed equations |
 | [decisions/0061-verified-is-earned-per-case.md](decisions/0061-verified-is-earned-per-case.md) | Decision record | Verified only from a case's convergence check; exact methods are Quantitative |
+| [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs (proposed) |
 
 ### Guides
 

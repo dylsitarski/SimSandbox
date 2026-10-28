@@ -99,7 +99,7 @@ _Last updated: 2026-10-28_
 
 ## In progress
 
-- Phase 2 item 2, step 5: 2D grids and the Gray–Scott example are built (2026-10-28), with an interim memory safety net (about 510 MB for Gray–Scott at 128 × 128). Next: the probes ADR, which settles [Q38](open-questions.md) (recording and memory) and [Q39](open-questions.md) (cores, exactness against speed), as the owner asked.
+- Phase 2 item 2, step 5: 2D grids and the Gray–Scott example are built (2026-10-28), with an interim memory safety net (about 510 MB for Gray–Scott at 128 × 128). The probes ADR is drafted ([ADR 0062](decisions/0062-probes-recording-and-replay.md), proposed) and waits on the owner's choices; it settles [Q38](open-questions.md) and [Q39](open-questions.md) once accepted.
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
