@@ -91,6 +91,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Unit conversions and input blocks are labelled Quantitative, not Verified (ADR 0061): Verified is earned by a run of a model through a convergence check (planned), never declared by a method.
 - Typed equations run faster: they are compiled to an instruction list when the model loads (ADR 0060), taking about 40% less time per step (the Lorenz system: 1.8× the built-in block's time, from 3.1×).
 - A parameter changed while running now acts in the next step; before, a change to a block feeding others reached them one step later.
 - Units are shown with a slash: `m/s`, `kg·m/s^2`, `1/s` instead of `m·s^-1`.

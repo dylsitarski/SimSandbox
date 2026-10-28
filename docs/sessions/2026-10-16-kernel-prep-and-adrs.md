@@ -78,6 +78,7 @@
 
 ## Decided
 
+- 2026-10-28: Verified is earned per case ([ADR 0061](../decisions/0061-verified-is-earned-per-case.md)): the owner chose to relabel `units.convert` and the input blocks Quantitative (they had declared Verified, against ADR 0004 and the verification policy) and to add a convergence check to the roadmap's Phase 3.
 - 2026-10-27: arrays in typed equations ([ADR 0060](../decisions/0060-arrays-in-typed-equations.md)), the owner choosing the whole-array form after asking what arrays gain over a wrapper or other routes: 1D and 2D grids, `lap`/`ddx`/`ddy`, `edge` conditions, an instruction-list evaluator (Q35), `backward_euler` and `trbdf2` with a sparse Jacobian (Q17); Q26 after the gate; Q38 (recording large grids) raised.
 - 2026-10-26: run files ([ADR 0059](../decisions/0059-run-files.md)), after the owner asked how several runs of one model are kept: `<model>.<run>.run.json` beside the model with path, SHA-256 of the model without `controls`, seed, settings, schedule and track; the model keeps `run.inputs` as an optional default schedule only.
 - 2026-10-26: inputs ([ADR 0058](../decisions/0058-inputs-live-scheduled-replayed.md)): input blocks (`input.value`, `input.pointer`, later `input.gamepad`) whose values are parameters; bindings in `controls.inputs`; every change during a run recorded as a track (time, key, value) applied at step boundaries; replay after rewind until live input takes over; `run.inputs` schedules; `--inputs` tracks headless.

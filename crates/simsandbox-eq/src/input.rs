@@ -59,7 +59,8 @@ impl Input {
                 name: HELD.into(),
                 labels: MethodLabels {
                     speed: SpeedClass::RealTime,
-                    accuracy: AccuracyClass::Verified,
+                    // Exact, but Verified is earned per case (ADR 0061).
+                    accuracy: AccuracyClass::Quantitative,
                 },
             },
         }

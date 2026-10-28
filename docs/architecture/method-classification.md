@@ -25,6 +25,7 @@ Shorthand for common combinations: **Interactive** = real-time; **Exploratory** 
 | Explicit Euler | Real-time | Qualitative |
 | RK4, fixed step | Real-time | Quantitative |
 | Dormand–Prince 5(4), adaptive | Responsive | Quantitative |
+| Exact methods: unit conversions, input blocks, formulas, maps | Real-time | Quantitative (no method declares Verified, [ADR 0061](../decisions/0061-verified-is-earned-per-case.md)) |
 
 ## Composition rules
 
@@ -33,6 +34,8 @@ Shorthand for common combinations: **Interactive** = real-time; **Exploratory** 
 - Verified applies to a specific case, not to a method in general: it is earned when that case's convergence check passes and is lost if the model changes. No method may declare itself Verified.
 
 ## How a case earns Verified (planned tooling)
+
+The convergence check is on the roadmap in Phase 3 ([ADR 0061](../decisions/0061-verified-is-earned-per-case.md)).
 
 - **Declared accuracy:** each Block states its method, order and tolerances; run reports record them.
 - **Verification suite:** every backend ships tests against analytic or benchmark solutions (see [verification policy](../guides/verification-policy.md)).

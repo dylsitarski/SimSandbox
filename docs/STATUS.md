@@ -29,6 +29,7 @@ _Last updated: 2026-10-28_
 
 ## Done recently
 
+- 2026-10-28: Verified is earned per case ([ADR 0061](decisions/0061-verified-is-earned-per-case.md)), after the owner asked why the verified heat rod shows Quantitative: `units.convert` and the input blocks no longer declare Verified; a convergence check is on the roadmap (Phase 3).
 - 2026-10-28: Phase 2 item 2, step 3: the heat equation as the reference for arrays (`simsandbox-eq/tests/heat.rs`): second order in space under each edge kind, the stencil's discrete rates exact, RK4 fourth order in time on the grid; the typed rod, `eq.heat_rod` and the new typed heat-rod example follow the exact Gaussian solution to 0.1%.
 - 2026-10-27: Phase 2 item 2, step 2: arrays in typed equations in 1D (`grid`, `state T[x]`, `input q[x]`, `edge`, `lap`, `ddx`, `sum`, `mean`, `minof`, `maxof`, `at`, `spacing`), unit-checked, as grid outputs with the axis as coordinate; array ports connect to typed and built-in grids and fuse. The typed rod runs at 1.0–1.1× the built-in `eq.heat_rod`'s time per step.
 - 2026-10-27: Phase 2 item 2, step 1: typed equations run on an instruction list (`simsandbox_expr::Program`: registers, constants folded, temporaries reused) instead of walking the expression tree. Measured with `cargo run --release -p simsandbox-eq --example typed_speed` (RK4, dt = 0.001): the Lorenz system 0.288 to 0.178 µs a step against 0.098 built in (3.1× to 1.8×), the pendulum 0.358 to 0.247 against 0.124 (3.0× to 2.0×), ten blocks alike. Results are unchanged bit for bit, except `x^2`, now `x*x`.

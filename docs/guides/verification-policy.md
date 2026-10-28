@@ -9,7 +9,7 @@ AI-written numerical code can look right and be subtly wrong: lost conservation,
 1. **Reference test.** At least one test against an analytic solution or a published benchmark, with an explicit error bound. Put it in the crate's `tests/verification.rs` (or a sibling file named for the method).
 2. **Convergence-order test** for fixed-order methods: halve the step, check that the error ratio matches the theoretical order (e.g. about 16 for RK4).
 3. **Tolerance test** for adaptive methods: the error stays below the requested tolerance on a reference problem.
-4. **Honest labels.** Declare `MethodLabels` that match reality. Never declare `Verified`; it is earned per case by the planned verification tooling ([method classification](../architecture/method-classification.md)).
+4. **Honest labels.** Declare `MethodLabels` that match reality. Never declare `Verified`, even for exact methods (conversions, inputs, formulas): it is earned per case by the planned convergence check ([method classification](../architecture/method-classification.md), [ADR 0061](../decisions/0061-verified-is-earned-per-case.md)).
 5. **Units.** Every port and parameter carries a real `Unit`. Never pass dimensioned values through dimensionless ports to get past a unit check.
 6. **Determinism.** Same inputs, same outputs. Seed anything random and expose the seed as a parameter.
 

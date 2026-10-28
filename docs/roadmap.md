@@ -68,6 +68,7 @@ Goal: trustworthy results. Gate: reproduce a published result end to end.
 - [ ] CFD/FEM batch runs (OpenFOAM, FEniCSx)
 - [ ] Parameter sweeps and uncertainty quantification
 - [ ] Provenance reports
+- [ ] Convergence check: a case earns Verified by rerunning at half the step (and twice the cells on grids) and showing the change as an error estimate; the label lasts until the model changes ([ADR 0061](decisions/0061-verified-is-earned-per-case.md)). First cases: the heat-rod examples
 - [ ] Cluster execution
 - [ ] Standalone player app and explorables gallery
 - [ ] AI model assistant

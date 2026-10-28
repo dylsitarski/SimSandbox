@@ -52,7 +52,7 @@ impl ConstantGrass {
                 name: "constant".into(),
                 labels: MethodLabels {
                     speed: SpeedClass::RealTime,
-                    accuracy: AccuracyClass::Verified,
+                    accuracy: AccuracyClass::Quantitative,
                 },
             },
         }
