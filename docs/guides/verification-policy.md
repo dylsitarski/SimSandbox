@@ -1,6 +1,6 @@
 # Verification policy
 
-_Last updated: 2026-10-15_
+_Last updated: 2026-10-28_
 
 AI-written numerical code can look right and be subtly wrong: lost conservation, instability at edge cases, a sign error in a Jacobian. These rules make every method trustworthy before anyone relies on it.
 
@@ -24,6 +24,8 @@ AI-written numerical code can look right and be subtly wrong: lost conservation,
 | --- | --- | --- |
 | Exponential decay x' = −x | x = e^(−t) | Order tests for Euler and RK4; Dopri5 tolerance (`integrators.rs`) |
 | Two coupled oscillators, ω0² = 1, κ = 0.5 | x1 = (cos t + cos √2 t) / 2 | Fusion and co-simulation tests (`tests/verification.rs`) |
+| Heat equation ∂T/∂t = α ∂²T/∂x², one mode (sine held at 0, cosine insulated, sine periodic) | T = mode · e^(−α k² t); on cells of width h exactly mode · e^(−α (4/h²) sin²(kh/2) t) | Second order in space for each edge kind, the stencil's discrete rate to rounding, RK4's fourth order in time on the grid (`simsandbox-eq/tests/heat.rs`, [ADR 0060](../decisions/0060-arrays-in-typed-equations.md)) |
+| Heat equation, a Gaussian on a rod held at 0 at both ends | The spreading Gaussian by images: Σₙ g(x − c − 2nL) − g(x + c − 2nL), g of variance w² + 4αt | The typed rod and `eq.heat_rod` (`tests/heat.rs`), the typed heat-rod example (`simsandbox-file/tests/arrays.rs`) |
 
 Add new reference problems to this table when you introduce them. Candidates for later backends: Lotka–Volterra invariant (ODE), lid-driven cavity (CFD), simple pendulum period (rigid body).
 

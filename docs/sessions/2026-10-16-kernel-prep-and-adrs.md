@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-10-28: ADR 0060 step 3, the heat-equation reference. `simsandbox-eq/tests/heat.rs`: modes under each edge kind (second order in space), the stencil's discrete rates to 10⁻¹², RK4's fourth order against the discretised system's exact solution, the typed rod and `eq.heat_rod` against the Gaussian by images. Example `heat-rod-typed.ssbx.json`, checked from its file in `simsandbox-file/tests/arrays.rs`. The saved-form test now covers the input demos too; `pendulum-drag` had its controls out of order and was normalised.
 - 2026-10-27: ADR 0060 step 2, arrays in 1D.
   - `simsandbox-expr`: `Ast::Apply` for array operations (`ARRAY_OPS`, `dd<axis>`), `Expr::Array(ArrayOp, args)` with `Edge`, `resolve_with` and `units::dimension_with` hooks; `in_si` scales a stencil's result, not its arguments.
   - `program.rs`: `Program::with_layout(spans, size, steps)`; registers are `[variables][constants][temporaries]`, temporaries as wide as the longest array; `Ins::Arr` runs `ArrIns` (copy, negate, binary, calls, axis, stencil with ghosts, reductions). Constants are found in a first build so temporaries can follow them.

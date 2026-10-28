@@ -142,3 +142,40 @@ fn a_typed_rod_reads_the_built_in_rods_temperature() {
     let mean = t.iter().sum::<f64>() / t.len() as f64;
     assert!((sim.output(ids["probe"], "average").unwrap()[0] - mean).abs() < 1e-12);
 }
+
+#[test]
+fn the_typed_heat_rod_example_follows_the_exact_solution() {
+    // The example as shipped: a 100 K Gaussian of width 0.1 m on a 1 m rod
+    // with both ends held at 0. By images, the exact temperature is the
+    // spreading Gaussian reflected oddly about each end.
+    let text = include_str!("../../../examples/heat-rod-typed.ssbx.json");
+    let loaded = load(text, &registry()).expect("loads");
+    let id = loaded.ids["rod"];
+    let dt = loaded.file.run.dt;
+    let mut sim = Simulator::new(loaded.model, 0.0).unwrap();
+    for _ in 0..(2.0 / dt).round() as usize {
+        sim.step(dt).unwrap();
+    }
+    let (alpha, peak, c, w, l, t) = (0.01, 100.0, 0.5, 0.1, 1.0, 2.0);
+    let s2: f64 = w * w + 4.0 * alpha * t;
+    let g = |x: f64, centre: f64| peak * w / s2.sqrt() * (-(x - centre).powi(2) / s2).exp();
+    let exact = |x: f64| -> f64 {
+        (-3i32..=3)
+            .map(|n| {
+                let shift = 2.0 * n as f64 * l;
+                g(x, c + shift) - g(x, -c + shift)
+            })
+            .sum()
+    };
+    let temps = sim.output(id, "T").unwrap();
+    let xs = sim.output(id, "x").unwrap();
+    let error = temps
+        .iter()
+        .zip(xs)
+        .map(|(t, x)| (t - exact(*x)).abs())
+        .fold(0.0, f64::max);
+    // Peak 33.3 K; measured error 0.033 K (2026-10-28).
+    assert!(error < 0.05, "{error}");
+    let mean = sim.output(id, "mean_T").unwrap()[0];
+    assert!((mean - temps.iter().sum::<f64>() / 50.0).abs() < 1e-12);
+}

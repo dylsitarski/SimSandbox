@@ -64,16 +64,16 @@
   ],
   "controls": {
     "params": {
+      "bob.c": {
+        "slider": true,
+        "pin": true
+      },
       "bob.k": {
         "slider": true,
         "range": [
           0.0,
           200.0
         ],
-        "pin": true
-      },
-      "bob.c": {
-        "slider": true,
         "pin": true
       }
     },

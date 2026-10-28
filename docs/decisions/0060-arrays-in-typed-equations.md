@@ -167,6 +167,15 @@ Grids, arrays, stencils, edges and units in 1D are built, with these details set
 - **Evaluation:** array instructions loop over cells inside one instruction, with a specialised loop per operand case. The stencil reads the interior straight from the cells and only the two end cells through the ghosts. The rates leave out steps they do not need, such as the cell centres.
 - **Speed** (`cargo run --release -p simsandbox-eq --example typed_speed`, RK4, dt = 0.001): the typed rod of 50 cells takes 0.48 µs a step against 0.48 for `eq.heat_rod` (1.0×), and 1.1× for ten rods. That is inside the 1.5× target.
 
+### As built (step 3, 2026-10-28)
+
+The heat equation is the reference problem for arrays (`crates/simsandbox-eq/tests/heat.rs`), measured on a 1 m rod with α = 0.01 m²/s:
+- **Second order in space** for each edge kind: a sine held at 0, a cosine insulated, a whole-length sine periodic. RK4 to t = 5 s with a step small enough to leave only the space error; from 10 to 80 cells, the error falls by 3.96–4.11 per halving, to 3.9×10⁻⁵ of the amplitude (1.4×10⁻⁴ periodic, k twice as large).
+- **The stencil is exact for its discrete modes:** on 16 cells, dT/dt is −α (4/h²) sin²(kh/2) T in every cell to 10⁻¹², under each edge kind. So the ghost cells reflect the modes as they should.
+- **Fourth order in time:** RK4 against the exact solution of the discretised system (20 cells, to t = 2 s); the error falls by 16.1 per halving of the step (2.1×10⁻¹⁰ at 0.2 s).
+- **The typed rod and `eq.heat_rod`** both follow the exact Gaussian solution (by images): at t = 2 s, with a 33.3 K peak, the largest error is 0.033 K typed and 0.031 K built in (50 points each, RK4 with 10 substeps of 0.05 s).
+- **The typed heat-rod example** (`examples/heat-rod-typed.ssbx.json`, "Typed heat equation (arrays on a grid)") is checked against the same exact solution from its file.
+
 ## Consequences
 
 - Q35 is resolved as option (b), with (c) kept for later measurement. Q17 is resolved as option (a) with one-step methods. Q26 stays open, revisited after the gate.

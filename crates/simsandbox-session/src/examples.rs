@@ -66,6 +66,10 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/heat-rod.ssbx.json"),
     },
     Example {
+        name: "Typed heat equation (arrays on a grid)",
+        text: include_str!("../../../examples/heat-rod-typed.ssbx.json"),
+    },
+    Example {
         name: "Orbiting particles (a point set)",
         text: include_str!("../../../examples/orbits.ssbx.json"),
     },
