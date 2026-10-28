@@ -249,6 +249,72 @@ impl ArrIns {
     }
 }
 
+/// The sorted union of sorted index lists.
+fn union(sets: &[&Vec<usize>]) -> Vec<usize> {
+    let mut out: Vec<usize> = sets.iter().flat_map(|s| s.iter().copied()).collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+impl ArrIns {
+    /// As [`ArrIns::run`], on the dependencies of each register.
+    fn dependencies(&self, deps: &mut [Vec<usize>]) {
+        let src = |deps: &[Vec<usize>], s: Src, k: usize| -> Vec<usize> {
+            deps[if s.array { s.at + k } else { s.at }].clone()
+        };
+        match *self {
+            ArrIns::Copy { d, a, n } | ArrIns::Neg { d, a, n } | ArrIns::Call1 { d, a, n, .. } => {
+                for k in 0..n {
+                    deps[d + k] = src(deps, a, k);
+                }
+            }
+            ArrIns::Bin { d, a, b, n, .. } | ArrIns::Call2 { d, a, b, n, .. } => {
+                for k in 0..n {
+                    deps[d + k] = union(&[&src(deps, a, k), &src(deps, b, k)]);
+                }
+            }
+            ArrIns::Axis { d, lo, h, n } => {
+                let both = union(&[&deps[lo], &deps[h]]);
+                for k in 0..n {
+                    deps[d + k] = both.clone();
+                }
+            }
+            ArrIns::Stencil {
+                d, a, h, n, edges, ..
+            } => {
+                let ghost = |deps: &[Vec<usize>], edge: EdgeAt, high: bool| -> Vec<usize> {
+                    let (end, far) = if high { (a + n - 1, a) } else { (a, a + n - 1) };
+                    match edge {
+                        EdgeAt::Value(v) => union(&[&deps[v], &deps[end]]),
+                        EdgeAt::Gradient(g) => {
+                            let g = g.map(|g| deps[g].clone()).unwrap_or_default();
+                            union(&[&deps[end], &deps[h], &g])
+                        }
+                        EdgeAt::Periodic => deps[far].clone(),
+                    }
+                };
+                let low = ghost(deps, edges[0], false);
+                let high = ghost(deps, edges[1], true);
+                let cells: Vec<Vec<usize>> = (0..n)
+                    .map(|k| {
+                        let below = if k == 0 { &low } else { &deps[a + k - 1] };
+                        let above = if k + 1 == n { &high } else { &deps[a + k + 1] };
+                        union(&[below, &deps[a + k], above, &deps[h]])
+                    })
+                    .collect();
+                for (k, c) in cells.into_iter().enumerate() {
+                    deps[d + k] = c;
+                }
+            }
+            ArrIns::Reduce { d, a, n, .. } => {
+                let all: Vec<&Vec<usize>> = deps[a..a + n].iter().collect();
+                deps[d] = union(&all);
+            }
+        }
+    }
+}
+
 /// Assignments compiled to instructions; see the module documentation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
@@ -539,6 +605,40 @@ impl Program {
         self.code.is_empty()
     }
 
+    /// Which of the registers `from` each register in `to` depends on,
+    /// as offsets into `from`: the structure of the program's Jacobian
+    /// (ADR 0060). Found by running the program on sets of dependencies
+    /// instead of values, so it is exact for every value: a cell of a
+    /// stencil depends on its neighbours (and on the far end when
+    /// periodic), a reduction on every cell.
+    pub fn dependencies(
+        &self,
+        from: std::ops::Range<usize>,
+        to: std::ops::Range<usize>,
+    ) -> Vec<Vec<usize>> {
+        let mut deps: Vec<Vec<usize>> = vec![Vec::new(); self.template.len()];
+        for (k, r) in from.clone().enumerate() {
+            deps[r] = vec![k];
+        }
+        for ins in &self.code {
+            match *ins {
+                Ins::Copy(d, a) | Ins::Neg(d, a) | Ins::Sqr(d, a) | Ins::Call1(_, d, a) => {
+                    deps[d as usize] = deps[a as usize].clone();
+                }
+                Ins::Add(d, a, b)
+                | Ins::Sub(d, a, b)
+                | Ins::Mul(d, a, b)
+                | Ins::Div(d, a, b)
+                | Ins::Pow(d, a, b)
+                | Ins::Call2(_, d, a, b) => {
+                    deps[d as usize] = union(&[&deps[a as usize], &deps[b as usize]]);
+                }
+                Ins::Arr(k) => self.arrays[k as usize].dependencies(&mut deps),
+            }
+        }
+        to.map(|r| std::mem::take(&mut deps[r])).collect()
+    }
+
     /// Run every step on `r`, a buffer from [`Program::registers`] (or
     /// one at least as long, with the same constants).
     pub fn run(&self, r: &mut [f64]) {
@@ -726,5 +826,37 @@ mod tests {
             assert_eq!(run_on(&[(7, &e2)], a)[16], 2.0 * want);
             assert_eq!(&run_on(&[(6, &e)], a)[12..16], [want; 4]);
         }
+    }
+
+    #[test]
+    fn dependencies_follow_stencils_edges_and_reductions() {
+        // The array (variable 5) is the input; results 6 (array), 7 (scalar).
+        let (spans, size) = layout();
+        let a = spans[5].at;
+        let lap = |edges| Expr::Array(ArrayOp::Lap(edges), vec![Expr::Var(5), Expr::Var(1)]);
+        let deps = |e: &Expr, to: usize| {
+            let p = Program::with_layout(&spans, size, &[(to, e)]);
+            let s = spans[to];
+            p.dependencies(a..a + 4, s.at..s.at + s.len)
+        };
+        let held = deps(&lap([Edge::Value(2); 2]), 6);
+        assert_eq!(held, [vec![0, 1], vec![0, 1, 2], vec![1, 2, 3], vec![2, 3]]);
+        let periodic = deps(&lap([Edge::Periodic; 2]), 6);
+        assert_eq!(periodic[0], [0, 1, 3]);
+        assert_eq!(periodic[3], [0, 2, 3]);
+        // Cell by cell: a cell depends on itself only.
+        let scaled = Expr::Bin(Op::Mul, var(5), var(3));
+        assert_eq!(deps(&scaled, 6), [vec![0], vec![1], vec![2], vec![3]]);
+        // A reduction depends on every cell, and spreads that to every cell.
+        let mean = Expr::Array(ArrayOp::Mean, vec![Expr::Var(5)]);
+        assert_eq!(deps(&mean, 7), [vec![0, 1, 2, 3]]);
+        assert_eq!(
+            deps(&Expr::Bin(Op::Sub, var(5), Box::new(mean)), 6)[0],
+            [0, 1, 2, 3]
+        );
+        assert_eq!(
+            deps(&Expr::Array(ArrayOp::At(2), vec![Expr::Var(5)]), 7),
+            [vec![2]]
+        );
     }
 }

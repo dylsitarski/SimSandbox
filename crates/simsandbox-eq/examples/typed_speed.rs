@@ -97,4 +97,41 @@ fn main() {
             );
         }
     }
+    stiff();
+}
+
+/// Stiff steps (ADR 0060): the typed rod at 0.05 s a step, by RK4 with
+/// the substeps it needs to stay stable, and by TR-BDF2 in one step.
+fn stiff() {
+    println!("\nStiff: typed rod, 0.05 s steps to t = 2 s, ms per step (best of 3)");
+    for cells in [50usize, 200, 800] {
+        let lines: Vec<String> = HEAT_ROD
+            .iter()
+            .map(|l| l.replace(", 50", &format!(", {cells}")))
+            .collect();
+        let h = 1.0 / cells as f64;
+        // RK4 is stable below about 0.7 h²/α; keep a margin.
+        let substeps = (0.05 / (0.5 * h * h / 0.01)).ceil() as usize;
+        let time = |integrator: Integrator| {
+            let mut best = f64::INFINITY;
+            for _ in 0..3 {
+                let mut m = Model::new();
+                let set = EquationSet::parse("rod", &lines).expect("valid equations");
+                m.add(Box::new(OdeBlock::new(set, integrator)));
+                let mut s = Simulator::new(m, 0.0).expect("model builds");
+                let start = Instant::now();
+                for _ in 0..40 {
+                    s.step(0.05).expect("steps");
+                }
+                best = best.min(start.elapsed().as_secs_f64() * 1e3 / 40.0);
+            }
+            best
+        };
+        let rk4 = time(Integrator::Rk4 { substeps });
+        let tr = time(Integrator::TrBdf2 { substeps: 1 });
+        println!(
+            "{cells:4} cells: RK4 × {substeps:5} substeps {rk4:8.3}  TR-BDF2 × 1 {tr:7.3}  ratio {:.1}",
+            rk4 / tr
+        );
+    }
 }

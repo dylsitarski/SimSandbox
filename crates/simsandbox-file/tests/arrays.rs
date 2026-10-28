@@ -179,3 +179,62 @@ fn the_typed_heat_rod_example_follows_the_exact_solution() {
     let mean = sim.output(id, "mean_T").unwrap()[0];
     assert!((mean - temps.iter().sum::<f64>() / 50.0).abs() < 1e-12);
 }
+
+#[test]
+fn fused_array_blocks_run_implicitly() {
+    // The source, rod and probe of `array_ports_connect_fuse_and_run`,
+    // fused with TR-BDF2 and stepped at 0.1 s, almost 4 times RK4's
+    // limit on these cells (0.7 h²/α = 0.028 s).
+    let method = r#""method": {"name": "trbdf2", "substeps": 1.0}, "#;
+    let with_method = |b: String| {
+        b.replacen(
+            r#""type": "eq.equations", "#,
+            &format!(r#""type": "eq.equations", {method}"#),
+            1,
+        )
+    };
+    let rod = with_method(typed(
+        "rod",
+        &[
+            "grid x [m] = 0 .. 1, 50",
+            "input q[x] [K/s]",
+            "param alpha [m^2/s] = 0.01",
+            "state T[x] [K] = 0",
+            "edge T: x- = 0, x+ = 0",
+            "dT/dt = alpha*lap(T) + q",
+        ],
+    ));
+    let probe = with_method(typed(
+        "probe",
+        &[
+            "grid x [m] = 0 .. 1, 50",
+            "input T[x] [K]",
+            "param tau [s] = 0.1",
+            "state S[x] [K] = 0",
+            "dS/dt = (T - S)/tau",
+            "hottest = maxof(T) [K]",
+        ],
+    ));
+    let text = model(
+        &[typed("source", SOURCE), rod, probe],
+        &[("source.heat", "rod.q"), ("rod.T", "probe.T")],
+    );
+    let loaded = load(&text, &registry()).expect("loads");
+    assert_eq!(loaded.groups.len(), 1, "{:?}", loaded.groups);
+    assert!(
+        loaded.groups[0].method.starts_with("TR-BDF2"),
+        "{}",
+        loaded.groups[0].method
+    );
+    let ids = loaded.ids.clone();
+    let mut sim = Simulator::new(loaded.model, 0.0).unwrap();
+    for _ in 0..10 {
+        sim.step(0.1).unwrap();
+    }
+    let hottest = sim.output(ids["probe"], "hottest").unwrap()[0];
+    let exact = 0.2 * 50.0 * (0.05f64.sqrt() - 0.01f64.sqrt());
+    assert!(
+        (hottest - exact).abs() < 0.01 * exact,
+        "{hottest} vs {exact}"
+    );
+}

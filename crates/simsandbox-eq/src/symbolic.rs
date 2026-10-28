@@ -1659,6 +1659,14 @@ impl OdeSystem for EquationSet {
         &self.spec
     }
 
+    /// Exact: each rate's dependencies on the states, read from the
+    /// instructions that compute it (ADR 0060).
+    fn sparsity(&self) -> Option<Vec<Vec<usize>>> {
+        let ns = self.layout.states;
+        let at = self.layout.rates_at;
+        Some(self.rates.dependencies(1..1 + ns, at..at + ns))
+    }
+
     fn initial_state(&self, p: &[f64], x0: &mut [f64]) {
         let mut scratch = self.scratch.borrow_mut();
         if let Some(init) = &self.init {

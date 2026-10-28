@@ -11,6 +11,13 @@ pub trait OdeSystem: Equations + Send {
 
     /// Initial state from parameter values.
     fn initial_state(&self, p: &[f64], x0: &mut [f64]);
+
+    /// For each rate, the states it depends on: the structure of the
+    /// Jacobian, for implicit methods (ADR 0060). `None` if not known;
+    /// it is then found by perturbing each state.
+    fn sparsity(&self) -> Option<Vec<Vec<usize>>> {
+        None
+    }
 }
 
 /// An [`OdeSystem`] computed by a chosen [`Integrator`]: a kernel Block.
@@ -20,6 +27,8 @@ pub struct OdeBlock {
     system: Box<dyn OdeSystem>,
     integrator: Integrator,
     method: MethodSpec,
+    /// What an implicit method learns of the system's structure.
+    workspace: crate::implicit::Workspace,
 }
 
 impl OdeBlock {
@@ -33,6 +42,7 @@ impl OdeBlock {
             system,
             integrator,
             method,
+            workspace: Default::default(),
         }
     }
 
@@ -66,7 +76,15 @@ impl Block for OdeBlock {
     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
         let sys = self.system.as_ref();
         let f = |t: f64, x: &[f64], dx: &mut [f64]| sys.rhs(t, x, io.inputs, io.params, dx);
-        self.integrator.advance(&f, ctx.t, ctx.dt, io.state)?;
+        let structure = || sys.sparsity();
+        self.integrator.advance_in(
+            &f,
+            ctx.t,
+            ctx.dt,
+            io.state,
+            &mut self.workspace,
+            Some(&structure),
+        )?;
         // With the inputs held over the step; the master then makes
         // feedthrough outputs consistent (ADR 0040).
         sys.outputs(ctx.t + ctx.dt, io.state, io.inputs, io.params, io.outputs);

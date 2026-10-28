@@ -176,6 +176,20 @@ The heat equation is the reference problem for arrays (`crates/simsandbox-eq/tes
 - **The typed rod and `eq.heat_rod`** both follow the exact Gaussian solution (by images): at t = 2 s, with a 33.3 K peak, the largest error is 0.033 K typed and 0.031 K built in (50 points each, RK4 with 10 substeps of 0.05 s).
 - **The typed heat-rod example** (`examples/heat-rod-typed.ssbx.json`, "Typed heat equation (arrays on a grid)") is checked against the same exact solution from its file.
 
+### As built (step 4, 2026-10-28)
+
+`backward_euler` and `trbdf2` (option `substeps`) are methods of every continuous equation block and fused group (`crates/simsandbox-eq/src/implicit.rs`):
+- **One Jacobian and factorisation per communication step,** at its start, shared by its substeps, Newton's iterations and both TR-BDF2 stages (γ = 2 − √2, so both use `I − (γ/2)·h·J`). Nothing numeric is carried between steps, so a step's result depends only on its start and runs replay bit for bit after a rewind (tested).
+- **The structure:** typed equations give it exactly. `Program::dependencies` runs the rates' instructions on sets of state indices instead of values: a stencil cell depends on its neighbours (the far end when periodic), a reduction on every cell. Other systems (built-in blocks, fused groups) are probed once, at the first implicit step, by perturbing each state alone. An entry that happens to be zero there is missed; that slows Newton's method but cannot change what it converges to. Columns sharing no row are coloured together (3 colours for a 1D stencil).
+- **Newton's method** stops when the last correction is below 10⁻¹⁰ of the state's largest value (or 10⁻¹⁰ absolutely), within 50 iterations; otherwise the step fails with a message to take shorter steps or more substeps.
+- **`faer` 0.24 without `rayon`:** one thread, so the arithmetic is the same every run. Its fill-reducing ordering is computed once with the structure.
+- **Labels:** both real-time (a fixed amount of work per step); backward Euler qualitative (first order, like explicit Euler), TR-BDF2 quantitative.
+- **Measured** (`tests/heat.rs`, `examples/typed_speed.rs`):
+  - against the discretised system's exact solution (20 cells, to t = 2 s), the error falls by 1.98–1.99 per halving of the step for backward Euler and by 4.00–4.01 for TR-BDF2;
+  - with steps of 1 s on 50 cells (36 times RK4's limit), a slow mode plus a fast one decaying at 237 /s: the fast mode is gone and the slow one is within 0.014 (backward Euler) and 2.1×10⁻⁵ (TR-BDF2) of exact; RK4 blows up;
+  - `eq.heat_rod`, probed, at 0.5 s steps follows the exact Gaussian to 0.08 K of a 33.3 K peak;
+  - per 0.05 s step of the typed rod: 50 cells, 0.02 ms (RK4 with the 3 substeps it needs: 0.003 ms); 200 cells, 0.064 ms (RK4, 40 substeps: 0.087 ms); 800 cells, 0.25 ms (RK4, 640 substeps: 5.0 ms, 20 times slower).
+
 ## Consequences
 
 - Q35 is resolved as option (b), with (c) kept for later measurement. Q17 is resolved as option (a) with one-step methods. Q26 stays open, revisited after the gate.

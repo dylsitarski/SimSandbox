@@ -25,6 +25,8 @@ Shorthand for common combinations: **Interactive** = real-time; **Exploratory** 
 | Explicit Euler | Real-time | Qualitative |
 | RK4, fixed step | Real-time | Quantitative |
 | Dormand–Prince 5(4), adaptive | Responsive | Quantitative |
+| Backward Euler (implicit, L-stable) | Real-time | Qualitative |
+| TR-BDF2 (implicit, L-stable) | Real-time | Quantitative |
 | Exact methods: unit conversions, input blocks, formulas, maps | Real-time | Quantitative (no method declares Verified, [ADR 0061](../decisions/0061-verified-is-earned-per-case.md)) |
 
 ## Composition rules

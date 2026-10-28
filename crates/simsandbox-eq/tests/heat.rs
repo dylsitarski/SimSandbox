@@ -232,3 +232,140 @@ fn the_typed_and_built_in_rods_both_follow_the_exact_solution() {
     assert!(typed_error < 0.05, "typed {typed_error}");
     assert!(built_in_error < 0.05, "built in {built_in_error}");
 }
+
+/// The discrete decay rate of the held sine mode on `cells` cells.
+fn discrete_rate(cells: usize) -> f64 {
+    let h = LENGTH / cells as f64;
+    -ALPHA * 4.0 / (h * h) * (PI * h / (2.0 * LENGTH)).sin().powi(2)
+}
+
+#[test]
+fn implicit_methods_have_their_order_in_time_on_the_grid() {
+    // As for RK4: against the exact solution of the discretised system.
+    let (cells, t_end) = (20, 2.0);
+    let mode = &MODES[0];
+    let exact = |x: f64| (mode.shape)(x) * (discrete_rate(cells) * t_end).exp();
+    for (method, low, high) in [
+        (Integrator::BackwardEuler { substeps: 1 }, 1.8, 2.2),
+        (Integrator::TrBdf2 { substeps: 1 }, 3.6, 4.4),
+    ] {
+        let errors: Vec<f64> = [0.4, 0.2, 0.1]
+            .into_iter()
+            .map(|dt| {
+                let (mut sim, id) = rod(cells, mode.start, mode.edges, method);
+                run(&mut sim, t_end, dt);
+                max_error(&sim, id, exact)
+            })
+            .collect();
+        for w in errors.windows(2) {
+            let ratio = w[0] / w[1];
+            assert!(
+                (low..high).contains(&ratio),
+                "{method:?}: errors {errors:?}, ratio {ratio}"
+            );
+        }
+    }
+}
+
+#[test]
+fn implicit_methods_take_steps_far_beyond_the_explicit_limit() {
+    // 50 cells: RK4 is stable only below about 0.7 h²/α = 0.028 s. A slow
+    // mode plus a fast one (which decays at 237 /s), with steps of 1 s.
+    let cells = 50;
+    let start = "amp*(sin(pi*x/length) + 0.1*sin(49*pi*x/length))";
+    let edges = "edge T: x- = 0, x+ = 0";
+    let t_end = 5.0;
+    let exact = |x: f64| (PI * x / LENGTH).sin() * (-ALPHA * PI * PI * t_end).exp();
+    let error = |method| {
+        let (mut sim, id) = rod(cells, start, edges, method);
+        run(&mut sim, t_end, 1.0);
+        max_error(&sim, id, exact)
+    };
+    // The fast mode is gone (L-stable); the slow one is followed to the
+    // method's accuracy at this step.
+    let be = error(Integrator::BackwardEuler { substeps: 1 });
+    let tr = error(Integrator::TrBdf2 { substeps: 1 });
+    assert!(be < 0.02, "backward Euler {be}");
+    assert!(tr < 1e-4, "TR-BDF2 {tr}");
+    let rk4 = error(Integrator::Rk4 { substeps: 1 });
+    assert!(!rk4.is_finite() || rk4 > 1e6, "RK4 stayed bounded: {rk4}");
+}
+
+#[test]
+fn typed_equations_give_the_jacobian_structure_exactly() {
+    use simsandbox_eq::OdeSystem;
+    let set = EquationSet::parse(
+        "rod",
+        &lines(5, "amp*x/length", "edge T: x periodic\nmean_T = mean(T)"),
+    )
+    .unwrap();
+    let rows = set.sparsity().unwrap();
+    assert_eq!(rows[0], [0, 1, 4]);
+    assert_eq!(rows[2], [1, 2, 3]);
+    assert_eq!(rows[4], [0, 3, 4]);
+}
+
+#[test]
+fn implicit_runs_rewind_and_replay_bit_for_bit() {
+    let (mut sim, id) = rod(
+        40,
+        "amp*sin(pi*x/length)",
+        "edge T: x- = 0, x+ = 0",
+        Integrator::TrBdf2 { substeps: 2 },
+    );
+    run(&mut sim, 1.0, 0.1);
+    let snap = sim.snapshot();
+    run(&mut sim, 1.0, 0.1);
+    let first: Vec<u64> = sim
+        .output(id, "T")
+        .unwrap()
+        .iter()
+        .map(|v| v.to_bits())
+        .collect();
+    sim.restore(&snap);
+    run(&mut sim, 1.0, 0.1);
+    let again: Vec<u64> = sim
+        .output(id, "T")
+        .unwrap()
+        .iter()
+        .map(|v| v.to_bits())
+        .collect();
+    assert_eq!(first, again);
+    // A fresh run of the whole gives the same bits too.
+    let (mut fresh, f) = rod(
+        40,
+        "amp*sin(pi*x/length)",
+        "edge T: x- = 0, x+ = 0",
+        Integrator::TrBdf2 { substeps: 2 },
+    );
+    run(&mut fresh, 2.0, 0.1);
+    let fresh: Vec<u64> = fresh
+        .output(f, "T")
+        .unwrap()
+        .iter()
+        .map(|v| v.to_bits())
+        .collect();
+    assert_eq!(first, fresh);
+}
+
+#[test]
+fn the_built_in_rod_runs_implicitly_by_probing_its_structure() {
+    // eq.heat_rod does not tell its structure; it is probed once.
+    let mut m = Model::new();
+    let b = m.add(Box::new(OdeBlock::new(
+        HeatRod::new("rod"),
+        Integrator::TrBdf2 { substeps: 1 },
+    )));
+    let mut sim = Simulator::new(m, 0.0).unwrap();
+    run(&mut sim, 2.0, 0.5);
+    let exact = |x: f64| gaussian_on_rod(x, 2.0, 100.0, 0.5, 0.1, LENGTH);
+    let t = sim.output(b, "temperature").unwrap();
+    let x = sim.output(b, "position").unwrap();
+    let error = t
+        .iter()
+        .zip(x)
+        .map(|(t, x)| (t - exact(*x)).abs())
+        .fold(0.0, f64::max);
+    // Steps of 0.5 s, 18 times RK4's limit; the peak is 33.3 K.
+    assert!(error < 0.2, "{error}");
+}

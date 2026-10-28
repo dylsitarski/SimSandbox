@@ -94,6 +94,8 @@ fn ode(summary: &str) -> TypeInfo {
         .method("rk4", &["substeps"])
         .method("euler", &["substeps"])
         .method("dopri5", &["rtol", "atol"])
+        .method("backward_euler", &["substeps"])
+        .method("trbdf2", &["substeps"])
 }
 
 /// What each type is, for discovery (ADR 0039).
@@ -136,12 +138,15 @@ fn describe(r: &mut Registry) -> Result<()> {
              cells; 'state T[x] [K] = expression' and 'input q[x]' have a value per cell; \
              'edge T: x- = value, x+ gradient = 0' (or 'x periodic') sets the ends, insulated \
              if not given; 'lap(T)' and 'ddx(T)' are stencils, 'sum', 'mean', 'minof', \
-             'maxof' and 'at(T, i)' give one value, 'spacing(x)' the cell width. The method \
-             may be left out.",
+             'maxof' and 'at(T, i)' give one value, 'spacing(x)' the cell width. Stiff \
+             systems (diffusion on fine grids) take long steps with 'trbdf2' or \
+             'backward_euler'. The method may be left out.",
         )
         .method("rk4", &["substeps"])
         .method("euler", &["substeps"])
         .method("dopri5", &["rtol", "atol"])
+        .method("backward_euler", &["substeps"])
+        .method("trbdf2", &["substeps"])
         .method(crate::symbolic::ITERATE, &[])
         .method(crate::symbolic::EVALUATE, &[])
         .definition(&["input u", "dx/dt = -k*x + u", "E = x^2/2"]),

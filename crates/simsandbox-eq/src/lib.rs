@@ -15,6 +15,7 @@
 pub mod convert;
 pub mod fields;
 pub mod group;
+pub mod implicit;
 pub mod input;
 pub mod integrators;
 pub mod ode;

@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-10-28: ADR 0060 step 4, implicit methods. `implicit.rs` (`Scheme`, `Workspace`, `Structure` with colouring and `faer` `SymbolicLu`, `factorise`, Newton `stage`, `advance`); `Integrator::{BackwardEuler, TrBdf2}` and `advance_in(.., ws, structure)`; `OdeSystem::sparsity` (typed equations: `Program::dependencies`); `OdeBlock` and `GroupIntegrator` keep a `Workspace`. Tests in `integrators.rs`, `tests/heat.rs` (orders, stiff steps, replay after rewind, the probed built-in rod) and `simsandbox-file/tests/arrays.rs` (a fused group with TR-BDF2). Speed in `examples/typed_speed.rs`.
 - 2026-10-28: ADR 0060 step 3, the heat-equation reference. `simsandbox-eq/tests/heat.rs`: modes under each edge kind (second order in space), the stencil's discrete rates to 10⁻¹², RK4's fourth order against the discretised system's exact solution, the typed rod and `eq.heat_rod` against the Gaussian by images. Example `heat-rod-typed.ssbx.json`, checked from its file in `simsandbox-file/tests/arrays.rs`. The saved-form test now covers the input demos too; `pendulum-drag` had its controls out of order and was normalised.
 - 2026-10-27: ADR 0060 step 2, arrays in 1D.
   - `simsandbox-expr`: `Ast::Apply` for array operations (`ARRAY_OPS`, `dd<axis>`), `Expr::Array(ArrayOp, args)` with `Edge`, `resolve_with` and `units::dimension_with` hooks; `in_si` scales a stencil's result, not its arguments.
@@ -128,6 +129,7 @@
 
 ## Notes for the next session
 
+- 2026-10-28: `faer` (implicit methods) is built and tested on Linux only. CI builds Windows and macOS on pull requests and pushes to main, so the next PR is its cross-platform check (ADR 0060 asked for one before relying on it).
 - 2026-10-27: typed grids are cell-centred (edge values at faces), `eq.heat_rod` node-based (end temperatures at the ends), so ADR 0060's "matches eq.heat_rod to rounding" was amended: step 3 checks both against the analytic solution.
 - 2026-10-26: inputs are checked by tests and headless only; the app's keys and dragging were not tried in a window. The pendulum view sends the pointer only for `eq.pendulum` models (its `applies_to`), so "Drag the bob" (typed equations) drags on a `plot.xy` of `bob.x` against `bob.y`, given the new `plot.xy` styles `reach` (always show ±reach around 0) and `equal_scales` so there is room to press beyond the swing.
 - 2026-10-24: PR #1 merged Phase 1 and the editor into main; CI's first run failed only on two clippy 1.99 lints that local 1.97 missed (fixed in `d008c54`). Lint with an up-to-date stable before pushing ([development setup](../guides/development-setup.md)). Typed equations run about 2× slower than built-in blocks ([Q35](../open-questions.md)).

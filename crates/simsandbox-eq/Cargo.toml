@@ -11,6 +11,9 @@ authors.workspace = true
 [dependencies]
 simsandbox-core = { path = "../simsandbox-core" }
 simsandbox-expr = { path = "../simsandbox-expr" }
+# Sparse LU for implicit methods (ADR 0060). Without rayon: one thread,
+# so runs replay bit for bit.
+faer = { version = "0.24.4", default-features = false, features = ["std", "sparse-linalg"] }
 # The `views` feature: the domain's views (ADR 0016). They need egui, and so
 # Rust 1.95 like simsandbox-views; without the feature the domain has no GUI
 # dependency.

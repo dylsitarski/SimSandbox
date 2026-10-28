@@ -1,5 +1,6 @@
 //! Methods for the equation domain, each with speed and accuracy labels.
 
+use crate::implicit::{Scheme, Workspace};
 use simsandbox_core::block::{AccuracyClass, MethodLabels, MethodSpec, SpeedClass};
 use simsandbox_core::registry::MethodSettings;
 use simsandbox_core::{Result, SimError};
@@ -16,6 +17,12 @@ pub enum Integrator {
     Rk4 { substeps: usize },
     /// Dormand–Prince 5(4) with adaptive step-size control.
     Dopri5 { rtol: f64, atol: f64 },
+    /// Backward (implicit) Euler, `substeps` per communication step.
+    /// First order, L-stable: for stiff systems (ADR 0060).
+    BackwardEuler { substeps: usize },
+    /// TR-BDF2, `substeps` per communication step. Second order,
+    /// L-stable: for stiff systems such as diffusion on fine grids.
+    TrBdf2 { substeps: usize },
 }
 
 impl Integrator {
@@ -33,6 +40,17 @@ impl Integrator {
                 speed: SpeedClass::Responsive,
                 accuracy: AccuracyClass::Quantitative,
             },
+            // A fixed amount of work per step (one factorisation), so
+            // real-time for systems of moderate size; first order is
+            // qualitative, as for explicit Euler.
+            Integrator::BackwardEuler { .. } => MethodLabels {
+                speed: SpeedClass::RealTime,
+                accuracy: AccuracyClass::Qualitative,
+            },
+            Integrator::TrBdf2 { .. } => MethodLabels {
+                speed: SpeedClass::RealTime,
+                accuracy: AccuracyClass::Quantitative,
+            },
         }
     }
 
@@ -43,6 +61,10 @@ impl Integrator {
             Integrator::Dopri5 { rtol, atol } => {
                 format!("Dormand–Prince 5(4), rtol={rtol:e}, atol={atol:e}")
             }
+            Integrator::BackwardEuler { substeps } => {
+                format!("Backward Euler ({substeps} substeps)")
+            }
+            Integrator::TrBdf2 { substeps } => format!("TR-BDF2 ({substeps} substeps)"),
         };
         MethodSpec {
             name,
@@ -51,17 +73,17 @@ impl Integrator {
     }
 
     /// Advance `x` from `t` to `t + dt` in place.
-    /// Build from file settings: `euler` or `rk4` with optional `substeps`
-    /// (default 1), or `dopri5` with optional `rtol` (default 1e-8) and
-    /// `atol` (default 1e-10).
+    /// Build from file settings: `euler`, `rk4`, `backward_euler` or
+    /// `trbdf2` with optional `substeps` (default 1), or `dopri5` with
+    /// optional `rtol` (default 1e-8) and `atol` (default 1e-10).
     pub fn from_settings(m: &MethodSettings) -> Result<Self> {
         let allowed: &[&str] = match m.name.as_str() {
-            "euler" | "rk4" => &["substeps"],
+            "euler" | "rk4" | "backward_euler" | "trbdf2" => &["substeps"],
             "dopri5" => &["rtol", "atol"],
             other => {
                 return Err(SimError::InvalidMethod(format!(
-                    "unknown method '{other}' (expected euler, rk4 or dopri5)"
-                )))
+                "unknown method '{other}' (expected euler, rk4, dopri5, backward_euler or trbdf2)"
+            )))
             }
         };
         if let Some(k) = m.options.keys().find(|k| !allowed.contains(&k.as_str())) {
@@ -95,6 +117,12 @@ impl Integrator {
             "rk4" => Integrator::Rk4 {
                 substeps: substeps()?,
             },
+            "backward_euler" => Integrator::BackwardEuler {
+                substeps: substeps()?,
+            },
+            "trbdf2" => Integrator::TrBdf2 {
+                substeps: substeps()?,
+            },
             _ => Integrator::Dopri5 {
                 rtol: tol("rtol", 1e-8)?,
                 atol: tol("atol", 1e-10)?,
@@ -114,11 +142,47 @@ impl Integrator {
             Integrator::Dopri5 { rtol, atol } => MethodSettings::new("dopri5")
                 .with("rtol", rtol)
                 .with("atol", atol),
+            Integrator::BackwardEuler { substeps } => {
+                MethodSettings::new("backward_euler").with("substeps", substeps as f64)
+            }
+            Integrator::TrBdf2 { substeps } => {
+                MethodSettings::new("trbdf2").with("substeps", substeps as f64)
+            }
         }
     }
 
+    /// Advance `x` from `t` to `t + dt` in place. Implicit methods find
+    /// the Jacobian's structure afresh each call; see
+    /// [`Integrator::advance_in`] to keep it.
     pub fn advance(&self, f: &Rhs<'_>, t: f64, dt: f64, x: &mut [f64]) -> Result<()> {
+        self.advance_in(f, t, dt, x, &mut Workspace::default(), None)
+    }
+
+    /// As [`Integrator::advance`], keeping what implicit methods learn of
+    /// the system's structure in `ws`. `structure`, if given, tells it
+    /// (for each rate, the states it reads) instead of probing.
+    pub fn advance_in(
+        &self,
+        f: &Rhs<'_>,
+        t: f64,
+        dt: f64,
+        x: &mut [f64],
+        ws: &mut Workspace,
+        structure: Option<&dyn Fn() -> Option<Vec<Vec<usize>>>>,
+    ) -> Result<()> {
         match *self {
+            Integrator::BackwardEuler { substeps } => crate::implicit::advance(
+                (Scheme::BackwardEuler, substeps),
+                f,
+                t,
+                dt,
+                x,
+                ws,
+                structure,
+            ),
+            Integrator::TrBdf2 { substeps } => {
+                crate::implicit::advance((Scheme::TrBdf2, substeps), f, t, dt, x, ws, structure)
+            }
             Integrator::Euler { substeps } => {
                 let h = dt / substeps.max(1) as f64;
                 let mut dx = vec![0.0; x.len()];
@@ -262,6 +326,8 @@ fn dopri5(f: &Rhs<'_>, t0: f64, dt: f64, x: &mut [f64], rtol: f64, atol: f64) ->
 pub struct GroupIntegrator {
     integrator: Integrator,
     method: MethodSpec,
+    /// What an implicit method learns of the group's structure.
+    workspace: Workspace,
 }
 
 impl GroupIntegrator {
@@ -269,6 +335,7 @@ impl GroupIntegrator {
         Self {
             method: integrator.method_spec(),
             integrator,
+            workspace: Workspace::default(),
         }
     }
 }
@@ -285,7 +352,8 @@ impl simsandbox_core::fusion::GroupSolver for GroupIntegrator {
         dt: f64,
         x: &mut [f64],
     ) -> Result<()> {
-        self.integrator.advance(rhs, t, dt, x)
+        self.integrator
+            .advance_in(rhs, t, dt, x, &mut self.workspace, None)
     }
 }
 
@@ -331,5 +399,62 @@ mod tests {
             1,
         );
         assert!(e < 1e-8, "error {e}");
+    }
+
+    #[test]
+    fn backward_euler_is_first_order_and_trbdf2_second() {
+        let be = |n| error(Integrator::BackwardEuler { substeps: 1 }, n);
+        let ratio = be(100) / be(200);
+        assert!((1.8..2.2).contains(&ratio), "backward Euler ratio {ratio}");
+        let tr = |n| error(Integrator::TrBdf2 { substeps: 1 }, n);
+        let ratio = tr(20) / tr(40);
+        assert!((3.6..4.4).contains(&ratio), "TR-BDF2 ratio {ratio}");
+        // Substeps are steps: 2 substeps of 1/20 match 40 steps of 1/40.
+        let sub = error(Integrator::TrBdf2 { substeps: 2 }, 20);
+        assert!((sub - tr(40)).abs() < 1e-12 * tr(40).max(1e-30) + 1e-15);
+    }
+
+    #[test]
+    fn implicit_methods_take_stiff_steps_explicit_ones_cannot() {
+        // x' = -1000 (x - cos t): x follows cos t closely; steps of 0.1
+        // are 50 times the explicit limit (about 0.0028 for RK4).
+        let stiff = |t: f64, x: &[f64], dx: &mut [f64]| dx[0] = -1000.0 * (x[0] - t.cos());
+        let run = |m: Integrator| {
+            let mut x = [0.0];
+            for i in 0..20 {
+                m.advance(&stiff, i as f64 * 0.1, 0.1, &mut x).unwrap();
+            }
+            x[0]
+        };
+        let exact = 2f64.cos();
+        for m in [
+            Integrator::BackwardEuler { substeps: 1 },
+            Integrator::TrBdf2 { substeps: 1 },
+        ] {
+            let x = run(m);
+            assert!((x - exact).abs() < 2e-3, "{m:?}: {x} vs {exact}");
+        }
+        let blown = run(Integrator::Rk4 { substeps: 1 });
+        assert!(
+            !blown.is_finite() || blown.abs() > 1e10,
+            "RK4 stayed bounded: {blown}"
+        );
+        // A system whose Newton iteration fails is an error, not a guess.
+        let wild = |_t: f64, x: &[f64], dx: &mut [f64]| dx[0] = x[0].exp() * 1e6;
+        let mut x = [1.0];
+        let r = Integrator::BackwardEuler { substeps: 1 }.advance(&wild, 0.0, 1.0, &mut x);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn implicit_methods_are_read_and_written_as_settings() {
+        for name in ["backward_euler", "trbdf2"] {
+            let m = MethodSettings::new(name).with("substeps", 4.0);
+            let i = Integrator::from_settings(&m).unwrap();
+            assert_eq!(i.settings(), m);
+            assert!(
+                Integrator::from_settings(&MethodSettings::new(name).with("rtol", 1.0)).is_err()
+            );
+        }
     }
 }

@@ -25,10 +25,11 @@ _Last updated: 2026-10-28_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 303 tests in the workspace plus 16 Python tests, including verification against analytic solutions and convergence order.
+- 313 tests in the workspace plus 16 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-10-28: Phase 2 item 2, step 4: implicit methods `backward_euler` and `trbdf2` (Q17) for every continuous block and fused group: Newton's method with a coloured finite-difference Jacobian and a sparse LU (`faer`, one thread), the structure exact from typed equations and probed once otherwise; one factorisation per communication step, so runs replay bit for bit. Orders 1 and 2 measured on the heat grid; 20 times faster than RK4 on an 800-cell rod at 0.05 s steps.
 - 2026-10-28: Verified is earned per case ([ADR 0061](decisions/0061-verified-is-earned-per-case.md)), after the owner asked why the verified heat rod shows Quantitative: `units.convert` and the input blocks no longer declare Verified; a convergence check is on the roadmap (Phase 3).
 - 2026-10-28: Phase 2 item 2, step 3: the heat equation as the reference for arrays (`simsandbox-eq/tests/heat.rs`): second order in space under each edge kind, the stencil's discrete rates exact, RK4 fourth order in time on the grid; the typed rod, `eq.heat_rod` and the new typed heat-rod example follow the exact Gaussian solution to 0.1%.
 - 2026-10-27: Phase 2 item 2, step 2: arrays in typed equations in 1D (`grid`, `state T[x]`, `input q[x]`, `edge`, `lap`, `ddx`, `sum`, `mean`, `minof`, `maxof`, `at`, `spacing`), unit-checked, as grid outputs with the axis as coordinate; array ports connect to typed and built-in grids and fuse. The typed rod runs at 1.0–1.1× the built-in `eq.heat_rod`'s time per step.
@@ -98,13 +99,14 @@ _Last updated: 2026-10-28_
 
 ## In progress
 
-- Phase 2 item 2, typed equations with arrays ([ADR 0060](decisions/0060-arrays-in-typed-equations.md)): step 4, `backward_euler` and `trbdf2` with a sparse Jacobian.
+- Phase 2 item 2, typed equations with arrays ([ADR 0060](decisions/0060-arrays-in-typed-equations.md)): step 5, 2D grids and the Gray–Scott example.
+- `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Phase 2, item 2** as [ADR 0060](decisions/0060-arrays-in-typed-equations.md) decides, in order (steps 1–3 done 2026-10-27/28): (4) `backward_euler` and `trbdf2` with a sparse, coloured finite-difference Jacobian and a sparse LU (`faer`, after a build check on all three platforms); (5) 2D grids and a Gray–Scott example (target 128 × 128 live), settling [Q38](open-questions.md) on recording large grids.
+1. **Phase 2, item 2** as [ADR 0060](decisions/0060-arrays-in-typed-equations.md) decides, in order (steps 1–4 done 2026-10-27/28): (5) 2D grids and a Gray–Scott example (target 128 × 128 live), settling [Q38](open-questions.md) on recording large grids.
 2. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
