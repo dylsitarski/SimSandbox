@@ -67,9 +67,13 @@ const REAL_TIME_SWEEP: Duration = Duration::from_millis(33);
 
 /// Take a snapshot for rewind every this many steps.
 const SNAPSHOT_EVERY: usize = 10;
-/// When the snapshots grow past this, every other one is dropped: the whole
-/// run stays reachable, at coarser resolution.
+/// When the snapshots grow past this many, or past [`SNAPSHOT_VALUES`]
+/// numbers in all, every other one is dropped: the whole run stays
+/// reachable, at coarser resolution.
 const MAX_SNAPSHOTS: usize = 10_000;
+/// The memory snapshots may take, in numbers: 256 MB. A 128 × 128 grid
+/// model takes about 1 MB a snapshot, so it keeps about 250.
+const SNAPSHOT_VALUES: usize = 32_000_000;
 
 /// Where a recorded signal comes from: an element of an output port.
 struct Source {
@@ -913,7 +917,10 @@ impl Session {
         if self.steps_since_snapshot >= SNAPSHOT_EVERY {
             self.steps_since_snapshot = 0;
             self.snapshots.push(self.sim.snapshot());
-            if self.snapshots.len() > MAX_SNAPSHOTS {
+            let held = |s: &[Snapshot]| s.iter().map(Snapshot::values).sum::<usize>();
+            while self.snapshots.len() > 2
+                && (self.snapshots.len() > MAX_SNAPSHOTS || held(&self.snapshots) > SNAPSHOT_VALUES)
+            {
                 thin(&mut self.snapshots);
             }
         }

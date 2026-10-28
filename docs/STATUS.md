@@ -25,7 +25,7 @@ _Last updated: 2026-10-28_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 317 tests in the workspace plus 16 Python tests, including verification against analytic solutions and convergence order.
+- 318 tests in the workspace plus 16 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
@@ -99,7 +99,7 @@ _Last updated: 2026-10-28_
 
 ## In progress
 
-- Phase 2 item 2, step 5: 2D grids are built (2026-10-28). The Gray–Scott example works but is held back from the app's Examples menu: at 128 × 128 its memory is unbounded (rewind snapshots grow to about 10 GB). Waiting on the owner's direction for [Q38](open-questions.md) (recording and memory, possibly as probe nodes on the canvas) and [Q39](open-questions.md) (cores, exactness against speed).
+- Phase 2 item 2, step 5: 2D grids and the Gray–Scott example are built (2026-10-28), with an interim memory safety net (about 510 MB for Gray–Scott at 128 × 128). Next: the probes ADR, which settles [Q38](open-questions.md) (recording and memory) and [Q39](open-questions.md) (cores, exactness against speed), as the owner asked.
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up

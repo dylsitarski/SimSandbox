@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Example "Gray–Scott spots (reaction–diffusion on a 2D grid)": two chemicals on a 128 × 128 periodic grid; from two seeds, spots grow and split. Sliders for F and k change the pattern.
 - 2D grids in typed equations: two `grid` lines make a grid, arrays are written `T[x, y]`, `lap(T)` sums the second derivatives along both axes, `ddy(T)` differentiates along y, edges are set per axis (`edge T: x periodic, y- = 0`), and `at(T, i, j)` reads one cell. The heat map shows them with both axes as coordinates.
 - Implicit methods `trbdf2` (second order) and `backward_euler` (first order) for stiff systems such as diffusion on fine grids: they stay stable at steps far beyond what `rk4` allows (a 0.05 s step of an 800-cell rod takes 0.25 ms instead of 5 ms with the substeps RK4 needs). Every continuous block and fused group can use them, and runs still replay exactly after a rewind.
 - Example "Typed heat equation (arrays on a grid)": the heat rod in four lines of typed equations, verified against the exact solution of the heat equation.
@@ -93,6 +94,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Long runs of large grid models no longer use unbounded memory: recorded grids keep about 256 MB (thinning sooner for big grids) and rewind points about 256 MB, both thinned when full, so rewind becomes coarser rather than memory running out.
 - Unit conversions and input blocks are labelled Quantitative, not Verified (ADR 0061): Verified is earned by a run of a model through a convergence check (planned), never declared by a method.
 - Typed equations run faster: they are compiled to an instruction list when the model loads (ADR 0060), taking about 40% less time per step (the Lorenz system: 1.8× the built-in block's time, from 3.1×).
 - A parameter changed while running now acts in the next step; before, a change to a block feeding others reached them one step later.

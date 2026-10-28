@@ -18,6 +18,7 @@ const HEAT_ROD: &str = include_str!("../../../examples/heat-rod.ssbx.json");
 const HEAT_ROD_TYPED: &str = include_str!("../../../examples/heat-rod-typed.ssbx.json");
 const PENDULUM_DRAG: &str = include_str!("../../../examples/pendulum-drag.ssbx.json");
 const CRUISE_STEER: &str = include_str!("../../../examples/cruise-steer.ssbx.json");
+const GRAY_SCOTT: &str = include_str!("../../../examples/gray-scott.ssbx.json");
 const ORBITS: &str = include_str!("../../../examples/orbits.ssbx.json");
 const PENDULUM: &str = include_str!("../../../examples/pendulum.ssbx.json");
 const RESONANCE_MAP: &str = include_str!("../../../examples/resonance-map.ssbx.json");
@@ -85,6 +86,7 @@ fn examples_are_written_exactly_as_saved() {
         HEAT_ROD_TYPED,
         PENDULUM_DRAG,
         CRUISE_STEER,
+        GRAY_SCOTT,
     ] {
         let (file, _) = ModelFile::from_json(text).unwrap();
         assert_eq!(file.to_json(), text);

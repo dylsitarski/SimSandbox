@@ -70,6 +70,10 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/heat-rod-typed.ssbx.json"),
     },
     Example {
+        name: "Gray–Scott spots (reaction–diffusion on a 2D grid)",
+        text: include_str!("../../../examples/gray-scott.ssbx.json"),
+    },
+    Example {
         name: "Orbiting particles (a point set)",
         text: include_str!("../../../examples/orbits.ssbx.json"),
     },

@@ -147,3 +147,16 @@ fn restart_reinitialises_from_current_parameters() {
     assert_eq!(sim.state(id), &[1.0]);
     assert_eq!(sim.param(id, "k").unwrap(), 1.0);
 }
+
+#[test]
+fn a_snapshot_knows_its_size() {
+    // What the session's memory budget for rewind counts (ADR 0060):
+    // states, outputs and parameters, one number each here.
+    let mut model = Model::new();
+    let id = model.add(Box::new(Decay::new()));
+    let sim = Simulator::new(model, 0.0).unwrap();
+    let spec = sim.model().block(id).unwrap().spec();
+    let outputs: usize = spec.outputs().map(|p| p.shape.len()).sum();
+    let expected = spec.states.len() + outputs + spec.params.len();
+    assert_eq!(sim.snapshot().values(), expected);
+}

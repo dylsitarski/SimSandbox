@@ -199,7 +199,8 @@ The heat equation is the reference problem for arrays (`crates/simsandbox-eq/tes
 - **Measured** (`crates/simsandbox-session/examples/grid_cost.rs`, release, one thread):
   - RK4 at 128 × 128: 2.4 ms a step stepping alone, 2.6 ms in a session (recording and snapshots add 9%): about 400 simulated seconds a wall second, so the example's speed of 200 runs live. At 64 × 64: 0.51 ms.
   - TR-BDF2 at 128 × 128 (32 768 unknowns, 196 608 non-zeros): 730 ms a step, of which 600–675 ms factorising and about 150 ms in Newton's stages. The default ordering (COLAMD) fills in heavily on this 2D periodic pattern; implicit methods are not yet useful on 2D grids of this size. Gray–Scott at dt = 1 s is not stiff, so RK4 suits it.
-  - Memory: 0.47 MB a step until the history thins at 1000 samples (about 400 MB), then about 0.09 MB a step from rewind snapshots (1 MB each, every 10 steps) up to their cap of 10 000 (about 10 GB, some minutes of live play). The example is therefore not in the app's Examples menu until memory is bounded ([Q38](../open-questions.md)).
+  - Memory: 0.47 MB a step until the history thins at 1000 samples (about 400 MB), then about 0.09 MB a step from rewind snapshots (1 MB each, every 10 steps) up to their cap of 10 000 (about 10 GB, some minutes of live play). The example was held out of the app's Examples menu until memory was bounded ([Q38](../open-questions.md)).
+- **Safety net (2026-10-28), until probes settle Q38:** grid history keeps about 32 million values (256 MB; at least 100 samples, down from 1000), and rewind snapshots are thinned when they hold more than 32 million values (256 MB) as well as past 10 000 of them. Gray–Scott at 128 × 128 now levels off at about 510 MB (measured over 8000 steps), and the example is in the Examples menu. Snapshots still hold outputs: recomputing them on rewind could change the last bits where loops are solved by iteration, so dropping them waits for the probes design.
 
 ## Consequences
 

@@ -189,6 +189,21 @@ pub struct Simulator {
     changed: Vec<usize>,
 }
 
+impl Snapshot {
+    /// How many numbers it holds: what it costs in memory, at 8 bytes each.
+    pub fn values(&self) -> usize {
+        let flat = |v: &Vec<Vec<f64>>| v.iter().map(Vec::len).sum::<usize>();
+        let tables: usize = self
+            .tables
+            .iter()
+            .flatten()
+            .map(|t| t.len() * (t.columns() + 1))
+            .sum();
+        let populations: usize = self.population_outputs.iter().map(flat).sum();
+        flat(&self.states) + flat(&self.outputs) + flat(&self.params) + tables + populations
+    }
+}
+
 impl Simulator {
     /// Validate the model (every input connected), initialise all Blocks and
     /// compute outputs at `t0`.

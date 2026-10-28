@@ -13,8 +13,12 @@ pub const TIME: &str = "t";
 /// the whole run stays visible, at coarser resolution.
 const MAX_SAMPLES: usize = 100_000;
 /// Field frames are large, so with fields the sample limit is lowered to
-/// keep about this many field values in memory (never below 1000 samples).
-const FIELD_VALUES: usize = 4_000_000;
+/// keep about this many field values in memory: 256 MB (never below
+/// [`MIN_SAMPLES`] samples, so a very large grid can use more).
+const FIELD_VALUES: usize = 32_000_000;
+/// The fewest samples a history with fields keeps before thinning. Large
+/// grids reach it soon: a 128 × 128 grid of three fields keeps about 650.
+const MIN_SAMPLES: usize = 100;
 
 /// A signal a slot can bind to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,7 +144,7 @@ impl History {
         let field_values: usize = fields.iter().map(|(_, s)| s.len()).sum();
         let max_samples = FIELD_VALUES
             .checked_div(field_values)
-            .map_or(MAX_SAMPLES, |n| n.clamp(1000, MAX_SAMPLES));
+            .map_or(MAX_SAMPLES, |n| n.clamp(MIN_SAMPLES, MAX_SAMPLES));
         Self {
             index: index.into(),
             coordinates: Vec::new(),
@@ -284,7 +288,7 @@ impl History {
             }
         }
         // Populations count by the values they hold, like fixed fields.
-        let crowded = self.population_values > FIELD_VALUES && self.times.len() > 1000;
+        let crowded = self.population_values > FIELD_VALUES && self.times.len() > MIN_SAMPLES;
         if self.times.len() > self.max_samples || crowded {
             thin(&mut self.times);
             for p in &mut self.points {
@@ -438,13 +442,18 @@ mod tests {
         assert_eq!(h.population_values, 4);
 
         // Thinned by the values held, as fixed fields are, but never below
-        // 1000 samples.
+        // MIN_SAMPLES samples.
         let mut big = History::with_fields("t", vec![], vec![("p".into(), shape)]);
-        let frame = vec![0.0; 20_000];
+        let frame = vec![0.0; 40_000];
         for k in 0..2_000 {
             big.push_sample(k as f64, &[], &[&frame]);
         }
-        assert!((500..=1001).contains(&big.len()), "{}", big.len());
+        assert!(
+            big.population_values <= FIELD_VALUES,
+            "{}",
+            big.population_values
+        );
+        assert!(big.len() > FIELD_VALUES / frame.len() / 2, "{}", big.len());
         assert_eq!(big.population_values, big.len() * frame.len());
         assert_eq!(big.times()[0], 0.0);
     }
@@ -475,12 +484,12 @@ mod tests {
         assert_eq!(h.len(), 3);
         assert_eq!(h.fields()[0].frame(2), [2.0, 4.0, 6.0]);
         assert!(h.value(SignalRef::Field(0), 0).is_nan());
-        // A large field lowers the sample limit, never below 1000.
+        // A large field lowers the sample limit, never below MIN_SAMPLES.
         let big = History::with_fields(
             "t",
             vec![],
             vec![("f".into(), FieldShape::Grid { nx: 1000, ny: 1000 })],
         );
-        assert_eq!(big.max_samples, 1000);
+        assert_eq!(big.max_samples, MIN_SAMPLES);
     }
 }
