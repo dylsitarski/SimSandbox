@@ -103,7 +103,7 @@ _Last updated: 2026-10-29_
 
 ## In progress
 
-- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md)): steps 1 and 2 built 2026-10-29; the probe nodes, settings window, "from" menu and Save probe data were checked headless (a screenshot under Xvfb, tests) but not yet by the owner in the window. Next, step 3.
+- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md)): steps 1 and 2 built 2026-10-29; the probe nodes, settings window, "from" menu and Save probe data were checked headless (a screenshot under Xvfb, tests) but not yet by the owner in the window. Next: [ADR 0063](decisions/0063-probes-on-wires.md) (proposed 2026-10-29, probe outputs wired into views, filters and models; the implicit history records only what is wired), then step 3.
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
