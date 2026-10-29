@@ -360,7 +360,6 @@ fn bad_probes_are_dropped_with_warnings() {
         r#"[{"name": "ok", "record": ["lorenz.x"], "every": {"seconds": 0.5}, "to": "ok.csv"},
             {"name": "ok", "record": ["lorenz.x"]},
             {"name": "two", "record": ["lorenz.x"], "every": {"steps": 2, "seconds": 1}},
-            {"name": "none", "record": []},
             {"name": "deep", "record": ["lorenz.x"], "to": "../x.csv"},
             {"name": "keep", "record": ["lorenz.x"], "keep": {"last": 0}}]"#,
     );
@@ -372,7 +371,7 @@ fn bad_probes_are_dropped_with_warnings() {
         .map(|p| p.name.as_str())
         .collect();
     assert_eq!(names, ["ok"]);
-    assert_eq!(warnings.len(), 5, "{warnings:?}");
+    assert_eq!(warnings.len(), 4, "{warnings:?}");
     assert!(warnings[0].starts_with("controls.probes[1]") && warnings[0].contains("twice"));
     // Saved as read, defaults left out.
     let again = ModelFile::from_json(&file.to_json()).unwrap().0;

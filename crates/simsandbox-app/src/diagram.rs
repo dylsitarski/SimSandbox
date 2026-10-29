@@ -13,7 +13,7 @@
 use crate::live::Model;
 use eframe::egui;
 use simsandbox_core::registry::Registry;
-use simsandbox_file::{FilterEntry, ModelFile, ViewEntry};
+use simsandbox_file::{FilterEntry, ModelFile, ProbeEntry, ViewEntry};
 use simsandbox_session::canvas::{type_menu, Canvas, Request, Selection};
 use simsandbox_session::diagram::{apply_in, Diagram, Edit, NodeKind, Scope};
 use simsandbox_session::undo::{canvas_state, change, Change};
@@ -33,16 +33,19 @@ pub enum Outcome {
     },
     /// Save block positions in the running model's file, at a level.
     Moved(Scope, Vec<(String, [f64; 2])>),
-    /// Save where data-layer nodes sit: filters by name, views by place.
+    /// Save where data-layer nodes sit: filters and probes by name, views
+    /// by place.
     Placed {
         filters: Vec<(String, [f64; 2])>,
         views: Vec<(usize, [f64; 2])>,
+        probes: Vec<(String, [f64; 2])>,
     },
-    /// Apply these filters and views to the running model, then log the
-    /// notes.
+    /// Apply these filters, views and probes to the running model, then
+    /// log the notes.
     Data {
         filters: Vec<FilterEntry>,
         views: Vec<ViewEntry>,
+        probes: Vec<ProbeEntry>,
         notes: Vec<String>,
     },
     /// Put every node where this file has it (undoing a move).
@@ -88,6 +91,8 @@ pub struct DiagramTab {
     data_key: String,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
+    /// A probe's settings, open from its node (ADR 0062).
+    probe: Option<crate::probe_editor::ProbeEditor>,
 }
 
 impl DiagramTab {
@@ -204,7 +209,9 @@ impl DiagramTab {
         // Filters and views change outside the canvas too.
         let key = match self.hide_data {
             true => String::new(),
-            false => serde_json::to_string(&(views.0, &model.filters)).unwrap_or_default(),
+            false => {
+                serde_json::to_string(&(views.0, &model.filters, &model.probes)).unwrap_or_default()
+            }
         };
         if key != self.data_key {
             self.data_key = key;
@@ -223,6 +230,7 @@ impl DiagramTab {
                     let mut f = source.clone();
                     f.controls.filters = model.filters.clone();
                     f.controls.views = views.0.to_vec();
+                    f.controls.probes = model.probes.clone();
                     d.observe(&f, views.1);
                 }
             }
@@ -307,6 +315,16 @@ impl DiagramTab {
                     out.push(Outcome::ShowView(k));
                     continue;
                 }
+                Request::EditProbe(name) => {
+                    let probes = match &self.draft {
+                        Some((f, _)) => &f.controls.probes,
+                        None => &model.probes,
+                    };
+                    if let Some(p) = probes.iter().find(|p| p.name == name) {
+                        self.probe = Some(crate::probe_editor::ProbeEditor::new(p));
+                    }
+                    continue;
+                }
                 // While edits wait as a draft, values go into it: the
                 // running model may not have the block yet. Inside a
                 // subsystem a value is every use's default, in the file.
@@ -359,6 +377,17 @@ impl DiagramTab {
                     }))
                 }
                 _ => {}
+            }
+        }
+        if let Some(ed) = &mut self.probe {
+            use crate::probe_editor::Done;
+            match ed.show(ui.ctx()) {
+                Some(Done::Apply(probe)) => {
+                    edits.push(Edit::SetProbe { probe });
+                    self.probe = None;
+                }
+                Some(Done::Close) => self.probe = None,
+                None => {}
             }
         }
         if let Some(back) = step {
@@ -445,6 +474,7 @@ impl DiagramTab {
                 out.push(Outcome::Data {
                     filters: next.controls.filters,
                     views: next.controls.views,
+                    probes: next.controls.probes,
                     notes: vec![word.into()],
                 });
             }
@@ -498,7 +528,7 @@ impl DiagramTab {
             );
             return out;
         }
-        let mut placed = (Vec::new(), Vec::new());
+        let mut placed = (Vec::new(), Vec::new(), Vec::new());
         let mut model_moves = Vec::new();
         for e in moves {
             let Edit::Move { block, at } = e else {
@@ -506,6 +536,8 @@ impl DiagramTab {
             };
             if let Some(f) = block.strip_prefix("filter:") {
                 placed.0.push((f.to_string(), at));
+            } else if let Some(p) = block.strip_prefix("probe:") {
+                placed.2.push((p.to_string(), at));
             } else if let Some(k) = block.strip_prefix("view:").and_then(|k| k.parse().ok()) {
                 placed.1.push((k, at));
             } else {
@@ -515,10 +547,11 @@ impl DiagramTab {
         if !model_moves.is_empty() {
             out.push(Outcome::Moved(scope.clone(), model_moves));
         }
-        if !placed.0.is_empty() || !placed.1.is_empty() {
+        if !placed.0.is_empty() || !placed.1.is_empty() || !placed.2.is_empty() {
             out.push(Outcome::Placed {
                 filters: placed.0,
                 views: placed.1,
+                probes: placed.2,
             });
         }
         if !rest.is_empty() {
@@ -534,6 +567,7 @@ impl DiagramTab {
             out.push(Outcome::Data {
                 filters: file.controls.filters,
                 views: file.controls.views,
+                probes: file.controls.probes,
                 notes,
             });
         }

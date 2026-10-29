@@ -65,11 +65,14 @@ Probes ([ADR 0062](../decisions/0062-probes-recording-and-replay.md)) record cho
 
 | Key | Meaning |
 | --- | --- |
-| `record` | Signals and fields by the names views bind (`car.v`, `gs.v`, a filter's name); only what the model records (with `controls.plots`, those outputs and the filters) |
+| `record` | Signals and fields by the names views bind (may be empty) (`car.v`, `gs.v`, a filter's name); only what the model records (with `controls.plots`, those outputs and the filters) |
 | `every` | One of `{"steps": N}`, `{"seconds": dt}`, `{"times": [...]}`: at the first step at or after each; every step if absent |
 | `keep` | One of `{"mb": size}` (thinned past it), `{"last": N}`, `{"all": true}`; thinned when long if absent |
 | `to` | A file name ending in `.csv`: `t` and the signals, one row per sample; each grid or point field in `<stem>.<field>.npy` beside it (`(samples, ny, nx)` or `(samples, count, dim)`, read with `numpy.load`) |
-| `canvas` | Where its node sits on the diagram's data layer |
+| `canvas` | Where its node sits on the diagram's data layer, where `render --diagram` draws it |
+
+A view entry with `"probe": "NAME"` draws what that probe recorded instead of every step, in the app and in `simsandbox render`. A probe with an empty `record` records nothing yet.
+
 
 A probe with bad settings, or recording something the model does not record, is dropped with a warning. `simsandbox run FILE --probe NAME` prints one; `--save-probes DIR` writes the files. A swept model records no probes. JSON output of a probe: `rows`, `t`, `signals` (name → list), `fields` (name → `{shape, frames}`).
 

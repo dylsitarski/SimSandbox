@@ -25,10 +25,11 @@ _Last updated: 2026-10-29_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 330 tests in the workspace plus 18 Python tests, including verification against analytic solutions and convergence order.
+- 334 tests in the workspace plus 18 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-10-29: probes, step 2 complete: probe nodes on the Diagram's data layer ("Add probe", wire signals into `record`, double-click for when, how long and the file), applied without a restart and undoable; Runs › "Save probe data" writes their files beside the model; views can show a probe's recording ("from" menu, `probe` in the view entry), also in `simsandbox render`.
 - 2026-10-29: probes, step 2, first part: `controls.probes` in model files (bad ones dropped with a warning, saved back); data files (a CSV of the signals, a NumPy `.npy` per grid or point field); `simsandbox run --probe NAME` and `--save-probes DIR`; Python `Model.add_probe` and `Model.run_probes`. Headless probes run through the session, so their samples are the app's bit for bit.
 - 2026-10-29: probes, step 1: probes in memory (`Session::set_probes`): a subset of signals and grid fields, recorded every N steps, every Δt or at listed times, kept thinned, the newest N or all; exact copies of the implicit history's samples, following restarts, rewinds and filter edits. No visible change yet.
 - 2026-10-29: probes decided ([ADR 0062](decisions/0062-probes-recording-and-replay.md), resolves Q38 and Q39): canvas nodes record chosen values at chosen times and may save files, thinning by default; snapshots keep outputs on their own budget; runs exact on several cores or fast; recompute on demand later; built before rigid bodies.
@@ -102,14 +103,14 @@ _Last updated: 2026-10-29_
 
 ## In progress
 
-- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md)): step 1 (probes in memory) and the first part of step 2 (file, data files, headless) built 2026-10-29; next, the second part of step 2: probe nodes on the canvas's data layer and the app (adding and editing probes, saving their files, views reading a probe).
+- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md)): steps 1 and 2 built 2026-10-29; the probe nodes, settings window, "from" menu and Save probe data were checked headless (a screenshot under Xvfb, tests) but not yet by the owner in the window. Next, step 3.
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (step 1 and the file, data files and headless part of step 2 done 2026-10-29): (2) probe nodes on the canvas's data layer, in the app (add, edit, write files) and in `render --diagram`; (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
+1. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 2. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations

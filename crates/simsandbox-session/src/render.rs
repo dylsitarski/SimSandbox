@@ -4,7 +4,7 @@
 //! PNG.
 
 use crate::raster::{Canvas, Image, Textures};
-use crate::views::{grid, Views};
+use crate::views::{grid, Recorded, Views};
 use crate::Session;
 use simsandbox_views::ViewRegistry;
 
@@ -69,11 +69,22 @@ pub fn render(
         views.tiles = vec![keep];
     }
 
+    // Views showing a probe draw what it recorded (ADR 0062).
+    let shared: Vec<(&str, crate::session::SharedHistory)> = s
+        .probe_names()
+        .into_iter()
+        .filter_map(|n| s.probe(n).map(|h| (n, h)))
+        .collect();
+    let guards: Vec<_> = shared.iter().map(|(n, h)| (*n, h.read())).collect();
+    let recorded = Recorded {
+        all: &h,
+        probes: guards.iter().map(|(n, g)| (*n, &**g)).collect(),
+    };
     // One view alone, or as the saved arrangement places them.
     let layout = s.file.controls.layout.as_ref().filter(|_| o.view.is_none());
     let image = paint(o, |ui| match layout {
-        Some(l) => arranged(ui, &mut views, &h, l),
-        None => tiles(ui, &mut views, &h),
+        Some(l) => arranged(ui, &mut views, &recorded, l),
+        None => tiles(ui, &mut views, &recorded),
     });
     Ok((image, warnings))
 }
@@ -172,7 +183,7 @@ fn paint(o: &RenderOptions, mut draw: impl FnMut(&mut egui::Ui)) -> Image {
 
 /// The tiles in a grid, each with its type's name as a title, as in the
 /// app (without its controls).
-fn tiles(ui: &mut egui::Ui, views: &mut Views, history: &simsandbox_views::History) {
+fn tiles(ui: &mut egui::Ui, views: &mut Views, history: &Recorded<'_>) {
     let area = ui.available_rect_before_wrap();
     let all: Vec<usize> = (0..views.tiles.len()).collect();
     grid_in(ui, views, history, &all, area);
@@ -185,7 +196,7 @@ fn tiles(ui: &mut egui::Ui, views: &mut Views, history: &simsandbox_views::Histo
 fn arranged(
     ui: &mut egui::Ui,
     views: &mut Views,
-    history: &simsandbox_views::History,
+    history: &Recorded<'_>,
     layout: &simsandbox_file::layout::Layout,
 ) {
     let area = ui.available_rect_before_wrap();
@@ -272,7 +283,7 @@ pub fn view_areas(
 fn grid_in(
     ui: &mut egui::Ui,
     views: &mut Views,
-    history: &simsandbox_views::History,
+    history: &Recorded<'_>,
     shown: &[usize],
     area: egui::Rect,
 ) {
@@ -299,8 +310,12 @@ fn grid_in(
         ui.scope_builder(builder, |ui| {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
-                ui.label(egui::RichText::new(t.label).strong());
-                tile.state.show(ui, t, history);
+                let title = match &tile.probe {
+                    Some(p) => format!("{} · probe {p}", t.label),
+                    None => t.label.to_string(),
+                };
+                ui.label(egui::RichText::new(title).strong());
+                tile.state.show(ui, t, history.of(tile.probe.as_deref()));
             });
         });
     }

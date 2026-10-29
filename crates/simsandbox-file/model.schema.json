@@ -573,6 +573,10 @@
                 "maxItems": 2,
                 "description": "Where its node sits on the canvas's data layer (ADR 0050)."
               },
+              "probe": {
+                "type": "string",
+                "description": "The probe it shows (ADR 0062); every step if absent."
+              },
               "camera": {
                 "type": "object",
                 "required": [
@@ -680,8 +684,7 @@
           "items": {
             "type": "object",
             "required": [
-              "name",
-              "record"
+              "name"
             ],
             "additionalProperties": false,
             "properties": {
@@ -691,7 +694,6 @@
               },
               "record": {
                 "type": "array",
-                "minItems": 1,
                 "items": {
                   "type": "string"
                 },

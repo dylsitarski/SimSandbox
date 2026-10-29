@@ -414,7 +414,9 @@ fn is_identifier(s: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct ProbeEntry {
     pub name: String,
-    /// Signals and fields, by the names views bind (`car.v`, `rod.T`).
+    /// Signals and fields, by the names views bind (`car.v`, `rod.T`);
+    /// empty for a probe that records nothing yet.
+    #[serde(default)]
     pub record: Vec<String>,
     /// When it records; every step if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -442,9 +444,6 @@ impl ProbeEntry {
                 "'{}' is not a name (letters, digits, _)",
                 self.name
             ));
-        }
-        if self.record.is_empty() {
-            return Err("a probe records at least one signal or field".into());
         }
         if let Some(e) = &self.every {
             let set = [e.steps.is_some(), e.seconds.is_some(), e.times.is_some()];
@@ -868,6 +867,10 @@ pub struct ViewEntry {
     /// `at`, which cut filters use for their cuts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<[f64; 2]>,
+    /// The probe it shows (ADR 0062): what that probe recorded, when it
+    /// recorded it. Every step (the implicit probe) if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe: Option<String>,
 }
 
 impl ViewEntry {
@@ -1044,6 +1047,7 @@ impl ViewControl {
             camera: self.camera,
             selection: None,
             canvas: None,
+            probe: None,
         }
     }
 

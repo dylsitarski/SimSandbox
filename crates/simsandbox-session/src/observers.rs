@@ -1,7 +1,8 @@
-//! The canvas's data layer (ADR 0032, ADR 0050): filters and views drawn
-//! as nodes beside the model's blocks, wired to the recorded signals they
-//! read. Filters are `filter:NAME` nodes, views `view:K` (their place in
-//! `controls.views`). Data wires carry recorded data, not current values,
+//! The canvas's data layer (ADR 0032, ADR 0050): filters, views and
+//! probes drawn as nodes beside the model's blocks, wired to the recorded
+//! signals they read. Filters are `filter:NAME` nodes, views `view:K`
+//! (their place in `controls.views`), probes `probe:NAME` (ADR 0062), each
+//! with one input, `record`, taking any number of signals. Data wires carry recorded data, not current values,
 //! so a filter never feeds a model block: wiring one into a block's input
 //! is refused, and promoting the filter turns it into a formula block that
 //! can. Edits to filters and views change only `controls`; the app
@@ -12,7 +13,9 @@ use crate::diagram::{
 };
 use simsandbox_core::block::Shape;
 use simsandbox_core::registry::Registry;
-use simsandbox_file::{Binding, BlockEntry, ConnectionEntry, FilterEntry, ModelFile, ViewEntry};
+use simsandbox_file::{
+    Binding, BlockEntry, ConnectionEntry, FilterEntry, ModelFile, ProbeEntry, ViewEntry,
+};
 use simsandbox_views::ViewRegistry;
 use std::collections::BTreeMap;
 
@@ -28,9 +31,46 @@ pub fn view_node(index: usize) -> String {
     format!("view:{index}")
 }
 
+pub fn probe_node(name: &str) -> String {
+    format!("probe:{name}")
+}
+
+/// A probe node's one input.
+pub const RECORD: &str = "record";
+
 /// Whether a node name is on the data layer.
 pub fn is_observer(node: &str) -> bool {
-    node.starts_with("filter:") || node.starts_with("view:")
+    node.starts_with("filter:") || node.starts_with("view:") || node.starts_with("probe:")
+}
+
+/// A probe's settings in a few words: when, how long, its file.
+pub fn probe_summary(p: &ProbeEntry) -> String {
+    match &p.to {
+        Some(to) => format!("{} · {to}", probe_timing(p)),
+        None => probe_timing(p),
+    }
+}
+
+/// When a probe records and how long it keeps samples.
+fn probe_timing(p: &ProbeEntry) -> String {
+    let every = match &p.every {
+        Some(e) if e.steps.is_some_and(|n| n > 1) => {
+            format!("every {} steps", e.steps.unwrap_or(1))
+        }
+        Some(e) if e.seconds.is_some() => format!("every {} s", e.seconds.unwrap_or_default()),
+        Some(e) if e.times.is_some() => {
+            let n = e.times.as_ref().map_or(0, Vec::len);
+            format!("at {n} time{}", if n == 1 { "" } else { "s" })
+        }
+        _ => "every step".into(),
+    };
+    let keep = match &p.keep {
+        Some(k) if k.all => "all kept".to_string(),
+        Some(k) if k.last.is_some() => format!("last {}", k.last.unwrap_or_default()),
+        Some(k) if k.mb.is_some() => format!("thinned past {} MB", k.mb.unwrap_or_default()),
+        _ => "thinned".into(),
+    };
+    format!("{every} · {keep}")
 }
 
 /// The node of a `"node.port"` key.
@@ -220,7 +260,11 @@ impl Diagram {
                 name,
                 kind: NodeKind::View,
                 type_name: v.type_name.clone(),
-                method: t.map_or("unknown view type".into(), |t| t.label.to_string()),
+                method: match (t, &v.probe) {
+                    (None, _) => "unknown view type".into(),
+                    (Some(t), None) => t.label.to_string(),
+                    (Some(t), Some(p)) => format!("{} · probe {p}", t.label),
+                },
                 inputs: slots
                     .into_iter()
                     .map(|name| Port {
@@ -241,7 +285,39 @@ impl Diagram {
                 settings: Default::default(),
             });
         }
-        // Data wires: what each filter input and view slot reads.
+        for pr in &file.controls.probes {
+            let name = probe_node(&pr.name);
+            self.many.insert(format!("{name}.{RECORD}"));
+            self.nodes.push(Node {
+                name,
+                kind: NodeKind::Probe,
+                type_name: "probe".into(),
+                method: if pr.record.is_empty() {
+                    "records nothing yet".into()
+                } else {
+                    probe_timing(pr)
+                },
+                inputs: vec![Port {
+                    name: RECORD.into(),
+                    unit: String::new(),
+                    shape: Shape::Scalar,
+                }],
+                outputs: Vec::new(),
+                at: pr.canvas.unwrap_or_default(),
+                placed: pr.canvas.is_some(),
+                error: None,
+                unreached: Vec::new(),
+                values: Vec::new(),
+                open: false,
+                // Its file, shown beside its input.
+                settings: pr
+                    .to
+                    .iter()
+                    .map(|t| ("to".to_string(), t.clone()))
+                    .collect(),
+            });
+        }
+        // Data wires: what each filter input, view slot and probe reads.
         let mut wires = Vec::new();
         for i in model_nodes..self.nodes.len() {
             let n = &self.nodes[i];
@@ -253,6 +329,12 @@ impl Diagram {
                         .enumerate()
                         .map(|(k, p)| (k, p.name.clone())),
                 ),
+                NodeKind::Probe => {
+                    let name = &n.name["probe:".len()..];
+                    if let Some(pr) = file.controls.probes.iter().find(|p| p.name == name) {
+                        reads.extend(pr.record.iter().map(|s| (0, s.clone())));
+                    }
+                }
                 _ => {
                     let k = n.name["view:".len()..].parse::<usize>().unwrap_or(0);
                     for (slot, b) in &file.controls.views[k].bind {
@@ -280,7 +362,7 @@ impl Diagram {
                     }),
                     None => {
                         let slot = self.nodes[i].inputs[port].name.clone();
-                        let entry = if self.nodes[i].kind == NodeKind::View {
+                        let entry = if self.nodes[i].kind != NodeKind::Filter {
                             format!("{slot}: {signal}")
                         } else {
                             signal
@@ -295,7 +377,7 @@ impl Diagram {
     }
 
     /// Place data-layer nodes without a saved place: filters in a column to
-    /// the right of the model, views in the next.
+    /// the right of the model, views and then probes in the next.
     fn place_observers(&mut self, first: usize) {
         let model = &self.nodes[..first];
         let right = model
@@ -312,19 +394,20 @@ impl Diagram {
         let has_filters = self.nodes[first..]
             .iter()
             .any(|n| n.kind == NodeKind::Filter);
-        for (kind, x) in [
-            (NodeKind::Filter, x0),
-            (
-                NodeKind::View,
-                if has_filters {
-                    x0 + NODE_WIDTH + GAP_X
-                } else {
-                    x0
-                },
-            ),
+        let x1 = if has_filters {
+            x0 + NODE_WIDTH + GAP_X
+        } else {
+            x0
+        };
+        for (kinds, x) in [
+            (&[NodeKind::Filter][..], x0),
+            (&[NodeKind::View, NodeKind::Probe][..], x1),
         ] {
             let mut y = y0;
-            for n in self.nodes[first..].iter_mut().filter(|n| n.kind == kind) {
+            for n in self.nodes[first..]
+                .iter_mut()
+                .filter(|n| kinds.contains(&n.kind))
+            {
                 if !n.placed {
                     n.at = [x, y];
                 }
@@ -375,6 +458,26 @@ fn filter_index(file: &ModelFile, node: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("no filter '{name}'"))
 }
 
+fn probe_index(file: &ModelFile, node: &str) -> Result<usize, String> {
+    let name = node.strip_prefix("probe:").unwrap_or(node);
+    file.controls
+        .probes
+        .iter()
+        .position(|p| p.name == name)
+        .ok_or_else(|| format!("no probe '{name}'"))
+}
+
+/// Record `signal` with probe node `node` too.
+fn record(file: &mut ModelFile, node: &str, signal: String) -> Result<String, String> {
+    let k = probe_index(file, node)?;
+    let p = &mut file.controls.probes[k];
+    if p.record.contains(&signal) {
+        return Ok(format!("probe {} already records {signal}", p.name));
+    }
+    p.record.push(signal.clone());
+    Ok(format!("probe {} records {signal}", p.name))
+}
+
 fn view_index(file: &ModelFile, node: &str) -> Result<usize, String> {
     node.strip_prefix("view:")
         .and_then(|k| k.parse::<usize>().ok())
@@ -389,6 +492,9 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
             if block.starts_with("filter:") {
                 let k = filter_index(file, block)?;
                 file.controls.filters[k].canvas = at;
+            } else if block.starts_with("probe:") {
+                let k = probe_index(file, block)?;
+                file.controls.probes[k].canvas = at;
             } else {
                 let k = view_index(file, block)?;
                 file.controls.views[k].canvas = at;
@@ -399,6 +505,10 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
             if is_observer(node_of(from)) && !is_observer(node_of(to)) {
                 let name = node_of(from).trim_start_matches("filter:");
                 return Err(feeds_model(name));
+            }
+            if to.starts_with("probe:") {
+                let signal = signal_of(file, from)?;
+                return record(file, node_of(to), signal);
             }
             if to.starts_with("view:") {
                 // Without the view registry: a slot holding several takes
@@ -431,6 +541,10 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
             f.inputs = vec![signal.clone()];
             Ok(format!("{} now cuts {signal}", f.name))
         }
+        Edit::Bind { from, to, .. } if to.starts_with("probe:") => {
+            let signal = signal_of(file, from)?;
+            record(file, node_of(to), signal)
+        }
         Edit::Bind { from, to, many } => {
             let k = view_index(file, node_of(to))?;
             let slot = to
@@ -453,11 +567,19 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
         }
         Edit::Unbind { to, signal } => unbind(file, to, Some(signal)),
         Edit::Disconnect { to } => unbind(file, to, None),
+        Edit::Delete { block } if block.starts_with("probe:") => {
+            let k = probe_index(file, block)?;
+            let p = file.controls.probes.remove(k);
+            Ok(format!("Deleted the probe {}", p.name))
+        }
         Edit::Delete { block } => {
             if block.starts_with("filter:") {
                 let k = filter_index(file, block)?;
                 let f = file.controls.filters.remove(k);
                 let outputs = f.outputs();
+                for p in &mut file.controls.probes {
+                    p.record.retain(|s| !outputs.contains(s));
+                }
                 for v in &mut file.controls.views {
                     for b in v.bind.values_mut() {
                         let kept: Vec<String> = b
@@ -475,6 +597,15 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                 file.controls.views.remove(k);
                 Ok(format!("Deleted view {}", k + 1))
             }
+        }
+        Edit::Rename { from, to } if from.starts_with("probe:") => {
+            let k = probe_index(file, from)?;
+            crate::filters::plain_name(to)?;
+            if file.controls.probes.iter().any(|p| &p.name == to) {
+                return Err(format!("there is already a probe '{to}'"));
+            }
+            let old = std::mem::replace(&mut file.controls.probes[k].name, to.clone());
+            Ok(format!("Renamed the probe {old} to {to}"))
         }
         Edit::Rename { from, to } => {
             if from.starts_with("view:") {
@@ -504,6 +635,30 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                 "Added the filter {name} (edit its formula in Data…)"
             ))
         }
+        Edit::AddProbe { at } => {
+            let name = free_name("probe", |n| {
+                file.controls.probes.iter().any(|p| p.name == n)
+            });
+            file.controls.probes.push(ProbeEntry {
+                name: name.clone(),
+                record: Vec::new(),
+                every: None,
+                keep: None,
+                to: None,
+                canvas: Some(at.map(tidy)),
+            });
+            Ok(format!(
+                "Added the probe {name}: wire the signals it records into it"
+            ))
+        }
+        Edit::SetProbe { probe } => {
+            let k = probe_index(file, &probe.name)?;
+            probe.check()?;
+            let mut p = probe.clone();
+            p.canvas = file.controls.probes[k].canvas;
+            file.controls.probes[k] = p;
+            Ok(format!("probe {}: {}", probe.name, probe_summary(probe)))
+        }
         Edit::AddView { type_name, at } => {
             file.controls.views.push(ViewEntry {
                 type_name: type_name.clone(),
@@ -512,6 +667,7 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                 camera: None,
                 selection: None,
                 canvas: Some(at.map(tidy)),
+                probe: None,
             });
             Ok(format!("Added a {type_name} view"))
         }
@@ -541,6 +697,18 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
 /// Stop a data-layer input reading `signal` (every signal if `None`).
 fn unbind(file: &mut ModelFile, to: &str, signal: Option<&String>) -> Result<String, String> {
     let (node, slot) = to.split_once('.').ok_or("an input is 'node.port'")?;
+    if node.starts_with("probe:") {
+        let k = probe_index(file, node)?;
+        let p = &mut file.controls.probes[k];
+        match signal {
+            Some(s) => p.record.retain(|x| x != s),
+            None => p.record.clear(),
+        }
+        return Ok(match signal {
+            Some(s) => format!("probe {} no longer records {s}", p.name),
+            None => format!("probe {} records nothing", p.name),
+        });
+    }
     if node.starts_with("view:") {
         let k = view_index(file, node)?;
         let bind = &mut file.controls.views[k].bind;
@@ -590,6 +758,13 @@ fn rename_signal(file: &mut ModelFile, old: &str, new: &str) {
                 "expr".into(),
                 serde_json::Value::String(map_names(&e, &map)),
             );
+        }
+    }
+    for p in &mut file.controls.probes {
+        for s in &mut p.record {
+            if let Some(n) = map(s) {
+                *s = n;
+            }
         }
     }
     for v in &mut file.controls.views {
@@ -1053,5 +1228,80 @@ mod tests {
             "2*blk.e + e2 - a.e + 1.5e3*blk.e[1]"
         );
         assert_eq!(map("sin(e)^2"), "sin(blk.e)^2");
+    }
+
+    #[test]
+    fn probes_are_nodes_that_record_what_is_wired_into_them() {
+        let mut f = file("oscillators");
+        apply(&mut f, &registry(), &Edit::AddProbe { at: [600.0, 0.0] }).unwrap();
+        assert_eq!(f.controls.probes[0].name, "probe1");
+        let d = observed(&f);
+        let i = d.node("probe:probe1").unwrap();
+        assert_eq!(d.nodes[i].kind, NodeKind::Probe);
+        assert_eq!(d.nodes[i].method, "records nothing yet");
+        assert!(d.many.contains("probe:probe1.record"));
+        // Wire a block output and a filter output into it.
+        for from in ["a.x", "filter:energy.energy"] {
+            let e = Edit::Bind {
+                from: from.into(),
+                to: "probe:probe1.record".into(),
+                many: true,
+            };
+            assert!(e.data_only());
+            apply(&mut f, &registry(), &e).unwrap();
+        }
+        assert_eq!(f.controls.probes[0].record, ["a.x", "energy"]);
+        let d = observed(&f);
+        let i = d.node("probe:probe1").unwrap();
+        assert_eq!(d.wires.iter().filter(|w| w.to.0 == i).count(), 2);
+        // Renaming the filter follows; deleting it drops what it gave.
+        let rename = Edit::Rename {
+            from: "filter:energy".into(),
+            to: "e".into(),
+        };
+        apply(&mut f, &registry(), &rename).unwrap();
+        assert_eq!(f.controls.probes[0].record, ["a.x", "e"]);
+        let unbind = Edit::Unbind {
+            to: "probe:probe1.record".into(),
+            signal: "a.x".into(),
+        };
+        apply(&mut f, &registry(), &unbind).unwrap();
+        apply(
+            &mut f,
+            &registry(),
+            &Edit::Delete {
+                block: "filter:e".into(),
+            },
+        )
+        .unwrap();
+        assert!(f.controls.probes[0].record.is_empty());
+        // Settings, renaming and deleting the probe itself.
+        let mut p = f.controls.probes[0].clone();
+        p.to = Some("osc.csv".into());
+        p.every = Some(simsandbox_file::ProbeEvery {
+            seconds: Some(0.5),
+            ..Default::default()
+        });
+        apply(&mut f, &registry(), &Edit::SetProbe { probe: p.clone() }).unwrap();
+        assert_eq!(
+            probe_summary(&f.controls.probes[0]),
+            "every 0.5 s · thinned · osc.csv"
+        );
+        p.to = Some("../x.csv".into());
+        assert!(apply(&mut f, &registry(), &Edit::SetProbe { probe: p }).is_err());
+        let rename = Edit::Rename {
+            from: "probe:probe1".into(),
+            to: "osc".into(),
+        };
+        apply(&mut f, &registry(), &rename).unwrap();
+        apply(
+            &mut f,
+            &registry(),
+            &Edit::Delete {
+                block: "probe:osc".into(),
+            },
+        )
+        .unwrap();
+        assert!(f.controls.probes.is_empty());
     }
 }

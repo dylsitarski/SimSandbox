@@ -183,9 +183,6 @@ impl ProbeSpec {
                 self.name
             ));
         }
-        if self.record.is_empty() {
-            return Err(format!("probe {}: it records nothing", self.name));
-        }
         Ok(())
     }
 }
@@ -427,9 +424,10 @@ mod tests {
         assert!(p(Every::Steps(1), Keep::Thin { mb: Some(0.0) })
             .check()
             .is_err());
+        // A probe just added on the canvas records nothing yet.
         let mut none = p(Every::Steps(1), Keep::All);
         none.record.clear();
-        assert!(none.check().is_err());
+        assert!(none.check().is_ok());
     }
 
     #[test]

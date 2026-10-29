@@ -11,7 +11,7 @@ use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
 use simsandbox_file::runs::RunFile;
 use simsandbox_file::{
-    Design, FilterEntry, FusedGroup, ModelFile, ParamPlan, Plan, Sampling, ViewEntry,
+    Design, FilterEntry, FusedGroup, ModelFile, ParamPlan, Plan, ProbeEntry, Sampling, ViewEntry,
 };
 use simsandbox_views::cut::Geometry;
 use simsandbox_views::history::thin;
@@ -1010,11 +1010,89 @@ impl Session {
                 pending: Vec::new(),
             });
         }
+        let recorded_to = h.times().last().copied();
         drop(h);
         if !problems.is_empty() {
             return Err(problems);
         }
+        // A probe whose recording is unchanged keeps what it recorded; a
+        // new one records from now on.
+        let eps = self.eps();
+        for b in &mut built {
+            let same = |o: &&mut Extra| {
+                o.spec.name == b.spec.name
+                    && o.spec.record == b.spec.record
+                    && o.spec.every == b.spec.every
+                    && o.spec.keep == b.spec.keep
+            };
+            if let Some(old) = self.probes.iter_mut().find(same) {
+                std::mem::swap(b, old);
+                b.spec = old.spec.clone();
+            } else {
+                b.trigger.seek(recorded_to, eps);
+            }
+        }
         self.probes = built;
+        Ok(())
+    }
+
+    /// Set the probes from the model file's form (ADR 0062), as the
+    /// canvas edits them: what each probe recorded is kept if its
+    /// recording did not change.
+    pub fn set_probe_entries(&mut self, entries: &[ProbeEntry]) -> Result<(), Vec<String>> {
+        if self.sweep.is_some() {
+            self.file.controls.probes = entries.to_vec();
+            return Ok(());
+        }
+        self.set_probes(entries.iter().map(ProbeSpec::from_entry).collect())
+    }
+
+    /// The probes in the model file's form.
+    pub fn probe_entries(&self) -> Vec<ProbeEntry> {
+        if self.sweep.is_some() {
+            return self.file.controls.probes.clone();
+        }
+        self.probes.iter().map(|p| p.spec.to_entry()).collect()
+    }
+
+    /// Write the files of the probes that have one (`to`) into `dir`, as
+    /// recorded so far: the files written, and notes on what was left out.
+    pub fn write_probe_files(
+        &mut self,
+        dir: &std::path::Path,
+    ) -> std::io::Result<(Vec<std::path::PathBuf>, Vec<String>)> {
+        self.flush(true);
+        let mut written = Vec::new();
+        let mut notes = Vec::new();
+        for p in &self.probes {
+            if let Some(to) = &p.spec.to {
+                let (w, n) = crate::probe::write_files(&p.history.read(), dir, to)?;
+                written.extend(w);
+                notes.extend(n.into_iter().map(|n| format!("probe {}: {n}", p.spec.name)));
+            }
+        }
+        Ok((written, notes))
+    }
+
+    /// Where a probe's node sits on the data layer, without restarting
+    /// its recording.
+    pub fn place_probe(&mut self, name: &str, at: Option<[f64; 2]>) -> Result<(), String> {
+        if self.sweep.is_some() {
+            let p = self
+                .file
+                .controls
+                .probes
+                .iter_mut()
+                .find(|p| p.name == name);
+            p.ok_or_else(|| format!("no probe '{name}'"))?.canvas = at;
+            return Ok(());
+        }
+        let p = self
+            .probes
+            .iter_mut()
+            .find(|p| p.spec.name == name)
+            .ok_or_else(|| format!("no probe '{name}'"))?;
+        p.spec.canvas = at.map(|p| p.map(|v| (v * 10.0).round() / 10.0));
         Ok(())
     }
 
@@ -1495,9 +1573,7 @@ impl Session {
         }
         self.file.controls.filters = self.filter_entries.clone();
         // A swept model records no probes: the file keeps its own.
-        if self.sweep.is_none() {
-            self.file.controls.probes = self.probes.iter().map(|p| p.spec.to_entry()).collect();
-        }
+        self.file.controls.probes = self.probe_entries();
         if let Some(sw) = &self.sweep {
             self.file.sample = Some(sw.sampling.clone());
         }
@@ -3113,5 +3189,38 @@ mod probe_tests {
         }
         let err = crate::run::run_probes(&text, &registry(), None, None, Vec::new(), &["x".into()]);
         assert!(err.is_err_and(|e| e.contains("no probe 'x'")));
+    }
+
+    #[test]
+    fn probe_edits_keep_what_unchanged_probes_recorded() {
+        let text =
+            cruise_with(r#"[{"name": "speed", "record": ["car.v"], "keep": {"all": true}}]"#);
+        let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        s.run_until(1.0).unwrap();
+        s.flush(true);
+        let before = s.probe("speed").unwrap().read().len();
+        assert_eq!(before, 21);
+        // Moved, and a probe added that records nothing yet.
+        let mut entries = s.probe_entries();
+        entries[0].canvas = Some([5.0, 5.0]);
+        entries.push(ProbeSpec::new("later", vec![]).to_entry());
+        entries[1].every = Some(simsandbox_file::ProbeEvery {
+            seconds: Some(0.5),
+            ..Default::default()
+        });
+        entries[1].record = vec!["car.v".into()];
+        s.set_probe_entries(&entries).unwrap();
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        assert_eq!(s.probe("speed").unwrap().read().len(), 41);
+        // The new one from now on, at multiples of 0.5 s after t = 1.
+        let later: Vec<f64> = s.probe("later").unwrap().read().times().to_vec();
+        assert_eq!(later.len(), 2, "{later:?}");
+        assert!((later[0] - 1.5).abs() < 1e-9);
+        assert_eq!(s.probe_entries()[0].canvas, Some([5.0, 5.0]));
+        // A probe that records nothing is kept.
+        entries[1].record.clear();
+        s.set_probe_entries(&entries).unwrap();
+        assert_eq!(s.probe_names(), ["speed", "later"]);
     }
 }

@@ -32,6 +32,10 @@ pub struct Model {
     pub params: Vec<ParamRow>,
     pub sweep: Option<Arc<Sweep>>,
     pub filters: Vec<FilterEntry>,
+    /// Probes besides the implicit one, as the file writes them (ADR 0062).
+    pub probes: Vec<simsandbox_file::ProbeEntry>,
+    /// What each probe has recorded, shared for drawing, by name.
+    pub probe_histories: Vec<(String, simsandbox_session::session::SharedHistory)>,
     pub dt: f64,
     pub labels: Option<MethodLabels>,
     /// Sliders apply while dragged (ADR 0037).
@@ -53,6 +57,12 @@ impl Model {
             params: s.params(),
             sweep: s.sweep_shared(),
             filters: s.filters().to_vec(),
+            probes: s.probe_entries(),
+            probe_histories: s
+                .probe_names()
+                .into_iter()
+                .filter_map(|n| s.probe(n).map(|h| (n.to_string(), h)))
+                .collect(),
             dt: s.dt,
             labels: s.labels(),
             real_time: s.real_time(),

@@ -63,6 +63,9 @@ pub enum NodeKind {
     Filter,
     /// A view on the data layer: where data is shown.
     View,
+    /// A probe on the data layer (ADR 0062): what is recorded, when, and
+    /// the file it writes.
+    Probe,
 }
 
 /// One node.
@@ -152,7 +155,10 @@ impl Node {
 
     /// Whether it is on the data layer (ADR 0050).
     pub fn is_observer(&self) -> bool {
-        matches!(self.kind, NodeKind::Filter | NodeKind::View)
+        matches!(
+            self.kind,
+            NodeKind::Filter | NodeKind::View | NodeKind::Probe
+        )
     }
 }
 
@@ -834,6 +840,11 @@ pub enum Edit {
     /// Data layer: a new view of a type (bound from its first preset when
     /// the app shows it).
     AddView { type_name: String, at: [f64; 2] },
+    /// Data layer: a new probe recording nothing yet (ADR 0062).
+    AddProbe { at: [f64; 2] },
+    /// Data layer: a probe's settings (what, when, how long, its file),
+    /// replacing the probe of the same name.
+    SetProbe { probe: simsandbox_file::ProbeEntry },
     /// Turn an expression filter into a formula block, so it can feed the
     /// model (ADR 0032).
     Promote { filter: String },
@@ -886,7 +897,9 @@ impl Edit {
             Edit::Bind { .. }
             | Edit::Unbind { .. }
             | Edit::AddFilter { .. }
-            | Edit::AddView { .. } => true,
+            | Edit::AddView { .. }
+            | Edit::AddProbe { .. }
+            | Edit::SetProbe { .. } => true,
             Edit::Connect { to, .. } | Edit::Disconnect { to } => observer(&node(to)),
             Edit::Delete { block } => observer(block),
             Edit::Rename { from, .. } => observer(from),
@@ -1391,6 +1404,8 @@ fn edit_level(
         | Edit::Unbind { .. }
         | Edit::AddFilter { .. }
         | Edit::AddView { .. }
+        | Edit::AddProbe { .. }
+        | Edit::SetProbe { .. }
         | Edit::Promote { .. }
         | Edit::PromoteConnect { .. } => unreachable!("handled before"),
     }

@@ -53,6 +53,8 @@ pub enum Request {
     EditData(String),
     /// Show a view's tile, by its place among the views.
     ShowView(usize),
+    /// Edit a probe's settings (ADR 0062), by its name.
+    EditProbe(String),
     /// A value typed on a node (ADR 0053): `"block.param"` and the value.
     SetValue { key: String, value: f64 },
     /// `= expression` typed on a node (ADR 0056): `"block.param"` and the
@@ -430,6 +432,7 @@ impl Canvas {
             NodeKind::Input | NodeKind::Output => visuals.warn_fg_color.gamma_multiply(0.25),
             NodeKind::Filter => visuals.hyperlink_color.gamma_multiply(0.3),
             NodeKind::View => visuals.hyperlink_color.gamma_multiply(0.15),
+            NodeKind::Probe => visuals.warn_fg_color.gamma_multiply(0.18),
         };
         painter.rect_filled(
             header,
@@ -501,6 +504,7 @@ impl Canvas {
                 NodeKind::Output => "subsystem output".into(),
                 NodeKind::Filter => format!("filter · {}", n.method),
                 NodeKind::View => format!("view · {}", n.method),
+                NodeKind::Probe => n.method.clone(),
             }
         };
         painter.text(
@@ -557,6 +561,11 @@ impl Canvas {
                             format!("{} · {}", p.name, more.join(", "))
                         }
                     }
+                    // A probe names its file.
+                    NodeKind::Probe => match n.settings.get("to") {
+                        Some(to) => format!("{} · {to}", p.name),
+                        None => p.name.clone(),
+                    },
                     // A conversion shows its units (ADR 0045).
                     _ => match unit_setting(n, c).filter(|_| k == 0) {
                         Some(setting) => {
@@ -1040,6 +1049,12 @@ impl Canvas {
                                 from,
                                 to,
                             }),
+                            // A probe records it too.
+                            (_, Some(NodeKind::Probe)) => edits.push(Edit::Bind {
+                                many: true,
+                                from,
+                                to,
+                            }),
                             // A filter cannot feed the model: offer to
                             // promote it.
                             (Some(NodeKind::Filter), Some(k)) if !matches!(k, NodeKind::Filter) => {
@@ -1216,6 +1231,16 @@ impl Canvas {
                             ui.close();
                         }
                     }
+                    NodeKind::Probe => {
+                        if ui
+                            .button("Settings…")
+                            .on_hover_text("When it records, how long it keeps samples, its file")
+                            .clicked()
+                        {
+                            requests.push(open_request(n));
+                            ui.close();
+                        }
+                    }
                 }
                 ui.add_enabled_ui(n.kind != NodeKind::View, |ui| ui.horizontal(|ui| {
                     let field = ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(110.0));
@@ -1280,6 +1305,17 @@ impl Canvas {
                         .clicked()
                     {
                         edits.push(Edit::AddFilter { at });
+                        ui.close();
+                    }
+                    if ui
+                        .button("Add probe")
+                        .on_hover_text(
+                            "Records the signals and fields wired into it, when and for as long \
+                             as you choose, and can save them to a file (ADR 0062)",
+                        )
+                        .clicked()
+                    {
+                        edits.push(Edit::AddProbe { at });
                         ui.close();
                     }
                     ui.menu_button("Add view", |ui| {
@@ -1394,7 +1430,7 @@ impl Canvas {
 /// What a node is called on the canvas.
 fn title(n: &Node) -> String {
     match n.kind {
-        NodeKind::Input | NodeKind::Output | NodeKind::Filter => {
+        NodeKind::Input | NodeKind::Output | NodeKind::Filter | NodeKind::Probe => {
             n.name[n.name.find(':').map_or(0, |i| i + 1)..].to_string()
         }
         NodeKind::View => {
@@ -1410,6 +1446,7 @@ fn open_request(n: &Node) -> Request {
     match n.kind {
         NodeKind::Filter => Request::EditData(title(n)),
         NodeKind::View => Request::ShowView(n.name["view:".len()..].parse().unwrap_or(0)),
+        NodeKind::Probe => Request::EditProbe(title(n)),
         _ => Request::Open(n.name.clone()),
     }
 }
@@ -1421,6 +1458,12 @@ fn observer_help(n: &Node) -> String {
         NodeKind::Filter => format!(
             "Filter {} ({}): computed from recorded data after each step; it cannot feed the \
              model. Double-click to edit it in Data…",
+            title(n),
+            n.method
+        ),
+        NodeKind::Probe => format!(
+            "Probe {} ({}): records the signals and fields wired into it, without changing \
+             results. Drop more on it; double-click for its settings.",
             title(n),
             n.method
         ),

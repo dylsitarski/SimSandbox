@@ -1080,10 +1080,21 @@ impl SimApp {
                 }
                 Outcome::Open(name) => self.open_block(m, &name),
                 Outcome::Error(e) => self.error = Some(e),
-                Outcome::Placed { filters, views } => {
+                Outcome::Placed {
+                    filters,
+                    views,
+                    probes,
+                } => {
                     let Some(live) = &self.session else {
                         return;
                     };
+                    for (name, at) in probes {
+                        live.send(Some(&format!("place-probe:{name}")), move |s, c| {
+                            if let Err(e) = s.place_probe(&name, Some(at)) {
+                                c.error(e);
+                            }
+                        });
+                    }
                     for (name, at) in filters {
                         live.send(Some(&format!("place:{name}")), move |s, c| {
                             if let Err(e) = s.place_filter(&name, Some(at)) {
@@ -1107,6 +1118,12 @@ impl SimApp {
                             let _ = s.place_filter(&name, at);
                         });
                     }
+                    for p in &file.controls.probes {
+                        let (name, at) = (p.name.clone(), p.canvas);
+                        live.send(None, move |s, _| {
+                            let _ = s.place_probe(&name, at);
+                        });
+                    }
                     for (t, v) in self.views.tiles.iter_mut().zip(&file.controls.views) {
                         t.canvas = v.canvas;
                     }
@@ -1117,8 +1134,9 @@ impl SimApp {
                 Outcome::Data {
                     filters,
                     views,
+                    probes,
                     notes,
-                } => self.apply_data(m, filters, views, notes),
+                } => self.apply_data(m, (filters, views, probes), notes),
                 Outcome::EditData(_) => {
                     self.signals_editor = Some(SignalsEditor::new(m));
                 }
@@ -1148,8 +1166,11 @@ impl SimApp {
     fn apply_data(
         &mut self,
         m: &crate::live::Model,
-        filters: Vec<simsandbox_file::FilterEntry>,
-        views: Vec<simsandbox_file::ViewEntry>,
+        (filters, views, probes): (
+            Vec<simsandbox_file::FilterEntry>,
+            Vec<simsandbox_file::ViewEntry>,
+            Vec<simsandbox_file::ProbeEntry>,
+        ),
         notes: Vec<String>,
     ) {
         let Some(live) = &self.session else {
@@ -1157,6 +1178,20 @@ impl SimApp {
         };
         if filters != m.filters {
             match live.call(move |s, _| s.set_filters(filters)) {
+                Ok(Ok(())) => {}
+                Ok(Err(problems)) => {
+                    self.error = Some(problems.join("; "));
+                    return;
+                }
+                Err(e) => {
+                    self.error = Some(e);
+                    return;
+                }
+            }
+        }
+        // Probes follow the filters, which they may record (ADR 0062).
+        if probes != live.model().probes {
+            match live.call(move |s, _| s.set_probe_entries(&probes)) {
                 Ok(Ok(())) => {}
                 Ok(Err(problems)) => {
                     self.error = Some(problems.join("; "));
@@ -1269,6 +1304,17 @@ impl SimApp {
         // Read while drawing; the worker keeps stepping and appends later.
         let history = live.history();
         let available = m.available(&history);
+        // Views showing a probe draw what it recorded (ADR 0062).
+        let probe_guards: Vec<_> = m
+            .probe_histories
+            .iter()
+            .map(|(n, h)| (n.as_str(), h.read()))
+            .collect();
+        let recorded = simsandbox_session::views::Recorded {
+            all: &history,
+            probes: probe_guards.iter().map(|(n, g)| (*n, &**g)).collect(),
+        };
+        let probe_names: Vec<&str> = m.probes.iter().map(|p| p.name.as_str()).collect();
         let views = &mut self.views;
         let (text, error) = (&mut self.param_edits, &mut self.error);
         let area = ui.available_rect_before_wrap();
@@ -1325,6 +1371,7 @@ impl SimApp {
                     .stroke(stroke)
                     .show(ui, |ui| {
                         ui.set_min_size(ui.available_size());
+                        let shown_history = recorded.of(tile.probe.as_deref());
                         ui.horizontal(|ui| {
                             if ui
                                 .selectable_label(selected, egui::RichText::new(t.label).strong())
@@ -1332,6 +1379,15 @@ impl SimApp {
                                 .clicked()
                             {
                                 actions.push(DockAction::Select(tile.id));
+                            }
+                            if let Some(p) = &tile.probe {
+                                let gone = !probe_names.contains(&p.as_str());
+                                let label = if gone {
+                                    format!("probe {p} (gone: every step)")
+                                } else {
+                                    format!("probe {p}")
+                                };
+                                ui.weak(label);
                             }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -1360,8 +1416,35 @@ impl SimApp {
                                         actions.push(action);
                                     }
                                     let id = tile.id;
+                                    if !probe_names.is_empty() || tile.probe.is_some() {
+                                        ui.menu_button("from", |ui| {
+                                            if ui
+                                                .selectable_label(tile.probe.is_none(), "every step")
+                                                .on_hover_text("Everything recorded, at every step")
+                                                .clicked()
+                                            {
+                                                tile.probe = None;
+                                                ui.close();
+                                            }
+                                            for p in &probe_names {
+                                                if ui
+                                                    .selectable_label(
+                                                        tile.probe.as_deref() == Some(*p),
+                                                        format!("probe {p}"),
+                                                    )
+                                                    .on_hover_text("What this probe recorded, when it recorded it")
+                                                    .clicked()
+                                                {
+                                                    tile.probe = Some(p.to_string());
+                                                    ui.close();
+                                                }
+                                            }
+                                        })
+                                        .response
+                                        .on_hover_text("Show every step, or what a probe recorded (ADR 0062)");
+                                    }
                                     ui.menu_button("style", |ui| {
-                                        style_editor(ui, t, &mut tile.state, &history, id, text, error);
+                                        style_editor(ui, t, &mut tile.state, shown_history, id, text, error);
                                     })
                                     .response
                                     .on_hover_text("How this view draws: trails, scales and what it picks");
@@ -1384,7 +1467,7 @@ impl SimApp {
                         slot_editors(ui, t, &mut tile.state, &available, &history);
                         let sender = senders.get(&tile.id);
                         tile.state.sends_pointer = sender.is_some();
-                        tile.state.show(ui, t, &history);
+                        tile.state.show(ui, t, shown_history);
                         if let Some(signal) = tile.state.picked() {
                             actions.push(DockAction::Inspect(signal));
                         }
@@ -1503,6 +1586,33 @@ impl SimApp {
         }
     }
 
+    /// Write the probes' files beside the model (ADR 0062).
+    fn save_probe_data(&mut self) {
+        let (Some(live), Some(dir)) = (
+            self.session.as_ref(),
+            self.path.as_deref().and_then(Path::parent),
+        ) else {
+            return;
+        };
+        let dir = dir.to_path_buf();
+        let shown = dir.display().to_string();
+        match live.call(move |s, _| s.write_probe_files(&dir).map_err(|e| e.to_string())) {
+            Ok(Ok((written, notes))) => {
+                for n in notes {
+                    self.log.warn(n);
+                }
+                let names: Vec<String> = written
+                    .iter()
+                    .filter_map(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .collect();
+                self.log
+                    .info(format!("Saved probe data in {shown}: {}", names.join(", ")));
+            }
+            Ok(Err(e)) | Err(e) => self.error = Some(format!("{shown}: {e}")),
+        }
+    }
+
     /// The Runs menu (ADR 0059): save this run, replay a saved run of
     /// this model, or make a run the model's default schedule.
     fn runs_menu(&mut self, ui: &mut egui::Ui) {
@@ -1523,6 +1633,27 @@ impl SimApp {
                 Ok(run) => self.use_as_schedule(&run, "this run"),
                 Err(e) => self.error = Some(e),
             }
+            ui.close();
+        }
+        let with_files = self
+            .session
+            .as_ref()
+            .is_some_and(|l| l.model().probes.iter().any(|p| p.to.is_some()));
+        let hover = match (&self.path, with_files) {
+            (_, false) => "No probe has a file: set one in a probe's settings (double-click it on the diagram)",
+            (None, true) => "Save the model first: probe files are written beside it",
+            _ => "Write what the probes with a file have recorded so far, beside the model (CSV, and .npy for grids)",
+        };
+        if ui
+            .add_enabled(
+                with_files && self.path.is_some(),
+                egui::Button::new("Save probe data"),
+            )
+            .on_hover_text(hover)
+            .on_disabled_hover_text(hover)
+            .clicked()
+        {
+            self.save_probe_data();
             ui.close();
         }
         ui.separator();
@@ -4868,6 +4999,61 @@ mod tests {
         assert_eq!(m.file.run.inputs.len(), 3);
         assert!(utc_now().ends_with('Z') && utc_now().len() == 20);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probes_added_on_the_canvas_record_and_save_their_files() {
+        use simsandbox_session::diagram::Edit;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES.iter().find(|e| e.name.contains("Cruise")).unwrap();
+        app.open_text(e.name, e.text);
+        let dir = std::env::temp_dir().join(format!("simsandbox-app-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        app.path = Some(dir.join("cruise.ssbx.json"));
+        let live = app.session.as_ref().unwrap();
+        live.call(|s, _| s.run_until(1.0)).unwrap().unwrap();
+        canvas_edits(&mut app, vec![Edit::AddProbe { at: [600.0, 0.0] }]);
+        canvas_edits(
+            &mut app,
+            vec![Edit::Bind {
+                from: "car.v".into(),
+                to: "probe:probe1.record".into(),
+                many: true,
+            }],
+        );
+        let mut probe = app.session.as_ref().unwrap().model().probes[0].clone();
+        assert_eq!(probe.record, ["car.v"]);
+        probe.to = Some("speed.csv".into());
+        canvas_edits(&mut app, vec![Edit::SetProbe { probe }]);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let live = app.session.as_ref().unwrap();
+        // Not restarted: the probe records from t = 1 on.
+        assert!(live.status().time > 0.9);
+        live.call(|s, _| s.run_until(2.0)).unwrap().unwrap();
+        app.save_probe_data();
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let csv = std::fs::read_to_string(dir.join("speed.csv")).unwrap();
+        // From when it was wired, at every step since.
+        let t: Vec<f64> = csv
+            .lines()
+            .skip(1)
+            .map(|l| l.split(',').next().unwrap().parse().unwrap())
+            .collect();
+        assert!(t.len() > 2 && t[0] > 0.9, "{csv}");
+        assert!(
+            t.windows(2).all(|w| (w[1] - w[0] - 0.05).abs() < 1e-9),
+            "{csv}"
+        );
+        // Saved with the model, and undone without a restart.
+        assert!(app.saved_text().unwrap().contains("\"to\": \"speed.csv\""));
+        canvas_step(&mut app, true);
+        canvas_step(&mut app, true);
+        canvas_step(&mut app, true);
+        let live = app.session.as_ref().unwrap();
+        live.sync();
+        assert!(live.model().probes.is_empty());
+        assert!(live.status().time > 1.9);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
