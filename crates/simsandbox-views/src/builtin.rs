@@ -3,10 +3,10 @@
 //! [`crate::fields`].
 
 use crate::colour::{bins, segments, trail_start, ColourKey, HEAD};
-use crate::history::{History, SignalRef, TIME};
+use crate::history::{label, paired, split_source, SignalRef, TIME};
 use crate::view::{
-    always, over_time, Available, Bindings, Preset, Slot, SlotKind, StyleProperty, Swap, View,
-    ViewInput, ViewRegistry, ViewType,
+    always, over_time, Available, Bindings, Bound, Preset, Slot, SlotKind, StyleProperty, Swap,
+    View, ViewInput, ViewRegistry, ViewType,
 };
 use crate::view3d::{self, Camera};
 use egui_plot::{Legend, Line, MarkerShape, Plot, PlotUi, Points};
@@ -202,15 +202,6 @@ pub(crate) fn bindings(pairs: &[(&str, &str)]) -> Bindings {
         .collect()
 }
 
-/// How the colour slot colours a line.
-fn colour_key(input: &ViewInput<'_>) -> ColourKey {
-    match input.one("colour") {
-        None => ColourKey::Constant,
-        Some(SignalRef::Time) => ColourKey::Time(input.history.times().to_vec()),
-        Some(s) => ColourKey::Value(input.history.values(s)),
-    }
-}
-
 /// The scroll wheel zooms around the pointer instead of panning; drag pans
 /// and double-click resets, as egui_plot does by default.
 pub fn scroll_to_zoom(plot: &mut PlotUi<'_>) {
@@ -293,22 +284,67 @@ fn curve_id(name: &str) -> egui::Id {
     egui::Id::new(("curve", name))
 }
 
+/// One curve of `plot.xy`: its `y` against `x` (and colour), at the times
+/// all of them were recorded (ADR 0063).
+struct Curve {
+    /// The binding as written, and as shown.
+    name: String,
+    label: String,
+    t: Vec<f64>,
+    x: Vec<f64>,
+    y: Vec<f64>,
+    colour: ColourKey,
+    unordered: bool,
+}
+
+impl Curve {
+    fn new(x: Bound<'_>, y: Bound<'_>, colour: Option<Bound<'_>>) -> Self {
+        let mut signals = vec![(x.history, x.signal), (y.history, y.signal)];
+        signals.extend(colour.map(|c| (c.history, c.signal)));
+        let mut p = paired(&signals);
+        let colour = match colour {
+            None => ColourKey::Constant,
+            Some(c) if c.signal == SignalRef::Time => ColourKey::Time(p.t.clone()),
+            Some(_) => ColourKey::Value(p.columns.pop().unwrap_or_default()),
+        };
+        let ys = p.columns.pop().unwrap_or_default();
+        let xs = p.columns.pop().unwrap_or_default();
+        Self {
+            name: y.name.to_string(),
+            label: label(y.name),
+            t: p.t,
+            x: xs,
+            y: ys,
+            colour,
+            unordered: y.history.unordered(),
+        }
+    }
+}
+
 impl View for Xy {
     fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>) {
-        let h = input.history;
-        let Some(x) = input.one("x") else {
+        let Some(x) = input.one_any("x") else {
             return;
         };
-        let ys = input.many("y");
-        let n = h.len();
-        let first = trail_start(h.times(), input.style("trail_length"));
-        let against_time = x == SignalRef::Time;
-        let x_label = if against_time && h.index() == TIME {
+        let colour = input.one_any("colour");
+        // Each curve from its own recording, paired with x (and colour) at
+        // the times both recorded.
+        let curves: Vec<Curve> = input
+            .many_any("y")
+            .iter()
+            .map(|&y| Curve::new(x, y, colour))
+            .collect();
+        let trail = input.style("trail_length");
+        let firsts: Vec<usize> = curves.iter().map(|c| trail_start(&c.t, trail)).collect();
+        let against_time = x.signal == SignalRef::Time;
+        let x_label = if against_time && input.history.index() == TIME {
             "t [s]".to_string()
+        } else if against_time {
+            input.history.index().to_string()
         } else {
-            h.name(x).to_string()
+            label(x.name)
         };
-        let y_label = (ys.len() == 1).then(|| h.name(ys[0]).to_string());
+        let y_label = (curves.len() == 1).then(|| curves[0].label.clone());
         // A point of the curve of y against x, as drawn.
         let tr = self.transposed;
         let at = move |a: f64, b: f64| if tr { [b, a] } else { [a, b] };
@@ -328,20 +364,26 @@ impl View for Xy {
         if let Some(l) = up {
             plot = plot.y_axis_label(l);
         }
-        if ys.len() > 1 {
+        if curves.len() > 1 {
             plot = plot.legend(Legend::default());
         }
         // Keep near-constant signals (e.g. a conserved energy) from being
         // magnified until rounding noise looks like drift.
-        let range = |s: SignalRef| value_range((first..n).map(|k| h.value(s, k)));
-        let y_range = ys
+        let union = |a: [f64; 2], b: [f64; 2]| [a[0].min(b[0]), a[1].max(b[1])];
+        let y_range = curves
             .iter()
-            .filter_map(|&y| range(y))
-            .reduce(|a, b| [a[0].min(b[0]), a[1].max(b[1])]);
+            .zip(&firsts)
+            .filter_map(|(c, &f)| value_range(c.y[f..].iter().copied()))
+            .reduce(union);
+        let x_range = curves
+            .iter()
+            .zip(&firsts)
+            .filter_map(|(c, &f)| value_range(c.x[f..].iter().copied()))
+            .reduce(union);
         let (across_range, up_range) = if tr {
-            (y_range, range(x))
+            (y_range, x_range)
         } else {
-            (range(x), y_range)
+            (x_range, y_range)
         };
         if let Some([lo, hi]) = across_range.and_then(widened) {
             plot = plot.include_x(lo).include_x(hi);
@@ -360,82 +402,57 @@ impl View for Xy {
         if input.style("equal_scales") >= 0.5 {
             plot = plot.data_aspect(1.0);
         }
-        let shown: Vec<String> = ys.iter().map(|&y| h.name(y).to_string()).collect();
+        let shown: Vec<String> = curves.iter().map(|c| c.name.clone()).collect();
+        let one_coloured = curves.len() == 1 && colour.is_some();
         let response = plot.show(ui, |plot| {
             scroll_to_zoom(plot);
-            let points = |y: SignalRef, from: usize, to: usize| {
-                finite_runs((from..to).map(|k| at(h.value(x, k), h.value(y, k))))
-            };
-            if h.unordered() {
-                // Samples with no order between them: markers, not lines
-                // (ADR 0028).
-                let markers =
-                    |y: SignalRef, ks: &mut dyn Iterator<Item = usize>| -> Vec<[f64; 2]> {
-                        ks.map(|k| at(h.value(x, k), h.value(y, k)))
+            for (k, (c, &first)) in curves.iter().zip(&firsts).enumerate() {
+                let n = c.t.len();
+                let points =
+                    |from: usize, to: usize| finite_runs((from..to).map(|i| at(c.x[i], c.y[i])));
+                if c.unordered {
+                    // Samples with no order between them: markers, not lines
+                    // (ADR 0028).
+                    let markers = |ks: &mut dyn Iterator<Item = usize>| -> Vec<[f64; 2]> {
+                        ks.map(|i| at(c.x[i], c.y[i]))
                             .filter(|p| p.iter().all(|v| v.is_finite()))
                             .collect()
                     };
-                if let ([y], Some(_)) = (ys, input.one("colour")) {
-                    for (colour, ks) in bins(first, n, &colour_key(input), COLOUR_CHUNKS) {
-                        let pts = markers(*y, &mut ks.into_iter());
-                        plot.points(Points::new("samples", pts).radius(2.0).color(colour));
-                    }
-                } else {
-                    for (k, &y) in ys.iter().enumerate() {
-                        let pts = markers(y, &mut (first..n));
+                    if one_coloured {
+                        for (colour, ks) in bins(first, n, &c.colour, COLOUR_CHUNKS) {
+                            let pts = markers(&mut ks.into_iter());
+                            plot.points(Points::new("samples", pts).radius(2.0).color(colour));
+                        }
+                    } else {
                         plot.points(
-                            Points::new(h.name(y).to_string(), pts)
-                                .id(curve_id(h.name(y)))
+                            Points::new(c.label.clone(), markers(&mut (first..n)))
+                                .id(curve_id(&c.name))
                                 .radius(2.0)
                                 .color(series_colour(k)),
                         );
                     }
-                }
-            } else if let ([y], Some(_)) = (ys, input.one("colour")) {
-                // One curve with a colour encoding: coloured segments.
-                for seg in segments(first, n, &colour_key(input), COLOUR_CHUNKS) {
-                    for run in points(*y, seg.start, seg.end + 1) {
-                        plot.line(Line::new("trail", run).color(seg.colour).allow_hover(false));
+                } else if one_coloured {
+                    // One curve with a colour encoding: coloured segments.
+                    for seg in segments(first, n, &c.colour, COLOUR_CHUNKS) {
+                        for run in points(seg.start, seg.end + 1) {
+                            plot.line(Line::new("trail", run).color(seg.colour).allow_hover(false));
+                        }
                     }
-                }
-            } else {
-                for (k, &y) in ys.iter().enumerate() {
-                    let name = h.name(y).to_string();
+                } else if n > first + 1 {
                     // Pieces of one curve (split where it is not finite)
                     // share its name and colour.
-                    let colour = series_colour(k);
-                    match y {
-                        // The whole run against time: plot the recorded points
-                        // directly when they are all finite.
-                        SignalRef::Signal(i)
-                            if against_time
-                                && !tr
-                                && first == 0
-                                && h.points(i).iter().all(|p| p.y.is_finite()) =>
-                        {
-                            plot.line(
-                                Line::new(name.clone(), h.points(i))
-                                    .id(curve_id(&name))
-                                    .color(colour),
-                            );
-                        }
-                        _ if n > first + 1 => {
-                            for run in points(y, first, n) {
-                                plot.line(
-                                    Line::new(name.clone(), run)
-                                        .id(curve_id(&name))
-                                        .color(colour),
-                                );
-                            }
-                        }
-                        _ => {}
+                    for run in points(first, n) {
+                        plot.line(
+                            Line::new(c.label.clone(), run)
+                                .id(curve_id(&c.name))
+                                .color(series_colour(k)),
+                        );
                     }
                 }
-            }
-            // Mark the current point unless time is an axis (it is the edge).
-            if !against_time && !h.unordered() && n > 0 {
-                for &y in ys {
-                    let now = at(h.value(x, n - 1), h.value(y, n - 1));
+                // Mark the current point unless time is an axis (it is the
+                // edge).
+                if !against_time && !c.unordered && n > 0 {
+                    let now = at(c.x[n - 1], c.y[n - 1]);
                     if now.iter().all(|v| v.is_finite()) {
                         plot.points(
                             Points::new("now", vec![now])
@@ -458,7 +475,9 @@ impl View for Xy {
             let hit = response
                 .hovered_plot_item
                 .and_then(|id| shown.iter().find(|n| curve_id(n) == id).cloned());
-            self.picked = hit.or_else(|| (shown.len() == 1).then(|| shown[0].clone()));
+            self.picked = hit
+                .or_else(|| (shown.len() == 1).then(|| shown[0].clone()))
+                .map(|n| split_source(&n).1.to_string());
         }
     }
 
@@ -500,21 +519,33 @@ struct Trajectory {
 
 impl View for Trajectory {
     fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>) {
-        let h: &History = input.history;
-        let (Some(x), Some(y), Some(z)) = (input.one("x"), input.one("y"), input.one("z")) else {
+        let (Some(x), Some(y), Some(z)) =
+            (input.one_any("x"), input.one_any("y"), input.one_any("z"))
+        else {
             return;
         };
-        let points: Vec<[f64; 3]> = (0..h.len())
-            .map(|k| [h.value(x, k), h.value(y, k), h.value(z, k)])
+        // Paired at the times all of them were recorded (ADR 0063).
+        let colour = input.one_any("colour");
+        let mut signals: Vec<_> = [x, y, z].iter().map(|b| (b.history, b.signal)).collect();
+        signals.extend(colour.map(|c| (c.history, c.signal)));
+        let p = paired(&signals);
+        let points: Vec<[f64; 3]> = (0..p.t.len())
+            .map(|k| [p.columns[0][k], p.columns[1][k], p.columns[2][k]])
             .collect();
-        let first = trail_start(h.times(), input.style("trail_length"));
-        let segs = segments(first, h.len(), &colour_key(input), COLOUR_CHUNKS);
+        let key = match colour {
+            None => ColourKey::Constant,
+            Some(c) if c.signal == SignalRef::Time => ColourKey::Time(p.t.clone()),
+            Some(_) => ColourKey::Value(p.columns[3].clone()),
+        };
+        let first = trail_start(&p.t, input.style("trail_length"));
+        let segs = segments(first, p.t.len(), &key, COLOUR_CHUNKS);
+        let names = [x, y, z].map(|b| label(b.name));
         view3d::show(
             ui,
             &mut self.camera,
             &points,
             &segs,
-            [x, y, z].map(|s| h.name(s)),
+            [&names[0], &names[1], &names[2]].map(String::as_str),
         );
     }
 
@@ -565,6 +596,37 @@ mod tests {
     }
 
     #[test]
+    fn signals_from_different_recordings_pair_at_common_times() {
+        use crate::history::{paired, Recorded};
+        // Every step (0.1 s) and a probe every 0.3 s.
+        let mut all = crate::History::new(vec!["a.x".into()]);
+        let mut probe = crate::History::new(vec!["a.x".into()]);
+        for k in 0..10 {
+            let t = k as f64 * 0.1;
+            all.push(t, &[k as f64]);
+            if k % 3 == 0 {
+                probe.push(t, &[10.0 * k as f64]);
+            }
+        }
+        let probes = [("p", &probe)];
+        let r = Recorded {
+            all: &all,
+            probes: &probes,
+        };
+        let (h, x) = r.resolve("a.x").unwrap();
+        let (hp, xp) = r.resolve("probe:p/a.x").unwrap();
+        assert!(r.resolve("probe:gone/a.x").is_none());
+        let p = paired(&[(h, x), (hp, xp)]);
+        assert_eq!(p.columns[0], [0.0, 3.0, 6.0, 9.0]);
+        assert_eq!(p.columns[1], [0.0, 30.0, 60.0, 90.0]);
+        // One recording alone: every sample; t binds to its times.
+        let one = paired(&[(hp, xp), (hp, SignalRef::Time)]);
+        assert_eq!(one.t.len(), 4);
+        assert_eq!(one.columns[1], one.t);
+        assert_eq!(crate::history::label("probe:p/a.x"), "a.x (p)");
+    }
+
+    #[test]
     fn scrolling_up_zooms_in() {
         assert!(zoom_factor(50.0) > 1.0);
         assert!(zoom_factor(-50.0) < 1.0);
@@ -575,7 +637,7 @@ mod tests {
     fn clicking_a_curve_picks_its_signal() {
         let reg = crate::ViewRegistry::builtin();
         let t = reg.get("plot.xy").unwrap();
-        let mut h = History::new(vec!["low".into(), "high".into()]);
+        let mut h = crate::History::new(vec!["low".into(), "high".into()]);
         for k in 0..=20 {
             h.push(k as f64 * 0.05, &[0.0, 1.0]);
         }
@@ -585,7 +647,7 @@ mod tests {
         ]
         .into();
         let style = Default::default();
-        let input = crate::view::view_input(&bind, &style, t, &h);
+        let input = crate::view::view_input(&bind, &style, t, (&h).into());
         let ctx = egui::Context::default();
         let mut view = Xy::default();
         let mut frame = |events: Vec<egui::Event>| {

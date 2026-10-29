@@ -13,25 +13,6 @@ pub struct Tile {
     pub state: ViewState,
     /// Where its node sits on the canvas's data layer (ADR 0050).
     pub canvas: Option<[f64; 2]>,
-    /// The probe it shows, if not every step (ADR 0062).
-    pub probe: Option<String>,
-}
-
-/// What tiles draw from (ADR 0062): every step (the implicit probe) and
-/// each probe's recording, by name.
-pub struct Recorded<'a> {
-    pub all: &'a simsandbox_views::History,
-    pub probes: Vec<(&'a str, &'a simsandbox_views::History)>,
-}
-
-impl<'a> Recorded<'a> {
-    /// What a tile showing `probe` draws: every step if it names none or
-    /// one that is gone.
-    pub fn of(&self, probe: Option<&str>) -> &'a simsandbox_views::History {
-        probe
-            .and_then(|p| self.probes.iter().find(|(n, _)| *n == p))
-            .map_or(self.all, |(_, h)| h)
-    }
 }
 
 pub struct Views {
@@ -71,9 +52,7 @@ impl Views {
             match self.restore(entry, available) {
                 Ok(state) => {
                     let id = self.push(state);
-                    let tile = self.tile_mut(id);
-                    tile.canvas = entry.canvas;
-                    tile.probe = entry.probe.clone();
+                    self.tile_mut(id).canvas = entry.canvas;
                     self.opened.push(Some(id));
                 }
                 Err(e) => {
@@ -129,7 +108,6 @@ impl Views {
             id,
             state,
             canvas: None,
-            probe: None,
         });
         id
     }
@@ -178,9 +156,7 @@ impl Views {
             match state {
                 Ok(state) => {
                     let id = self.push(state);
-                    let tile = self.tile_mut(id);
-                    tile.canvas = e.canvas;
-                    tile.probe = e.probe.clone();
+                    self.tile_mut(id).canvas = e.canvas;
                 }
                 Err(err) => warnings.push(format!("view {}: {err}; not shown", i + 1)),
             }
@@ -280,7 +256,7 @@ impl Views {
                     }),
                     selection: s.selection(),
                     canvas: tile.canvas,
-                    probe: tile.probe.clone(),
+                    probe: None,
                 }
             })
             .collect()
@@ -353,22 +329,12 @@ mod tests {
         ];
         let mut phase = saved[1].clone();
         phase.camera = None;
-        // A view showing a probe keeps it (ADR 0062).
-        phase.probe = Some("speed".into());
         assert!(v
             .open(&avail(&signals()), &[saved[0].clone(), phase.clone()])
             .is_empty());
         assert_eq!(v.tiles.len(), 2);
         assert_eq!(v.entries(), [saved[0].clone(), phase]);
         assert_eq!(v.selected, Some(v.tiles[0].id));
-        assert_eq!(v.tiles[1].probe.as_deref(), Some("speed"));
-        let shown = simsandbox_views::History::new(vec!["l.xyz[0]".into()]);
-        let recorded = Recorded {
-            all: &shown,
-            probes: Vec::new(),
-        };
-        // A probe that is gone shows every step.
-        assert!(std::ptr::eq(recorded.of(Some("speed")), &shown));
     }
 
     #[test]

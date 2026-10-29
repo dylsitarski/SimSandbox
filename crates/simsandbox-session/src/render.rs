@@ -4,8 +4,9 @@
 //! PNG.
 
 use crate::raster::{Canvas, Image, Textures};
-use crate::views::{grid, Recorded, Views};
+use crate::views::{grid, Views};
 use crate::Session;
+use simsandbox_views::Recorded;
 use simsandbox_views::ViewRegistry;
 
 /// How to render.
@@ -69,16 +70,18 @@ pub fn render(
         views.tiles = vec![keep];
     }
 
-    // Views showing a probe draw what it recorded (ADR 0062).
+    // Bindings from a probe draw what it recorded (ADR 0063).
     let shared: Vec<(&str, crate::session::SharedHistory)> = s
         .probe_names()
         .into_iter()
         .filter_map(|n| s.probe(n).map(|h| (n, h)))
         .collect();
     let guards: Vec<_> = shared.iter().map(|(n, h)| (*n, h.read())).collect();
+    let probes: Vec<(&str, &simsandbox_views::History)> =
+        guards.iter().map(|(n, g)| (*n, &**g)).collect();
     let recorded = Recorded {
         all: &h,
-        probes: guards.iter().map(|(n, g)| (*n, &**g)).collect(),
+        probes: &probes,
     };
     // One view alone, or as the saved arrangement places them.
     let layout = s.file.controls.layout.as_ref().filter(|_| o.view.is_none());
@@ -310,12 +313,8 @@ fn grid_in(
         ui.scope_builder(builder, |ui| {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
-                let title = match &tile.probe {
-                    Some(p) => format!("{} · probe {p}", t.label),
-                    None => t.label.to_string(),
-                };
-                ui.label(egui::RichText::new(title).strong());
-                tile.state.show(ui, t, history.of(tile.probe.as_deref()));
+                ui.label(egui::RichText::new(t.label).strong());
+                tile.state.show(ui, t, *history);
             });
         });
     }

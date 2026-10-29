@@ -561,10 +561,10 @@ impl Canvas {
                             format!("{} · {}", p.name, more.join(", "))
                         }
                     }
-                    // A probe names its file.
-                    NodeKind::Probe => match n.settings.get("to") {
-                        Some(to) => format!("{} · {to}", p.name),
-                        None => p.name.clone(),
+                    // A probe names its file beside its input.
+                    NodeKind::Probe => match (c, n.settings.get("to")) {
+                        (Causality::Input, Some(to)) => format!("{} · {to}", p.name),
+                        _ => p.name.clone(),
                     },
                     // A conversion shows its units (ADR 0045).
                     _ => match unit_setting(n, c).filter(|_| k == 0) {

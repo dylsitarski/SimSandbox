@@ -5,7 +5,7 @@
 //! parameters). A [`ViewState`] is one view on screen: a type, its slot
 //! bindings, its style values and the drawing state (e.g. a 3D camera).
 
-use crate::history::{Coordinate, History, SignalRef, TIME};
+use crate::history::{split_source, Coordinate, History, Recorded, SignalRef, TIME};
 use std::collections::BTreeMap;
 
 /// What a slot accepts.
@@ -77,27 +77,53 @@ pub struct StyleProperty {
 /// Slot name to signal names (`"t"`, `"a.x"`, `"lorenz.xyz[0]"`).
 pub type Bindings = BTreeMap<String, Vec<String>>;
 
+/// A bound signal in the recording it comes from (ADR 0063): its binding
+/// as written, the recording and the signal there.
+#[derive(Clone, Copy)]
+pub struct Bound<'a> {
+    pub name: &'a str,
+    pub history: &'a History,
+    pub signal: SignalRef,
+}
+
 /// What a view draws from in one frame.
 pub struct ViewInput<'a> {
+    /// The recording of the view's first bound signal (in slot order), or
+    /// the model's: what [`ViewInput::one`] and [`ViewInput::many`] read.
     pub history: &'a History,
     pub bind: &'a Bindings,
     /// The view feeds an `input.pointer` (ADR 0058): dragging sends the
     /// pointer instead of panning, through [`View::pointer`].
     pub sends_pointer: bool,
+    /// Bindings in `history`.
     slots: BTreeMap<&'a str, Vec<SignalRef>>,
+    /// Every binding, in its own recording.
+    any: BTreeMap<&'a str, Vec<Bound<'a>>>,
     style: &'a BTreeMap<String, f64>,
     view_type: &'a ViewType,
 }
 
-impl ViewInput<'_> {
-    /// The signal bound to a single slot.
+impl<'a> ViewInput<'a> {
+    /// The signal bound to a single slot, if it is in [`ViewInput::history`].
     pub fn one(&self, slot: &str) -> Option<SignalRef> {
         self.slots.get(slot).and_then(|v| v.first().copied())
     }
 
-    /// The signals bound to a slot.
+    /// The signals bound to a slot that are in [`ViewInput::history`]:
+    /// views that draw from one recording read these.
     pub fn many(&self, slot: &str) -> &[SignalRef] {
         self.slots.get(slot).map_or(&[], Vec::as_slice)
+    }
+
+    /// The signal bound to a single slot, from whichever recording.
+    pub fn one_any(&self, slot: &str) -> Option<Bound<'a>> {
+        self.any.get(slot).and_then(|v| v.first().copied())
+    }
+
+    /// The signals bound to a slot, each from its own recording: views that
+    /// pair signals at common times read these (ADR 0063).
+    pub fn many_any(&self, slot: &str) -> &[Bound<'a>] {
+        self.any.get(slot).map_or(&[], Vec::as_slice)
     }
 
     /// A style property's value, or its default where it is unset or does
@@ -182,8 +208,10 @@ pub struct Available<'a> {
 }
 
 impl Available<'_> {
-    /// Whether `name` can fill a slot of this kind.
+    /// Whether `name` can fill a slot of this kind; from a probe
+    /// (`probe:NAME/signal`), whether the model has the signal.
     pub fn accepts(&self, kind: SlotKind, name: &str) -> bool {
+        let name = split_source(name).1;
         match kind {
             SlotKind::Scalar => name == TIME || self.scalars.iter().any(|s| s == name),
             SlotKind::Grid => self.grids.iter().any(|s| s == name),
@@ -214,6 +242,7 @@ impl Available<'_> {
     /// `Some(axis)` for a coordinate; an error if it cannot be an axis of
     /// it.
     pub fn axis_of(&self, field: &str, name: &str) -> Result<Option<usize>, String> {
+        let (field, name) = (split_source(field).1, split_source(name).1);
         if name == TIME {
             return if self.lines.iter().any(|l| l == field) {
                 Ok(None)
@@ -408,19 +437,49 @@ impl ViewRegistry {
     }
 }
 
-/// What a view of type `t` draws from: its bindings resolved in `history`;
-/// bindings to signals that no longer exist are skipped.
+/// What a view of type `t` draws from: its bindings resolved in their
+/// recordings; bindings to signals that no longer exist (or a probe that is
+/// gone) are skipped.
 pub(crate) fn view_input<'a>(
     bind: &'a Bindings,
     style: &'a BTreeMap<String, f64>,
     t: &'a ViewType,
-    history: &'a History,
+    recorded: Recorded<'a>,
 ) -> ViewInput<'a> {
-    let slots = bind
+    let any: BTreeMap<&str, Vec<Bound>> = bind
         .iter()
         .map(|(slot, names)| {
-            let refs = names.iter().filter_map(|n| history.resolve(n)).collect();
-            (slot.as_str(), refs)
+            let bound = names
+                .iter()
+                .filter_map(|n| {
+                    let (history, signal) = recorded.resolve(n)?;
+                    Some(Bound {
+                        name: n.as_str(),
+                        history,
+                        signal,
+                    })
+                })
+                .collect();
+            (slot.as_str(), bound)
+        })
+        .collect();
+    // The recording of the first signal bound, in slot order.
+    let history = t
+        .slots
+        .iter()
+        .filter_map(|s| any.get(s.name))
+        .flatten()
+        .find(|b| b.signal != SignalRef::Time)
+        .map_or(recorded.all, |b| b.history);
+    let slots = any
+        .iter()
+        .map(|(slot, bound)| {
+            let refs = bound
+                .iter()
+                .filter(|b| b.signal == SignalRef::Time || std::ptr::eq(b.history, history))
+                .map(|b| b.signal)
+                .collect();
+            (*slot, refs)
         })
         .collect();
     ViewInput {
@@ -428,6 +487,7 @@ pub(crate) fn view_input<'a>(
         bind,
         sends_pointer: false,
         slots,
+        any,
         style,
         view_type: t,
     }
@@ -522,15 +582,21 @@ impl ViewState {
     }
 
     /// The view's selection controls, for the side panel.
-    pub fn edit_selection(&mut self, ui: &mut egui::Ui, t: &ViewType, history: &History) {
-        let input = view_input(&self.bind, &self.style, t, history);
+    pub fn edit_selection<'a>(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &ViewType,
+        recorded: impl Into<Recorded<'a>>,
+    ) {
+        let input = view_input(&self.bind, &self.style, t, recorded.into());
         self.view.edit_selection(ui, &input);
     }
 
-    /// Draw from `history`. Bindings to signals that no longer exist are
-    /// skipped.
-    pub fn show(&mut self, ui: &mut egui::Ui, t: &ViewType, history: &History) {
-        let mut input = view_input(&self.bind, &self.style, t, history);
+    /// Draw from what is recorded: the model's recording, and probes' for
+    /// bindings that name one. Bindings to signals that no longer exist
+    /// are skipped.
+    pub fn show<'a>(&mut self, ui: &mut egui::Ui, t: &ViewType, recorded: impl Into<Recorded<'a>>) {
+        let mut input = view_input(&self.bind, &self.style, t, recorded.into());
         input.sends_pointer = self.sends_pointer;
         self.view.show(ui, &input);
     }
@@ -726,6 +792,7 @@ mod tests {
                 bind: &bind,
                 sends_pointer: false,
                 slots: BTreeMap::new(),
+                any: BTreeMap::new(),
                 style: &style,
                 view_type: xy,
             }

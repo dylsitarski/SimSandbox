@@ -106,6 +106,120 @@ pub struct Coordinate {
     pub axis: usize,
 }
 
+/// A binding's source and signal (ADR 0063): `probe:speed/car.v` is probe
+/// `speed`'s recording of `car.v`; `car.v` alone is the model's, at every
+/// step.
+pub fn split_source(name: &str) -> (Option<&str>, &str) {
+    name.strip_prefix("probe:")
+        .and_then(|r| r.split_once('/'))
+        .map_or((None, name), |(p, s)| (Some(p), s))
+}
+
+/// The binding of probe `probe`'s recording of `signal`.
+pub fn from_probe(probe: &str, signal: &str) -> String {
+    format!("probe:{probe}/{signal}")
+}
+
+/// A binding as shown: `car.v`, or `car.v (speed)` from probe `speed`.
+pub fn label(name: &str) -> String {
+    match split_source(name) {
+        (Some(p), s) => format!("{s} ({p})"),
+        (None, s) => s.to_string(),
+    }
+}
+
+/// What views draw from (ADR 0063): the model's recording at every step,
+/// and each probe's, by name.
+#[derive(Clone, Copy)]
+pub struct Recorded<'a> {
+    pub all: &'a History,
+    pub probes: &'a [(&'a str, &'a History)],
+}
+
+impl<'a> From<&'a History> for Recorded<'a> {
+    fn from(all: &'a History) -> Self {
+        Self::single(all)
+    }
+}
+
+impl<'a> Recorded<'a> {
+    /// Only the model's recording.
+    pub fn single(all: &'a History) -> Self {
+        Self { all, probes: &[] }
+    }
+
+    /// The recording a binding reads and its signal there; `None` for a
+    /// probe that is gone or does not record it.
+    pub fn resolve(&self, name: &str) -> Option<(&'a History, SignalRef)> {
+        match split_source(name) {
+            (None, s) => self.all.resolve(s).map(|r| (self.all, r)),
+            (Some(p), s) => {
+                let (_, h) = self.probes.iter().find(|(n, _)| *n == p)?;
+                h.resolve(s).map(|r| (*h, r))
+            }
+        }
+    }
+}
+
+/// Signals from one or more recordings at the times all of them recorded
+/// (ADR 0063): never interpolated or held. `t` binds to those times.
+#[derive(Debug, Default, PartialEq)]
+pub struct Paired {
+    pub t: Vec<f64>,
+    pub columns: Vec<Vec<f64>>,
+}
+
+/// Pair `signals` at their common times.
+pub fn paired(signals: &[(&History, SignalRef)]) -> Paired {
+    let mut sources: Vec<&History> = Vec::new();
+    for (h, r) in signals {
+        if *r != SignalRef::Time && !sources.iter().any(|s| std::ptr::eq(*s, *h)) {
+            sources.push(h);
+        }
+    }
+    if sources.is_empty() {
+        sources.extend(signals.first().map(|(h, _)| *h));
+    }
+    // For each common time, its sample in every source.
+    let rows: Vec<Vec<usize>> = match sources.as_slice() {
+        [] => Vec::new(),
+        [h] => (0..h.len()).map(|k| vec![k]).collect(),
+        _ => {
+            let base = (0..sources.len())
+                .min_by_key(|&i| sources[i].len())
+                .unwrap_or(0);
+            sources[base]
+                .times()
+                .iter()
+                .enumerate()
+                .filter_map(|(k, &t)| {
+                    sources
+                        .iter()
+                        .enumerate()
+                        .map(|(i, h)| {
+                            if i == base {
+                                return Some(k);
+                            }
+                            let j = h.times().partition_point(|&x| x < t);
+                            (h.times().get(j) == Some(&t)).then_some(j)
+                        })
+                        .collect()
+                })
+                .collect()
+        }
+    };
+    let at = |h: &History| sources.iter().position(|s| std::ptr::eq(*s, h));
+    let t: Vec<f64> = rows.iter().map(|r| sources[0].times()[r[0]]).collect();
+    let columns = signals
+        .iter()
+        .map(|(h, s)| match (s, at(h)) {
+            (SignalRef::Time, _) | (_, None) => t.clone(),
+            (s, Some(i)) => rows.iter().map(|r| h.value(*s, r[i])).collect(),
+        })
+        .collect();
+    Paired { t, columns }
+}
+
 pub struct History {
     /// What the index is: `t`, or a swept parameter such as `spring.w`.
     index: String,

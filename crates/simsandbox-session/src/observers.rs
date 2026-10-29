@@ -2,7 +2,10 @@
 //! probes drawn as nodes beside the model's blocks, wired to the recorded
 //! signals they read. Filters are `filter:NAME` nodes, views `view:K`
 //! (their place in `controls.views`), probes `probe:NAME` (ADR 0062), each
-//! with one input, `record`, taking any number of signals. Data wires carry recorded data, not current values,
+//! with one input, `record`, taking any number of signals, and an output
+//! per signal it records (ADR 0063): a view wired from one draws the
+//! probe's recording (`probe:NAME/signal`), wired from the model, every
+//! step. Data wires carry recorded data, not current values,
 //! so a filter never feeds a model block: wiring one into a block's input
 //! is refused, and promoting the filter turns it into a formula block that
 //! can. Edits to filters and views change only `controls`; the app
@@ -108,6 +111,12 @@ fn flat_output(
 /// The recorded signal a canvas output carries: a filter's output by its
 /// name, a model output by its flat name.
 fn signal_of(file: &ModelFile, from: &str) -> Result<String, String> {
+    if let Some(rest) = from.strip_prefix("probe:") {
+        return rest
+            .split_once('.')
+            .map(|(probe, signal)| simsandbox_views::history::from_probe(probe, signal))
+            .ok_or_else(|| format!("'{from}' is not an output"));
+    }
     if let Some(rest) = from.strip_prefix("filter:") {
         return rest
             .split_once('.')
@@ -288,6 +297,29 @@ impl Diagram {
         for pr in &file.controls.probes {
             let name = probe_node(&pr.name);
             self.many.insert(format!("{name}.{RECORD}"));
+            // An output per signal it records, shaped like its source.
+            let i = self.nodes.len();
+            let outputs: Vec<Port> = pr
+                .record
+                .iter()
+                .map(|r| {
+                    let (unit, shape) = resolve(&sources, r).map_or_else(
+                        || (String::new(), Shape::Scalar),
+                        |(n, k)| {
+                            let p = &self.nodes[n].outputs[k];
+                            (p.unit.clone(), p.shape)
+                        },
+                    );
+                    Port {
+                        name: r.clone(),
+                        unit,
+                        shape,
+                    }
+                })
+                .collect();
+            for (k, r) in pr.record.iter().enumerate() {
+                sources.insert(simsandbox_views::history::from_probe(&pr.name, r), (i, k));
+            }
             self.nodes.push(Node {
                 name,
                 kind: NodeKind::Probe,
@@ -302,7 +334,7 @@ impl Diagram {
                     unit: String::new(),
                     shape: Shape::Scalar,
                 }],
-                outputs: Vec::new(),
+                outputs,
                 at: pr.canvas.unwrap_or_default(),
                 placed: pr.canvas.is_some(),
                 error: None,
@@ -376,8 +408,8 @@ impl Diagram {
         self.place_observers(model_nodes);
     }
 
-    /// Place data-layer nodes without a saved place: filters in a column to
-    /// the right of the model, views and then probes in the next.
+    /// Place data-layer nodes without a saved place, in columns to the right
+    /// of the model: filters, probes, views.
     fn place_observers(&mut self, first: usize) {
         let model = &self.nodes[..first];
         let right = model
@@ -391,18 +423,18 @@ impl Diagram {
             0.0
         };
         let y0 = if top.is_finite() { top } else { 0.0 };
-        let has_filters = self.nodes[first..]
-            .iter()
-            .any(|n| n.kind == NodeKind::Filter);
-        let x1 = if has_filters {
-            x0 + NODE_WIDTH + GAP_X
-        } else {
-            x0
-        };
-        for (kinds, x) in [
-            (&[NodeKind::Filter][..], x0),
-            (&[NodeKind::View, NodeKind::Probe][..], x1),
-        ] {
+        // Filters, then probes (which read the model and filters), then
+        // views (which read all of them), skipping empty columns.
+        let mut x = x0;
+        let mut columns = Vec::new();
+        for kind in [NodeKind::Filter, NodeKind::Probe, NodeKind::View] {
+            if self.nodes[first..].iter().any(|n| n.kind == kind) {
+                columns.push((kind, x));
+                x += NODE_WIDTH + GAP_X;
+            }
+        }
+        for (kind, x) in columns {
+            let kinds = [kind];
             let mut y = y0;
             for n in self.nodes[first..]
                 .iter_mut()
@@ -502,6 +534,14 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
             Ok(String::new())
         }
         Edit::Connect { from, to } => {
+            if from.starts_with("probe:") && !to.starts_with("view:") {
+                let probe = node_of(from).trim_start_matches("probe:");
+                return Err(if to.starts_with("filter:") || to.starts_with("probe:") {
+                    format!("probe {probe} feeds views so far; filters and probes fed from probes come next (ADR 0063)")
+                } else {
+                    format!("probe {probe} cannot feed the model yet: that is item 3 of ADR 0063")
+                });
+            }
             if is_observer(node_of(from)) && !is_observer(node_of(to)) {
                 let name = node_of(from).trim_start_matches("filter:");
                 return Err(feeds_model(name));
@@ -542,6 +582,9 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
             Ok(format!("{} now cuts {signal}", f.name))
         }
         Edit::Bind { from, to, .. } if to.starts_with("probe:") => {
+            if from.starts_with("probe:") {
+                return Err("a probe records the model and filters, not another probe".into());
+            }
             let signal = signal_of(file, from)?;
             record(file, node_of(to), signal)
         }
@@ -570,6 +613,8 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
         Edit::Delete { block } if block.starts_with("probe:") => {
             let k = probe_index(file, block)?;
             let p = file.controls.probes.remove(k);
+            let prefix = simsandbox_views::history::from_probe(&p.name, "");
+            unbind_views(file, &|s| s.starts_with(&prefix));
             Ok(format!("Deleted the probe {}", p.name))
         }
         Edit::Delete { block } => {
@@ -585,7 +630,10 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                         let kept: Vec<String> = b
                             .signals()
                             .into_iter()
-                            .filter(|s| !outputs.contains(s))
+                            .filter(|s| {
+                                let inner = simsandbox_views::history::split_source(s).1;
+                                !outputs.iter().any(|o| o == inner)
+                            })
                             .collect();
                         *b = Binding::from(kept);
                     }
@@ -605,6 +653,23 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                 return Err(format!("there is already a probe '{to}'"));
             }
             let old = std::mem::replace(&mut file.controls.probes[k].name, to.clone());
+            let (was, now) = (
+                simsandbox_views::history::from_probe(&old, ""),
+                simsandbox_views::history::from_probe(to, ""),
+            );
+            for v in &mut file.controls.views {
+                for b in v.bind.values_mut() {
+                    let renamed: Vec<String> = b
+                        .signals()
+                        .into_iter()
+                        .map(|s| match s.strip_prefix(&was) {
+                            Some(rest) => format!("{now}{rest}"),
+                            None => s,
+                        })
+                        .collect();
+                    *b = Binding::from(renamed);
+                }
+            }
             Ok(format!("Renamed the probe {old} to {to}"))
         }
         Edit::Rename { from, to } => {
@@ -704,6 +769,16 @@ fn unbind(file: &mut ModelFile, to: &str, signal: Option<&String>) -> Result<Str
             Some(s) => p.record.retain(|x| x != s),
             None => p.record.clear(),
         }
+        // What it no longer records, views no longer read from it.
+        let (prefix, kept) = (
+            simsandbox_views::history::from_probe(&p.name, ""),
+            p.record.clone(),
+        );
+        let p = file.controls.probes[k].clone();
+        unbind_views(file, &|s| {
+            s.strip_prefix(&prefix)
+                .is_some_and(|r| !kept.iter().any(|k| k == r))
+        });
         return Ok(match signal {
             Some(s) => format!("probe {} no longer records {s}", p.name),
             None => format!("probe {} records nothing", p.name),
@@ -739,13 +814,31 @@ fn unbind(file: &mut ModelFile, to: &str, signal: Option<&String>) -> Result<Str
     ))
 }
 
+/// Remove view bindings to the signals `gone` says.
+fn unbind_views(file: &mut ModelFile, gone: &dyn Fn(&str) -> bool) {
+    for v in &mut file.controls.views {
+        for b in v.bind.values_mut() {
+            let kept: Vec<String> = b.signals().into_iter().filter(|s| !gone(s)).collect();
+            *b = Binding::from(kept);
+        }
+        v.bind.retain(|_, b| !b.signals().is_empty());
+    }
+}
+
 /// Replace the names a filter's outputs go by (`old`, `old[k]`,
 /// `old.x`) in filters and views.
 fn rename_signal(file: &mut ModelFile, old: &str, new: &str) {
-    let map = |s: &str| -> Option<String> {
+    let plain = |s: &str| -> Option<String> {
         let rest = s.strip_prefix(old)?;
         (rest.is_empty() || rest.starts_with('[') || rest.starts_with('.'))
             .then(|| format!("{new}{rest}"))
+    };
+    // Also as recorded by a probe (`probe:NAME/old`).
+    let map = |s: &str| -> Option<String> {
+        match simsandbox_views::history::split_source(s) {
+            (Some(p), inner) => plain(inner).map(|n| simsandbox_views::history::from_probe(p, &n)),
+            (None, _) => plain(s),
+        }
     };
     for f in &mut file.controls.filters {
         for i in &mut f.inputs {
@@ -1303,5 +1396,59 @@ mod tests {
         )
         .unwrap();
         assert!(f.controls.probes.is_empty());
+    }
+
+    #[test]
+    fn probe_outputs_feed_views_with_the_probes_recording() {
+        let mut f = file("oscillators");
+        apply(&mut f, &registry(), &Edit::AddProbe { at: [600.0, 0.0] }).unwrap();
+        let bind = |from: &str, to: &str| Edit::Bind {
+            from: from.into(),
+            to: to.into(),
+            many: true,
+        };
+        apply(&mut f, &registry(), &bind("a.x", "probe:probe1.record")).unwrap();
+        let d = observed(&f);
+        let p = d.node("probe:probe1").unwrap();
+        assert_eq!(d.nodes[p].outputs.len(), 1);
+        assert_eq!(d.nodes[p].outputs[0].unit, "m");
+        // Into a view: the view reads the probe's recording.
+        apply(&mut f, &registry(), &bind("probe:probe1.a.x", "view:0.y")).unwrap();
+        assert!(f.controls.views[0].bind["y"]
+            .signals()
+            .contains(&"probe:probe1/a.x".to_string()));
+        let d = observed(&f);
+        let (p, v) = (d.node("probe:probe1").unwrap(), d.node("view:0").unwrap());
+        assert!(d.wires.iter().any(|w| w.from.0 == p && w.to.0 == v));
+        // Not into the model, filters or probes yet.
+        for to in ["b.neighbor_x", "filter:energy.a.x"] {
+            let e = Edit::Connect {
+                from: "probe:probe1.a.x".into(),
+                to: to.into(),
+            };
+            assert!(apply(&mut f, &registry(), &e).is_err(), "{to}");
+        }
+        // Renaming the probe follows into the view; deleting it unbinds.
+        let rename = Edit::Rename {
+            from: "probe:probe1".into(),
+            to: "pos".into(),
+        };
+        apply(&mut f, &registry(), &rename).unwrap();
+        assert!(f.controls.views[0].bind["y"]
+            .signals()
+            .contains(&"probe:pos/a.x".to_string()));
+        apply(
+            &mut f,
+            &registry(),
+            &Edit::Delete {
+                block: "probe:pos".into(),
+            },
+        )
+        .unwrap();
+        assert!(!f.controls.views[0]
+            .bind
+            .values()
+            .flat_map(Binding::signals)
+            .any(|s| s.starts_with("probe:")));
     }
 }

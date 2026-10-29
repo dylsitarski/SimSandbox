@@ -379,6 +379,27 @@ fn bad_probes_are_dropped_with_warnings() {
 }
 
 #[test]
+fn a_view_showing_a_probe_reads_its_signals_from_it() {
+    // As written on 2026-10-29 (ADR 0062), converted on reading (ADR 0063).
+    let mut v: serde_json::Value = serde_json::from_str(LORENZ).unwrap();
+    v["controls"]["views"][0]["probe"] = "p".into();
+    let loaded = load(&v.to_string(), &registry()).unwrap();
+    let view = &loaded.file.controls.views[0];
+    let signals: Vec<String> = view.bind.values().flat_map(Binding::signals).collect();
+    assert!(
+        signals
+            .iter()
+            .all(|s| s == "t" || s.starts_with("probe:p/")),
+        "{signals:?}"
+    );
+    assert!(loaded
+        .conversions
+        .iter()
+        .any(|c| c.contains("controls.views[0]")));
+    assert!(!loaded.file.to_json().contains("\"probe\":"));
+}
+
+#[test]
 fn sliders_written_before_pins_pin_and_open_nodes_are_kept() {
     // LORENZ gives lorenz.rho a slider and no pin.
     let (mut file, _) = ModelFile::from_json(LORENZ).unwrap();

@@ -1304,17 +1304,18 @@ impl SimApp {
         // Read while drawing; the worker keeps stepping and appends later.
         let history = live.history();
         let available = m.available(&history);
-        // Views showing a probe draw what it recorded (ADR 0062).
+        // Bindings from a probe draw what it recorded (ADR 0063).
         let probe_guards: Vec<_> = m
             .probe_histories
             .iter()
             .map(|(n, h)| (n.as_str(), h.read()))
             .collect();
-        let recorded = simsandbox_session::views::Recorded {
+        let probes: Vec<(&str, &simsandbox_views::History)> =
+            probe_guards.iter().map(|(n, g)| (*n, &**g)).collect();
+        let recorded = simsandbox_views::Recorded {
             all: &history,
-            probes: probe_guards.iter().map(|(n, g)| (*n, &**g)).collect(),
+            probes: &probes,
         };
-        let probe_names: Vec<&str> = m.probes.iter().map(|p| p.name.as_str()).collect();
         let views = &mut self.views;
         let (text, error) = (&mut self.param_edits, &mut self.error);
         let area = ui.available_rect_before_wrap();
@@ -1371,7 +1372,6 @@ impl SimApp {
                     .stroke(stroke)
                     .show(ui, |ui| {
                         ui.set_min_size(ui.available_size());
-                        let shown_history = recorded.of(tile.probe.as_deref());
                         ui.horizontal(|ui| {
                             if ui
                                 .selectable_label(selected, egui::RichText::new(t.label).strong())
@@ -1379,15 +1379,6 @@ impl SimApp {
                                 .clicked()
                             {
                                 actions.push(DockAction::Select(tile.id));
-                            }
-                            if let Some(p) = &tile.probe {
-                                let gone = !probe_names.contains(&p.as_str());
-                                let label = if gone {
-                                    format!("probe {p} (gone: every step)")
-                                } else {
-                                    format!("probe {p}")
-                                };
-                                ui.weak(label);
                             }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -1416,35 +1407,8 @@ impl SimApp {
                                         actions.push(action);
                                     }
                                     let id = tile.id;
-                                    if !probe_names.is_empty() || tile.probe.is_some() {
-                                        ui.menu_button("from", |ui| {
-                                            if ui
-                                                .selectable_label(tile.probe.is_none(), "every step")
-                                                .on_hover_text("Everything recorded, at every step")
-                                                .clicked()
-                                            {
-                                                tile.probe = None;
-                                                ui.close();
-                                            }
-                                            for p in &probe_names {
-                                                if ui
-                                                    .selectable_label(
-                                                        tile.probe.as_deref() == Some(*p),
-                                                        format!("probe {p}"),
-                                                    )
-                                                    .on_hover_text("What this probe recorded, when it recorded it")
-                                                    .clicked()
-                                                {
-                                                    tile.probe = Some(p.to_string());
-                                                    ui.close();
-                                                }
-                                            }
-                                        })
-                                        .response
-                                        .on_hover_text("Show every step, or what a probe recorded (ADR 0062)");
-                                    }
                                     ui.menu_button("style", |ui| {
-                                        style_editor(ui, t, &mut tile.state, shown_history, id, text, error);
+                                        style_editor(ui, t, &mut tile.state, recorded, id, text, error);
                                     })
                                     .response
                                     .on_hover_text("How this view draws: trails, scales and what it picks");
@@ -1467,7 +1431,7 @@ impl SimApp {
                         slot_editors(ui, t, &mut tile.state, &available, &history);
                         let sender = senders.get(&tile.id);
                         tile.state.sends_pointer = sender.is_some();
-                        tile.state.show(ui, t, shown_history);
+                        tile.state.show(ui, t, recorded);
                         if let Some(signal) = tile.state.picked() {
                             actions.push(DockAction::Inspect(signal));
                         }
@@ -3024,17 +2988,17 @@ fn style_editor(
     ui: &mut egui::Ui,
     t: &ViewType,
     state: &mut ViewState,
-    history: &History,
+    recorded: simsandbox_views::Recorded<'_>,
     tile: u64,
     text: &mut HashMap<String, String>,
     error: &mut Option<String>,
 ) {
     let context = simsandbox_views::Context {
-        history,
+        history: recorded.all,
         bind: &state.bind,
     };
     let shown: Vec<_> = t.style.iter().filter(|p| (p.applies)(&context)).collect();
-    state.edit_selection(ui, t, history);
+    state.edit_selection(ui, t, recorded);
     if shown.is_empty() {
         ui.weak("Nothing to set for this view");
         return;

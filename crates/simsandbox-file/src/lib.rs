@@ -867,9 +867,10 @@ pub struct ViewEntry {
     /// `at`, which cut filters use for their cuts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<[f64; 2]>,
-    /// The probe it shows (ADR 0062): what that probe recorded, when it
-    /// recorded it. Every step (the implicit probe) if absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The probe it showed, as written on 2026-10-29 (ADR 0062). Still
+    /// read; converted into bindings from the probe (ADR 0063) and never
+    /// written.
+    #[serde(default, skip_serializing)]
     pub probe: Option<String>,
 }
 
@@ -909,6 +910,23 @@ impl ViewEntry {
                 }
             }
             _ => {}
+        }
+        // ADR 0063: a view showing a probe reads each signal from it.
+        if let Some(probe) = self.probe.take() {
+            for b in self.bind.values_mut() {
+                let from: Vec<String> = b
+                    .signals()
+                    .into_iter()
+                    .map(|s| {
+                        if s == "t" || s.starts_with("probe:") {
+                            s
+                        } else {
+                            format!("probe:{probe}/{s}")
+                        }
+                    })
+                    .collect();
+                *b = Binding::from(from);
+            }
         }
         *self != before
     }
@@ -2041,11 +2059,16 @@ impl ModelFile {
         for (i, mut v) in std::mem::take(&mut c.views).into_iter().enumerate() {
             let before = v.type_name.clone();
             if v.upgrade() {
-                conversions.push(format!("controls.views[{i}]: the older {before} became today's form (ADR 0018, ADR 0024)"));
+                conversions.push(format!("controls.views[{i}]: the older {before} became today's form (ADR 0018, ADR 0024, ADR 0063)"));
             }
             let scalar =
                 |s: &str| derived.iter().any(|d| d == s) || output_element_exists(s, model, ids);
             let unknown = v.bind.values().flat_map(Binding::signals).find(|s| {
+                // From a probe (ADR 0063): the model's signal it records.
+                let s = s
+                    .strip_prefix("probe:")
+                    .and_then(|r| r.split_once('/'))
+                    .map_or(s.as_str(), |(_, s)| s);
                 let grid = grid2 && s.strip_prefix("grid.").is_some_and(scalar);
                 s != "t" && !scalar(s) && !grid
             });
