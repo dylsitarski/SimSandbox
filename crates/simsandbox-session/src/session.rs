@@ -180,8 +180,9 @@ const SNAPSHOT_EVERY: usize = 10;
 /// numbers in all, every other one is dropped: the whole run stays
 /// reachable, at coarser resolution.
 const MAX_SNAPSHOTS: usize = 10_000;
-/// The memory snapshots may take, in numbers: 256 MB. A 128 × 128 grid
-/// model takes about 1 MB a snapshot, so it keeps about 250.
+/// The memory snapshots may take, in numbers: 256 MB. Gray–Scott (128 ×
+/// 128, outputs copying its states left out, ADR 0063) takes about
+/// 0.65 MB a snapshot, so it keeps about 390.
 const SNAPSHOT_VALUES: usize = 32_000_000;
 
 /// Where a recorded signal comes from: an element of an output port.
@@ -4113,5 +4114,49 @@ mod probe_tests {
             before.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
             again.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn snapshots_leave_out_outputs_copying_state_and_restore_them_exactly() {
+        let all_outputs = |s: &Session| -> Vec<u64> {
+            let mut v = Vec::new();
+            for e in &s.flat.blocks {
+                let id = s.ids[&e.name];
+                let spec = s.sim.model().block(id).unwrap().spec().clone();
+                for p in spec.outputs() {
+                    v.extend(
+                        s.sim
+                            .output(id, &p.name)
+                            .unwrap_or(&[])
+                            .iter()
+                            .map(|x| x.to_bits()),
+                    );
+                }
+            }
+            v
+        };
+        for e in EXAMPLES {
+            let mut s = Session::load(e.name, e.text, &registry()).unwrap();
+            if s.sweep().is_some() {
+                continue;
+            }
+            for _ in 0..20 {
+                s.step().unwrap();
+            }
+            let before = all_outputs(&s);
+            let snap = s.sim.snapshot();
+            for _ in 0..7 {
+                s.step().unwrap();
+            }
+            s.sim.restore(&snap);
+            assert_eq!(all_outputs(&s), before, "{}", e.name);
+        }
+        // Gray–Scott: the states u and v (two grids) are held once; the
+        // computed reaction and the axes x and y stay: 5 grids, not 7.
+        let gs = EXAMPLES.iter().find(|e| e.name.contains("Gray")).unwrap();
+        let s = Session::load(gs.name, gs.text, &registry()).unwrap();
+        let snap = s.sim.snapshot();
+        let cells = 128 * 128;
+        assert!(snap.values() < 5 * cells + 100, "{} values", snap.values());
     }
 }

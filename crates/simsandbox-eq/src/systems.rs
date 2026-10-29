@@ -53,7 +53,7 @@ impl Lorenz {
             spec: BlockSpec {
                 name: name.into(),
                 domain: Domain::Equations,
-                ports: vec![PortSpec::output("xyz", one, Shape::Vector(3))],
+                ports: vec![PortSpec::output("xyz", one, Shape::Vector(3)).from_state(0)],
                 params: vec![
                     param("sigma", one, 10.0, 0.0, 50.0, "Prandtl number"),
                     param("rho", one, 28.0, 0.0, 100.0, "Rayleigh number"),
@@ -112,8 +112,9 @@ impl CoupledOscillator {
                 domain: Domain::Equations,
                 ports: vec![
                     PortSpec::input("neighbor_x", Unit::METER, Shape::Scalar),
-                    PortSpec::output("x", Unit::METER, Shape::Scalar),
-                    PortSpec::output("v", Unit::parse("m/s").expect("valid unit"), Shape::Scalar),
+                    PortSpec::output("x", Unit::METER, Shape::Scalar).from_state(0),
+                    PortSpec::output("v", Unit::parse("m/s").expect("valid unit"), Shape::Scalar)
+                        .from_state(1),
                 ],
                 params: vec![
                     param(
@@ -193,8 +194,8 @@ impl Pendulum {
                 name: name.into(),
                 domain: Domain::Equations,
                 ports: vec![
-                    PortSpec::output("angle", rad, Shape::Scalar),
-                    PortSpec::output("omega", per_s, Shape::Scalar),
+                    PortSpec::output("angle", rad, Shape::Scalar).from_state(0),
+                    PortSpec::output("omega", per_s, Shape::Scalar).from_state(1),
                     PortSpec::output("x", Unit::METER, Shape::Scalar),
                     PortSpec::output("y", Unit::METER, Shape::Scalar),
                 ],

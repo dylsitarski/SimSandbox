@@ -33,7 +33,7 @@ impl HeatRod {
                 name: name.into(),
                 domain: Domain::Equations,
                 ports: vec![
-                    PortSpec::output("temperature", k, Shape::Grid { nx: n, ny: 1 }),
+                    PortSpec::output("temperature", k, Shape::Grid { nx: n, ny: 1 }).from_state(0),
                     PortSpec::output("position", Unit::METER, Shape::Grid { nx: n, ny: 1 })
                         .coordinate_of("temperature", 0),
                 ],
@@ -162,7 +162,7 @@ impl Grass {
                 domain: Domain::Equations,
                 ports: vec![
                     PortSpec::input("grazing", per_second, grid),
-                    PortSpec::output("grass", density, grid),
+                    PortSpec::output("grass", density, grid).from_state(0),
                     PortSpec::output("x", Unit::METER, grid).coordinate_of("grass", 0),
                     PortSpec::output("y", Unit::METER, grid).coordinate_of("grass", 1),
                     PortSpec::output("total", Unit::KILOGRAM, Shape::Scalar),

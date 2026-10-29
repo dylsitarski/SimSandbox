@@ -14,14 +14,17 @@ use crate::{Result, SimError};
 use std::cell::RefCell;
 
 /// A saved point in a run, used for rewind and branching: time, every
-/// Block's state, tables, outputs and parameter values.
+/// Block's state, tables, outputs and parameter values. Outputs that are
+/// copies of a Block's state are left out and restored from it (ADR 0063).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub t: f64,
     step: u64,
     states: Vec<Vec<f64>>,
     tables: Vec<Vec<Table>>,
+    /// Per Block: every output, or (`compact`) those not copying the state.
     outputs: Vec<Vec<f64>>,
+    compact: Vec<bool>,
     population_outputs: Vec<Vec<Vec<f64>>>,
     params: Vec<Vec<f64>>,
 }
@@ -187,6 +190,9 @@ pub struct Simulator {
     /// Blocks whose parameters changed since the last step: their outputs
     /// are recomputed before the next one, so the change acts in it.
     changed: Vec<usize>,
+    /// Per Block: outputs declared copies of its state, as (output offset,
+    /// state offset, length) (ADR 0063).
+    copies: Vec<Vec<(usize, usize, usize)>>,
 }
 
 impl Snapshot {
@@ -298,7 +304,25 @@ impl Simulator {
                 )));
             }
         }
+        // Outputs copying a state (ADR 0063), where they fit.
+        let copies = model
+            .blocks
+            .iter()
+            .zip(&states)
+            .map(|(b, x)| {
+                let spec = b.spec();
+                spec.outputs()
+                    .filter(|p| !p.shape.is_variable())
+                    .filter_map(|p| {
+                        let s = p.state?;
+                        let (off, len) = port_offset(&spec.ports, Causality::Output, &p.name)?;
+                        (s + len <= x.len()).then_some((off, s, len))
+                    })
+                    .collect()
+            })
+            .collect();
         let mut sim = Self {
+            copies,
             model,
             routes,
             outputs_plan,
@@ -610,12 +634,40 @@ impl Simulator {
     }
 
     pub fn snapshot(&self) -> Snapshot {
+        // Outputs copying the state, checked bit for bit, are left out.
+        let mut outputs = Vec::with_capacity(self.outputs.len());
+        let mut compact = Vec::with_capacity(self.outputs.len());
+        for ((y, x), copies) in self.outputs.iter().zip(&self.states).zip(&self.copies) {
+            let copied = !copies.is_empty()
+                && copies.iter().all(|&(o, s, n)| {
+                    y[o..o + n]
+                        .iter()
+                        .zip(&x[s..s + n])
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                });
+            if copied {
+                let mut kept = Vec::with_capacity(y.len());
+                let mut at = 0;
+                let mut ranges = copies.clone();
+                ranges.sort_unstable();
+                for (o, _, n) in ranges {
+                    kept.extend_from_slice(&y[at..o]);
+                    at = o + n;
+                }
+                kept.extend_from_slice(&y[at..]);
+                outputs.push(kept);
+            } else {
+                outputs.push(y.clone());
+            }
+            compact.push(copied);
+        }
         Snapshot {
             t: self.t,
             step: self.step,
             states: self.states.clone(),
             tables: self.tables.clone(),
-            outputs: self.outputs.clone(),
+            outputs,
+            compact,
             population_outputs: self.population_outputs.clone(),
             params: self.model.params.clone(),
         }
@@ -629,7 +681,24 @@ impl Simulator {
         self.step = snap.step;
         self.states.clone_from(&snap.states);
         self.tables.clone_from(&snap.tables);
-        self.outputs.clone_from(&snap.outputs);
+        for (b, y) in self.outputs.iter_mut().enumerate() {
+            if !snap.compact[b] {
+                y.clone_from(&snap.outputs[b]);
+                continue;
+            }
+            // The kept outputs between the copies, then the copies.
+            let mut ranges = self.copies[b].clone();
+            ranges.sort_unstable();
+            let (kept, x) = (&snap.outputs[b], &snap.states[b]);
+            let (mut at, mut from) = (0, 0);
+            for (o, s, n) in ranges {
+                y[at..o].copy_from_slice(&kept[from..from + o - at]);
+                from += o - at;
+                y[o..o + n].copy_from_slice(&x[s..s + n]);
+                at = o + n;
+            }
+            y[at..].copy_from_slice(&kept[from..]);
+        }
         self.population_outputs.clone_from(&snap.population_outputs);
         self.model.params.clone_from(&snap.params);
         self.exchange();

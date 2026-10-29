@@ -25,10 +25,11 @@ _Last updated: 2026-10-29_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 342 tests in the workspace plus 18 Python tests, including verification against analytic solutions and convergence order.
+- 344 tests in the workspace plus 18 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-10-29: ADR 0063 step 2: rewind snapshots leave out outputs that copy a block's state (declared with `PortSpec::from_state`, checked bit for bit at every snapshot) and restore them from it; Gray–Scott's snapshots 29% smaller (7 to 5 grids).
 - 2026-10-29: filters read several probes (owner's request, ADR 0063): each input has a source (`from`); a filter runs where its sources' times pair, or with `when: any` whenever one records, with the others' latest values; filters with inputs from probes have their own recording, bound by output name, and replay exactly after a rewind.
 - 2026-10-29: ADR 0063 step 1: probe nodes have outputs, wired into views (`probe:NAME/signal`) and filters (which then run on the probe's samples); one plot can mix the model's every step and probes at other rates, paired only at common times; the model's every-step recording keeps only what views and filters read from it; probes record any output (`controls.plots` no longer limits); the tile's "from" menu is gone.
 - 2026-10-29: probes, step 2 complete: probe nodes on the Diagram's data layer ("Add probe", wire signals into `record`, double-click for when, how long and the file), applied without a restart and undoable; Runs › "Save probe data" writes their files beside the model; views can show a probe's recording ("from" menu, `probe` in the view entry), also in `simsandbox render`.
@@ -105,14 +106,14 @@ _Last updated: 2026-10-29_
 
 ## In progress
 
-- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md), [ADR 0063](decisions/0063-probes-on-wires.md)): ADR 0062 steps 1 and 2 and ADR 0063 step 1 built 2026-10-29; checked by tests, headless renders and screenshots under Xvfb, not yet by the owner in the window (probe nodes and outputs, the settings window, Save probe data, filters on probes). Next: ADR 0063 step 2.
+- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md), [ADR 0063](decisions/0063-probes-on-wires.md)): ADR 0062 steps 1 and 2 and ADR 0063 step 1 built 2026-10-29; checked by tests, headless renders and screenshots under Xvfb, not yet by the owner in the window (probe nodes and outputs, the settings window, Save probe data, filters on probes). Next: ADR 0063 step 3 (probes into blocks of the same model).
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Probes on wires** ([ADR 0063](decisions/0063-probes-on-wires.md)), in order (step 1 done 2026-10-29): (2) snapshots without outputs that copy states; (3) probes into blocks of the same model; (4) a block reading probe files; (5) several models in one session linked by probes (its own ADR first).
+1. **Probes on wires** ([ADR 0063](decisions/0063-probes-on-wires.md)), in order (steps 1 and 2 done 2026-10-29): (3) probes into blocks of the same model; (4) a block reading probe files; (5) several models in one session linked by probes (its own ADR first).
 2. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 3. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 

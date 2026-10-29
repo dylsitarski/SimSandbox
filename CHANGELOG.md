@@ -98,6 +98,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Rewind keeps more of a run in the same memory: snapshots no longer store outputs that are copies of a block's state (typed equations' states, among others), and restore them from it exactly. Gray–Scott's snapshots are 29% smaller.
 - Long runs of large grid models no longer use unbounded memory: recorded grids keep about 256 MB (thinning sooner for big grids) and rewind points about 256 MB, both thinned when full, so rewind becomes coarser rather than memory running out.
 - Unit conversions and input blocks are labelled Quantitative, not Verified (ADR 0061): Verified is earned by a run of a model through a convergence check (planned), never declared by a method.
 - Typed equations run faster: they are compiled to an instruction list when the model loads (ADR 0060), taking about 40% less time per step (the Lorenz system: 1.8× the built-in block's time, from 3.1×).

@@ -154,6 +154,10 @@ pub struct PortSpec {
     /// instant (direct feedthrough, ADR 0040). Empty if it depends on state
     /// and parameters only.
     pub feedthrough: Vec<String>,
+    /// For an output: its values are the Block's state from this offset,
+    /// exactly, so rewind snapshots need not keep them (ADR 0063). The
+    /// kernel checks it at every snapshot and keeps them if not.
+    pub state: Option<usize>,
 }
 
 /// What an output is a coordinate of: another output of the same Block, of
@@ -173,6 +177,7 @@ impl PortSpec {
             shape,
             coordinate: Vec::new(),
             feedthrough: Vec::new(),
+            state: None,
         }
     }
 
@@ -193,6 +198,12 @@ impl PortSpec {
         self
     }
 
+    /// An output whose values are the Block's state from `offset`.
+    pub fn from_state(mut self, offset: usize) -> Self {
+        self.state = Some(offset);
+        self
+    }
+
     pub fn output(name: &str, unit: Unit, shape: Shape) -> Self {
         Self {
             name: name.into(),
@@ -201,6 +212,7 @@ impl PortSpec {
             shape,
             coordinate: Vec::new(),
             feedthrough: Vec::new(),
+            state: None,
         }
     }
 }

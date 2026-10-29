@@ -134,6 +134,7 @@ impl EquationGroup {
             for p in s.outputs() {
                 let mut q = p.clone();
                 q.name = format!("{}.{}", s.name, p.name);
+                q.state = p.state.map(|o| o + x_off);
                 for c in &mut q.coordinate {
                     c.port = format!("{}.{}", s.name, c.port);
                 }

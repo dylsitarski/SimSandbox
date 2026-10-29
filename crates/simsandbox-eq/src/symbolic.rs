@@ -1602,14 +1602,16 @@ impl EquationSet {
                 Shape::Scalar
             }
         };
+        // A state's output is the state itself (ADR 0063), in state order.
+        let mut state_at = 0;
         let mut ports: Vec<PortSpec> = inputs
             .iter()
             .map(|n| PortSpec::input(n, unit_of(n), shape(n)))
-            .chain(
-                states
-                    .iter()
-                    .map(|n| PortSpec::output(n, unit_of(n), shape(n))),
-            )
+            .chain(states.iter().map(|n| {
+                let p = PortSpec::output(n, unit_of(n), shape(n)).from_state(state_at);
+                state_at += shape(n).len();
+                p
+            }))
             .chain(defined.iter().zip(&uses).map(|(n, u)| {
                 let u: Vec<&str> = u.iter().map(String::as_str).collect();
                 PortSpec::output(n, unit_of(n), shape(n)).depends_on(&u)
