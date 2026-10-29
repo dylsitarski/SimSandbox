@@ -418,6 +418,22 @@ fn filter_outputs_are_bound_by_name_wherever_they_run() {
 }
 
 #[test]
+fn controls_with_only_newer_sections_are_written() {
+    // A recorder, a probe, open nodes or a layout alone are not "empty".
+    for controls in [
+        serde_json::json!({"recorder": {}}),
+        serde_json::json!({"probes": [{"name": "p", "record": []}]}),
+        serde_json::json!({"open": ["lorenz"]}),
+    ] {
+        let mut v: serde_json::Value = serde_json::from_str(LORENZ).unwrap();
+        v["controls"] = controls.clone();
+        let (f, _) = ModelFile::from_json(&v.to_string()).unwrap();
+        let again: serde_json::Value = serde_json::from_str(&f.to_json()).unwrap();
+        assert_eq!(again["controls"], controls);
+    }
+}
+
+#[test]
 fn sliders_written_before_pins_pin_and_open_nodes_are_kept() {
     // LORENZ gives lorenz.rho a slider and no pin.
     let (mut file, _) = ModelFile::from_json(LORENZ).unwrap();

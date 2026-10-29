@@ -4238,4 +4238,82 @@ mod probe_tests {
         assert_eq!(s.history_range(), (s.time(), s.time()));
         assert!(!s.save_json(1.0, None).unwrap().contains("\"recorder\""));
     }
+
+    /// Cruise control whose controller reads the speed through probe
+    /// `sampled`, every `every` seconds (ADR 0063 step 3).
+    fn sampled_cruise(every: f64) -> String {
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Cruise control"))
+            .unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(e.text).unwrap();
+        v["controls"]["probes"] = serde_json::json!([
+            {"name": "sampled", "record": ["car.v"], "every": {"seconds": every}}
+        ]);
+        v["connections"][0]["from"] = "probe:sampled.car.v".into();
+        v.to_string()
+    }
+
+    #[test]
+    fn a_probe_feeding_the_model_holds_its_samples_with_no_delay() {
+        let text = sampled_cruise(1.0);
+        let r = crate::run::run(&text, &registry(), Some(5.0), None).unwrap();
+        let series = |name: &str| -> &Vec<f64> {
+            &r.outputs.iter().find(|o| o.name == name).unwrap().values
+        };
+        let (v, e) = (series("car.v"), series("cruise.e"));
+        // 0.05 s steps: samples at steps 0, 20, 40, ... The error uses the
+        // speed of that very step (no delay) and holds it until the next.
+        for (k, e) in e.iter().enumerate() {
+            let sampled = 20 * (k / 20);
+            assert_eq!(e.to_bits(), (25.0 - v[sampled]).to_bits(), "step {k}");
+        }
+        // Sampled every step, it is a direct wire between blocks solved
+        // apart (a hold never joins a fused group), bit for bit.
+        let direct_text = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Cruise control"))
+            .unwrap()
+            .text;
+        let apart = |text: &str| {
+            let mut v: serde_json::Value = serde_json::from_str(text).unwrap();
+            v["fusion"] = "off".into();
+            v.to_string()
+        };
+        let every_step = apart(&sampled_cruise(1e-9));
+        let a = crate::run::run(&apart(direct_text), &registry(), Some(5.0), None).unwrap();
+        let b = crate::run::run(&every_step, &registry(), Some(5.0), None).unwrap();
+        let bits = |r: &crate::run::Results| -> Vec<u64> {
+            r.outputs
+                .iter()
+                .filter(|o| !o.name.starts_with("probe:"))
+                .flat_map(|o| o.values.iter().map(|x| x.to_bits()))
+                .collect()
+        };
+        assert_eq!(bits(&a), bits(&b));
+    }
+
+    #[test]
+    fn a_held_probe_rewinds_and_replays_exactly() {
+        let mut s = Session::load("c", &sampled_cruise(0.7), &registry()).unwrap();
+        s.set_recorder(Some(Default::default()));
+        s.set_view_reads(vec!["cruise.e".into()]);
+        s.run_until(5.0).unwrap();
+        s.flush(true);
+        let e = |s: &Session| {
+            let h = s.signals();
+            h.values(h.resolve("cruise.e").unwrap())
+        };
+        let first = e(&s);
+        s.rewind_to(2.2);
+        s.run_until(5.0).unwrap();
+        s.flush(true);
+        let again = e(&s);
+        assert_eq!(
+            first.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            again.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+        );
+        // The hold is not a recorded output of the model.
+        assert!(!s.bindable_scalars().iter().any(|n| n.starts_with("probe:")));
+    }
 }

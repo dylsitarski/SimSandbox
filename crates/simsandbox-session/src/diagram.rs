@@ -302,9 +302,11 @@ impl Diagram {
             };
             Some((n, ports.iter().position(|q| q.name == p)?))
         };
+        // Probes feeding blocks are drawn with the data layer (ADR 0063).
         let mut links: Vec<(String, String)> = l
             .connections
             .iter()
+            .filter(|c| !c.from.starts_with("probe:"))
             .map(|c| (c.from.clone(), c.to.clone()))
             .collect();
         for p in l.inputs {

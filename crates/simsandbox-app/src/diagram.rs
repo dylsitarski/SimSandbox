@@ -591,6 +591,16 @@ impl DiagramTab {
             });
         }
         if !rest.is_empty() {
+            // A data edit that reaches the model (a probe feeding a block,
+            // ADR 0063) rebuilds it like any model edit.
+            let mut trial = base.clone();
+            for e in &rest {
+                let _ = apply_in(&mut trial, &scope, registry, e);
+            }
+            if change(&base, &trial) == Change::Model {
+                self.rebuild(base, rest, registry, &mut out);
+                return out;
+            }
             let mut file = base;
             let mut notes = Vec::new();
             for e in &rest {

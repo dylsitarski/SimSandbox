@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- A probe can feed a block of its own model (ADR 0063): drop a probe's output on a block's input and the block reads that signal as the probe samples it, held between samples, with no delay, like a sensor read by a digital controller. In the file: `{"from": "probe:sensor.car.v", "to": "cruise.v"}`. Such a probe is part of the model: changing when it records rebuilds and restarts the run, and run files notice it.
 - Probes on the diagram (ADR 0062): "Add probe" in the Diagram's menu adds a probe node; drop outputs or filter outputs on its `record` input to record them, delete a wire to stop. Double-click it to set when it records, how long it keeps samples and its file. Changes apply without restarting the run, and undo works as for filters and views. Runs › "Save probe data" writes the probes' files beside the model.
 - Probes have outputs (ADR 0063): wire one into a view to show what the probe recorded, when it recorded it, or into a filter's input to compute on the probe's samples (`probe:NAME/signal` in the file; a filter gets `"from": {"car.v": "NAME"}`). A filter may read several probes: by default it runs where their times pair; "Run when any input records" (`"when": "any"`) runs it whenever one of them records, with the others' latest values. A filter's outputs are bound by name wherever it runs. One plot can show curves from the model and from probes at different rates; signals from different sources are paired only at times both recorded.
 - The model's every-step recording now keeps only what views and filters read from the model, so unwatched outputs, large grids especially, take no memory. A signal wired to a view during a run starts from then; restart to see it from t = 0. Probes can record any output, not only those in `controls.plots`, which no longer limits anything.
@@ -87,6 +88,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- A model file whose controls held only a layout, open nodes, input bindings, probes or a recorder lost them when saved.
 - A model no longer shows "unsaved" right after opening: the window fitting its panes to their contents is not counted as a change, and is not saved.
 - Turning off a slider in a model saved before pins (such as the platoon) also unpinned the value. Such files now get their pins when opened, reported as a conversion.
 - A popped-out tab froze the main window while the main window had focus (Linux): popped-out tabs now draw on their own.

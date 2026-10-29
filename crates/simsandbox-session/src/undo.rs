@@ -113,6 +113,23 @@ pub fn change(now: &ModelFile, next: &ModelFile) -> Change {
     if a == b {
         return Change::Layout;
     }
+    // A probe feeding the model is part of it (ADR 0063): when it records
+    // changes the model.
+    let feeding = |f: &ModelFile| -> Vec<(String, Option<simsandbox_file::ProbeEvery>)> {
+        f.controls
+            .probes
+            .iter()
+            .filter(|p| {
+                f.connections
+                    .iter()
+                    .any(|c| c.from.starts_with(&format!("probe:{}.", p.name)))
+            })
+            .map(|p| (p.name.clone(), p.every.clone()))
+            .collect()
+    };
+    if feeding(&a) != feeding(&b) {
+        return Change::Model;
+    }
     for f in [&mut a, &mut b] {
         f.controls.filters.clear();
         f.controls.views.clear();

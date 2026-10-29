@@ -434,6 +434,21 @@ pub struct ProbeEntry {
 }
 
 impl ProbeEntry {
+    /// When it records, as the kernel samples (every step if not given).
+    pub fn schedule(&self) -> simsandbox_core::schedule::Every {
+        use simsandbox_core::schedule::Every;
+        match &self.every {
+            Some(ProbeEvery { steps: Some(n), .. }) => Every::Steps(*n),
+            Some(ProbeEvery {
+                seconds: Some(dt), ..
+            }) => Every::Seconds(*dt),
+            Some(ProbeEvery {
+                times: Some(ts), ..
+            }) => Every::Times(ts.clone()),
+            _ => Every::Steps(1),
+        }
+    }
+
     /// Check the settings the file can check alone (what it records is
     /// checked against the model by the session); an error says what is
     /// wrong.
@@ -1086,14 +1101,20 @@ impl From<Vec<String>> for Binding {
 }
 
 impl Controls {
+    /// Whether there is nothing to write: every section empty.
     pub fn is_empty(&self) -> bool {
         self.params.is_empty()
             && self.speed.is_none()
             && self.plots.is_empty()
             && self.views.is_empty()
+            && self.layout.is_none()
+            && self.open.is_empty()
+            && self.inputs.is_empty()
+            && self.filters.is_empty()
+            && self.probes.is_empty()
+            && self.recorder.is_none()
             && self.sweep.is_empty()
             && self.signals.is_empty()
-            && self.filters.is_empty()
             && self.view.is_none()
     }
 }
@@ -1660,13 +1681,76 @@ impl ModelFile {
                 .map_err(|e| invalid(format!("{path}.start"), e))?;
             ids.insert(entry.name.clone(), id);
         }
+        // Probes feeding the model: a hold per probe signal (ADR 0063).
+        let mut holds: BTreeMap<String, BlockId> = BTreeMap::new();
         for (ci, c) in self.connections.iter().enumerate() {
             let path = format!("connections[{ci}]");
-            let from = port_ref(&c.from, &ids).map_err(|m| invalid(format!("{path}.from"), m))?;
             let to = port_ref(&c.to, &ids).map_err(|m| invalid(format!("{path}.to"), m))?;
+            let from = match c.from.strip_prefix("probe:") {
+                Some(rest) => {
+                    let hold = match holds.get(rest) {
+                        Some(&h) => h,
+                        None => {
+                            let h = self
+                                .hold(&mut model, rest, &ids)
+                                .map_err(|m| invalid(format!("{path}.from"), m))?;
+                            holds.insert(rest.to_string(), h);
+                            h
+                        }
+                    };
+                    (hold, "y")
+                }
+                None => port_ref(&c.from, &ids).map_err(|m| invalid(format!("{path}.from"), m))?,
+            };
             model.connect(from, to).map_err(|e| invalid(&path, e))?;
         }
         Ok((model, ids))
+    }
+
+    /// The hold of `probe.signal` (ADR 0063): a sample-and-hold of the
+    /// signal's output, sampling when the probe records.
+    fn hold(
+        &self,
+        model: &mut Model,
+        probe_signal: &str,
+        ids: &BTreeMap<String, BlockId>,
+    ) -> Result<BlockId, String> {
+        let (probe, signal) = probe_signal
+            .split_once('.')
+            .ok_or_else(|| format!("'probe:{probe_signal}' must be 'probe:NAME.signal'"))?;
+        let p = self
+            .controls
+            .probes
+            .iter()
+            .find(|p| p.name == probe)
+            .ok_or_else(|| format!("no probe '{probe}'"))?;
+        if !p.record.iter().any(|r| r == signal) {
+            return Err(format!("probe {probe} does not record '{signal}'"));
+        }
+        let (id, port) = port_ref(signal, ids).map_err(|_| {
+            format!("'{signal}' is not a block's output: a probe feeds the model whole outputs")
+        })?;
+        let spec = model.block(id).map_err(|e| e.to_string())?.spec();
+        let out = spec
+            .outputs()
+            .find(|q| q.name == port)
+            .ok_or_else(|| format!("'{signal}' is not a block's output"))?;
+        if out.shape.is_variable() {
+            return Err(format!(
+                "'{signal}' is a population: a probe cannot hold it"
+            ));
+        }
+        let hold = simsandbox_core::hold::SampleHold::new(
+            &format!("probe:{probe}/{signal}"),
+            out.unit,
+            out.shape,
+            p.schedule(),
+        );
+        let h = model.add(Box::new(hold));
+        model
+            .connect((id, port), (h, "u"))
+            .map_err(|e| e.to_string())?;
+        Ok(h)
     }
 
     /// Fuse the explicit groups, then (unless `fusion` is off) every set of

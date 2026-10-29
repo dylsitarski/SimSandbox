@@ -431,6 +431,37 @@ impl Diagram {
                 settings: Default::default(),
             });
         }
+        // Probes feeding blocks (ADR 0063): model wires, a value held
+        // between the probe's samples.
+        for c in &file.connections {
+            let Some(rest) = c.from.strip_prefix("probe:") else {
+                continue;
+            };
+            let Some((probe, signal)) = rest.split_once('.') else {
+                continue;
+            };
+            let from = self.node(&probe_node(probe)).and_then(|n| {
+                let k = self.nodes[n]
+                    .outputs
+                    .iter()
+                    .position(|p| p.name == signal)?;
+                Some((n, k))
+            });
+            let to = c.to.split_once('.').and_then(|(b, port)| {
+                let n = self.node(b)?;
+                let k = self.nodes[n].inputs.iter().position(|p| p.name == port)?;
+                Some((n, k))
+            });
+            if let (Some(from), Some(to)) = (from, to) {
+                self.wires.push(Wire {
+                    from,
+                    to,
+                    from_name: c.from.clone(),
+                    to_name: c.to.clone(),
+                    signal: String::new(),
+                });
+            }
+        }
         // Data wires: what each filter input, view slot and probe reads.
         let mut wires = Vec::new();
         for i in model_nodes..self.nodes.len() {
@@ -629,11 +660,31 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
             if from.starts_with("probe:") && !to.starts_with("view:") && !to.starts_with("filter:")
             {
                 let probe = node_of(from).trim_start_matches("probe:");
-                return Err(if to.starts_with("probe:") {
-                    format!("probe {probe}: a probe records the model and its filters, not another probe")
-                } else {
-                    format!("probe {probe} cannot feed the model yet: that is item 3 of ADR 0063")
+                if to.starts_with("probe:") {
+                    return Err(format!(
+                        "probe {probe}: a probe records the model and its filters, not another probe"
+                    ));
+                }
+                // Into a block (ADR 0063): its samples, held between them.
+                // This changes the model, which is rebuilt.
+                let signal = from.split_once('.').map_or("", |(_, s)| s);
+                let own = file
+                    .blocks
+                    .iter()
+                    .any(|b| signal.starts_with(&format!("{}.", b.name)));
+                if !own {
+                    return Err(format!(
+                        "probe {probe} can feed blocks the model's own outputs, not '{signal}'"
+                    ));
+                }
+                file.connections.retain(|c| c.to != *to);
+                file.connections.push(ConnectionEntry {
+                    from: from.clone(),
+                    to: to.clone(),
                 });
+                return Ok(format!(
+                    "{to} reads {signal} as probe {probe} samples it, held between samples"
+                ));
             }
             if is_observer(node_of(from)) && !is_observer(node_of(to)) {
                 let name = node_of(from).trim_start_matches("filter:");
@@ -738,6 +789,9 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
         Edit::Delete { block } if block.starts_with("probe:") => {
             let k = probe_index(file, block)?;
             let p = file.controls.probes.remove(k);
+            // What it fed is left unconnected (ADR 0063).
+            let fed = format!("probe:{}.", p.name);
+            file.connections.retain(|c| !c.from.starts_with(&fed));
             // Inputs from it come from the model again.
             for f in &mut file.controls.filters {
                 if f.probe.as_deref() == Some(p.name.as_str()) {
@@ -788,6 +842,12 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                 return Err(format!("there is already a probe '{to}'"));
             }
             let old = std::mem::replace(&mut file.controls.probes[k].name, to.clone());
+            let (was_fed, now_fed) = (format!("probe:{old}."), format!("probe:{to}."));
+            for c in &mut file.connections {
+                if let Some(rest) = c.from.strip_prefix(&was_fed) {
+                    c.from = format!("{now_fed}{rest}");
+                }
+            }
             for f in &mut file.controls.filters {
                 if f.probe.as_deref() == Some(old.as_str()) {
                     f.probe = Some(to.clone());
@@ -949,6 +1009,12 @@ fn unbind(file: &mut ModelFile, to: &str, signal: Option<&String>) -> Result<Str
             p.record.clone(),
         );
         let p = file.controls.probes[k].clone();
+        let fed = format!("probe:{}.", p.name);
+        file.connections.retain(|c| {
+            c.from
+                .strip_prefix(&fed)
+                .is_none_or(|s| kept.iter().any(|k| k == s))
+        });
         unbind_views(file, &|s| {
             s.strip_prefix(&prefix)
                 .is_some_and(|r| !kept.iter().any(|k| k == r))
@@ -1620,12 +1686,33 @@ mod tests {
         let d = observed(&f);
         let (p, v) = (d.node("probe:probe1").unwrap(), d.node("view:0").unwrap());
         assert!(d.wires.iter().any(|w| w.from.0 == p && w.to.0 == v));
-        // Not into the model yet.
+        // Into a block (ADR 0063 step 3): a model connection, drawn as a
+        // model wire from the probe.
         let e = Edit::Connect {
             from: "probe:probe1.a.x".into(),
             to: "b.neighbor_x".into(),
         };
-        assert!(apply(&mut f, &registry(), &e).is_err());
+        assert!(e.changes_model());
+        apply(&mut f, &registry(), &e).unwrap();
+        assert!(f
+            .connections
+            .iter()
+            .any(|c| c.from == "probe:probe1.a.x" && c.to == "b.neighbor_x"));
+        assert_eq!(
+            f.connections
+                .iter()
+                .filter(|c| c.to == "b.neighbor_x")
+                .count(),
+            1
+        );
+        let d = observed(&f);
+        let (p, b) = (d.node("probe:probe1").unwrap(), d.node("b").unwrap());
+        assert!(d
+            .wires
+            .iter()
+            .any(|w| w.from.0 == p && w.to.0 == b && !w.is_data()));
+        // The model loads with the hold in place.
+        assert!(simsandbox_file::load(&f.to_json(), &registry()).is_ok());
         // Renaming the probe follows into the view; deleting it unbinds.
         let rename = Edit::Rename {
             from: "probe:probe1".into(),

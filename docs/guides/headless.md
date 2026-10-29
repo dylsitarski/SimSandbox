@@ -76,6 +76,8 @@ A view binds a probe's recording as `probe:NAME/signal` (`"y": ["car.v", "probe:
 
 A probe with bad settings, or recording something the model does not record, is dropped with a warning. `simsandbox run FILE --probe NAME` prints one; `--save-probes DIR` writes the files. A swept model records no probes. JSON output of a probe: `rows`, `t`, `signals` (name → list), `fields` (name → `{shape, frames}`).
 
+A model-level connection may come from a probe: `{"from": "probe:sensor.car.v", "to": "cruise.v"}` feeds `cruise.v` with `car.v` as probe `sensor` samples it, held between samples ([ADR 0063](../decisions/0063-probes-on-wires.md)). The probe must record that signal, a whole output of a block on the model's level. Such a probe changes results: it counts in a run file's model hash.
+
 ## Recorder
 
 `"recorder": {"every": 10, "mb": 256}` in `controls` (both optional) lets the model be rewound in the app ([ADR 0064](../decisions/0064-recorder-node.md)): a snapshot of its state every `every` steps, within `mb` megabytes. Without it the app shows no rewind bar. It changes no results; headless runs ignore it.

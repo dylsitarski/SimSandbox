@@ -137,7 +137,29 @@ impl RunFile {
 /// own settings does not make it look stale.
 pub fn model_hash(model: &ModelFile) -> String {
     let mut m = model.clone();
+    // Probes feeding the model change its results (ADR 0063): their
+    // names and when they record are part of it.
+    let feeding = |p: &crate::ProbeEntry| {
+        m.connections
+            .iter()
+            .any(|c| c.from.starts_with(&format!("probe:{}.", p.name)))
+    };
+    let probes: Vec<crate::ProbeEntry> = model
+        .controls
+        .probes
+        .iter()
+        .filter(|p| feeding(p))
+        .map(|p| crate::ProbeEntry {
+            name: p.name.clone(),
+            record: p.record.clone(),
+            every: p.every.clone(),
+            keep: None,
+            to: None,
+            canvas: None,
+        })
+        .collect();
     m.controls = Default::default();
+    m.controls.probes = probes;
     m.run.seed = None;
     m.run.dt = crate::RunSettings::default().dt;
     m.run.t_end = None;
@@ -198,6 +220,38 @@ mod tests {
     const MODEL: &str = r#"{"format": 1, "blocks": [
         {"name": "push", "type": "input.value", "settings": {"unit": "N"}}],
         "controls": {"speed": 2.0}}"#;
+
+    #[test]
+    fn a_probe_feeding_the_model_is_part_of_its_hash() {
+        let with = |every: f64, to: Option<&str>, feeds: bool| {
+            let mut v: serde_json::Value = serde_json::from_str(MODEL).unwrap();
+            v["controls"]["probes"] = serde_json::json!([{
+                "name": "p", "record": ["push.y"], "every": {"seconds": every}
+            }]);
+            if let Some(to) = to {
+                v["controls"]["probes"][0]["to"] = to.into();
+            }
+            if feeds {
+                v["blocks"].as_array_mut().unwrap().push(serde_json::json!(
+                    {"name": "q", "type": "input.value", "settings": {"unit": "N"}}
+                ));
+                v["connections"] = serde_json::json!([]);
+            }
+            let (mut f, _) = ModelFile::from_json(&v.to_string()).unwrap();
+            if feeds {
+                f.connections.push(crate::ConnectionEntry {
+                    from: "probe:p.push.y".into(),
+                    to: "q.u".into(),
+                });
+            }
+            model_hash(&f)
+        };
+        // Not feeding the model: a control, outside the hash.
+        assert_eq!(with(1.0, None, false), with(2.0, None, false));
+        // Feeding it: when it records is part of the model; its file is not.
+        assert_ne!(with(1.0, None, true), with(2.0, None, true));
+        assert_eq!(with(1.0, None, true), with(1.0, Some("p.csv"), true));
+    }
 
     #[test]
     fn runs_read_write_and_know_their_model() {

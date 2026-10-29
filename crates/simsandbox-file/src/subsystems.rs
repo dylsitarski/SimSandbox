@@ -778,8 +778,19 @@ impl Ctx<'_> {
         }
         for (ci, c) in connections.iter().enumerate() {
             let cpath = format!("{path}connections[{ci}]");
-            let from =
-                resolve(&items, &c.from, false).map_err(|m| invalid(format!("{cpath}.from"), m))?;
+            // A probe feeding the model (ADR 0063), on the model's level:
+            // the loader puts a hold between them.
+            let from = if c.from.starts_with("probe:") {
+                if !path.is_empty() {
+                    return Err(invalid(
+                        format!("{cpath}.from"),
+                        "probes feed blocks on the model's level, not inside a subsystem",
+                    ));
+                }
+                vec![c.from.clone()]
+            } else {
+                resolve(&items, &c.from, false).map_err(|m| invalid(format!("{cpath}.from"), m))?
+            };
             let to = resolve(&items, &c.to, true).map_err(|m| invalid(format!("{cpath}.to"), m))?;
             for t in to {
                 self.connections.push(ConnectionEntry {
