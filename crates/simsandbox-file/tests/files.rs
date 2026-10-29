@@ -400,6 +400,24 @@ fn a_view_showing_a_probe_reads_its_signals_from_it() {
 }
 
 #[test]
+fn filter_outputs_are_bound_by_name_wherever_they_run() {
+    // `probe:NAME/output` for a filter on a probe, as written 2026-10-29.
+    let mut v: serde_json::Value = serde_json::from_str(LORENZ).unwrap();
+    v["controls"]["filters"] = serde_json::json!([
+        {"name": "sq", "type": "expression", "expr": "lorenz.xyz[0]^2", "probe": "p"}
+    ]);
+    v["controls"]["views"][0]["bind"]["y"] =
+        serde_json::json!(["probe:p/sq", "probe:p/lorenz.xyz[1]"]);
+    let loaded = load(&v.to_string(), &registry()).unwrap();
+    let y = loaded.file.controls.views[0].bind["y"].signals();
+    assert_eq!(y, ["sq", "probe:p/lorenz.xyz[1]"]);
+    assert!(loaded
+        .conversions
+        .iter()
+        .any(|c| c.contains("bound by name")));
+}
+
+#[test]
 fn sliders_written_before_pins_pin_and_open_nodes_are_kept() {
     // LORENZ gives lorenz.rho a slider and no pin.
     let (mut file, _) = ModelFile::from_json(LORENZ).unwrap();

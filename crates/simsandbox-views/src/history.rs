@@ -129,11 +129,13 @@ pub fn label(name: &str) -> String {
 }
 
 /// What views draw from (ADR 0063): the model's recording at every step,
-/// and each probe's, by name.
+/// each probe's, by name, and those of filters with clocks of their own,
+/// found by their outputs' names.
 #[derive(Clone, Copy)]
 pub struct Recorded<'a> {
     pub all: &'a History,
     pub probes: &'a [(&'a str, &'a History)],
+    pub derived: &'a [&'a History],
 }
 
 impl<'a> From<&'a History> for Recorded<'a> {
@@ -145,14 +147,24 @@ impl<'a> From<&'a History> for Recorded<'a> {
 impl<'a> Recorded<'a> {
     /// Only the model's recording.
     pub fn single(all: &'a History) -> Self {
-        Self { all, probes: &[] }
+        Self {
+            all,
+            probes: &[],
+            derived: &[],
+        }
     }
 
     /// The recording a binding reads and its signal there; `None` for a
     /// probe that is gone or does not record it.
     pub fn resolve(&self, name: &str) -> Option<(&'a History, SignalRef)> {
         match split_source(name) {
-            (None, s) => self.all.resolve(s).map(|r| (self.all, r)),
+            (None, s) => self.all.resolve(s).map(|r| (self.all, r)).or_else(|| {
+                self.derived.iter().find_map(|h| {
+                    h.resolve(s)
+                        .filter(|r| *r != SignalRef::Time)
+                        .map(|r| (*h, r))
+                })
+            }),
             (Some(p), s) => {
                 let (_, h) = self.probes.iter().find(|(n, _)| *n == p)?;
                 h.resolve(s).map(|r| (*h, r))

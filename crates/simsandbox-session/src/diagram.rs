@@ -840,6 +840,9 @@ pub enum Edit {
     /// Data layer: a new view of a type (bound from its first preset when
     /// the app shows it).
     AddView { type_name: String, at: [f64; 2] },
+    /// Data layer: whether a filter with inputs from probes runs whenever
+    /// one of them records (`any`), or where their times pair (ADR 0063).
+    SetFilterWhen { filter: String, any: bool },
     /// Data layer: a new probe recording nothing yet (ADR 0062).
     AddProbe { at: [f64; 2] },
     /// Data layer: a probe's settings (what, when, how long, its file),
@@ -899,7 +902,8 @@ impl Edit {
             | Edit::AddFilter { .. }
             | Edit::AddView { .. }
             | Edit::AddProbe { .. }
-            | Edit::SetProbe { .. } => true,
+            | Edit::SetProbe { .. }
+            | Edit::SetFilterWhen { .. } => true,
             Edit::Connect { to, .. } | Edit::Disconnect { to } => observer(&node(to)),
             Edit::Delete { block } => observer(block),
             Edit::Rename { from, .. } => observer(from),
@@ -1406,6 +1410,7 @@ fn edit_level(
         | Edit::AddView { .. }
         | Edit::AddProbe { .. }
         | Edit::SetProbe { .. }
+        | Edit::SetFilterWhen { .. }
         | Edit::Promote { .. }
         | Edit::PromoteConnect { .. } => unreachable!("handled before"),
     }

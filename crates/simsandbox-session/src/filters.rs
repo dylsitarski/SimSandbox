@@ -323,6 +323,8 @@ mod tests {
             inputs: vec![input.into()],
             canvas: None,
             probe: None,
+            from: Default::default(),
+            when: None,
             settings: serde_json::from_value(settings).unwrap(),
         };
         let good = cut(

@@ -452,7 +452,21 @@
               },
               "probe": {
                 "type": "string",
-                "description": "The probe whose samples it runs on (ADR 0063); its outputs join that probe's recording. Every step if absent."
+                "description": "The probe its inputs come from unless 'from' says otherwise (ADR 0063); the model at every step if absent."
+              },
+              "from": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "The probe each of these inputs comes from (ADR 0063)."
+              },
+              "when": {
+                "enum": [
+                  "paired",
+                  "any"
+                ],
+                "description": "With inputs from probes: run at the times all sources recorded (paired, the default), or whenever one does, with the others' latest values (any)."
               },
               "canvas": {
                 "type": "array",

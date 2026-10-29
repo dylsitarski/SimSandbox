@@ -79,9 +79,14 @@ pub fn render(
     let guards: Vec<_> = shared.iter().map(|(n, h)| (*n, h.read())).collect();
     let probes: Vec<(&str, &simsandbox_views::History)> =
         guards.iter().map(|(n, g)| (*n, &**g)).collect();
+    // Outputs of filters with clocks of their own, from their recordings.
+    let derived_shared = s.derived_histories();
+    let derived_guards: Vec<_> = derived_shared.iter().map(|(_, h)| h.read()).collect();
+    let derived: Vec<&simsandbox_views::History> = derived_guards.iter().map(|g| &**g).collect();
     let recorded = Recorded {
         all: &h,
         probes: &probes,
+        derived: &derived,
     };
     // One view alone, or as the saved arrangement places them.
     let layout = s.file.controls.layout.as_ref().filter(|_| o.view.is_none());

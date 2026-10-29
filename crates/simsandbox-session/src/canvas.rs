@@ -1210,6 +1210,24 @@ impl Canvas {
                             requests.push(open_request(n));
                             ui.close();
                         }
+                        if n.settings.contains_key("clock") {
+                            let mut any = n.method.ends_with(" · on any");
+                            if ui
+                                .checkbox(&mut any, "Run when any input records")
+                                .on_hover_text(
+                                    "Off: it runs where all its inputs' sources recorded at the \
+                                     same time. On: whenever one of them records, with the \
+                                     others' latest values (ADR 0063)",
+                                )
+                                .changed()
+                            {
+                                edits.push(Edit::SetFilterWhen {
+                                    filter: name.clone(),
+                                    any,
+                                });
+                                ui.close();
+                            }
+                        }
                         if n.type_name == "expression"
                             && ui
                                 .button("Promote to block")

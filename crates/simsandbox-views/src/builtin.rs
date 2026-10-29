@@ -612,6 +612,7 @@ mod tests {
         let r = Recorded {
             all: &all,
             probes: &probes,
+            derived: &[],
         };
         let (h, x) = r.resolve("a.x").unwrap();
         let (hp, xp) = r.resolve("probe:p/a.x").unwrap();

@@ -749,11 +749,18 @@ pub struct FilterEntry {
     /// `at`, which cut filters use for their cuts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<[f64; 2]>,
-    /// The probe whose samples it runs on (ADR 0063): it reads what that
-    /// probe records, and its outputs join the probe's recording
-    /// (`probe:NAME/output`). Every step of the model if absent.
+    /// The probe its inputs come from (ADR 0063), unless `from` says
+    /// otherwise; the model at every step if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe: Option<String>,
+    /// The probe each of these inputs comes from (ADR 0063).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub from: BTreeMap<String, String>,
+    /// When a filter with inputs from probes runs: `paired` (the default)
+    /// at the times all its sources recorded, or `any` whenever one does,
+    /// with each other input's latest value (ADR 0063).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
     /// Settings of the filter's type.
     #[serde(flatten)]
     pub settings: BTreeMap<String, Value>,
@@ -767,8 +774,28 @@ impl FilterEntry {
             inputs,
             canvas: None,
             probe: None,
+            from: BTreeMap::new(),
+            when: None,
             settings: [("expr".to_string(), Value::String(expr.into()))].into(),
         }
+    }
+
+    /// The probe an input comes from (ADR 0063); `None` for the model.
+    pub fn source_of(&self, input: &str) -> Option<&str> {
+        self.from
+            .get(input)
+            .map(String::as_str)
+            .or(self.probe.as_deref())
+    }
+
+    /// Whether any input comes from a probe, so it has a clock of its own.
+    pub fn on_probes(&self) -> bool {
+        self.probe.is_some() || !self.from.is_empty()
+    }
+
+    /// Whether it runs whenever one of its sources records (`when: any`).
+    pub fn on_any(&self) -> bool {
+        self.when.as_deref() == Some("any")
     }
 
     /// An expression filter's text.
@@ -845,6 +872,8 @@ fn cut_filter_from_selection(name: &str, grid: &str, selection: &Value) -> Optio
         inputs: vec![grid.into()],
         canvas: None,
         probe: None,
+        from: BTreeMap::new(),
+        when: None,
         settings,
     })
 }
@@ -2063,10 +2092,39 @@ impl ModelFile {
         let mut kept = Vec::new();
         // Each view's new place, for the layout.
         let mut moved: Vec<Option<usize>> = vec![None; c.views.len()];
+        let filter_outputs: Vec<String> = c.filters.iter().flat_map(FilterEntry::outputs).collect();
         for (i, mut v) in std::mem::take(&mut c.views).into_iter().enumerate() {
             let before = v.type_name.clone();
             if v.upgrade() {
                 conversions.push(format!("controls.views[{i}]: the older {before} became today's form (ADR 0018, ADR 0024, ADR 0063)"));
+            }
+            // A filter's outputs are bound by name, wherever it runs
+            // (ADR 0063); `probe:NAME/output` was written on 2026-10-29.
+            let mut renamed = false;
+            for b in v.bind.values_mut() {
+                let plain: Vec<String> = b
+                    .signals()
+                    .into_iter()
+                    .map(|s| {
+                        let inner = s
+                            .strip_prefix("probe:")
+                            .and_then(|r| r.split_once('/'))
+                            .map(|(_, o)| o.to_string());
+                        match inner {
+                            Some(o) if filter_outputs.contains(&o) => {
+                                renamed = true;
+                                o
+                            }
+                            _ => s,
+                        }
+                    })
+                    .collect();
+                *b = Binding::from(plain);
+            }
+            if renamed {
+                conversions.push(format!(
+                    "controls.views[{i}]: filter outputs are bound by name (ADR 0063)"
+                ));
             }
             let scalar =
                 |s: &str| derived.iter().any(|d| d == s) || output_element_exists(s, model, ids);

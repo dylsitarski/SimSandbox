@@ -1324,9 +1324,14 @@ impl SimApp {
             .collect();
         let probes: Vec<(&str, &simsandbox_views::History)> =
             probe_guards.iter().map(|(n, g)| (*n, &**g)).collect();
+        // Outputs of filters with clocks of their own, from their recordings.
+        let derived_guards: Vec<_> = m.derived_histories.iter().map(|(_, h)| h.read()).collect();
+        let derived: Vec<&simsandbox_views::History> =
+            derived_guards.iter().map(|g| &**g).collect();
         let recorded = simsandbox_views::Recorded {
             all: &history,
             probes: &probes,
+            derived: &derived,
         };
         let views = &mut self.views;
         let (text, error) = (&mut self.param_edits, &mut self.error);
@@ -2445,6 +2450,8 @@ impl SimApp {
                 let was = was.filters.iter().find(|f| f.name == e.name);
                 e.canvas = was.and_then(|f| f.canvas);
                 e.probe = was.and_then(|f| f.probe.clone());
+                e.from = was.map(|f| f.from.clone()).unwrap_or_default();
+                e.when = was.and_then(|f| f.when.clone());
             }
             match live.call(move |s, _| s.set_filters(entries)) {
                 Ok(Ok(())) => {
@@ -3874,6 +3881,8 @@ impl CutEdit {
             inputs: vec![self.input.clone()],
             canvas: None,
             probe: None,
+            from: Default::default(),
+            when: None,
             settings,
         }
     }

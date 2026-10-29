@@ -57,12 +57,80 @@ struct Extra {
     /// Where its signals and fields are in a whole sample.
     signals: Vec<usize>,
     fields: Vec<usize>,
-    /// Its fields' names, in `fields` order.
-    field_names: Vec<String>,
-    /// Filters on this probe (ADR 0063): computed from its samples, their
-    /// outputs recorded after its signals and fields.
-    filters: Filters,
     pending: Vec<Pending>,
+}
+
+/// Where an input of a filter with a clock of its own comes from
+/// (ADR 0063).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Src {
+    /// The model, at every step.
+    Model,
+    /// A probe, by place.
+    Probe(usize),
+    /// Another such filter, by place (always an earlier one).
+    Derived(usize),
+}
+
+/// One input: its name, source, and where its value is: a place in the
+/// whole sample (model, probe), or among that filter's outputs.
+#[derive(Clone, Debug)]
+struct Input {
+    name: String,
+    src: Src,
+    at: usize,
+    field: bool,
+}
+
+/// A filter with an input from a probe (ADR 0063): it runs when its
+/// sources record (all of them, or any with `when: any`) and keeps its
+/// own recording, bound by its outputs' names.
+struct Derived {
+    entry: FilterEntry,
+    /// Its probes as set, so it is kept while they do not change.
+    key: Vec<ProbeSpec>,
+    filters: Filters,
+    inputs: Vec<Input>,
+    sources: Vec<Src>,
+    /// Each input's latest value (one number for a signal).
+    held: Vec<Option<Vec<f64>>>,
+    history: SharedHistory,
+    pending: Vec<Pending>,
+    /// What it gave at the current step, for filters reading it.
+    now: Option<(Vec<f64>, Vec<Vec<f64>>)>,
+}
+
+impl Derived {
+    /// Its outputs' names: signals, then fields.
+    fn outputs(&self) -> (Vec<String>, Vec<String>) {
+        (
+            self.filters.exprs.iter().map(|f| f.name.clone()).collect(),
+            self.filters
+                .cuts
+                .iter()
+                .flat_map(|c| c.fields().into_iter().map(|(n, _)| n))
+                .collect(),
+        )
+    }
+
+    fn flush(&mut self, wait: bool) -> bool {
+        if self.pending.is_empty() {
+            return true;
+        }
+        let guard = if wait {
+            Some(self.history.write())
+        } else {
+            self.history.try_write()
+        };
+        let Some(mut h) = guard else {
+            return false;
+        };
+        for p in self.pending.drain(..) {
+            let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
+            h.push_sample(p.index, &p.values, &frames);
+        }
+        true
+    }
 }
 
 impl Extra {
@@ -236,8 +304,11 @@ pub struct Session {
     /// Which fields place which others' cells, among everything a step
     /// yields.
     all_coordinates: Vec<Coordinate>,
-    /// Outputs of filters on probes, as bindings (`probe:NAME/power`).
-    probed: Vec<String>,
+    /// Filters with an input from a probe, each with its own clock and
+    /// recording (ADR 0063), in dependency order.
+    derived: Vec<Derived>,
+    /// Their outputs' names, as views bind them.
+    derived_names: Vec<String>,
     /// What the history keeps of each sample: places in the layout.
     keep_signals: Vec<usize>,
     keep_fields: Vec<usize>,
@@ -512,7 +583,8 @@ impl Session {
             all_coordinates: Vec::new(),
             keep_signals: Vec::new(),
             keep_fields: Vec::new(),
-            probed: Vec::new(),
+            derived: Vec::new(),
+            derived_names: Vec::new(),
             sources,
             output_names: names,
             base_fields: fields,
@@ -567,7 +639,9 @@ impl Session {
         if session.sweep.is_some() {
             session.resample();
         } else {
-            session.rebuild_history();
+            // No probes yet: they are loaded next, and the filters that
+            // read them with them.
+            session.build_history();
             session.load_probes();
             // Scheduled changes at t = 0 set where the run starts.
             session.restart().map_err(|e| e.to_string())?;
@@ -762,6 +836,9 @@ impl Session {
         for p in &mut self.probes {
             probes_done &= p.flush(wait);
         }
+        for d in &mut self.derived {
+            probes_done &= d.flush(wait);
+        }
         if self.pending.is_empty() {
             return probes_done;
         }
@@ -788,31 +865,23 @@ impl Session {
             .copied()
             .chain(cuts.iter().map(Vec::as_slice))
             .collect();
-        if self.sweep.is_none() && !self.probes.is_empty() {
+        if self.sweep.is_none() && (!self.probes.is_empty() || !self.derived.is_empty()) {
             let (step, eps) = (self.sim.step_count(), self.eps());
-            let params = if self.probes.iter().any(|p| !p.filters.exprs.is_empty()) {
-                self.param_values()
-            } else {
-                Vec::new()
-            };
-            let coordinates = &self.all_coordinates;
+            let mut fired = Vec::with_capacity(self.probes.len());
             for p in &mut self.probes {
-                if !p.trigger.due(index, step, eps) {
+                let due = p.trigger.due(index, step, eps);
+                fired.push(due);
+                if !due {
                     continue;
                 }
-                let mut values: Vec<f64> = p.signals.iter().map(|&i| values[i]).collect();
-                derive(&p.filters.exprs, index, &mut values, &params);
-                let mut frames: Vec<Vec<f64>> =
-                    p.fields.iter().map(|&i| frames[i].to_vec()).collect();
-                let cuts = probe_cuts(&p.filters, &p.field_names, &frames, coordinates);
-                frames.extend(cuts);
                 p.pending.push(Pending {
                     index,
-                    values,
-                    frames,
+                    values: p.signals.iter().map(|&i| values[i]).collect(),
+                    frames: p.fields.iter().map(|&i| frames[i].to_vec()).collect(),
                 });
                 p.flush(false);
             }
+            self.run_derived(index, values, &frames, &fired);
         }
         self.push_kept(index, values, &frames);
     }
@@ -874,8 +943,10 @@ impl Session {
             );
         };
         let mut want: std::collections::BTreeSet<String> = reads.iter().cloned().collect();
-        // Filters on probes read the probes, not the model.
-        for f in self.filter_entries.iter().filter(|f| f.probe.is_none()) {
+        // Filters with clocks of their own read probes and each other.
+        let derived = crate::observers::clocked(&self.filter_entries);
+        let model = |f: &&FilterEntry| !derived.iter().any(|d| d.name == f.name);
+        for f in self.filter_entries.iter().filter(model) {
             want.extend(crate::observers::filter_reads(f));
         }
         for c in &self.filters.cuts {
@@ -945,7 +1016,7 @@ impl Session {
             lines: &self.lines,
             coordinates: &self.all_coordinates,
             swept: self.sweep.as_ref().map_or(&[], |sw| sw.keys()),
-            probed: &self.probed,
+            derived: &self.derived_names,
         }
     }
 
@@ -989,7 +1060,11 @@ impl Session {
     fn compile_filters(&self, entries: &[FilterEntry]) -> (Filters, Vec<String>) {
         let entries: Vec<FilterEntry> = entries
             .iter()
-            .filter(|e| e.probe.is_none())
+            .filter(|e| {
+                !crate::observers::clocked(entries)
+                    .iter()
+                    .any(|d| d.name == e.name)
+            })
             .cloned()
             .collect();
         let entries = &entries[..];
@@ -1164,13 +1239,18 @@ impl Session {
     /// changes and the problems are returned. Probes record in time only,
     /// not in sweeps, and start empty.
     pub fn set_probes(&mut self, specs: Vec<ProbeSpec>) -> Result<(), Vec<String>> {
+        self.install_probes(specs)?;
+        self.build_derived();
+        Ok(())
+    }
+
+    /// [`Session::set_probes`] without the filters that read probes.
+    fn install_probes(&mut self, specs: Vec<ProbeSpec>) -> Result<(), Vec<String>> {
         let mut problems = Vec::new();
         let mut names: Vec<&str> = Vec::new();
         // Probes take from every sample a step yields (ADR 0063), not
         // from what the history keeps.
         let (scalars, field_list) = (&self.layout_scalars, &self.layout_fields);
-        let params = param_keys(&self.flat, &self.ids, self.sim.model());
-        let mut notes = Vec::new();
         let mut built = Vec::new();
         for spec in &specs {
             if let Err(e) = spec.check() {
@@ -1195,42 +1275,16 @@ impl Session {
             let probe_fields: Vec<(String, FieldShape)> =
                 fields.iter().map(|&i| field_list[i].clone()).collect();
             let probe_signals: Vec<String> = signals.iter().map(|&i| scalars[i].clone()).collect();
-            // Filters on it read what it records (ADR 0063).
-            let on: Vec<FilterEntry> = self
-                .filter_entries
-                .iter()
-                .filter(|f| f.probe.as_deref() == Some(spec.name.as_str()))
-                .cloned()
-                .collect();
-            let (filters, problems) = Filters::compile(&on, &probe_signals, &params, &probe_fields);
-            notes.extend(problems.into_iter().map(|p| {
-                format!(
-                    "filter {p} (on probe {}, which records only what is wired into it); ignored",
-                    spec.name
-                )
-            }));
-            let mut names = probe_signals.clone();
-            names.extend(filters.exprs.iter().map(|f| f.name.clone()));
-            let mut all_fields = probe_fields.clone();
-            all_fields.extend(filters.cuts.iter().flat_map(|c| c.fields()));
-            let mut ph = History::with_fields("t", names, all_fields);
-            // Coordinates of what it records, when it records them too, and
-            // of its cuts' lines.
+            let mut ph = History::with_fields("t", probe_signals, probe_fields);
+            // Coordinates of what it records, when it records them too.
             let has = |n: &str| spec.record.iter().any(|r| r == n);
-            let mut coordinates: Vec<Coordinate> = self
-                .all_coordinates
-                .iter()
-                .filter(|c| has(&c.name) && has(&c.of))
-                .cloned()
-                .collect();
-            for c in &filters.cuts {
-                coordinates.extend(c.lines().into_iter().map(|l| Coordinate {
-                    name: c.coordinate(),
-                    of: l,
-                    axis: 0,
-                }));
-            }
-            ph.set_coordinates(coordinates);
+            ph.set_coordinates(
+                self.all_coordinates
+                    .iter()
+                    .filter(|c| has(&c.name) && has(&c.of))
+                    .cloned()
+                    .collect(),
+            );
             spec.keep.apply(&mut ph);
             built.push(Extra {
                 spec: spec.clone(),
@@ -1238,16 +1292,8 @@ impl Session {
                 history: SharedHistory::new(ph),
                 signals,
                 fields,
-                field_names: probe_fields.into_iter().map(|(n, _)| n).collect(),
-                filters,
                 pending: Vec::new(),
             });
-        }
-        // Probes are set again on every probe edit: say each once.
-        for n in notes {
-            if !self.warnings.contains(&n) {
-                self.warnings.push(n);
-            }
         }
         let recorded_to = self.history.read().times().last().copied();
         if !problems.is_empty() {
@@ -1271,25 +1317,355 @@ impl Session {
             }
         }
         self.probes = built;
-        self.probed = self
-            .probes
-            .iter()
-            .flat_map(|p| {
-                let outputs = p.filters.exprs.iter().map(|f| f.name.clone()).chain(
-                    p.filters
-                        .cuts
-                        .iter()
-                        .flat_map(|c| c.fields().into_iter().map(|(n, _)| n)),
-                );
-                outputs.map(|o| simsandbox_views::history::from_probe(&p.spec.name, &o))
-            })
-            .collect();
         Ok(())
     }
 
-    /// The outputs of filters on probes, as views bind them (ADR 0063).
-    pub fn probed(&self) -> &[String] {
-        &self.probed
+    /// The filters with an input from a probe (ADR 0063), in an order
+    /// where each comes after those it reads. One whose recording and
+    /// probes did not change keeps what it recorded.
+    fn build_derived(&mut self) {
+        let mut old: Vec<Derived> = std::mem::take(&mut self.derived);
+        self.derived_names.clear();
+        if self.sweep.is_some() {
+            return;
+        }
+        let params = param_keys(&self.flat, &self.ids, self.sim.model());
+        let mut waiting: Vec<FilterEntry> = crate::observers::clocked(&self.filter_entries);
+        let mut notes = Vec::new();
+        let recorded_to = self.history.read().times().last().copied();
+        while !waiting.is_empty() {
+            let before = waiting.len();
+            let mut k = 0;
+            while k < waiting.len() {
+                match self.derived_inputs(&waiting[k], &waiting) {
+                    Ok(None) => k += 1,
+                    Ok(Some(inputs)) => {
+                        let e = waiting.remove(k);
+                        match self.compile_derived(e, inputs, &params, &mut old, recorded_to) {
+                            Ok(d) => self.derived.push(d),
+                            Err(p) => notes.push(p),
+                        }
+                    }
+                    Err(p) => {
+                        notes.push(p);
+                        waiting.remove(k);
+                    }
+                }
+            }
+            if waiting.len() == before {
+                for e in waiting.drain(..) {
+                    notes.push(format!(
+                        "filter {}: it reads itself through other filters; ignored",
+                        e.name
+                    ));
+                }
+            }
+        }
+        for d in &self.derived {
+            let (s, f) = d.outputs();
+            self.derived_names.extend(s.into_iter().chain(f));
+        }
+        // Filters are set again on every probe edit: say each once.
+        for n in notes {
+            if !self.warnings.contains(&n) {
+                self.warnings.push(n);
+            }
+        }
+    }
+
+    /// The inputs of filter `e`, each with its source; `Ok(None)` while a
+    /// filter it reads (among `waiting`) is not built yet.
+    fn derived_inputs(
+        &self,
+        e: &FilterEntry,
+        waiting: &[FilterEntry],
+    ) -> Result<Option<Vec<Input>>, String> {
+        let params = param_keys(&self.flat, &self.ids, self.sim.model());
+        let reads: Vec<String> = crate::observers::filter_reads(e)
+            .into_iter()
+            .filter(|r| r != "t" && !params.contains(r))
+            .collect();
+        for p in e.probe.iter().chain(e.from.values()) {
+            if !self.probes.iter().any(|x| x.spec.name == *p) {
+                return Err(format!(
+                    "filter {}: there is no probe '{p}' to run on",
+                    e.name
+                ));
+            }
+        }
+        let mut inputs = Vec::new();
+        for r in reads {
+            if waiting
+                .iter()
+                .any(|w| w.name != e.name && w.outputs().contains(&r))
+            {
+                return Ok(None);
+            }
+            if let Some(j) = self.derived.iter().position(|d| {
+                let (s, f) = d.outputs();
+                s.contains(&r) || f.contains(&r)
+            }) {
+                let (s, f) = self.derived[j].outputs();
+                let (at, field) = match s.iter().position(|n| *n == r) {
+                    Some(i) => (i, false),
+                    None => (f.iter().position(|n| *n == r).unwrap_or(0), true),
+                };
+                inputs.push(Input {
+                    name: r,
+                    src: Src::Derived(j),
+                    at,
+                    field,
+                });
+                continue;
+            }
+            let src = match e.source_of(&r) {
+                None => Src::Model,
+                Some(p) => {
+                    let i = self
+                        .probes
+                        .iter()
+                        .position(|x| x.spec.name == p)
+                        .ok_or_else(|| {
+                            format!("filter {}: there is no probe '{p}' to run on", e.name)
+                        })?;
+                    if !self.probes[i].spec.record.contains(&r) {
+                        return Err(format!(
+                            "filter {}: probe {p} does not record '{r}'; ignored",
+                            e.name
+                        ));
+                    }
+                    Src::Probe(i)
+                }
+            };
+            let (at, field) = match self.layout_scalars.iter().position(|n| *n == r) {
+                Some(i) => (i, false),
+                None => match self.layout_fields.iter().position(|(n, _)| *n == r) {
+                    Some(i) => (i, true),
+                    None => {
+                        return Err(format!(
+                            "filter {}: the model has no '{r}'; ignored",
+                            e.name
+                        ))
+                    }
+                },
+            };
+            inputs.push(Input {
+                name: r,
+                src,
+                at,
+                field,
+            });
+        }
+        Ok(Some(inputs))
+    }
+
+    /// Compile filter `e` on its inputs, keeping the recording of an
+    /// equal one in `old`.
+    fn compile_derived(
+        &self,
+        e: FilterEntry,
+        inputs: Vec<Input>,
+        params: &[String],
+        old: &mut Vec<Derived>,
+        recorded_to: Option<f64>,
+    ) -> Result<Derived, String> {
+        let scalars: Vec<String> = inputs
+            .iter()
+            .filter(|i| !i.field)
+            .map(|i| i.name.clone())
+            .collect();
+        let shape_of = |i: &Input| match i.src {
+            Src::Derived(j) => {
+                let h = self.derived[j].history.read();
+                h.fields()
+                    .iter()
+                    .find(|f| f.name == i.name)
+                    .map(|f| f.shape)
+            }
+            _ => Some(self.layout_fields[i.at].1),
+        };
+        let grids: Vec<(String, FieldShape)> = inputs
+            .iter()
+            .filter(|i| i.field)
+            .filter_map(|i| shape_of(i).map(|s| (i.name.clone(), s)))
+            .collect();
+        let (filters, problems) =
+            Filters::compile(std::slice::from_ref(&e), &scalars, params, &grids);
+        if let Some(p) = problems.into_iter().next() {
+            return Err(format!("filter {p}; ignored"));
+        }
+        let mut sources: Vec<Src> = Vec::new();
+        for i in &inputs {
+            if !sources.contains(&i.src) {
+                sources.push(i.src);
+            }
+        }
+        let key: Vec<ProbeSpec> = sources
+            .iter()
+            .filter_map(|s| match s {
+                Src::Probe(i) => Some(self.probes[*i].spec.clone()),
+                _ => None,
+            })
+            .collect();
+        let held = vec![None; inputs.len()];
+        if let Some(k) = old.iter().position(|d| d.entry == e && d.key == key) {
+            let mut d = old.remove(k);
+            d.filters = filters;
+            d.inputs = inputs;
+            d.sources = sources;
+            return Ok(d);
+        }
+        let mut d = Derived {
+            entry: e,
+            key,
+            filters,
+            inputs,
+            sources,
+            held,
+            history: SharedHistory::new(History::new(Vec::new())),
+            pending: Vec::new(),
+            now: None,
+        };
+        let (names, _) = d.outputs();
+        let fields: Vec<(String, FieldShape)> =
+            d.filters.cuts.iter().flat_map(|c| c.fields()).collect();
+        let mut h = History::with_fields("t", names, fields);
+        let mut coordinates = Vec::new();
+        for c in &d.filters.cuts {
+            coordinates.extend(c.lines().into_iter().map(|l| Coordinate {
+                name: c.coordinate(),
+                of: l,
+                axis: 0,
+            }));
+        }
+        h.set_coordinates(coordinates);
+        d.history = SharedHistory::new(h);
+        // Mid-run, it starts from what its sources recorded so far.
+        if recorded_to.is_some() {
+            self.reseed(&mut d);
+        }
+        Ok(d)
+    }
+
+    /// Take a filter's held inputs again from its sources' recordings, as
+    /// they stand (after a rewind, or when it is new).
+    fn reseed(&self, d: &mut Derived) {
+        for (k, i) in d.inputs.iter().enumerate() {
+            let h = match i.src {
+                Src::Model => None,
+                Src::Probe(p) => Some(self.probes[p].history.clone()),
+                Src::Derived(j) => Some(self.derived[j].history.clone()),
+            };
+            d.held[k] = h.and_then(|h| {
+                let h = h.read();
+                let last = h.len().checked_sub(1)?;
+                if i.field {
+                    let f = h.fields().iter().find(|f| f.name == i.name)?;
+                    Some(f.frame(last).to_vec()).filter(|v| !v.is_empty())
+                } else {
+                    let s = h.resolve(&i.name)?;
+                    Some(vec![h.value(s, last)])
+                }
+            });
+        }
+        d.now = None;
+    }
+
+    /// Run the filters with clocks of their own whose sources recorded at
+    /// this sample (`fired`, by probe).
+    fn run_derived(&mut self, t: f64, values: &[f64], frames: &[&[f64]], fired: &[bool]) {
+        if self.derived.is_empty() {
+            return;
+        }
+        let params = self.param_values();
+        let coordinates = self.all_coordinates.clone();
+        let mut produced = vec![false; self.derived.len()];
+        for j in 0..self.derived.len() {
+            let (before, rest) = self.derived.split_at_mut(j);
+            let d = &mut rest[0];
+            d.now = None;
+            let did = |s: &Src| match *s {
+                Src::Model => true,
+                Src::Probe(i) => fired.get(i).copied().unwrap_or(false),
+                Src::Derived(k) => produced[k],
+            };
+            let go = if d.entry.on_any() {
+                d.sources.iter().any(did)
+            } else {
+                d.sources.iter().all(did)
+            };
+            if !go {
+                continue;
+            }
+            for (k, i) in d.inputs.iter().enumerate() {
+                if !did(&i.src) {
+                    continue;
+                }
+                d.held[k] = Some(match (i.src, i.field) {
+                    (Src::Derived(m), field) => {
+                        let (v, f) = before[m].now.as_ref().expect("it produced");
+                        if field {
+                            f[i.at].clone()
+                        } else {
+                            vec![v[i.at]]
+                        }
+                    }
+                    (_, true) => frames[i.at].to_vec(),
+                    (_, false) => vec![values[i.at]],
+                });
+            }
+            // Until every input has a value (`any`), it gives NaN.
+            let ready = d.held.iter().all(Option::is_some);
+            let mut vals: Vec<f64> = d
+                .inputs
+                .iter()
+                .zip(&d.held)
+                .filter(|(i, _)| !i.field)
+                .map(|(_, h)| h.as_ref().map_or(f64::NAN, |v| v[0]))
+                .collect();
+            let base = vals.len();
+            derive(&d.filters.exprs, t, &mut vals, &params);
+            let mut out: Vec<f64> = vals.split_off(base);
+            if !ready {
+                out.iter_mut().for_each(|v| *v = f64::NAN);
+            }
+            let field_names: Vec<String> = d
+                .inputs
+                .iter()
+                .filter(|i| i.field)
+                .map(|i| i.name.clone())
+                .collect();
+            let field_frames: Vec<Vec<f64>> = d
+                .inputs
+                .iter()
+                .zip(&d.held)
+                .filter(|(i, _)| i.field)
+                .map(|(_, h)| h.clone().unwrap_or_default())
+                .collect();
+            let cut_frames = derived_cuts(&d.filters, &field_names, &field_frames, &coordinates);
+            d.pending.push(Pending {
+                index: t,
+                values: out.clone(),
+                frames: cut_frames.clone(),
+            });
+            d.flush(false);
+            d.now = Some((out, cut_frames));
+            produced[j] = true;
+        }
+    }
+
+    /// The outputs of filters with clocks of their own, as views bind
+    /// them (ADR 0063).
+    pub fn derived_names(&self) -> &[String] {
+        &self.derived_names
+    }
+
+    /// What each filter with a clock of its own recorded, by its name.
+    pub fn derived_histories(&self) -> Vec<(String, SharedHistory)> {
+        self.derived
+            .iter()
+            .map(|d| (d.entry.name.clone(), d.history.clone()))
+            .collect()
     }
 
     /// Set the probes from the model file's form (ADR 0062), as the
@@ -1359,7 +1735,7 @@ impl Session {
         for (k, e) in self.file.controls.probes.clone().iter().enumerate() {
             let mut specs = kept.clone();
             specs.push(ProbeSpec::from_entry(e));
-            match self.set_probes(specs.clone()) {
+            match self.install_probes(specs.clone()) {
                 Ok(()) => kept = specs,
                 Err(problems) => {
                     for p in problems {
@@ -1657,6 +2033,12 @@ impl Session {
             p.pending.clear();
             p.history.write().clear();
             p.trigger.seek(None, 0.0);
+        }
+        for d in &mut self.derived {
+            d.pending.clear();
+            d.history.write().clear();
+            d.held.iter_mut().for_each(|h| *h = None);
+            d.now = None;
         }
         self.record();
         Ok(())
@@ -2033,6 +2415,28 @@ impl Session {
             p.history.write().truncate_after(t0);
             p.trigger.seek(Some(t0), eps);
         }
+        // Filters with clocks of their own hold what their sources
+        // recorded by then (ADR 0063).
+        for j in 0..self.derived.len() {
+            let mut d = std::mem::replace(
+                &mut self.derived[j],
+                Derived {
+                    entry: FilterEntry::expression("", "0", Vec::new()),
+                    key: Vec::new(),
+                    filters: Filters::default(),
+                    inputs: Vec::new(),
+                    sources: Vec::new(),
+                    held: Vec::new(),
+                    history: SharedHistory::new(History::new(Vec::new())),
+                    pending: Vec::new(),
+                    now: None,
+                },
+            );
+            d.flush(true);
+            d.history.write().truncate_after(t0);
+            self.reseed(&mut d);
+            self.derived[j] = d;
+        }
         self.steps_since_snapshot = 0;
     }
 
@@ -2122,20 +2526,6 @@ impl Session {
         self.build_history();
         self.replay_history(&old, true);
         self.reset_probes();
-        // A filter on a probe that is not there (yet: the canvas sets
-        // probes after filters) computes nothing.
-        for e in &self.filter_entries {
-            if let Some(p) = e
-                .probe
-                .as_deref()
-                .filter(|p| !self.probe_names().contains(p))
-            {
-                let note = format!("filter {}: there is no probe '{p}' to run on", e.name);
-                if !self.warnings.contains(&note) {
-                    self.warnings.push(note);
-                }
-            }
-        }
         Ok(())
     }
 
@@ -2153,9 +2543,9 @@ impl Session {
     }
 }
 
-/// A probe's cut filters' frames for one sample, from the probe's own
-/// field frames, named by `names`.
-fn probe_cuts(
+/// A filter's cut frames for one sample, from its input fields' frames,
+/// named by `names`.
+fn derived_cuts(
     filters: &Filters,
     names: &[String],
     frames: &[Vec<f64>],
@@ -2185,11 +2575,12 @@ fn probe_cuts(
 /// out; those on probes as given (ADR 0063); in the given order.
 fn kept_entries(filters: &Filters, given: &[FilterEntry]) -> Vec<FilterEntry> {
     let compiled = filters.entries(given);
+    let derived = crate::observers::clocked(given);
     given
         .iter()
         .filter_map(|g| match &g.probe {
-            Some(_) => Some(g.clone()),
-            None => compiled.iter().find(|c| c.name == g.name).cloned(),
+            _ if derived.iter().any(|d| d.name == g.name) => Some(g.clone()),
+            _ => compiled.iter().find(|c| c.name == g.name).cloned(),
         })
         .collect()
 }
@@ -2295,6 +2686,8 @@ pub fn default_cut(h: &History, name: &str, input: &str) -> FilterEntry {
         inputs: vec![input.into()],
         canvas: None,
         probe: None,
+        from: Default::default(),
+        when: None,
         settings: [
             ("mode".to_string(), serde_json::Value::from("along_x")),
             ("at".to_string(), serde_json::Value::from(at)),
@@ -3599,6 +3992,18 @@ mod probe_tests {
             .all(|v| v.is_finite()));
     }
 
+    /// The values of `name` in a filter's own recording, with its times.
+    fn derived_series(s: &Session, filter: &str, name: &str) -> (Vec<f64>, Vec<f64>) {
+        let (_, h) = s
+            .derived_histories()
+            .into_iter()
+            .find(|(n, _)| n == filter)
+            .unwrap();
+        let h = h.read();
+        let r = h.resolve(name).unwrap();
+        (h.times().to_vec(), h.values(r))
+    }
+
     #[test]
     fn filters_on_a_probe_run_on_its_samples() {
         let text = cruise_with(
@@ -3613,23 +4018,22 @@ mod probe_tests {
         s.set_filters(filters.clone()).unwrap();
         s.run_until(2.0).unwrap();
         s.flush(true);
+        // Every 0.5 s, from the probe's samples, in a recording of its own.
+        let (t, w) = derived_series(&s, "power", "power");
         let p = s.probe("speed").unwrap();
         let h = p.read();
-        // Every 0.5 s, from the probe's own samples.
-        assert_eq!(h.names(), ["car.v", "cruise.F", "power"]);
-        let (v, f, w) = (
+        assert_eq!(t, h.times());
+        let (v, f) = (
             h.values(SignalRef::Signal(0)),
             h.values(SignalRef::Signal(1)),
-            h.values(SignalRef::Signal(2)),
         );
-        assert_eq!(w.len(), v.len());
         assert!(w
             .iter()
             .zip(v.iter().zip(&f))
             .all(|(w, (v, f))| (w - v * f).abs() < 1e-9));
         drop(h);
-        // Not in the model's history, and saved with its probe.
         assert!(s.signals().resolve("power").is_none());
+        assert!(s.derived_names().contains(&"power".to_string()));
         let saved = s.save_json(1.0, None).unwrap();
         assert!(saved.contains("\"probe\": \"speed\""));
         // A filter on a probe reads only what the probe records.
@@ -3640,10 +4044,74 @@ mod probe_tests {
         assert!(s
             .warnings
             .iter()
-            .any(|w| w.contains("pi") && w.contains("probe speed")));
+            .any(|w| w.contains("pi") && w.contains("does not record")));
         let mut nowhere = FilterEntry::expression("x", "1", Vec::new());
         nowhere.probe = Some("gone".into());
         s.set_filters(vec![nowhere]).unwrap();
         assert!(s.warnings.iter().any(|w| w.contains("no probe 'gone'")));
+    }
+
+    #[test]
+    fn filters_on_several_probes_run_paired_or_on_any() {
+        // car.v every 0.2 s, cruise.F every 0.3 s (steps of 0.05 s).
+        let text = cruise_with(
+            r#"[{"name": "a", "record": ["car.v"], "every": {"steps": 4}, "keep": {"all": true}},
+                {"name": "b", "record": ["cruise.F"], "every": {"steps": 6}, "keep": {"all": true}}]"#,
+        );
+        let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        let both = |name: &str, when: Option<&str>| {
+            let mut f = FilterEntry::expression(name, "car.v*cruise.F", Vec::new());
+            f.from = [
+                ("car.v".into(), "a".into()),
+                ("cruise.F".into(), "b".into()),
+            ]
+            .into();
+            f.when = when.map(String::from);
+            f
+        };
+        // And a filter reading a filter: on its clock.
+        let half = FilterEntry::expression("half", "paired/2", Vec::new());
+        s.set_filters(vec![
+            both("paired", None),
+            both("latest", Some("any")),
+            half,
+        ])
+        .unwrap();
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        s.run_until(1.2).unwrap();
+        s.flush(true);
+        let step =
+            |t: &[f64]| -> Vec<i64> { t.iter().map(|t| (t / 0.05).round() as i64).collect() };
+        // Paired: where both recorded, every 12 steps.
+        let (t, w) = derived_series(&s, "paired", "paired");
+        assert_eq!(step(&t), [12, 24]);
+        let (th, h) = derived_series(&s, "half", "half");
+        assert_eq!(th, t);
+        assert!(h.iter().zip(&w).all(|(h, w)| (2.0 * h - w).abs() < 1e-9));
+        // Any: whenever either recorded (steps 4, 6, 8, 12, ...), with the
+        // other's latest value; NaN until both have one.
+        let (t, w) = derived_series(&s, "latest", "latest");
+        assert_eq!(step(&t), [4, 6, 8, 12, 16, 18, 20, 24]);
+        assert!(w[0].is_nan() && w[1].is_finite());
+        let a = s.probe("a").unwrap();
+        let b = s.probe("b").unwrap();
+        let (a, b) = (a.read(), b.read());
+        // At step 8: car.v at 8, cruise.F held from 6.
+        let (v8, f6) = (
+            a.values(SignalRef::Signal(0))[1],
+            b.values(SignalRef::Signal(0))[0],
+        );
+        assert!((w[2] - v8 * f6).abs() < 1e-9);
+        drop((a, b));
+        // After a rewind it records the same again.
+        let before = derived_series(&s, "latest", "latest").1;
+        s.rewind_to(0.5);
+        s.run_until(1.2).unwrap();
+        s.flush(true);
+        let again = derived_series(&s, "latest", "latest").1;
+        assert_eq!(
+            before.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            again.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
     }
 }
