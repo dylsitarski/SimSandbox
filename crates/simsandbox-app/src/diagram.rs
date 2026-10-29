@@ -39,6 +39,7 @@ pub enum Outcome {
         filters: Vec<(String, [f64; 2])>,
         views: Vec<(usize, [f64; 2])>,
         probes: Vec<(String, [f64; 2])>,
+        recorder: Option<[f64; 2]>,
     },
     /// Apply these filters, views and probes to the running model, then
     /// log the notes.
@@ -46,6 +47,7 @@ pub enum Outcome {
         filters: Vec<FilterEntry>,
         views: Vec<ViewEntry>,
         probes: Vec<ProbeEntry>,
+        recorder: Option<simsandbox_file::RecorderEntry>,
         notes: Vec<String>,
     },
     /// Put every node where this file has it (undoing a move).
@@ -93,6 +95,8 @@ pub struct DiagramTab {
     redo: Vec<Snapshot>,
     /// A probe's settings, open from its node (ADR 0062).
     probe: Option<crate::probe_editor::ProbeEditor>,
+    /// The recorder's settings, open from its node (ADR 0064).
+    recorder: Option<crate::recorder_editor::RecorderEditor>,
 }
 
 impl DiagramTab {
@@ -210,7 +214,8 @@ impl DiagramTab {
         let key = match self.hide_data {
             true => String::new(),
             false => {
-                serde_json::to_string(&(views.0, &model.filters, &model.probes)).unwrap_or_default()
+                serde_json::to_string(&(views.0, &model.filters, &model.probes, &model.recorder))
+                    .unwrap_or_default()
             }
         };
         if key != self.data_key {
@@ -231,6 +236,7 @@ impl DiagramTab {
                     f.controls.filters = model.filters.clone();
                     f.controls.views = views.0.to_vec();
                     f.controls.probes = model.probes.clone();
+                    f.controls.recorder = model.recorder.clone();
                     d.observe(&f, views.1);
                 }
             }
@@ -315,6 +321,16 @@ impl DiagramTab {
                     out.push(Outcome::ShowView(k));
                     continue;
                 }
+                Request::EditRecorder => {
+                    let recorder = match &self.draft {
+                        Some((f, _)) => f.controls.recorder.clone(),
+                        None => model.recorder.clone(),
+                    };
+                    if let Some(r) = recorder {
+                        self.recorder = Some(crate::recorder_editor::RecorderEditor::new(&r));
+                    }
+                    continue;
+                }
                 Request::EditProbe(name) => {
                     let probes = match &self.draft {
                         Some((f, _)) => &f.controls.probes,
@@ -387,6 +403,17 @@ impl DiagramTab {
                     self.probe = None;
                 }
                 Some(Done::Close) => self.probe = None,
+                None => {}
+            }
+        }
+        if let Some(ed) = &mut self.recorder {
+            use crate::recorder_editor::Done;
+            match ed.show(ui.ctx()) {
+                Some(Done::Apply(recorder)) => {
+                    edits.push(Edit::SetRecorder { recorder });
+                    self.recorder = None;
+                }
+                Some(Done::Close) => self.recorder = None,
                 None => {}
             }
         }
@@ -475,6 +502,7 @@ impl DiagramTab {
                     filters: next.controls.filters,
                     views: next.controls.views,
                     probes: next.controls.probes,
+                    recorder: next.controls.recorder,
                     notes: vec![word.into()],
                 });
             }
@@ -529,6 +557,7 @@ impl DiagramTab {
             return out;
         }
         let mut placed = (Vec::new(), Vec::new(), Vec::new());
+        let mut recorder_at = None;
         let mut model_moves = Vec::new();
         for e in moves {
             let Edit::Move { block, at } = e else {
@@ -538,6 +567,8 @@ impl DiagramTab {
                 placed.0.push((f.to_string(), at));
             } else if let Some(p) = block.strip_prefix("probe:") {
                 placed.2.push((p.to_string(), at));
+            } else if block == simsandbox_session::observers::RECORDER {
+                recorder_at = Some(at);
             } else if let Some(k) = block.strip_prefix("view:").and_then(|k| k.parse().ok()) {
                 placed.1.push((k, at));
             } else {
@@ -547,11 +578,16 @@ impl DiagramTab {
         if !model_moves.is_empty() {
             out.push(Outcome::Moved(scope.clone(), model_moves));
         }
-        if !placed.0.is_empty() || !placed.1.is_empty() || !placed.2.is_empty() {
+        if !placed.0.is_empty()
+            || !placed.1.is_empty()
+            || !placed.2.is_empty()
+            || recorder_at.is_some()
+        {
             out.push(Outcome::Placed {
                 filters: placed.0,
                 views: placed.1,
                 probes: placed.2,
+                recorder: recorder_at,
             });
         }
         if !rest.is_empty() {
@@ -568,6 +604,7 @@ impl DiagramTab {
                 filters: file.controls.filters,
                 views: file.controls.views,
                 probes: file.controls.probes,
+                recorder: file.controls.recorder,
                 notes,
             });
         }

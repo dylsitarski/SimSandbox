@@ -174,16 +174,12 @@ struct ResampleJob {
 /// A sweep counts as real-time (ADR 0037) when it recomputes within this.
 const REAL_TIME_SWEEP: Duration = Duration::from_millis(33);
 
-/// Take a snapshot for rewind every this many steps.
-const SNAPSHOT_EVERY: usize = 10;
-/// When the snapshots grow past this many, or past [`SNAPSHOT_VALUES`]
-/// numbers in all, every other one is dropped: the whole run stays
-/// reachable, at coarser resolution.
+/// When the snapshots grow past this many, or past the recorder's memory
+/// budget (ADR 0064), every other one is dropped: the whole run stays
+/// reachable, at coarser resolution. Gray–Scott (128 × 128, its outputs
+/// computed again on rewind, ADR 0063) takes about 0.26 MB a snapshot, so
+/// the default 256 MB keeps about 1 000.
 const MAX_SNAPSHOTS: usize = 10_000;
-/// The memory snapshots may take, in numbers: 256 MB. Gray–Scott (128 ×
-/// 128, its outputs computed again on rewind, ADR 0063) takes about
-/// 0.26 MB a snapshot, so it keeps about 1 000.
-const SNAPSHOT_VALUES: usize = 32_000_000;
 
 /// Where a recorded signal comes from: an element of an output port.
 struct Source {
@@ -335,6 +331,8 @@ pub struct Session {
     sim: Simulator,
     snapshots: Vec<Snapshot>,
     steps_since_snapshot: usize,
+    /// The recorder (ADR 0064): without one, no snapshots and no rewind.
+    recorder: Option<simsandbox_file::RecorderEntry>,
     /// Set when the model has no states: it is swept, not run.
     sweep: Option<Arc<Sweep>>,
     /// The sweep being evaluated, if not finished.
@@ -598,6 +596,7 @@ impl Session {
             snapshots: vec![sim.snapshot()],
             sim,
             steps_since_snapshot: 0,
+            recorder: start_file.controls.recorder.clone(),
             sweep,
             job: None,
             deferred,
@@ -1821,16 +1820,14 @@ impl Session {
         self.apply_due();
         self.sim.step(self.dt)?;
         self.record();
+        let Some(r) = &self.recorder else {
+            return Ok(());
+        };
         self.steps_since_snapshot += 1;
-        if self.steps_since_snapshot >= SNAPSHOT_EVERY {
+        if self.steps_since_snapshot as u64 >= r.every() {
             self.steps_since_snapshot = 0;
             self.snapshots.push(self.sim.snapshot());
-            let held = |s: &[Snapshot]| s.iter().map(Snapshot::values).sum::<usize>();
-            while self.snapshots.len() > 2
-                && (self.snapshots.len() > MAX_SNAPSHOTS || held(&self.snapshots) > SNAPSHOT_VALUES)
-            {
-                thin(&mut self.snapshots);
-            }
+            self.fit_snapshots();
         }
         Ok(())
     }
@@ -1929,7 +1926,7 @@ impl Session {
         self.set_value(key, value)?;
         // Before the run starts, a value the schedule also sets is the
         // model's own: the run starts from it.
-        if self.time() == 0.0 && self.snapshots.len() == 1 {
+        if self.time() == 0.0 && self.sim.step_count() == 0 {
             for (k, v) in &mut self.track.base {
                 if k == key {
                     *v = value;
@@ -1989,7 +1986,7 @@ impl Session {
     fn after_param_change(&mut self) -> Result<(), String> {
         if self.sweep.is_some() {
             self.resample();
-        } else if self.time() == 0.0 && self.snapshots.len() == 1 {
+        } else if self.time() == 0.0 && self.sim.step_count() == 0 {
             self.restart().map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -2026,7 +2023,10 @@ impl Session {
         }
         self.apply_due();
         self.sim.restart(0.0)?;
-        self.snapshots = vec![self.sim.snapshot()];
+        self.snapshots = match self.recorder {
+            Some(_) => vec![self.sim.snapshot()],
+            None => Vec::new(),
+        };
         self.steps_since_snapshot = 0;
         self.stop_at = self.file.run.t_end;
         self.history_mut().clear();
@@ -2210,6 +2210,7 @@ impl Session {
             self.file.controls.views = v;
         }
         self.file.controls.filters = self.filter_entries.clone();
+        self.file.controls.recorder = self.recorder.clone();
         // A swept model records no probes: the file keeps its own.
         self.file.controls.probes = self.probe_entries();
         if let Some(sw) = &self.sweep {
@@ -2391,16 +2392,54 @@ impl Session {
         methods && sweep
     }
 
+    /// Thin the snapshots to the recorder's budget.
+    fn fit_snapshots(&mut self) {
+        let Some(r) = &self.recorder else {
+            return;
+        };
+        let budget = (r.mb() * 1e6 / 8.0) as usize;
+        let held = |s: &[Snapshot]| s.iter().map(Snapshot::values).sum::<usize>();
+        while self.snapshots.len() > 2
+            && (self.snapshots.len() > MAX_SNAPSHOTS || held(&self.snapshots) > budget)
+        {
+            thin(&mut self.snapshots);
+        }
+    }
+
+    /// The recorder, if the model has one (ADR 0064).
+    pub fn recorder(&self) -> Option<&simsandbox_file::RecorderEntry> {
+        self.recorder.as_ref()
+    }
+
+    /// Add, change or remove the recorder (ADR 0064). Added during a run,
+    /// it can rewind to now and later; removed, its snapshots go.
+    pub fn set_recorder(&mut self, recorder: Option<simsandbox_file::RecorderEntry>) {
+        match (&self.recorder, &recorder) {
+            (None, Some(_)) => {
+                self.snapshots = vec![self.sim.snapshot()];
+                self.steps_since_snapshot = 0;
+            }
+            (_, None) => self.snapshots.clear(),
+            _ => {}
+        }
+        self.recorder = recorder;
+        self.fit_snapshots();
+    }
+
     /// Earliest and latest time the run can be rewound to.
     pub fn history_range(&self) -> (f64, f64) {
-        let first = self.snapshots.first().map_or(0.0, |s| s.t);
+        let first = self.snapshots.first().map_or(self.time(), |s| s.t);
         let last = self.snapshots.last().map_or(first, |s| s.t);
         (first, last)
     }
 
     /// Rewind to the latest snapshot at or before `t`. Everything recorded
     /// after it is discarded, so running on starts a new branch.
+    /// Without a recorder (ADR 0064) there is nothing to rewind to.
     pub fn rewind_to(&mut self, t: f64) {
+        if self.snapshots.is_empty() {
+            return;
+        }
         let keep = self.snapshots.iter().rposition(|s| s.t <= t).unwrap_or(0);
         self.snapshots.truncate(keep + 1);
         let snap = &self.snapshots[keep];
@@ -2795,6 +2834,8 @@ mod tests {
     #[test]
     fn rewind_then_rerun_reproduces_the_run() {
         let mut s = lorenz();
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
         for _ in 0..300 {
             s.step().unwrap();
         }
@@ -2874,6 +2915,8 @@ mod tests {
             .text
             .replace(r#""dt": 0.01"#, r#""dt": 0.01, "t_end": 0.5"#);
         let mut s = Session::load("l", &text, &registry()).unwrap();
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
         let mut steps = 0;
         while !s.take_end_reached() {
             s.step().unwrap();
@@ -3271,6 +3314,8 @@ mod tests {
     #[test]
     fn field_outputs_are_recorded_whole_and_offered_to_views() {
         let mut s = example("rod");
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
         let h = s.signals();
         let a = s.available(&h);
         assert!(a.scalars.is_empty());
@@ -3569,6 +3614,8 @@ mod input_tests {
     #[test]
     fn live_input_is_recorded_and_replays_bit_for_bit() {
         let mut s = cart(CART);
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
         steer(&mut s);
         let reference = signals(&s);
         assert_eq!(s.recorded().len(), 3);
@@ -3659,6 +3706,8 @@ mod input_tests {
     #[test]
     fn new_input_during_a_replay_starts_a_branch() {
         let mut s = cart(CART);
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
         steer(&mut s);
         s.rewind_to(1.0);
         s.run_until(1.5).unwrap();
@@ -3788,6 +3837,8 @@ mod probe_tests {
     #[test]
     fn probes_keep_the_newest_or_thin_and_replay_after_a_rewind() {
         let mut s = example("Cruise control");
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
         s.set_probes(vec![
             spec(
                 "last",
@@ -4060,6 +4111,8 @@ mod probe_tests {
                 {"name": "b", "record": ["cruise.F"], "every": {"steps": 6}, "keep": {"all": true}}]"#,
         );
         let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
         let both = |name: &str, when: Option<&str>| {
             let mut f = FilterEntry::expression(name, "car.v*cruise.F", Vec::new());
             f.from = [
@@ -4158,5 +4211,31 @@ mod probe_tests {
         let snap = s.sim.snapshot();
         let cells = 128 * 128;
         assert!(snap.values() < 2 * cells + 100, "{} values", snap.values());
+    }
+
+    #[test]
+    fn rewind_needs_a_recorder_and_reaches_back_to_when_it_was_added() {
+        let mut s = example("Cruise control");
+        assert!(s.recorder().is_none());
+        s.run_until(1.0).unwrap();
+        // No recorder: no snapshots, nothing to rewind to.
+        assert_eq!(s.history_range(), (s.time(), s.time()));
+        s.rewind_to(0.5);
+        assert!((s.time() - 1.0).abs() < 1e-9);
+        // Added at t = 1: rewind reaches back to then, not before.
+        s.set_recorder(Some(simsandbox_file::RecorderEntry {
+            every: Some(4),
+            ..Default::default()
+        }));
+        s.run_until(2.0).unwrap();
+        let (first, last) = s.history_range();
+        assert!((first - 1.0).abs() < 1e-9 && (last - 2.0).abs() < 1e-9);
+        s.rewind_to(0.5);
+        assert!((s.time() - 1.0).abs() < 1e-9);
+        // Saved with the model; removed, its snapshots go.
+        assert!(s.save_json(1.0, None).unwrap().contains("\"recorder\""));
+        s.set_recorder(None);
+        assert_eq!(s.history_range(), (s.time(), s.time()));
+        assert!(!s.save_json(1.0, None).unwrap().contains("\"recorder\""));
     }
 }

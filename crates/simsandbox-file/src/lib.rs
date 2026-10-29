@@ -482,6 +482,48 @@ impl ProbeEntry {
     }
 }
 
+/// The recorder (ADR 0064): rewind's snapshots and their settings.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecorderEntry {
+    /// Steps between snapshots; 10 if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<u64>,
+    /// The memory snapshots may use, in MB; 256 if absent. Past it they
+    /// thin, every other one dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mb: Option<f64>,
+    /// Where its node sits on the canvas's data layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<[f64; 2]>,
+}
+
+impl RecorderEntry {
+    pub const EVERY: u64 = 10;
+    pub const MB: f64 = 256.0;
+
+    /// Steps between snapshots.
+    pub fn every(&self) -> u64 {
+        self.every.unwrap_or(Self::EVERY)
+    }
+
+    /// Its memory budget in MB.
+    pub fn mb(&self) -> f64 {
+        self.mb.unwrap_or(Self::MB)
+    }
+
+    /// What is wrong with its settings, if anything.
+    pub fn check(&self) -> Result<(), String> {
+        if self.every.is_some_and(|n| n == 0) {
+            return Err("'every' is at least 1 step".into());
+        }
+        if self.mb.is_some_and(|mb| !(mb.is_finite() && mb > 0.0)) {
+            return Err("'mb' is a positive size".into());
+        }
+        Ok(())
+    }
+}
+
 /// When a probe records: one of the three.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -707,6 +749,11 @@ pub struct Controls {
     /// records nothing the model has is dropped with a warning.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub probes: Vec<ProbeEntry>,
+    /// The recorder (ADR 0064): with one, the model can be rewound; its
+    /// settings say how often snapshots are taken and how much memory
+    /// they may use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorder: Option<RecorderEntry>,
     /// Derived signals as written before filters (name to expression).
     /// Still read; converted into `expression` filters on load and never
     /// written.
@@ -1452,6 +1499,11 @@ impl ModelFile {
         // two can then be changed apart.
         for c in controls.params.values_mut() {
             c.pin |= c.slider;
+        }
+        // Nor does the recorder.
+        if let Some(Err(e)) = controls.recorder.as_ref().map(RecorderEntry::check) {
+            warnings.push(format!("controls.recorder: {e}; ignored"));
+            controls.recorder = None;
         }
         // Probes never change results: an invalid one is dropped, not the file.
         let mut names = std::collections::BTreeSet::new();

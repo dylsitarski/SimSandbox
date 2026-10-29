@@ -41,9 +41,20 @@ pub fn probe_node(name: &str) -> String {
 /// A probe node's one input.
 pub const RECORD: &str = "record";
 
+/// The recorder's node (ADR 0064): one per model.
+pub const RECORDER: &str = "recorder";
+
 /// Whether a node name is on the data layer.
 pub fn is_observer(node: &str) -> bool {
-    node.starts_with("filter:") || node.starts_with("view:") || node.starts_with("probe:")
+    node.starts_with("filter:")
+        || node.starts_with("view:")
+        || node.starts_with("probe:")
+        || node == RECORDER
+}
+
+/// The recorder's settings in a few words.
+pub fn recorder_summary(r: &simsandbox_file::RecorderEntry) -> String {
+    format!("every {} steps · {} MB", r.every(), r.mb())
 }
 
 /// A probe's settings in a few words: when, how long, its file.
@@ -403,6 +414,23 @@ impl Diagram {
                 settings: Default::default(),
             });
         }
+        if let Some(r) = &file.controls.recorder {
+            self.nodes.push(Node {
+                name: RECORDER.into(),
+                kind: NodeKind::Recorder,
+                type_name: RECORDER.into(),
+                method: recorder_summary(r),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                at: r.canvas.unwrap_or_default(),
+                placed: r.canvas.is_some(),
+                error: None,
+                unreached: Vec::new(),
+                values: Vec::new(),
+                open: false,
+                settings: Default::default(),
+            });
+        }
         // Data wires: what each filter input, view slot and probe reads.
         let mut wires = Vec::new();
         for i in model_nodes..self.nodes.len() {
@@ -483,7 +511,7 @@ impl Diagram {
         let column = |n: &Node| match n.kind {
             NodeKind::Filter if n.settings.contains_key("clock") => 2,
             NodeKind::Filter => 0,
-            NodeKind::Probe => 1,
+            NodeKind::Probe | NodeKind::Recorder => 1,
             _ => 3,
         };
         let mut x = x0;
@@ -584,6 +612,13 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
             } else if block.starts_with("probe:") {
                 let k = probe_index(file, block)?;
                 file.controls.probes[k].canvas = at;
+            } else if block == RECORDER {
+                let r = file
+                    .controls
+                    .recorder
+                    .as_mut()
+                    .ok_or("there is no recorder")?;
+                r.canvas = at;
             } else {
                 let k = view_index(file, block)?;
                 file.controls.views[k].canvas = at;
@@ -696,6 +731,10 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
         }
         Edit::Unbind { to, signal } => unbind(file, to, Some(signal)),
         Edit::Disconnect { to } => unbind(file, to, None),
+        Edit::Delete { block } if block == RECORDER => {
+            file.controls.recorder = None;
+            Ok("Removed the recorder: the model can no longer be rewound".into())
+        }
         Edit::Delete { block } if block.starts_with("probe:") => {
             let k = probe_index(file, block)?;
             let p = file.controls.probes.remove(k);
@@ -738,6 +777,9 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                 file.controls.views.remove(k);
                 Ok(format!("Deleted view {}", k + 1))
             }
+        }
+        Edit::Rename { from, .. } if from == RECORDER => {
+            Err("the recorder has no name: a model has one".into())
         }
         Edit::Rename { from, to } if from.starts_with("probe:") => {
             let k = probe_index(file, from)?;
@@ -812,6 +854,25 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
             } else {
                 format!("{} runs where its inputs' times pair", f.name)
             })
+        }
+        Edit::AddRecorder { at } => {
+            if file.controls.recorder.is_some() {
+                return Err("the model has a recorder already".into());
+            }
+            file.controls.recorder = Some(simsandbox_file::RecorderEntry {
+                canvas: Some(at.map(tidy)),
+                ..Default::default()
+            });
+            Ok("Added a recorder: the model can be rewound from now on".into())
+        }
+        Edit::SetRecorder { recorder } => {
+            recorder.check()?;
+            let canvas = file.controls.recorder.as_ref().and_then(|r| r.canvas);
+            file.controls.recorder = Some(simsandbox_file::RecorderEntry {
+                canvas,
+                ..recorder.clone()
+            });
+            Ok(format!("Recorder: {}", recorder_summary(recorder)))
         }
         Edit::AddProbe { at } => {
             let name = free_name("probe", |n| {
@@ -1671,5 +1732,36 @@ mod tests {
         .unwrap();
         assert_eq!(f.controls.filters[0].source_of("b.x"), None);
         assert_eq!(f.controls.filters[0].source_of("a.x"), Some("probe1"));
+    }
+
+    #[test]
+    fn the_recorder_is_a_node_added_once_and_set_on_the_canvas() {
+        let mut f = file("oscillators");
+        assert!(observed(&f).node(RECORDER).is_none());
+        apply(&mut f, &registry(), &Edit::AddRecorder { at: [600.0, 0.0] }).unwrap();
+        assert!(apply(&mut f, &registry(), &Edit::AddRecorder { at: [0.0, 0.0] }).is_err());
+        let d = observed(&f);
+        let r = d.node(RECORDER).unwrap();
+        assert_eq!(d.nodes[r].kind, NodeKind::Recorder);
+        assert_eq!(d.nodes[r].method, "every 10 steps · 256 MB");
+        let set = Edit::SetRecorder {
+            recorder: simsandbox_file::RecorderEntry {
+                every: Some(5),
+                ..Default::default()
+            },
+        };
+        assert!(set.data_only());
+        apply(&mut f, &registry(), &set).unwrap();
+        let r = f.controls.recorder.clone().unwrap();
+        assert_eq!((r.every, r.canvas), (Some(5), Some([600.0, 0.0])));
+        apply(
+            &mut f,
+            &registry(),
+            &Edit::Delete {
+                block: RECORDER.into(),
+            },
+        )
+        .unwrap();
+        assert!(f.controls.recorder.is_none());
     }
 }

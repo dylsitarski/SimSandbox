@@ -751,7 +751,9 @@ impl SimApp {
         let Some(live) = self.session.as_ref() else {
             return;
         };
-        if live.model().sweep.is_some() {
+        // Without a recorder there is nothing to rewind to (ADR 0064).
+        let m = live.model();
+        if m.sweep.is_some() || m.recorder.is_none() {
             return;
         }
         let (first, last) = live.status().history_range;
@@ -1096,10 +1098,23 @@ impl SimApp {
                     filters,
                     views,
                     probes,
+                    recorder,
                 } => {
                     let Some(live) = &self.session else {
                         return;
                     };
+                    if let Some(at) = recorder {
+                        live.send(Some("place-recorder"), move |s, _| {
+                            let r = s
+                                .recorder()
+                                .cloned()
+                                .map(|r| simsandbox_file::RecorderEntry {
+                                    canvas: Some(at.map(|v| (v * 10.0).round() / 10.0)),
+                                    ..r
+                                });
+                            s.set_recorder(r);
+                        });
+                    }
                     for (name, at) in probes {
                         live.send(Some(&format!("place-probe:{name}")), move |s, c| {
                             if let Err(e) = s.place_probe(&name, Some(at)) {
@@ -1147,8 +1162,17 @@ impl SimApp {
                     filters,
                     views,
                     probes,
+                    recorder,
                     notes,
-                } => self.apply_data(m, (filters, views, probes), notes),
+                } => {
+                    // The recorder is set apart: it never needs a check.
+                    if let Some(live) = &self.session {
+                        if recorder != m.recorder {
+                            live.send(None, move |s, _| s.set_recorder(recorder));
+                        }
+                    }
+                    self.apply_data(m, (filters, views, probes), notes)
+                }
                 Outcome::EditData(_) => {
                     self.signals_editor = Some(SignalsEditor::new(m));
                 }

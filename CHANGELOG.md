@@ -98,6 +98,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Rewind is now opt-in (ADR 0064): add a recorder on the Diagram ("Add recorder") and the rewind bar appears; its settings say how often it saves the model's state (every 10 steps) and how much memory it may use (256 MB). Without one, no memory goes to rewind and the bar is hidden. Restart and replaying saved runs work as before. The "Drag the bob" and "Steer the car with keys" examples include one; add one to a model you want to rewind (`"recorder": {}` in `controls`).
 - Rewind keeps far more of a run in the same memory: snapshots no longer store outputs that can be computed again exactly from a block's state (checked bit for bit when the snapshot is taken) or that copy it. Gray–Scott's snapshots are 72% smaller (the two state grids alone), so it can rewind about four times as far back at full detail.
 - Long runs of large grid models no longer use unbounded memory: recorded grids keep about 256 MB (thinning sooner for big grids) and rewind points about 256 MB, both thinned when full, so rewind becomes coarser rather than memory running out.
 - Unit conversions and input blocks are labelled Quantitative, not Verified (ADR 0061): Verified is earned by a run of a model through a convergence check (planned), never declared by a method.

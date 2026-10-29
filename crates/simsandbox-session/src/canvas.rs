@@ -55,6 +55,8 @@ pub enum Request {
     ShowView(usize),
     /// Edit a probe's settings (ADR 0062), by its name.
     EditProbe(String),
+    /// Edit the recorder's settings (ADR 0064).
+    EditRecorder,
     /// A value typed on a node (ADR 0053): `"block.param"` and the value.
     SetValue { key: String, value: f64 },
     /// `= expression` typed on a node (ADR 0056): `"block.param"` and the
@@ -433,6 +435,7 @@ impl Canvas {
             NodeKind::Filter => visuals.hyperlink_color.gamma_multiply(0.3),
             NodeKind::View => visuals.hyperlink_color.gamma_multiply(0.15),
             NodeKind::Probe => visuals.warn_fg_color.gamma_multiply(0.18),
+            NodeKind::Recorder => visuals.error_fg_color.gamma_multiply(0.18),
         };
         painter.rect_filled(
             header,
@@ -505,6 +508,7 @@ impl Canvas {
                 NodeKind::Filter => format!("filter · {}", n.method),
                 NodeKind::View => format!("view · {}", n.method),
                 NodeKind::Probe => n.method.clone(),
+                NodeKind::Recorder => format!("rewind · {}", n.method),
             }
         };
         painter.text(
@@ -1259,8 +1263,18 @@ impl Canvas {
                             ui.close();
                         }
                     }
+                    NodeKind::Recorder => {
+                        if ui
+                            .button("Settings…")
+                            .on_hover_text("How often it saves the model's state, and how much memory it may use")
+                            .clicked()
+                        {
+                            requests.push(open_request(n));
+                            ui.close();
+                        }
+                    }
                 }
-                ui.add_enabled_ui(n.kind != NodeKind::View, |ui| ui.horizontal(|ui| {
+                ui.add_enabled_ui(!matches!(n.kind, NodeKind::View | NodeKind::Recorder), |ui| ui.horizontal(|ui| {
                     let field = ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(110.0));
                     let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (ui.button("Rename").clicked() || enter) && self.rename != shown {
@@ -1334,6 +1348,18 @@ impl Canvas {
                         .clicked()
                     {
                         edits.push(Edit::AddProbe { at });
+                        ui.close();
+                    }
+                    if d.node(crate::observers::RECORDER).is_none()
+                        && ui
+                            .button("Add recorder")
+                            .on_hover_text(
+                                "Saves the model's state as it runs, so it can be rewound \
+                                 (ADR 0064); without one the rewind bar is hidden",
+                            )
+                            .clicked()
+                    {
+                        edits.push(Edit::AddRecorder { at });
                         ui.close();
                     }
                     ui.menu_button("Add view", |ui| {
@@ -1448,6 +1474,7 @@ impl Canvas {
 /// What a node is called on the canvas.
 fn title(n: &Node) -> String {
     match n.kind {
+        NodeKind::Recorder => "Recorder".into(),
         NodeKind::Input | NodeKind::Output | NodeKind::Filter | NodeKind::Probe => {
             n.name[n.name.find(':').map_or(0, |i| i + 1)..].to_string()
         }
@@ -1465,6 +1492,7 @@ fn open_request(n: &Node) -> Request {
         NodeKind::Filter => Request::EditData(title(n)),
         NodeKind::View => Request::ShowView(n.name["view:".len()..].parse().unwrap_or(0)),
         NodeKind::Probe => Request::EditProbe(title(n)),
+        NodeKind::Recorder => Request::EditRecorder,
         _ => Request::Open(n.name.clone()),
     }
 }
@@ -1483,6 +1511,11 @@ fn observer_help(n: &Node) -> String {
             "Probe {} ({}): records the signals and fields wired into it, without changing \
              results. Drop more on it; double-click for its settings.",
             title(n),
+            n.method
+        ),
+        NodeKind::Recorder => format!(
+            "Recorder ({}): saves the whole model's state as it runs, so it can be rewound. \
+             Double-click for its settings; delete it to stop.",
             n.method
         ),
         _ => format!(

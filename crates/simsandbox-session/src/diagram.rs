@@ -66,6 +66,8 @@ pub enum NodeKind {
     /// A probe on the data layer (ADR 0062): what is recorded, when, and
     /// the file it writes.
     Probe,
+    /// The recorder (ADR 0064): with it, the model can be rewound.
+    Recorder,
 }
 
 /// One node.
@@ -157,7 +159,7 @@ impl Node {
     pub fn is_observer(&self) -> bool {
         matches!(
             self.kind,
-            NodeKind::Filter | NodeKind::View | NodeKind::Probe
+            NodeKind::Filter | NodeKind::View | NodeKind::Probe | NodeKind::Recorder
         )
     }
 }
@@ -843,6 +845,12 @@ pub enum Edit {
     /// Data layer: whether a filter with inputs from probes runs whenever
     /// one of them records (`any`), or where their times pair (ADR 0063).
     SetFilterWhen { filter: String, any: bool },
+    /// Data layer: add the recorder, so the model can be rewound (ADR 0064).
+    AddRecorder { at: [f64; 2] },
+    /// Data layer: the recorder's settings.
+    SetRecorder {
+        recorder: simsandbox_file::RecorderEntry,
+    },
     /// Data layer: a new probe recording nothing yet (ADR 0062).
     AddProbe { at: [f64; 2] },
     /// Data layer: a probe's settings (what, when, how long, its file),
@@ -903,7 +911,9 @@ impl Edit {
             | Edit::AddView { .. }
             | Edit::AddProbe { .. }
             | Edit::SetProbe { .. }
-            | Edit::SetFilterWhen { .. } => true,
+            | Edit::SetFilterWhen { .. }
+            | Edit::AddRecorder { .. }
+            | Edit::SetRecorder { .. } => true,
             Edit::Connect { to, .. } | Edit::Disconnect { to } => observer(&node(to)),
             Edit::Delete { block } => observer(block),
             Edit::Rename { from, .. } => observer(from),
@@ -1411,6 +1421,8 @@ fn edit_level(
         | Edit::AddProbe { .. }
         | Edit::SetProbe { .. }
         | Edit::SetFilterWhen { .. }
+        | Edit::AddRecorder { .. }
+        | Edit::SetRecorder { .. }
         | Edit::Promote { .. }
         | Edit::PromoteConnect { .. } => unreachable!("handled before"),
     }

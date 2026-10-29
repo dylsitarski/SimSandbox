@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-10-29: ADR 0064, the recorder. File `RecorderEntry`, `Controls::recorder`; session `recorder`, `set_recorder`, `fit_snapshots` (replacing `SNAPSHOT_EVERY`/`SNAPSHOT_VALUES`); canvas `NodeKind::Recorder`, `Edit::{AddRecorder, SetRecorder}`, `Request::EditRecorder`; app `recorder_editor.rs`, rewind bar hidden without one; examples `pendulum-drag` and `cruise-steer` rewritten with `"recorder": {}`. Screenshots under Xvfb: the bar is there with a recorder, gone without.
 - 2026-10-29: outputs recomputed on rewind. Kernel: `Kept` (`All`, `ButCopies`, `None`), `Simulator::{recomputable, recompute}`, `bits_equal`; restore sets parameters before recomputing. Tests: `tests/snapshots.rs` (honest and lagging blocks), the examples' bit-for-bit restore, Gray–Scott at 2 grids. `grid_cost`: 1.674 ms a step in a session against 1.728 stepping alone.
 - 2026-10-29: ADR 0063 step 2. Kernel: `PortSpec::state`, `from_state`; `Simulator::copies`; `Snapshot::compact`; `snapshot` checks copies bit for bit, `restore` rebuilds them. Declarations in `symbolic.rs`, `group.rs`, `systems.rs`, `fields.rs`. Tests: `simsandbox-core/tests/snapshots.rs` (a true and a wrong declaration), every example restored bit for bit, Gray–Scott at 5 grids. Note: blocks write their outputs in `do_step`; the kernel does not call `compute_outputs` after a step, which is why a stale declared copy must be checked rather than trusted.
 - 2026-10-29: filters with several sources (ADR 0063 amended). File: `FilterEntry::{from, when}`, `source_of`, `on_probes`, `on_any`; `probe:NAME/output` view bindings of filter outputs converted to names. Session: `Src`, `Input`, `Derived`; `build_derived` (dependency order, keeps unchanged ones), `derived_inputs`, `compile_derived`, `reseed`, `run_derived`, `derived_names`, `derived_histories`; `install_probes` (probes without filters, for loading); the load builds the history without resetting probes; rewind and restart cover derived filters. Views: `Recorded::derived`, `Available::derived`. Observers: `clocked`, `set_source` (replaces `put_on`), per-input `from.NAME` settings, `Edit::SetFilterWhen`, canvas checkbox. Tests: paired and any over two probes at 0.2 and 0.3 s, a filter reading a filter, exact replay after rewind.
@@ -88,6 +89,7 @@
 
 ## Decided
 
+- 2026-10-29: rewind off by default; a recorder node turns it on and holds its settings; the rewind bar is hidden until one is present; subsystem-level replay later (owner). ADR 0064.
 - 2026-10-29: rewind recomputes outputs where that is exact (the owner left it to us): amends ADR 0062, recorded in ADR 0063.
 - 2026-10-29: filters may read several probes (owner): each input has a source; `when` chooses running where the inputs pair (default) or whenever one updates, with held values; such filters keep their own recordings, bound by output name. Recorded in ADR 0063.
 - 2026-10-29: a probe feeding its own model adds no delay: it is a sample-and-hold element evaluated at each communication point in dependency order (ADR 0063 corrected; the one-step delay was an artefact of probes recording after the step).

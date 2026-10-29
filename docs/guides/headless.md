@@ -76,6 +76,10 @@ A view binds a probe's recording as `probe:NAME/signal` (`"y": ["car.v", "probe:
 
 A probe with bad settings, or recording something the model does not record, is dropped with a warning. `simsandbox run FILE --probe NAME` prints one; `--save-probes DIR` writes the files. A swept model records no probes. JSON output of a probe: `rows`, `t`, `signals` (name → list), `fields` (name → `{shape, frames}`).
 
+## Recorder
+
+`"recorder": {"every": 10, "mb": 256}` in `controls` (both optional) lets the model be rewound in the app ([ADR 0064](../decisions/0064-recorder-node.md)): a snapshot of its state every `every` steps, within `mb` megabytes. Without it the app shows no rewind bar. It changes no results; headless runs ignore it.
+
 ## Inputs and run files
 
 Input blocks ([ADR 0058](../decisions/0058-inputs-live-scheduled-replayed.md)) are values set from outside a running model: `input.value` (one output `y`) and `input.pointer` (`x`, `y`, `down`), with settings `unit`, `min` and `max`. Their outputs are their own parameters, so they are wired like any block.

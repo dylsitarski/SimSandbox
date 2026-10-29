@@ -696,6 +696,31 @@
             }
           }
         },
+        "recorder": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The recorder (ADR 0064): with one, the model can be rewound.",
+          "properties": {
+            "every": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Steps between snapshots; 10 if absent."
+            },
+            "mb": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Memory for snapshots in MB; 256 if absent. Past it they thin."
+            },
+            "canvas": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        },
         "probes": {
           "type": "array",
           "description": "Probes (ADR 0062): what is recorded, when, how long, and the file written. Never affects results.",

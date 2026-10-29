@@ -47,6 +47,7 @@ pub fn canvas_state(now: &ModelFile, target: &ModelFile) -> ModelFile {
     out.controls.filters = target.controls.filters.clone();
     out.controls.views = target.controls.views.clone();
     out.controls.probes = target.controls.probes.clone();
+    out.controls.recorder = target.controls.recorder.clone();
     out
 }
 
@@ -100,6 +101,9 @@ fn unplaced(f: &ModelFile) -> ModelFile {
     for p in &mut f.controls.probes {
         p.canvas = None;
     }
+    if let Some(r) = &mut f.controls.recorder {
+        r.canvas = None;
+    }
     f
 }
 
@@ -113,6 +117,7 @@ pub fn change(now: &ModelFile, next: &ModelFile) -> Change {
         f.controls.filters.clear();
         f.controls.views.clear();
         f.controls.probes.clear();
+        f.controls.recorder = None;
     }
     if a == b {
         Change::Data

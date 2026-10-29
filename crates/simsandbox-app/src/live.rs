@@ -34,6 +34,8 @@ pub struct Model {
     pub filters: Vec<FilterEntry>,
     /// Probes besides the implicit one, as the file writes them (ADR 0062).
     pub probes: Vec<simsandbox_file::ProbeEntry>,
+    /// The recorder: with it the model can be rewound (ADR 0064).
+    pub recorder: Option<simsandbox_file::RecorderEntry>,
     /// What each probe has recorded, shared for drawing, by name.
     pub probe_histories: Vec<(String, simsandbox_session::session::SharedHistory)>,
     pub dt: f64,
@@ -67,6 +69,7 @@ impl Model {
             sweep: s.sweep_shared(),
             filters: s.filters().to_vec(),
             probes: s.probe_entries(),
+            recorder: s.recorder().cloned(),
             probe_histories: s
                 .probe_names()
                 .into_iter()
@@ -496,11 +499,10 @@ mod tests {
         let reference = values(&direct.signals(), "lorenz.xyz[0]");
 
         // Fast, so the worker gets there quickly; it records whole steps.
-        let live = Live::start(
-            Session::load_deferred("l", text, &registry()).unwrap(),
-            200.0,
-            true,
-        );
+        let mut s = Session::load_deferred("l", text, &registry()).unwrap();
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
+        let live = Live::start(s, 200.0, true);
         wait_for(&live, 401);
         live.set_running(false);
         live.sync();

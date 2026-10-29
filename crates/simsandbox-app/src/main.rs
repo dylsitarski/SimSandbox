@@ -18,6 +18,7 @@ mod live;
 mod log;
 mod pacing;
 mod probe_editor;
+mod recorder_editor;
 
 use app::{ScreenshotRequest, SimApp};
 use eframe::egui;
