@@ -118,6 +118,10 @@ pub struct SimApp {
     discard_ok: bool,
     screenshot: Option<ScreenshotRequest>,
     screenshot_requested: bool,
+    /// Frames drawn before the window is maximized: once it is showing,
+    /// as a person would (created maximized, Windows keeps the drawing
+    /// area at the first size). `None` when done, or for screenshots.
+    maximize_in: Option<u8>,
 }
 
 impl SimApp {
@@ -170,6 +174,7 @@ impl SimApp {
             last_unsaved_check: Instant::now(),
             asking: None,
             discard_ok: false,
+            maximize_in: screenshot.is_none().then_some(2),
             screenshot,
             screenshot_requested: false,
         };
@@ -2840,6 +2845,18 @@ impl SimApp {
 impl eframe::App for SimApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Fill the screen once the window shows.
+        match self.maximize_in {
+            Some(0) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                self.maximize_in = None;
+            }
+            Some(n) => {
+                self.maximize_in = Some(n - 1);
+                ctx.request_repaint();
+            }
+            None => {}
+        }
         self.handle_dropped_files(&ctx);
         self.poll(&ctx);
         self.equation_editor(&ctx);

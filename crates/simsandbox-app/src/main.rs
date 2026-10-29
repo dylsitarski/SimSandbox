@@ -109,12 +109,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Maximized, filling the screen; screenshots keep a fixed size.
+    // Maximized once it shows (`SimApp`), not when created: on Windows a
+    // window created maximized keeps drawing at this size until resized.
     let viewport = egui::ViewportBuilder::default()
         .with_title("SimSandbox")
         .with_inner_size([1100.0, 700.0])
-        .with_drag_and_drop(true)
-        .with_maximized(args.screenshot.is_none());
+        .with_drag_and_drop(true);
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport,
