@@ -288,9 +288,18 @@ fn write_npy<'a>(
     out.write_all(b"\x93NUMPY\x01\x00")?;
     out.write_all(&(header.len() as u16).to_le_bytes())?;
     out.write_all(header.as_bytes())?;
+    // A frame not recorded (empty) is written as NaN, so every frame has
+    // the field's shape.
+    let len = shape[1] * shape[2];
     for frame in frames {
-        for v in frame {
-            out.write_all(&v.to_le_bytes())?;
+        if frame.len() == len {
+            for v in frame {
+                out.write_all(&v.to_le_bytes())?;
+            }
+        } else {
+            for _ in 0..len {
+                out.write_all(&f64::NAN.to_le_bytes())?;
+            }
         }
     }
     Ok(())

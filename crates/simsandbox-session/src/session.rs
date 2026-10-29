@@ -219,6 +219,21 @@ pub struct Session {
     pending: Vec<Pending>,
     /// Probes besides the implicit one, which is `history` (ADR 0062).
     probes: Vec<Extra>,
+    /// What views read from the model directly (ADR 0063): the history
+    /// records these and what filters read, nothing else. `None` until
+    /// known (a model without saved views, before the app shows any):
+    /// everything.
+    view_reads: Option<Vec<String>>,
+    /// Every scalar and per-sample field a step yields, in sample order:
+    /// what probes take from and views can bind.
+    layout_scalars: Vec<String>,
+    layout_fields: Vec<(String, FieldShape)>,
+    /// Which fields place which others' cells, among everything a step
+    /// yields.
+    all_coordinates: Vec<Coordinate>,
+    /// What the history keeps of each sample: places in the layout.
+    keep_signals: Vec<usize>,
+    keep_fields: Vec<usize>,
     sources: Vec<Source>,
     /// Names of the scalar output signals, in `sources` order.
     output_names: Vec<String>,
@@ -389,7 +404,6 @@ impl Session {
         let mut field_sources = Vec::new();
         let mut coordinates: Vec<Coordinate> = Vec::new();
         let mut block_types = Vec::new();
-        let plots = &loaded.file.controls.plots;
         for entry in &loaded.flat.blocks {
             let id = loaded.ids[&entry.name];
             let block = loaded.model.block(id).map_err(|e| e.to_string())?;
@@ -398,11 +412,9 @@ impl Session {
             }
             let spec = block.spec();
             for port in spec.outputs() {
+                // Every output can be recorded; what is, wiring decides
+                // (ADR 0063), so `controls.plots` no longer limits it.
                 let key = format!("{}.{}", entry.name, port.name);
-                // Plot what the file asks for, or every output if it says nothing.
-                if !plots.is_empty() && !plots.contains(&key) {
-                    continue;
-                }
                 let field = match port.shape {
                     Shape::Grid { nx, ny } => Some(FieldShape::Grid { nx, ny }),
                     Shape::Points { count, dim } => Some(FieldShape::Points { count, dim }),
@@ -486,6 +498,13 @@ impl Session {
             history: SharedHistory::new(History::new(Vec::new())),
             pending: Vec::new(),
             probes: Vec::new(),
+            view_reads: (!start_file.controls.views.is_empty())
+                .then(|| view_reads(&start_file.controls.views)),
+            layout_scalars: Vec::new(),
+            layout_fields: Vec::new(),
+            all_coordinates: Vec::new(),
+            keep_signals: Vec::new(),
+            keep_fields: Vec::new(),
             sources,
             output_names: names,
             base_fields: fields,
@@ -668,6 +687,30 @@ impl Session {
 
     /// Names of the recorded grids, point sets, one-row grids and the
     /// model's block types: what views can bind besides scalars.
+    /// Every scalar a step yields, which views can bind (ADR 0063).
+    pub fn bindable_scalars(&self) -> &[String] {
+        &self.layout_scalars
+    }
+
+    /// The 2D grids a cut filter can take, recorded or not (ADR 0063).
+    pub fn cut_inputs(&self) -> Vec<String> {
+        if self.sweep.is_some() {
+            // A sweep records everything, its whole-sweep grids included.
+            return cut_inputs(&self.signals());
+        }
+        self.layout_fields
+            .iter()
+            .filter(|(_, s)| matches!(s, FieldShape::Grid { nx, ny } if *nx >= 2 && *ny >= 2))
+            .filter(|(n, _)| !self.all_coordinates.iter().any(|c| &c.name == n))
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    /// Which fields place which others' cells, among all a step yields.
+    pub fn all_coordinates(&self) -> &[Coordinate] {
+        &self.all_coordinates
+    }
+
     pub fn bindable(&self) -> [&[String]; 4] {
         [&self.grids, &self.points, &self.lines, &self.block_types]
     }
@@ -751,31 +794,135 @@ impl Session {
                 p.flush(false);
             }
         }
+        self.push_kept(index, values, &frames);
+    }
+
+    /// Record in the history what it keeps of a whole sample (ADR 0063).
+    fn push_kept(&mut self, index: f64, values: &[f64], frames: &[&[f64]]) {
+        let values: Vec<f64> = self.keep_signals.iter().map(|&i| values[i]).collect();
+        let frames: Vec<&[f64]> = self
+            .keep_fields
+            .iter()
+            .map(|&i| frames.get(i).copied().unwrap_or(&[]))
+            .collect();
         if let Some(mut h) = self.history.try_write() {
             for p in self.pending.drain(..) {
                 let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
                 h.push_sample(p.index, &p.values, &frames);
             }
-            h.push_sample(index, values, &frames);
+            h.push_sample(index, &values, &frames);
             return;
         }
         self.pending.push(Pending {
             index,
-            values: values.to_vec(),
+            values,
             frames: frames.iter().map(|f| f.to_vec()).collect(),
         });
     }
 
-    /// What views can bind, with `h` this session's history: the scalar
-    /// signals, grids, point sets and the model's block types.
+    /// Tell the session what the views read (their bindings as written):
+    /// the history records what they read from the model directly and
+    /// what filters read, from now on (ADR 0063). What it recorded of
+    /// those before is kept; what it no longer records is dropped.
+    pub fn set_view_reads(&mut self, reads: Vec<String>) {
+        let reads = Some(model_reads(reads));
+        if self.view_reads == reads {
+            return;
+        }
+        self.view_reads = reads;
+        if self.sweep.is_some() {
+            return;
+        }
+        let (signals, fields) = self.kept();
+        if signals == self.keep_signals && fields == self.keep_fields {
+            return;
+        }
+        drop(self.history_mut());
+        let old = self.replace_history(History::new(Vec::new()));
+        self.build_history();
+        self.replay_history(&old, false);
+    }
+
+    /// The places in the layout the history keeps: everything in a sweep
+    /// or when no views are known, else what views read from the model
+    /// and what filters read, with the coordinates cuts need.
+    fn kept(&self) -> (Vec<usize>, Vec<usize>) {
+        let (Some(reads), None) = (&self.view_reads, &self.sweep) else {
+            return (
+                (0..self.layout_scalars.len()).collect(),
+                (0..self.layout_fields.len()).collect(),
+            );
+        };
+        let mut want: std::collections::BTreeSet<String> = reads.iter().cloned().collect();
+        for f in &self.filter_entries {
+            want.extend(crate::observers::filter_reads(f));
+        }
+        for c in &self.filters.cuts {
+            want.extend(
+                self.all_coordinates
+                    .iter()
+                    .filter(|k| k.of == c.input)
+                    .map(|k| k.name.clone()),
+            );
+        }
+        let signals = (0..self.layout_scalars.len())
+            .filter(|&i| want.contains(&self.layout_scalars[i]))
+            .collect();
+        let fields = (0..self.layout_fields.len())
+            .filter(|&i| want.contains(&self.layout_fields[i].0))
+            .collect();
+        (signals, fields)
+    }
+
+    /// Append the samples of `old` to the (new, empty) history, by name:
+    /// what it did not record is NaN for signals and absent for fields.
+    /// With `recompute`, the filters are computed again from the outputs.
+    fn replay_history(&mut self, old: &History, recompute: bool) {
+        let signal_at: Vec<Option<usize>> = self
+            .layout_scalars
+            .iter()
+            .map(|n| old.names().iter().position(|m| m == n))
+            .collect();
+        let field_at: Vec<Option<usize>> = self
+            .layout_fields
+            .iter()
+            .map(|(n, _)| old.fields().iter().position(|f| &f.name == n && !f.whole))
+            .collect();
+        let outputs = self.output_names.len();
+        let base = self.base_fields.len();
+        for k in 0..old.len() {
+            let t = old.times()[k];
+            let mut values: Vec<f64> = signal_at
+                .iter()
+                .map(|i| i.map_or(f64::NAN, |i| old.value(SignalRef::Signal(i), k)))
+                .collect();
+            let mut frames: Vec<&[f64]> = field_at
+                .iter()
+                .map(|i| i.map_or(&[][..], |i| old.fields()[i].frame(k)))
+                .collect();
+            let cuts;
+            if recompute {
+                values.truncate(outputs);
+                self.append_derived(t, &mut values);
+                frames.truncate(base);
+                cuts = self.sample_cuts(&frames);
+                frames.extend(cuts.iter().map(Vec::as_slice));
+            }
+            self.push_kept(t, &values, &frames);
+        }
+    }
+
+    /// What views can bind: everything a step yields (ADR 0063), whether
+    /// or not the history `h` records it now; and the model's block types.
     pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
+        let _ = h;
         Available {
-            scalars: h.names(),
+            scalars: &self.layout_scalars,
             grids: &self.grids,
             points: &self.points,
             block_types: &self.block_types,
             lines: &self.lines,
-            coordinates: h.coordinates(),
+            coordinates: &self.all_coordinates,
             swept: self.sweep.as_ref().map_or(&[], |sw| sw.keys()),
         }
     }
@@ -835,6 +982,12 @@ impl Session {
     /// two-parameter grid, every signal reshaped as a grid; then the cut
     /// filters' fields.
     fn rebuild_history(&mut self) {
+        self.build_history();
+        self.reset_probes();
+    }
+
+    /// The layout of a sample and an empty history keeping what is wired.
+    fn build_history(&mut self) {
         let names = self.scalar_names();
         let mut fields = self.base_fields.clone();
         let mut whole = Vec::new();
@@ -892,7 +1045,28 @@ impl Session {
         };
         self.grids = of_kind(true);
         self.points = of_kind(false);
-        let mut h = History::with_fields(index, scalars, fields);
+        self.lines = all
+            .iter()
+            .filter(|(_, s)| matches!(s, FieldShape::Grid { ny: 1, .. }))
+            .map(|(n, _)| n.clone())
+            .collect();
+        self.layout_scalars = scalars;
+        self.layout_fields = fields;
+        self.all_coordinates = coordinates;
+        (self.keep_signals, self.keep_fields) = self.kept();
+        let kept_fields: Vec<(String, FieldShape)> = self
+            .keep_fields
+            .iter()
+            .map(|&i| self.layout_fields[i].clone())
+            .collect();
+        let mut h = History::with_fields(
+            index,
+            self.keep_signals
+                .iter()
+                .map(|&i| self.layout_scalars[i].clone())
+                .collect(),
+            kept_fields,
+        );
         for (name, shape) in whole {
             h.add_whole(&name, shape);
         }
@@ -906,27 +1080,32 @@ impl Session {
                 }
             }
         }
+        // Coordinates among what it records.
+        let recorded = |n: &str| h.fields().iter().any(|f| f.name == n);
+        let coordinates = self
+            .all_coordinates
+            .iter()
+            .filter(|c| recorded(&c.name) && recorded(&c.of))
+            .cloned()
+            .collect();
         h.set_coordinates(coordinates);
         for (name, label) in labels {
             h.set_label(&name, &label);
         }
-        self.lines = h
-            .fields()
-            .iter()
-            .filter(|f| matches!(f.shape, FieldShape::Grid { ny: 1, .. }))
-            .map(|f| f.name.clone())
-            .collect();
         self.replace_history(h);
-        // What the probes record may have moved or gone: they start afresh,
-        // without what is no longer recorded.
+    }
+
+    /// What the probes record may have moved or gone: they start afresh,
+    /// without what a step no longer yields.
+    fn reset_probes(&mut self) {
         let mut specs: Vec<ProbeSpec> = Vec::new();
         {
-            let h = self.history.read();
-            let recorded = |n: &str| {
-                h.names().iter().any(|m| m == n) || h.fields().iter().any(|f| f.name == n)
-            };
+            let (scalars, fields) = (&self.layout_scalars, &self.layout_fields);
+            let recorded =
+                |n: &str| scalars.iter().any(|m| m == n) || fields.iter().any(|(f, _)| f == n);
             for p in &self.probes {
                 let mut spec = p.spec.clone();
+                let had = !spec.record.is_empty();
                 spec.record.retain(|r| {
                     let ok = recorded(r);
                     if !ok {
@@ -935,7 +1114,7 @@ impl Session {
                     }
                     ok
                 });
-                if spec.record.is_empty() {
+                if had && spec.record.is_empty() {
                     self.warnings.push(format!(
                         "probe {}: removed, it records nothing now",
                         spec.name
@@ -958,9 +1137,9 @@ impl Session {
     pub fn set_probes(&mut self, specs: Vec<ProbeSpec>) -> Result<(), Vec<String>> {
         let mut problems = Vec::new();
         let mut names: Vec<&str> = Vec::new();
-        let h = self.history.read();
-        let field_list: Vec<&simsandbox_views::history::Field> =
-            h.fields().iter().filter(|f| !f.whole).collect();
+        // Probes take from every sample a step yields (ADR 0063), not
+        // from what the history keeps.
+        let (scalars, field_list) = (&self.layout_scalars, &self.layout_fields);
         let mut built = Vec::new();
         for spec in &specs {
             if let Err(e) = spec.check() {
@@ -974,27 +1153,25 @@ impl Session {
             let mut signals = Vec::new();
             let mut fields = Vec::new();
             for r in &spec.record {
-                if let Some(i) = h.names().iter().position(|n| n == r) {
+                if let Some(i) = scalars.iter().position(|n| n == r) {
                     signals.push(i);
-                } else if let Some(i) = field_list.iter().position(|f| &f.name == r) {
+                } else if let Some(i) = field_list.iter().position(|(f, _)| f == r) {
                     fields.push(i);
                 } else {
-                    problems.push(format!("probe {}: nothing is recorded as '{r}'", spec.name));
+                    problems.push(format!("probe {}: the model has no '{r}'", spec.name));
                 }
             }
-            let probe_fields: Vec<(String, FieldShape)> = fields
-                .iter()
-                .map(|&i| (field_list[i].name.clone(), field_list[i].shape))
-                .collect();
+            let probe_fields: Vec<(String, FieldShape)> =
+                fields.iter().map(|&i| field_list[i].clone()).collect();
             let mut ph = History::with_fields(
                 "t",
-                signals.iter().map(|&i| h.names()[i].clone()).collect(),
+                signals.iter().map(|&i| scalars[i].clone()).collect(),
                 probe_fields,
             );
             // Coordinates of what it records, when it records them too.
             let has = |n: &str| spec.record.iter().any(|r| r == n);
             ph.set_coordinates(
-                h.coordinates()
+                self.all_coordinates
                     .iter()
                     .filter(|c| has(&c.name) && has(&c.of))
                     .cloned()
@@ -1010,8 +1187,7 @@ impl Session {
                 pending: Vec::new(),
             });
         }
-        let recorded_to = h.times().last().copied();
-        drop(h);
+        let recorded_to = self.history.read().times().last().copied();
         if !problems.is_empty() {
             return Err(problems);
         }
@@ -1145,8 +1321,7 @@ impl Session {
         frame: impl Fn(&str) -> Option<&'a [f64]>,
         whole: bool,
     ) -> Vec<Vec<f64>> {
-        let h = self.signals();
-        let coordinates = h.coordinates();
+        let coordinates = &self.all_coordinates;
         self.filters
             .cuts
             .iter()
@@ -1860,22 +2035,13 @@ impl Session {
             self.resample();
             return Ok(());
         }
-        // Replay the recorded outputs and fields through the new filters.
+        // Replay the recorded outputs and fields through the new filters;
+        // probes start afresh from now.
         drop(self.history_mut());
         let old = self.replace_history(History::new(Vec::new()));
-        self.rebuild_history();
-        let outputs = self.output_names.len();
-        let base = self.base_fields.len();
-        for k in 0..old.len() {
-            let t = old.times()[k];
-            let mut values: Vec<f64> = (0..outputs)
-                .map(|i| old.value(SignalRef::Signal(i), k))
-                .collect();
-            self.append_derived(t, &mut values);
-            let frames: Vec<&[f64]> = old.fields()[..base].iter().map(|f| f.frame(k)).collect();
-            let cuts = self.sample_cuts(&frames);
-            self.push(t, &values, &frames, &cuts);
-        }
+        self.build_history();
+        self.replay_history(&old, true);
+        self.reset_probes();
         Ok(())
     }
 
@@ -1891,6 +2057,25 @@ impl Session {
             })
             .collect()
     }
+}
+
+/// What views read, as their bindings are written (ADR 0063).
+pub fn view_reads(views: &[ViewEntry]) -> Vec<String> {
+    model_reads(
+        views
+            .iter()
+            .flat_map(|v| v.bind.values().flat_map(simsandbox_file::Binding::signals))
+            .collect(),
+    )
+}
+
+/// Of these bindings, what is read from the model directly: not `t` and
+/// not a probe's recording; sorted, once each.
+fn model_reads(mut reads: Vec<String>) -> Vec<String> {
+    reads.retain(|r| r != "t" && !r.starts_with("probe:"));
+    reads.sort();
+    reads.dedup();
+    reads
 }
 
 /// One note per algebraic loop (ADR 0040), saying how it is solved.
@@ -2433,7 +2618,9 @@ mod tests {
         let drift = e.iter().map(|v| (v - e[0]).abs()).fold(0.0, f64::max);
         assert!(drift < 1e-9 * e[0], "energy drifted by {drift} of {}", e[0]);
 
-        // Redefining recomputes the whole history.
+        // Redefining recomputes the whole history (of what a view reads,
+        // ADR 0063).
+        s.set_view_reads(vec!["ax2".into()]);
         s.set_filters(exprs(&[("ax2", "a.x^2 + 0*t")])).unwrap();
         let ax = values(&s, "a.x");
         let ax2 = values(&s, "ax2");
@@ -2463,6 +2650,7 @@ mod tests {
     #[test]
     fn expression_filters_may_read_each_other() {
         let mut s = example("Coupled");
+        s.set_view_reads(vec!["double".into()]);
         s.set_filters(exprs(&[("double", "2*sq"), ("sq", "a.x^2")]))
             .unwrap();
         for _ in 0..10 {
@@ -3044,7 +3232,7 @@ mod probe_tests {
         drop((p, all));
         // Unknown names are refused, and nothing changes.
         let bad = s.set_probes(vec![spec("x", &["car.nope"], Every::Steps(1), Keep::All)]);
-        assert!(bad.unwrap_err()[0].contains("nothing is recorded as 'car.nope'"));
+        assert!(bad.unwrap_err()[0].contains("the model has no 'car.nope'"));
         assert_eq!(s.probe_names(), ["speed"]);
     }
 
@@ -3222,5 +3410,37 @@ mod probe_tests {
         entries[1].record.clear();
         s.set_probe_entries(&entries).unwrap();
         assert_eq!(s.probe_names(), ["speed", "later"]);
+    }
+
+    #[test]
+    fn the_history_records_only_what_is_wired_and_probes_anything() {
+        // Cruise control's views read car.v and cruise.F, and so on.
+        let mut s = example("Cruise control");
+        s.set_view_reads(vec!["car.v".into(), "probe:speed/cruise.F".into()]);
+        assert_eq!(s.signals().names(), ["car.v"]);
+        // Everything can still be bound and probed.
+        let h = s.signals();
+        assert!(s.available(&h).scalars.contains(&"cruise.I".to_string()));
+        drop(h);
+        s.set_probes(vec![spec("i", &["cruise.I"], Every::Steps(1), Keep::All)])
+            .unwrap();
+        s.run_until(1.0).unwrap();
+        s.flush(true);
+        // Added after the sample at t = 0: every step since.
+        assert_eq!(s.probe("i").unwrap().read().len(), 20);
+        // Wiring cruise.I to a view records it from now; car.v keeps its past.
+        s.set_view_reads(vec!["car.v".into(), "cruise.I".into()]);
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        let h = s.signals();
+        assert_eq!(h.names(), ["car.v", "cruise.I"]);
+        let i = h.values(h.resolve("cruise.I").unwrap());
+        assert_eq!(h.len(), 41);
+        assert!(i[..21].iter().all(|v| v.is_nan()));
+        assert!(i[21..].iter().all(|v| v.is_finite()));
+        assert!(h
+            .values(h.resolve("car.v").unwrap())
+            .iter()
+            .all(|v| v.is_finite()));
     }
 }

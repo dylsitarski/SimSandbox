@@ -51,6 +51,8 @@ pub struct SimApp {
     this: std::sync::Weak<std::sync::Mutex<SimApp>>,
     /// What popped-out windows asked for, carried out by the main window.
     popped_actions: Vec<DockAction>,
+    /// What the views read, as last told to the session (ADR 0063).
+    view_reads: Vec<String>,
     /// Values keys are driving (ADR 0058), by input block, while a key is
     /// held or until its release is sent.
     key_values: HashMap<String, f64>,
@@ -130,6 +132,7 @@ impl SimApp {
             new_param: Default::default(),
             this: std::sync::Weak::new(),
             popped_actions: Vec::new(),
+            view_reads: Vec::new(),
             key_values: HashMap::new(),
             run_dialog: None,
             registry: registry(),
@@ -433,6 +436,9 @@ impl SimApp {
                     self.views.open(&s.available(&h), &s.file.controls.views)
                 };
                 s.warnings.extend(w);
+                // The history records what the views read (ADR 0063).
+                self.view_reads = simsandbox_session::session::view_reads(&self.views.entries());
+                s.set_view_reads(self.view_reads.clone());
                 let tiles = self.tile_ids();
                 let opened = self.views.opened.clone();
                 let tile = |k: usize| opened.get(k).copied().flatten();
@@ -495,6 +501,12 @@ impl SimApp {
         let st = live.status();
         if st.running {
             self.rewind_t = st.time;
+        }
+        // Views bound, rebound or closed: the history follows (ADR 0063).
+        let reads = simsandbox_session::session::view_reads(&self.views.entries());
+        if reads != self.view_reads {
+            self.view_reads = reads.clone();
+            live.send(Some("view-reads"), move |s, _| s.set_view_reads(reads));
         }
     }
 
@@ -2396,6 +2408,7 @@ impl SimApp {
         let (mut apply, mut cancel) = (false, false);
         {
             let history = live.history();
+            let m = live.model();
             egui::Window::new("Data")
                 .open(&mut open)
                 .default_width(640.0)
@@ -2404,7 +2417,7 @@ impl SimApp {
                     egui::ScrollArea::vertical()
                         .max_height(520.0)
                         .show(ui, |ui| {
-                            data_editor(ui, ed, &history);
+                            data_editor(ui, ed, &history, &m);
                         });
                     for p in &ed.problems {
                         ui.colored_label(ui.visuals().error_fg_color, p);
@@ -3909,7 +3922,7 @@ impl SignalsEditor {
 }
 
 /// The Data window's contents: expressions, then cuts.
-fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History) {
+fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History, m: &Model) {
     use simsandbox_views::cut::{Interpolation, Mode};
     ui.heading("Signals");
     ui.label(
@@ -3941,9 +3954,9 @@ fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History) {
         ed.exprs
             .push((format!("signal{}", ed.exprs.len() + 1), String::new()));
     }
-    ui.weak(format!("Plotted signals: {}", history.names().join(", ")));
+    ui.weak(format!("Signals: {}", m.scalars.join(", ")));
 
-    let inputs = simsandbox_session::session::cut_inputs(history);
+    let inputs = &m.cut_inputs;
     ui.add_space(8.0);
     ui.heading("Cuts");
     if inputs.is_empty() {
@@ -3964,7 +3977,7 @@ fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History) {
             egui::ComboBox::from_id_salt(("cut_input", k))
                 .selected_text(&c.input)
                 .show_ui(ui, |ui| {
-                    for i in &inputs {
+                    for i in inputs {
                         ui.selectable_value(&mut c.input, i.clone(), i);
                     }
                 });

@@ -232,7 +232,6 @@ pub fn check(text: &str, r: &Registry) -> Value {
     match Session::load("check", text, r) {
         Err(e) => json!({"ok": false, "errors": [{"message": e}], "warnings": []}),
         Ok(s) => {
-            let h = s.signals();
             let labels = s.labels();
             json!({
                 "ok": true,
@@ -242,9 +241,11 @@ pub fn check(text: &str, r: &Registry) -> Value {
                 "labels": labels.map(self::labels),
                 "swept": s.sweep().map(|sw| sw.keys().to_vec()),
                 "fused_groups": s.groups.iter().map(|g| json!({"blocks": g.blocks, "method": g.method.to_string()})).collect::<Vec<_>>(),
+                // What views and probes can take (ADR 0063); what the history
+                // records follows the views.
                 "recorded": {
-                    "signals": h.names(),
-                    "fields": h.fields().iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
+                    "signals": s.bindable_scalars(),
+                    "fields": s.bindable()[..2].concat(),
                 },
                 "params": s.params().iter().map(|p| json!({
                     "key": p.key,

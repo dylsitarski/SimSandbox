@@ -160,7 +160,7 @@ fn resolve(sources: &BTreeMap<String, (usize, usize)>, signal: &str) -> Option<(
 
 /// What a filter reads: its inputs as saved, or the names in its
 /// expression.
-fn filter_reads(f: &FilterEntry) -> Vec<String> {
+pub(crate) fn filter_reads(f: &FilterEntry) -> Vec<String> {
     if !f.inputs.is_empty() {
         return f.inputs.clone();
     }

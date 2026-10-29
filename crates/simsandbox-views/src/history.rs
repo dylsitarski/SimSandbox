@@ -417,12 +417,13 @@ impl History {
             p.push(PlotPoint::new(t, v));
         }
         for (f, frame) in per_sample.zip(frames) {
-            // A missing or misshapen frame is recorded as NaN (empty for a
-            // population), so every frame has the field's shape.
+            // A misshapen frame is recorded as NaN (empty for a population);
+            // an empty one as not recorded (ADR 0063: a field wired after
+            // the run started has no past), which views draw as nothing.
             let population = matches!(f.shape, FieldShape::Population { .. });
             f.frames.push(if f.shape.fits(frame.len()) {
                 frame.to_vec()
-            } else if population {
+            } else if population || frame.is_empty() {
                 Vec::new()
             } else {
                 vec![f64::NAN; f.shape.len()]

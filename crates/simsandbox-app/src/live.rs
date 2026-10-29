@@ -40,6 +40,11 @@ pub struct Model {
     pub labels: Option<MethodLabels>,
     /// Sliders apply while dragged (ADR 0037).
     pub real_time: bool,
+    /// Everything views can bind, recorded or not (ADR 0063).
+    pub scalars: Vec<String>,
+    /// The 2D grids cut filters can take.
+    pub cut_inputs: Vec<String>,
+    coordinates: Vec<simsandbox_views::Coordinate>,
     grids: Vec<String>,
     points: Vec<String>,
     lines: Vec<String>,
@@ -66,6 +71,9 @@ impl Model {
             dt: s.dt,
             labels: s.labels(),
             real_time: s.real_time(),
+            scalars: s.bindable_scalars().to_vec(),
+            cut_inputs: s.cut_inputs(),
+            coordinates: s.all_coordinates().to_vec(),
             grids,
             points,
             lines,
@@ -77,15 +85,17 @@ impl Model {
         self.sweep.as_deref()
     }
 
-    /// What views can bind, with `h` the model's history.
+    /// What views can bind: everything a step yields, whether or not the
+    /// history `h` records it now (ADR 0063).
     pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
+        let _ = h;
         Available {
-            scalars: h.names(),
+            scalars: &self.scalars,
             grids: &self.grids,
             points: &self.points,
             block_types: &self.block_types,
             lines: &self.lines,
-            coordinates: h.coordinates(),
+            coordinates: &self.coordinates,
             swept: self.sweep.as_ref().map_or(&[], |sw| sw.keys()),
         }
     }
