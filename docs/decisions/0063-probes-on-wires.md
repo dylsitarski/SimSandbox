@@ -45,7 +45,7 @@ Snapshots (every 10 steps, within their budget) hold the full replay state: stat
 ## Owner's answers (2026-10-29)
 
 1. **Probes feed models in every way that connects them**, for maximum flexibility, including interactions that are not obvious otherwise:
-   - **Into the same model:** a probe output wired into a block input, as a sampled signal: the value is held between samples and changes results like any wire. Since a probe samples after a step, the block reads it from the next step on.
+   - **Into the same model:** a probe output wired into a block input, as a sampled signal: the value is held between samples and changes results like any wire. No delay is added (owner's question, 2026-10-29): such a probe is a sample-and-hold element in the model's graph, evaluated at each communication point in dependency order like an output with direct feedthrough ([ADR 0040](0040-feedthrough-and-algebraic-loops.md)), so a block reads the value sampled at the same instant. Its held value is kernel state, kept in snapshots. It never joins a fused group: blocks it feeds see a value held over each step, as for any input from outside a group. It counts as feedthrough in loop detection, so a loop through it is solved like any other.
    - **Into another model through its file:** a block that reads a probe's saved file (CSV, `.npy`) as an input over time. It also serves external data ([ADR 0048](0048-units-of-external-data.md)).
    - **Into a model on different time steps**, and **into a time-independent model** (formulas, a sweep) that is evaluated again whenever the probe delivers new data. Probes are the links between models with their own clocks.
 2. **Recompute on demand comes later**, as ADR 0062 planned, and only when asked for (an action on a view or probe), never automatically. A signal wired mid-run starts empty; Restart or that action fills it.
@@ -59,7 +59,7 @@ As above: probes have outputs; the implicit history records only what is wired; 
 **Order of work:**
 1. Probe outputs; sources in bindings; the implicit history records only what is wired; views and filters with several sources; the "from" menu and `ViewEntry::probe` go (converted).
 2. Snapshots without outputs that copy a state.
-3. A probe into a block of the same model (sampled and held).
+3. A probe into a block of the same model: a sample-and-hold element in the graph, with no added delay.
 4. A block reading a probe's file (or any CSV or `.npy`) as an input over time.
 5. Several models in one session, each with its own clock, linked by probes; a time-independent model evaluated again on new data. Its own ADR first: how clocks interleave, exact replay across models, how the canvas shows several models.
 

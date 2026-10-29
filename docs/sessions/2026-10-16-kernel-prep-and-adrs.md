@@ -84,6 +84,7 @@
 
 ## Decided
 
+- 2026-10-29: a probe feeding its own model adds no delay: it is a sample-and-hold element evaluated at each communication point in dependency order (ADR 0063 corrected; the one-step delay was an artefact of probes recording after the step).
 - 2026-10-29: ADR 0063 accepted. Probes feed models in every way: into the same model (sampled and held), through their files, into models on other time steps and time-independent models updated on new data. A probe feeding a model is part of the model (hashed; edits restart). Recompute on demand later, only on request. Order of work in the ADR.
 - 2026-10-29: the owner chose probes with outputs wired into views, filters and models instead of the tile's "from" menu; views may mix sources; the implicit history records only what is wired, scalars included. Proposed as [ADR 0063](../decisions/0063-probes-on-wires.md), which also answers whether snapshots duplicate probes; two questions open (what feeding other models means, when recompute on demand comes).
 - 2026-10-29: probe files are written only where asked (`--save-probes DIR`, `save=`), not by every `simsandbox run`; probe controls are lenient like the others (dropped with a warning, the file still opens). Recorded in ADR 0062's as-built notes.
