@@ -43,7 +43,7 @@ A probe is a node on the canvas's data layer, beside filters and views ([ADR 005
 ### Rewind and replay
 
 - **Snapshots** keep the replay state on their own budget (an app setting, default 256 MB). Past it they thin, so rewind stays possible over the whole run, coarser further back.
-- **Snapshots without outputs** would be about a third the size for grids. Recomputing outputs on rewind is exact for most models but can differ in the last bits where algebraic loops are solved by iteration (ADR 0040). **Decided:** snapshots keep outputs, so rewind is exact for every model.
+- **Snapshots without outputs** would be about a third the size for grids. Recomputing outputs on rewind is exact for most models but can differ in the last bits where algebraic loops are solved by iteration (ADR 0040). **Decided:** snapshots keep outputs, so rewind is exact for every model. (Amended 2026-10-29 by [ADR 0063](0063-probes-on-wires.md): outputs that depend only on a Block's state and parameters, and recompute bit for bit, are left out and recomputed; all others, loops included, are kept.)
 - **Recompute on demand:** when a view shows a time a probe did not record (between its samples, or after thinning), the session can rerun from the nearest snapshot to fill it in, exactly. This is how "record little, see everything" works. **Decided:** later, after the rest of this ADR is built.
 
 ### Exact or fast (Q39)

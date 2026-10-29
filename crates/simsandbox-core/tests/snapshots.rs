@@ -1,5 +1,5 @@
-//! Rewind snapshots leave out outputs that copy a state (ADR 0063), and
-//! keep them when they do not.
+//! Rewind snapshots leave out outputs they can have again exactly from
+//! the state (ADR 0063), and keep them when they cannot.
 
 use simsandbox_core::block::Shape;
 use simsandbox_core::block::{
@@ -11,8 +11,10 @@ use simsandbox_core::sim::Simulator;
 use simsandbox_core::units::Unit;
 use simsandbox_core::Result;
 
-/// x' = -x by Euler, with outputs `x` (declared a copy of the state) and
-/// `y`, which is `x` too if `honest`, else `2x` (wrongly declared a copy).
+/// x' = -x by Euler, with outputs `x` and `y` declared copies of the
+/// state. An honest one computes them after its step, as
+/// `compute_outputs` does; a lagging one writes `x` and `2x` before
+/// moving its state, so neither recomputing nor copying gives them back.
 struct Decay {
     spec: BlockSpec,
     method: MethodSpec,
@@ -58,25 +60,27 @@ impl Block for Decay {
         Ok(())
     }
     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
+        if self.honest {
+            io.state[0] -= ctx.dt * io.state[0];
+            return self.compute_outputs(ctx.t + ctx.dt, io);
+        }
+        io.outputs[0] = io.state[0];
+        io.outputs[1] = 2.0 * io.state[0];
         io.state[0] -= ctx.dt * io.state[0];
-        self.compute_outputs(ctx.t + ctx.dt, io)
+        Ok(())
     }
     fn compute_outputs(&self, _t: f64, io: StepIo<'_>) -> Result<()> {
         io.outputs[0] = io.state[0];
-        io.outputs[1] = if self.honest {
-            io.state[0]
-        } else {
-            2.0 * io.state[0]
-        };
+        io.outputs[1] = io.state[0];
         Ok(())
     }
 }
 
 #[test]
-fn outputs_copying_a_state_are_left_out_and_restored() {
+fn outputs_had_again_from_the_state_are_left_out_and_restored() {
     let mut model = Model::new();
     let honest = model.add(Box::new(Decay::new("honest", true)));
-    let wrong = model.add(Box::new(Decay::new("wrong", false)));
+    let wrong = model.add(Box::new(Decay::new("lagging", false)));
     let mut sim = Simulator::new(model, 0.0).unwrap();
     for _ in 0..3 {
         sim.step(0.1).unwrap();
@@ -89,11 +93,11 @@ fn outputs_copying_a_state_are_left_out_and_restored() {
     };
     let before = out(&sim);
     let snap = sim.snapshot();
-    // Two states, the honest block's outputs left out, the wrong one's
+    // Two states, the honest block's outputs left out, the lagging one's
     // kept whole (no parameters).
     assert_eq!(snap.values(), 2 + 2);
     sim.step(0.1).unwrap();
     sim.restore(&snap);
     assert_eq!(out(&sim), before);
-    assert_eq!(before[3], 2.0 * before[2]);
+    assert_ne!(before[2], before[3]);
 }

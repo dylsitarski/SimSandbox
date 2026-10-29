@@ -29,6 +29,7 @@ _Last updated: 2026-10-29_
 
 ## Done recently
 
+- 2026-10-29: rewind recomputes outputs (owner's go-ahead; amends ADR 0062): a block's outputs without feedthrough are left out of snapshots when recomputing them from the state gives the same bits, checked at each snapshot; others are kept, loops included. Gray–Scott's snapshots are its two state grids (72% smaller than before step 2), at no measurable cost.
 - 2026-10-29: ADR 0063 step 2: rewind snapshots leave out outputs that copy a block's state (declared with `PortSpec::from_state`, checked bit for bit at every snapshot) and restore them from it; Gray–Scott's snapshots 29% smaller (7 to 5 grids).
 - 2026-10-29: filters read several probes (owner's request, ADR 0063): each input has a source (`from`); a filter runs where its sources' times pair, or with `when: any` whenever one records, with the others' latest values; filters with inputs from probes have their own recording, bound by output name, and replay exactly after a rewind.
 - 2026-10-29: ADR 0063 step 1: probe nodes have outputs, wired into views (`probe:NAME/signal`) and filters (which then run on the probe's samples); one plot can mix the model's every step and probes at other rates, paired only at common times; the model's every-step recording keeps only what views and filters read from it; probes record any output (`controls.plots` no longer limits); the tile's "from" menu is gone.

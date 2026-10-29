@@ -181,8 +181,8 @@ const SNAPSHOT_EVERY: usize = 10;
 /// reachable, at coarser resolution.
 const MAX_SNAPSHOTS: usize = 10_000;
 /// The memory snapshots may take, in numbers: 256 MB. Gray–Scott (128 ×
-/// 128, outputs copying its states left out, ADR 0063) takes about
-/// 0.65 MB a snapshot, so it keeps about 390.
+/// 128, its outputs computed again on rewind, ADR 0063) takes about
+/// 0.26 MB a snapshot, so it keeps about 1 000.
 const SNAPSHOT_VALUES: usize = 32_000_000;
 
 /// Where a recorded signal comes from: an element of an output port.
@@ -4117,7 +4117,7 @@ mod probe_tests {
     }
 
     #[test]
-    fn snapshots_leave_out_outputs_copying_state_and_restore_them_exactly() {
+    fn snapshots_leave_out_outputs_had_again_from_state_and_restore_them_exactly() {
         let all_outputs = |s: &Session| -> Vec<u64> {
             let mut v = Vec::new();
             for e in &s.flat.blocks {
@@ -4151,12 +4151,12 @@ mod probe_tests {
             s.sim.restore(&snap);
             assert_eq!(all_outputs(&s), before, "{}", e.name);
         }
-        // Gray–Scott: the states u and v (two grids) are held once; the
-        // computed reaction and the axes x and y stay: 5 grids, not 7.
+        // Gray–Scott: its outputs (u, v, reaction, the axes) come from its
+        // state and parameters alone: a snapshot holds the two state grids.
         let gs = EXAMPLES.iter().find(|e| e.name.contains("Gray")).unwrap();
         let s = Session::load(gs.name, gs.text, &registry()).unwrap();
         let snap = s.sim.snapshot();
         let cells = 128 * 128;
-        assert!(snap.values() < 5 * cells + 100, "{} values", snap.values());
+        assert!(snap.values() < 2 * cells + 100, "{} values", snap.values());
     }
 }
