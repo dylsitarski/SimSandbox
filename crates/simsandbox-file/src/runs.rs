@@ -155,6 +155,7 @@ pub fn model_hash(model: &ModelFile) -> String {
             every: p.every.clone(),
             keep: None,
             to: None,
+            stream: false,
             canvas: None,
         })
         .collect();

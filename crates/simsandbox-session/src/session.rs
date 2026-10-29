@@ -58,6 +58,27 @@ struct Extra {
     signals: Vec<usize>,
     fields: Vec<usize>,
     pending: Vec<Pending>,
+    /// Whether it keeps samples in memory: only while something reads
+    /// them (views, filters, a file written when asked, a headless run),
+    /// so a probe feeding a block or writing as it records costs none.
+    in_memory: bool,
+    /// Its file, written as it records (ADR 0063).
+    stream: Option<crate::probe::Stream>,
+}
+
+impl Extra {
+    /// Its signals' names and its fields, as recorded.
+    fn layout(&self) -> (Vec<String>, Vec<(String, FieldShape)>) {
+        let h = self.history.read();
+        (
+            h.names().to_vec(),
+            h.fields()
+                .iter()
+                .filter(|f| !f.whole)
+                .map(|f| (f.name.clone(), f.shape))
+                .collect(),
+        )
+    }
 }
 
 /// Where an input of a filter with a clock of its own comes from
@@ -306,6 +327,12 @@ pub struct Session {
     derived: Vec<Derived>,
     /// Their outputs' names, as views bind them.
     derived_names: Vec<String>,
+    /// Probes whose recordings views read.
+    view_probes: Vec<String>,
+    /// Keep every probe's samples (a headless run).
+    record_all_probes: bool,
+    /// Where probes write their files as they record.
+    probe_dir: Option<std::path::PathBuf>,
     /// What the history keeps of each sample: places in the layout.
     keep_signals: Vec<usize>,
     keep_fields: Vec<usize>,
@@ -584,6 +611,9 @@ impl Session {
             keep_fields: Vec::new(),
             derived: Vec::new(),
             derived_names: Vec::new(),
+            view_probes: Vec::new(),
+            record_all_probes: false,
+            probe_dir: None,
             sources,
             output_names: names,
             base_fields: fields,
@@ -835,6 +865,11 @@ impl Session {
         let mut probes_done = true;
         for p in &mut self.probes {
             probes_done &= p.flush(wait);
+            if wait {
+                if let Some(w) = &mut p.stream {
+                    let _ = w.flush();
+                }
+            }
         }
         for d in &mut self.derived {
             probes_done &= d.flush(wait);
@@ -874,9 +909,25 @@ impl Session {
                 if !due {
                     continue;
                 }
+                let own: Vec<f64> = p.signals.iter().map(|&i| values[i]).collect();
+                if p.stream.is_some() {
+                    let fr: Vec<&[f64]> = p.fields.iter().map(|&i| frames[i]).collect();
+                    let (_, fields) = p.layout();
+                    let w = p.stream.as_mut().expect("checked");
+                    if let Err(e) = w.write(index, &own, &fr, &fields) {
+                        let note = format!("probe {}: writing its file failed: {e}", p.spec.name);
+                        p.stream = None;
+                        if !self.warnings.contains(&note) {
+                            self.warnings.push(note);
+                        }
+                    }
+                }
+                if !p.in_memory {
+                    continue;
+                }
                 p.pending.push(Pending {
                     index,
-                    values: p.signals.iter().map(|&i| values[i]).collect(),
+                    values: own,
                     frames: p.fields.iter().map(|&i| frames[i].to_vec()).collect(),
                 });
                 p.flush(false);
@@ -914,6 +965,20 @@ impl Session {
     /// what filters read, from now on (ADR 0063). What it recorded of
     /// those before is kept; what it no longer records is dropped.
     pub fn set_view_reads(&mut self, reads: Vec<String>) {
+        let mut probes: Vec<String> = reads
+            .iter()
+            .filter_map(|r| {
+                simsandbox_views::history::split_source(r)
+                    .0
+                    .map(String::from)
+            })
+            .collect();
+        probes.sort();
+        probes.dedup();
+        if probes != self.view_probes {
+            self.view_probes = probes;
+            self.update_probe_io();
+        }
         let reads = Some(model_reads(reads));
         if self.view_reads == reads {
             return;
@@ -1241,7 +1306,86 @@ impl Session {
     pub fn set_probes(&mut self, specs: Vec<ProbeSpec>) -> Result<(), Vec<String>> {
         self.install_probes(specs)?;
         self.build_derived();
+        self.update_probe_io();
         Ok(())
+    }
+
+    /// Which probes keep samples in memory, and which write their files
+    /// as they record (ADR 0063): call after anything those depend on
+    /// changes.
+    fn update_probe_io(&mut self) {
+        let read_by_filters: Vec<usize> = self
+            .derived
+            .iter()
+            .flat_map(|d| d.sources.iter())
+            .filter_map(|s| match s {
+                Src::Probe(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        let indexed = self.recorder.is_some();
+        let mut notes = Vec::new();
+        for (i, p) in self.probes.iter_mut().enumerate() {
+            let s = &p.spec;
+            let in_memory = self.record_all_probes
+                || self.view_probes.contains(&s.name)
+                || read_by_filters.contains(&i)
+                || (s.to.is_some() && !s.stream);
+            if in_memory != p.in_memory {
+                // Started or stopped: from now on, nothing before.
+                p.pending.clear();
+                p.history.write().clear();
+                p.in_memory = in_memory;
+            }
+            let wanted = match (&s.to, &self.probe_dir) {
+                (Some(to), Some(dir)) if s.stream && self.sweep.is_none() => Some(dir.join(to)),
+                _ => None,
+            };
+            let current = p.stream.as_ref().map(|w| w.paths[0].clone());
+            if wanted != current {
+                p.stream = None;
+                if let (Some(_), Some(dir), Some(to)) = (&wanted, &self.probe_dir, &s.to) {
+                    let (names, fields) = p.layout();
+                    match crate::probe::Stream::new(dir, to, &names, &fields, indexed) {
+                        Ok((w, n)) => {
+                            notes.extend(n.into_iter().map(|n| format!("probe {}: {n}", s.name)));
+                            p.stream = Some(w);
+                        }
+                        Err(e) => notes.push(format!("probe {}: cannot write {to}: {e}", s.name)),
+                    }
+                }
+            }
+            if let Some(w) = &mut p.stream {
+                w.set_indexed(indexed);
+            }
+            if s.stream && s.to.is_some() && self.probe_dir.is_none() && self.sweep.is_none() {
+                notes.push(format!(
+                    "probe {}: it writes its file once the model is saved",
+                    s.name
+                ));
+            }
+        }
+        for n in notes {
+            if !self.warnings.contains(&n) {
+                self.warnings.push(n);
+            }
+        }
+    }
+
+    /// Where probes write their files as they record: beside the model
+    /// (ADR 0063). `None` while the model has no file.
+    pub fn set_probe_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        if self.probe_dir != dir {
+            self.probe_dir = dir;
+            self.update_probe_io();
+        }
+    }
+
+    /// Keep every probe's samples in memory, whatever reads them: a
+    /// headless run returns them all.
+    pub fn record_all_probes(&mut self) {
+        self.record_all_probes = true;
+        self.update_probe_io();
     }
 
     /// [`Session::set_probes`] without the filters that read probes.
@@ -1293,6 +1437,8 @@ impl Session {
                 signals,
                 fields,
                 pending: Vec::new(),
+                in_memory: true,
+                stream: None,
             });
         }
         let recorded_to = self.history.read().times().last().copied();
@@ -1696,8 +1842,13 @@ impl Session {
         self.flush(true);
         let mut written = Vec::new();
         let mut notes = Vec::new();
-        for p in &self.probes {
-            if let Some(to) = &p.spec.to {
+        for p in &mut self.probes {
+            // Written as it records: already there, flushed above.
+            if let Some(w) = &p.stream {
+                written.extend(w.paths.iter().cloned());
+                continue;
+            }
+            if let Some(to) = p.spec.to.as_ref().filter(|_| !p.spec.stream) {
                 let (w, n) = crate::probe::write_files(&p.history.read(), dir, to)?;
                 written.extend(w);
                 notes.extend(n.into_iter().map(|n| format!("probe {}: {n}", p.spec.name)));
@@ -2034,6 +2185,9 @@ impl Session {
             p.pending.clear();
             p.history.write().clear();
             p.trigger.seek(None, 0.0);
+            if let Some(w) = &mut p.stream {
+                let _ = w.truncate_after(None);
+            }
         }
         for d in &mut self.derived {
             d.pending.clear();
@@ -2424,6 +2578,7 @@ impl Session {
         }
         self.recorder = recorder;
         self.fit_snapshots();
+        self.update_probe_io();
     }
 
     /// Earliest and latest time the run can be rewound to.
@@ -2454,6 +2609,9 @@ impl Session {
             p.flush(true);
             p.history.write().truncate_after(t0);
             p.trigger.seek(Some(t0), eps);
+            if let Some(w) = &mut p.stream {
+                let _ = w.truncate_after(Some(t0));
+            }
         }
         // Filters with clocks of their own hold what their sources
         // recorded by then (ADR 0063).
@@ -3801,6 +3959,8 @@ mod probe_tests {
     fn a_probe_records_a_subset_on_its_own_schedule() {
         // Cruise control, 0.05 s steps; a probe of the speed every 0.5 s.
         let mut s = example("Cruise control");
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
         s.set_probes(vec![spec(
             "speed",
             &["car.v"],
@@ -3837,6 +3997,8 @@ mod probe_tests {
     #[test]
     fn probes_keep_the_newest_or_thin_and_replay_after_a_rewind() {
         let mut s = example("Cruise control");
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
         // Rewinding needs a recorder (ADR 0064).
         s.set_recorder(Some(Default::default()));
         s.set_probes(vec![
@@ -3873,6 +4035,8 @@ mod probe_tests {
     #[test]
     fn probes_record_grid_fields_with_their_coordinates() {
         let mut s = example("Typed heat equation");
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
         s.set_probes(vec![spec(
             "snapshots",
             &["rod.T", "rod.x"],
@@ -3898,6 +4062,8 @@ mod probe_tests {
     #[test]
     fn probes_survive_filter_edits_without_what_is_gone() {
         let mut s = example("Cruise control");
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
         let filter = FilterEntry::expression("double", "2*car.v", vec!["car.v".into()]);
         s.set_filters(vec![filter]).unwrap();
         s.set_probes(vec![spec(
@@ -3958,8 +4124,8 @@ mod probe_tests {
             r#"[{"name": "speed", "record": ["car.v"], "every": {"steps": 10}, "keep": {"all": true},
                  "to": "speed.csv"}]"#,
         );
-        let r =
-            crate::run::run_probes(&text, &registry(), Some(5.0), None, Vec::new(), &[]).unwrap();
+        let r = crate::run::run_probes(&text, &registry(), Some(5.0), None, Vec::new(), &[], None)
+            .unwrap();
         let (spec, h) = &r.probes[0];
         assert_eq!(spec.name, "speed");
         let h = h.read();
@@ -3975,7 +4141,15 @@ mod probe_tests {
         for (k, p) in h.points(0).iter().enumerate() {
             assert_eq!(p.y.to_bits(), v[10 * k].to_bits());
         }
-        let err = crate::run::run_probes(&text, &registry(), None, None, Vec::new(), &["x".into()]);
+        let err = crate::run::run_probes(
+            &text,
+            &registry(),
+            None,
+            None,
+            Vec::new(),
+            &["x".into()],
+            None,
+        );
         assert!(err.is_err_and(|e| e.contains("no probe 'x'")));
     }
 
@@ -3984,6 +4158,9 @@ mod probe_tests {
         let text =
             cruise_with(r#"[{"name": "speed", "record": ["car.v"], "keep": {"all": true}}]"#);
         let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
+        s.restart().unwrap();
         s.run_until(1.0).unwrap();
         s.flush(true);
         let before = s.probe("speed").unwrap().read().len();
@@ -4016,6 +4193,8 @@ mod probe_tests {
     fn the_history_records_only_what_is_wired_and_probes_anything() {
         // Cruise control's views read car.v and cruise.F, and so on.
         let mut s = example("Cruise control");
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
         s.set_view_reads(vec!["car.v".into(), "probe:speed/cruise.F".into()]);
         assert_eq!(s.signals().names(), ["car.v"]);
         // Everything can still be bound and probed.
@@ -4315,5 +4494,108 @@ mod probe_tests {
         );
         // The hold is not a recorded output of the model.
         assert!(!s.bindable_scalars().iter().any(|n| n.starts_with("probe:")));
+    }
+
+    /// A fresh folder for files a test writes.
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("simsandbox-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_probe_writes_its_file_as_it_records_and_rewinds_cut_it_back() {
+        let text = cruise_with(
+            r#"[{"name": "speed", "record": ["car.v"], "keep": {"last": 2},
+                 "to": "speed.csv", "stream": true}]"#,
+        );
+        let dir = temp_dir("stream");
+        let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        s.set_recorder(Some(Default::default()));
+        s.set_probe_dir(Some(dir.clone()));
+        s.restart().unwrap();
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        let csv = || std::fs::read_to_string(dir.join("speed.csv")).unwrap();
+        // Every sample in the file, whatever Keep keeps in memory (here
+        // nothing: no view reads it).
+        let all = csv();
+        assert_eq!(all.lines().count(), 1 + 41, "{all}");
+        assert!(s.probe("speed").unwrap().read().is_empty());
+        // A rewind cuts the file back; running on writes the same again.
+        s.rewind_to(1.01);
+        s.flush(true);
+        assert_eq!(csv().lines().count(), 1 + 21);
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        assert_eq!(csv(), all);
+        // A restart starts it afresh.
+        s.restart().unwrap();
+        s.flush(true);
+        assert_eq!(csv().lines().count(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_streamed_grid_is_a_npy_file_numpy_reads() {
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Typed heat"))
+            .unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(e.text).unwrap();
+        let rod = v["blocks"][0]["name"].as_str().unwrap().to_string();
+        v["controls"]["probes"] = serde_json::json!([{
+            "name": "profile", "record": [format!("{rod}.T")], "every": {"steps": 5},
+            "to": "rod.csv", "stream": true
+        }]);
+        let dir = temp_dir("stream-npy");
+        let mut s = Session::load("rod", &v.to_string(), &registry()).unwrap();
+        s.set_probe_dir(Some(dir.clone()));
+        s.restart().unwrap();
+        for _ in 0..20 {
+            s.step().unwrap();
+        }
+        s.flush(true);
+        let npy = std::fs::read(dir.join(format!("rod.{rod}.T.npy"))).unwrap();
+        let len = u16::from_le_bytes([npy[8], npy[9]]) as usize;
+        let header = std::str::from_utf8(&npy[10..10 + len]).unwrap();
+        // Steps 0, 5, 10, 15, 20: five frames of one row.
+        assert!(header.contains("'shape': (5, 1, "), "{header}");
+        let cells: usize = header
+            .split(", ")
+            .nth(4)
+            .unwrap()
+            .trim_end_matches(')')
+            .parse()
+            .unwrap_or(0);
+        assert_eq!(npy.len(), 10 + len + 5 * cells * 8, "{header}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn probes_keep_samples_in_memory_only_when_something_reads_them() {
+        // Feeding the controller only: nothing kept.
+        let mut s = Session::load("c", &sampled_cruise(0.5), &registry()).unwrap();
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        assert!(s.probe("sampled").unwrap().read().is_empty());
+        // A view reading it: kept from then on.
+        s.set_view_reads(vec!["probe:sampled/car.v".into()]);
+        s.run_until(4.0).unwrap();
+        s.flush(true);
+        assert_eq!(s.probe("sampled").unwrap().read().len(), 4);
+        // A headless run keeps every probe.
+        let r = crate::run::run_probes(
+            &sampled_cruise(0.5),
+            &registry(),
+            Some(2.0),
+            None,
+            Vec::new(),
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(r.probes[0].1.read().len(), 5);
     }
 }

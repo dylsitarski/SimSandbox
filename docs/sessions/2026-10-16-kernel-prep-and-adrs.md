@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-10-29: probe streaming (`probe::Stream`, CSV and `.npy` with rewritten headers, cut back on rewind), `keep.samples`, memory only when read (`Session::update_probe_io`, `record_all_probes`, `set_probe_dir`; the app passes the model's folder), Hide data keeping feeding probes (`observers::model_part`). Tests for each.
 - 2026-10-29: ADR 0063 step 3. Kernel: `schedule.rs` (`Every`, `Trigger` with `position`/`set_position`, moved from `probe.rs`, which re-exports them), `hold.rs` (`SampleHold`). File: flattening lets model-level `probe:` sources through; `build` makes holds (`ModelFile::hold`), `ProbeEntry::schedule`; `model_hash` includes feeding probes; `Controls::is_empty` covers every section. Session/canvas: `Diagram::of` skips probe sources; `observe` draws them from probe outputs; `Connect` from a probe into a block writes the connection; probe delete/rename/unbind follow; `undo::change` treats a feeding probe's schedule as the model. App: `DiagramTab::handle` rebuilds when a data edit changes the model. Tests in session (hold, no delay, replay), observers, runs (hash), files (controls).
 - 2026-10-29: on Windows the window opened marked maximized but drawn at 1100 × 700 (owner's screenshot): a window created maximized keeps its first drawing size until resized. Now created at 1100 × 700 and maximized by `ViewportCommand::Maximized` two frames after it shows (`SimApp::maximize_in`), as a person maximizing it would. Not checkable here (Xvfb has no window manager); the owner checks on Windows.
 - 2026-10-29: landing page and maximized window (owner's request). `SimApp::landing` (centred column: title, New model, Open, two columns of example links with descriptions from `example_description`), shown by `docked` while no model is open; `SimApp::new` opens a file if given, nothing otherwise; `main.rs` maximizes the window except for `--screenshot` (fixed 1100 × 700 for repeatable images); F11 toggles full screen. Tests that relied on Lorenz opening now open it. Maximizing could not be checked under Xvfb (no window manager).
@@ -93,6 +94,7 @@
 
 ## Decided
 
+- 2026-10-29: no batch-size setting for streamed probe files; buffered writes already batch (judged not useful, as the owner allowed). The default keep is "thinned past 100 000 samples", editable. Probes feeding blocks belong to the model and stay visible when data is hidden (owner).
 - 2026-10-29: rewind off by default; a recorder node turns it on and holds its settings; the rewind bar is hidden until one is present; subsystem-level replay later (owner). ADR 0064.
 - 2026-10-29: rewind recomputes outputs where that is exact (the owner left it to us): amends ADR 0062, recorded in ADR 0063.
 - 2026-10-29: filters may read several probes (owner): each input has a source; `when` chooses running where the inputs pair (default) or whenever one updates, with held values; such filters keep their own recordings, bound by output name. Recorded in ADR 0063.

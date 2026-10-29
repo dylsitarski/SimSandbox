@@ -227,19 +227,20 @@ impl DiagramTab {
         let draft = self.draft.is_some();
         let built = self.cache.get_or_insert_with(|| {
             let mut d = Diagram::of(source, &scope, registry);
-            if !hide_data {
-                if draft {
-                    d.observe(source, views.1);
-                } else {
-                    // The running model's filters and the open tiles.
-                    let mut f = source.clone();
-                    f.controls.filters = model.filters.clone();
-                    f.controls.views = views.0.to_vec();
-                    f.controls.probes = model.probes.clone();
-                    f.controls.recorder = model.recorder.clone();
-                    d.observe(&f, views.1);
-                }
+            let mut f = source.clone();
+            if !draft {
+                // The running model's filters and the open tiles.
+                f.controls.filters = model.filters.clone();
+                f.controls.views = views.0.to_vec();
+                f.controls.probes = model.probes.clone();
+                f.controls.recorder = model.recorder.clone();
             }
+            // Hidden, the data layer keeps the probes feeding blocks: they
+            // are part of the model (ADR 0063).
+            if hide_data {
+                f = simsandbox_session::observers::model_part(&f);
+            }
+            d.observe(&f, views.1);
             d
         });
         // The running values on the nodes (ADR 0053).
@@ -399,7 +400,7 @@ impl DiagramTab {
             use crate::probe_editor::Done;
             match ed.show(ui.ctx()) {
                 Some(Done::Apply(probe)) => {
-                    edits.push(Edit::SetProbe { probe });
+                    edits.push(Edit::SetProbe { probe: *probe });
                     self.probe = None;
                 }
                 Some(Done::Close) => self.probe = None,

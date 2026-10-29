@@ -6,8 +6,10 @@ use eframe::egui;
 use simsandbox_file::{ProbeEntry, ProbeEvery, ProbeKeep};
 
 const EVERY: [&str; 3] = ["steps", "seconds", "times"];
+/// Samples a probe keeps before thinning when nothing says otherwise.
+const THIN_SAMPLES: usize = 100_000;
 const KEEP: [&str; 4] = [
-    "thinned when long",
+    "thinned past samples",
     "thinned past MB",
     "last samples",
     "all",
@@ -21,12 +23,13 @@ pub struct ProbeEditor {
     keep: usize,
     keep_text: String,
     to: String,
+    stream: bool,
     pub problem: Option<String>,
 }
 
 /// What the window asks for.
 pub enum Done {
-    Apply(ProbeEntry),
+    Apply(Box<ProbeEntry>),
     Close,
 }
 
@@ -47,7 +50,10 @@ impl ProbeEditor {
             Some(ProbeKeep { mb: Some(mb), .. }) => (1, num(*mb)),
             Some(ProbeKeep { last: Some(n), .. }) => (2, n.to_string()),
             Some(ProbeKeep { all: true, .. }) => (3, String::new()),
-            _ => (0, String::new()),
+            Some(ProbeKeep {
+                samples: Some(n), ..
+            }) => (0, n.to_string()),
+            _ => (0, THIN_SAMPLES.to_string()),
         };
         Self {
             entry: entry.clone(),
@@ -56,6 +62,7 @@ impl ProbeEditor {
             keep,
             keep_text,
             to: entry.to.clone().unwrap_or_default(),
+            stream: entry.stream,
             problem: None,
         }
     }
@@ -97,7 +104,14 @@ impl ProbeEditor {
             }),
         };
         e.keep = match self.keep {
-            0 => None,
+            // The default is left out, so the safety net for grids holds.
+            0 => match whole(&self.keep_text, "keep")? as usize {
+                THIN_SAMPLES => None,
+                n => Some(ProbeKeep {
+                    samples: Some(n),
+                    ..Default::default()
+                }),
+            },
             1 => Some(ProbeKeep {
                 mb: Some(number(&self.keep_text, "keep")?),
                 ..Default::default()
@@ -119,6 +133,7 @@ impl ProbeEditor {
                 format!("{to}.csv")
             }
         });
+        e.stream = self.stream && e.to.is_some();
         e.check()?;
         Ok(e)
     }
@@ -155,8 +170,13 @@ impl ProbeEditor {
                         ui.end_row();
                         ui.label("Keep");
                         ui.add_enabled(
-                            matches!(self.keep, 1 | 2),
+                            self.keep != 3,
                             egui::TextEdit::singleline(&mut self.keep_text).desired_width(120.0),
+                        )
+                        .on_hover_text(
+                            "What it keeps in memory, for views and filters. Thinned: every \
+                             other sample dropped past it (grids are thinned sooner unless you \
+                             give a number).",
                         );
                         egui::ComboBox::from_id_salt("probe keep")
                             .selected_text(KEEP[self.keep])
@@ -175,6 +195,17 @@ impl ProbeEditor {
                             );
                         ui.weak(".csv");
                         ui.end_row();
+                        ui.label("");
+                        ui.add_enabled(
+                            !self.to.trim().is_empty(),
+                            egui::Checkbox::new(&mut self.stream, "write as it records"),
+                        )
+                        .on_hover_text(
+                            "Append every sample to the file as the run goes, so it holds the \
+                             whole run whatever Keep keeps in memory. Written beside the model \
+                             once it is saved; a rewind cuts the file back too.",
+                        );
+                        ui.end_row();
                     });
                 if let Some(p) = &self.problem {
                     ui.colored_label(ui.visuals().error_fg_color, p);
@@ -182,7 +213,7 @@ impl ProbeEditor {
                 ui.horizontal(|ui| {
                     if ui.button("Apply").clicked() {
                         match self.entry() {
-                            Ok(e) => done = Some(Done::Apply(e)),
+                            Ok(e) => done = Some(Done::Apply(Box::new(e))),
                             Err(p) => self.problem = Some(p),
                         }
                     }
@@ -210,6 +241,7 @@ mod tests {
             every: None,
             keep: None,
             to: None,
+            stream: false,
             canvas: None,
         };
         let mut ed = ProbeEditor::new(&entry);
@@ -225,6 +257,15 @@ mod tests {
         assert_eq!(e.to.as_deref(), Some("out.csv"));
         let again = ProbeEditor::new(&ed.entry().unwrap()).entry().unwrap();
         assert_eq!(again, ed.entry().unwrap());
+        ed.stream = true;
+        assert!(ed.entry().unwrap().stream);
+        // Thinned past samples: the default 100 000 is left out.
+        ed.keep = 0;
+        ed.keep_text = "100000".into();
+        assert_eq!(ed.entry().unwrap().keep, None);
+        ed.keep_text = "5000".into();
+        assert_eq!(ed.entry().unwrap().keep.unwrap().samples, Some(5000));
+        ed.keep = 2;
         ed.keep_text = "0".into();
         assert!(ed.entry().is_err());
         ed.keep_text = "ten".into();

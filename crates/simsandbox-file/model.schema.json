@@ -771,8 +771,13 @@
                 "type": "object",
                 "additionalProperties": false,
                 "maxProperties": 1,
-                "description": "How long it keeps samples; thinned when long if absent.",
+                "description": "How long it keeps samples in memory; thinned past 100 000 samples (fewer for grids) if absent.",
                 "properties": {
+                  "samples": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "description": "Thinned past this many samples."
+                  },
                   "mb": {
                     "type": "number",
                     "exclusiveMinimum": 0,
@@ -793,6 +798,10 @@
                 "type": "string",
                 "pattern": "^[^/\\\\]+\\.csv$",
                 "description": "A CSV file beside the model for its signals; each grid or point field goes to a .npy file beside it."
+              },
+              "stream": {
+                "type": "boolean",
+                "description": "Write the file as it records, every sample (ADR 0063)."
               },
               "canvas": {
                 "type": "array",

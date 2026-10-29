@@ -122,9 +122,14 @@ pub fn render_diagram(
         }
     };
     let mut d = crate::diagram::Diagram::of(file, &scope, registry);
-    if o.data {
-        d.observe(file, &crate::examples::view_registry());
-    }
+    // Without the data layer, probes feeding blocks still show: they are
+    // part of the model (ADR 0063).
+    let observed = if o.data {
+        file.clone()
+    } else {
+        crate::observers::model_part(file)
+    };
+    d.observe(&observed, &crate::examples::view_registry());
     // The nodes the file opens, or all.
     let mut canvas = if o.values {
         crate::canvas::Canvas::all_open()

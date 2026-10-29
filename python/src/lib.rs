@@ -165,7 +165,7 @@ fn run_probes<'py>(
     let names = names.unwrap_or_default();
     let (r, files) = py
         .detach(|| {
-            let r = run_model_probes(text, &registry(), t_end, dt, track, &names)?;
+            let r = run_model_probes(text, &registry(), t_end, dt, track, &names, save.as_deref())?;
             let files = match &save {
                 Some(dir) => r
                     .write_files(dir)

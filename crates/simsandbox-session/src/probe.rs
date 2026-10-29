@@ -17,10 +17,12 @@ use std::path::{Path, PathBuf};
 /// How long a probe keeps its samples.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Keep {
-    /// The whole run, thinned (every other sample dropped) when it holds
-    /// more than `mb` megabytes, or by the fields' size if not given: the
-    /// default.
-    Thin { mb: Option<f64> },
+    /// The whole run, thinned (every other sample dropped) past `samples`
+    /// samples; if not given, past 100 000 (fewer for grids, the memory
+    /// safety net): the default.
+    Thin { samples: Option<usize> },
+    /// The whole run, thinned past `mb` megabytes.
+    Budget { mb: f64 },
     /// Only the newest `samples`, forgetting the oldest.
     Last { samples: usize },
     /// Every sample, never thinned.
@@ -29,7 +31,7 @@ pub enum Keep {
 
 impl Default for Keep {
     fn default() -> Self {
-        Keep::Thin { mb: None }
+        Keep::Thin { samples: None }
     }
 }
 
@@ -37,8 +39,9 @@ impl Keep {
     /// Apply to a history.
     pub(crate) fn apply(&self, h: &mut History) {
         match *self {
-            Keep::Thin { mb: None } => {}
-            Keep::Thin { mb: Some(mb) } => {
+            Keep::Thin { samples: None } => {}
+            Keep::Thin { samples: Some(n) } => h.thin_past(n),
+            Keep::Budget { mb } => {
                 let per = h.values_per_sample().max(1) as f64 * 8.0;
                 h.thin_past((mb * 1e6 / per) as usize);
             }
@@ -59,6 +62,8 @@ pub struct ProbeSpec {
     /// The CSV file it writes beside the model, if any; grid and point
     /// fields go into `.npy` files beside it.
     pub to: Option<String>,
+    /// Write `to` as it records, every sample (ADR 0063).
+    pub stream: bool,
     /// Where its node sits on the canvas's data layer.
     pub canvas: Option<[f64; 2]>,
 }
@@ -72,6 +77,7 @@ impl ProbeSpec {
             every: Every::Steps(1),
             keep: Keep::default(),
             to: None,
+            stream: false,
             canvas: None,
         }
     }
@@ -92,7 +98,8 @@ impl ProbeSpec {
         let keep = match &e.keep {
             Some(ProbeKeep { last: Some(n), .. }) => Keep::Last { samples: *n },
             Some(ProbeKeep { all: true, .. }) => Keep::All,
-            Some(ProbeKeep { mb, .. }) => Keep::Thin { mb: *mb },
+            Some(ProbeKeep { mb: Some(mb), .. }) => Keep::Budget { mb: *mb },
+            Some(ProbeKeep { samples, .. }) => Keep::Thin { samples: *samples },
             None => Keep::default(),
         };
         Self {
@@ -101,6 +108,7 @@ impl ProbeSpec {
             every,
             keep,
             to: e.to.clone(),
+            stream: e.stream,
             canvas: e.canvas,
         }
     }
@@ -123,9 +131,13 @@ impl ProbeSpec {
             }),
         };
         let keep = match self.keep {
-            Keep::Thin { mb: None } => None,
-            Keep::Thin { mb } => Some(ProbeKeep {
-                mb,
+            Keep::Thin { samples: None } => None,
+            Keep::Thin { samples } => Some(ProbeKeep {
+                samples,
+                ..Default::default()
+            }),
+            Keep::Budget { mb } => Some(ProbeKeep {
+                mb: Some(mb),
                 ..Default::default()
             }),
             Keep::Last { samples } => Some(ProbeKeep {
@@ -143,6 +155,7 @@ impl ProbeSpec {
             every,
             keep,
             to: self.to.clone(),
+            stream: self.stream,
             canvas: self.canvas,
         }
     }
@@ -163,7 +176,8 @@ impl ProbeSpec {
             ));
         }
         let keep_ok = match self.keep {
-            Keep::Thin { mb } => mb.is_none_or(|mb| mb.is_finite() && mb > 0.0),
+            Keep::Thin { samples } => samples.is_none_or(|n| n >= 2),
+            Keep::Budget { mb } => mb.is_finite() && mb > 0.0,
             Keep::Last { samples } => samples >= 1,
             Keep::All => true,
         };
@@ -260,6 +274,215 @@ pub fn to_json(h: &History) -> serde_json::Value {
     json!({"rows": h.len(), "t": list(h.times()), "signals": signals, "fields": fields})
 }
 
+/// A probe's file written as it records (ADR 0063): its CSV and a `.npy`
+/// per grid or point field, appended sample by sample through buffers
+/// that are flushed (and the `.npy` headers updated) every couple of
+/// seconds and when it is dropped. With `index`, it remembers where each
+/// sample starts, so a rewind can cut the files back.
+pub(crate) struct Stream {
+    csv: io::BufWriter<std::fs::File>,
+    /// Bytes of the CSV's header row.
+    header: u64,
+    /// Bytes of the CSV written so far.
+    written: u64,
+    npys: Vec<Npy>,
+    samples: usize,
+    /// Each sample's time and where its CSV row starts.
+    index: Option<Vec<(f64, u64)>>,
+    last_flush: std::time::Instant,
+    /// The files, for messages.
+    pub paths: Vec<PathBuf>,
+}
+
+/// A `.npy` file being appended to.
+struct Npy {
+    file: io::BufWriter<std::fs::File>,
+    /// The shape of one frame.
+    frame: [usize; 2],
+}
+
+/// The `.npy` header is written at this fixed size, so its sample count
+/// can be rewritten in place.
+const NPY_HEADER: usize = 128;
+
+fn npy_header(samples: usize, [a, b]: [usize; 2]) -> Vec<u8> {
+    let mut header =
+        format!("{{'descr': '<f8', 'fortran_order': False, 'shape': ({samples}, {a}, {b}), }}");
+    header.push_str(&" ".repeat(NPY_HEADER - 10 - header.len() - 1));
+    header.push('\n');
+    let mut out = b"\x93NUMPY\x01\x00".to_vec();
+    out.extend_from_slice(&((NPY_HEADER - 10) as u16).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    out
+}
+
+impl Stream {
+    /// Start the files in `dir`, empty: `to` for `names` (and `t`), and a
+    /// `.npy` beside it for each grid or point field. Populations are not
+    /// written. Returns the notes on what is left out.
+    pub(crate) fn new(
+        dir: &Path,
+        to: &str,
+        names: &[String],
+        fields: &[(String, FieldShape)],
+        index: bool,
+    ) -> io::Result<(Self, Vec<String>)> {
+        use std::io::Seek;
+        let mut paths = vec![dir.join(to)];
+        let mut csv = io::BufWriter::new(std::fs::File::create(&paths[0])?);
+        let mut header = String::from("t");
+        for n in names {
+            header.push(',');
+            header.push_str(n);
+        }
+        header.push('\n');
+        csv.write_all(header.as_bytes())?;
+        let stem = to.strip_suffix(".csv").unwrap_or(to);
+        let mut npys = Vec::new();
+        let mut notes = Vec::new();
+        for (name, shape) in fields {
+            let frame = match *shape {
+                FieldShape::Grid { nx, ny } => [ny, nx],
+                FieldShape::Points { count, dim } => [count, dim],
+                FieldShape::Population { .. } => {
+                    notes.push(format!(
+                        "{name} is a population (its size varies) and is not written"
+                    ));
+                    continue;
+                }
+            };
+            let path = dir.join(format!("{stem}.{name}.npy"));
+            let mut file = io::BufWriter::new(std::fs::File::create(&path)?);
+            file.write_all(&npy_header(0, frame))?;
+            file.seek(io::SeekFrom::End(0))?;
+            npys.push(Npy { file, frame });
+            paths.push(path);
+        }
+        let header = header.len() as u64;
+        Ok((
+            Self {
+                csv,
+                header,
+                written: header,
+                npys,
+                samples: 0,
+                index: index.then(Vec::new),
+                last_flush: std::time::Instant::now(),
+                paths,
+            },
+            notes,
+        ))
+    }
+
+    /// Append one sample: its signals' values and its fields' frames (in
+    /// the order given to [`Stream::new`], populations included).
+    pub(crate) fn write(
+        &mut self,
+        t: f64,
+        values: &[f64],
+        frames: &[&[f64]],
+        fields: &[(String, FieldShape)],
+    ) -> io::Result<()> {
+        let mut row = t.to_string();
+        for v in values {
+            row.push(',');
+            row.push_str(&v.to_string());
+        }
+        row.push('\n');
+        if let Some(index) = &mut self.index {
+            index.push((t, self.written));
+        }
+        self.csv.write_all(row.as_bytes())?;
+        self.written += row.len() as u64;
+        let fixed = fields
+            .iter()
+            .zip(frames)
+            .filter(|((_, s), _)| !matches!(s, FieldShape::Population { .. }));
+        for (npy, (_, frame)) in self.npys.iter_mut().zip(fixed) {
+            let len = npy.frame[0] * npy.frame[1];
+            if frame.len() == len {
+                for v in frame.iter() {
+                    npy.file.write_all(&v.to_le_bytes())?;
+                }
+            } else {
+                for _ in 0..len {
+                    npy.file.write_all(&f64::NAN.to_le_bytes())?;
+                }
+            }
+        }
+        self.samples += 1;
+        if self.last_flush.elapsed() > std::time::Duration::from_secs(2) {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Remember where samples start (for rewinds) or not, from now on.
+    pub(crate) fn set_indexed(&mut self, on: bool) {
+        match (on, self.index.is_some()) {
+            (true, false) => self.index = Some(Vec::new()),
+            (false, true) => self.index = None,
+            _ => {}
+        }
+    }
+
+    /// Write out what is buffered, with the `.npy` sample counts.
+    pub(crate) fn flush(&mut self) -> io::Result<()> {
+        use std::io::Seek;
+        self.last_flush = std::time::Instant::now();
+        self.csv.flush()?;
+        for npy in &mut self.npys {
+            npy.file.flush()?;
+            let f = npy.file.get_mut();
+            f.seek(io::SeekFrom::Start(0))?;
+            f.write_all(&npy_header(self.samples, npy.frame))?;
+            f.seek(io::SeekFrom::End(0))?;
+        }
+        Ok(())
+    }
+
+    /// Cut the files back to the samples at or before `t` (a rewind), or
+    /// to none (`None`, a restart).
+    pub(crate) fn truncate_after(&mut self, t: Option<f64>) -> io::Result<()> {
+        use std::io::Seek;
+        // Where the first sample after `t` starts.
+        let (keep, at) = match t {
+            None => (0, self.header),
+            Some(t) => {
+                // Without an index there is no rewind to follow.
+                let Some(index) = &self.index else {
+                    return Ok(());
+                };
+                let k = index.partition_point(|&(s, _)| s <= t);
+                (k, index.get(k).map_or(self.written, |&(_, off)| off))
+            }
+        };
+        if let Some(index) = &mut self.index {
+            index.truncate(keep);
+        }
+        self.csv.flush()?;
+        let f = self.csv.get_mut();
+        f.set_len(at)?;
+        f.seek(io::SeekFrom::Start(at))?;
+        self.written = at;
+        for npy in &mut self.npys {
+            npy.file.flush()?;
+            let bytes = (NPY_HEADER + keep * npy.frame[0] * npy.frame[1] * 8) as u64;
+            let f = npy.file.get_mut();
+            f.set_len(bytes)?;
+            f.seek(io::SeekFrom::Start(bytes))?;
+        }
+        self.samples = keep;
+        self.flush()
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
 /// A NumPy `.npy` file (format 1.0) of `f64` values in C order.
 fn write_npy<'a>(
     out: &mut impl Write,
@@ -313,7 +536,7 @@ mod tests {
         assert!(p(Every::Steps(1), Keep::Last { samples: 0 })
             .check()
             .is_err());
-        assert!(p(Every::Steps(1), Keep::Thin { mb: Some(0.0) })
+        assert!(p(Every::Steps(1), Keep::Budget { mb: 0.0 })
             .check()
             .is_err());
         // A probe just added on the canvas records nothing yet.
@@ -326,7 +549,8 @@ mod tests {
     fn probes_go_to_the_file_and_back() {
         for (every, keep) in [
             (Every::Steps(1), Keep::default()),
-            (Every::Steps(4), Keep::Thin { mb: Some(5.0) }),
+            (Every::Steps(4), Keep::Budget { mb: 5.0 }),
+            (Every::Steps(2), Keep::Thin { samples: Some(500) }),
             (Every::Seconds(0.5), Keep::Last { samples: 10 }),
             (Every::Times(vec![1.0, 2.0]), Keep::All),
         ] {

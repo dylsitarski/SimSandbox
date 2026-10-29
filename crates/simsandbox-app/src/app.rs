@@ -53,6 +53,9 @@ pub struct SimApp {
     popped_actions: Vec<DockAction>,
     /// What the views read, as last told to the session (ADR 0063).
     view_reads: Vec<String>,
+    /// The folder probes write their files into as they record, as last
+    /// told to the session: the saved model's (ADR 0063).
+    probe_dir: Option<PathBuf>,
     /// The dock as it settled by itself (egui_dock fits splits to their
     /// contents and to the window), and the arrangement that stands for:
     /// such changes are not edits, so they neither mark the model unsaved
@@ -145,6 +148,7 @@ impl SimApp {
             this: std::sync::Weak::new(),
             popped_actions: Vec::new(),
             view_reads: Vec::new(),
+            probe_dir: None,
             dock_settled: None,
             key_values: HashMap::new(),
             run_dialog: None,
@@ -459,6 +463,7 @@ impl SimApp {
                     None => Dock::standard(&tiles),
                 };
                 self.dock_settled = None;
+                self.probe_dir = None;
                 for p in popped {
                     let pane = match p {
                         Popped::Controls => Some(Pane::Controls),
@@ -513,6 +518,16 @@ impl SimApp {
         let st = live.status();
         if st.running {
             self.rewind_t = st.time;
+        }
+        // Probes writing as they record write beside the saved model.
+        let dir = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        if dir != self.probe_dir {
+            self.probe_dir = dir.clone();
+            live.send(Some("probe-dir"), move |s, _| s.set_probe_dir(dir));
         }
         // Views bound, rebound or closed: the history follows (ADR 0063).
         let reads = simsandbox_session::session::view_reads(&self.views.entries());

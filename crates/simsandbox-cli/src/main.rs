@@ -274,7 +274,8 @@ fn run_file_probes(
     json: bool,
 ) -> Result<(), String> {
     let names: Vec<String> = flags.get("--probe").map(String::from).into_iter().collect();
-    let r = run_probes(text, &registry(), t_end, dt, track, &names)
+    let dir = flags.get("--save-probes").map(std::path::Path::new);
+    let r = run_probes(text, &registry(), t_end, dt, track, &names, dir)
         .map_err(|e| format!("{path}: {e}"))?;
     for w in &r.warnings {
         eprintln!("warning: {path}: {w}");

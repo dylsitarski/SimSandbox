@@ -67,11 +67,14 @@ Probes ([ADR 0062](../decisions/0062-probes-recording-and-replay.md)) record cho
 | --- | --- |
 | `record` | Signals and fields by the names views bind (`car.v`, `gs.v`, a model filter's name); may be empty |
 | `every` | One of `{"steps": N}`, `{"seconds": dt}`, `{"times": [...]}`: at the first step at or after each; every step if absent |
-| `keep` | One of `{"mb": size}` (thinned past it), `{"last": N}`, `{"all": true}`; thinned when long if absent |
+| `keep` | One of `{"samples": N}` (thinned past N samples), `{"mb": size}` (thinned past it), `{"last": N}`, `{"all": true}`; thinned past 100 000 samples if absent. Applies only to samples held in memory |
 | `to` | A file name ending in `.csv`: `t` and the signals, one row per sample; each grid or point field in `<stem>.<field>.npy` beside it (`(samples, ny, nx)` or `(samples, count, dim)`, read with `numpy.load`) |
+| `stream` | `true`: write `to` as it records (buffered, flushed about every 2 s and when the run stops); the file holds every sample, `keep` does not thin it, and rewind cuts it back. Needs `to`; the app writes it once the model is saved |
 | `canvas` | Where its node sits on the diagram's data layer, where `render --diagram` draws it |
 
 A view binds a probe's recording as `probe:NAME/signal` (`"y": ["car.v", "probe:speed/car.v"]`): the model's every step and the probe's samples on one plot. Where a view pairs signals from different sources (x against y, colour), it uses only the times both recorded. A filter's inputs may come from probes: `"from": {"car.v": "fast", "cruise.F": "slow"}` (or `"probe": "NAME"` for all of them); it then reads only what those probes record and runs where their times pair, or with `"when": "any"` whenever one of them records, with the others' latest values. Its outputs are bound by name, as any filter's ([ADR 0063](../decisions/0063-probes-on-wires.md)). The model's every-step recording keeps only what views and filters read from the model; `controls.plots` no longer limits anything.
+
+A probe keeps its samples in memory only when something reads them: a view or filter wired to it, a file written at the end (`to` without `stream`), or `run --probe` (which keeps every probe it is given). A probe that only streams, or that nothing reads, holds nothing, so `keep` has no effect on it. `render --diagram --no-data` hides the data layer but keeps probes that feed blocks: they are part of the model.
 
 
 A probe with bad settings, or recording something the model does not record, is dropped with a warning. `simsandbox run FILE --probe NAME` prints one; `--save-probes DIR` writes the files. A swept model records no probes. JSON output of a probe: `rows`, `t`, `signals` (name → list), `fields` (name → `{shape, frames}`).

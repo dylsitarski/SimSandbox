@@ -301,7 +301,8 @@ impl ProbeRun {
         let mut written = Vec::new();
         let mut notes = Vec::new();
         for (spec, h) in &self.probes {
-            if let Some(to) = &spec.to {
+            // Those written as they recorded are there already.
+            if let Some(to) = spec.to.as_ref().filter(|_| !spec.stream) {
                 let (w, n) = crate::probe::write_files(&h.read(), dir, to)?;
                 written.extend(w);
                 notes.extend(n.into_iter().map(|n| format!("probe {}: {n}", spec.name)));
@@ -314,7 +315,9 @@ impl ProbeRun {
 /// Run a model file with its probes, as the app does: to `t_end` in
 /// steps of `dt` (each defaulting to the file's `run` section), with
 /// `track` replayed as recorded input. `names` picks probes (all if
-/// empty). A swept model is not run in time and records no probes.
+/// empty). Probes that write as they record (ADR 0063) write into `dir`
+/// during the run, if given; [`ProbeRun::write_files`] writes the others.
+/// A swept model is not run in time and records no probes.
 pub fn run_probes(
     text: &str,
     registry: &Registry,
@@ -322,6 +325,7 @@ pub fn run_probes(
     dt: Option<f64>,
     track: Vec<InputEvent>,
     names: &[String],
+    dir: Option<&Path>,
 ) -> Result<ProbeRun, String> {
     for v in [t_end, dt].into_iter().flatten() {
         if !(v.is_finite() && v > 0.0) {
@@ -346,7 +350,13 @@ pub fn run_probes(
     }
     let t_end = t_end.or(s.file.run.t_end).unwrap_or(DEFAULT_T_END);
     let steps = (t_end / s.dt).round() as usize;
-    if !track.is_empty() {
+    // Every probe kept, for the results; streaming ones into `dir` from
+    // t = 0 on.
+    s.record_all_probes();
+    s.set_probe_dir(dir.map(Path::to_path_buf));
+    if track.is_empty() {
+        s.restart().map_err(|e| e.to_string())?;
+    } else {
         s.replay(track)?;
     }
     for _ in 0..steps {

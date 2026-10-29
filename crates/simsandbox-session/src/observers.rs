@@ -52,6 +52,25 @@ pub fn is_observer(node: &str) -> bool {
         || node == RECORDER
 }
 
+/// Whether probe `name` feeds a block of the model (ADR 0063).
+pub fn probe_feeds_model(file: &ModelFile, name: &str) -> bool {
+    let prefix = format!("probe:{name}.");
+    file.connections.iter().any(|c| c.from.starts_with(&prefix))
+}
+
+/// The file with only the part of its data layer that belongs to the
+/// model: the probes feeding blocks, which "Hide data" still shows.
+pub fn model_part(file: &ModelFile) -> ModelFile {
+    let mut f = file.clone();
+    f.controls.filters.clear();
+    f.controls.views.clear();
+    f.controls.recorder = None;
+    f.controls
+        .probes
+        .retain(|p| probe_feeds_model(file, &p.name));
+    f
+}
+
 /// The recorder's settings in a few words.
 pub fn recorder_summary(r: &simsandbox_file::RecorderEntry) -> String {
     format!("every {} steps · {} MB", r.every(), r.mb())
@@ -82,6 +101,7 @@ fn probe_timing(p: &ProbeEntry) -> String {
         Some(k) if k.all => "all kept".to_string(),
         Some(k) if k.last.is_some() => format!("last {}", k.last.unwrap_or_default()),
         Some(k) if k.mb.is_some() => format!("thinned past {} MB", k.mb.unwrap_or_default()),
+        Some(k) if k.samples.is_some() => format!("thinned past {}", k.samples.unwrap_or_default()),
         _ => "thinned".into(),
     };
     format!("{every} · {keep}")
@@ -270,11 +290,16 @@ impl Diagram {
                         unreached: Vec::new(),
                         values: Vec::new(),
                         open: false,
-                        // Its file, shown beside its input.
+                        // Its file, shown beside its input; whether it is
+                        // part of the model (feeding a block, ADR 0063).
                         settings: pr
                             .to
                             .iter()
                             .map(|t| ("to".to_string(), t.clone()))
+                            .chain(
+                                probe_feeds_model(file, &pr.name)
+                                    .then(|| ("feeds".to_string(), "model".to_string())),
+                            )
                             .collect(),
                     });
                 }
@@ -944,6 +969,7 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                 every: None,
                 keep: None,
                 to: None,
+                stream: false,
                 canvas: Some(at.map(tidy)),
             });
             Ok(format!(
@@ -1850,5 +1876,34 @@ mod tests {
         )
         .unwrap();
         assert!(f.controls.recorder.is_none());
+    }
+
+    #[test]
+    fn hidden_data_keeps_the_probes_feeding_blocks() {
+        let mut f = file("oscillators");
+        for _ in 0..2 {
+            apply(&mut f, &registry(), &Edit::AddProbe { at: [600.0, 0.0] }).unwrap();
+        }
+        let bind = Edit::Bind {
+            from: "a.x".into(),
+            to: "probe:probe1.record".into(),
+            many: true,
+        };
+        apply(&mut f, &registry(), &bind).unwrap();
+        let feed = Edit::Connect {
+            from: "probe:probe1.a.x".into(),
+            to: "b.neighbor_x".into(),
+        };
+        apply(&mut f, &registry(), &feed).unwrap();
+        let hidden = model_part(&f);
+        let d = observed(&hidden);
+        assert!(d.node("probe:probe1").is_some());
+        assert!(d.node("probe:probe2").is_none());
+        assert!(d.node("filter:energy").is_none() && d.node("view:0").is_none());
+        let n = d.node("probe:probe1").unwrap();
+        assert_eq!(
+            d.nodes[n].settings.get("feeds").map(String::as_str),
+            Some("model")
+        );
     }
 }

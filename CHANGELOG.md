@@ -6,6 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Probes can write their file as they record ("write as it records" in the probe's settings, `"stream": true` in the file): every sample goes to disk, buffered and flushed about every 2 s, without being held in memory; rewind cuts the file back.
+- A probe's Keep can be "thinned past N samples" (`"keep": {"samples": N}`); the default, 100 000, is shown and editable.
 - A probe can feed a block of its own model (ADR 0063): drop a probe's output on a block's input and the block reads that signal as the probe samples it, held between samples, with no delay, like a sensor read by a digital controller. In the file: `{"from": "probe:sensor.car.v", "to": "cruise.v"}`. Such a probe is part of the model: changing when it records rebuilds and restarts the run, and run files notice it.
 - Probes on the diagram (ADR 0062): "Add probe" in the Diagram's menu adds a probe node; drop outputs or filter outputs on its `record` input to record them, delete a wire to stop. Double-click it to set when it records, how long it keeps samples and its file. Changes apply without restarting the run, and undo works as for filters and views. Runs › "Save probe data" writes the probes' files beside the model.
 - Probes have outputs (ADR 0063): wire one into a view to show what the probe recorded, when it recorded it, or into a filter's input to compute on the probe's samples (`probe:NAME/signal` in the file; a filter gets `"from": {"car.v": "NAME"}`). A filter may read several probes: by default it runs where their times pair; "Run when any input records" (`"when": "any"`) runs it whenever one of them records, with the others' latest values. A filter's outputs are bound by name wherever it runs. One plot can show curves from the model and from probes at different rates; signals from different sources are paired only at times both recorded.
@@ -101,6 +103,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- A probe keeps samples in memory only when a view or filter reads it or it writes a file when the run ends; otherwise Keep has no effect and the probe holds nothing.
+- Hide data keeps probes that feed blocks of the model on the diagram: they are part of the model.
 - The app opens maximized, on a landing page: "New model…", "Open…" and the examples, each with its description on hover (it used to open the Lorenz example). A file given on the command line still opens at once. F11 toggles full screen.
 - Rewind is now opt-in (ADR 0064): add a recorder on the Diagram ("Add recorder") and the rewind bar appears; its settings say how often it saves the model's state (every 10 steps) and how much memory it may use (256 MB). Without one, no memory goes to rewind and the bar is hidden. Restart and replaying saved runs work as before. The "Drag the bob" and "Steer the car with keys" examples include one; add one to a model you want to rewind (`"recorder": {}` in `controls`).
 - Rewind keeps far more of a run in the same memory: snapshots no longer store outputs that can be computed again exactly from a block's state (checked bit for bit when the snapshot is taken) or that copy it. Gray–Scott's snapshots are 72% smaller (the two state grids alone), so it can rewind about four times as far back at full detail.

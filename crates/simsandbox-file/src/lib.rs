@@ -421,13 +421,18 @@ pub struct ProbeEntry {
     /// When it records; every step if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<ProbeEvery>,
-    /// How long it keeps samples; thinned when long if absent.
+    /// How long it keeps samples in memory; thinned past 100 000 samples
+    /// (fewer for grids) if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep: Option<ProbeKeep>,
     /// The file it writes, beside the model: a CSV of its signals, and
     /// a `.npy` file per grid or point field beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
+    /// Write the file as it records, every sample, instead of when asked
+    /// (ADR 0063): the file holds the whole run whatever `keep` keeps.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stream: bool,
     /// Where its node sits on the canvas's data layer (ADR 0050).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<[f64; 2]>,
@@ -476,10 +481,21 @@ impl ProbeEntry {
                 );
             }
         }
+        if self.stream && self.to.is_none() {
+            return Err("'stream' writes its file: give 'to' too".into());
+        }
         if let Some(kp) = &self.keep {
-            let set = [kp.mb.is_some(), kp.last.is_some(), kp.all];
+            if kp.samples.is_some_and(|n| n < 2) {
+                return Err("'keep': samples is at least 2".into());
+            }
+            let set = [
+                kp.samples.is_some(),
+                kp.mb.is_some(),
+                kp.last.is_some(),
+                kp.all,
+            ];
             if set.iter().filter(|s| **s).count() > 1 {
-                return Err("'keep' gives at most one of mb, last or all".into());
+                return Err("'keep' gives at most one of samples, mb, last or all".into());
             }
             if !(kp.mb.is_none_or(positive) && kp.last.is_none_or(|n| n >= 1)) {
                 return Err("'keep': mb is positive and last at least 1".into());
@@ -559,6 +575,9 @@ pub struct ProbeEvery {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProbeKeep {
+    /// Thinned (every other sample dropped) past this many samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples: Option<usize>,
     /// Thinned (every other sample dropped) past this many megabytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mb: Option<f64>,

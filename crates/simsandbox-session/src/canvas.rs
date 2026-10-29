@@ -454,7 +454,8 @@ impl Canvas {
         } else {
             visuals.window_stroke
         };
-        if n.is_observer() {
+        // A probe feeding a block is part of the model: drawn solid.
+        if n.is_observer() && !n.settings.contains_key("feeds") {
             // Dashed: on the data layer, not part of the model.
             let colour = if n.error.is_some() || selected {
                 border.color
