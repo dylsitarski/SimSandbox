@@ -53,6 +53,14 @@ pub struct SimApp {
     popped_actions: Vec<DockAction>,
     /// What the views read, as last told to the session (ADR 0063).
     view_reads: Vec<String>,
+    /// The dock as it settled by itself (egui_dock fits splits to their
+    /// contents and to the window), and the arrangement that stands for:
+    /// such changes are not edits, so they neither mark the model unsaved
+    /// nor get saved.
+    dock_settled: Option<(
+        simsandbox_file::layout::Layout,
+        Option<simsandbox_file::layout::Layout>,
+    )>,
     /// Values keys are driving (ADR 0058), by input block, while a key is
     /// held or until its release is sent.
     key_values: HashMap<String, f64>,
@@ -133,6 +141,7 @@ impl SimApp {
             this: std::sync::Weak::new(),
             popped_actions: Vec::new(),
             view_reads: Vec::new(),
+            dock_settled: None,
             key_values: HashMap::new(),
             run_dialog: None,
             registry: registry(),
@@ -447,6 +456,7 @@ impl SimApp {
                     Some(l) => Dock::from_layout(l, &tile, &tiles),
                     None => Dock::standard(&tiles),
                 };
+                self.dock_settled = None;
                 for p in popped {
                     let pane = match p {
                         Popped::Controls => Some(Pane::Controls),
@@ -873,6 +883,12 @@ impl SimApp {
     fn layout(&self) -> Option<simsandbox_file::layout::Layout> {
         let index = |id: u64| self.views.tiles.iter().position(|t| t.id == id);
         let l = self.dock.to_layout(&index)?;
+        // As it settled by itself: what it was before.
+        if let Some((now, was)) = &self.dock_settled {
+            if *now == l {
+                return was.clone();
+            }
+        }
         let standard = Dock::standard(&self.tile_ids()).to_layout(&index);
         (Some(&l) != standard.as_ref()).then_some(l)
     }
@@ -888,7 +904,12 @@ impl SimApp {
         if let Some(Focus::Tile(t)) = self.focus.take() {
             self.dock.focus(|p| p.tiles().contains(&t));
         }
+        let saved_before = self.layout();
+        let arranged = |app: &Self, dock: &Dock| {
+            dock.to_layout(&|id: u64| app.views.tiles.iter().position(|t| t.id == id))
+        };
         let mut dock = std::mem::replace(&mut self.dock, Dock::standard(&[]));
+        let before = arranged(self, &dock);
         let mut tabs = Tabs {
             app: self,
             actions: Vec::new(),
@@ -900,6 +921,16 @@ impl SimApp {
             .show_leaf_close_all_buttons(false)
             .show_inside(ui, &mut tabs);
         let mut actions = tabs.actions;
+        // The dock changed with no pointer at work: it fitted itself to
+        // its contents or the window. That is not an edit.
+        let after = arranged(self, &dock);
+        let pointer = ui
+            .input(|i| i.pointer.any_down() || i.pointer.any_pressed() || i.pointer.any_released());
+        if before != after && !pointer {
+            if let Some(after) = after {
+                self.dock_settled = Some((after, saved_before));
+            }
+        }
         actions.append(&mut self.popped_actions);
         // Popped-out tabs are deferred viewports: each window is drawn on
         // its own, from the shared app, so one window never waits for
@@ -5252,6 +5283,38 @@ mod tests {
                 .unwrap();
             assert_eq!((row.value, row.formula.as_deref()), (800.0, Some("kp")));
         }
+    }
+
+    #[test]
+    fn the_dock_fitting_itself_to_the_window_is_not_an_edit() {
+        let mut app = SimApp::new(None, None, None, None);
+        let k = EXAMPLES
+            .iter()
+            .position(|e| e.name.contains("Cruise"))
+            .unwrap();
+        app.open_example(k);
+        let frame = |app: &mut SimApp, ctx: &egui::Context, height: f32| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, height),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.docked(ui));
+            out.textures_delta.clear();
+        };
+        // A short window: the splits are fitted to the panes' contents.
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&mut app, &ctx, 260.0);
+        }
+        assert!(app.dock_settled.is_some(), "the dock did not fit itself");
+        assert!(!app.has_unsaved(), "fitting the dock is not an edit");
+        // A real change still counts: a view in a tab of its own.
+        let t = app.tile_ids()[0];
+        app.dock.own_tab(t);
+        assert!(app.has_unsaved());
     }
 
     #[test]

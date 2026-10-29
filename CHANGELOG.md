@@ -87,6 +87,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- A model no longer shows "unsaved" right after opening: the window fitting its panes to their contents is not counted as a change, and is not saved.
 - Turning off a slider in a model saved before pins (such as the platoon) also unpinned the value. Such files now get their pins when opened, reported as a conversion.
 - A popped-out tab froze the main window while the main window had focus (Linux): popped-out tabs now draw on their own.
 - Turning the only plot into a tab of its own no longer removes the Views tab, so the plot can be tiled back after closing its tab.
