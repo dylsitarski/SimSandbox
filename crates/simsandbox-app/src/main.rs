@@ -6,9 +6,10 @@
 //! simsandbox-app [FILE] --screenshot OUT.ppm [--after SECONDS]
 //! ```
 //!
-//! Without a file it opens the built-in Lorenz example. `--screenshot`
-//! saves the window after `--after` seconds (default 3) and exits; it is
-//! for documentation and visual checks.
+//! It opens maximized (F11 toggles full screen); without a file, on the
+//! landing page (a new model, a file or an example). `--screenshot` saves
+//! the window after `--after` seconds (default 3) and exits; it is for
+//! documentation and visual checks, at a fixed size.
 
 mod app;
 mod diagram;
@@ -108,12 +109,15 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Maximized, filling the screen; screenshots keep a fixed size.
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("SimSandbox")
+        .with_inner_size([1100.0, 700.0])
+        .with_drag_and_drop(true)
+        .with_maximized(args.screenshot.is_none());
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        viewport: egui::ViewportBuilder::default()
-            .with_title("SimSandbox")
-            .with_inner_size([1100.0, 700.0])
-            .with_drag_and_drop(true),
+        viewport,
         ..Default::default()
     };
     let result = eframe::run_native(

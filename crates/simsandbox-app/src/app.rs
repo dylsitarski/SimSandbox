@@ -173,13 +173,10 @@ impl SimApp {
             screenshot,
             screenshot_requested: false,
         };
-        // Hobbyists first (ADR 0009): a model runs as soon as it opens.
-        match path {
-            Some(p) => app.open_path(&p),
-            None => {
-                app.open_text(EXAMPLES[0].name, EXAMPLES[0].text);
-                app.mark_saved();
-            }
+        // A file given opens and runs at once (ADR 0009); without one, the
+        // landing page offers a new model, a file or an example.
+        if let Some(p) = path {
+            app.open_path(&p);
         }
         // A --view flag overrides the view saved in the file.
         if view == Some("diagram") {
@@ -893,10 +890,94 @@ impl SimApp {
         (Some(&l) != standard.as_ref()).then_some(l)
     }
 
+    /// The landing page, while no model is open: start a model, open a
+    /// file or pick an example.
+    fn landing(&mut self, ui: &mut egui::Ui) {
+        let mut open = None;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // One column, centred.
+                let width = ui.available_width().min(760.0);
+                {
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(width);
+                        ui.add_space(48.0);
+                        ui.heading(egui::RichText::new("SimSandbox").size(34.0).strong());
+                        ui.add_space(4.0);
+                        ui.label("Build a model, run it live, and change it while it runs.");
+                        ui.add_space(20.0);
+                        let button = |text: &str| {
+                            egui::Button::new(egui::RichText::new(text).size(16.0))
+                                .min_size(egui::vec2(150.0, 36.0))
+                        };
+                        let gap = ui.spacing().item_spacing.x;
+                        ui.horizontal(|ui| {
+                            ui.add_space(((width - 300.0 - gap) / 2.0).max(0.0));
+                            if ui
+                                .add(button("New model…"))
+                                .on_hover_text("Type equations and run them")
+                                .clicked()
+                            {
+                                self.editor = Some(Editor {
+                                    block: None,
+                                    text: NEW_MODEL.into(),
+                                    error: None,
+                                });
+                            }
+                            if ui
+                                .add(button("Open…"))
+                                .on_hover_text(
+                                    "A model file (.ssbx.json) or a saved run (.run.json)",
+                                )
+                                .clicked()
+                            {
+                                self.open_dialog();
+                            }
+                        });
+                        ui.add_space(6.0);
+                        ui.weak("or drop a model file on this window");
+                        ui.add_space(32.0);
+                        ui.label(egui::RichText::new("Examples").strong().size(16.0));
+                        ui.add_space(8.0);
+                        // Two columns, each name a link with its description
+                        // on hover.
+                        let column = (width - gap) / 2.0;
+                        let half = EXAMPLES.len().div_ceil(2);
+                        ui.horizontal_top(|ui| {
+                            for part in [0..half, half..EXAMPLES.len()] {
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(column, 0.0),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_width(column);
+                                        for k in part {
+                                            if ui
+                                                .link(EXAMPLES[k].name)
+                                                .on_hover_text(example_description(k))
+                                                .clicked()
+                                            {
+                                                open = Some(k);
+                                            }
+                                            ui.add_space(2.0);
+                                        }
+                                    },
+                                );
+                            }
+                        });
+                        ui.add_space(24.0);
+                    });
+                }
+            });
+        if let Some(k) = open {
+            self.open_example(k);
+        }
+    }
+
     /// The docked tabs (ADR 0053), and the ones popped out into windows.
     fn docked(&mut self, ui: &mut egui::Ui) {
         if self.session.is_none() {
-            ui.centered_and_justified(|ui| ui.label("Open an example or a model file."));
+            self.landing(ui);
             return;
         }
         let tiles = self.tile_ids();
@@ -1962,6 +2043,12 @@ impl SimApp {
         let save_as = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
         let save = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
         let open = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
+        // F11: full screen and back.
+        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F11)) {
+            let full = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+        }
         // The more specific shortcut first, so Ctrl+Shift+S is not taken as Ctrl+S.
         if ui.input_mut(|i| i.consume_shortcut(&save_as)) && self.session.is_some() {
             self.save_as_dialog();
@@ -4192,6 +4279,23 @@ struct Editor {
     error: Option<String>,
 }
 
+/// A built-in example's description, from its file, read once.
+fn example_description(k: usize) -> &'static str {
+    static DESCRIPTIONS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let all = DESCRIPTIONS.get_or_init(|| {
+        EXAMPLES
+            .iter()
+            .map(|e| {
+                serde_json::from_str::<serde_json::Value>(e.text)
+                    .ok()
+                    .and_then(|v| v["description"].as_str().map(String::from))
+                    .unwrap_or_default()
+            })
+            .collect()
+    });
+    all.get(k).map_or("", String::as_str)
+}
+
 /// What "New model…" starts with: a damped oscillator that moves at once.
 const NEW_MODEL: &str = "\
 # A spring with friction. Change anything, then press Apply.
@@ -4336,6 +4440,9 @@ mod tests {
         let path = dir.join("lorenz.ssbx.json");
 
         let mut app = SimApp::new(None, None, None, None);
+        // Without a file the app opens on its landing page.
+        app.open_example(0);
+        app.mark_saved();
         assert!(app.path.is_none(), "built-in examples have no path");
         app.save_to(&path);
         assert_eq!(app.error, None);
@@ -4433,6 +4540,9 @@ mod tests {
     #[test]
     fn mistakes_keep_the_editor_open_and_the_model_running() {
         let mut app = SimApp::new(None, None, None, None);
+        // Without a file the app opens on its landing page.
+        app.open_example(0);
+        app.mark_saved();
         app.editor = editor(None, "dx/dt = -k*");
         app.apply_equations();
         let e = app.editor.as_ref().unwrap().error.as_deref().unwrap();
@@ -4499,7 +4609,10 @@ mod tests {
         }
         // The examples: the Lorenz system is real-time; a sweep is once
         // evaluated quickly.
-        let app = SimApp::new(None, None, None, None);
+        let mut app = SimApp::new(None, None, None, None);
+        // Without a file the app opens on its landing page.
+        app.open_example(0);
+        app.mark_saved();
         let live = app.session.as_ref().unwrap();
         assert!(live.model().real_time);
     }
@@ -5315,6 +5428,24 @@ mod tests {
         let t = app.tile_ids()[0];
         app.dock.own_tab(t);
         assert!(app.has_unsaved());
+    }
+
+    #[test]
+    fn without_a_file_the_app_opens_on_its_landing_page() {
+        let mut app = SimApp::new(None, None, None, None);
+        assert!(app.session.is_none());
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.docked(ui));
+        out.textures_delta.clear();
+        assert!(!example_description(0).is_empty());
+        assert!(!app.has_unsaved());
     }
 
     #[test]
