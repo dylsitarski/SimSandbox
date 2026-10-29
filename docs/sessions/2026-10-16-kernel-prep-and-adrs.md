@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-10-29: ADR 0062 step 2, first part. File: `ProbeEntry`, `ProbeEvery`, `ProbeKeep`, `Controls::probes`, `ProbeEntry::check` (applied after `controls` is parsed: bad entries and repeated names dropped with warnings), schema. Session: `ProbeSpec` gains `to`, `canvas`, `new`, `from_entry`, `to_entry`; `Session::load_probes` builds the file's probes one by one (each that fails is dropped with a warning), `probe_specs`, saving writes them back unless swept. `probe.rs`: `write_files`, `write_csv`, `to_json`, `.npy` writer. `run.rs`: `ProbeRun`, `run_probes` (through a `Session`). CLI `run --probe`, `--save-probes`. Python `run_probes` native, `Model.add_probe`, `Model.run_probes`, `Probe`, `ProbeRun`. Gray–Scott headless with a field probe every 500 s: `numpy.load` reads `(5, 128, 128)`.
 - 2026-10-29: ADR 0062 step 1, probes in memory. `probe.rs` (`Every`, `Keep`, `ProbeSpec`, `Trigger`); `Session::set_probes`, `probe_names`, `probe`; `Extra` probes fed from the implicit probe's samples in `push`, cleared on restart, truncated and re-armed on rewind, rebuilt without vanished names when filters change; `History::{thin_past, keep_last, values_per_sample}`. Tests in `probe.rs` and `session.rs` (`probe_tests`).
 - 2026-10-28: memory safety net for large grids (owner's choice, before the probes ADR). `history.rs`: `FIELD_VALUES` 32 million, `MIN_SAMPLES` 100. `Snapshot::values`; the session thins snapshots past `SNAPSHOT_VALUES` (32 million) or `MAX_SNAPSHOTS`. Gray–Scott registered as an example.
 - 2026-10-28: ADR 0060 step 5, first part: 2D grids. `simsandbox_expr::Line` (stride, count) and `ArrayOp::{Axis, Second, First}` along one axis; `lap` is their sum; `EdgeLine::axis`; `at(T, i, j)`. Tests: 2D mode at its discrete rate and second order (`tests/heat.rs`), `two_axes_*` in `symbolic.rs`, `simsandbox-file/tests/gray_scott.rs` (spots split). `examples/gray-scott.ssbx.json` is not registered in the app's examples until memory is bounded (Q38). `crates/simsandbox-session/examples/grid_cost.rs` measures step time and memory.
@@ -82,6 +83,7 @@
 
 ## Decided
 
+- 2026-10-29: probe files are written only where asked (`--save-probes DIR`, `save=`), not by every `simsandbox run`; probe controls are lenient like the others (dropped with a warning, the file still opens). Recorded in ADR 0062's as-built notes.
 - 2026-10-29: probes ([ADR 0062](../decisions/0062-probes-recording-and-replay.md)), the owner choosing: thin by default, snapshots keep outputs, recompute on demand later, exact runs on several cores from the start, built after item 2 and before rigid bodies.
 - 2026-10-28: Verified is earned per case ([ADR 0061](../decisions/0061-verified-is-earned-per-case.md)): the owner chose to relabel `units.convert` and the input blocks Quantitative (they had declared Verified, against ADR 0004 and the verification policy) and to add a convergence check to the roadmap's Phase 3.
 - 2026-10-27: arrays in typed equations ([ADR 0060](../decisions/0060-arrays-in-typed-equations.md)), the owner choosing the whole-array form after asking what arrays gain over a wrapper or other routes: 1D and 2D grids, `lap`/`ddx`/`ddy`, `edge` conditions, an instruction-list evaluator (Q35), `backward_euler` and `trbdf2` with a sparse Jacobian (Q17); Q26 after the gate; Q38 (recording large grids) raised.
@@ -133,6 +135,7 @@
 
 ## Notes for the next session
 
+- Probes step 2, second part: probe nodes on the data layer (`diagram.rs`/`observers.rs`, `canvas.rs`, wires from what they record, edits like filters), the app's probe editing and "Save probe data", `render --diagram` drawing them, and views bound to a probe. A probe records only what the implicit history does; with `controls.plots` set that excludes other outputs, which the canvas should explain or widen.
 - 2026-10-28: ADR 0062 (probes) is a draft (Proposed). Open for the owner: thin or forget by default; snapshots with or without outputs; recompute on demand in the first build or later; several cores for exact runs from the start; its place in the Phase 2 plan.
 - 2026-10-28: step 5 paused on Q38 and Q39. The owner asked whether history and replay could be part of a general probing and saving capability (canvas nodes that save chosen values at set intervals or times), with the user choosing memory budget, recording interval, and exactness against speed. TR-BDF2 is too slow on 128 × 128 grids (730 ms a step, mostly the LU's fill-in), a follow-up for the solver's ordering.
 - 2026-10-28: the owner asked why multithreading was turned off in `faer` without discussion; recorded as Q39 (parallelism without losing exact replay), to settle with measurements in step 5.

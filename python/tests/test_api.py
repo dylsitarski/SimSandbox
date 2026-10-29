@@ -263,3 +263,34 @@ def test_inputs_schedules_and_runs_replay_the_same(tmp_path):
     # A change to a parameter that does not exist is an error.
     with pytest.raises(ss.ModelError, match="no parameter .z."):
         m.run(inputs=[(0.5, "push.z", 1.0)])
+
+
+def test_probes_record_on_their_own_schedule_and_write_files(tmp_path):
+    m = ss.Model.example("Cruise control")
+    m.add_probe("speed", ["car.v"], every={"steps": 10}, keep={"all": True}, to="speed.csv")
+    r = m.run_probes(t_end=5.0, save=tmp_path)
+    p = r["speed"]
+    assert len(p) == 11
+    # The same numbers as a plain run, at every tenth step.
+    plain = m.run(t_end=5.0)
+    assert np.array_equal(p["car.v"], plain["car.v"][::10])
+    assert np.array_equal(p.t, plain.t[::10])
+    assert r.files == [str(tmp_path / "speed.csv")]
+    lines = (tmp_path / "speed.csv").read_text().splitlines()
+    assert lines[0] == "t,car.v" and len(lines) == 12
+    # Saved with the model, and loaded back.
+    again = ss.Model.from_json(m.to_json())
+    assert again.data["controls"]["probes"][0]["every"] == {"steps": 10}
+    with pytest.raises(ss.ModelError, match="no probe 'x'"):
+        m.run_probes(probes=["x"])
+
+
+def test_grid_probes_come_back_as_arrays_and_npy_files(tmp_path):
+    m = ss.Model.example("Gray")
+    field = "gs.v"
+    assert m.run(t_end=1.0)[field].ndim == 3
+    m.add_probe("profile", [field], every={"times": [0.0, 30.0]}, to="gs.csv")
+    p = m.run_probes(t_end=50.0, save=tmp_path)["profile"]
+    assert p[field].shape == (2, 128, 128)
+    saved = np.load(tmp_path / f"gs.{field}.npy")
+    assert np.array_equal(saved, p[field])

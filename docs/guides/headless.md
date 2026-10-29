@@ -21,6 +21,7 @@ Build with `cargo build --release -p simsandbox-cli`; the binary is `target/rele
 | `simsandbox schema [run]` | The model file's JSON Schema, or the [run file's](../../crates/simsandbox-file/run.schema.json) |
 | `simsandbox check FILE` | JSON report; exit status 1 if the model cannot run. For a run file: its model is found and checked with the run's settings and events, and a model changed since the run was made is a warning |
 | `simsandbox run FILE [--t-end S] [--dt S] [--format csv\|json] [--inputs RUN]` | Every output at every step (or sweep sample). `FILE` may be a run file, which is replayed; `--inputs RUN` applies a run's events to a model file. `render` takes `--inputs` too |
+| `simsandbox run FILE --probe NAME [--save-probes DIR] [...]` | What probe `NAME` recorded ([Probes](#probes)) instead of every output: CSV of `t` and its signals, or with `--format json` also its fields. `--save-probes DIR` (with or without `--probe`) writes the files of the probes that have one (`to`) into `DIR` |
 | `simsandbox render FILE --out IMAGE.png [--t-end S] [--view N] [--width P] [--height P] [--scale S] [--light]` | PNG of the views after running to `t_end`, placed as the file's `controls.layout` arranges them ([ADR 0053](../decisions/0053-docked-panes-inspector-and-node-values.md)) or tiled in a grid |
 | `simsandbox render FILE --diagram [--subsystem NAME] [--no-data] [--values] --out IMAGE.png [--width P] [--height P] [--scale S] [--light]` | PNG of the block diagram, or a subsystem's inside, as the app's Diagram tab shows it (also for a file that cannot run), with the filters and views as its data layer unless `--no-data` ([ADR 0050](../decisions/0050-data-layer-and-canvas-undo.md)); the nodes `controls.open` lists show their values, every node with `--values` ([ADR 0055](../decisions/0055-open-nodes-subsystem-values-deferred-windows.md)) |
 | `simsandbox start-from FILE --t S [--out NEW.json]` | The model file that starts from the state reached at `t` ([ADR 0042](../decisions/0042-node-canvas.md)): initial-condition parameters where they say it exactly, else a `start` entry per block |
@@ -53,6 +54,24 @@ Notes, warnings and labels go to standard error; data to standard output.
 | `labels`, `notes`, `warnings` | As in `check` and on standard error |
 
 JSON has no infinities or NaN; they are written as `null`. CSV leaves populations out.
+
+## Probes
+
+Probes ([ADR 0062](../decisions/0062-probes-recording-and-replay.md)) record chosen signals and fields on their own schedule, and can write files. They are saved in `controls.probes`:
+
+```json
+{"name": "pattern", "record": ["gs.v"], "every": {"seconds": 50}, "keep": {"all": true}, "to": "gs-pattern.csv"}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `record` | Signals and fields by the names views bind (`car.v`, `gs.v`, a filter's name); only what the model records (with `controls.plots`, those outputs and the filters) |
+| `every` | One of `{"steps": N}`, `{"seconds": dt}`, `{"times": [...]}`: at the first step at or after each; every step if absent |
+| `keep` | One of `{"mb": size}` (thinned past it), `{"last": N}`, `{"all": true}`; thinned when long if absent |
+| `to` | A file name ending in `.csv`: `t` and the signals, one row per sample; each grid or point field in `<stem>.<field>.npy` beside it (`(samples, ny, nx)` or `(samples, count, dim)`, read with `numpy.load`) |
+| `canvas` | Where its node sits on the diagram's data layer |
+
+A probe with bad settings, or recording something the model does not record, is dropped with a warning. `simsandbox run FILE --probe NAME` prints one; `--save-probes DIR` writes the files. A swept model records no probes. JSON output of a probe: `rows`, `t`, `signals` (name → list), `fields` (name → `{shape, frames}`).
 
 ## Inputs and run files
 
@@ -94,6 +113,9 @@ m.schedule(5.0, "decay.k", 2.0)                  # a change at t = 5 in every ru
 r = m.run(inputs=[(1.0, "decay.k", 0.1)])        # one-off changes during this run
 run = ss.Run.load("cart-pole.push-test.run.json")  # a run file and its model
 r = run.replay()                                 # the same numbers as when it was recorded
+m.add_probe("speed", ["car.v"], every={"seconds": 0.5}, to="speed.csv")  # a probe (ADR 0062)
+p = m.run_probes(save=".")["speed"]              # what it recorded; its files written to "."
+p.t, p["car.v"]
 ss.Run(m, track=[(1.0, "decay.k", 0.1)], name="slow", model_path="decay.ssbx.json").save("decay.slow.run.json")
 ```
 

@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use simsandbox_session::examples::{registry, view_registry, EXAMPLES};
 use simsandbox_session::render::{png, render as render_views, RenderOptions};
-use simsandbox_session::run::run_with as run_model;
+use simsandbox_session::run::{run_probes as run_model_probes, run_with as run_model};
 use simsandbox_session::session::InputEvent;
 use simsandbox_session::{describe as catalogue, Session};
 
@@ -137,6 +137,93 @@ fn run<'py>(
     )?;
     d.set_item("notes", r.notes.clone())?;
     d.set_item("warnings", r.warnings.clone())?;
+    Ok(d)
+}
+
+/// Run a model file with its probes (ADR 0062), all of them or those in
+/// `names`, writing the files of those that have one into `save` if
+/// given. Returns a dict: `probes` as a list of (name, times bytes,
+/// [(signal, bytes)], [(field, dims, bytes)], [(population, dim, [bytes
+/// per sample])]), `files` written, and `labels`, `warnings`.
+#[pyfunction]
+#[pyo3(signature = (text, t_end=None, dt=None, track=None, names=None, save=None))]
+fn run_probes<'py>(
+    py: Python<'py>,
+    text: &str,
+    t_end: Option<f64>,
+    dt: Option<f64>,
+    track: Option<Vec<(f64, String, f64)>>,
+    names: Option<Vec<String>>,
+    save: Option<std::path::PathBuf>,
+) -> PyResult<Bound<'py, PyDict>> {
+    use simsandbox_views::history::FieldShape;
+    let track: Vec<InputEvent> = track
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(t, key, value)| InputEvent { t, key, value })
+        .collect();
+    let names = names.unwrap_or_default();
+    let (r, files) = py
+        .detach(|| {
+            let r = run_model_probes(text, &registry(), t_end, dt, track, &names)?;
+            let files = match &save {
+                Some(dir) => r
+                    .write_files(dir)
+                    .map_err(|e| format!("{}: {e}", dir.display()))?,
+                None => Default::default(),
+            };
+            Ok::<_, String>((r, files))
+        })
+        .map_err(ModelError::new_err)?;
+    let probes = PyList::empty(py);
+    for (spec, h) in &r.probes {
+        let h = h.read();
+        let signals = PyList::empty(py);
+        for (i, n) in h.names().iter().enumerate() {
+            let values = h.values(simsandbox_views::history::SignalRef::Signal(i));
+            signals.append((n, bytes(py, &values)))?;
+        }
+        let fields = PyList::empty(py);
+        let populations = PyList::empty(py);
+        for f in h.fields().iter().filter(|f| !f.whole) {
+            let frames = (0..h.len()).map(|k| f.frame(k));
+            match f.shape {
+                FieldShape::Grid { nx, ny } => fields.append((
+                    &f.name,
+                    vec![ny, nx],
+                    bytes(py, &frames.flatten().copied().collect::<Vec<_>>()),
+                ))?,
+                FieldShape::Points { count, dim } => fields.append((
+                    &f.name,
+                    vec![count, dim],
+                    bytes(py, &frames.flatten().copied().collect::<Vec<_>>()),
+                ))?,
+                FieldShape::Population { dim } => populations.append((
+                    &f.name,
+                    dim,
+                    frames.map(|v| bytes(py, v)).collect::<Vec<_>>(),
+                ))?,
+            }
+        }
+        probes.append((
+            &spec.name,
+            bytes(py, h.times()),
+            signals,
+            fields,
+            populations,
+        ))?;
+    }
+    let (written, notes) = files;
+    let mut warnings = r.warnings.clone();
+    warnings.extend(notes);
+    let d = PyDict::new(py);
+    d.set_item("probes", probes)?;
+    d.set_item("files", written)?;
+    d.set_item(
+        "labels",
+        json(&serde_json::json!(r.labels.map(catalogue::labels))),
+    )?;
+    d.set_item("warnings", warnings)?;
     Ok(d)
 }
 
@@ -275,6 +362,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(examples, m)?)?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
+    m.add_function(wrap_pyfunction!(run_probes, m)?)?;
     m.add_function(wrap_pyfunction!(model_hash, m)?)?;
     m.add_function(wrap_pyfunction!(run_schema, m)?)?;
     m.add_function(wrap_pyfunction!(render, m)?)?;

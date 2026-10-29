@@ -541,6 +541,7 @@ impl Session {
             session.resample();
         } else {
             session.rebuild_history();
+            session.load_probes();
             // Scheduled changes at t = 0 set where the run starts.
             session.restart().map_err(|e| e.to_string())?;
         }
@@ -1017,9 +1018,36 @@ impl Session {
         Ok(())
     }
 
+    /// Build the file's probes, one by one: one that records what this
+    /// session does not is dropped with a warning.
+    fn load_probes(&mut self) {
+        let mut kept: Vec<ProbeSpec> = Vec::new();
+        for (k, e) in self.file.controls.probes.clone().iter().enumerate() {
+            let mut specs = kept.clone();
+            specs.push(ProbeSpec::from_entry(e));
+            match self.set_probes(specs.clone()) {
+                Ok(()) => kept = specs,
+                Err(problems) => {
+                    for p in problems {
+                        self.warnings
+                            .push(format!("controls.probes[{k}]: {p}; ignored"));
+                    }
+                }
+            }
+        }
+        if let Err(problems) = self.set_probes(kept) {
+            self.warnings.extend(problems);
+        }
+    }
+
     /// The probes besides the implicit one, by name.
     pub fn probe_names(&self) -> Vec<&str> {
         self.probes.iter().map(|p| p.spec.name.as_str()).collect()
+    }
+
+    /// The probes besides the implicit one, as set.
+    pub fn probe_specs(&self) -> Vec<&ProbeSpec> {
+        self.probes.iter().map(|p| &p.spec).collect()
     }
 
     /// What probe `name` has recorded, shared for reading (`None` if
@@ -1466,6 +1494,10 @@ impl Session {
             self.file.controls.views = v;
         }
         self.file.controls.filters = self.filter_entries.clone();
+        // A swept model records no probes: the file keeps its own.
+        if self.sweep.is_none() {
+            self.file.controls.probes = self.probes.iter().map(|p| p.spec.to_entry()).collect();
+        }
         if let Some(sw) = &self.sweep {
             self.file.sample = Some(sw.sampling.clone());
         }
@@ -2888,10 +2920,9 @@ mod probe_tests {
 
     fn spec(name: &str, record: &[&str], every: Every, keep: Keep) -> ProbeSpec {
         ProbeSpec {
-            name: name.into(),
-            record: record.iter().map(|r| r.to_string()).collect(),
             every,
             keep,
+            ..ProbeSpec::new(name, record.iter().map(|r| r.to_string()).collect())
         }
     }
 
@@ -3019,5 +3050,68 @@ mod probe_tests {
             .warnings
             .iter()
             .any(|w| w.contains("'double' is no longer recorded")));
+    }
+
+    /// The cruise control example with `probes` (JSON) in its controls.
+    fn cruise_with(probes: &str) -> String {
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Cruise control"))
+            .unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(e.text).unwrap();
+        v["controls"]["probes"] = serde_json::from_str(probes).unwrap();
+        v.to_string()
+    }
+
+    #[test]
+    fn probes_load_from_the_file_and_save_back() {
+        let text = cruise_with(
+            r#"[{"name": "speed", "record": ["car.v"], "every": {"seconds": 0.5},
+                 "keep": {"last": 4}, "to": "speed.csv", "canvas": [10, 20]},
+                {"name": "bad", "record": ["car.nope"]}]"#,
+        );
+        let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        assert_eq!(s.probe_names(), ["speed"]);
+        assert!(
+            s.warnings
+                .iter()
+                .any(|w| w.contains("controls.probes[1]") && w.contains("car.nope")),
+            "{:?}",
+            s.warnings
+        );
+        let spec = s.probe_specs()[0].clone();
+        assert_eq!(spec.every, Every::Seconds(0.5));
+        assert_eq!(spec.keep, Keep::Last { samples: 4 });
+        assert_eq!(spec.canvas, Some([10.0, 20.0]));
+        let saved = s.save_json(1.0, None).unwrap();
+        let again = Session::load("again", &saved, &registry()).unwrap();
+        assert_eq!(again.probe_specs(), [&spec]);
+    }
+
+    #[test]
+    fn a_headless_run_records_what_the_app_does() {
+        let text = cruise_with(
+            r#"[{"name": "speed", "record": ["car.v"], "every": {"steps": 10}, "keep": {"all": true},
+                 "to": "speed.csv"}]"#,
+        );
+        let r =
+            crate::run::run_probes(&text, &registry(), Some(5.0), None, Vec::new(), &[]).unwrap();
+        let (spec, h) = &r.probes[0];
+        assert_eq!(spec.name, "speed");
+        let h = h.read();
+        assert_eq!(h.len(), 11);
+        // Every sample is the plain run's at the same step, exactly.
+        let plain = crate::run::run(&text, &registry(), Some(5.0), None).unwrap();
+        let v = &plain
+            .outputs
+            .iter()
+            .find(|o| o.name == "car.v")
+            .unwrap()
+            .values;
+        for (k, p) in h.points(0).iter().enumerate() {
+            assert_eq!(p.y.to_bits(), v[10 * k].to_bits());
+        }
+        let err = crate::run::run_probes(&text, &registry(), None, None, Vec::new(), &["x".into()]);
+        assert!(err.is_err_and(|e| e.contains("no probe 'x'")));
     }
 }

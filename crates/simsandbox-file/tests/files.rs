@@ -350,6 +350,36 @@ fn bad_controls_are_dropped_with_warnings() {
 }
 
 #[test]
+fn bad_probes_are_dropped_with_warnings() {
+    let with = |probes: &str| {
+        let mut v: serde_json::Value = serde_json::from_str(LORENZ).unwrap();
+        v["controls"]["probes"] = serde_json::from_str(probes).unwrap();
+        v.to_string()
+    };
+    let text = with(
+        r#"[{"name": "ok", "record": ["lorenz.x"], "every": {"seconds": 0.5}, "to": "ok.csv"},
+            {"name": "ok", "record": ["lorenz.x"]},
+            {"name": "two", "record": ["lorenz.x"], "every": {"steps": 2, "seconds": 1}},
+            {"name": "none", "record": []},
+            {"name": "deep", "record": ["lorenz.x"], "to": "../x.csv"},
+            {"name": "keep", "record": ["lorenz.x"], "keep": {"last": 0}}]"#,
+    );
+    let (file, warnings) = ModelFile::from_json(&text).unwrap();
+    let names: Vec<&str> = file
+        .controls
+        .probes
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(names, ["ok"]);
+    assert_eq!(warnings.len(), 5, "{warnings:?}");
+    assert!(warnings[0].starts_with("controls.probes[1]") && warnings[0].contains("twice"));
+    // Saved as read, defaults left out.
+    let again = ModelFile::from_json(&file.to_json()).unwrap().0;
+    assert_eq!(again.controls.probes, file.controls.probes);
+}
+
+#[test]
 fn sliders_written_before_pins_pin_and_open_nodes_are_kept() {
     // LORENZ gives lorenz.rho a slider and no pin.
     let (mut file, _) = ModelFile::from_json(LORENZ).unwrap();

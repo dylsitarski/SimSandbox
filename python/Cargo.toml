@@ -20,6 +20,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 simsandbox-session = { path = "../crates/simsandbox-session" }
+simsandbox-views = { path = "../crates/simsandbox-views" }
 serde_json = "1"
 # One wheel for every CPython from 3.10 on (the stable ABI).
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py310"] }

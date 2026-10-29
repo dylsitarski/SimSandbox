@@ -673,6 +673,92 @@
               }
             }
           }
+        },
+        "probes": {
+          "type": "array",
+          "description": "Probes (ADR 0062): what is recorded, when, how long, and the file written. Never affects results.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "record"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "record": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                },
+                "description": "Signals and fields by the names views bind, e.g. car.v, rod.T."
+              },
+              "every": {
+                "type": "object",
+                "additionalProperties": false,
+                "minProperties": 1,
+                "maxProperties": 1,
+                "description": "When it records; every step if absent.",
+                "properties": {
+                  "steps": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "times": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  }
+                }
+              },
+              "keep": {
+                "type": "object",
+                "additionalProperties": false,
+                "maxProperties": 1,
+                "description": "How long it keeps samples; thinned when long if absent.",
+                "properties": {
+                  "mb": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Thinned past this many megabytes."
+                  },
+                  "last": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Only the newest this many samples."
+                  },
+                  "all": {
+                    "type": "boolean",
+                    "description": "Every sample, never thinned."
+                  }
+                }
+              },
+              "to": {
+                "type": "string",
+                "pattern": "^[^/\\\\]+\\.csv$",
+                "description": "A CSV file beside the model for its signals; each grid or point field goes to a .npy file beside it."
+              },
+              "canvas": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
         }
       }
     },

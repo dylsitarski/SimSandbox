@@ -400,6 +400,120 @@ pub struct ScheduledChange {
     pub to: f64,
 }
 
+/// Whether `s` is a name: a letter or `_`, then letters, digits or `_`.
+fn is_identifier(s: &str) -> bool {
+    let mut c = s.chars();
+    c.next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && c.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// A probe (ADR 0062): what it records, when, how long, and the file it
+/// writes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeEntry {
+    pub name: String,
+    /// Signals and fields, by the names views bind (`car.v`, `rod.T`).
+    pub record: Vec<String>,
+    /// When it records; every step if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<ProbeEvery>,
+    /// How long it keeps samples; thinned when long if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<ProbeKeep>,
+    /// The file it writes, beside the model: a CSV of its signals, and
+    /// a `.npy` file per grid or point field beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// Where its node sits on the canvas's data layer (ADR 0050).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<[f64; 2]>,
+}
+
+impl ProbeEntry {
+    /// Check the settings the file can check alone (what it records is
+    /// checked against the model by the session); an error says what is
+    /// wrong.
+    pub fn check(&self) -> Result<(), String> {
+        let positive = |v: f64| v.is_finite() && v > 0.0;
+        if !is_identifier(&self.name) {
+            return Err(format!(
+                "'{}' is not a name (letters, digits, _)",
+                self.name
+            ));
+        }
+        if self.record.is_empty() {
+            return Err("a probe records at least one signal or field".into());
+        }
+        if let Some(e) = &self.every {
+            let set = [e.steps.is_some(), e.seconds.is_some(), e.times.is_some()];
+            if set.iter().filter(|s| **s).count() != 1 {
+                return Err("'every' gives one of steps, seconds or times".into());
+            }
+            let ok = e.steps.is_none_or(|n| n >= 1)
+                && e.seconds.is_none_or(positive)
+                && e.times.as_ref().is_none_or(|ts| {
+                    !ts.is_empty() && ts.iter().all(|t| t.is_finite() && *t >= 0.0)
+                });
+            if !ok {
+                return Err(
+                    "'every': steps is at least 1, seconds positive, times 0 or more".into(),
+                );
+            }
+        }
+        if let Some(kp) = &self.keep {
+            let set = [kp.mb.is_some(), kp.last.is_some(), kp.all];
+            if set.iter().filter(|s| **s).count() > 1 {
+                return Err("'keep' gives at most one of mb, last or all".into());
+            }
+            if !(kp.mb.is_none_or(positive) && kp.last.is_none_or(|n| n >= 1)) {
+                return Err("'keep': mb is positive and last at least 1".into());
+            }
+        }
+        if let Some(to) = &self.to {
+            let plain = !to.contains(['/', '\\']) && to.len() > 4 && to.ends_with(".csv");
+            if !plain {
+                return Err(format!(
+                    "'to': '{to}' is a file name ending in .csv, written beside the model"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// When a probe records: one of the three.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeEvery {
+    /// Every this many steps, from t = 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u64>,
+    /// Every this much simulated time, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<f64>,
+    /// At these times, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub times: Option<Vec<f64>>,
+}
+
+/// How long a probe keeps samples: at most one of these; thinned when
+/// long if none.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeKeep {
+    /// Thinned (every other sample dropped) past this many megabytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mb: Option<f64>,
+    /// Only the newest this many samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<usize>,
+    /// Every sample, never thinned.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all: bool,
+}
+
 /// How keys and views drive an input block (ADR 0058), in
 /// `controls.inputs` by the block's name. Never affects results: a run
 /// records the values, not the keys.
@@ -589,6 +703,11 @@ pub struct Controls {
     /// invalid ones are dropped with a warning.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<FilterEntry>,
+    /// Probes recording chosen signals and fields at chosen times, and
+    /// the files they write (ADR 0062). Checked by the session; one that
+    /// records nothing the model has is dropped with a warning.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub probes: Vec<ProbeEntry>,
     /// Derived signals as written before filters (name to expression).
     /// Still read; converted into `expression` filters on load and never
     /// written.
@@ -1276,6 +1395,22 @@ impl ModelFile {
         for c in controls.params.values_mut() {
             c.pin |= c.slider;
         }
+        // Probes never change results: an invalid one is dropped, not the file.
+        let mut names = std::collections::BTreeSet::new();
+        let mut k = 0;
+        controls.probes.retain(|pr| {
+            let checked = pr.check().and_then(|()| {
+                names
+                    .insert(pr.name.clone())
+                    .then_some(())
+                    .ok_or_else(|| format!("'{}' is used twice", pr.name))
+            });
+            if let Err(e) = &checked {
+                warnings.push(format!("controls.probes[{k}]: {e}; ignored"));
+            }
+            k += 1;
+            checked.is_ok()
+        });
         Ok((
             Self {
                 format: raw.format,

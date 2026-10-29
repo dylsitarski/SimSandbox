@@ -5,9 +5,12 @@
 //!
 //! ```text
 //! simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json] [--inputs RUN]
+//!                 [--probe NAME] [--save-probes DIR]
 //!                                   (default: the file's `run` section)
 //!                                   (FILE a run file: replays it, ADR 0059)
 //!                                   (a model with no states: one row per sample of its sweep)
+//!                                   (--probe: what that probe records, not every output, ADR 0062)
+//!                                   (--save-probes: the probes' files (`to`) written into DIR)
 //! simsandbox check FILE             (JSON; exit status 1 if the model cannot run)
 //! simsandbox describe [TYPE]        (JSON: every block, view and filter type and the units, or one; TYPE "units" lists the units)
 //! simsandbox schema [run]           (the model file's, or a run file's, JSON Schema)
@@ -31,15 +34,16 @@ use simsandbox_file::runs::RunFile;
 use simsandbox_file::ModelFile;
 use simsandbox_session::examples::{registry, view_registry};
 use simsandbox_session::render::{png, render, render_diagram, RenderOptions};
-use simsandbox_session::run::{run_with, start_from, DEFAULT_T_END};
+use simsandbox_session::run::{run_probes, run_with, start_from, DEFAULT_T_END};
 use simsandbox_session::session::InputEvent;
-use simsandbox_session::{describe, Session};
+use simsandbox_session::{describe, probe, Session};
 use std::collections::BTreeMap;
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json] [--inputs RUN]
+                  [--probe NAME] [--save-probes DIR]
   simsandbox check FILE
   simsandbox describe [TYPE | units]
   simsandbox schema [run]
@@ -208,7 +212,17 @@ fn print_json(v: &Value) -> Result<(), String> {
 /// [`simsandbox_session::run`]) as CSV (without populations) or JSON.
 fn run_file(args: &[String]) -> Result<(), String> {
     let (path, rest) = args.split_first().ok_or(USAGE)?;
-    let flags = Flags::parse(rest, &["--t-end", "--dt", "--format", "--inputs"])?;
+    let flags = Flags::parse(
+        rest,
+        &[
+            "--t-end",
+            "--dt",
+            "--format",
+            "--inputs",
+            "--probe",
+            "--save-probes",
+        ],
+    )?;
     let json = match flags.get("--format") {
         None | Some("csv") => false,
         Some("json") => true,
@@ -216,6 +230,9 @@ fn run_file(args: &[String]) -> Result<(), String> {
     };
     let (t_end, dt) = (flags.positive("--t-end")?, flags.positive("--dt")?);
     let (text, track) = model_and_track(path, flags.get("--inputs"))?;
+    if flags.has("--probe") || flags.has("--save-probes") {
+        return run_file_probes(path, &text, track, (t_end, dt), &flags, json);
+    }
     let r = run_with(&text, &registry(), t_end, dt, track).map_err(|e| format!("{path}: {e}"))?;
     for w in &r.warnings {
         eprintln!("warning: {path}: {w}");
@@ -240,6 +257,62 @@ fn run_file(args: &[String]) -> Result<(), String> {
             );
         }
         r.write_csv(&mut out)
+    };
+    written
+        .and_then(|()| out.flush())
+        .map_err(|e| e.to_string())
+}
+
+/// `run` with probes (ADR 0062): print one (`--probe`), write their files
+/// (`--save-probes DIR`), or both.
+fn run_file_probes(
+    path: &str,
+    text: &str,
+    track: Vec<InputEvent>,
+    (t_end, dt): (Option<f64>, Option<f64>),
+    flags: &Flags,
+    json: bool,
+) -> Result<(), String> {
+    let names: Vec<String> = flags.get("--probe").map(String::from).into_iter().collect();
+    let r = run_probes(text, &registry(), t_end, dt, track, &names)
+        .map_err(|e| format!("{path}: {e}"))?;
+    for w in &r.warnings {
+        eprintln!("warning: {path}: {w}");
+    }
+    if let Some(l) = r.labels {
+        eprintln!("speed: {:?} | accuracy: {:?}", l.speed, l.accuracy);
+    }
+    if let Some(dir) = flags.get("--save-probes") {
+        let (written, notes) = r
+            .write_files(std::path::Path::new(dir))
+            .map_err(|e| format!("{dir}: {e}"))?;
+        for n in notes {
+            eprintln!("note: {n}");
+        }
+        if written.is_empty() {
+            eprintln!("note: no probe has a file ('to'); nothing written");
+        }
+        for w in written {
+            eprintln!("wrote {}", w.display());
+        }
+    }
+    let Some((_, h)) = r.probes.first().filter(|_| flags.has("--probe")) else {
+        return Ok(());
+    };
+    let h = h.read();
+    let mut out = BufWriter::new(io::stdout().lock());
+    let written = if json {
+        serde_json::to_writer(&mut out, &probe::to_json(&h))
+            .map_err(io::Error::other)
+            .and_then(|()| writeln!(out))
+    } else {
+        for f in h.fields() {
+            eprintln!(
+                "note: {} is a field and is not written as CSV (--format json or --save-probes include it)",
+                f.name
+            );
+        }
+        probe::write_csv(&h, &mut out)
     };
     written
         .and_then(|()| out.flush())

@@ -2,12 +2,15 @@
 //! as `simsandbox run` and the Python API do: every communication step of a
 //! timed model, or every sample of a swept one (ADR 0028).
 
-use crate::session::{set_key, InputEvent, Track};
+use crate::probe::ProbeSpec;
+use crate::session::{set_key, InputEvent, SharedHistory, Track};
+use crate::Session;
 use serde_json::{json, Value};
 use simsandbox_core::block::{MethodLabels, Shape};
 use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::Simulator;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 /// Used when neither the caller nor the model file gives an end time.
 pub const DEFAULT_T_END: f64 = 20.0;
@@ -280,6 +283,92 @@ pub fn run_with(
         r.index = vec![("t".to_string(), t)];
     }
     Ok(r)
+}
+
+/// What a run's probes recorded (ADR 0062).
+pub struct ProbeRun {
+    /// Each probe as set, with what it recorded, in file order.
+    pub probes: Vec<(ProbeSpec, SharedHistory)>,
+    pub labels: Option<MethodLabels>,
+    /// The model's warnings and notes on its algebraic loops.
+    pub warnings: Vec<String>,
+}
+
+impl ProbeRun {
+    /// Write the files of the probes that have one (`to`) into `dir`:
+    /// the files written, and notes on what was left out.
+    pub fn write_files(&self, dir: &Path) -> io::Result<(Vec<PathBuf>, Vec<String>)> {
+        let mut written = Vec::new();
+        let mut notes = Vec::new();
+        for (spec, h) in &self.probes {
+            if let Some(to) = &spec.to {
+                let (w, n) = crate::probe::write_files(&h.read(), dir, to)?;
+                written.extend(w);
+                notes.extend(n.into_iter().map(|n| format!("probe {}: {n}", spec.name)));
+            }
+        }
+        Ok((written, notes))
+    }
+}
+
+/// Run a model file with its probes, as the app does: to `t_end` in
+/// steps of `dt` (each defaulting to the file's `run` section), with
+/// `track` replayed as recorded input. `names` picks probes (all if
+/// empty). A swept model is not run in time and records no probes.
+pub fn run_probes(
+    text: &str,
+    registry: &Registry,
+    t_end: Option<f64>,
+    dt: Option<f64>,
+    track: Vec<InputEvent>,
+    names: &[String],
+) -> Result<ProbeRun, String> {
+    for v in [t_end, dt].into_iter().flatten() {
+        if !(v.is_finite() && v > 0.0) {
+            return Err("the end time and step must be positive".into());
+        }
+    }
+    let mut s = Session::load("probes", text, registry)?;
+    if s.sweep().is_some() {
+        return Err("a swept model is not run in time, so it records no probes".into());
+    }
+    if let Some(unknown) = names
+        .iter()
+        .find(|n| !s.probe_names().contains(&n.as_str()))
+    {
+        return Err(format!(
+            "no probe '{unknown}'; the model has: {}",
+            s.probe_names().join(", ")
+        ));
+    }
+    if let Some(dt) = dt {
+        s.dt = dt;
+    }
+    let t_end = t_end.or(s.file.run.t_end).unwrap_or(DEFAULT_T_END);
+    let steps = (t_end / s.dt).round() as usize;
+    if !track.is_empty() {
+        s.replay(track)?;
+    }
+    for _ in 0..steps {
+        s.step().map_err(|e| e.to_string())?;
+    }
+    s.flush(true);
+    let probes = s
+        .probe_specs()
+        .into_iter()
+        .filter(|p| names.is_empty() || names.contains(&p.name))
+        .map(|p| {
+            (
+                p.clone(),
+                s.probe(&p.name).expect("a probe the session has"),
+            )
+        })
+        .collect();
+    Ok(ProbeRun {
+        probes,
+        labels: s.labels(),
+        warnings: s.warnings.clone(),
+    })
 }
 
 /// Run a model file to `t` and make that state its start (ADR 0042):

@@ -71,6 +71,12 @@ The owner accepted the proposal on 2026-10-29 with these choices: probes thin by
 - **`History` gains:** `thin_past`, `keep_last` and `values_per_sample`.
 - **Not yet:** headless results and views are unchanged; they read the implicit probe as before. Probes reach the file, the canvas, the CLI and Python in step 2.
 
+**Step 2, first part (2026-10-29): the file, files and headless.** The canvas nodes and the app follow in the second part.
+- **In the file:** `controls.probes` entries (`ProbeEntry`): `name`, `record`, `every` (one of `steps`, `seconds`, `times`; every step if absent), `keep` (at most one of `mb`, `last`, `all`; thinned if absent), `to` and `canvas`. Like other controls they never stop a file loading: an entry with bad settings or a name used twice is dropped with a warning (`controls.probes[k]: …; ignored`), and so is one that records something the session does not record. Saving writes the probes back with defaults left out; a swept model keeps the file's probes as they are.
+- **Files:** `to` is a plain file name ending in `.csv`, written beside the model: `t` and the probe's signals, one row per sample. Each grid or point field goes to `<stem>.<field>.npy` beside it (NumPy format 1.0, little-endian `f64`), shaped `(samples, ny, nx)` or `(samples, count, dim)`; populations are not written (a note says so). HDF5 or Parquet wait for Phase 3.
+- **Headless:** `run::run_probes` runs a model through a `Session`, as the app does, so a probe's samples are the app's, bit for bit (tested against `simsandbox run`). `simsandbox run FILE --probe NAME` prints that probe (CSV of its signals, or JSON with its fields), and `--save-probes DIR` writes the files of the probes that have one into `DIR`. Python: `Model.add_probe(name, record, every=, keep=, to=)` and `Model.run_probes(t_end, dt, inputs, probes=, save=)`, returning `ProbeRun` and `Probe` (numpy arrays).
+- **Differences from the proposal:** files are written only where asked (`--save-probes DIR`, `save=`), never as a side effect of `simsandbox run`. A probe records only what the implicit probe records: with `controls.plots` set, the outputs listed there and the filters.
+
 ## Options considered
 
 **How recording is declared**

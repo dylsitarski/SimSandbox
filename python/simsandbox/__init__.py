@@ -29,6 +29,8 @@ from ._native import ModelError
 __version__ = _native.__version__
 __all__ = [
     "Model",
+    "Probe",
+    "ProbeRun",
     "Results",
     "Run",
     "ModelError",
@@ -257,13 +259,7 @@ class Model:
         whose schedule and recorded input are applied to this model.
         Raises :class:`ModelError` with every problem :func:`check` finds
         if it cannot run."""
-        model, track = self, []
-        if isinstance(inputs, Run):
-            model = self.copy()
-            model.data.setdefault("run", {})["inputs"] = copy.deepcopy(inputs.inputs)
-            track = list(inputs.track)
-        elif inputs is not None:
-            track = [(float(t), str(k), float(v)) for t, k, v in inputs]
+        model, track = self._with_inputs(inputs)
         text = model.to_json()
         try:
             raw = _native.run(text, t_end, dt, track)
@@ -271,6 +267,65 @@ class Model:
             report = json.loads(_native.check(text))
             raise ModelError(_errors(report) if not report["ok"] else str(e)) from None
         return Results(raw)
+
+    def _with_inputs(self, inputs) -> "tuple[Model, list[tuple[float, str, float]]]":
+        if isinstance(inputs, Run):
+            model = self.copy()
+            model.data.setdefault("run", {})["inputs"] = copy.deepcopy(inputs.inputs)
+            return model, list(inputs.track)
+        if inputs is not None:
+            return self, [(float(t), str(k), float(v)) for t, k, v in inputs]
+        return self, []
+
+    def add_probe(
+        self,
+        name: str,
+        record: Iterable[str],
+        every: dict | None = None,
+        keep: dict | None = None,
+        to: str | None = None,
+    ) -> "Model":
+        """Add a probe (ADR 0062): it records the signals and fields in
+        ``record`` (names as views bind them, ``"car.v"``), ``every``
+        ``{"steps": n}``, ``{"seconds": dt}`` or ``{"times": [...]}``
+        (every step if not given), and ``keep``s ``{"mb": size}``,
+        ``{"last": n}`` or ``{"all": True}`` (thinned when long if not
+        given). ``to`` names the CSV file it writes beside the model, with
+        a ``.npy`` file per grid or point field."""
+        probe: dict = {"name": name, "record": list(record)}
+        if every is not None:
+            probe["every"] = dict(every)
+        if keep is not None:
+            probe["keep"] = dict(keep)
+        if to is not None:
+            probe["to"] = to
+        self.data.setdefault("controls", {}).setdefault("probes", []).append(probe)
+        return self
+
+    def run_probes(
+        self,
+        t_end: float | None = None,
+        dt: float | None = None,
+        inputs: "Iterable[tuple[float, str, float]] | Run | None" = None,
+        probes: Iterable[str] | None = None,
+        save: "str | os.PathLike | None" = None,
+    ) -> "ProbeRun":
+        """Run as the app does and return what the probes recorded
+        (ADR 0062): all of them, or those named in ``probes``. ``t_end``,
+        ``dt`` and ``inputs`` are as for :meth:`run`. With ``save``, the
+        probes that have a file (``to``) write it into that directory.
+        A swept model records no probes."""
+        model, track = self._with_inputs(inputs)
+        text = model.to_json()
+        names = None if probes is None else list(probes)
+        try:
+            raw = _native.run_probes(
+                text, t_end, dt, track, names, None if save is None else os.fspath(save)
+            )
+        except ModelError as e:
+            report = json.loads(_native.check(text))
+            raise ModelError(_errors(report) if not report["ok"] else str(e)) from None
+        return ProbeRun(raw)
 
     def schedule(self, t: float, key: str, value: float) -> "Model":
         """Change ``key`` to ``value`` at time ``t`` in every run: the
@@ -588,6 +643,72 @@ class Results:
             f"Results(rows={self.rows}, index={list(self.index)}, "
             f"outputs={list(self.outputs)}, populations={list(self.populations)})"
         )
+
+
+class Probe:
+    """What one probe recorded, as numpy arrays.
+
+    - ``t``: the times of its samples.
+    - ``signals``: each scalar signal, shape ``(samples,)``.
+    - ``fields``: each grid ``(samples, ny, nx)`` or point set
+      ``(samples, count, dim)``.
+    - ``populations``: each population, a list over samples of
+      ``(n, dim)`` arrays.
+
+    ``probe[name]`` looks in ``t``, the signals, the fields, then the
+    populations.
+    """
+
+    def __init__(self, raw: tuple):
+        name, times, signals, fields, populations = raw
+        self.name: str = name
+        self.t = _array(times, (-1,))
+        n = len(self.t)
+        self.signals = {s: _array(data, (n,)) for s, data in signals}
+        self.fields = {f: _array(data, (n, *dims)) for f, dims, data in fields}
+        self.populations = {
+            p: [_array(f, (-1, dim)) for f in frames] for p, dim, frames in populations
+        }
+
+    def __getitem__(self, name: str):
+        if name == "t":
+            return self.t
+        for d in (self.signals, self.fields, self.populations):
+            if name in d:
+                return d[name]
+        raise KeyError(f"{name!r}; recorded: {list(self.signals) + list(self.fields)}")
+
+    def __len__(self) -> int:
+        return len(self.t)
+
+    def __repr__(self) -> str:
+        return (
+            f"Probe({self.name!r}, samples={len(self)}, signals={list(self.signals)}, "
+            f"fields={list(self.fields)})"
+        )
+
+
+class ProbeRun:
+    """What a run's probes recorded: ``probes`` by name (see
+    :class:`Probe`), the ``files`` written, ``labels`` and ``warnings``.
+    ``run[name]`` is a probe."""
+
+    def __init__(self, raw: dict):
+        self.probes: dict[str, Probe] = {p[0]: Probe(p) for p in raw["probes"]}
+        self.files: list[str] = [str(f) for f in raw["files"]]
+        self.labels: dict | None = json.loads(raw["labels"])
+        self.warnings: list[str] = raw["warnings"]
+
+    def __getitem__(self, name: str) -> Probe:
+        if name not in self.probes:
+            raise KeyError(f"{name!r}; probes: {list(self.probes)}")
+        return self.probes[name]
+
+    def __contains__(self, name: str) -> bool:
+        return name in self.probes
+
+    def __repr__(self) -> str:
+        return f"ProbeRun(probes={list(self.probes)}, files={self.files})"
 
 
 def _dims(shape: dict) -> tuple[int, ...]:

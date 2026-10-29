@@ -1214,6 +1214,7 @@ dependencies = [
  "pyo3",
  "serde_json",
  "simsandbox-session",
+ "simsandbox-views",
 ]
 
 [[package]]
