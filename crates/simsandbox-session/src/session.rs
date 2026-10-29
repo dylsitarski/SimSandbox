@@ -2,6 +2,7 @@
 //! recorded signals the views draw from, and its parameters.
 
 use crate::filters::Filters;
+use crate::probe::{ProbeSpec, Trigger};
 use simsandbox_core::block::{MethodLabels, Shape};
 use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::registry::Registry;
@@ -44,6 +45,41 @@ impl SharedHistory {
             Err(std::sync::TryLockError::Poisoned(e)) => Some(e.into_inner()),
             Err(std::sync::TryLockError::WouldBlock) => None,
         }
+    }
+}
+
+/// A probe besides the implicit one (ADR 0062): a subset of what the
+/// session records, on its own schedule, kept its own way.
+struct Extra {
+    spec: ProbeSpec,
+    trigger: Trigger,
+    history: SharedHistory,
+    /// Where its signals and fields are in a sample of the implicit probe.
+    signals: Vec<usize>,
+    fields: Vec<usize>,
+    pending: Vec<Pending>,
+}
+
+impl Extra {
+    /// Append any pending samples, waiting for readers if `wait`.
+    /// Returns whether none are left.
+    fn flush(&mut self, wait: bool) -> bool {
+        if self.pending.is_empty() {
+            return true;
+        }
+        let guard = if wait {
+            Some(self.history.write())
+        } else {
+            self.history.try_write()
+        };
+        let Some(mut h) = guard else {
+            return false;
+        };
+        for p in self.pending.drain(..) {
+            let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
+            h.push_sample(p.index, &p.values, &frames);
+        }
+        true
     }
 }
 
@@ -181,6 +217,8 @@ pub struct Session {
     history: SharedHistory,
     /// Samples waiting for the window to stop reading.
     pending: Vec<Pending>,
+    /// Probes besides the implicit one, which is `history` (ADR 0062).
+    probes: Vec<Extra>,
     sources: Vec<Source>,
     /// Names of the scalar output signals, in `sources` order.
     output_names: Vec<String>,
@@ -447,6 +485,7 @@ impl Session {
             warnings,
             history: SharedHistory::new(History::new(Vec::new())),
             pending: Vec::new(),
+            probes: Vec::new(),
             sources,
             output_names: names,
             base_fields: fields,
@@ -667,8 +706,12 @@ impl Session {
     /// Append pending samples: waiting for the window if `wait`, else only
     /// if it is not reading. Returns whether none are left.
     pub fn flush(&mut self, wait: bool) -> bool {
+        let mut probes_done = true;
+        for p in &mut self.probes {
+            probes_done &= p.flush(wait);
+        }
         if self.pending.is_empty() {
-            return true;
+            return probes_done;
         }
         if wait {
             drop(self.history_mut());
@@ -693,6 +736,20 @@ impl Session {
             .copied()
             .chain(cuts.iter().map(Vec::as_slice))
             .collect();
+        if self.sweep.is_none() && !self.probes.is_empty() {
+            let (step, eps) = (self.sim.step_count(), self.eps());
+            for p in &mut self.probes {
+                if !p.trigger.due(index, step, eps) {
+                    continue;
+                }
+                p.pending.push(Pending {
+                    index,
+                    values: p.signals.iter().map(|&i| values[i]).collect(),
+                    frames: p.fields.iter().map(|&i| frames[i].to_vec()).collect(),
+                });
+                p.flush(false);
+            }
+        }
         if let Some(mut h) = self.history.try_write() {
             for p in self.pending.drain(..) {
                 let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
@@ -859,6 +916,119 @@ impl Session {
             .map(|f| f.name.clone())
             .collect();
         self.replace_history(h);
+        // What the probes record may have moved or gone: they start afresh,
+        // without what is no longer recorded.
+        let mut specs: Vec<ProbeSpec> = Vec::new();
+        {
+            let h = self.history.read();
+            let recorded = |n: &str| {
+                h.names().iter().any(|m| m == n) || h.fields().iter().any(|f| f.name == n)
+            };
+            for p in &self.probes {
+                let mut spec = p.spec.clone();
+                spec.record.retain(|r| {
+                    let ok = recorded(r);
+                    if !ok {
+                        self.warnings
+                            .push(format!("probe {}: '{r}' is no longer recorded", spec.name));
+                    }
+                    ok
+                });
+                if spec.record.is_empty() {
+                    self.warnings.push(format!(
+                        "probe {}: removed, it records nothing now",
+                        spec.name
+                    ));
+                } else {
+                    specs.push(spec);
+                }
+            }
+        }
+        self.probes.clear();
+        if let Err(problems) = self.set_probes(specs) {
+            self.warnings.extend(problems);
+        }
+    }
+
+    /// Replace the probes besides the implicit one (ADR 0062). Each must
+    /// record signals or fields this session records; otherwise nothing
+    /// changes and the problems are returned. Probes record in time only,
+    /// not in sweeps, and start empty.
+    pub fn set_probes(&mut self, specs: Vec<ProbeSpec>) -> Result<(), Vec<String>> {
+        let mut problems = Vec::new();
+        let mut names: Vec<&str> = Vec::new();
+        let h = self.history.read();
+        let field_list: Vec<&simsandbox_views::history::Field> =
+            h.fields().iter().filter(|f| !f.whole).collect();
+        let mut built = Vec::new();
+        for spec in &specs {
+            if let Err(e) = spec.check() {
+                problems.push(e);
+                continue;
+            }
+            if names.contains(&spec.name.as_str()) {
+                problems.push(format!("probe {}: the name is used twice", spec.name));
+            }
+            names.push(&spec.name);
+            let mut signals = Vec::new();
+            let mut fields = Vec::new();
+            for r in &spec.record {
+                if let Some(i) = h.names().iter().position(|n| n == r) {
+                    signals.push(i);
+                } else if let Some(i) = field_list.iter().position(|f| &f.name == r) {
+                    fields.push(i);
+                } else {
+                    problems.push(format!("probe {}: nothing is recorded as '{r}'", spec.name));
+                }
+            }
+            let probe_fields: Vec<(String, FieldShape)> = fields
+                .iter()
+                .map(|&i| (field_list[i].name.clone(), field_list[i].shape))
+                .collect();
+            let mut ph = History::with_fields(
+                "t",
+                signals.iter().map(|&i| h.names()[i].clone()).collect(),
+                probe_fields,
+            );
+            // Coordinates of what it records, when it records them too.
+            let has = |n: &str| spec.record.iter().any(|r| r == n);
+            ph.set_coordinates(
+                h.coordinates()
+                    .iter()
+                    .filter(|c| has(&c.name) && has(&c.of))
+                    .cloned()
+                    .collect(),
+            );
+            spec.keep.apply(&mut ph);
+            built.push(Extra {
+                spec: spec.clone(),
+                trigger: Trigger::new(spec.every.clone()),
+                history: SharedHistory::new(ph),
+                signals,
+                fields,
+                pending: Vec::new(),
+            });
+        }
+        drop(h);
+        if !problems.is_empty() {
+            return Err(problems);
+        }
+        self.probes = built;
+        Ok(())
+    }
+
+    /// The probes besides the implicit one, by name.
+    pub fn probe_names(&self) -> Vec<&str> {
+        self.probes.iter().map(|p| p.spec.name.as_str()).collect()
+    }
+
+    /// What probe `name` has recorded, shared for reading (`None` if
+    /// there is no such probe). The implicit probe is [`Session::signals`].
+    pub fn probe(&self, name: &str) -> Option<SharedHistory> {
+        self.probes
+            .iter()
+            .find(|p| p.spec.name == name)
+            .map(|p| p.history.clone())
     }
 
     /// The frames of the cut filters that are per sample (`whole` false)
@@ -1122,6 +1292,11 @@ impl Session {
         self.steps_since_snapshot = 0;
         self.stop_at = self.file.run.t_end;
         self.history_mut().clear();
+        for p in &mut self.probes {
+            p.pending.clear();
+            p.history.write().clear();
+            p.trigger.seek(None, 0.0);
+        }
         self.record();
         Ok(())
     }
@@ -1490,6 +1665,11 @@ impl Session {
         self.track.seek(t0, eps);
         self.stop_at = self.file.run.t_end.filter(|&end| end > t0);
         self.history_mut().truncate_after(t0);
+        for p in &mut self.probes {
+            p.flush(true);
+            p.history.write().truncate_after(t0);
+            p.trigger.seek(Some(t0), eps);
+        }
         self.steps_since_snapshot = 0;
     }
 
@@ -2691,5 +2871,153 @@ mod input_tests {
             .warnings
             .iter()
             .any(|w| w.contains("outside its suggested range")));
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    //! Probes besides the implicit one (ADR 0062).
+    use super::*;
+    use crate::examples::{registry, EXAMPLES};
+    use crate::probe::{Every, Keep, ProbeSpec};
+
+    fn example(part: &str) -> Session {
+        let e = EXAMPLES.iter().find(|e| e.name.contains(part)).unwrap();
+        Session::load(e.name, e.text, &registry()).unwrap()
+    }
+
+    fn spec(name: &str, record: &[&str], every: Every, keep: Keep) -> ProbeSpec {
+        ProbeSpec {
+            name: name.into(),
+            record: record.iter().map(|r| r.to_string()).collect(),
+            every,
+            keep,
+        }
+    }
+
+    /// `(t, value)` bits of signal `name` in history `h`.
+    fn series(h: &History, name: &str) -> Vec<(u64, u64)> {
+        let k = h.names().iter().position(|n| n == name).unwrap();
+        h.points(k)
+            .iter()
+            .map(|p| (p.x.to_bits(), p.y.to_bits()))
+            .collect()
+    }
+
+    #[test]
+    fn a_probe_records_a_subset_on_its_own_schedule() {
+        // Cruise control, 0.05 s steps; a probe of the speed every 0.5 s.
+        let mut s = example("Cruise control");
+        s.set_probes(vec![spec(
+            "speed",
+            &["car.v"],
+            Every::Seconds(0.5),
+            Keep::default(),
+        )])
+        .unwrap();
+        assert_eq!(s.probe_names(), ["speed"]);
+        s.restart().unwrap();
+        s.run_until(5.0).unwrap();
+        s.flush(true);
+        let probe = s.probe("speed").unwrap();
+        let p = probe.read();
+        assert_eq!(p.names(), ["car.v"]);
+        let times: Vec<f64> = p.times().to_vec();
+        assert_eq!(times.len(), 11, "{times:?}");
+        // Every sample is the implicit probe's at the same time, exactly.
+        let all = s.signals();
+        let k = all.names().iter().position(|n| n == "car.v").unwrap();
+        for (i, t) in times.iter().enumerate() {
+            let j = all.times().iter().position(|x| x == t).unwrap();
+            assert_eq!(
+                p.value(SignalRef::Signal(0), i).to_bits(),
+                all.points(k)[j].y.to_bits()
+            );
+        }
+        drop((p, all));
+        // Unknown names are refused, and nothing changes.
+        let bad = s.set_probes(vec![spec("x", &["car.nope"], Every::Steps(1), Keep::All)]);
+        assert!(bad.unwrap_err()[0].contains("nothing is recorded as 'car.nope'"));
+        assert_eq!(s.probe_names(), ["speed"]);
+    }
+
+    #[test]
+    fn probes_keep_the_newest_or_thin_and_replay_after_a_rewind() {
+        let mut s = example("Cruise control");
+        s.set_probes(vec![
+            spec(
+                "last",
+                &["car.v"],
+                Every::Steps(1),
+                Keep::Last { samples: 20 },
+            ),
+            spec("every", &["car.v", "cruise.F"], Every::Steps(2), Keep::All),
+        ])
+        .unwrap();
+        s.restart().unwrap();
+        s.run_until(10.0).unwrap();
+        s.flush(true);
+        let last = s.probe("last").unwrap();
+        let n = last.read().len();
+        assert!((20..=22).contains(&n), "{n}");
+        assert!(last.read().times()[n - 1] > 9.9);
+        let every = s.probe("every").unwrap();
+        let before = series(&every.read(), "cruise.F");
+        assert_eq!(before.len(), 101);
+        // Rewind to 4 s and run on: the same samples again, bit for bit.
+        s.rewind_to(4.0);
+        assert!(every.read().times().last().unwrap() <= &4.0);
+        s.run_until(10.0).unwrap();
+        s.flush(true);
+        assert_eq!(series(&every.read(), "cruise.F"), before);
+        // Restart: empty, then recording again from t = 0.
+        s.restart().unwrap();
+        assert_eq!(every.read().len(), 1);
+    }
+
+    #[test]
+    fn probes_record_grid_fields_with_their_coordinates() {
+        let mut s = example("Typed heat equation");
+        s.set_probes(vec![spec(
+            "snapshots",
+            &["rod.T", "rod.x"],
+            Every::Times(vec![0.0, 1.0, 2.0]),
+            Keep::All,
+        )])
+        .unwrap();
+        s.restart().unwrap();
+        s.run_until(3.0).unwrap();
+        s.flush(true);
+        let p = s.probe("snapshots").unwrap();
+        let h = p.read();
+        assert_eq!(h.len(), 3);
+        let names: Vec<&str> = h.fields().iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["rod.T", "rod.x"]);
+        assert_eq!(h.fields()[0].frame(2).len(), 50);
+        assert!(h
+            .coordinates()
+            .iter()
+            .any(|c| c.name == "rod.x" && c.of == "rod.T"));
+    }
+
+    #[test]
+    fn probes_survive_filter_edits_without_what_is_gone() {
+        let mut s = example("Cruise control");
+        let filter = FilterEntry::expression("double", "2*car.v", vec!["car.v".into()]);
+        s.set_filters(vec![filter]).unwrap();
+        s.set_probes(vec![spec(
+            "p",
+            &["car.v", "double"],
+            Every::Steps(1),
+            Keep::default(),
+        )])
+        .unwrap();
+        s.set_filters(Vec::new()).unwrap();
+        assert_eq!(s.probe_names(), ["p"]);
+        assert_eq!(s.probe("p").unwrap().read().names(), ["car.v"]);
+        assert!(s
+            .warnings
+            .iter()
+            .any(|w| w.contains("'double' is no longer recorded")));
     }
 }

@@ -62,6 +62,15 @@ One app setting, the **memory budget** (default 1 GB), shared by snapshots and i
 
 The owner accepted the proposal on 2026-10-29 with these choices: probes thin by default; snapshots keep outputs; recompute on demand comes later; exact runs use several cores from the start; probes are built after item 2 (arrays) and before item 3 (rigid bodies).
 
+## As built
+
+**Step 1 (2026-10-29): probes in memory.** `crates/simsandbox-session/src/probe.rs`: `Every` (`Steps`, `Seconds`, `Times`), `Keep` (`Thin { mb }`, the default; `Last { samples }`; `All`), `ProbeSpec` with its checks, and the trigger that decides when a probe records. It follows rewinds: after rewinding to t, it fires again exactly where it did. The session keeps its history as the implicit probe, unchanged, and holds further probes (`Session::set_probes`, `probe_names`, `probe`).
+- **What they record:** a subset of what the implicit probe records, signals and grid fields by name (with their coordinates when recorded too), taken from the same samples. A probe's values are the implicit history's, bit for bit.
+- **When they reset:** they clear on restart, truncate and record the same samples again after a rewind, and start afresh when filters change, dropping (with a warning) names no longer recorded.
+- **Where they don't record:** probes record in time only, not in sweeps.
+- **`History` gains:** `thin_past`, `keep_last` and `values_per_sample`.
+- **Not yet:** headless results and views are unchanged; they read the implicit probe as before. Probes reach the file, the canvas, the CLI and Python in step 2.
+
 ## Options considered
 
 **How recording is declared**

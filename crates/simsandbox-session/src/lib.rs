@@ -23,6 +23,7 @@ pub mod diagram;
 pub mod examples;
 pub mod filters;
 pub mod observers;
+pub mod probe;
 pub mod raster;
 pub mod render;
 pub mod run;

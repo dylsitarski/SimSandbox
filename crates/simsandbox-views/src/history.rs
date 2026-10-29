@@ -121,6 +121,9 @@ pub struct History {
     points: Vec<Vec<PlotPoint>>,
     fields: Vec<Field>,
     max_samples: usize,
+    /// Keep only this many of the newest samples, forgetting older ones,
+    /// instead of thinning (a probe's `keep`, ADR 0062).
+    last: Option<usize>,
     /// Values held in population frames, which vary in size.
     population_values: usize,
 }
@@ -163,6 +166,7 @@ impl History {
                 })
                 .collect(),
             max_samples,
+            last: None,
             population_values: 0,
         }
     }
@@ -189,6 +193,32 @@ impl History {
     /// samples are all needed to reshape them).
     pub fn keep_all(&mut self) {
         self.max_samples = usize::MAX;
+        self.last = None;
+    }
+
+    /// Thin when longer than `samples` (at least 2), instead of the limit
+    /// the fields' size sets.
+    pub fn thin_past(&mut self, samples: usize) {
+        self.max_samples = samples.max(2);
+        self.last = None;
+    }
+
+    /// Keep only the newest `samples` (at least 1), forgetting the oldest,
+    /// instead of thinning.
+    pub fn keep_last(&mut self, samples: usize) {
+        self.last = Some(samples.max(1));
+        self.max_samples = usize::MAX;
+    }
+
+    /// Numbers recorded per sample: the signals and the fixed-size fields.
+    pub fn values_per_sample(&self) -> usize {
+        self.names.len()
+            + self
+                .fields
+                .iter()
+                .filter(|f| !f.whole)
+                .map(|f| f.shape.len())
+                .sum::<usize>()
     }
 
     /// Mark the samples as an unordered cloud (random designs), which views
@@ -286,6 +316,21 @@ impl History {
             if population {
                 self.population_values += f.frames.last().map_or(0, Vec::len);
             }
+        }
+        if let Some(n) = self.last {
+            // Forget the oldest in batches, so each sample costs little.
+            if self.times.len() > n + n / 8 {
+                let drop = self.times.len() - n;
+                self.times.drain(..drop);
+                for p in &mut self.points {
+                    p.drain(..drop);
+                }
+                for f in self.fields.iter_mut().filter(|f| !f.whole) {
+                    f.frames.drain(..drop);
+                }
+                self.count_population_values();
+            }
+            return;
         }
         // Populations count by the values they hold, like fixed fields.
         let crowded = self.population_values > FIELD_VALUES && self.times.len() > MIN_SAMPLES;
