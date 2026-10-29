@@ -67,7 +67,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0059](0059-run-files.md) | Run files beside the model: recorded tracks and scenarios with the model hash, seed and settings; the model keeps an optional default schedule | Accepted | 2026-10-26 |
 | [0060](0060-arrays-in-typed-equations.md) | Arrays in typed equations: 1D and 2D grids, whole-array equations with stencils and declared edges, an instruction-list evaluator, `backward_euler` and `trbdf2` with a sparse Jacobian | Accepted | 2026-10-27 |
 | [0061](0061-verified-is-earned-per-case.md) | Verified is earned per case by a convergence check; no method declares it, exact ones included (conversions, inputs relabelled Quantitative) | Accepted | 2026-10-28 |
-| [0062](0062-probes-recording-and-replay.md) | Probes: canvas nodes that record and save chosen values at chosen times; replay state on its own budget; exact or fast runs (draft) | Proposed | 2026-10-28 |
+| [0062](0062-probes-recording-and-replay.md) | Probes: canvas nodes that record and save chosen values at chosen times (thinning by default); snapshots on their own budget, with outputs; exact runs on several cores, or fast; built after Phase 2 item 2 | Accepted | 2026-10-29 |
 
 ## When to write one
 

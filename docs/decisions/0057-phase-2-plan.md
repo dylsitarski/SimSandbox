@@ -1,6 +1,6 @@
 # 0057 — Phase 2 order, scope and gate
 
-- **Status:** Accepted
+- **Status:** Accepted; a probes item between items 2 and 3 added by [0062](0062-probes-recording-and-replay.md)
 - **Date:** 2026-10-26
 
 ## Context

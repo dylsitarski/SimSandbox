@@ -1,8 +1,9 @@
 # 0062 — Probes: what a run records, saves and replays
 
-- **Status:** Proposed (draft for the owner; the choices marked **Owner** are open)
-- **Date:** 2026-10-28
-- **Settles, once accepted:** [Q38](../open-questions.md) (recording large grids), [Q39](../open-questions.md) (several cores and exact replay)
+- **Status:** Accepted
+- **Date:** 2026-10-28 (proposed), 2026-10-29 (accepted)
+- **Amends:** [ADR 0057](0057-phase-2-plan.md) (a new item after item 2)
+- **Settles:** [Q38](../open-questions.md) (recording large grids), [Q39](../open-questions.md) (several cores and exact replay)
 
 ## Context
 
@@ -34,7 +35,7 @@ A probe is a node on the canvas's data layer, beside filters and views ([ADR 005
 
 - **What:** any signals, fields and filter outputs, by name.
 - **When** (`every`): every N steps, every Δt of simulated time, or at listed times. Later, possibly when a condition holds ("when v_mean > 0.01"), in the expression language.
-- **How long** (`keep`): everything, the last N samples or seconds, or a memory budget; past it, the probe thins (every other sample dropped, as now) or forgets the oldest. **Owner:** whether a probe thins or forgets by default.
+- **How long** (`keep`): everything, the last N samples or seconds, or a memory budget; past it, the probe thins (every other sample dropped, as now) or forgets the oldest. **Decided:** a probe thins by default; forgetting the oldest is the other choice of `keep`.
 - **Where** (`to`): memory (default), or memory and a file beside the model, named like run files ([ADR 0059](0059-run-files.md)). CSV first; a binary format for grids (NumPy `.npy`, later HDF5 or Parquet with Phase 3).
 - **Views read probes.** A view shows what the probes have recorded of its signals. A model without probes gets one implicit probe recording what its views and filters need at every step within the app's memory budget, which is today's behaviour. `controls.plots` becomes that implicit probe's list.
 - **Headless:** `simsandbox run` and Python record what the probes say: by default every output at every step, as now; `--probe NAME` or `Model.run(probes=...)` selects. A probe with a file writes it headless too, so a scripted run produces the same data files as the app.
@@ -42,8 +43,8 @@ A probe is a node on the canvas's data layer, beside filters and views ([ADR 005
 ### Rewind and replay
 
 - **Snapshots** keep the replay state on their own budget (an app setting, default 256 MB). Past it they thin, so rewind stays possible over the whole run, coarser further back.
-- **Snapshots without outputs** would be about a third the size for grids. Recomputing outputs on rewind is exact for most models but can differ in the last bits where algebraic loops are solved by iteration (ADR 0040). **Owner:** keep outputs (exact, larger) or recompute them (smaller, exact except for such loops, which would keep outputs).
-- **Recompute on demand:** when a view shows a time a probe did not record (between its samples, or after thinning), the session can rerun from the nearest snapshot to fill it in, exactly. This is how "record little, see everything" works. **Owner:** whether this is part of the first build or later.
+- **Snapshots without outputs** would be about a third the size for grids. Recomputing outputs on rewind is exact for most models but can differ in the last bits where algebraic loops are solved by iteration (ADR 0040). **Decided:** snapshots keep outputs, so rewind is exact for every model.
+- **Recompute on demand:** when a view shows a time a probe did not record (between its samples, or after thinning), the session can rerun from the nearest snapshot to fill it in, exactly. This is how "record little, see everything" works. **Decided:** later, after the rest of this ADR is built.
 
 ### Exact or fast (Q39)
 
@@ -51,11 +52,15 @@ A run is either **exact** or **fast**, set with the model's run settings (`run.m
 
 - **Exact** (default): replay, rewind and headless runs give the same bits on any computer. Cell-by-cell evaluation runs on several cores (identical in any split). Sums (`sum`, `mean`) and factorisations add in a fixed order that does not depend on the machine: work is cut into a fixed number of chunks, combined in the same order.
 - **Fast:** every core, any order, the sparse LU's own parallelism. Results may differ in the last bits between runs and machines; replaying a fast run says "close, not exact".
-- **Owner:** whether exact runs use several cores from the first build (the fixed-chunk split), or stay on one thread until fast mode exists.
+- **Decided:** exact runs use several cores from the first build (the fixed-chunk split).
 
 ### Memory
 
 One app setting, the **memory budget** (default 1 GB), shared by snapshots and in-memory probes; a probe's own `keep` is a share of it. When a model would exceed it the toolbar says so and which probe is largest. The current safety net becomes this budget's default split.
+
+## Decision
+
+The owner accepted the proposal on 2026-10-29 with these choices: probes thin by default; snapshots keep outputs; recompute on demand comes later; exact runs use several cores from the start; probes are built after item 2 (arrays) and before item 3 (rigid bodies).
 
 ## Options considered
 
@@ -90,5 +95,5 @@ One app setting, the **memory budget** (default 1 GB), shared by snapshots and i
 - Data files beside the model join run files; Phase 3's provenance reports build on both.
 - `run.mode` in model and run files; reductions and the instruction list's cell loops split into fixed chunks for exact runs; fast runs may use `faer`'s own parallelism.
 - Q38 and Q39 are settled; the safety net's constants become the memory budget's defaults.
-- Order of work: probes in memory with the implicit probe (no behaviour change), then probe nodes and files, then exact multi-core, then fast mode, then recompute on demand.
-- Where it goes in Phase 2: after item 2 (arrays) and before item 3 (rigid bodies), since the cart-pole gate's replay and saved data use it. **Owner:** confirm the place in the plan ([ADR 0057](0057-phase-2-plan.md)).
+- Order of work: (1) probes in memory with the implicit probe (no behaviour change); (2) probe nodes on the canvas and files; (3) exact runs on several cores; (4) fast mode; (5) the memory budget as an app setting. Recompute on demand comes after.
+- Where it goes in Phase 2: after item 2 (arrays) and before item 3 (rigid bodies), since the cart-pole gate's replay and saved data use it. **Decided:** as proposed, a new item between items 2 and 3 of [ADR 0057](0057-phase-2-plan.md).

@@ -1,6 +1,6 @@
 # Status
 
-_Last updated: 2026-10-28_
+_Last updated: 2026-10-29_
 
 **Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0038](decisions/0038-phase-1-revised.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). **Gate met:** 2026-10-22, the grazing example (`eq.grass` and `agents.grazers`) runs live in the desktop app at 4× real time with about 400 sheep (checked headless in the cloud); **confirmed by the owner on Linux and Windows on 2026-10-23**. **All eight Phase 1 items are built** (2026-10-23). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
 
@@ -29,6 +29,7 @@ _Last updated: 2026-10-28_
 
 ## Done recently
 
+- 2026-10-29: probes decided ([ADR 0062](decisions/0062-probes-recording-and-replay.md), resolves Q38 and Q39): canvas nodes record chosen values at chosen times and may save files, thinning by default; snapshots keep outputs on their own budget; runs exact on several cores or fast; recompute on demand later; built before rigid bodies.
 - 2026-10-28: Phase 2 item 2, step 4: implicit methods `backward_euler` and `trbdf2` (Q17) for every continuous block and fused group: Newton's method with a coloured finite-difference Jacobian and a sparse LU (`faer`, one thread), the structure exact from typed equations and probed once otherwise; one factorisation per communication step, so runs replay bit for bit. Orders 1 and 2 measured on the heat grid; 20 times faster than RK4 on an 800-cell rod at 0.05 s steps.
 - 2026-10-28: Verified is earned per case ([ADR 0061](decisions/0061-verified-is-earned-per-case.md)), after the owner asked why the verified heat rod shows Quantitative: `units.convert` and the input blocks no longer declare Verified; a convergence check is on the roadmap (Phase 3).
 - 2026-10-28: Phase 2 item 2, step 3: the heat equation as the reference for arrays (`simsandbox-eq/tests/heat.rs`): second order in space under each edge kind, the stencil's discrete rates exact, RK4 fourth order in time on the grid; the typed rod, `eq.heat_rod` and the new typed heat-rod example follow the exact Gaussian solution to 0.1%.
@@ -99,14 +100,14 @@ _Last updated: 2026-10-28_
 
 ## In progress
 
-- Phase 2 item 2, step 5: 2D grids and the Gray–Scott example are built (2026-10-28), with an interim memory safety net (about 510 MB for Gray–Scott at 128 × 128). The probes ADR is drafted ([ADR 0062](decisions/0062-probes-recording-and-replay.md), proposed) and waits on the owner's choices; it settles [Q38](open-questions.md) and [Q39](open-questions.md) once accepted.
+- Nothing; Phase 2 item 2 (arrays) is built. Next is the probes item.
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Phase 2, item 2** as [ADR 0060](decisions/0060-arrays-in-typed-equations.md) decides, in order (steps 1–4 done 2026-10-27/28): (5) 2D grids and a Gray–Scott example (target 128 × 128 live), measuring where several cores would help and settling [Q39](open-questions.md) (parallelism and exact replay) and [Q38](open-questions.md) on recording large grids.
+1. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order: (1) probes in memory with an implicit probe that keeps today's behaviour, views and headless results read from probes; (2) probe nodes on the canvas (`controls.probes`: what, every N steps / Δt / at times, keep, file), CSV and a binary grid format, headless `--probe` and Python; (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 2. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
