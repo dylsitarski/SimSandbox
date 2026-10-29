@@ -205,12 +205,18 @@ pub struct Available<'a> {
     /// In a sweep, the swept parameters' keys, also among `scalars`
     /// (ADR 0028).
     pub swept: &'a [String],
+    /// What only probes have, as bindings (`probe:NAME/power`): the
+    /// outputs of filters on probes (ADR 0063).
+    pub probed: &'a [String],
 }
 
 impl Available<'_> {
     /// Whether `name` can fill a slot of this kind; from a probe
     /// (`probe:NAME/signal`), whether the model has the signal.
     pub fn accepts(&self, kind: SlotKind, name: &str) -> bool {
+        if self.probed.iter().any(|p| p == name) {
+            return true;
+        }
         let name = split_source(name).1;
         match kind {
             SlotKind::Scalar => name == TIME || self.scalars.iter().any(|s| s == name),

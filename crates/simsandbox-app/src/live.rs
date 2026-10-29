@@ -44,6 +44,8 @@ pub struct Model {
     pub scalars: Vec<String>,
     /// The 2D grids cut filters can take.
     pub cut_inputs: Vec<String>,
+    /// The outputs of filters on probes, as views bind them.
+    probed: Vec<String>,
     coordinates: Vec<simsandbox_views::Coordinate>,
     grids: Vec<String>,
     points: Vec<String>,
@@ -73,6 +75,7 @@ impl Model {
             real_time: s.real_time(),
             scalars: s.bindable_scalars().to_vec(),
             cut_inputs: s.cut_inputs(),
+            probed: s.probed().to_vec(),
             coordinates: s.all_coordinates().to_vec(),
             grids,
             points,
@@ -97,6 +100,7 @@ impl Model {
             lines: &self.lines,
             coordinates: &self.coordinates,
             swept: self.sweep.as_ref().map_or(&[], |sw| sw.keys()),
+            probed: &self.probed,
         }
     }
 }

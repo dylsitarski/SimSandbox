@@ -749,6 +749,11 @@ pub struct FilterEntry {
     /// `at`, which cut filters use for their cuts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<[f64; 2]>,
+    /// The probe whose samples it runs on (ADR 0063): it reads what that
+    /// probe records, and its outputs join the probe's recording
+    /// (`probe:NAME/output`). Every step of the model if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe: Option<String>,
     /// Settings of the filter's type.
     #[serde(flatten)]
     pub settings: BTreeMap<String, Value>,
@@ -761,6 +766,7 @@ impl FilterEntry {
             type_name: "expression".into(),
             inputs,
             canvas: None,
+            probe: None,
             settings: [("expr".to_string(), Value::String(expr.into()))].into(),
         }
     }
@@ -838,6 +844,7 @@ fn cut_filter_from_selection(name: &str, grid: &str, selection: &Value) -> Optio
         type_name: "cut".into(),
         inputs: vec![grid.into()],
         canvas: None,
+        probe: None,
         settings,
     })
 }

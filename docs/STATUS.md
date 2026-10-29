@@ -25,10 +25,11 @@ _Last updated: 2026-10-29_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 334 tests in the workspace plus 18 Python tests, including verification against analytic solutions and convergence order.
+- 340 tests in the workspace plus 18 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-10-29: ADR 0063 step 1: probe nodes have outputs, wired into views (`probe:NAME/signal`) and filters (which then run on the probe's samples); one plot can mix the model's every step and probes at other rates, paired only at common times; the model's every-step recording keeps only what views and filters read from it; probes record any output (`controls.plots` no longer limits); the tile's "from" menu is gone.
 - 2026-10-29: probes, step 2 complete: probe nodes on the Diagram's data layer ("Add probe", wire signals into `record`, double-click for when, how long and the file), applied without a restart and undoable; Runs › "Save probe data" writes their files beside the model; views can show a probe's recording ("from" menu, `probe` in the view entry), also in `simsandbox render`.
 - 2026-10-29: probes, step 2, first part: `controls.probes` in model files (bad ones dropped with a warning, saved back); data files (a CSV of the signals, a NumPy `.npy` per grid or point field); `simsandbox run --probe NAME` and `--save-probes DIR`; Python `Model.add_probe` and `Model.run_probes`. Headless probes run through the session, so their samples are the app's bit for bit.
 - 2026-10-29: probes, step 1: probes in memory (`Session::set_probes`): a subset of signals and grid fields, recorded every N steps, every Δt or at listed times, kept thinned, the newest N or all; exact copies of the implicit history's samples, following restarts, rewinds and filter edits. No visible change yet.
@@ -103,14 +104,14 @@ _Last updated: 2026-10-29_
 
 ## In progress
 
-- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md)): steps 1 and 2 built 2026-10-29; the probe nodes, settings window, "from" menu and Save probe data were checked headless (a screenshot under Xvfb, tests) but not yet by the owner in the window. Next: [ADR 0063](decisions/0063-probes-on-wires.md) (accepted 2026-10-29), then step 3.
+- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md), [ADR 0063](decisions/0063-probes-on-wires.md)): ADR 0062 steps 1 and 2 and ADR 0063 step 1 built 2026-10-29; checked by tests, headless renders and screenshots under Xvfb, not yet by the owner in the window (probe nodes and outputs, the settings window, Save probe data, filters on probes). Next: ADR 0063 step 2.
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Probes on wires** ([ADR 0063](decisions/0063-probes-on-wires.md)), in order: (1) probe outputs, sources in bindings, the implicit history recording only what is wired, views and filters reading several sources; (2) snapshots without outputs that copy states; (3) probes into blocks of the same model; (4) a block reading probe files; (5) several models in one session linked by probes (its own ADR first).
+1. **Probes on wires** ([ADR 0063](decisions/0063-probes-on-wires.md)), in order (step 1 done 2026-10-29): (2) snapshots without outputs that copy states; (3) probes into blocks of the same model; (4) a block reading probe files; (5) several models in one session linked by probes (its own ADR first).
 2. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 3. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
@@ -132,6 +133,8 @@ In priority order. Each item should end with tests and updated docs.
 - Populations are left out of `simsandbox run`'s CSV (rows cannot hold a varying number of values); `--format json` and the Python API include them. Blocks with tables cannot join fused groups.
 - Headless rendering draws the views as they stand after the run, one sample per pixel, without the app's controls (the 3D views still print their mouse hint); filters and view selections saved in the file apply. Python and `render` take a whole model file; there is no Python call to step a running model, set parameters between steps or rewind. The Python package is built from source, not published.
 - A step in progress cannot be interrupted: commands, Pause included, wait for it; the toolbar shows how long it has run but not yet which block ([ADR 0035](decisions/0035-simulation-worker-thread.md)). One model is open at a time. Headless screenshots wait a fixed wall time (`--after`), not for a number of samples.
+- Probes ([ADR 0063](decisions/0063-probes-on-wires.md)): a signal wired to a view during a run has no past until Restart (recompute on demand comes later, on request); a filter reads one probe, not two; probes cannot feed the model or other probes yet; field views (heat map, profile, surface) read one recording. A model loaded headless without saved views records everything.
+- The heat-rod example shows "unsaved" right after opening (seen 2026-10-29, also before ADR 0063; not investigated).
 - Plotted series and rewind history are thinned (every other point dropped) beyond 100 000 points and 10 000 snapshots, so very long runs lose resolution in the past.
 - A model built in code cannot be saved (Blocks do not know their type name); files are the source for saving.
 - Only models with no states can be swept; sweeping models with states (bifurcation diagrams) is a later feature. Maps have no step-number variable `n` yet.

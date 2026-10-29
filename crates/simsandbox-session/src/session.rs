@@ -54,9 +54,14 @@ struct Extra {
     spec: ProbeSpec,
     trigger: Trigger,
     history: SharedHistory,
-    /// Where its signals and fields are in a sample of the implicit probe.
+    /// Where its signals and fields are in a whole sample.
     signals: Vec<usize>,
     fields: Vec<usize>,
+    /// Its fields' names, in `fields` order.
+    field_names: Vec<String>,
+    /// Filters on this probe (ADR 0063): computed from its samples, their
+    /// outputs recorded after its signals and fields.
+    filters: Filters,
     pending: Vec<Pending>,
 }
 
@@ -231,6 +236,8 @@ pub struct Session {
     /// Which fields place which others' cells, among everything a step
     /// yields.
     all_coordinates: Vec<Coordinate>,
+    /// Outputs of filters on probes, as bindings (`probe:NAME/power`).
+    probed: Vec<String>,
     /// What the history keeps of each sample: places in the layout.
     keep_signals: Vec<usize>,
     keep_fields: Vec<usize>,
@@ -505,6 +512,7 @@ impl Session {
             all_coordinates: Vec::new(),
             keep_signals: Vec::new(),
             keep_fields: Vec::new(),
+            probed: Vec::new(),
             sources,
             output_names: names,
             base_fields: fields,
@@ -549,7 +557,7 @@ impl Session {
         }
         session.track.base = base;
         let (filters, problems) = session.compile_filters(&entries);
-        session.filter_entries = filters.entries(&entries);
+        session.filter_entries = kept_entries(&filters, &entries);
         session.filters = filters;
         for p in problems {
             session
@@ -782,14 +790,26 @@ impl Session {
             .collect();
         if self.sweep.is_none() && !self.probes.is_empty() {
             let (step, eps) = (self.sim.step_count(), self.eps());
+            let params = if self.probes.iter().any(|p| !p.filters.exprs.is_empty()) {
+                self.param_values()
+            } else {
+                Vec::new()
+            };
+            let coordinates = &self.all_coordinates;
             for p in &mut self.probes {
                 if !p.trigger.due(index, step, eps) {
                     continue;
                 }
+                let mut values: Vec<f64> = p.signals.iter().map(|&i| values[i]).collect();
+                derive(&p.filters.exprs, index, &mut values, &params);
+                let mut frames: Vec<Vec<f64>> =
+                    p.fields.iter().map(|&i| frames[i].to_vec()).collect();
+                let cuts = probe_cuts(&p.filters, &p.field_names, &frames, coordinates);
+                frames.extend(cuts);
                 p.pending.push(Pending {
                     index,
-                    values: p.signals.iter().map(|&i| values[i]).collect(),
-                    frames: p.fields.iter().map(|&i| frames[i].to_vec()).collect(),
+                    values,
+                    frames,
                 });
                 p.flush(false);
             }
@@ -854,7 +874,8 @@ impl Session {
             );
         };
         let mut want: std::collections::BTreeSet<String> = reads.iter().cloned().collect();
-        for f in &self.filter_entries {
+        // Filters on probes read the probes, not the model.
+        for f in self.filter_entries.iter().filter(|f| f.probe.is_none()) {
             want.extend(crate::observers::filter_reads(f));
         }
         for c in &self.filters.cuts {
@@ -924,6 +945,7 @@ impl Session {
             lines: &self.lines,
             coordinates: &self.all_coordinates,
             swept: self.sweep.as_ref().map_or(&[], |sw| sw.keys()),
+            probed: &self.probed,
         }
     }
 
@@ -963,7 +985,14 @@ impl Session {
     }
 
     /// Compile filters for this model; problems are `name: reason`.
+    /// Filters on probes are compiled with their probes (ADR 0063).
     fn compile_filters(&self, entries: &[FilterEntry]) -> (Filters, Vec<String>) {
+        let entries: Vec<FilterEntry> = entries
+            .iter()
+            .filter(|e| e.probe.is_none())
+            .cloned()
+            .collect();
+        let entries = &entries[..];
         let params = param_keys(&self.flat, &self.ids, self.sim.model());
         // Cuts may take any grid an expression makes in a 2D sweep.
         let mut scalars = self.output_names.clone();
@@ -1140,6 +1169,8 @@ impl Session {
         // Probes take from every sample a step yields (ADR 0063), not
         // from what the history keeps.
         let (scalars, field_list) = (&self.layout_scalars, &self.layout_fields);
+        let params = param_keys(&self.flat, &self.ids, self.sim.model());
+        let mut notes = Vec::new();
         let mut built = Vec::new();
         for spec in &specs {
             if let Err(e) = spec.check() {
@@ -1163,20 +1194,43 @@ impl Session {
             }
             let probe_fields: Vec<(String, FieldShape)> =
                 fields.iter().map(|&i| field_list[i].clone()).collect();
-            let mut ph = History::with_fields(
-                "t",
-                signals.iter().map(|&i| scalars[i].clone()).collect(),
-                probe_fields,
-            );
-            // Coordinates of what it records, when it records them too.
+            let probe_signals: Vec<String> = signals.iter().map(|&i| scalars[i].clone()).collect();
+            // Filters on it read what it records (ADR 0063).
+            let on: Vec<FilterEntry> = self
+                .filter_entries
+                .iter()
+                .filter(|f| f.probe.as_deref() == Some(spec.name.as_str()))
+                .cloned()
+                .collect();
+            let (filters, problems) = Filters::compile(&on, &probe_signals, &params, &probe_fields);
+            notes.extend(problems.into_iter().map(|p| {
+                format!(
+                    "filter {p} (on probe {}, which records only what is wired into it); ignored",
+                    spec.name
+                )
+            }));
+            let mut names = probe_signals.clone();
+            names.extend(filters.exprs.iter().map(|f| f.name.clone()));
+            let mut all_fields = probe_fields.clone();
+            all_fields.extend(filters.cuts.iter().flat_map(|c| c.fields()));
+            let mut ph = History::with_fields("t", names, all_fields);
+            // Coordinates of what it records, when it records them too, and
+            // of its cuts' lines.
             let has = |n: &str| spec.record.iter().any(|r| r == n);
-            ph.set_coordinates(
-                self.all_coordinates
-                    .iter()
-                    .filter(|c| has(&c.name) && has(&c.of))
-                    .cloned()
-                    .collect(),
-            );
+            let mut coordinates: Vec<Coordinate> = self
+                .all_coordinates
+                .iter()
+                .filter(|c| has(&c.name) && has(&c.of))
+                .cloned()
+                .collect();
+            for c in &filters.cuts {
+                coordinates.extend(c.lines().into_iter().map(|l| Coordinate {
+                    name: c.coordinate(),
+                    of: l,
+                    axis: 0,
+                }));
+            }
+            ph.set_coordinates(coordinates);
             spec.keep.apply(&mut ph);
             built.push(Extra {
                 spec: spec.clone(),
@@ -1184,8 +1238,16 @@ impl Session {
                 history: SharedHistory::new(ph),
                 signals,
                 fields,
+                field_names: probe_fields.into_iter().map(|(n, _)| n).collect(),
+                filters,
                 pending: Vec::new(),
             });
+        }
+        // Probes are set again on every probe edit: say each once.
+        for n in notes {
+            if !self.warnings.contains(&n) {
+                self.warnings.push(n);
+            }
         }
         let recorded_to = self.history.read().times().last().copied();
         if !problems.is_empty() {
@@ -1209,7 +1271,25 @@ impl Session {
             }
         }
         self.probes = built;
+        self.probed = self
+            .probes
+            .iter()
+            .flat_map(|p| {
+                let outputs = p.filters.exprs.iter().map(|f| f.name.clone()).chain(
+                    p.filters
+                        .cuts
+                        .iter()
+                        .flat_map(|c| c.fields().into_iter().map(|(n, _)| n)),
+                );
+                outputs.map(|o| simsandbox_views::history::from_probe(&p.spec.name, &o))
+            })
+            .collect();
         Ok(())
+    }
+
+    /// The outputs of filters on probes, as views bind them (ADR 0063).
+    pub fn probed(&self) -> &[String] {
+        &self.probed
     }
 
     /// Set the probes from the model file's form (ADR 0062), as the
@@ -1785,7 +1865,7 @@ impl Session {
         self.sweep = Some(Arc::new(Sweep::new(sampling, plan, &self.ids)?));
         let entries = self.filter_entries.clone();
         let (filters, problems) = self.compile_filters(&entries);
-        self.filter_entries = filters.entries(&entries);
+        self.filter_entries = kept_entries(&filters, &entries);
         self.filters = filters;
         self.resample();
         Ok(problems
@@ -2029,7 +2109,7 @@ impl Session {
         if !problems.is_empty() {
             return Err(problems);
         }
-        self.filter_entries = filters.entries(&entries);
+        self.filter_entries = kept_entries(&filters, &entries);
         self.filters = filters;
         if self.sweep.is_some() {
             self.resample();
@@ -2042,6 +2122,20 @@ impl Session {
         self.build_history();
         self.replay_history(&old, true);
         self.reset_probes();
+        // A filter on a probe that is not there (yet: the canvas sets
+        // probes after filters) computes nothing.
+        for e in &self.filter_entries {
+            if let Some(p) = e
+                .probe
+                .as_deref()
+                .filter(|p| !self.probe_names().contains(p))
+            {
+                let note = format!("filter {}: there is no probe '{p}' to run on", e.name);
+                if !self.warnings.contains(&note) {
+                    self.warnings.push(note);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2056,6 +2150,66 @@ impl Session {
                     .unwrap_or(f64::NAN)
             })
             .collect()
+    }
+}
+
+/// A probe's cut filters' frames for one sample, from the probe's own
+/// field frames, named by `names`.
+fn probe_cuts(
+    filters: &Filters,
+    names: &[String],
+    frames: &[Vec<f64>],
+    coordinates: &[Coordinate],
+) -> Vec<Vec<f64>> {
+    let frame = |name: &str| -> Option<&[f64]> {
+        names
+            .iter()
+            .position(|n| n == name)
+            .and_then(|i| frames.get(i))
+            .map(Vec::as_slice)
+    };
+    filters
+        .cuts
+        .iter()
+        .flat_map(|c| match frame(&c.input) {
+            Some(input) => {
+                let g = c.geometry(coordinates, frame);
+                c.frames(&g, input)
+            }
+            None => vec![Vec::new(); c.settings.count() + 1],
+        })
+        .collect()
+}
+
+/// The filters as saved: the model's, compiled, with their inputs written
+/// out; those on probes as given (ADR 0063); in the given order.
+fn kept_entries(filters: &Filters, given: &[FilterEntry]) -> Vec<FilterEntry> {
+    let compiled = filters.entries(given);
+    given
+        .iter()
+        .filter_map(|g| match &g.probe {
+            Some(_) => Some(g.clone()),
+            None => compiled.iter().find(|c| c.name == g.name).cloned(),
+        })
+        .collect()
+}
+
+/// Evaluate expression filters into `values`, which holds `base` signals
+/// first: slots are `t`, those signals, the filters, then `params`.
+fn derive(exprs: &[crate::filters::ExprFilter], t: f64, values: &mut Vec<f64>, params: &[f64]) {
+    if exprs.is_empty() {
+        return;
+    }
+    let base = values.len();
+    let mut vars = Vec::with_capacity(1 + base + exprs.len() + params.len());
+    vars.push(t);
+    vars.extend_from_slice(values);
+    vars.extend(std::iter::repeat_n(0.0, exprs.len()));
+    vars.extend_from_slice(params);
+    for (k, f) in exprs.iter().enumerate() {
+        let v = f.expr.eval(&vars);
+        vars[1 + base + k] = v;
+        values.push(v);
     }
 }
 
@@ -2140,6 +2294,7 @@ pub fn default_cut(h: &History, name: &str, input: &str) -> FilterEntry {
         type_name: "cut".into(),
         inputs: vec![input.into()],
         canvas: None,
+        probe: None,
         settings: [
             ("mode".to_string(), serde_json::Value::from("along_x")),
             ("at".to_string(), serde_json::Value::from(at)),
@@ -3442,5 +3597,53 @@ mod probe_tests {
             .values(h.resolve("car.v").unwrap())
             .iter()
             .all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn filters_on_a_probe_run_on_its_samples() {
+        let text = cruise_with(
+            r#"[{"name": "speed", "record": ["car.v", "cruise.F"], "every": {"seconds": 0.5},
+                 "keep": {"all": true}}]"#,
+        );
+        let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        let mut filters = s.filters().to_vec();
+        let mut power = FilterEntry::expression("power", "car.v*cruise.F", Vec::new());
+        power.probe = Some("speed".into());
+        filters.push(power);
+        s.set_filters(filters.clone()).unwrap();
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        let p = s.probe("speed").unwrap();
+        let h = p.read();
+        // Every 0.5 s, from the probe's own samples.
+        assert_eq!(h.names(), ["car.v", "cruise.F", "power"]);
+        let (v, f, w) = (
+            h.values(SignalRef::Signal(0)),
+            h.values(SignalRef::Signal(1)),
+            h.values(SignalRef::Signal(2)),
+        );
+        assert_eq!(w.len(), v.len());
+        assert!(w
+            .iter()
+            .zip(v.iter().zip(&f))
+            .all(|(w, (v, f))| (w - v * f).abs() < 1e-9));
+        drop(h);
+        // Not in the model's history, and saved with its probe.
+        assert!(s.signals().resolve("power").is_none());
+        let saved = s.save_json(1.0, None).unwrap();
+        assert!(saved.contains("\"probe\": \"speed\""));
+        // A filter on a probe reads only what the probe records.
+        let mut bad = FilterEntry::expression("pi", "cruise.I*2", Vec::new());
+        bad.probe = Some("speed".into());
+        filters.push(bad);
+        s.set_filters(filters.clone()).unwrap();
+        assert!(s
+            .warnings
+            .iter()
+            .any(|w| w.contains("pi") && w.contains("probe speed")));
+        let mut nowhere = FilterEntry::expression("x", "1", Vec::new());
+        nowhere.probe = Some("gone".into());
+        s.set_filters(vec![nowhere]).unwrap();
+        assert!(s.warnings.iter().any(|w| w.contains("no probe 'gone'")));
     }
 }

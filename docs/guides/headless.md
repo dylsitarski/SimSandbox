@@ -40,7 +40,7 @@ Notes, warnings and labels go to standard error; data to standard output.
 | `params` | Every parameter: `key` (`block.param`; a model parameter's `name`, a subsystem use's `instance.name`; blocks inside uses `instance/inner.param`), `value`, `formula` (set when a formula computes it), `unit`, `suggested` range, `initial_condition`, `description` |
 | `subsystems`, `blocks` | Each subsystem's parameters, ports and uses ([ADR 0043](../decisions/0043-subsystems.md)); every block after flattening, as signals and sliders name them |
 | `labels` | Speed and accuracy of the model's methods |
-| `recorded` | `signals` (scalars) and `fields` (grids, point sets, populations) that views can bind |
+| `recorded` | `signals` (scalars) and `fields` (grids, point sets, populations) that views and probes can take, recorded now or not |
 | `fused_groups`, `swept`, `filters`, `views` | How blocks are solved together, the swept parameters, filter and view names |
 
 ### `run --format json`
@@ -65,13 +65,13 @@ Probes ([ADR 0062](../decisions/0062-probes-recording-and-replay.md)) record cho
 
 | Key | Meaning |
 | --- | --- |
-| `record` | Signals and fields by the names views bind (may be empty) (`car.v`, `gs.v`, a filter's name); only what the model records (with `controls.plots`, those outputs and the filters) |
+| `record` | Signals and fields by the names views bind (`car.v`, `gs.v`, a model filter's name); may be empty |
 | `every` | One of `{"steps": N}`, `{"seconds": dt}`, `{"times": [...]}`: at the first step at or after each; every step if absent |
 | `keep` | One of `{"mb": size}` (thinned past it), `{"last": N}`, `{"all": true}`; thinned when long if absent |
 | `to` | A file name ending in `.csv`: `t` and the signals, one row per sample; each grid or point field in `<stem>.<field>.npy` beside it (`(samples, ny, nx)` or `(samples, count, dim)`, read with `numpy.load`) |
 | `canvas` | Where its node sits on the diagram's data layer, where `render --diagram` draws it |
 
-A view entry with `"probe": "NAME"` draws what that probe recorded instead of every step, in the app and in `simsandbox render`. A probe with an empty `record` records nothing yet.
+A view binds a probe's recording as `probe:NAME/signal` (`"y": ["car.v", "probe:speed/car.v"]`): the model's every step and the probe's samples on one plot. Where a view pairs signals from different sources (x against y, colour), it uses only the times both recorded. A filter with `"probe": "NAME"` runs on that probe's samples and reads only what it records; its outputs are bound as `probe:NAME/output` ([ADR 0063](../decisions/0063-probes-on-wires.md)). The model's every-step recording keeps only what views and filters read from the model; `controls.plots` no longer limits anything.
 
 
 A probe with bad settings, or recording something the model does not record, is dropped with a warning. `simsandbox run FILE --probe NAME` prints one; `--save-probes DIR` writes the files. A swept model records no probes. JSON output of a probe: `rows`, `t`, `signals` (name → list), `fields` (name → `{shape, frames}`).

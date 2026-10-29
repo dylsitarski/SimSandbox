@@ -65,6 +65,16 @@ As above: probes have outputs; the implicit history records only what is wired; 
 
 Then ADR 0062 step 3 (exact runs on several cores). Recompute on demand after ADR 0062, as an action.
 
+## As built
+
+**Step 1 (2026-10-29): probe outputs, recording what is wired, several sources.** Built in three parts, each committed.
+
+- **Views read named recordings.** A binding is `car.v` (the model, every step) or `probe:speed/car.v` (`simsandbox_views::history::split_source`, `from_probe`, `label`). `Recorded` holds the model's history and each probe's; `ViewInput` resolves every binding in its own recording (`Bound`, `one_any`, `many_any`), while `one` and `many` keep giving the bindings in the view's main recording for views that read one. `paired` pairs signals at the times all of them recorded. `plot.xy` draws each curve from its own recording (against `t` at its own times; against another signal or with colour, paired) and `plot.3d` pairs its axes; field views read one recording. `ViewEntry::probe` (built earlier the same day) is read and converted into `probe:` bindings, never written; the tile's "from" menu is gone.
+- **Probe nodes have outputs**, one per signal recorded, wired into views (`Edit::Bind` writes `probe:NAME/signal`) and filters. Renaming or deleting a probe, or no longer recording a signal, follows into views and filters; a probe cannot record another probe's recording or feed the model yet. The data layer's columns: model filters, probes, filters on probes, views.
+- **The history records what is wired.** `Session::set_view_reads` (the app calls it whenever its tiles' bindings change) sets what views read from the model directly; the history keeps those and what model filters read (with the coordinates cuts need), nothing else, and keeps what it had of them. A signal wired mid-run has no past: NaN for signals, an absent (empty) frame for fields, which views draw as nothing and `.npy` files write as NaN. **Difference from the decision:** until views are known (a model loaded without saved views and no app, e.g. `simsandbox render` of a file without views, whose default views are chosen when drawn) the history records everything. Sweeps record everything, as before.
+- **Probes take their samples from everything a step yields** (the session's layout: every output and model filter output), not from the history. `controls.plots` no longer limits what can be recorded, bound or probed; it is still read and saved but has no effect. Views, the Data window and `check`'s `recorded` list everything a step yields.
+- **Filters on probes.** `FilterEntry::probe` names the probe a filter runs on. It is compiled with that probe (reading only what the probe records, parameters and `t`) and computed whenever the probe records; its outputs join the probe's recording, bound as `probe:NAME/output` (`Available::probed`). Wiring a probe output into a filter puts it on the probe (views reading its outputs follow); deleting the probe puts its filters back on the model. A filter whose probe is missing computes nothing, with a warning. A filter reads one probe; pairing two probes' samples in a filter is not built.
+
 ## Options considered
 
 | Option | Pros | Cons |

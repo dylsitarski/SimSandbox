@@ -450,6 +450,10 @@
                   "type": "string"
                 }
               },
+              "probe": {
+                "type": "string",
+                "description": "The probe whose samples it runs on (ADR 0063); its outputs join that probe's recording. Every step if absent."
+              },
               "canvas": {
                 "type": "array",
                 "items": {

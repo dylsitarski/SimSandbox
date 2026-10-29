@@ -2438,14 +2438,13 @@ impl SimApp {
                 .map(|f| f.name.clone())
                 .collect();
             let mut entries = ed.entries();
-            // Filters keep their place on the canvas (ADR 0050).
+            // Filters keep their place on the canvas (ADR 0050) and the
+            // probe they run on (ADR 0063).
             for e in &mut entries {
-                e.canvas = live
-                    .model()
-                    .filters
-                    .iter()
-                    .find(|f| f.name == e.name)
-                    .and_then(|f| f.canvas);
+                let was = live.model();
+                let was = was.filters.iter().find(|f| f.name == e.name);
+                e.canvas = was.and_then(|f| f.canvas);
+                e.probe = was.and_then(|f| f.probe.clone());
             }
             match live.call(move |s, _| s.set_filters(entries)) {
                 Ok(Ok(())) => {
@@ -3874,6 +3873,7 @@ impl CutEdit {
             type_name: "cut".into(),
             inputs: vec![self.input.clone()],
             canvas: None,
+            probe: None,
             settings,
         }
     }
