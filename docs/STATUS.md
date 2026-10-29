@@ -103,15 +103,16 @@ _Last updated: 2026-10-29_
 
 ## In progress
 
-- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md)): steps 1 and 2 built 2026-10-29; the probe nodes, settings window, "from" menu and Save probe data were checked headless (a screenshot under Xvfb, tests) but not yet by the owner in the window. Next: [ADR 0063](decisions/0063-probes-on-wires.md) (proposed 2026-10-29, probe outputs wired into views, filters and models; the implicit history records only what is wired), then step 3.
+- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md)): steps 1 and 2 built 2026-10-29; the probe nodes, settings window, "from" menu and Save probe data were checked headless (a screenshot under Xvfb, tests) but not yet by the owner in the window. Next: [ADR 0063](decisions/0063-probes-on-wires.md) (accepted 2026-10-29), then step 3.
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
-2. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
+1. **Probes on wires** ([ADR 0063](decisions/0063-probes-on-wires.md)), in order: (1) probe outputs, sources in bindings, the implicit history recording only what is wired, views and filters reading several sources; (2) snapshots without outputs that copy states; (3) probes into blocks of the same model; (4) a block reading probe files; (5) several models in one session linked by probes (its own ADR first).
+2. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
+3. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
 
