@@ -229,10 +229,13 @@ impl SimApp {
                 let title = Path::new(path)
                     .file_name()
                     .map_or(path.into(), |n| n.to_string_lossy().into_owned());
+                // Blocks read their files from the model's folder (ADR 0063).
+                let previous = self.path.replace(path.into());
                 self.open_text(&title, &text);
                 if self.error.is_none() {
-                    self.path = Some(path.into());
                     self.mark_saved();
+                } else {
+                    self.path = previous;
                 }
             }
             Err(e) => self.error = Some(format!("{path}: {e}")),
@@ -436,7 +439,9 @@ impl SimApp {
     }
 
     fn open_inner(&mut self, title: &str, text: &str, running: bool, announce: bool) {
-        match Session::load_deferred(title, text, &self.registry) {
+        let folder = self.path.as_deref().and_then(Path::parent);
+        self.diagram.folder = folder.map(Path::to_path_buf);
+        match Session::load_in(title, text, &self.registry, folder, true) {
             Ok(mut s) => {
                 self.speed = s.file.controls.speed.unwrap_or(1.0);
                 // Tabs shown in their own windows stay there when the model
@@ -526,6 +531,7 @@ impl SimApp {
             .and_then(Path::parent)
             .map(Path::to_path_buf);
         if dir != self.probe_dir {
+            self.diagram.folder = dir.clone();
             self.probe_dir = dir.clone();
             live.send(Some("probe-dir"), move |s, _| s.set_probe_dir(dir));
         }
@@ -1980,11 +1986,12 @@ impl SimApp {
         let title = model
             .file_name()
             .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        let previous = self.path.replace(model.clone());
         self.open_text(&title, &replayed.to_json());
         if self.error.is_some() {
+            self.path = previous;
             return;
         }
-        self.path = Some(model.clone());
         self.mark_saved();
         if !run_fits_disk(&run, &model, &self.registry) {
             self.log.warn(format!(
@@ -2221,6 +2228,13 @@ impl SimApp {
         let mut changes: Vec<(ParamRow, f64)> = Vec::new();
         let mut controls: Vec<(String, simsandbox_file::ParamControl)> = Vec::new();
         let mut open_editor: Option<(String, String)> = None;
+        // Where a file reader's data is named from (ADR 0063).
+        let folder = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        let folder = folder.as_deref();
         // Edits that go through the diagram (a conversion's units, a new
         // block's values), at the level they apply to.
         let mut canvas_edits: Vec<(Scope, Edit)> = Vec::new();
@@ -2318,7 +2332,11 @@ impl SimApp {
                                     canvas_edits.push((at.clone(), e));
                                     shown = true;
                                 }
-                                shown |= b.type_name == simsandbox_eq::convert::CONVERT;
+                                for e in file_fields(ui, b, &mut self.param_edits, folder) {
+                                    canvas_edits.push((at.clone(), e));
+                                }
+                                shown |= b.type_name == simsandbox_eq::convert::CONVERT
+                                    || b.type_name == simsandbox_eq::file_input::FILE;
                             } else if let (Some(b), Some(f)) = (drafted, &draft) {
                                 ui.weak(
                                     "Not in the running model yet: it joins when the model loads",
@@ -2333,6 +2351,9 @@ impl SimApp {
                                     }
                                 }
                                 for e in unit_fields(ui, b, &mut self.param_edits) {
+                                    canvas_edits.push((at.clone(), e));
+                                }
+                                for e in file_fields(ui, b, &mut self.param_edits, folder) {
                                     canvas_edits.push((at.clone(), e));
                                 }
                                 shown = true;
@@ -3399,6 +3420,141 @@ fn block_entry<'a>(
     blocks.iter().find(|b| b.name == name)
 }
 
+/// A text field for one setting of block `b`; a changed value is an edit
+/// (empty clears the setting).
+fn setting_field(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    key: &str,
+    width: f32,
+    hint: &str,
+    edits: &mut HashMap<String, String>,
+) -> Option<Edit> {
+    let now = b.settings.get(key).cloned().unwrap_or_default();
+    let id = format!("setting:{}:{key}", b.name);
+    let mut text = edits.get(&id).cloned().unwrap_or_else(|| now.clone());
+    let r = ui
+        .add(egui::TextEdit::singleline(&mut text).desired_width(width))
+        .on_hover_text(hint);
+    if r.has_focus() {
+        edits.insert(id.clone(), text.clone());
+    }
+    if r.lost_focus() {
+        edits.remove(&id);
+        if text.trim() != now {
+            return Some(Edit::SetSetting {
+                block: b.name.clone(),
+                key: key.into(),
+                text: text.trim().into(),
+            });
+        }
+    }
+    None
+}
+
+/// A file reader's settings (ADR 0063): the file, typed or chosen in the
+/// system dialog (relative to the model's `folder` when inside it), how
+/// values go between samples, the unit, and for a `.npy` its times and
+/// shape. Nothing for other blocks.
+fn file_fields(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    edits: &mut HashMap<String, String>,
+    folder: Option<&Path>,
+) -> Vec<Edit> {
+    let mut out = Vec::new();
+    if b.type_name != simsandbox_eq::file_input::FILE {
+        return out;
+    }
+    let set = |key: &str, text: String| Edit::SetSetting {
+        block: b.name.clone(),
+        key: key.into(),
+        text,
+    };
+    let relative = |path: std::path::PathBuf| {
+        folder
+            .and_then(|f| path.strip_prefix(f).ok())
+            .map_or(path.clone(), Path::to_path_buf)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    ui.horizontal(|ui| {
+        ui.label("reads");
+        let hint = if folder.is_some() {
+            "A .csv (time, then a column per output) or .npy, in the model's folder or a full path"
+        } else {
+            "A .csv or .npy: save the model first to name it from the model's folder, or give a full path"
+        };
+        out.extend(setting_field(ui, b, "file", 160.0, hint, edits));
+        if ui.small_button("Choose…").clicked() {
+            let mut dialog = rfd::FileDialog::new()
+                .set_title("Data to read")
+                .add_filter("Data", &["csv", "npy"]);
+            if let Some(dir) = folder {
+                dialog = dialog.set_directory(dir);
+            }
+            if let Some(path) = dialog.pick_file() {
+                out.push(set("file", relative(path)));
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("between samples");
+        let now = b.settings.get("interpolate").map_or("hold", String::as_str);
+        for (choice, hint) in [
+            (
+                "hold",
+                "The last sample, as a probe feeding a block gives it",
+            ),
+            ("linear", "A straight line between samples"),
+        ] {
+            if ui
+                .selectable_label(now == choice, choice)
+                .on_hover_text(hint)
+                .clicked()
+                && now != choice
+            {
+                out.push(set("interpolate", choice.into()));
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("unit");
+        out.extend(setting_field(
+            ui,
+            b,
+            "unit",
+            70.0,
+            "For columns whose header gives none (\"car.v [m/s]\" does), e.g. m/s",
+            edits,
+        ));
+    });
+    if b.settings.get("file").is_some_and(|f| f.ends_with(".npy")) {
+        ui.horizontal(|ui| {
+            ui.label("times from");
+            out.extend(setting_field(
+                ui,
+                b,
+                "times",
+                110.0,
+                "A CSV whose first column gives the samples' times, e.g. the probe's CSV",
+                edits,
+            ));
+            ui.label("or every");
+            out.extend(setting_field(
+                ui,
+                b,
+                "dt",
+                50.0,
+                "Seconds between samples, from 0",
+                edits,
+            ));
+            ui.label("s");
+        });
+    }
+    out
+}
+
 /// A conversion block's `from` and `to` units (ADR 0045) as text fields;
 /// a changed one is an edit, which restarts the run. Nothing for other
 /// blocks.
@@ -4406,7 +4562,7 @@ fn runs_beside(model: &Path) -> Vec<(PathBuf, simsandbox_file::runs::RunFile)> {
 fn run_fits_disk(run: &simsandbox_file::runs::RunFile, model: &Path, registry: &Registry) -> bool {
     std::fs::read_to_string(model)
         .ok()
-        .and_then(|t| simsandbox_file::load(&t, registry).ok())
+        .and_then(|t| simsandbox_file::load_in(&t, registry, model.parent()).ok())
         .and_then(|l| run.fits(&l).ok())
         .unwrap_or(false)
 }
@@ -4925,7 +5081,11 @@ mod tests {
         assert!(app.error.as_deref().unwrap().starts_with("Not applied"));
         type_in(&mut app, "leader.T", Typed::Formula("nope".into()));
         assert!(app.error.as_deref().unwrap().contains("nope"));
-        assert!(app.diagram.draft_problem().is_none());
+        assert!(
+            app.diagram.draft_problem().is_none(),
+            "{:?}",
+            app.diagram.draft_problem()
+        );
         assert_eq!(row(&app, "leader.T").formula.as_deref(), Some("tau / 2"));
         // A use's own value takes a formula too; the model's parameters and
         // values inside uses stay numbers.
@@ -5283,7 +5443,11 @@ mod tests {
                 to: "car.F".into(),
             }],
         );
-        assert!(app.diagram.draft_problem().is_none());
+        assert!(
+            app.diagram.draft_problem().is_none(),
+            "{:?}",
+            app.diagram.draft_problem()
+        );
         assert!(app.error.is_none(), "{:?}", app.error);
         let live = app.session.as_ref().unwrap();
         let m = live.model();
@@ -5405,6 +5569,62 @@ mod tests {
         let problem = app.diagram.draft_problem().unwrap();
         assert!(problem.contains("measure different things"), "{problem}");
         assert_eq!(unit(&app, "to"), "mm");
+    }
+
+    #[test]
+    fn a_file_reader_added_on_the_canvas_reads_from_the_models_folder() {
+        let dir = std::env::temp_dir().join(format!("simsandbox-app-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("push.csv"), "t,F [N]\n0,1\n1,3\n").unwrap();
+        let model = dir.join("m.ssbx.json");
+        std::fs::write(
+            &model,
+            r#"{"format": 1, "blocks": [{"name": "one", "type": "eq.equations",
+                "equations": ["y = 1"]}]}"#,
+        )
+        .unwrap();
+        let mut app = SimApp::new(None, None, None, None);
+        app.open_path(&model.to_string_lossy());
+        assert!(app.error.is_none(), "{:?}", app.error);
+        // Added without a file it waits as a draft; naming one loads it.
+        app.edit_at(
+            Scope::Model,
+            Edit::Add {
+                type_name: simsandbox_eq::file_input::FILE.into(),
+                at: [0.0, 0.0],
+            },
+        );
+        let problem = app.diagram.draft_problem().unwrap();
+        assert!(problem.contains("settings.file"), "{problem}");
+        let name = app.diagram.draft_file().unwrap().blocks[1].name.clone();
+        app.edit_at(
+            Scope::Model,
+            Edit::SetSetting {
+                block: name.clone(),
+                key: "file".into(),
+                text: "push.csv".into(),
+            },
+        );
+        assert!(
+            app.diagram.draft_problem().is_none(),
+            "{:?}",
+            app.diagram.draft_problem()
+        );
+        let live = app.session.as_ref().unwrap();
+        let key = format!("{name}.F");
+        let f = live
+            .call(move |s, _| {
+                s.set_view_reads(vec![key.clone()]);
+                s.restart().unwrap();
+                s.run_until(1.0).unwrap();
+                s.flush(true);
+                let h = s.signals();
+                h.values(h.resolve(&key).unwrap())
+            })
+            .unwrap();
+        assert_eq!((f.first(), f.last()), (Some(&1.0), Some(&3.0)));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

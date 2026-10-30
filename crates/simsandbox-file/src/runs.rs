@@ -9,6 +9,7 @@
 use crate::{FileError, Loaded, ModelFile, ScheduledChange};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 /// The run file format this build reads and writes.
 pub const RUN_FORMAT: u32 = 1;
@@ -136,6 +137,13 @@ impl RunFile {
 /// itself (seed, `dt`, `t_end`, the schedule), so replaying a run under its
 /// own settings does not make it look stale.
 pub fn model_hash(model: &ModelFile) -> String {
+    model_hash_with(model, &BTreeMap::new())
+}
+
+/// The hash of a model file whose blocks read files (ADR 0063): `data`
+/// maps each `block.setting` to the digest of the file it names
+/// ([`Loaded::data`]). Without files it equals [`model_hash`].
+pub fn model_hash_with(model: &ModelFile, data: &BTreeMap<String, String>) -> String {
     let mut m = model.clone();
     // Probes feeding the model change its results (ADR 0063): their
     // names and when they record are part of it.
@@ -165,7 +173,11 @@ pub fn model_hash(model: &ModelFile) -> String {
     m.run.dt = crate::RunSettings::default().dt;
     m.run.t_end = None;
     m.run.inputs.clear();
-    let digest = Sha256::digest(m.to_json().as_bytes());
+    let mut text = m.to_json();
+    for (k, v) in data {
+        text.push_str(&format!("\n{k} {v}"));
+    }
+    let digest = Sha256::digest(text.as_bytes());
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     format!("sha256:{hex}")
 }
@@ -179,7 +191,7 @@ pub fn loaded_hash(loaded: &Loaded) -> Result<String, FileError> {
     flat.capture_params(&loaded.model, &loaded.ids)?;
     let mut file = loaded.file.clone();
     file.capture_from(&flat, &loaded.params);
-    Ok(model_hash(&file))
+    Ok(model_hash_with(&file, &loaded.data))
 }
 
 /// The usual name of a run file beside `model_path`:

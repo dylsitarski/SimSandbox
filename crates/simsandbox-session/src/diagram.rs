@@ -258,7 +258,7 @@ impl Diagram {
             .iter()
             .map(|b| match file.subsystems.get(&b.type_name) {
                 Some(_) => instance_node(file, b, registry),
-                None => node(b, registry),
+                None => node(b, registry, file.folder.as_deref()),
             })
             .collect();
         for p in l.inputs {
@@ -446,22 +446,24 @@ fn ports(spec: &simsandbox_core::block::BlockSpec, c: Causality) -> Vec<Port> {
 fn build(
     b: &BlockEntry,
     registry: &Registry,
+    folder: Option<&std::path::Path>,
 ) -> Result<Box<dyn simsandbox_core::block::Block>, String> {
     let config = BlockConfig {
         method: (&b.method).into(),
         definition: b.equations.clone(),
         update: b.update.clone(),
         settings: b.settings.clone(),
+        folder: folder.map(Into::into),
     };
     registry
         .build(&b.type_name, &b.name, &config)
         .map_err(|e| e.to_string())
 }
 
-fn node(b: &BlockEntry, registry: &Registry) -> Node {
+fn node(b: &BlockEntry, registry: &Registry, folder: Option<&std::path::Path>) -> Node {
     let mut method = b.method.name.clone();
     let mut values = Vec::new();
-    let (inputs, outputs, error) = match build(b, registry) {
+    let (inputs, outputs, error) = match build(b, registry, folder) {
         Ok(block) => {
             if method.is_empty() {
                 method = block.method().name.clone();
@@ -585,7 +587,7 @@ fn interface_port(
             }
         }
         None => {
-            let block = build(entry, registry).ok()?;
+            let block = build(entry, registry, file.folder.as_deref()).ok()?;
             let want = if input {
                 Causality::Input
             } else {
@@ -1174,6 +1176,10 @@ fn edit_level(
                 .iter_mut()
                 .find(|b| b.name == *block)
                 .ok_or_else(|| format!("no block '{block}'"))?;
+            if text.trim().is_empty() {
+                b.settings.remove(key);
+                return Ok(format!("{block}: {key} cleared"));
+            }
             b.settings.insert(key.clone(), text.trim().to_string());
             Ok(format!("{block}: {key} is now {}", text.trim()))
         }

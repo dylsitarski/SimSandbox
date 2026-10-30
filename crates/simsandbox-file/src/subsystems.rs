@@ -976,10 +976,11 @@ impl Check {
     pub(crate) fn verify(
         &self,
         registry: &simsandbox_core::registry::Registry,
+        folder: Option<&std::path::Path>,
     ) -> Result<(), FileError> {
         let (mut model, ids) = self
             .file
-            .build(registry)
+            .build(registry, folder)
             .map_err(|e| crate::origin(e, &self.block_origins, &self.connection_origins))?;
         self.plan.clone().fit_blocks(&mut model, &ids)?;
         for (path, port, input) in &self.ports {

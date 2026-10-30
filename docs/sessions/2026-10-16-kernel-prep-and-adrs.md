@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-10-30: ADR 0063 step 4: `input.file` (`simsandbox-eq/src/file_input.rs`: CSV and `.npy` readers, hold or linear); kernel `BlockConfig::folder`, `BlockConfig::file`, `TypeInfo::file`, `registry::in_folder`/`set_folder`; `simsandbox_file::load_in`, `Loaded::data`, `runs::model_hash_with`; `Session::load_in`; CLI and Python read files from the model's folder (`Model.folder`); app loads with the saved model's folder, Inspector fields (`file_fields`), `Edit::SetSetting` with empty text clears a setting. Found by the app test: the canvas's edited copy of the model lost its folder, so the diagram pane now holds it. Tests: the block's own, a probe's file read back equals the live probe bit for bit, hash follows contents, Python, app.
 - 2026-10-29: probe streaming (`probe::Stream`, CSV and `.npy` with rewritten headers, cut back on rewind), `keep.samples`, memory only when read (`Session::update_probe_io`, `record_all_probes`, `set_probe_dir`; the app passes the model's folder), Hide data keeping feeding probes (`observers::model_part`). Tests for each.
 - 2026-10-29: ADR 0063 step 3. Kernel: `schedule.rs` (`Every`, `Trigger` with `position`/`set_position`, moved from `probe.rs`, which re-exports them), `hold.rs` (`SampleHold`). File: flattening lets model-level `probe:` sources through; `build` makes holds (`ModelFile::hold`), `ProbeEntry::schedule`; `model_hash` includes feeding probes; `Controls::is_empty` covers every section. Session/canvas: `Diagram::of` skips probe sources; `observe` draws them from probe outputs; `Connect` from a probe into a block writes the connection; probe delete/rename/unbind follow; `undo::change` treats a feeding probe's schedule as the model. App: `DiagramTab::handle` rebuilds when a data edit changes the model. Tests in session (hold, no delay, replay), observers, runs (hash), files (controls).
 - 2026-10-29: on Windows the window opened marked maximized but drawn at 1100 × 700 (owner's screenshot): a window created maximized keeps its first drawing size until resized. Now created at 1100 × 700 and maximized by `ViewportCommand::Maximized` two frames after it shows (`SimApp::maximize_in`), as a person maximizing it would. Not checkable here (Xvfb has no window manager); the owner checks on Windows.
@@ -94,6 +95,7 @@
 
 ## Decided
 
+- 2026-10-30 (ours, owner to confirm): headless tools set the model's folder for the thread (`in_folder`) instead of a folder argument on every function that takes a model's text; CSV column names become port names with non-identifier characters made `_`; a file reader never fuses (its value is held over each step, like a probe's hold); data files count in the run hash by content.
 - 2026-10-29: no batch-size setting for streamed probe files; buffered writes already batch (judged not useful, as the owner allowed). The default keep is "thinned past 100 000 samples", editable. Probes feeding blocks belong to the model and stay visible when data is hidden (owner).
 - 2026-10-29: rewind off by default; a recorder node turns it on and holds its settings; the rewind bar is hidden until one is present; subsystem-level replay later (owner). ADR 0064.
 - 2026-10-29: rewind recomputes outputs where that is exact (the owner left it to us): amends ADR 0062, recorded in ADR 0063.
@@ -153,6 +155,7 @@
 
 ## Notes for the next session
 
+- ADR 0063 step 5 next (several models in one session, own ADR first). `input.file` has not been tried in the window; Q42 (units in probe CSV headers) and Q43 (re-reading changed files) are open.
 - ADR 0063 step 4 next: a block reading a probe's file (or any CSV or `.npy`) as an input over time; it also serves external data (ADR 0048). The owner has not yet tried probes in the window.
 - Probes: the owner has not yet tried the probe nodes, settings window, "from" menu and Save probe data in the window. A probe records only what the implicit history does; with `controls.plots` set, wiring an output that is not plotted into a probe is refused with the reason ("nothing is recorded as …"). Next is ADR 0062 step 3, exact runs on several cores.
 - 2026-10-28: ADR 0062 (probes) is a draft (Proposed). Open for the owner: thin or forget by default; snapshots with or without outputs; recompute on demand in the first build or later; several cores for exact runs from the start; its place in the Phase 2 plan.

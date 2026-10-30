@@ -97,6 +97,9 @@ pub struct DiagramTab {
     probe: Option<crate::probe_editor::ProbeEditor>,
     /// The recorder's settings, open from its node (ADR 0064).
     recorder: Option<crate::recorder_editor::RecorderEditor>,
+    /// The saved model's folder, where blocks read the files they name
+    /// (ADR 0063); set by the app.
+    pub folder: Option<std::path::PathBuf>,
 }
 
 impl DiagramTab {
@@ -510,12 +513,16 @@ impl DiagramTab {
             Change::Model => {
                 self.draft = None;
                 let text = next.to_json();
-                match Session::load_deferred("check", &text, registry) {
+                match Session::load_in("check", &text, registry, self.folder.as_deref(), true) {
                     Ok(_) => out.push(Outcome::Apply {
                         text,
                         notes: vec![word.into()],
                     }),
-                    Err(problem) => self.draft = Some((next, problem)),
+                    Err(problem) => {
+                        let mut next = next;
+                        next.folder = self.folder.clone();
+                        self.draft = Some((next, problem));
+                    }
                 }
             }
         }
@@ -684,13 +691,17 @@ impl DiagramTab {
                     Edit::SetFormula { .. } | Edit::DeclareParam { .. } | Edit::RemoveParam { .. }
                 )
             });
-        match Session::load_deferred("check", &text, registry) {
+        match Session::load_in("check", &text, registry, self.folder.as_deref(), true) {
             Ok(_) => out.push(Outcome::Apply { text, notes }),
             Err(problem) if refused => {
                 self.undo.pop();
                 out.push(Outcome::Error(format!("Not applied: {problem}")));
             }
-            Err(problem) => self.draft = Some((file, problem)),
+            Err(problem) => {
+                let mut file = file;
+                file.folder = self.folder.clone();
+                self.draft = Some((file, problem));
+            }
         }
     }
 }

@@ -19,6 +19,7 @@ name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
+simsandbox-core = { path = "../crates/simsandbox-core" }
 simsandbox-session = { path = "../crates/simsandbox-session" }
 simsandbox-views = { path = "../crates/simsandbox-views" }
 serde_json = "1"

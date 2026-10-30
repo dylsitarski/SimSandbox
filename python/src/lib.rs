@@ -346,6 +346,15 @@ fn promote(text: &str, filter: String, to: Option<String>) -> PyResult<(String, 
     Ok((file.to_json(), note))
 }
 
+/// Set the folder blocks on this thread read the files their settings
+/// name from (ADR 0063): the model file's. Returns the folder it replaces,
+/// to set back.
+#[pyfunction]
+#[pyo3(signature = (folder=None))]
+fn set_folder(folder: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    simsandbox_core::registry::set_folder(folder)
+}
+
 /// A model file in the current form (ADR 0044): the text, the older forms
 /// converted, and what was dropped as unusable.
 #[pyfunction]
@@ -358,6 +367,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ModelError", m.py().get_type::<ModelError>())?;
     m.add_function(wrap_pyfunction!(describe, m)?)?;
     m.add_function(wrap_pyfunction!(promote, m)?)?;
+    m.add_function(wrap_pyfunction!(set_folder, m)?)?;
     m.add_function(wrap_pyfunction!(schema, m)?)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(examples, m)?)?;

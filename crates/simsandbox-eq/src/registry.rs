@@ -81,6 +81,11 @@ pub fn register(registry: &mut Registry) -> Result<()> {
         let ty = crate::input::VALUE;
         Ok(Box::new(crate::input::Input::from_config(ty, name, c)?))
     })?;
+    registry.register(crate::file_input::FILE, |name, c| {
+        Ok(Box::new(crate::file_input::FileInput::from_config(
+            name, c,
+        )?))
+    })?;
     registry.register(crate::input::POINTER, |name, c| {
         let ty = crate::input::POINTER;
         Ok(Box::new(crate::input::Input::from_config(ty, name, c)?))
@@ -187,6 +192,27 @@ fn describe(r: &mut Registry) -> Result<()> {
         .setting("unit", &[])
         .setting("min", &[])
         .setting("max", &[]),
+    )?;
+    r.describe(
+        crate::file_input::FILE,
+        TypeInfo::new(
+            "Recorded data as an input over time (ADR 0063): a probe's file or any CSV or .npy, \
+             read from the model's folder. A CSV's first column is the time and each other \
+             column an output named by its header ('car.v' gives car_v), its unit from \
+             'name [unit]' in the header, 'unit.COLUMN' or 'unit'. A .npy is one output y \
+             (scalar, vector, grid or, with shape: points, a point set) with its times from \
+             'times' (a CSV's first column) or every 'dt' seconds. Values are held between \
+             samples or interpolated (interpolate: linear); outside them, the first or last.",
+        )
+        .method(crate::file_input::READ, &[])
+        .setting("file", &[])
+        .setting("interpolate", &["hold", "linear"])
+        .setting("unit", &[])
+        .setting("times", &[])
+        .setting("dt", &[])
+        .setting("shape", &["grid", "points"])
+        .file("file")
+        .file("times"),
     )
 }
 

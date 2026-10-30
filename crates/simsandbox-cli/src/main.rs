@@ -555,10 +555,39 @@ fn run_lorenz(args: &[String]) -> Result<(), String> {
     out.flush().map_err(|e| e.to_string())
 }
 
+/// The folder of the model a command's file names (a run file's model):
+/// where blocks read the files their settings name (ADR 0063).
+fn model_folder(path: &str) -> Option<std::path::PathBuf> {
+    let model = if is_run_file(path) {
+        let run = RunFile::from_json(&read(path).ok()?).ok()?;
+        std::path::Path::new(path).parent()?.join(run.model)
+    } else {
+        std::path::PathBuf::from(path)
+    };
+    let folder = model.parent()?;
+    Some(if folder.as_os_str().is_empty() {
+        std::path::PathBuf::from(".")
+    } else {
+        folder.to_path_buf()
+    })
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rest = args.get(1..).unwrap_or(&[]);
-    let result = match args.first().map(String::as_str) {
+    let folder = rest.first().and_then(|p| model_folder(p));
+    let result = simsandbox_core::registry::in_folder(folder.as_deref(), || command(&args, rest));
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn command(args: &[String], rest: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
         Some("--version") | Some("-V") => {
             println!("simsandbox {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -582,12 +611,5 @@ fn main() -> ExitCode {
         Some("upgrade") => upgrade_file(rest),
         Some("lorenz") => run_lorenz(rest),
         _ => Err(USAGE.to_string()),
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
     }
 }

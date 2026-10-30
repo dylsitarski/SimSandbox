@@ -14,6 +14,7 @@
 
 pub mod convert;
 pub mod fields;
+pub mod file_input;
 pub mod group;
 pub mod implicit;
 pub mod input;

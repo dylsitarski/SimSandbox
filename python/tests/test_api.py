@@ -294,3 +294,21 @@ def test_grid_probes_come_back_as_arrays_and_npy_files(tmp_path):
     assert p[field].shape == (2, 128, 128)
     saved = np.load(tmp_path / f"gs.{field}.npy")
     assert np.array_equal(saved, p[field])
+
+
+def test_a_saved_model_reads_its_data_file_from_its_folder(tmp_path):
+    (tmp_path / "push.csv").write_text("t,F [N]\n0,1\n1,3\n")
+    m = ss.Model()
+    m.add_block("data", "input.file", settings={"file": "push.csv", "interpolate": "linear"})
+    m.add_block("gain", "eq.equations", equations=["input F [N]", "y = 2*F [N]"])
+    m.connect("data.F", "gain.F")
+    m.set_run(dt=0.25, t_end=1.5)
+    # Not saved: the relative file has no folder to be read from.
+    assert not m.check()["ok"]
+    m.save(tmp_path / "model.ssbx.json")
+    assert m.check()["ok"]
+    r = m.run()
+    assert list(r["gain.y"]) == [2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 6.0]
+    again = ss.Model.load(tmp_path / "model.ssbx.json")
+    assert list(again.run()["data.F"]) == [1.0, 1.5, 2.0, 2.5, 3.0, 3.0, 3.0]
+    assert ss.check(tmp_path / "model.ssbx.json")["ok"]

@@ -106,6 +106,10 @@ pub struct ModelFile {
     /// written.
     #[serde(skip)]
     pub converted: Vec<String>,
+    /// The folder the file was read from, where blocks read the files
+    /// their settings name (ADR 0063); never written.
+    #[serde(skip)]
+    pub folder: Option<std::path::PathBuf>,
 }
 
 /// Automatic fusion of equation blocks (ADR 0023).
@@ -1317,11 +1321,28 @@ pub struct Loaded {
     /// Where a model without states is evaluated (ADR 0027); `None` for one
     /// that runs in time.
     pub plan: Option<Plan>,
+    /// The files blocks read (ADR 0063), as `block.setting` and the
+    /// SHA-256 of the file's contents: part of a run's model hash.
+    pub data: BTreeMap<String, String>,
 }
 
-/// Parse a model file and build its model.
+/// Parse a model file and build its model. Blocks that read files accept
+/// only absolute names: see [`load_in`].
 pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
+    load_in(text, registry, None)
+}
+
+/// Parse a model file saved in `folder` and build its model: blocks read
+/// the files their settings name from there (ADR 0063).
+pub fn load_in(
+    text: &str,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+) -> Result<Loaded, FileError> {
     let (mut file, mut warnings) = ModelFile::from_json(text)?;
+    file.folder = folder
+        .map(Into::into)
+        .or_else(simsandbox_core::registry::current_folder);
     let subsystems::Flat {
         file: mut flat,
         plan: mut params,
@@ -1330,11 +1351,12 @@ pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
         checks,
     } = file.flatten()?;
     for c in &checks {
-        c.verify(registry)?;
+        c.verify(registry, folder)?;
     }
     // Errors name the place in the file as written.
     let origin = |e: FileError| origin(e, &block_origins, &connection_origins);
-    let (mut model, ids) = flat.build(registry).map_err(origin)?;
+    let (mut model, ids) = flat.build(registry, folder).map_err(origin)?;
+    let data = data_digests(&flat, registry, folder);
     // Formulas give each block parameter in its unit (ADR 0045).
     params.fit_blocks(&mut model, &ids)?;
     for (block, param, value) in params.evaluate() {
@@ -1380,7 +1402,45 @@ pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
         warnings,
         groups,
         plan,
+        data,
     })
+}
+
+/// The SHA-256 of each file a block reads, by `block.setting`.
+fn data_digests(
+    flat: &ModelFile,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+) -> BTreeMap<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut data = BTreeMap::new();
+    for b in &flat.blocks {
+        let Some(info) = registry.info(&b.type_name) else {
+            continue;
+        };
+        let config = BlockConfig {
+            settings: b.settings.clone(),
+            folder: folder.map(Into::into),
+            ..Default::default()
+        };
+        for setting in &info.files {
+            // The block was built, so its files were read; one that cannot
+            // be read again hashes as missing.
+            let Some(Ok(path)) = config.file(setting) else {
+                continue;
+            };
+            let digest = std::fs::read(&path).map_or_else(
+                |_| "missing".to_string(),
+                |bytes| {
+                    let d = Sha256::digest(&bytes);
+                    let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
+                    format!("sha256:{hex}")
+                },
+            );
+            data.insert(format!("{}.{setting}", b.name), digest);
+        }
+    }
+    data
 }
 
 /// Map an error at a flat path (`blocks[3].method`) to where it is
@@ -1447,6 +1507,7 @@ impl ModelFile {
             groups: Vec::new(),
             controls: Controls::default(),
             converted: Vec::new(),
+            folder: None,
         }
     }
 
@@ -1575,6 +1636,7 @@ impl ModelFile {
                 groups: raw.groups,
                 controls,
                 converted,
+                folder: None,
             },
             warnings,
         ))
@@ -1615,6 +1677,7 @@ impl ModelFile {
     pub(crate) fn build(
         &self,
         registry: &Registry,
+        folder: Option<&std::path::Path>,
     ) -> Result<(Model, BTreeMap<String, BlockId>), FileError> {
         let mut model = Model::new();
         model.set_seed(
@@ -1669,6 +1732,7 @@ impl ModelFile {
                 definition: entry.equations.clone(),
                 update: entry.update.clone(),
                 settings: entry.settings.clone(),
+                folder: folder.map(Into::into),
             };
             let block = registry
                 .build(&entry.type_name, &entry.name, &config)

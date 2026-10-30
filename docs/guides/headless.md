@@ -81,6 +81,24 @@ A probe with bad settings, or recording something the model does not record, is 
 
 A model-level connection may come from a probe: `{"from": "probe:sensor.car.v", "to": "cruise.v"}` feeds `cruise.v` with `car.v` as probe `sensor` samples it, held between samples ([ADR 0063](../decisions/0063-probes-on-wires.md)). The probe must record that signal, a whole output of a block on the model's level. Such a probe changes results: it counts in a run file's model hash.
 
+## Data files as inputs
+
+An `input.file` block reads recorded data as an input over time: a probe's file, or any CSV or `.npy` ([ADR 0063](../decisions/0063-probes-on-wires.md)). File names are read from the model file's folder (absolute names work anywhere); the CLI and Python (`Model.load`, `Model.save`) use the model's folder, and a model never saved can name files only by full path.
+
+```json
+{"name": "recorded", "type": "input.file", "settings": {"file": "speed.csv", "unit.car.v": "m/s"}}
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `file` | A `.csv`: first column the time, each other column a scalar output named by its header with characters other than letters, digits and `_` made `_` (`car.v` gives `recorded.car_v`). Or a `.npy` (`float64` or `float32`): one output `y`, its first axis the samples, `(samples)` a scalar, `(samples, n)` a vector, `(samples, a, b)` a grid of `a` rows of `b` |
+| `interpolate` | `hold` (default): the last sample, as a probe feeding a block gives it; `linear`: a straight line between samples. Before the first sample, the first; after the last, the last |
+| `unit`, `unit.COLUMN` | Units of the outputs, unless a CSV header gives one as `name [unit]`; dimensionless otherwise |
+| `times` or `dt` | For a `.npy`: a CSV whose first column gives the times (a probe's CSV beside its `.npy` files), or seconds between samples from 0 |
+| `shape` | For a `.npy` of 3 axes: `grid` (default) or `points` (`a` points of `b` coordinates) |
+
+The file is read when the model is built (opened, or changed on the canvas). Its contents count in a run file's model hash: the same model with a different data file is a different model. `describe input.file` lists the settings that name files (`files`). The value is taken at each step's end and held over the next step, like any block's output; the block never joins a fused group.
+
 ## Recorder
 
 `"recorder": {"every": 10, "mb": 256}` in `controls` (both optional) lets the model be rewound in the app ([ADR 0064](../decisions/0064-recorder-node.md)): a snapshot of its state every `every` steps, within `mb` megabytes. Without it the app shows no rewind bar. It changes no results; headless runs ignore it.

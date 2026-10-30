@@ -16,6 +16,7 @@ numbers in the app, the CLI and here.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import os
@@ -61,20 +62,48 @@ def check(model: "Model | dict | str | os.PathLike") -> dict:
     ``blocks[0].method``, or ``line`` and ``column``), ``warnings``,
     ``params``, what the model records and its views. Never raises for a
     bad model: read ``ok``."""
-    return json.loads(_native.check(_text(model)))
+    with _in_folder(_folder(model)):
+        return json.loads(_native.check(_text(model)))
 
 
 def upgrade(model: "Model | dict | str | os.PathLike") -> tuple["Model", list[str]]:
     """The model in the current form of the file format, and the older
     forms it was converted from (ADR 0044). Files in older forms open
     anyway; this writes them as SimSandbox writes files today."""
-    text, conversions, _warnings = _native.upgrade(_text(model))
+    with _in_folder(_folder(model)):
+        text, conversions, _warnings = _native.upgrade(_text(model))
     return Model.from_json(text), conversions
 
 
 def examples() -> list[str]:
     """Names of the built-in example models, for :meth:`Model.example`."""
     return [name for name, _ in _native.examples()]
+
+
+@contextlib.contextmanager
+def _in_folder(folder: "str | None"):
+    # Blocks that read files (``input.file``, ADR 0063) read them from the
+    # model file's folder.
+    previous = _native.set_folder(folder)
+    try:
+        yield
+    finally:
+        _native.set_folder(previous)
+
+
+def _folder(model: "Model | dict | str | os.PathLike") -> "str | None":
+    if isinstance(model, Model):
+        return model.folder
+    if isinstance(model, os.PathLike) or (
+        isinstance(model, str) and not model.lstrip().startswith("{")
+    ):
+        return os.path.dirname(os.path.abspath(model))
+    return None
+
+
+def _model_hash(model: "Model") -> str:
+    with _in_folder(model.folder):
+        return _native.model_hash(model.to_json())
 
 
 def _text(model: "Model | dict | str | os.PathLike") -> str:
@@ -91,21 +120,28 @@ def _text(model: "Model | dict | str | os.PathLike") -> str:
 
 
 class Model:
-    """A model file as a dict, with helpers to build and edit it."""
+    """A model file as a dict, with helpers to build and edit it.
 
-    def __init__(self, data: dict | None = None):
+    ``folder`` is where blocks read the files their settings name
+    (``input.file``, ADR 0063): the folder the model was loaded from or
+    saved to, else ``None`` (only absolute file names then)."""
+
+    def __init__(self, data: dict | None = None, folder: "str | os.PathLike | None" = None):
         self.data: dict = (
             copy.deepcopy(data)
             if data is not None
             else {"format": 1, "blocks": [], "connections": []}
         )
+        self.folder: str | None = None if folder is None else os.fspath(folder)
 
     # Opening and saving
 
     @classmethod
     def load(cls, path: str | os.PathLike) -> "Model":
         with open(path, encoding="utf-8") as f:
-            return cls.from_json(f.read())
+            m = cls.from_json(f.read())
+        m.folder = os.path.dirname(os.path.abspath(path))
+        return m
 
     @classmethod
     def from_json(cls, text: str) -> "Model":
@@ -131,9 +167,10 @@ class Model:
     def save(self, path: str | os.PathLike) -> None:
         with open(path, "w", encoding="utf-8") as f:
             f.write(self.to_json() + "\n")
+        self.folder = os.path.dirname(os.path.abspath(path))
 
     def copy(self) -> "Model":
-        return Model(self.data)
+        return Model(self.data, self.folder)
 
     # Building
 
@@ -262,9 +299,11 @@ class Model:
         model, track = self._with_inputs(inputs)
         text = model.to_json()
         try:
-            raw = _native.run(text, t_end, dt, track)
+            with _in_folder(self.folder):
+                raw = _native.run(text, t_end, dt, track)
         except ModelError as e:
-            report = json.loads(_native.check(text))
+            with _in_folder(self.folder):
+                report = json.loads(_native.check(text))
             raise ModelError(_errors(report) if not report["ok"] else str(e)) from None
         return Results(raw)
 
@@ -319,11 +358,13 @@ class Model:
         text = model.to_json()
         names = None if probes is None else list(probes)
         try:
-            raw = _native.run_probes(
-                text, t_end, dt, track, names, None if save is None else os.fspath(save)
-            )
+            with _in_folder(self.folder):
+                raw = _native.run_probes(
+                    text, t_end, dt, track, names, None if save is None else os.fspath(save)
+                )
         except ModelError as e:
-            report = json.loads(_native.check(text))
+            with _in_folder(self.folder):
+                report = json.loads(_native.check(text))
             raise ModelError(_errors(report) if not report["ok"] else str(e)) from None
         return ProbeRun(raw)
 
@@ -384,8 +425,10 @@ class Model:
         state ``x``) take the values where they can express the state;
         other blocks get a ``start`` entry with their state and tables.
         The notes say which (``.start_notes``)."""
-        text, notes = _native.start_from(self.to_json(), float(t))
+        with _in_folder(self.folder):
+            text, notes = _native.start_from(self.to_json(), float(t))
         m = Model.from_json(text)
+        m.folder = self.folder
         m.start_notes = notes
         return m
 
@@ -417,21 +460,23 @@ class Model:
         if diagram:
             if t_end is not None or view is not None:
                 raise ValueError("t_end and view do not apply to a diagram")
-            image = _native.render_diagram(
-                self.to_json(),
-                float(width),
-                float(height),
-                float(scale),
-                light,
-                subsystem,
-                data,
-                values,
-            )
+            with _in_folder(self.folder):
+                image = _native.render_diagram(
+                    self.to_json(),
+                    float(width),
+                    float(height),
+                    float(scale),
+                    light,
+                    subsystem,
+                    data,
+                    values,
+                )
             warnings = []
         else:
-            image, warnings = _native.render(
-                self.to_json(), t_end, view, float(width), float(height), float(scale), light
-            )
+            with _in_folder(self.folder):
+                image, warnings = _native.render(
+                    self.to_json(), t_end, view, float(width), float(height), float(scale), light
+                )
         for w in warnings:
             import warnings as _w
 
@@ -509,7 +554,8 @@ class Run:
             model_path=model_path,
         )
         run.created = data.get("created", "")
-        run.stale = _native.model_hash(model.to_json()) != data["model_hash"]
+        with _in_folder(model.folder):
+            run.stale = _native.model_hash(model.to_json()) != data["model_hash"]
         if run.stale:
             import warnings as _w
 
@@ -540,7 +586,7 @@ class Run:
         data: dict[str, Any] = {
             "format": 1,
             "model": target,
-            "model_hash": _native.model_hash(self.model.to_json()),
+            "model_hash": _model_hash(self.model),
         }
         if self.name:
             data["name"] = self.name

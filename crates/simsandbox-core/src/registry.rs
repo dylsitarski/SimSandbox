@@ -7,7 +7,40 @@
 use crate::block::{Block, Domain};
 use crate::fusion::GroupSolver;
 use crate::{Result, SimError};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+thread_local! {
+    static FOLDER: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with `folder` as where blocks on this thread read the files
+/// their settings name when their configuration gives no folder (ADR
+/// 0063): headless tools wrap a command on a model file in the file's
+/// folder, so every function that loads the model's text finds its data.
+pub fn in_folder<T>(folder: Option<&Path>, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FOLDER.with(|c| *c.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(set_folder(folder.map(Into::into)));
+    f()
+}
+
+/// Set the folder of [`in_folder`] on this thread until set again, for a
+/// caller that cannot wrap its work in a closure (Python); returns the
+/// folder it replaces.
+pub fn set_folder(folder: Option<PathBuf>) -> Option<PathBuf> {
+    FOLDER.with(|c| c.replace(folder))
+}
+
+/// The folder set by [`in_folder`] on this thread, if any.
+pub fn current_folder() -> Option<PathBuf> {
+    FOLDER.with(|c| c.borrow().clone())
+}
 
 /// The method a Block should run, as written in a model file: a method name
 /// plus numeric options, e.g. `rk4` with `substeps = 4`.
@@ -45,6 +78,32 @@ pub struct BlockConfig {
     /// Named text settings, e.g. a unit conversion's `from` and `to`
     /// (ADR 0045). A type rejects settings it does not have.
     pub settings: BTreeMap<String, String>,
+    /// The folder file names in settings are read from: the model file's
+    /// (ADR 0063). `None` for a model not saved in a folder; a type then
+    /// accepts only absolute file names.
+    pub folder: Option<PathBuf>,
+}
+
+impl BlockConfig {
+    /// Where the file named in a setting is: as written if absolute, else
+    /// in [`BlockConfig::folder`] or, without one, the folder set by
+    /// [`in_folder`].
+    pub fn file(&self, setting: &str) -> Option<Result<PathBuf>> {
+        let name = self.settings.get(setting)?;
+        let path = PathBuf::from(name);
+        Some(if path.is_absolute() {
+            Ok(path)
+        } else if let Some(folder) = self.folder.clone().or_else(current_folder) {
+            Ok(folder.join(path))
+        } else {
+            Err(SimError::InvalidSetting {
+                setting: format!("settings.{setting}"),
+                reason: format!(
+                    "'{name}' is read from the model's folder: save the model first, or give a full path"
+                ),
+            })
+        })
+    }
 }
 
 /// What a block type is and how it is configured, for discovery by people
@@ -61,6 +120,9 @@ pub struct TypeInfo {
     pub definition: Option<Vec<String>>,
     /// Named settings and their choices, e.g. `update`.
     pub settings: Vec<(String, Vec<String>)>,
+    /// Settings that name files (ADR 0063): read from the model's folder,
+    /// and part of a run's model hash by their contents.
+    pub files: Vec<String>,
 }
 
 impl TypeInfo {
@@ -85,6 +147,12 @@ impl TypeInfo {
     pub fn setting(mut self, name: &str, choices: &[&str]) -> Self {
         self.settings
             .push((name.into(), choices.iter().map(|c| c.to_string()).collect()));
+        self
+    }
+
+    /// A setting that names a file.
+    pub fn file(mut self, name: &str) -> Self {
+        self.files.push(name.into());
         self
     }
 }

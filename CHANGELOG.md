@@ -6,6 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Recorded data as an input (ADR 0063): an `input.file` block reads a probe's file, or any CSV or `.npy`, from the model's folder and gives its columns as outputs over time, held between samples or interpolated linearly. Units come from `name [unit]` in a CSV header or the block's settings. Name the file in the Inspector (typed or chosen). A probe's file read back drives a model exactly as the probe did. The data file's contents count in a run file's model hash.
+- Python: `Model.folder`, set by `Model.load` and `Model.save`, is where a model's blocks read their files.
 - Probes can write their file as they record ("write as it records" in the probe's settings, `"stream": true` in the file): every sample goes to disk, buffered and flushed about every 2 s, without being held in memory; rewind cuts the file back.
 - A probe's Keep can be "thinned past N samples" (`"keep": {"samples": N}`); the default, 100 000, is shown and editable.
 - A probe can feed a block of its own model (ADR 0063): drop a probe's output on a block's input and the block reads that signal as the probe samples it, held between samples, with no delay, like a sensor read by a digital controller. In the file: `{"from": "probe:sensor.car.v", "to": "cruise.v"}`. Such a probe is part of the model: changing when it records rebuilds and restarts the run, and run files notice it.

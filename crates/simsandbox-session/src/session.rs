@@ -379,6 +379,8 @@ pub struct Session {
     /// The file as it was when the current run started (its parameters at
     /// t = 0), which a run file is made with (ADR 0059).
     start_file: ModelFile,
+    /// Digests of the files blocks read, for the model hash (ADR 0063).
+    data: BTreeMap<String, String>,
 }
 
 /// Set a value by its key on a running model: a declared parameter (the
@@ -486,22 +488,26 @@ impl Session {
     /// Load a model file, evaluating any sweep at once. Errors are
     /// formatted for display.
     pub fn load(title: &str, text: &str, registry: &Registry) -> Result<Self, String> {
-        Self::load_with(title, text, registry, false)
+        Self::load_in(title, text, registry, None, false)
     }
 
     /// Load a model file, leaving its sweep (if any) to be evaluated by
     /// [`Session::resume_resample`].
     pub fn load_deferred(title: &str, text: &str, registry: &Registry) -> Result<Self, String> {
-        Self::load_with(title, text, registry, true)
+        Self::load_in(title, text, registry, None, true)
     }
 
-    fn load_with(
+    /// Load a model file saved in `folder`, whose blocks read the files
+    /// they name from there (ADR 0063); `deferred` as in
+    /// [`Session::load_deferred`].
+    pub fn load_in(
         title: &str,
         text: &str,
         registry: &Registry,
+        folder: Option<&std::path::Path>,
         deferred: bool,
     ) -> Result<Self, String> {
-        let loaded = simsandbox_file::load(text, registry).map_err(|e| e.to_string())?;
+        let loaded = simsandbox_file::load_in(text, registry, folder).map_err(|e| e.to_string())?;
         let mut names = Vec::new();
         let mut sources = Vec::new();
         let mut fields = Vec::new();
@@ -584,6 +590,7 @@ impl Session {
             .collect();
         schedule.sort_by(|a, b| a.t.total_cmp(&b.t));
         let start_file = loaded.file.clone();
+        let data = loaded.data;
         let mut warnings = loaded.warnings;
         warnings.extend(loop_notes(&sim));
         let entries = loaded.file.controls.filters.clone();
@@ -638,6 +645,7 @@ impl Session {
                 ..Track::default()
             },
             start_file,
+            data,
         };
         session.check_events(
             &session
@@ -769,7 +777,7 @@ impl Session {
         RunFile {
             format: simsandbox_file::runs::RUN_FORMAT,
             model: model.into(),
-            model_hash: simsandbox_file::runs::model_hash(&self.start_file),
+            model_hash: simsandbox_file::runs::model_hash_with(&self.start_file, &self.data),
             name: name.into(),
             note: note.into(),
             created: created.into(),
@@ -4470,6 +4478,57 @@ mod probe_tests {
                 .collect()
         };
         assert_eq!(bits(&a), bits(&b));
+    }
+
+    #[test]
+    fn a_probe_file_read_back_drives_the_model_as_the_probe_did() {
+        // ADR 0063 step 4: the controller reads the speed every second
+        // from a probe; the probe's file, read back by an input.file block
+        // in place of the probe, gives the same run bit for bit.
+        let dir = temp_dir("read-back");
+        let mut live: serde_json::Value = serde_json::from_str(&sampled_cruise(1.0)).unwrap();
+        live["controls"]["probes"][0]["to"] = "speed.csv".into();
+        live["controls"]["probes"][0]["stream"] = true.into();
+        let watched = |s: &mut Session| {
+            s.set_view_reads(vec!["car.v".into(), "cruise.e".into()]);
+            s.run_until(5.0).unwrap();
+            s.flush(true);
+            let h = s.signals();
+            ["car.v", "cruise.e"]
+                .iter()
+                .flat_map(|n| h.values(h.resolve(n).unwrap()))
+                .map(f64::to_bits)
+                .collect::<Vec<_>>()
+        };
+        let mut a = Session::load("live", &live.to_string(), &registry()).unwrap();
+        a.set_probe_dir(Some(dir.clone()));
+        a.restart().unwrap();
+        let first = watched(&mut a);
+        drop(a);
+        let mut read: serde_json::Value = serde_json::from_str(&sampled_cruise(1.0)).unwrap();
+        read["controls"]["probes"] = serde_json::json!([]);
+        read["blocks"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "recorded", "type": "input.file",
+                "settings": {"file": "speed.csv", "unit.car.v": "m/s"}
+            }));
+        read["connections"][0]["from"] = "recorded.car_v".into();
+        let text = read.to_string();
+        // A relative file needs the model's folder.
+        let e = Session::load("read", &text, &registry()).err().unwrap();
+        assert!(e.contains("save the model first"), "{e}");
+        let mut b = Session::load_in("read", &text, &registry(), Some(&dir), false).unwrap();
+        assert_eq!(watched(&mut b), first);
+        // The run hash follows the file's contents.
+        let hash = |s: &Session| s.run_file("m.json", "", "", "").model_hash;
+        let before = hash(&b);
+        let csv = std::fs::read_to_string(dir.join("speed.csv")).unwrap();
+        std::fs::write(dir.join("speed.csv"), csv.replacen("\n0,", "\n0.0,", 1)).unwrap();
+        let b = Session::load_in("read", &text, &registry(), Some(&dir), false).unwrap();
+        assert_ne!(hash(&b), before);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

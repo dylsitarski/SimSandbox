@@ -107,6 +107,12 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
         v["note"] =
             json!("Defined by its 'equations' lines: the interface below is the example's.");
     }
+    if !info.files.is_empty() {
+        v["files"] = json!(info.files);
+        v["note"] = json!(
+            "Reads the files these settings name, from the model's folder: its outputs come from the file."
+        );
+    }
     if let Ok(b) = r.example(name) {
         v["interface"] = block(b.as_ref());
     }
@@ -283,6 +289,10 @@ mod tests {
         for name in r.type_names() {
             let v = block_type(&r, name);
             assert_ne!(v["summary"], "(not described)", "{name}");
+            // A type reading a file has its ports from the file.
+            if v["files"].is_array() {
+                continue;
+            }
             assert!(v["interface"].is_object(), "{name}: no example");
             for m in v["methods"].as_array().unwrap() {
                 // Every listed method builds (formulas need the example to
