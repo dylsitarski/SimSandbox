@@ -1,6 +1,6 @@
 # Status
 
-_Last updated: 2026-10-29_
+_Last updated: 2026-10-31_
 
 **Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0038](decisions/0038-phase-1-revised.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). **Gate met:** 2026-10-22, the grazing example (`eq.grass` and `agents.grazers`) runs live in the desktop app at 4× real time with about 400 sheep (checked headless in the cloud); **confirmed by the owner on Linux and Windows on 2026-10-23**. **All eight Phase 1 items are built** (2026-10-23). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
 
@@ -113,14 +113,14 @@ _Last updated: 2026-10-29_
 
 ## In progress
 
-- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md), [ADR 0063](decisions/0063-probes-on-wires.md)): ADR 0062 steps 1 and 2 and ADR 0063 steps 1 to 3 built 2026-10-29, step 4 2026-10-30; checked by tests, headless renders and screenshots under Xvfb, not yet by the owner in the window (probe nodes and outputs, the settings window, Save probe data, filters on probes). Next: ADR 0063 step 5 (several models in one session; its own ADR first).
+- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md), [ADR 0063](decisions/0063-probes-on-wires.md)): ADR 0062 steps 1 and 2 and ADR 0063 steps 1 to 3 built 2026-10-29, step 4 2026-10-30; checked by tests, headless renders and screenshots under Xvfb, not yet by the owner in the window (probe nodes and outputs, the settings window, Save probe data, filters on probes). Next: ADR 0063 step 5, proposed as [ADR 0065](decisions/0065-several-models-with-own-clocks.md) (2026-10-31), waiting for the owner.
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Probes on wires** ([ADR 0063](decisions/0063-probes-on-wires.md)), in order (steps 1 to 3 done 2026-10-29, step 4 2026-10-30): (5) several models in one session linked by probes (its own ADR first).
+1. **Probes on wires** ([ADR 0063](decisions/0063-probes-on-wires.md)), in order (steps 1 to 3 done 2026-10-29, step 4 2026-10-30): (5) several models in one file linked by probes, proposed in [ADR 0065](decisions/0065-several-models-with-own-clocks.md) (2026-10-31), waiting for the owner; then its order of work.
 2. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 3. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
