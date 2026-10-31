@@ -133,7 +133,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0060-arrays-in-typed-equations.md](decisions/0060-arrays-in-typed-equations.md) | Decision record | Arrays, grids, stencils and implicit methods in typed equations |
 | [decisions/0061-verified-is-earned-per-case.md](decisions/0061-verified-is-earned-per-case.md) | Decision record | Verified only from a case's convergence check; exact methods are Quantitative |
 | [decisions/0064-recorder-node.md](decisions/0064-recorder-node.md) | Decision record | Rewind off by default; the recorder node |
-| [decisions/0065-several-models-with-own-clocks.md](decisions/0065-several-models-with-own-clocks.md) | Decision record (proposed) | Several models with their own clocks, linked by probes |
+| [decisions/0065-several-models-with-own-clocks.md](decisions/0065-several-models-with-own-clocks.md) | Decision record (proposed) | Compositions of model files with their own clocks, linked by probes |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 

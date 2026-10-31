@@ -120,7 +120,7 @@ _Last updated: 2026-10-31_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Probes on wires** ([ADR 0063](decisions/0063-probes-on-wires.md)), in order (steps 1 to 3 done 2026-10-29, step 4 2026-10-30): (5) several models in one file linked by probes, proposed in [ADR 0065](decisions/0065-several-models-with-own-clocks.md) (2026-10-31), waiting for the owner; then its order of work.
+1. **Probes on wires** ([ADR 0063](decisions/0063-probes-on-wires.md)), in order (steps 1 to 3 done 2026-10-29, step 4 2026-10-30): (5) compositions of model files with their own clocks, linked by probes, proposed in [ADR 0065](decisions/0065-several-models-with-own-clocks.md) (2026-10-31), waiting for the owner; then its order of work.
 2. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 3. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 

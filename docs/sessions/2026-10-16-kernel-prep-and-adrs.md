@@ -96,6 +96,7 @@
 
 ## Decided
 
+- 2026-10-31 (owner): every model is named; models are referenced from their own files; editing a used model inside another file asks whether to copy it or edit the original. ADR 0065 rewritten around compositions (still Proposed; our suggestions in Q44).
 - 2026-10-30 (ours, owner to confirm): headless tools set the model's folder for the thread (`in_folder`) instead of a folder argument on every function that takes a model's text; CSV column names become port names with non-identifier characters made `_`; a file reader never fuses (its value is held over each step, like a probe's hold); data files count in the run hash by content.
 - 2026-10-29: no batch-size setting for streamed probe files; buffered writes already batch (judged not useful, as the owner allowed). The default keep is "thinned past 100 000 samples", editable. Probes feeding blocks belong to the model and stay visible when data is hidden (owner).
 - 2026-10-29: rewind off by default; a recorder node turns it on and holds its settings; the rewind bar is hidden until one is present; subsystem-level replay later (owner). ADR 0064.
