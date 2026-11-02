@@ -1051,6 +1051,10 @@ pub enum Edit {
     AddPort { input: bool, at: [f64; 2] },
     /// Move these blocks into a new subsystem and use it in their place.
     Group { blocks: Vec<String> },
+    /// Move these blocks into a new model defined in the file and use it
+    /// in their place (ADR 0068): crossing wires become its input blocks
+    /// and declared outputs.
+    GroupModel { blocks: Vec<String> },
     /// Rename a subsystem (its uses follow).
     RenameSubsystem { from: String, to: String },
     /// Data layer (ADR 0050): show the signal an output carries in a
@@ -1195,6 +1199,9 @@ pub fn apply_in(
     }
     if let Edit::Group { blocks } = edit {
         return group(file, scope, blocks);
+    }
+    if let Edit::GroupModel { blocks } = edit {
+        return group_model(file, scope, blocks);
     }
     match edit {
         Edit::DeclareParam { name, value, unit } => {
@@ -1658,6 +1665,7 @@ fn edit_level(
             ))
         }
         Edit::Group { .. }
+        | Edit::GroupModel { .. }
         | Edit::RenameSubsystem { .. }
         | Edit::DeclareParam { .. }
         | Edit::RemoveParam { .. } => unreachable!("handled before"),
@@ -1991,6 +1999,41 @@ fn rename_subsystem(file: &mut ModelFile, from: &str, to: &str) -> Result<String
 /// Move `names` (blocks of one level) into a new subsystem and use it in
 /// their place. Wires crossing the boundary become its ports; declared
 /// parameters the moved formulas use are passed in as its parameters.
+/// "Make model" (ADR 0068): the selection grouped as a subsystem would
+/// be, then written as a model defined in the file, used in its place on
+/// the same clock.
+fn group_model(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String, String> {
+    if *scope != Scope::Model {
+        return Err("a model is made at a model's level, not inside a subsystem".into());
+    }
+    let sub = free_name("group", |n| file.subsystems.contains_key(n));
+    let before = file.clone();
+    group(file, scope, names)?;
+    simsandbox_file::compose::convert_some_subsystems(file, std::slice::from_ref(&sub));
+    let key = free_name("model", |n| file.models.contains_key(n));
+    let def = file.models.remove(&sub).ok_or("the group was not made")?;
+    file.models.insert(key.clone(), def);
+    let Some(k) = file
+        .blocks
+        .iter()
+        .position(|b| b.model.as_deref() == Some(sub.as_str()))
+    else {
+        *file = before;
+        return Err("the group was not made".into());
+    };
+    file.blocks[k].model = Some(key.clone());
+    let instance = file.blocks[k].name.clone();
+    // On its user's clock, as the blocks were, wired or not.
+    if !simsandbox_file::compose::wired(&file.connections, &instance) {
+        file.blocks[k].clock = Some(simsandbox_file::UseClock::Shared);
+    }
+    file.resolve_models().map_err(|e| e.to_string())?;
+    Ok(format!(
+        "Made the model {key} of {} blocks (used as {instance})",
+        names.len()
+    ))
+}
+
 fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String, String> {
     if names.is_empty() {
         return Err("select the blocks to group".into());

@@ -2424,7 +2424,10 @@ impl SimApp {
                 let convert = entry.filter(|b| b.type_name == simsandbox_eq::convert::CONVERT);
                 let kind = match entry.filter(|b| b.is_use()).map(|b| b.file.as_deref()) {
                     Some(Some(file)) => format!("uses {file}"),
-                    Some(None) => "a local copy of a model".to_string(),
+                    Some(None) => format!(
+                        "uses the model {}",
+                        entry.and_then(|b| b.model.as_deref()).unwrap_or_default()
+                    ),
                     None if g.instance => format!("subsystem {}", g.type_name),
                     None => g.type_name.clone(),
                 };
@@ -5839,6 +5842,148 @@ mod tests {
             );
             let _ = std::fs::remove_file(dir.join("hold-2.ssbx.json"));
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_model_defined_in_the_file_is_edited_for_every_use_or_one() {
+        use simsandbox_session::edit_use::How;
+        let counter = serde_json::json!({"blocks": [{"name": "c", "type": "eq.equations",
+            "method": {"name": "euler"}, "equations": ["state x", "dx/dt = 1"], "params": {"x0": 0}}]});
+        let text =
+            serde_json::json!({"format": 1, "run": {"dt": 0.1}, "models": {"count": counter},
+            "blocks": [{"name": "a", "model": "count"}, {"name": "b", "model": "count"}]})
+            .to_string();
+        let starts = |app: &SimApp| {
+            app.session
+                .as_ref()
+                .unwrap()
+                .call(|s, _| {
+                    s.set_view_reads(vec!["a/c.x".into(), "b/c.x".into()]);
+                    s.restart().unwrap();
+                    s.run_until(0.1).unwrap();
+                    s.flush(true);
+                    let h = s.signals();
+                    let first = |n: &str| h.values(h.resolve(n).unwrap())[0];
+                    (first("a/c.x"), first("b/c.x"))
+                })
+                .unwrap()
+        };
+        let x0 = |v: f64| {
+            vec![simsandbox_session::diagram::Edit::SetParam {
+                block: "c".into(),
+                param: "x0".into(),
+                value: v,
+            }]
+        };
+        let edit = |app: &mut SimApp, how: Option<How>, edits| {
+            let live = app.session.as_ref().unwrap();
+            let m = live.model();
+            let text = app.saved_text().unwrap();
+            let current = move || Ok(text.clone());
+            let outcomes = match how {
+                Some(how) => app.diagram.answer(edits, how, &app.registry, &current),
+                None => app.diagram.begin_edit(edits, &app.registry, &current),
+            };
+            app.diagram_outcomes(&m, outcomes);
+            assert!(app.error.is_none(), "{:?}", app.error);
+        };
+        // Used twice: the question is asked; the definition changes both.
+        let mut app = SimApp::new(None, None, None, None);
+        app.open_text("defs", &text);
+        assert_eq!(starts(&app), (0.0, 0.0));
+        app.diagram.inside = vec!["a".into()];
+        edit(&mut app, None, x0(2.0));
+        assert!(app.diagram.asking.is_some(), "asked");
+        assert_eq!(starts(&app), (0.0, 0.0));
+        app.diagram.asking = None;
+        edit(&mut app, Some(How::Original), x0(2.0));
+        assert_eq!(starts(&app), (2.0, 2.0));
+        assert!(app.diagram.edited.is_empty());
+        // A local copy for one use: a new definition, the other unchanged.
+        let mut app = SimApp::new(None, None, None, None);
+        app.open_text("defs", &text);
+        app.diagram.inside = vec!["b".into()];
+        edit(&mut app, Some(How::LocalCopy), x0(3.0));
+        assert_eq!(starts(&app), (0.0, 3.0));
+        let saved = app.saved_text().unwrap();
+        assert!(
+            saved.contains("\"model\": \"b\"") && saved.contains("\"count\""),
+            "{saved}"
+        );
+        // That copy is used once: the next edit goes to it without asking.
+        app.diagram.choices.clear();
+        edit(&mut app, None, x0(4.0));
+        assert!(app.diagram.asking.is_none());
+        assert_eq!(starts(&app), (0.0, 4.0));
+    }
+
+    #[test]
+    fn a_used_model_moves_into_the_file_and_back_out() {
+        let dir = std::env::temp_dir().join(format!("simsandbox-app-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("count.ssbx.json"),
+            serde_json::json!({"format": 1, "run": {"dt": 0.1}, "blocks": [{"name": "c",
+                "type": "eq.equations", "method": {"name": "euler"}, "equations": ["state x", "dx/dt = 1"],
+                "params": {"x0": 2}}]})
+            .to_string(),
+        )
+        .unwrap();
+        let model = dir.join("top.ssbx.json");
+        std::fs::write(
+            &model,
+            serde_json::json!({"format": 1, "blocks": [{"name": "a", "file": "count.ssbx.json"}]})
+                .to_string(),
+        )
+        .unwrap();
+        let mut app = SimApp::new(None, None, None, None);
+        app.open_path(&model.to_string_lossy());
+        let mv = |app: &mut SimApp, to: Option<std::path::PathBuf>| {
+            let live = app.session.as_ref().unwrap();
+            let m = live.model();
+            let text = app.saved_text().unwrap();
+            let current = move || Ok(text.clone());
+            let outcomes = app.diagram.move_use("a", to, &app.registry, &current);
+            app.diagram_outcomes(&m, outcomes);
+            assert!(app.error.is_none(), "{:?}", app.error);
+        };
+        let x0 = |app: &SimApp| {
+            app.session
+                .as_ref()
+                .unwrap()
+                .call(|s, _| {
+                    s.set_view_reads(vec!["a/c.x".into()]);
+                    s.restart().unwrap();
+                    s.run_until(0.1).unwrap();
+                    s.flush(true);
+                    let h = s.signals();
+                    h.values(h.resolve("a/c.x").unwrap())[0]
+                })
+                .unwrap()
+        };
+        mv(&mut app, None);
+        let saved = app.saved_text().unwrap();
+        assert!(
+            saved.contains("\"model\": \"count\"") && saved.contains("\"models\""),
+            "{saved}"
+        );
+        assert_eq!(x0(&app), 2.0);
+        mv(&mut app, Some(dir.join("count-2.ssbx.json")));
+        assert!(app.saved_text().unwrap().contains("count-2.ssbx.json"));
+        assert!(app
+            .diagram
+            .edited
+            .contains_key(&dir.join("count-2.ssbx.json")));
+        assert_eq!(x0(&app), 2.0);
+        // Undo brings the definition back and forgets the new file.
+        canvas_step(&mut app, true);
+        assert!(app.diagram.edited.is_empty());
+        assert!(app.saved_text().unwrap().contains("\"model\": \"count\""));
+        canvas_step(&mut app, false);
+        app.save_to(&model);
+        assert!(dir.join("count-2.ssbx.json").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

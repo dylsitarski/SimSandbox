@@ -1174,6 +1174,106 @@ mod tests {
     }
 
     #[test]
+    fn make_model_moves_a_selection_into_a_definition_that_runs_the_same() {
+        use crate::diagram::{apply_in, Edit, Scope};
+        let r = registry();
+        let text = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Cruise control"))
+            .unwrap()
+            .text;
+        let (mut f, _) = simsandbox_file::ModelFile::from_json(text).unwrap();
+        let note = apply_in(
+            &mut f,
+            &Scope::Model,
+            &r,
+            &Edit::GroupModel {
+                blocks: vec!["car".into()],
+            },
+        )
+        .unwrap();
+        assert!(note.contains("model1"), "{note}");
+        assert!(f.subsystems.is_empty());
+        let def = simsandbox_file::compose::read_definition("model1", &f.models["model1"]).unwrap();
+        // Crossing wires became an input block and a declared output.
+        assert!(
+            def.blocks
+                .iter()
+                .any(|b| b.name == "F" && b.type_name == "input.value"),
+            "{def:?}"
+        );
+        assert_eq!(def.outputs[0].from, "car.v");
+        let use_ = f
+            .blocks
+            .iter()
+            .find(|b| b.model.as_deref() == Some("model1"))
+            .unwrap();
+        assert_eq!(use_.clock, None, "wired: it shares the clock");
+        let written = f.to_json();
+        let one = crate::run::run(text, &r, Some(20.0), None).unwrap();
+        let two = run_composition(&written, &r, Some(20.0)).unwrap();
+        assert_eq!(two.models.len(), 1);
+        let inst = &use_.name;
+        assert_eq!(
+            bits(series(&one, "car.v")),
+            bits(two.values(&format!("{inst}/car.v")).unwrap())
+        );
+        // Not wired, it is put on the user's clock explicitly.
+        let (mut g, _) = simsandbox_file::ModelFile::from_json(text).unwrap();
+        apply_in(
+            &mut g,
+            &Scope::Model,
+            &r,
+            &Edit::GroupModel {
+                blocks: vec!["car".into(), "cruise".into()],
+            },
+        )
+        .unwrap();
+        let use_ = g.blocks.iter().find(|b| b.model.is_some()).unwrap();
+        assert_eq!(use_.clock, Some(simsandbox_file::UseClock::Shared));
+        let three = run_composition(&g.to_json(), &r, Some(20.0)).unwrap();
+        assert_eq!(
+            bits(series(&one, "car.v")),
+            bits(three.values(&format!("{}/car.v", use_.name)).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_used_file_moves_into_the_model_and_back_out() {
+        use crate::edit_use::{definition_to_file, file_to_definition, save, Edited};
+        let dir = temp_dir("move-def");
+        cruise_files(&dir);
+        let text = with(
+            json!({"format": 1, "run": {"t_end": 5},
+               "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+            cruise_links("plant", "controller"),
+        );
+        let before = run_in(&dir, &text);
+        let v = |c: &Composed| bits(c.values("plant/car.v").unwrap());
+        let (mut f, _) = simsandbox_file::ModelFile::from_json(&text.to_string()).unwrap();
+        f.folder = Some(dir.clone());
+        // In: the file becomes a definition named after it.
+        let key = file_to_definition(&mut f, Some(&dir), "plant").unwrap();
+        assert_eq!(key, "car");
+        assert_eq!(f.blocks[0].model.as_deref(), Some("car"));
+        let inside = run_in(&dir, &serde_json::from_str(&f.to_json()).unwrap());
+        assert_eq!(v(&inside), v(&before));
+        // Out: written to a new file, kept apart until saved.
+        let mut edited = Edited::new();
+        let to = dir.join("car-out.ssbx.json");
+        definition_to_file(&mut f, Some(&dir), &mut edited, "car", &to).unwrap();
+        assert!(f.models.is_empty());
+        assert_eq!(f.blocks[0].file.as_deref(), Some("car-out.ssbx.json"));
+        assert!(!to.exists() && edited.contains_key(&to));
+        let outside = run_in(&dir, &serde_json::from_str(&f.to_json()).unwrap());
+        assert_eq!(v(&outside), v(&before));
+        save(&mut edited).unwrap();
+        assert!(to.exists());
+        assert!(definition_to_file(&mut f, Some(&dir), &mut edited, "car", &to).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn models_defined_in_a_file_are_found_used_and_refused() {
         let gain = |k: f64| {
             json!({"blocks": [

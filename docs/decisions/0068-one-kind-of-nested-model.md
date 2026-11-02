@@ -104,3 +104,19 @@ Results are the same bits as before. Saving writes the new form.
   - local copies as definitions, headless and in the app (undo and redo included);
   - Python.
 
+**Step 2 (2026-11-02): definitions in the diagram and the app.**
+- **Nodes:** a use of a definition is a use node ("model wheel", its clock: "shared clock" when wired with no step of its own), with its input blocks and declared outputs as ports. It opens like a use of a file. The Inspector labels its group "uses the model wheel".
+- **Editing inside** goes through the same path as for files (ADR 0066 step 4c), so the editor inside a use is the model-level editor: blocks, wires, values, input blocks and declared outputs.
+- **The edit question for definitions** (`DiagramTab::begin_edit`): for a definition used N times here, "Edit the definition (N uses)", "Edit as a new copy" (named after the definition) or "Make a local copy" (a new definition for this use). A definition used once (as a local copy is) is edited without asking.
+- **Make model** (`Edit::GroupModel`): at a model's level, the canvas's "Make model" groups the selection as "Make subsystem" did, then writes it as a definition `modelN` (`compose::convert_some_subsystems`, which brings along the subsystems it uses). Crossing wires become its input blocks and declared outputs. Not wired, its use is put on the user's clock explicitly (`"clock": "shared"`). Inside a subsystem the menu still says "Make subsystem".
+- **Moving a definition to its own file and back** (`edit_use::definition_to_file`, `file_to_definition`; canvas "Move to its own file…" and "Put in this file"; the app's `move_use`):
+  - *Out:* the definition, with those it uses, rebased, goes to a new file, kept with the files edited until Save. Every use of it, in definitions too unless they define the name again, points at the file.
+  - *In:* the file a use reads becomes a definition named after it, used by every use of that file at this level. The file stays as it is.
+  - Undo covers both.
+- **Moved to step 3:** replacing `Scope::Subsystem` by paths of uses, which only makes sense once subsystems are converted on reading.
+- **Tests:**
+  - Make model gives the original model's bits, wired or not;
+  - a file moved in and out again gives the same bits, the new file written only on Save;
+  - in the app: a definition used twice asks and changes both, a local copy changes one, and one used once is edited without asking;
+  - moving in and out in the app, with undo and Save.
+

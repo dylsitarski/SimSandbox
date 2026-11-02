@@ -422,3 +422,119 @@ pub fn copy_name(file: &Path, beside: Option<&Path>, edited: &Edited) -> PathBuf
         .find(|p| !p.exists() && !edited.contains_key(p))
         .expect("a free name")
 }
+
+/// Rewrite uses of the definition `def` in `model` and in its definitions
+/// (where the name is not defined again) as uses of `file`.
+fn point_at_file(model: &mut ModelFile, def: &str, file: &str) {
+    for b in &mut model.blocks {
+        if b.model.as_deref() == Some(def) {
+            b.model = None;
+            b.resolved = None;
+            b.file = Some(file.to_string());
+        }
+    }
+    for (name, v) in model.models.iter_mut() {
+        if let Ok(mut d) = read_definition(name, v) {
+            if !d.models.contains_key(def) {
+                point_at_file(&mut d, def, file);
+                *v = as_definition(&d);
+            }
+        }
+    }
+}
+
+/// "Move to its own file" (ADR 0068): the definition `def` of `top` (saved
+/// in `folder`) written to the new file `to`, kept in `edited` until
+/// saved, and every use of it pointed at that file.
+pub fn definition_to_file(
+    top: &mut ModelFile,
+    folder: Option<&Path>,
+    edited: &mut Edited,
+    def: &str,
+    to: &Path,
+) -> Result<(), String> {
+    if to.exists() || edited.contains_key(to) {
+        return Err(format!("{} exists: choose another name", to.display()));
+    }
+    // As read, with the definitions it uses from around it.
+    let resolved = top
+        .blocks
+        .iter()
+        .find(|b| b.model.as_deref() == Some(def))
+        .and_then(|b| b.resolved.as_deref().cloned());
+    let mut model = match resolved {
+        Some(m) => m,
+        None => {
+            let v = top
+                .models
+                .get(def)
+                .ok_or_else(|| format!("no model named '{def}' is defined here"))?;
+            read_definition(def, v)?
+        }
+    };
+    self_contained(&mut model);
+    rebase(&mut model, folder, to.parent());
+    edited.insert(to.to_path_buf(), model.to_json());
+    set_edited(edited.clone());
+    top.models.remove(def);
+    point_at_file(top, def, &relative(to, folder));
+    top.resolve_models().map_err(|e| e.to_string())
+}
+
+/// "Put in this file" (ADR 0068): the model file the use `name` reads
+/// becomes a definition of `top`, named after the file, and every use of
+/// that file at this level uses it. Returns the definition's name.
+pub fn file_to_definition(
+    top: &mut ModelFile,
+    folder: Option<&Path>,
+    name: &str,
+) -> Result<String, String> {
+    let entry = top
+        .blocks
+        .iter()
+        .find(|b| b.name == name && b.file.is_some())
+        .ok_or_else(|| format!("'{name}' does not use a model file"))?;
+    let file = entry.file.clone().expect("found");
+    // The file as written, without this use's replacements.
+    let bare = simsandbox_file::BlockEntry {
+        name: name.to_string(),
+        file: Some(file.clone()),
+        ..Default::default()
+    };
+    let (mut model, at, inner) = used_model(&bare, folder)?;
+    self_contained(&mut model);
+    rebase(&mut model, inner.as_deref(), folder);
+    let stem = at
+        .as_deref()
+        .and_then(Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem: String = stem
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let stem = if stem.is_empty() || stem.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("model_{stem}")
+    } else {
+        stem
+    };
+    let key = free_key(&top.models, &stem);
+    top.models.insert(key.clone(), as_definition(&model));
+    for b in &mut top.blocks {
+        if b.file.as_deref() == Some(file.as_str()) {
+            b.file = None;
+            b.model = Some(key.clone());
+        }
+    }
+    top.resolve_models().map_err(|e| e.to_string())?;
+    Ok(key)
+}

@@ -74,6 +74,11 @@ pub enum Request {
     },
     /// Choose a model file to use here, at this place (ADR 0066 step 4c).
     AddModel([f64; 2]),
+    /// Write the model defined in the file that this use names to a file
+    /// of its own (ADR 0068).
+    MoveToFile(String),
+    /// Make the model file this use reads a model defined in the file.
+    PutInFile(String),
 }
 
 /// Values show on nodes from this zoom up, and can be edited from this one.
@@ -1249,6 +1254,24 @@ impl Canvas {
                             requests.push(Request::Open(name.clone()));
                             ui.close();
                         }
+                        // A definition goes to a file and back (ADR 0068).
+                        if n.type_name.starts_with("model ") {
+                            if ui
+                                .button("Move to its own file…")
+                                .on_hover_text("Write this model to a model file; every use here uses the file")
+                                .clicked()
+                            {
+                                requests.push(Request::MoveToFile(name.clone()));
+                                ui.close();
+                            }
+                        } else if ui
+                            .button("Put in this file")
+                            .on_hover_text("Copy the model file into this model as a model defined here; the file stays as it is")
+                            .clicked()
+                        {
+                            requests.push(Request::PutInFile(name.clone()));
+                            ui.close();
+                        }
                         // Every other port, by path (ADR 0066 step 4b).
                         if !n.reachable.is_empty() {
                             ui.separator();
@@ -1368,16 +1391,25 @@ impl Canvas {
                     } else {
                         vec![name.clone()]
                     };
+                    // At a model's level a model defined in the file
+                    // (ADR 0068); inside a subsystem, a subsystem.
+                    let model = d.scope == crate::diagram::Scope::Model;
+                    let word = if model { "model" } else { "subsystem" };
                     let label = match group.len() {
-                        1 => "Make subsystem".to_string(),
-                        k => format!("Make subsystem of {k} blocks"),
+                        1 => format!("Make {word}"),
+                        k => format!("Make {word} of {k} blocks"),
                     };
-                    if ui
-                        .button(label)
-                        .on_hover_text("Move into a new subsystem; wires that cross become its ports (Shift-click or Shift-drag to select several)")
-                        .clicked()
-                    {
-                        edits.push(Edit::Group { blocks: group });
+                    let hover = if model {
+                        "Move into a new model defined in this file; wires that cross become its input blocks and outputs (Shift-click or Shift-drag to select several)"
+                    } else {
+                        "Move into a new subsystem; wires that cross become its ports (Shift-click or Shift-drag to select several)"
+                    };
+                    if ui.button(label).on_hover_text(hover).clicked() {
+                        edits.push(if model {
+                            Edit::GroupModel { blocks: group }
+                        } else {
+                            Edit::Group { blocks: group }
+                        });
                         ui.close();
                     }
                 }

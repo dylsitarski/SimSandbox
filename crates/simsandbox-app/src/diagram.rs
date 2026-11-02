@@ -116,10 +116,20 @@ pub struct DiagramTab {
     pub(crate) choices: BTreeMap<Vec<String>, Target>,
     /// Edits inside a use waiting for that answer, with the name offered
     /// for a new copy.
-    asking: Option<(Vec<Edit>, String)>,
+    pub(crate) asking: Option<Asking>,
 }
 
 use std::collections::BTreeMap;
+
+/// Edits inside a use waiting for the edit question's answer.
+pub(crate) struct Asking {
+    edits: Vec<Edit>,
+    /// The name offered for a new copy.
+    name: String,
+    /// The definition of this file it uses, and how many uses it has,
+    /// when it is one (ADR 0068).
+    definition: Option<(String, usize)>,
+}
 
 /// The model file at the end of `path`, a chain of uses of model files
 /// from `top` (saved in `folder`), read from disk.
@@ -238,33 +248,7 @@ impl DiagramTab {
             _ => None,
         });
         if !edits.is_empty() {
-            match self.choices.get(&self.inside).cloned() {
-                Some(target) => {
-                    out.extend(self.edit_inside(None, &target, edits, registry, current))
-                }
-                None => {
-                    let original = self.base(current).ok().and_then(|mut top| {
-                        top.folder.clone_from(&self.folder);
-                        edit_use::prepare(
-                            &mut top,
-                            self.folder.as_deref(),
-                            &mut self.edited.clone(),
-                            &self.inside,
-                            How::Original,
-                        )
-                        .ok()
-                    });
-                    let file = original
-                        .and_then(|t| t.file)
-                        .unwrap_or_else(|| std::path::PathBuf::from("model.ssbx.json"));
-                    let name = edit_use::copy_name(&file, self.folder.as_deref(), &self.edited);
-                    let name = name
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    self.asking = Some((edits, name));
-                }
-            }
+            out.extend(self.begin_edit(edits, registry, current));
         }
         out.extend(self.question(ui, registry, current));
         if let Some(name) = opened {
@@ -272,6 +256,67 @@ impl DiagramTab {
             self.inside_cache = None;
             self.canvas.selected = None;
             self.canvas.refit();
+        }
+        out
+    }
+
+    /// Edits made inside the used model open: where its answer says, or
+    /// the edit question first (ADR 0066 step 4c, ADR 0068).
+    pub(crate) fn begin_edit(
+        &mut self,
+        edits: Vec<Edit>,
+        registry: &Registry,
+        current: &dyn Fn() -> Result<String, String>,
+    ) -> Vec<Outcome> {
+        let mut out = Vec::new();
+        match self.choices.get(&self.inside).cloned() {
+            Some(target) => out.extend(self.edit_inside(None, &target, edits, registry, current)),
+            None => {
+                let top = self.base(current).ok().map(|mut top| {
+                    top.folder.clone_from(&self.folder);
+                    top
+                });
+                let original = top.clone().and_then(|mut top| {
+                    edit_use::prepare(
+                        &mut top,
+                        self.folder.as_deref(),
+                        &mut self.edited.clone(),
+                        &self.inside,
+                        How::Original,
+                    )
+                    .ok()
+                });
+                // A definition of this file (ADR 0068): used once, as a
+                // local copy is, its edits go to it without asking.
+                let definition = match (&original, &top) {
+                    (Some(t), Some(top)) if t.file.is_none() && !t.def.is_empty() => Some((
+                        t.def.last().cloned().unwrap_or_default(),
+                        edit_use::uses_of(top, t),
+                    )),
+                    _ => None,
+                };
+                if let (Some((_, 1)), Some(t)) = (&definition, &original) {
+                    self.choices.insert(self.inside.clone(), t.clone());
+                    let t = t.clone();
+                    out.extend(self.edit_inside(None, &t, edits, registry, current));
+                } else {
+                    let file = match (&original, &definition) {
+                        (_, Some((def, _))) => std::path::PathBuf::from(format!("{def}.ssbx.json")),
+                        (Some(t), None) => t.file.clone().unwrap_or_default(),
+                        (None, None) => std::path::PathBuf::from("model.ssbx.json"),
+                    };
+                    let name = edit_use::copy_name(&file, self.folder.as_deref(), &self.edited);
+                    let name = name
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.asking = Some(Asking {
+                        edits,
+                        name,
+                        definition,
+                    });
+                }
+            }
         }
         out
     }
@@ -284,9 +329,13 @@ impl DiagramTab {
         registry: &Registry,
         current: &dyn Fn() -> Result<String, String>,
     ) -> Vec<Outcome> {
-        let Some((_, name)) = &mut self.asking else {
+        let Some(Asking {
+            name, definition, ..
+        }) = &mut self.asking
+        else {
             return Vec::new();
         };
+        let definition = definition.clone();
         let mut how = None;
         let mut cancel = false;
         let shown = self.inside.join(" › ");
@@ -294,13 +343,21 @@ impl DiagramTab {
         egui::Modal::new(egui::Id::new("edit-used-model")).show(ui.ctx(), |ui| {
             ui.set_max_width(420.0);
             ui.heading(format!("Edit {shown}"));
-            ui.label("This model is used from a file. Where should the edit go?");
+            let (says, original, hover) = match &definition {
+                Some((def, n)) => (
+                    format!("This is the model '{def}' defined in this file, used {n} times here. Where should the edit go?"),
+                    format!("Edit the definition ({n} uses)"),
+                    "Every use of it changes".to_string(),
+                ),
+                None => (
+                    "This model is used from a file. Where should the edit go?".to_string(),
+                    "Edit the original".to_string(),
+                    "The used file changes, for every model using it; Save writes it".to_string(),
+                ),
+            };
+            ui.label(says);
             ui.add_space(6.0);
-            if ui
-                .button("Edit the original")
-                .on_hover_text("The used file changes, for every model using it; Save writes it")
-                .clicked()
-            {
+            if ui.button(original).on_hover_text(hover).clicked() {
                 how = Some(How::Original);
             }
             ui.horizontal(|ui| {
@@ -319,7 +376,7 @@ impl DiagramTab {
             }
             if ui
                 .button("Make a local copy")
-                .on_hover_text("Written into this model, detached from any file, with the same clock and names")
+                .on_hover_text("A model defined in this file for this use only, with the same clock and names")
                 .clicked()
             {
                 how = Some(How::LocalCopy);
@@ -337,7 +394,7 @@ impl DiagramTab {
         let Some(how) = how else {
             return Vec::new();
         };
-        let (edits, _) = self.asking.take().expect("asking");
+        let Asking { edits, .. } = self.asking.take().expect("asking");
         self.answer(edits, how, registry, current)
     }
 
@@ -372,6 +429,63 @@ impl DiagramTab {
             Err(e) => {
                 self.restore();
                 vec![Outcome::Error(e)]
+            }
+        }
+    }
+
+    /// Move the model the use `name` reads out to the file `to` (a model
+    /// defined here), or into this file (`None`, a model file), ADR 0068.
+    pub(crate) fn move_use(
+        &mut self,
+        name: &str,
+        to: Option<std::path::PathBuf>,
+        registry: &Registry,
+        current: &dyn Fn() -> Result<String, String>,
+    ) -> Vec<Outcome> {
+        let mut top = match self.base(current) {
+            Ok(f) => f,
+            Err(e) => return vec![Outcome::Error(e)],
+        };
+        top.folder.clone_from(&self.folder);
+        self.remember(top.clone());
+        let done = match &to {
+            Some(path) => {
+                let def = top
+                    .blocks
+                    .iter()
+                    .find(|b| b.name == name)
+                    .and_then(|b| b.model.clone())
+                    .unwrap_or_default();
+                edit_use::definition_to_file(
+                    &mut top,
+                    self.folder.as_deref(),
+                    &mut self.edited,
+                    &def,
+                    path,
+                )
+                .map(|()| format!("Moved the model {def} to {}", path.display()))
+            }
+            None => edit_use::file_to_definition(&mut top, self.folder.as_deref(), name)
+                .map(|key| format!("Put the file {name} uses in this model as the model {key}")),
+        };
+        let note = match done {
+            Ok(n) => n,
+            Err(e) => {
+                self.restore();
+                return vec![Outcome::Error(e)];
+            }
+        };
+        self.cache = None;
+        self.choices.clear();
+        let text = top.to_json();
+        match Session::load_in("check", &text, registry, self.folder.as_deref(), true) {
+            Ok(_) => vec![Outcome::Apply {
+                text,
+                notes: vec![note],
+            }],
+            Err(problem) => {
+                self.restore();
+                vec![Outcome::Error(format!("Not applied: {problem}"))]
             }
         }
     }
@@ -669,6 +783,8 @@ impl DiagramTab {
         let (made, requests) = self.canvas.show(ui, d, registry, true);
         edits.extend(made);
         let d = self.cache.as_ref().expect("built above");
+        // Moving a model to a file or back, after the requests (ADR 0068).
+        let mut moves: Vec<(String, Option<std::path::PathBuf>)> = Vec::new();
         for r in requests {
             let name = match r {
                 Request::Open(name) => name,
@@ -731,6 +847,30 @@ impl DiagramTab {
                 }
                 Request::SetSetting { block, key, text } => {
                     edits.push(Edit::SetSetting { block, key, text });
+                    continue;
+                }
+                Request::MoveToFile(name) => {
+                    let def = model
+                        .file
+                        .blocks
+                        .iter()
+                        .find(|b| b.name == name)
+                        .and_then(|b| b.model.clone())
+                        .unwrap_or_default();
+                    let mut dialog = rfd::FileDialog::new()
+                        .set_title("Move the model to its own file")
+                        .add_filter("SimSandbox model", &["json"])
+                        .set_file_name(format!("{def}.ssbx.json"));
+                    if let Some(dir) = &self.folder {
+                        dialog = dialog.set_directory(dir);
+                    }
+                    if let Some(path) = dialog.save_file() {
+                        moves.push((name, Some(path)));
+                    }
+                    continue;
+                }
+                Request::PutInFile(name) => {
+                    moves.push((name, None));
                     continue;
                 }
                 Request::AddModel(at) => {
@@ -798,6 +938,10 @@ impl DiagramTab {
                 Some(Done::Close) => self.recorder = None,
                 None => {}
             }
+        }
+        if let Some((name, to)) = moves.pop() {
+            out.extend(self.move_use(&name, to, registry, current));
+            return out;
         }
         if let Some(back) = step {
             out.extend(self.step(back, registry, current));

@@ -711,10 +711,21 @@ pub(crate) fn resolve_models(
 /// to and from their ports paths (`car1/lead`, `car1/v`). Returns whether
 /// anything changed. The model built is the same.
 pub fn convert_subsystems(file: &mut ModelFile) -> bool {
-    if file.subsystems.is_empty() {
+    let names: Vec<String> = file.subsystems.keys().cloned().collect();
+    convert_some_subsystems(file, &names)
+}
+
+/// [`convert_subsystems`] for the subsystems `names` only; the others stay
+/// subsystems, and a definition made holds those it uses.
+pub fn convert_some_subsystems(file: &mut ModelFile, names: &[String]) -> bool {
+    let names: Vec<String> = names
+        .iter()
+        .filter(|n| file.subsystems.contains_key(*n))
+        .cloned()
+        .collect();
+    if names.is_empty() {
         return false;
     }
-    let names: Vec<String> = file.subsystems.keys().cloned().collect();
     let uses = |blocks: &mut Vec<BlockEntry>, connections: &mut Vec<crate::ConnectionEntry>| {
         let instances: Vec<String> = blocks
             .iter()
@@ -738,7 +749,14 @@ pub fn convert_subsystems(file: &mut ModelFile) -> bool {
             path(&mut c.to);
         }
     };
-    for (name, sub) in std::mem::take(&mut file.subsystems) {
+    let converted: Vec<(String, Subsystem)> = names
+        .iter()
+        .map(|n| (n.clone(), file.subsystems.remove(n).expect("filtered")))
+        .collect();
+    for sub in file.subsystems.values_mut() {
+        uses(&mut sub.blocks, &mut sub.connections);
+    }
+    for (name, sub) in converted {
         let mut def = ModelFile::new();
         def.description = sub.description;
         def.params = sub.params;
@@ -760,6 +778,14 @@ pub fn convert_subsystems(file: &mut ModelFile) -> bool {
             }
         }
         def.outputs = sub.outputs;
+        // The subsystems it still uses go with it.
+        let mut need: Vec<String> = def.blocks.iter().map(|b| b.type_name.clone()).collect();
+        while let Some(t) = need.pop() {
+            if let (Some(sd), false) = (file.subsystems.get(&t), def.subsystems.contains_key(&t)) {
+                need.extend(sd.blocks.iter().map(|b| b.type_name.clone()));
+                def.subsystems.insert(t, sd.clone());
+            }
+        }
         file.models.insert(name, as_definition(&def));
     }
     uses(&mut file.blocks, &mut file.connections);
