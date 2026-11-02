@@ -325,6 +325,10 @@ struct Loader<'a> {
     /// The files being loaded, outermost first, to find a file that uses
     /// itself.
     stack: Vec<PathBuf>,
+    /// Put every use in place, its own clock kept apart by the kernel
+    /// ([`load_merged`]), instead of loading uses on their own clocks as
+    /// models apart.
+    merge: bool,
 }
 
 /// Read and build a model that uses model files, saved in `folder` (or the
@@ -353,6 +357,7 @@ pub fn load_composition(
         data: BTreeMap::new(),
         warnings,
         stack: Vec::new(),
+        merge: false,
     };
     l.level(&file, "", folder.as_deref(), None, file.run.dt, false)?;
     let mut clocks = Vec::new();
@@ -379,6 +384,105 @@ pub fn load_composition(
         data: l.data,
         warnings: l.warnings,
     })
+}
+
+/// A model that uses model files as one model (ADR 0066 step 4b): every
+/// use put in place, and each block on its model's clock
+/// ([`simsandbox_core::graph::Model::set_clocks`]), drawing as it would in
+/// that model alone. A link is a probe feeding the model; an input block
+/// it drives becomes a pass-through of the same name. What the session
+/// runs, so views, sliders, probes and rewind work as for any model; it
+/// keeps the file as written for saving.
+pub fn load_merged(
+    text: &str,
+    registry: &Registry,
+    folder: Option<&Path>,
+) -> Result<Loaded, FileError> {
+    let c = load_composition(text, registry, folder)?;
+    if let Some(d) = c.domains.iter().find(|d| d.swept()) {
+        return Err(invalid(
+            "blocks",
+            format!(
+                "{} sweeps at each delivery, which runs headless only for now",
+                d.name()
+            ),
+        ));
+    }
+    let (file, _) = ModelFile::from_json(text)?;
+    let folder = folder
+        .map(Path::to_path_buf)
+        .or_else(simsandbox_core::registry::current_folder);
+    let top_seed = file
+        .run
+        .seed
+        .unwrap_or(simsandbox_core::graph::DEFAULT_SEED);
+    let mut l = Loader {
+        registry,
+        seed: top_seed,
+        domains: Vec::new(),
+        probes: Vec::new(),
+        links: Vec::new(),
+        data: BTreeMap::new(),
+        warnings: Vec::new(),
+        stack: Vec::new(),
+        merge: true,
+    };
+    let mut merged = file.clone();
+    l.inline_shared(&mut merged, "", folder.as_deref())?;
+    merged.run.dt = c
+        .domains
+        .iter()
+        .filter(|d| !d.on_data)
+        .map(|d| d.dt)
+        .fold(f64::INFINITY, f64::min);
+    let mut loaded = load_in(&merged.to_json(), registry, folder.as_deref())?;
+    let clocks: Vec<simsandbox_core::graph::Clock> = c
+        .domains
+        .iter()
+        .enumerate()
+        .map(|(k, d)| simsandbox_core::graph::Clock {
+            dt: d.dt,
+            every: c.clocks[k].map_or(0, |i| c.ticks.steps[i]),
+            on_data: d.on_data,
+        })
+        .collect();
+    let mut clock_of = Vec::new();
+    for id in loaded.model.block_ids() {
+        let name = loaded
+            .model
+            .block(id)
+            .map_err(|e| invalid("blocks", e))?
+            .spec()
+            .name
+            .clone();
+        // A probe's hold samples on its signal's clock.
+        let signal = name
+            .strip_prefix("probe:")
+            .and_then(|r| r.split_once('/'))
+            .map_or(name.as_str(), |(_, s)| s);
+        let (d, local) = c
+            .domain_of(signal)
+            .ok_or_else(|| invalid("blocks", format!("{name} is in no model")))?;
+        clock_of.push(d);
+        let path = &c.domains[d].path;
+        if !path.is_empty() && !name.starts_with("probe:") {
+            let stream = simsandbox_core::random::stream(seed_for(top_seed, path), local);
+            loaded
+                .model
+                .set_stream(id, stream)
+                .map_err(|e| invalid("blocks", e))?;
+        }
+    }
+    loaded
+        .model
+        .set_clocks(clocks, clock_of)
+        .map_err(|e| invalid("blocks", e))?;
+    loaded.data = c.data.clone();
+    // Saving writes the file as written, not the merged one.
+    let mut written = file;
+    written.folder = folder;
+    loaded.file = written;
+    Ok(loaded)
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -582,6 +686,65 @@ fn expose_output(
     def.outputs.push(crate::OutputPort {
         name: name.clone(),
         from,
+        canvas: None,
+    });
+    Ok(name)
+}
+
+/// Make an input block a pass-through, `y = u`, under the same name and
+/// unit: a link feeds its input when the model is merged (ADR 0066 step
+/// 4b), and what views read (`speed.y`) stays.
+fn pass_through(b: &mut BlockEntry) {
+    let unit = b
+        .settings
+        .get("unit")
+        .filter(|u| !u.trim().is_empty() && u.trim() != "1");
+    let input = match unit {
+        Some(u) => format!("input u [{u}]"),
+        None => "input u".to_string(),
+    };
+    b.type_name = "eq.equations".into();
+    b.equations = vec![input, "y = u".into()];
+    b.settings.clear();
+    b.params.clear();
+    b.method = Default::default();
+}
+
+/// Pass a link through ports to `inner`: an input block (made a
+/// pass-through) or a block's input, at any depth of models put in place.
+fn expose_link(
+    subs: &mut BTreeMap<String, Subsystem>,
+    inl: &Inlined,
+    inner: &str,
+) -> Result<String, String> {
+    let target = match inner.split_once('/') {
+        Some((first, rest)) => {
+            let child = inl
+                .inner
+                .get(first)
+                .ok_or_else(|| format!("'{first}' is not a model used here"))?;
+            format!("{first}.{}", expose_link(subs, child, rest)?)
+        }
+        None if inner.contains('.') => inner.to_string(),
+        None => {
+            let def = subs.get_mut(&inl.def).expect("inlined");
+            let b = def
+                .blocks
+                .iter_mut()
+                .find(|b| b.name == inner && b.type_name == INPUT_VALUE)
+                .ok_or_else(|| format!("no input block '{inner}'"))?;
+            pass_through(b);
+            format!("{inner}.u")
+        }
+    };
+    let def = subs.get_mut(&inl.def).expect("inlined");
+    if let Some(p) = def.inputs.iter().find(|p| p.to == [target.clone()]) {
+        return Ok(p.name.clone());
+    }
+    let name = port_name(def, inner);
+    def.inputs.push(crate::InputPort {
+        name: name.clone(),
+        to: vec![target],
         canvas: None,
     });
     Ok(name)
@@ -881,7 +1044,8 @@ impl Loader<'_> {
     ) -> Result<Inlining, FileError> {
         let shared: Vec<usize> = (0..file.blocks.len())
             .filter(|&k| {
-                file.blocks[k].file.is_some() && file.blocks[k].clock == Some(UseClock::Shared)
+                file.blocks[k].file.is_some()
+                    && (self.merge || file.blocks[k].clock == Some(UseClock::Shared))
             })
             .collect();
         let mut tree: BTreeMap<String, Inlined> = BTreeMap::new();
@@ -1011,7 +1175,7 @@ impl Loader<'_> {
                         name
                     }
                 };
-                let to = if in_use(&c.to, &own_clock) || in_use(signal, &own_clock) {
+                let to = if self.merge || in_use(&c.to, &own_clock) || in_use(signal, &own_clock) {
                     // A link between its models on their own clocks and
                     // its own blocks.
                     format!("{}/{}", u.name, c.to)
@@ -1133,10 +1297,37 @@ impl Loader<'_> {
         // input blocks as they are.
         for ci in 0..file.connections.len() {
             let c = file.connections[ci].clone();
+            let at = format!("connections[{ci}]");
             if c.from.starts_with("probe:") {
+                // Merged, a link is a probe feeding the model: into an
+                // input block made a pass-through, at any depth.
+                if self.merge {
+                    let to = match c.to.split_once('/') {
+                        Some((name, rest)) if tree.contains_key(name) => {
+                            let port = expose_link(&mut file.subsystems, &tree[name], rest)
+                                .map_err(|m| {
+                                    invalid(format!("{at}.to"), format!("{}: {m}", c.to))
+                                })?;
+                            format!("{name}.{port}")
+                        }
+                        None if !c.to.contains('.') => {
+                            match file.blocks.iter_mut().find(|b| b.name == c.to) {
+                                Some(b) if b.type_name == INPUT_VALUE => pass_through(b),
+                                _ => {
+                                    return Err(invalid(
+                                        format!("{at}.to"),
+                                        format!("{} is not an input block", c.to),
+                                    ))
+                                }
+                            }
+                            format!("{}.u", c.to)
+                        }
+                        _ => c.to.clone(),
+                    };
+                    file.connections[ci].to = to;
+                }
                 continue;
             }
-            let at = format!("connections[{ci}]");
             if let Some((name, rest)) = c.to.split_once('/') {
                 if let Some(inl) = tree.get(name) {
                     let port = expose_input(&mut file.subsystems, inl, rest)

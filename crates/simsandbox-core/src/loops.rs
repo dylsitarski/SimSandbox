@@ -192,15 +192,41 @@ impl OutputPlan {
         inputs: &mut [Vec<f64>],
         eval: &mut Eval<'_>,
     ) -> Result<()> {
+        self.solve_active(method, outputs, inputs, eval, None)
+    }
+
+    /// [`OutputPlan::solve`] for the units `active` marks only (ADR 0066
+    /// step 4b: the blocks whose clock has an instant now); the others
+    /// keep their outputs and their inputs.
+    pub fn solve_active(
+        &self,
+        method: LoopMethod,
+        outputs: &mut [Vec<f64>],
+        inputs: &mut [Vec<f64>],
+        eval: &mut Eval<'_>,
+        active: Option<&[bool]>,
+    ) -> Result<()> {
+        let on = |u: usize| active.is_none_or(|a| a[u]);
         let mut scratch = Vec::new();
         for item in &self.items {
             match item {
+                Item::One(p) if !on(p.unit) => {}
                 Item::One(p) => {
                     self.compute(p, outputs, inputs, eval, &mut scratch)?;
                     outputs[p.unit][p.offset..p.offset + p.len]
                         .copy_from_slice(&scratch[p.offset..p.offset + p.len]);
                 }
-                Item::Loop(ports) => self.solve_loop(method, ports, outputs, inputs, eval)?,
+                Item::Loop(ports) if ports.iter().all(|p| on(p.unit)) => {
+                    self.solve_loop(method, ports, outputs, inputs, eval)?
+                }
+                Item::Loop(ports) => {
+                    // Part of a loop is between its instants: solved with
+                    // those ports held.
+                    let now: Vec<Port> = ports.iter().filter(|p| on(p.unit)).cloned().collect();
+                    if !now.is_empty() {
+                        self.solve_loop(method, &now, outputs, inputs, eval)?;
+                    }
+                }
             }
         }
         Ok(())

@@ -38,6 +38,24 @@ pub struct Model {
     /// Per Block, a state to start from instead of the one its parameters
     /// give (ADR 0042).
     pub(crate) starts: Vec<Option<Start>>,
+    /// Clocks the blocks step on, when they step on several (ADR 0066
+    /// step 4b); empty for one clock, the step given to `Simulator::step`.
+    pub(crate) clocks: Vec<Clock>,
+    /// Per Block, its clock in `clocks`.
+    pub(crate) clock_of: Vec<usize>,
+    /// Per Block, its random stream when not the model's seed and its
+    /// name: a block of a used model draws as it would there.
+    pub(crate) streams: Vec<Option<u64>>,
+}
+
+/// A clock some blocks of a model step on (ADR 0066 step 4b): every `dt`,
+/// counted as `every` ticks of the model's common tick, or, on new data,
+/// evaluated at every instant of the others and never stepped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Clock {
+    pub dt: f64,
+    pub every: u128,
+    pub on_data: bool,
 }
 
 /// A Block's state and table rows to start from, replacing what `init`
@@ -62,6 +80,9 @@ impl Default for Model {
             seed: DEFAULT_SEED,
             loops: crate::loops::LoopMethod::default(),
             starts: Vec::new(),
+            clocks: Vec::new(),
+            clock_of: Vec::new(),
+            streams: Vec::new(),
         }
     }
 }
@@ -81,6 +102,42 @@ impl Model {
         self.seed
     }
 
+    /// Step blocks on several clocks (ADR 0066 step 4b): `clock_of` gives
+    /// each Block's clock in `clocks`. `Simulator::step` then advances to
+    /// the next instant of any clock; blocks step at their clock's instants
+    /// only, and take their inputs only then.
+    pub fn set_clocks(&mut self, clocks: Vec<Clock>, clock_of: Vec<usize>) -> Result<()> {
+        if clock_of.len() != self.blocks.len() || clock_of.iter().any(|&c| c >= clocks.len()) {
+            return Err(SimError::InvalidSetting {
+                setting: "clocks".into(),
+                reason: "every block needs one of the clocks".into(),
+            });
+        }
+        if !clocks.iter().any(|c| !c.on_data && c.every > 0) {
+            return Err(SimError::InvalidSetting {
+                setting: "clocks".into(),
+                reason: "at least one clock runs in time".into(),
+            });
+        }
+        self.clocks = clocks;
+        self.clock_of = clock_of;
+        Ok(())
+    }
+
+    /// The clocks set by [`Model::set_clocks`], and each Block's.
+    pub fn clocks(&self) -> (&[Clock], &[usize]) {
+        (&self.clocks, &self.clock_of)
+    }
+
+    /// The random stream of a Block, instead of the one from the model's
+    /// seed and its name (ADR 0066: a block of a used model draws as it
+    /// would in that model alone).
+    pub fn set_stream(&mut self, block: BlockId, stream: u64) -> Result<()> {
+        self.block(block)?;
+        self.streams[block.0] = Some(stream);
+        Ok(())
+    }
+
     /// How algebraic loops are solved (ADR 0040).
     pub fn set_loop_method(&mut self, method: crate::loops::LoopMethod) {
         self.loops = method;
@@ -94,6 +151,8 @@ impl Model {
     pub fn add(&mut self, block: Box<dyn Block>) -> BlockId {
         self.params.push(block.spec().default_params());
         self.starts.push(None);
+        self.clock_of.push(0);
+        self.streams.push(None);
         self.blocks.push(block);
         BlockId(self.blocks.len() - 1)
     }

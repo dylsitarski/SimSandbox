@@ -1821,4 +1821,155 @@ mod tests {
         assert_eq!(report["declared_outputs"][0]["from"], "car.v", "{report}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// Run `model` merged into one simulator with clocks (ADR 0066 step
+    /// 4b) and check every value the headless runner records, at each
+    /// model's own instants, bit for bit.
+    fn merged_matches_runner(dir: &Path, model: &Value) {
+        let apart = run_in(dir, model);
+        let loaded = simsandbox_core::registry::in_folder(Some(dir), || {
+            simsandbox_file::compose::load_merged(&model.to_string(), &registry(), None)
+        })
+        .unwrap();
+        let t_end = model["run"]["t_end"].as_f64().unwrap();
+        let ids = loaded.ids.clone();
+        let mut sim = Simulator::new(loaded.model, 0.0).unwrap();
+        // Every instant: its time, each clock's steps, and the
+        // simulator's outputs then.
+        let mut instants: Vec<(f64, Vec<u128>, Vec<Vec<f64>>)> = Vec::new();
+        let grab = |sim: &Simulator| -> Vec<Vec<f64>> {
+            ids.values()
+                .map(|&id| {
+                    let spec = sim.model().block(id).unwrap().spec().clone();
+                    spec.outputs()
+                        .flat_map(|p| sim.output(id, &p.name).unwrap().to_vec())
+                        .collect()
+                })
+                .collect()
+        };
+        instants.push((sim.time(), sim.clock_steps().to_vec(), grab(&sim)));
+        while sim
+            .next_instant()
+            .is_some_and(|t| t <= t_end * (1.0 + 1e-12))
+        {
+            sim.step(0.0).unwrap();
+            instants.push((sim.time(), sim.clock_steps().to_vec(), grab(&sim)));
+        }
+        let value = |sim_values: &Vec<Vec<f64>>, name: &str| -> Option<Vec<f64>> {
+            let (block, port) = name.rsplit_once('.')?;
+            let k = ids.keys().position(|b| b == block)?;
+            let id = ids[block];
+            let spec = sim.model().block(id).unwrap().spec().clone();
+            let mut at = 0;
+            for p in spec.outputs() {
+                let n = p.shape.len();
+                if p.name == port {
+                    return Some(sim_values[k][at..at + n].to_vec());
+                }
+                at += n;
+            }
+            None
+        };
+        let mut compared = 0;
+        for (d, (domain, r)) in apart.models.iter().enumerate() {
+            let times = &r.index[0].1;
+            let on_data = model_on_data(&apart, d, &instants);
+            for o in &r.outputs {
+                for (row, &t) in times.iter().enumerate() {
+                    let n = o.shape.len();
+                    let want = &o.values[row * n..(row + 1) * n];
+                    // A clocked model's row k is the instant it took its
+                    // k-th step; one on new data's, the instant at its
+                    // delivery's time.
+                    let (_, _, vals) = instants
+                        .iter()
+                        .find(|(ti, steps, _)| {
+                            if on_data {
+                                ti.to_bits() == t.to_bits()
+                            } else {
+                                steps[d] == row as u128
+                            }
+                        })
+                        .unwrap_or_else(|| panic!("{domain}: no instant for row {row} (t = {t})"));
+                    let Some(got) = value(vals, &o.name) else {
+                        continue;
+                    };
+                    assert_eq!(bits(&got), bits(want), "{} at t = {t}", o.name);
+                    compared += 1;
+                }
+            }
+        }
+        assert!(compared > 20, "compared {compared}");
+    }
+
+    /// Whether domain `d` runs on new data: its clock takes no steps.
+    fn model_on_data(
+        _apart: &Composed,
+        d: usize,
+        instants: &[(f64, Vec<u128>, Vec<Vec<f64>>)],
+    ) -> bool {
+        instants.last().is_some_and(|(_, steps, _)| steps[d] == 0)
+    }
+
+    #[test]
+    fn one_simulator_with_clocks_runs_as_models_apart() {
+        let dir = temp_dir("merged");
+        cruise_files(&dir);
+        // The cruise control from two files, linked both ways.
+        merged_matches_runner(
+            &dir,
+            &with(
+                json!({"format": 1, "run": {"t_end": 20},
+                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            ),
+        );
+        // Clocks of 0.1 s and 0.3 s, each reading the other.
+        let mut two = pair(&dir, 0.1, 0.3);
+        two["run"] = json!({"t_end": 3});
+        merged_matches_runner(&dir, &two);
+        // A shared plant beside a controller on its own clock.
+        merged_matches_runner(
+            &dir,
+            &with(
+                json!({"format": 1, "run": {"dt": 0.05, "t_end": 20}, "fusion": "off",
+                   "blocks": [shared("plant", "car.ssbx.json"), {"name": "controller", "file": "cruise.ssbx.json", "clock": {"dt": 0.5}}]}),
+                cruise_links("plant", "controller"),
+            ),
+        );
+        // Nested: a vehicle file of linked models, used with a top level
+        // reading it.
+        write(
+            &dir,
+            "vehicle.ssbx.json",
+            &with(
+                json!({"format": 1,
+                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            ),
+        );
+        merged_matches_runner(
+            &dir,
+            &json!({"format": 1, "run": {"t_end": 5, "dt": 0.1},
+            "blocks": [
+                {"name": "watch", "type": "input.value", "settings": {"unit": "m/s"}},
+                {"name": "odo", "type": "eq.equations", "method": {"name": "euler"},
+                 "equations": ["input v [m/s]", "state d [m]", "dd/dt = v"], "params": {"d0": 0}},
+                use_of("vehicle", "vehicle.ssbx.json")],
+            "connections": [
+                {"from": "watch.y", "to": "odo.v"},
+                {"from": "probe:v.vehicle/plant/car.v", "to": "watch"}],
+            "controls": {"probes": [{"name": "v", "record": ["vehicle/plant/car.v"]}]}}),
+        );
+        // A model on new data: the same values at its deliveries.
+        on_data_files(&dir);
+        merged_matches_runner(
+            &dir,
+            &json!({"format": 1, "run": {"t_end": 1.2},
+            "blocks": [use_of("a", "a.ssbx.json"), use_of("d", "double.ssbx.json")],
+            "connections": [{"from": "probe:p.a/count.x", "to": "d/u"}],
+            "controls": {"probes": [{"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.3}}]}}),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

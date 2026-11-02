@@ -27,6 +27,10 @@ pub struct Snapshot {
     kept: Vec<Kept>,
     population_outputs: Vec<Vec<Vec<f64>>>,
     params: Vec<Vec<f64>>,
+    /// With several clocks: each clock's time and steps, and every input,
+    /// since inputs are taken only at their block's instants.
+    clocks: Vec<(f64, u128)>,
+    inputs: Vec<Vec<f64>>,
 }
 
 /// Whether two runs of numbers are the same, bit for bit.
@@ -214,6 +218,11 @@ pub struct Simulator {
     /// only (no feedthrough, no populations), so a snapshot may compute
     /// them again instead of keeping them (ADR 0063).
     recomputable: Vec<bool>,
+    /// With several clocks (ADR 0066 step 4b): each clock's time and steps
+    /// taken, and per Block whether its clock has an instant now.
+    clock_t: Vec<f64>,
+    clock_taken: Vec<u128>,
+    active: Vec<bool>,
 }
 
 impl Snapshot {
@@ -305,6 +314,11 @@ impl Simulator {
             ));
             seeds.push(crate::random::stream(model.seed, &spec.name));
         }
+        for (s, stream) in seeds.iter_mut().zip(&model.streams) {
+            if let Some(x) = stream {
+                *s = *x;
+            }
+        }
 
         let plans = (0..model.groups.len())
             .map(|g| GroupPlan::new(&model, g, &routes))
@@ -351,7 +365,12 @@ impl Simulator {
                     .all(|p| p.feedthrough.is_empty() && !p.shape.is_variable())
             })
             .collect();
+        let clocks = model.clocks.len();
+        let blocks = model.blocks.len();
         let mut sim = Self {
+            clock_t: vec![t0; clocks],
+            clock_taken: vec![0; clocks],
+            active: vec![true; blocks],
             copies,
             recomputable,
             model,
@@ -415,6 +434,9 @@ impl Simulator {
         self.t = t0;
         self.step = 0;
         self.changed.clear();
+        self.clock_t.fill(t0);
+        self.clock_taken.fill(0);
+        self.active.fill(true);
         self.resolve(t0)?;
         self.exchange();
         Ok(())
@@ -436,6 +458,8 @@ impl Simulator {
     /// the next step rather than one step later.
     fn refresh_changed(&mut self) -> Result<()> {
         let t = self.t;
+        // A changed parameter acts at once, whatever the clocks.
+        self.active.fill(true);
         for bi in std::mem::take(&mut self.changed) {
             let params = &self.model.params[bi];
             self.model.blocks[bi].compute_outputs(
@@ -466,13 +490,20 @@ impl Simulator {
         let params = &self.model.params;
         let (states, tables) = (&mut self.states, &mut self.tables);
         let (pin, pout) = (&self.population_inputs, &mut self.population_outputs);
-        self.outputs_plan.solve(
+        let active = (!self.model.clocks.is_empty()).then_some(self.active.as_slice());
+        // With several clocks a block computes at its own clock's time.
+        let (clock_of, clock_t, clocks) = (&self.model.clock_of, &self.clock_t, &self.model.clocks);
+        let time = |b: usize| match clocks.get(clock_of[b]) {
+            Some(c) if !c.on_data => clock_t[clock_of[b]],
+            _ => t,
+        };
+        self.outputs_plan.solve_active(
             self.model.loops,
             &mut self.outputs,
             &mut self.inputs,
             &mut |b, u, y| {
                 blocks[b].compute_outputs(
-                    t,
+                    time(b),
                     StepIo {
                         params: &params[b],
                         inputs: u,
@@ -484,6 +515,7 @@ impl Simulator {
                     },
                 )
             },
+            active,
         )
     }
 
@@ -495,13 +527,22 @@ impl Simulator {
 
     /// Copy outputs to connected inputs, applying unit conversion.
     fn exchange(&mut self) {
+        // With several clocks a block takes its inputs only at its own
+        // instants, holding them over its step (ADR 0066 step 4b).
+        let several = !self.model.clocks.is_empty();
         for r in &self.routes {
+            if several && !self.active[r.to_block] {
+                continue;
+            }
             for k in 0..r.len {
                 self.inputs[r.to_block][r.to_offset + k] =
                     r.factor * self.outputs[r.from_block][r.from_offset + k];
             }
         }
         for r in &self.population_routes {
+            if several && !self.active[r.to_block] {
+                continue;
+            }
             let from = &self.population_outputs[r.from_block][r.from_index];
             let to = &mut self.population_inputs[r.to_block][r.to_index];
             to.clear();
@@ -509,8 +550,13 @@ impl Simulator {
         }
     }
 
-    /// Advance every Block by one communication step `dt`.
+    /// Advance every Block by one communication step `dt`. With several
+    /// clocks ([`Model::set_clocks`]), advance to the next instant of any
+    /// of them instead; `dt` is not used.
     pub fn step(&mut self, dt: f64) -> Result<()> {
+        if !self.model.clocks.is_empty() {
+            return self.advance();
+        }
         if !self.changed.is_empty() {
             self.refresh_changed()?;
         }
@@ -643,6 +689,134 @@ impl Simulator {
     }
 
     /// The model being run: Block specs, parameter values and connections.
+    /// With several clocks, the steps each has taken.
+    pub fn clock_steps(&self) -> &[u128] {
+        &self.clock_taken
+    }
+
+    /// The next instant of any clock, as a time: when the next step ends.
+    /// Without clocks, `None` (each step is the `dt` given).
+    pub fn next_instant(&self) -> Option<f64> {
+        let clocks = &self.model.clocks;
+        let next = (0..clocks.len())
+            .filter(|&c| !clocks[c].on_data && clocks[c].every > 0)
+            .min_by_key(|&c| (self.clock_taken[c] + 1) * clocks[c].every)?;
+        Some(self.clock_t[next] + clocks[next].dt)
+    }
+
+    /// One instant with several clocks (ADR 0066 step 4b): the clocks
+    /// reaching it step their blocks over their own `dt`, with their
+    /// inputs as they took them at their last instant; then those blocks,
+    /// and those on new data, compute their outputs in dependency order
+    /// and take their inputs. The others hold theirs.
+    fn advance(&mut self) -> Result<()> {
+        if !self.changed.is_empty() {
+            self.refresh_changed()?;
+        }
+        let clocks = self.model.clocks.clone();
+        let Some(tick) = (0..clocks.len())
+            .filter(|&c| !clocks[c].on_data && clocks[c].every > 0)
+            .map(|c| (self.clock_taken[c] + 1) * clocks[c].every)
+            .min()
+        else {
+            return Ok(());
+        };
+        let reaching: Vec<bool> = (0..clocks.len())
+            .map(|c| {
+                clocks[c].on_data
+                    || (clocks[c].every > 0 && (self.clock_taken[c] + 1) * clocks[c].every == tick)
+            })
+            .collect();
+        for (b, a) in self.active.iter_mut().enumerate() {
+            *a = reaching[self.model.clock_of[b]];
+        }
+        let stepping = |c: usize| reaching[c] && !clocks[c].on_data;
+        for (bi, block) in self.model.blocks.iter_mut().enumerate() {
+            let c = self.model.clock_of[bi];
+            if !stepping(c)
+                || self
+                    .model
+                    .groups
+                    .iter()
+                    .any(|g| g.members.contains(&BlockId(bi)))
+            {
+                continue;
+            }
+            block.do_step(
+                StepContext {
+                    t: self.clock_t[c],
+                    dt: clocks[c].dt,
+                    step: self.clock_taken[c] as u64,
+                    seed: self.seeds[bi],
+                },
+                StepIo {
+                    params: &self.model.params[bi],
+                    inputs: &self.inputs[bi],
+                    state: &mut self.states[bi],
+                    outputs: &mut self.outputs[bi],
+                    tables: &mut self.tables[bi],
+                    population_inputs: &self.population_inputs[bi],
+                    population_outputs: &mut self.population_outputs[bi],
+                },
+            )?;
+        }
+        for (plan, group) in self.plans.iter().zip(&mut self.model.groups) {
+            let Some(&(first, _)) = plan.members.first() else {
+                continue;
+            };
+            let c = self.model.clock_of[first];
+            if !stepping(c) {
+                continue;
+            }
+            let (t0, dt) = (self.clock_t[c], clocks[c].dt);
+            let mut x = Vec::with_capacity(plan.len);
+            for &(b, _) in &plan.members {
+                x.extend_from_slice(&self.states[b]);
+            }
+            let (blocks, params, held) = (&self.model.blocks, &self.model.params, &self.inputs);
+            let failed = RefCell::new(None);
+            let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
+                if let Err(e) = plan.rhs(blocks, params, held, t, x, dx) {
+                    dx.fill(f64::NAN);
+                    failed.borrow_mut().get_or_insert(e);
+                }
+            };
+            group.solver.advance(&rhs, t0, dt, &mut x)?;
+            if let Some(e) = failed.into_inner() {
+                return Err(e);
+            }
+            for &(b, off) in &plan.members {
+                let n = self.states[b].len();
+                self.states[b].copy_from_slice(&x[off..off + n]);
+                self.model.blocks[b].compute_outputs(
+                    t0 + dt,
+                    StepIo {
+                        params: &self.model.params[b],
+                        inputs: &self.inputs[b],
+                        state: &mut self.states[b],
+                        outputs: &mut self.outputs[b],
+                        tables: &mut self.tables[b],
+                        population_inputs: &self.population_inputs[b],
+                        population_outputs: &mut self.population_outputs[b],
+                    },
+                )?;
+            }
+        }
+        let mut now = None;
+        for (c, clock) in clocks.iter().enumerate() {
+            if stepping(c) {
+                self.clock_t[c] += clock.dt;
+                self.clock_taken[c] += 1;
+                now.get_or_insert(self.clock_t[c]);
+            }
+        }
+        self.t = now.unwrap_or(self.t);
+        self.step += 1;
+        self.resolve(self.t)?;
+        self.exchange();
+        Ok(())
+    }
+
     pub fn model(&self) -> &Model {
         &self.model
     }
@@ -721,6 +895,17 @@ impl Simulator {
             kept,
             population_outputs: self.population_outputs.clone(),
             params: self.model.params.clone(),
+            clocks: self
+                .clock_t
+                .iter()
+                .copied()
+                .zip(self.clock_taken.iter().copied())
+                .collect(),
+            inputs: if self.model.clocks.is_empty() {
+                Vec::new()
+            } else {
+                self.inputs.clone()
+            },
         }
     }
 
@@ -753,6 +938,10 @@ impl Simulator {
     pub fn restore(&mut self, snap: &Snapshot) {
         self.changed.clear();
         self.t = snap.t;
+        for (c, &(t, n)) in snap.clocks.iter().enumerate() {
+            self.clock_t[c] = t;
+            self.clock_taken[c] = n;
+        }
         self.step = snap.step;
         self.states.clone_from(&snap.states);
         self.tables.clone_from(&snap.tables);
@@ -784,6 +973,11 @@ impl Simulator {
             }
         }
         self.population_outputs.clone_from(&snap.population_outputs);
-        self.exchange();
+        if snap.clocks.is_empty() {
+            self.exchange();
+        } else {
+            // Inputs as each block last took them.
+            self.inputs.clone_from(&snap.inputs);
+        }
     }
 }
