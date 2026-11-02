@@ -175,7 +175,17 @@ pub(crate) fn check_uses(
         if b.file.is_some() && b.model.is_some() {
             return Err(invalid(
                 format!("{path}.model"),
-                "a use names a file or holds a local copy, not both",
+                "a use names a file or a model defined here, not both",
+            ));
+        }
+        if let Some(m) = b
+            .model
+            .as_deref()
+            .filter(|m| !crate::subsystems::valid_name(m))
+        {
+            return Err(invalid(
+                format!("{path}.model"),
+                format!("'{m}': a model's name is letters, digits and '_'"),
             ));
         }
         match b.is_use().then_some(()) {
@@ -214,12 +224,12 @@ pub(crate) fn check_uses(
                     ("equations", !b.equations.is_empty()),
                     ("update", b.update.is_some()),
                     ("settings", !b.settings.is_empty()),
-                    ("start", b.start.is_some() || !b.starts.is_empty()),
+                    ("start", b.start.is_some()),
                 ];
                 if let Some((key, _)) = block_only.iter().find(|(_, has)| *has) {
                     return Err(invalid(
                         format!("{path}.{key}"),
-                        "a use of a model has a name, file (or model), files, params, clock and canvas",
+                        "a use of a model has a name, file or model, files, params, starts, clock and canvas",
                     ));
                 }
                 if let Some(key) = b
@@ -590,8 +600,8 @@ pub fn used_model(
     u: &BlockEntry,
     folder: Option<&Path>,
 ) -> Result<(ModelFile, Option<PathBuf>, Option<PathBuf>), String> {
-    let (text, at) = match (&u.model, &u.file) {
-        (Some(inline), _) => (inline.to_string(), None),
+    let (mut model, at) = match (&u.resolved, &u.file) {
+        (Some(def), _) => ((**def).clone(), None),
         (None, Some(name)) => {
             let at = PathBuf::from(name);
             let at = match folder {
@@ -601,22 +611,229 @@ pub fn used_model(
             let bytes = read_model(&at).map_err(|e| format!("{}: {e}", at.display()))?;
             let text = String::from_utf8(bytes)
                 .map_err(|_| format!("{}: not a text file", at.display()))?;
-            (text, Some(at))
+            let (m, _) =
+                ModelFile::from_json(&text).map_err(|e| format!("{}: {e}", at.display()))?;
+            (m, Some(at))
         }
         (None, None) => return Err(format!("'{}' uses no model", u.name)),
     };
-    let shown = at.as_ref().map_or_else(
-        || format!("{} (local copy)", u.name),
-        |p| p.display().to_string(),
-    );
-    let (mut model, _) = ModelFile::from_json(&text).map_err(|e| format!("{shown}: {e}"))?;
     replace_files(&mut model, &u.files, folder)?;
+    set_starts(&mut model, &u.starts)?;
     let inner = match &at {
         Some(p) => p.parent().map(Path::to_path_buf),
         None => folder.map(Path::to_path_buf),
     };
     model.folder.clone_from(&inner);
     Ok((model, at, inner))
+}
+
+/// Whether the use `u` (in a file saved in `folder`) runs on its user's
+/// clock: `"shared"`, or no clock, a model that writes no `run.dt`, and a
+/// wire reaching it (`wired`), since wires never cross clocks (ADR 0068).
+pub fn runs_shared(u: &BlockEntry, folder: Option<&Path>, wired: bool) -> bool {
+    match u.clock {
+        Some(UseClock::Shared) => true,
+        Some(UseClock::Step(_)) => false,
+        None if !wired => false,
+        None => match (&u.resolved, &u.file) {
+            (Some(def), _) => !def.run.dt_written,
+            (None, Some(name)) => {
+                let at = PathBuf::from(name);
+                let at = match folder {
+                    Some(f) if at.is_relative() => f.join(at),
+                    _ => at,
+                };
+                read_model(&at)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                    .is_some_and(|v| v.get("run").and_then(|r| r.get("dt")).is_none())
+            }
+            (None, None) => false,
+        },
+    }
+}
+
+/// Find the definitions the uses in `file` name (ADR 0068): in its own
+/// `models`, then in `outer` (those of the models holding it). Each is
+/// read and resolved in turn; one that uses itself is refused.
+pub(crate) fn resolve_models(
+    file: &mut ModelFile,
+    outer: &BTreeMap<String, serde_json::Value>,
+    stack: &mut Vec<String>,
+) -> Result<(), FileError> {
+    if file.models.is_empty() && file.blocks.iter().all(|b| b.model.is_none()) {
+        return Ok(());
+    }
+    let mut scope = outer.clone();
+    scope.extend(file.models.iter().map(|(k, v)| (k.clone(), v.clone())));
+    // Every definition is read, used or not, so a mistake shows.
+    for (name, v) in &file.models {
+        if !crate::subsystems::valid_name(name) {
+            return Err(invalid(
+                format!("models.{name}"),
+                "a model's name is letters, digits and '_'",
+            ));
+        }
+        definition(name, v)?;
+    }
+    let folder = file.folder.clone();
+    for (k, b) in file.blocks.iter_mut().enumerate() {
+        let Some(name) = b.model.clone() else {
+            continue;
+        };
+        let at = format!("blocks[{k}].model");
+        let v = scope.get(&name).ok_or_else(|| {
+            invalid(
+                &at,
+                format!("no model named '{name}' is defined here (`models`)"),
+            )
+        })?;
+        if stack.contains(&name) {
+            return Err(invalid(
+                &at,
+                format!("a model uses itself: {} → {name}", stack.join(" → ")),
+            ));
+        }
+        let mut m = definition(&name, v)?;
+        m.folder.clone_from(&folder);
+        stack.push(name.clone());
+        let inner = resolve_models(&mut m, &scope, stack);
+        stack.pop();
+        inner.map_err(|e| invalid(format!("models.{name}"), e))?;
+        b.resolved = Some(Box::new(m));
+    }
+    Ok(())
+}
+
+/// Write `file`'s subsystems as models defined in it (ADR 0068 point 10):
+/// each input port an input block wired to what the port fed, each output
+/// port a declared output, each use of one a use of the model, and wires
+/// to and from their ports paths (`car1/lead`, `car1/v`). Returns whether
+/// anything changed. The model built is the same.
+pub fn convert_subsystems(file: &mut ModelFile) -> bool {
+    if file.subsystems.is_empty() {
+        return false;
+    }
+    let names: Vec<String> = file.subsystems.keys().cloned().collect();
+    let uses = |blocks: &mut Vec<BlockEntry>, connections: &mut Vec<crate::ConnectionEntry>| {
+        let instances: Vec<String> = blocks
+            .iter()
+            .filter(|b| names.contains(&b.type_name))
+            .map(|b| b.name.clone())
+            .collect();
+        for b in blocks.iter_mut().filter(|b| names.contains(&b.type_name)) {
+            b.model = Some(std::mem::take(&mut b.type_name));
+            b.method = Default::default();
+        }
+        // `car1.lead` → `car1/lead`: a port of a use is reached by path.
+        let path = |end: &mut String| {
+            if let Some((node, rest)) = end.split_once('.') {
+                if instances.iter().any(|i| i == node) {
+                    *end = format!("{node}/{rest}");
+                }
+            }
+        };
+        for c in connections.iter_mut() {
+            path(&mut c.from);
+            path(&mut c.to);
+        }
+    };
+    for (name, sub) in std::mem::take(&mut file.subsystems) {
+        let mut def = ModelFile::new();
+        def.description = sub.description;
+        def.params = sub.params;
+        def.blocks = sub.blocks;
+        def.connections = sub.connections;
+        uses(&mut def.blocks, &mut def.connections);
+        for port in &sub.inputs {
+            def.blocks.push(BlockEntry {
+                name: port.name.clone(),
+                type_name: "input.value".into(),
+                canvas: port.canvas,
+                ..Default::default()
+            });
+            for to in &port.to {
+                def.connections.push(crate::ConnectionEntry {
+                    from: format!("{}.y", port.name),
+                    to: to.clone(),
+                });
+            }
+        }
+        def.outputs = sub.outputs;
+        file.models.insert(name, as_definition(&def));
+    }
+    uses(&mut file.blocks, &mut file.connections);
+    let _ = file.resolve_models();
+    true
+}
+
+/// A definition of a `models` section read as a model, its own uses not
+/// yet resolved (ADR 0068).
+pub fn read_definition(name: &str, v: &serde_json::Value) -> Result<ModelFile, String> {
+    definition(name, v).map_err(|e| e.to_string())
+}
+
+/// `model` as a definition of a `models` section: written like a model
+/// file, without `format`.
+pub fn as_definition(model: &ModelFile) -> serde_json::Value {
+    let mut v: serde_json::Value =
+        serde_json::from_str(&model.to_json()).expect("model files always serialize");
+    if let Some(o) = v.as_object_mut() {
+        o.remove("format");
+    }
+    v
+}
+
+/// The definition `name` of a `models` section, read.
+fn definition(name: &str, v: &serde_json::Value) -> Result<ModelFile, FileError> {
+    let at = format!("models.{name}");
+    let mut v = v.clone();
+    let obj = v
+        .as_object_mut()
+        .ok_or_else(|| invalid(&at, "a model is written like a model file, as an object"))?;
+    obj.entry("format")
+        .or_insert(serde_json::Value::from(crate::FORMAT_VERSION));
+    if let Some(c) = obj.get("controls").and_then(|c| c.as_object()) {
+        if let Some(k) = c.keys().find(|k| *k != "probes") {
+            return Err(invalid(
+                format!("{at}.controls.{k}"),
+                "a model defined in a file holds only probes in its controls",
+            ));
+        }
+    }
+    ModelFile::from_json_unresolved(&v.to_string())
+        .map(|(m, _)| m)
+        .map_err(|e| invalid(&at, e))
+}
+
+/// Put a use's start states (`starts`, by the path of the inner block;
+/// ADR 0068) into `model`, the model it reads: a block's own name sets its
+/// `start`; a deeper path goes into that use's `starts`.
+pub fn set_starts(
+    model: &mut ModelFile,
+    starts: &BTreeMap<String, crate::StartEntry>,
+) -> Result<(), String> {
+    for (key, s) in starts {
+        match key.split_once('/') {
+            None => {
+                let b = model
+                    .blocks
+                    .iter_mut()
+                    .find(|b| &b.name == key && !b.is_use())
+                    .ok_or_else(|| format!("'{key}': no block of that name"))?;
+                b.start = Some(s.clone());
+            }
+            Some((first, rest)) => {
+                let b = model
+                    .blocks
+                    .iter_mut()
+                    .find(|b| b.name == first)
+                    .ok_or_else(|| format!("'{key}': no use or subsystem '{first}'"))?;
+                b.starts.insert(rest.to_string(), s.clone());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Put `files` (replacements written in a use, by path of uses inside
@@ -661,6 +878,7 @@ pub fn replace_files(
             None => {
                 entry.file = Some(at);
                 entry.model = None;
+                entry.resolved = None;
             }
             Some(rest) => {
                 entry.files.insert(rest.to_string(), at);
@@ -696,6 +914,14 @@ fn in_use(end: &str, uses: &[&str]) -> bool {
         .and_then(|r| r.split_once('.'))
         .map_or(end, |(_, signal)| signal);
     uses.iter().any(|u| below(name, u))
+}
+
+/// Whether a wire (not a probe link) among `connections` reaches into or
+/// out of the use `name`.
+pub fn wired(connections: &[crate::ConnectionEntry], name: &str) -> bool {
+    connections
+        .iter()
+        .any(|c| !c.from.starts_with("probe:") && (below(&c.from, name) || below(&c.to, name)))
 }
 
 /// A use on its own clock, to load at a model's level: written there, or
@@ -1136,16 +1362,17 @@ impl Loader<'_> {
         path: &str,
         folder: Option<&Path>,
     ) -> Result<(ModelFile, PathBuf, PathBuf), FileError> {
-        // A local copy: its model is here, its files found from here.
-        if let Some(inline) = &u.model {
-            let text = inline.to_string();
-            let (mut model, _) = ModelFile::from_json(&text)
-                .map_err(|e| invalid("model", format!("the local copy: {e}")))?;
+        // A model defined in the file (ADR 0068): its files are found
+        // from here.
+        if let Some(def) = &u.resolved {
+            let mut model = (**def).clone();
             replace_files(&mut model, &u.files, folder).map_err(|e| invalid("files", e))?;
+            set_starts(&mut model, &u.starts).map_err(|e| invalid("starts", e))?;
             self.data
-                .insert(format!("{path}.file"), digest(text.as_bytes()));
+                .insert(format!("{path}.file"), digest(model.to_json().as_bytes()));
             let here = folder.map_or_else(PathBuf::new, Path::to_path_buf);
-            let shown = here.join(format!("{} (local copy)", u.name));
+            let name = u.model.as_deref().unwrap_or_default();
+            let shown = here.join(format!("{} (model {name})", u.name));
             return Ok((model, shown.clone(), shown));
         }
         let name = u.file.as_deref().expect("a use names a file");
@@ -1182,6 +1409,7 @@ impl Loader<'_> {
         let (mut model, _) = ModelFile::from_json(&text)
             .map_err(|e| invalid("file", format!("{}: {e}", found.display())))?;
         replace_files(&mut model, &u.files, folder).map_err(|e| invalid("files", e))?;
+        set_starts(&mut model, &u.starts).map_err(|e| invalid("starts", e))?;
         self.data.insert(format!("{path}.file"), digest(&bytes));
         Ok((model, found, canonical))
     }
@@ -1236,7 +1464,12 @@ impl Loader<'_> {
         let shared: Vec<usize> = (0..file.blocks.len())
             .filter(|&k| {
                 file.blocks[k].is_use()
-                    && (self.merge || file.blocks[k].clock == Some(UseClock::Shared))
+                    && (self.merge
+                        || runs_shared(
+                            &file.blocks[k],
+                            folder,
+                            wired(&file.connections, &file.blocks[k].name),
+                        ))
             })
             .collect();
         let mut tree: BTreeMap<String, Inlined> = BTreeMap::new();

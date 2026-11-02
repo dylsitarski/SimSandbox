@@ -41,7 +41,7 @@ Two kinds of nested thing mean two formats, two node kinds, two editors and two 
 
 **3. Finding a definition.** A use's `model` names a definition of the model it is written in, else of the models holding that one, outward to the file. A file used sees only its own definitions. A definition that uses itself, directly or not, is refused.
 
-**4. The default clock.** A use without `clock` runs on its own clock at the model's `run.dt` if the model writes one, else on its user's clock. A former subsystem has no `run`, so it stays on its user's clock. A model file that writes no `run.dt` now shares its user's clock when used, where it ran on its own at 0.01 s.
+**4. The default clock.** A use without `clock` runs on its user's clock when a wire reaches it (wires never cross clocks) and its model writes no `run.dt`. Otherwise ADR 0066 holds: its own clock at `run.dt` if it has states, on new data if not. A former subsystem has no `run` and is wired, so it stays on its user's clock. (As built, 2026-11-02: the first form, "shared whenever no `run.dt` is written", would have stopped models without states from running on new data, which ADR 0067 keeps; and files saved before this ADR always wrote `run.dt`. So `run.dt` decides only for a wired model. `run.dt` is now written only when it was read or differs from the default.)
 
 **5. Each use's values.** `params` as in ADR 0066 (numbers or formulas, at any depth by path). `starts` gives start states by the path of the inner block (`hub`, `axle/hub`), as subsystem uses had.
 
@@ -66,7 +66,7 @@ Two kinds of nested thing mean two formats, two node kinds, two editors and two 
 Results are the same bits as before. Saving writes the new form.
 
 **11. Headless:**
-- `check` lists `models` (definitions, their ports and uses).
+- `check` lists `definitions` (their ports, uses and step; `models` already lists the clock domains).
 - `render --diagram --inside PATH` draws a use's inside; `--subsystem` stays as another name for a while.
 - Python: `Model.define(name, model)`, `add_model(name, model=...)`, and `Model.group` makes a definition.
 
@@ -83,3 +83,24 @@ Results are the same bits as before. Saving writes the new form.
 - Shared-clock flattening stays the implementation (ADR 0066 step 2b), so solver fusion across boundaries is unchanged.
 - A model file with states but no `run.dt` changes timing when used: it now shares its user's clock. `check` shows each model's clock.
 - Files, Python code and names that use subsystems keep working through the conversion, then are written in the new form.
+
+## As built
+
+**Step 1 (2026-11-02): models defined in the file.**
+- **The file:** `ModelFile::models` holds definitions as written (JSON). A use's `model` names one. `BlockEntry::resolved` holds it as read: `ModelFile::from_json` resolves every use (`compose::resolve_models`: its own `models`, then the outer ones, refusing unknown names and models that use themselves), and `ModelFile::resolve_models` does it again after an edit in memory. Every definition is read, used or not. A definition's `format` is optional; its `controls` hold only probes.
+- **`run.dt`:** written only when it was read or differs from the default (`RunSettings::dt_written`, `writes_dt`); the `run` section is left out when empty.
+- **The clock:** `compose::runs_shared(use, folder, wired)` and `compose::wired`, used by the loader, the diagram's clock label and wiring on the canvas (a model with no step of its own shares once a wire reaches it).
+- **`starts`** on uses: `compose::set_starts`, by the path of the inner block, for uses of files and of definitions.
+- **Local copies are definitions** (`edit_use`): "Make a local copy" adds a definition named after the use (`free_key` if taken) to the file open, or to the definition holding it for a deeper use; models along the path become definitions held one in another. `edit_use::Target` names a file and a key path through nested `models`. A copy holds the definitions it uses (`self_contained`), and its files are rebased, `models` included. `uses_of` counts the uses of a definition, for the question.
+- **Conversion, ahead of step 3:** `compose::convert_subsystems` writes a file's subsystems as definitions: input ports as input blocks, output ports as declared outputs, instances as uses, and port wires as paths. It is not yet applied on reading.
+- **Headless:** `check` lists `definitions` (inputs, outputs, uses, step). Python: `Model.define(name, model)`, and `add_model(name, model=...)`.
+- **Undo:** `undo::canvas_state` carries `models` and `outputs`.
+- **Tests:**
+  - the Platoon example converted gives the same bits as with its subsystem, on one clock, and reads back unchanged;
+  - definitions are found in the file and from inside a definition, and an inner one of the same name wins;
+  - wired definitions share the user's clock; one with states and its own `run.dt` runs on its own clock;
+  - start states by use;
+  - refusals: an unknown name, a model using itself, `controls` other than probes;
+  - local copies as definitions, headless and in the app (undo and redo included);
+  - Python.
+

@@ -331,11 +331,12 @@ class Model:
     def add_model(
         self,
         name: str,
-        file: "str | os.PathLike",
+        file: "str | os.PathLike | None" = None,
         params: dict[str, float | str] | None = None,
         dt: float | None = None,
         shared: bool = False,
         files: "dict[str, str | os.PathLike] | None" = None,
+        model: str | None = None,
     ) -> "Model":
         """Use a model file in this model (ADR 0066), under ``name``, which
         prefixes everything in it (``"plant/car.v"``). ``file`` is found
@@ -350,10 +351,20 @@ class Model:
         (``"plant/force"``) and from its blocks' outputs (``"plant/car.v"``).
         ``files`` replaces the files of models used inside it, by path
         (``{"plant": "car-2.ssbx.json"}``), found from this model's folder;
-        only this use sees them, and the used file is left alone."""
+        only this use sees them, and the used file is left alone.
+        ``model`` names a model defined in this file (:meth:`define`) in
+        place of ``file``; without ``dt`` or ``shared`` it runs on its own
+        clock if it writes ``run.dt``, else on this model's when wired
+        (ADR 0068)."""
         if shared and dt is not None:
             raise ValueError("a use on a shared clock takes this model's step: no dt")
-        use: dict = {"name": name, "file": os.fspath(file)}
+        if (file is None) == (model is None):
+            raise ValueError("a use names a file or a model defined here, one of the two")
+        use: dict = {"name": name}
+        if file is not None:
+            use["file"] = os.fspath(file)
+        else:
+            use["model"] = model
         if params:
             use["params"] = {k: v if isinstance(v, str) else float(v) for k, v in params.items()}
         if files:
@@ -363,6 +374,16 @@ class Model:
         if shared:
             use["clock"] = "shared"
         self.data.setdefault("blocks", []).append(use)
+        return self
+
+    def define(self, name: str, model: "Model | dict") -> "Model":
+        """Define a model in this file under ``name`` (ADR 0068), used by
+        :meth:`add_model` with ``model=name``: written like a model file,
+        its input blocks are its inputs and its declared ``outputs`` its
+        outputs. Without ``run.dt`` it shares the clock of what uses it."""
+        data = dict(model.data if isinstance(model, Model) else model)
+        data.pop("format", None)
+        self.data.setdefault("models", {})[name] = data
         return self
 
     def link(self, signal: str, to: str, every: dict | None = None, probe: str | None = None) -> "Model":

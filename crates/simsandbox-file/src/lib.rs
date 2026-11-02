@@ -79,6 +79,7 @@ pub struct ModelFile {
     pub format: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "RunSettings::writes_nothing")]
     pub run: RunSettings,
     /// The parameter values a model without states is evaluated at
     /// (ADR 0027, ADR 0028); `None` for one that runs in time.
@@ -91,6 +92,10 @@ pub struct ModelFile {
     /// Groups of blocks used like block types by name (ADR 0043).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub subsystems: BTreeMap<String, Subsystem>,
+    /// Models defined in this file, used by name from `blocks` (ADR 0068):
+    /// each written like a model file, `format` optional.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<String, Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<BlockEntry>,
     /// The outputs it offers to models that use it (ADR 0066 step 4b), by
@@ -404,7 +409,7 @@ impl Sampling {
 }
 
 /// How the model is run (ADR 0013). Unlike `controls`, these affect results.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunSettings {
     /// Simulated seconds per communication step.
@@ -424,6 +429,50 @@ pub struct RunSettings {
     /// set times in every run. Recordings live in run files, never here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<ScheduledChange>,
+    /// Whether `dt` was written in the file: a use without a clock then
+    /// runs on its own at it, else on its user's (ADR 0068). `dt` is
+    /// written back when it was read or differs from the default.
+    #[serde(skip)]
+    pub dt_written: bool,
+}
+
+impl RunSettings {
+    /// Whether `dt` is written when saving.
+    pub fn writes_dt(&self) -> bool {
+        self.dt_written || self.dt != DEFAULT_DT
+    }
+
+    /// Nothing to write: the section is left out.
+    pub fn writes_nothing(&self) -> bool {
+        !self.writes_dt()
+            && self.t_end.is_none()
+            && self.seed.is_none()
+            && self.loops.is_none()
+            && self.inputs.is_empty()
+    }
+}
+
+impl Serialize for RunSettings {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("RunSettings", 5)?;
+        if self.writes_dt() {
+            st.serialize_field("dt", &self.dt)?;
+        }
+        if let Some(t) = &self.t_end {
+            st.serialize_field("t_end", t)?;
+        }
+        if let Some(seed) = &self.seed {
+            st.serialize_field("seed", seed)?;
+        }
+        if let Some(l) = &self.loops {
+            st.serialize_field("loops", l)?;
+        }
+        if !self.inputs.is_empty() {
+            st.serialize_field("inputs", &self.inputs)?;
+        }
+        st.end()
+    }
 }
 
 impl Default for RunSettings {
@@ -434,6 +483,7 @@ impl Default for RunSettings {
             seed: None,
             loops: None,
             inputs: Vec::new(),
+            dt_written: false,
         }
     }
 }
@@ -681,11 +731,14 @@ pub struct BlockEntry {
     /// (ADR 0066 step 4c): only this use sees them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: BTreeMap<String, String>,
-    /// A local copy of a used model (ADR 0066 step 4c): its model file
-    /// written here, in place of a `file`, detached from any file; its
-    /// files are found from this file's folder.
+    /// A use of a model defined in this file (`models`), or in a model
+    /// holding this one, by name (ADR 0068), in place of a `file`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<serde_json::Value>,
+    pub model: Option<String>,
+    /// The definition `model` names, found as the file was read; never
+    /// written.
+    #[serde(skip)]
+    pub resolved: Option<Box<ModelFile>>,
     /// Absent for a subsystem, whose blocks have their own; for a block,
     /// absent means the type's default method.
     #[serde(default, skip_serializing_if = "MethodEntry::is_empty")]
@@ -1585,6 +1638,8 @@ struct RawFile {
     #[serde(default)]
     subsystems: BTreeMap<String, Subsystem>,
     #[serde(default)]
+    models: BTreeMap<String, Value>,
+    #[serde(default)]
     blocks: Vec<BlockEntry>,
     #[serde(default)]
     outputs: Vec<OutputPort>,
@@ -1608,6 +1663,7 @@ impl ModelFile {
             sample: None,
             params: BTreeMap::new(),
             subsystems: BTreeMap::new(),
+            models: BTreeMap::new(),
             blocks: Vec::new(),
             outputs: Vec::new(),
             connections: Vec::new(),
@@ -1622,9 +1678,24 @@ impl ModelFile {
     /// Parse without building. Returns warnings for a malformed `controls`
     /// section, which is replaced by empty controls.
     pub fn from_json(text: &str) -> Result<(Self, Vec<String>), FileError> {
+        let (mut file, warnings) = Self::from_json_unresolved(text)?;
+        compose::resolve_models(&mut file, &BTreeMap::new(), &mut Vec::new())?;
+        Ok((file, warnings))
+    }
+
+    /// Find again the definitions this file's uses name (ADR 0068), after
+    /// it was changed in memory.
+    pub fn resolve_models(&mut self) -> Result<(), FileError> {
+        compose::resolve_models(self, &BTreeMap::new(), &mut Vec::new())
+    }
+
+    /// Parse, leaving uses of definitions unresolved.
+    pub(crate) fn from_json_unresolved(text: &str) -> Result<(Self, Vec<String>), FileError> {
         // The format number first: a newer file may not parse as this one.
         let mut converted = Vec::new();
+        let mut dt_written = false;
         if let Ok(v) = serde_json::from_str::<Value>(text) {
+            dt_written = v.get("run").and_then(|r| r.get("dt")).is_some();
             if let Some(n) = v.get("format").and_then(Value::as_u64) {
                 if n > FORMAT_VERSION as u64 {
                     return Err(FileError::UnsupportedFormat(n as u32));
@@ -1645,7 +1716,7 @@ impl ModelFile {
                 );
             }
         }
-        let raw: RawFile = serde_json::from_str(text).map_err(|e| {
+        let mut raw: RawFile = serde_json::from_str(text).map_err(|e| {
             let mut message = e.to_string();
             if message.contains("unknown field") {
                 // ADR 0044: within a format, newer versions only add.
@@ -1664,6 +1735,7 @@ impl ModelFile {
         if raw.format != FORMAT_VERSION {
             return Err(FileError::UnsupportedFormat(raw.format));
         }
+        raw.run.dt_written = dt_written;
         let positive = |v: f64| v.is_finite() && v > 0.0;
         for (k, c) in raw.run.inputs.iter().enumerate() {
             if !(c.t.is_finite() && c.t >= 0.0) {
@@ -1740,6 +1812,7 @@ impl ModelFile {
                 sample: raw.sample,
                 params: raw.params,
                 subsystems: raw.subsystems,
+                models: raw.models,
                 blocks: raw.blocks,
                 outputs: raw.outputs,
                 connections: raw.connections,

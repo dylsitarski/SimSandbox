@@ -44,6 +44,10 @@ pub fn canvas_state(now: &ModelFile, target: &ModelFile) -> ModelFile {
         }
     }
     out.groups = target.groups.clone();
+    // Models defined in the file and declared outputs (ADR 0068).
+    out.models = target.models.clone();
+    out.outputs = target.outputs.clone();
+    let _ = out.resolve_models();
     out.controls.filters = target.controls.filters.clone();
     out.controls.views = target.controls.views.clone();
     out.controls.probes = target.controls.probes.clone();

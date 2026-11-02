@@ -377,3 +377,22 @@ def test_a_composition_runs_models_on_their_own_clocks(tmp_path):
     assert list(flat.models) == ["."]
     direct = cruise.run(t_end=10)
     assert np.array_equal(flat["plant/car.v"], direct["car.v"])
+
+
+def test_models_defined_in_the_file_are_used_by_name():
+    gain = ss.Model({"format": 1, "blocks": []})
+    gain.add_block("u", "input.value")
+    gain.add_block("g", "eq.equations", equations=["input x", "y = 2*x"]).connect("u.y", "g.x")
+    gain.data["outputs"] = [{"name": "y", "from": "g.y"}]
+    m = ss.Model({"format": 1, "run": {"dt": 0.1, "t_end": 0.3}, "blocks": []})
+    m.add_block("src", "eq.equations", equations=["state s", "ds/dt = 1"], params={"s0": 1})
+    m.define("gain", gain).add_model("a", model="gain").add_model("b", model="gain")
+    m.connect("src.s", "a/u").connect("a/y", "b/u")
+    report = m.check()
+    assert report["ok"], report
+    assert report["definitions"]["gain"]["uses"] == ["a", "b"]
+    r = m.run()
+    assert np.array_equal(r["b/g.y"], 4 * r["src.s"])
+    with pytest.raises(ValueError):
+        m.add_model("c", "x.ssbx.json", model="gain")
+

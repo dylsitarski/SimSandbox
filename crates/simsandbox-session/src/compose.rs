@@ -115,6 +115,7 @@ pub fn check(text: &str, registry: &Registry) -> Value {
             .iter()
             .flat_map(|b| b.files.iter().map(move |(k, f)| (format!("{}/{k}", b.name), f.clone())))
             .collect::<std::collections::BTreeMap<_, _>>(),
+        "definitions": definitions(&c.file),
         "models": models,
         "links": links,
         "tick": c.ticks.seconds(),
@@ -122,6 +123,39 @@ pub fn check(text: &str, registry: &Registry) -> Value {
         "loops": c.loops,
         "model_hash": c.hash(),
     })
+}
+
+/// The models defined in `file` (ADR 0068), each with its ports (input
+/// blocks, declared outputs) and the uses naming it at its level.
+pub fn definitions(file: &simsandbox_file::ModelFile) -> Value {
+    let mut out = serde_json::Map::new();
+    for (name, v) in &file.models {
+        let Ok(d) = simsandbox_file::compose::read_definition(name, v) else {
+            continue;
+        };
+        let inputs: Vec<&str> = d
+            .blocks
+            .iter()
+            .filter(|b| b.type_name == simsandbox_eq::input::VALUE)
+            .map(|b| b.name.as_str())
+            .collect();
+        let uses: Vec<&str> = file
+            .blocks
+            .iter()
+            .filter(|b| b.model.as_deref() == Some(name.as_str()))
+            .map(|b| b.name.as_str())
+            .collect();
+        out.insert(
+            name.clone(),
+            json!({
+                "inputs": inputs,
+                "outputs": d.outputs.iter().map(|o| json!({"name": o.name, "from": o.from})).collect::<Vec<_>>(),
+                "uses": uses,
+                "dt": d.run.dt_written.then_some(d.run.dt),
+            }),
+        );
+    }
+    Value::Object(out)
 }
 
 /// One clock domain while it runs.
@@ -1099,6 +1133,145 @@ mod tests {
         );
         assert!(inside.is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_subsystem_written_as_a_model_defined_in_the_file_runs_the_same() {
+        let text = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap()
+            .text;
+        let (mut file, _) = simsandbox_file::ModelFile::from_json(text).unwrap();
+        assert!(simsandbox_file::compose::convert_subsystems(&mut file));
+        let written = file.to_json();
+        assert!(written.contains("\"models\"") && !written.contains("\"subsystems\""));
+        assert!(written.contains("\"model\": \"follower\"") && written.contains("\"car1/lead\""));
+        // Read back as written: one clock, wired through the input blocks.
+        let (again, _) = simsandbox_file::ModelFile::from_json(&written).unwrap();
+        assert_eq!(again.to_json(), written);
+        let one = crate::run::run(text, &registry(), Some(20.0), None).unwrap();
+        let two = run_composition(&written, &registry(), Some(20.0)).unwrap();
+        assert_eq!(two.models.len(), 1, "one clock");
+        for name in ["car1/car.v", "car2/car.v", "car3/control.I"] {
+            assert_eq!(
+                bits(series(&one, name)),
+                bits(two.values(name).unwrap()),
+                "{name}"
+            );
+        }
+        // check lists the definition, its ports and its uses.
+        let c = check(&written, &registry());
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(c["definitions"]["follower"]["inputs"], json!(["lead"]));
+        assert_eq!(
+            c["definitions"]["follower"]["uses"],
+            json!(["car1", "car2", "car3"])
+        );
+        // The session runs it as the app would.
+        let s = crate::Session::load_in("p", &written, &registry(), None, true).unwrap();
+        assert!(s.signals().resolve("car3/car.v").is_some());
+    }
+
+    #[test]
+    fn models_defined_in_a_file_are_found_used_and_refused() {
+        let gain = |k: f64| {
+            json!({"blocks": [
+            {"name": "u", "type": "input.value"},
+            {"name": "g", "type": "eq.equations", "equations": ["input x", format!("y = {k}*x")]}],
+            "connections": [{"from": "u.y", "to": "g.x"}],
+            "outputs": [{"name": "y", "from": "g.y"}]})
+        };
+        let src = json!({"name": "src", "type": "eq.equations", "method": {"name": "euler"},
+                         "equations": ["state s", "ds/dt = 1"], "params": {"s0": 1}});
+        let model = |models: Value, blocks: Value, conns: Value| {
+            json!({"format": 1, "run": {"dt": 0.1, "t_end": 0.5}, "models": models,
+                   "blocks": blocks, "connections": conns})
+            .to_string()
+        };
+        // Found in the file; a definition inside a definition finds the
+        // outer ones; wired, it shares the user's clock.
+        let twice = json!({"blocks": [{"name": "a", "model": "gain"}, {"name": "b", "model": "gain"},
+                                      {"name": "u", "type": "input.value"}],
+                           "connections": [{"from": "u.y", "to": "a/u"}, {"from": "a/y", "to": "b/u"}],
+                           "outputs": [{"name": "y", "from": "b/y"}]});
+        let text = model(
+            json!({"gain": gain(2.0), "twice": twice}),
+            json!([src, {"name": "t", "model": "twice"}]),
+            json!([{"from": "src.s", "to": "t/u"}]),
+        );
+        let r = run_composition(&text, &registry(), None).unwrap();
+        assert_eq!(r.models.len(), 1);
+        let s = r.values("src.s").unwrap();
+        let y = r.values("t/b/g.y").unwrap();
+        for (s, y) in s.iter().zip(y) {
+            assert_eq!(*y, 4.0 * s);
+        }
+        // An inner definition of the same name wins over the outer one.
+        let mut shadowed = twice.clone();
+        shadowed["models"] = json!({"gain": gain(3.0)});
+        let text = model(
+            json!({"gain": gain(2.0), "twice": shadowed}),
+            json!([src, {"name": "t", "model": "twice"}]),
+            json!([{"from": "src.s", "to": "t/u"}]),
+        );
+        let r = run_composition(&text, &registry(), None).unwrap();
+        assert_eq!(r.values("t/b/g.y").unwrap()[0], 9.0);
+        // Not wired, with states, it runs on its own clock at its run.dt.
+        let stepped = json!({"run": {"dt": 0.25}, "blocks": [{"name": "c", "type": "eq.equations",
+            "method": {"name": "euler"}, "equations": ["state x", "dx/dt = 1"], "params": {"x0": 0}}]});
+        let text = json!({"format": 1, "run": {"dt": 0.1, "t_end": 0.5}, "models": {"g": stepped},
+            "blocks": [src, {"name": "k", "model": "g"}]})
+        .to_string();
+        let r = run_composition(&text, &registry(), None).unwrap();
+        assert_eq!(r.models.len(), 2);
+        assert_eq!(r.model("k").unwrap().index[0].1[1], 0.25);
+        // Refused: an unknown name, a model using itself, controls other
+        // than probes.
+        let looped = json!({"blocks": [{"name": "again", "model": "me"}]});
+        for (text, says) in [
+            (
+                model(
+                    json!({}),
+                    json!([{"name": "t", "model": "nothing"}]),
+                    json!([]),
+                ),
+                "no model named 'nothing'",
+            ),
+            (
+                model(
+                    json!({"me": looped}),
+                    json!([{"name": "t", "model": "me"}]),
+                    json!([]),
+                ),
+                "uses itself",
+            ),
+            (
+                model(
+                    json!({"g": {"blocks": [], "controls": {"views": []}}}),
+                    json!([src]),
+                    json!([]),
+                ),
+                "only probes",
+            ),
+        ] {
+            let c = check(&text, &registry());
+            assert_eq!(c["ok"], false, "{c}");
+            assert!(c["errors"][0].to_string().contains(says), "{c}");
+        }
+    }
+
+    #[test]
+    fn a_use_sets_start_states_inside_by_path() {
+        let def = json!({"blocks": [{"name": "c", "type": "eq.equations", "method": {"name": "euler"},
+                                     "equations": ["state x", "dx/dt = 1"], "params": {"x0": 0}}]});
+        let text = json!({"format": 1, "run": {"dt": 0.1, "t_end": 0.2}, "models": {"count": def},
+            "blocks": [{"name": "a", "model": "count", "starts": {"c": {"state": [5.0]}}},
+                       {"name": "b", "model": "count"}]})
+        .to_string();
+        let r = run_composition(&text, &registry(), None).unwrap();
+        assert_eq!(r.values("a/c.x").unwrap()[0], 5.0);
+        assert_eq!(r.values("b/c.x").unwrap()[0], 0.0);
     }
 
     #[test]

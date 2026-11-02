@@ -485,8 +485,13 @@ fn run_settings_default_validate_and_round_trip() {
     let (file, _) = ModelFile::from_json(bare).unwrap();
     assert_eq!(file.run.dt, simsandbox_file::DEFAULT_DT);
     assert_eq!(file.run.t_end, None);
-    // Saving always writes the run section.
-    assert!(file.to_json().contains("\"run\""));
+    // The default step is written only when it was (ADR 0068).
+    assert!(!file.to_json().contains("\"run\""));
+    let (written, _) =
+        ModelFile::from_json(&bare.replace(r#""blocks""#, r#""run": {"dt": 0.01}, "blocks""#))
+            .unwrap();
+    assert!(written.to_json().contains("\"dt\": 0.01"));
+    assert!(written.run.dt_written && !file.run.dt_written);
 
     let with = bare.replace(
         r#""blocks""#,

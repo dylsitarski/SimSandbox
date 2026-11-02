@@ -1,12 +1,13 @@
-//! Editing a used model from the model using it (ADR 0066 step 4c): the
-//! three answers to the edit question, and where edits then go.
+//! Editing a used model from the model using it (ADR 0066 step 4c,
+//! ADR 0068): the answers to the edit question, and where edits then go.
 //!
 //! Model files edited and not yet saved are kept by path (`edited`) and
 //! read in place of the disk on this thread
 //! ([`simsandbox_file::compose::set_edited`]), so the run, `check` and
-//! the diagram see them before Save writes them.
+//! the diagram see them before Save writes them. A local copy is a model
+//! defined in the file open (`models`), used by that use only.
 
-use simsandbox_file::compose::{set_edited, used_model};
+use simsandbox_file::compose::{as_definition, read_definition, set_edited, used_model};
 use simsandbox_file::ModelFile;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,12 +18,13 @@ pub type Edited = BTreeMap<PathBuf, String>;
 /// The answer to the edit question.
 #[derive(Clone, Debug, PartialEq)]
 pub enum How {
-    /// Edit the used file, which every model using it sees.
+    /// Edit what the use reads: the used file, or the definition it names
+    /// (every use of either sees the change).
     Original,
     /// Write its contents to this new file (full path), point this use at
     /// it, and edit the copy.
     NewCopy(PathBuf),
-    /// Write its contents into the model open, detached from any file.
+    /// Copy it into a definition of the model open, used here only.
     LocalCopy,
 }
 
@@ -31,8 +33,9 @@ pub enum How {
 pub struct Target {
     /// The file holding the model edited; `None` for the model open.
     pub file: Option<PathBuf>,
-    /// Local copies inside that file, by name, down to the model edited.
-    pub inline: Vec<String>,
+    /// The definition edited, by its keys through nested `models` from
+    /// that file (`["vehicle", "plant"]`); empty for the file itself.
+    pub def: Vec<String>,
 }
 
 /// Models along a path of uses, each with the folder its files are
@@ -51,8 +54,12 @@ fn walk(
     let mut chain = Vec::new();
     let mut target = Target {
         file: None,
-        inline: Vec::new(),
+        def: Vec::new(),
     };
+    // Where definitions are found, innermost last: keys from the file and
+    // the definitions there.
+    let mut scopes: Vec<(Vec<String>, Vec<String>)> =
+        vec![(Vec::new(), top.models.keys().cloned().collect())];
     for name in path {
         let entry =
             at.0.blocks
@@ -60,14 +67,26 @@ fn walk(
                 .find(|b| &b.name == name && b.is_use())
                 .ok_or_else(|| format!("no model used as '{name}'"))?;
         let (model, file, inner) = used_model(entry, at.1.as_deref())?;
-        match file {
-            Some(f) => {
+        match (file, &entry.model) {
+            (Some(f), _) => {
                 target = Target {
                     file: Some(f),
-                    inline: Vec::new(),
-                }
+                    def: Vec::new(),
+                };
+                scopes = vec![(Vec::new(), model.models.keys().cloned().collect())];
             }
-            None => target.inline.push(name.clone()),
+            (None, Some(m)) => {
+                let (keys, _) = scopes
+                    .iter()
+                    .rev()
+                    .find(|(_, names)| names.contains(m))
+                    .ok_or_else(|| format!("no model named '{m}' is defined here"))?;
+                let mut keys = keys.clone();
+                keys.push(m.clone());
+                target.def.clone_from(&keys);
+                scopes.push((keys, model.models.keys().cloned().collect()));
+            }
+            (None, None) => return Err(format!("'{name}' uses no model")),
         }
         at = (model, inner);
         chain.push(at.clone());
@@ -88,6 +107,25 @@ pub fn model_at(
         .ok_or_else(|| "no model used".into())
 }
 
+/// How many uses in `top` (at any depth of its definitions) name the
+/// definition `target` edits, when it is one of the model open.
+pub fn uses_of(top: &ModelFile, target: &Target) -> usize {
+    if target.file.is_some() || target.def.is_empty() {
+        return 0;
+    }
+    let name = target.def.last().expect("not empty");
+    fn count(m: &ModelFile, name: &str) -> usize {
+        m.blocks
+            .iter()
+            .map(|b| {
+                usize::from(b.model.as_deref() == Some(name))
+                    + b.resolved.as_deref().map_or(0, |d| count(d, name))
+            })
+            .sum()
+    }
+    count(top, name)
+}
+
 /// `p` relative to `to` if it is inside it, else as it is.
 fn relative(p: &Path, to: Option<&Path>) -> String {
     to.and_then(|t| p.strip_prefix(t).ok())
@@ -96,8 +134,8 @@ fn relative(p: &Path, to: Option<&Path>) -> String {
         .into_owned()
 }
 
-/// Make the files `model` names (uses, replacements, data files), written
-/// from `from`, found the same from `to`.
+/// Make the files `model` names (uses, replacements, data files, those of
+/// its definitions), written from `from`, found the same from `to`.
 pub fn rebase(model: &mut ModelFile, from: Option<&Path>, to: Option<&Path>) {
     if from == to {
         return;
@@ -127,14 +165,41 @@ pub fn rebase(model: &mut ModelFile, from: Option<&Path>, to: Option<&Path>) {
                 *f = moved(f);
             }
         }
-        // A local copy's files are found from the same folder as its own.
-        if let Some(inline) = &b.model {
-            if let Ok((mut inner, _)) = ModelFile::from_json(&inline.to_string()) {
-                rebase(&mut inner, from, to);
-                b.model = serde_json::from_str(&inner.to_json()).ok();
+        if let Some(d) = &mut b.resolved {
+            rebase(d, from, to);
+        }
+    }
+    for (name, v) in model.models.iter_mut() {
+        if let Ok(mut d) = read_definition(name, v) {
+            rebase(&mut d, from, to);
+            *v = as_definition(&d);
+        }
+    }
+}
+
+/// Make `model` hold every definition its uses name, so it reads the same
+/// wherever it is put: those found outside it are copied in.
+fn self_contained(model: &mut ModelFile) {
+    for b in &model.blocks {
+        if let (Some(name), Some(d)) = (&b.model, &b.resolved) {
+            if !model.models.contains_key(name) {
+                let mut d = (**d).clone();
+                self_contained(&mut d);
+                model.models.insert(name.clone(), as_definition(&d));
             }
         }
     }
+}
+
+/// A key for a new definition in `models`: `name`, or `name_2`, ….
+fn free_key(models: &BTreeMap<String, serde_json::Value>, name: &str) -> String {
+    let mut key = name.to_string();
+    let mut k = 2;
+    while models.contains_key(&key) {
+        key = format!("{name}_{k}");
+        k += 1;
+    }
+    key
 }
 
 /// Prepare editing the model used at `path` in `top` (saved in `folder`)
@@ -149,11 +214,6 @@ pub fn prepare(
 ) -> Result<Target, String> {
     set_edited(edited.clone());
     let (chain, original) = walk(top, folder, path)?;
-    let first = top
-        .blocks
-        .iter_mut()
-        .find(|b| b.name == path[0] && b.is_use())
-        .ok_or_else(|| format!("no model used as '{}'", path[0]))?;
     match how {
         How::Original => Ok(original),
         How::NewCopy(to) => {
@@ -162,10 +222,16 @@ pub fn prepare(
             }
             let (model, from) = chain.last().cloned().expect("a path has a model");
             let mut copy = model;
+            self_contained(&mut copy);
             rebase(&mut copy, from.as_deref(), to.parent());
             copy.folder = to.parent().map(Path::to_path_buf);
             edited.insert(to.clone(), copy.to_json());
             let named = relative(&to, folder);
+            let first = top
+                .blocks
+                .iter_mut()
+                .find(|b| b.name == path[0] && b.is_use())
+                .expect("walked");
             if path.len() == 1 {
                 // Its replacements are in the copy now.
                 first.file = Some(named);
@@ -174,51 +240,77 @@ pub fn prepare(
             } else {
                 first.files.insert(path[1..].join("/"), named);
             }
+            top.resolve_models().map_err(|e| e.to_string())?;
             set_edited(edited.clone());
             Ok(Target {
                 file: Some(to),
-                inline: Vec::new(),
+                def: Vec::new(),
             })
         }
         How::LocalCopy => {
             // Each model along the path, its files found from here, held
-            // in the one above it.
+            // as a definition of the one above it, the first in `top`.
             let mut models: Vec<ModelFile> = chain
                 .into_iter()
                 .map(|(mut m, from)| {
+                    self_contained(&mut m);
                     rebase(&mut m, from.as_deref(), folder);
                     m
                 })
                 .collect();
-            while models.len() > 1 {
-                let inner = models.pop().expect("more than one");
-                let name = &path[models.len()];
-                let holder = models.last_mut().expect("one left");
-                let entry = holder
-                    .blocks
-                    .iter_mut()
-                    .find(|b| &b.name == name)
-                    .expect("walked");
-                hold(entry, &inner);
+            let mut keys: Vec<String> = Vec::new();
+            let mut held: Option<(String, ModelFile)> = None;
+            while let Some(mut m) = models.pop() {
+                let k = models.len();
+                if let Some((key, inner)) = held.take() {
+                    let entry = m
+                        .blocks
+                        .iter_mut()
+                        .find(|b| b.name == path[k + 1])
+                        .expect("walked");
+                    use_definition(entry, &key);
+                    m.models.insert(key.clone(), as_definition(&inner));
+                    keys.insert(0, key);
+                }
+                // Free among the definitions of the model holding it.
+                let key = free_key(
+                    if k == 0 {
+                        &top.models
+                    } else {
+                        &models[k - 1].models
+                    },
+                    &path[k],
+                );
+                held = Some((key, m));
             }
-            hold(first, &models[0]);
+            let (key, m) = held.expect("a path has a model");
+            let first = top
+                .blocks
+                .iter_mut()
+                .find(|b| b.name == path[0] && b.is_use())
+                .expect("walked");
+            use_definition(first, &key);
+            top.models.insert(key.clone(), as_definition(&m));
+            keys.insert(0, key);
+            top.resolve_models().map_err(|e| e.to_string())?;
             Ok(Target {
                 file: None,
-                inline: path.to_vec(),
+                def: keys,
             })
         }
     }
 }
 
-/// `entry` becomes a local copy of `model`.
-fn hold(entry: &mut simsandbox_file::BlockEntry, model: &ModelFile) {
+/// `entry` uses the definition `key` (its replacements are in it).
+fn use_definition(entry: &mut simsandbox_file::BlockEntry, key: &str) {
     entry.file = None;
     entry.files.clear();
-    entry.model = serde_json::from_str(&model.to_json()).ok();
+    entry.model = Some(key.to_string());
+    entry.resolved = None;
 }
 
-/// The file `target.file` names: as edited, else from disk; the model
-/// open for `None`.
+/// The file `file` names: as edited, else from disk; the model open for
+/// `None`.
 fn container(
     top: &ModelFile,
     edited: &Edited,
@@ -244,18 +336,36 @@ fn container(
 pub fn read(top: &ModelFile, edited: &Edited, target: &Target) -> Result<ModelFile, String> {
     let mut m = container(top, edited, &target.file)?;
     let folder = m.folder.clone();
-    for name in &target.inline {
-        let inline = m
-            .blocks
-            .iter()
-            .find(|b| &b.name == name)
-            .and_then(|b| b.model.clone())
-            .ok_or_else(|| format!("no local copy named '{name}'"))?;
-        let (inner, _) = ModelFile::from_json(&inline.to_string()).map_err(|e| e.to_string())?;
-        m = inner;
+    for key in &target.def {
+        let v = m
+            .models
+            .get(key)
+            .ok_or_else(|| format!("no model named '{key}' is defined here"))?;
+        m = read_definition(key, v)?;
         m.folder.clone_from(&folder);
     }
     Ok(m)
+}
+
+/// Put `model`, edited, as the definition `keys` names inside `holder`.
+fn put(holder: &mut ModelFile, keys: &[String], model: &ModelFile) -> Result<(), String> {
+    match keys {
+        [] => {
+            let folder = holder.folder.clone();
+            *holder = model.clone();
+            holder.folder = folder;
+        }
+        [key, rest @ ..] => {
+            let v = holder
+                .models
+                .get(key)
+                .ok_or_else(|| format!("no model named '{key}' is defined here"))?;
+            let mut inner = read_definition(key, v)?;
+            put(&mut inner, rest, model)?;
+            holder.models.insert(key.clone(), as_definition(&inner));
+        }
+    }
+    Ok(())
 }
 
 /// Put `model`, edited, back where `target` says: into `top`, or into
@@ -267,37 +377,13 @@ pub fn write(
     model: &ModelFile,
 ) -> Result<(), String> {
     let mut held = container(top, edited, &target.file)?;
-    // The models from the container down, then each put into the one
-    // above it.
-    let mut stack = vec![held.clone()];
-    for name in &target.inline {
-        let next = read(
-            stack.last().expect("one"),
-            &Edited::new(),
-            &Target {
-                file: None,
-                inline: vec![name.clone()],
-            },
-        )?;
-        stack.push(next);
-    }
-    stack.pop();
-    let mut inner = model.clone();
-    for (name, mut holder) in target.inline.iter().rev().zip(stack.into_iter().rev()) {
-        let entry = holder
-            .blocks
-            .iter_mut()
-            .find(|b| &b.name == name)
-            .expect("read above");
-        hold(entry, &inner);
-        inner = holder;
-    }
-    held = inner;
+    put(&mut held, &target.def, model)?;
     match &target.file {
         None => {
             let folder = top.folder.clone();
             *top = held;
             top.folder = folder;
+            top.resolve_models().map_err(|e| e.to_string())?;
         }
         Some(p) => {
             edited.insert(p.clone(), held.to_json());

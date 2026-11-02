@@ -263,7 +263,10 @@ impl Diagram {
             .blocks
             .iter()
             .map(|b| match file.subsystems.get(&b.type_name) {
-                _ if b.is_use() => use_node(b, registry, file.folder.as_deref(), 0),
+                _ if b.is_use() => {
+                    let wired = simsandbox_file::compose::wired(l.connections, &b.name);
+                    use_node(b, registry, file.folder.as_deref(), 0, wired)
+                }
                 Some(_) => instance_node(file, b, registry),
                 None => node(b, registry, file.folder.as_deref()),
             })
@@ -548,9 +551,14 @@ fn use_node(
     registry: &Registry,
     folder: Option<&std::path::Path>,
     depth: usize,
+    wired: bool,
 ) -> Node {
     use simsandbox_file::UseClock;
-    let file_name = b.file.clone().unwrap_or_else(|| "a local copy".into());
+    let file_name = match (&b.file, &b.model) {
+        (Some(f), _) => f.clone(),
+        (None, Some(m)) => format!("model {m}"),
+        (None, None) => String::new(),
+    };
     let mut n = Node {
         name: b.name.clone(),
         kind: NodeKind::Use,
@@ -591,7 +599,8 @@ fn use_node(
     let mut own_inputs: Vec<Port> = Vec::new();
     for e in &model.blocks {
         if e.is_use() {
-            let inner = use_node(e, registry, inner_folder.as_deref(), depth + 1);
+            let wired = simsandbox_file::compose::wired(&model.connections, &e.name);
+            let inner = use_node(e, registry, inner_folder.as_deref(), depth + 1, wired);
             has_states |= !inner.method.contains("new data");
             let prefixed = |p: Port| Port {
                 name: format!("{}/{}", e.name, p.name),
@@ -659,6 +668,8 @@ fn use_node(
     n.method = match b.clock {
         Some(UseClock::Step(dt)) => format!("every {dt} s"),
         Some(UseClock::Shared) => "shared clock".into(),
+        // ADR 0068: wired and with no step of its own, it shares.
+        None if wired && !model.run.dt_written => "shared clock".into(),
         None if has_states => format!("every {} s", model.run.dt),
         None => "on new data".into(),
     };
@@ -1732,7 +1743,9 @@ fn clock_of<'a>(file: &'a ModelFile, end: &str) -> Option<&'a str> {
     file.blocks
         .iter()
         .find(|b| b.name == first && b.is_use())
-        .filter(|b| b.clock != Some(simsandbox_file::UseClock::Shared))
+        // As if wired: a model with no step of its own shares its user's
+        // clock once a wire reaches it (ADR 0068).
+        .filter(|b| !simsandbox_file::compose::runs_shared(b, file.folder.as_deref(), true))
         .map(|b| b.name.as_str())
 }
 
