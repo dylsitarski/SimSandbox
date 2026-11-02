@@ -16,6 +16,7 @@ use simsandbox_core::registry::Registry;
 use simsandbox_file::{FilterEntry, ModelFile, ProbeEntry, ViewEntry};
 use simsandbox_session::canvas::{type_menu, Canvas, Request, Selection};
 use simsandbox_session::diagram::{apply_in, Diagram, Edit, NodeKind, Scope};
+use simsandbox_session::edit_use::{self, Edited, How, Target};
 use simsandbox_session::undo::{canvas_state, change, Change};
 use simsandbox_session::Session;
 use simsandbox_views::ViewRegistry;
@@ -74,6 +75,8 @@ pub enum Outcome {
 struct Snapshot {
     file: ModelFile,
     scope: Scope,
+    /// Used model files edited from here and not saved (ADR 0066 4c).
+    edited: Edited,
 }
 
 #[derive(Default)]
@@ -105,7 +108,18 @@ pub struct DiagramTab {
     pub inside: Vec<String>,
     /// Its diagram, for that path.
     inside_cache: Option<(Vec<String>, Diagram)>,
+    /// Model files edited from inside uses and not saved yet, read in
+    /// place of the disk (ADR 0066 step 4c); Save writes them.
+    pub edited: Edited,
+    /// The answer to the edit question for each use opened, by path,
+    /// until the model is closed or an edit is undone.
+    pub(crate) choices: BTreeMap<Vec<String>, Target>,
+    /// Edits inside a use waiting for that answer, with the name offered
+    /// for a new copy.
+    asking: Option<(Vec<Edit>, String)>,
 }
+
+use std::collections::BTreeMap;
 
 /// The model file at the end of `path`, a chain of uses of model files
 /// from `top` (saved in `folder`), read from disk.
@@ -122,20 +136,10 @@ pub(crate) fn used_file(
         let entry = file
             .blocks
             .iter()
-            .find(|b| &b.name == name && b.file.is_some())
-            .ok_or_else(|| format!("no model file used as '{name}'"))?;
-        let at = std::path::PathBuf::from(entry.file.as_deref().unwrap_or_default());
-        let at = match &folder {
-            Some(f) if at.is_relative() => f.join(at),
-            _ => at,
-        };
-        let text = std::fs::read_to_string(&at).map_err(|e| format!("{}: {e}", at.display()))?;
-        let (mut used, _) =
-            ModelFile::from_json(&text).map_err(|e| format!("{}: {e}", at.display()))?;
-        // As the run reads it: with the files its use replaces inside it.
-        simsandbox_file::compose::replace_files(&mut used, &entry.files, folder.as_deref())?;
-        used.folder = at.parent().map(std::path::Path::to_path_buf);
-        folder = used.folder.clone();
+            .find(|b| &b.name == name && b.is_use())
+            .ok_or_else(|| format!("no model used as '{name}'"))?;
+        let (used, _, inner) = simsandbox_file::compose::used_model(entry, folder.as_deref())?;
+        folder = inner;
         file = used;
     }
     Ok(file)
@@ -151,11 +155,16 @@ impl DiagramTab {
         model: &Model,
         registry: &Registry,
         views: &ViewRegistry,
+        current: &dyn Fn() -> Result<String, String>,
     ) -> Vec<Outcome> {
         let mut out = Vec::new();
         let mut back = None;
         ui.horizontal(|ui| {
-            if ui.link("Model").on_hover_text("Back to the whole model").clicked() {
+            if ui
+                .link("Model")
+                .on_hover_text("Back to the whole model")
+                .clicked()
+            {
                 back = Some(0);
             }
             for (k, name) in self.inside.iter().enumerate() {
@@ -168,7 +177,17 @@ impl DiagramTab {
                     ui.strong(name);
                 }
             }
-            ui.weak("· a model file used here, as written; editing it comes with the question of where (ADR 0066 step 4c)");
+            match self.choices.get(&self.inside) {
+                Some(Target { file: Some(f), .. }) => {
+                    ui.weak(format!("· editing {}", f.display()));
+                }
+                Some(_) => {
+                    ui.weak("· editing a local copy in this model");
+                }
+                None => {
+                    ui.weak("· a used model: the first edit asks where it goes");
+                }
+            }
         });
         if let Some(k) = back {
             self.inside.truncate(k);
@@ -209,24 +228,216 @@ impl DiagramTab {
         let (_, d) = self.inside_cache.as_mut().expect("built above");
         d.live_values(&rows);
         let (edits, requests) = self.canvas.show(ui, d, registry, true);
-        if !edits.is_empty() {
-            out.push(Outcome::Error(
-                "A used model is shown as written: open its own file to edit it (editing it \
-                 from here comes later)"
-                    .into(),
-            ));
-        }
-        for r in requests {
-            if let Request::Open(name) = r {
+        let opened = requests.into_iter().find_map(|r| match r {
+            Request::Open(name)
                 if d.node(&name)
-                    .is_some_and(|k| d.nodes[k].kind == NodeKind::Use)
-                {
-                    self.inside.push(name);
-                    self.inside_cache = None;
-                    self.canvas.selected = None;
-                    self.canvas.refit();
-                    break;
+                    .is_some_and(|k| d.nodes[k].kind == NodeKind::Use) =>
+            {
+                Some(name)
+            }
+            _ => None,
+        });
+        if !edits.is_empty() {
+            match self.choices.get(&self.inside).cloned() {
+                Some(target) => {
+                    out.extend(self.edit_inside(None, &target, edits, registry, current))
                 }
+                None => {
+                    let original = self.base(current).ok().and_then(|mut top| {
+                        top.folder.clone_from(&self.folder);
+                        edit_use::prepare(
+                            &mut top,
+                            self.folder.as_deref(),
+                            &mut self.edited.clone(),
+                            &self.inside,
+                            How::Original,
+                        )
+                        .ok()
+                    });
+                    let file = original
+                        .and_then(|t| t.file)
+                        .unwrap_or_else(|| std::path::PathBuf::from("model.ssbx.json"));
+                    let name = edit_use::copy_name(&file, self.folder.as_deref(), &self.edited);
+                    let name = name
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.asking = Some((edits, name));
+                }
+            }
+        }
+        out.extend(self.question(ui, registry, current));
+        if let Some(name) = opened {
+            self.inside.push(name);
+            self.inside_cache = None;
+            self.canvas.selected = None;
+            self.canvas.refit();
+        }
+        out
+    }
+
+    /// The edit question (ADR 0066 step 4c), while edits inside a used
+    /// model wait for it.
+    fn question(
+        &mut self,
+        ui: &mut egui::Ui,
+        registry: &Registry,
+        current: &dyn Fn() -> Result<String, String>,
+    ) -> Vec<Outcome> {
+        let Some((_, name)) = &mut self.asking else {
+            return Vec::new();
+        };
+        let mut how = None;
+        let mut cancel = false;
+        let shown = self.inside.join(" › ");
+        let folder = self.folder.clone();
+        egui::Modal::new(egui::Id::new("edit-used-model")).show(ui.ctx(), |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(format!("Edit {shown}"));
+            ui.label("This model is used from a file. Where should the edit go?");
+            ui.add_space(6.0);
+            if ui
+                .button("Edit the original")
+                .on_hover_text("The used file changes, for every model using it; Save writes it")
+                .clicked()
+            {
+                how = Some(How::Original);
+            }
+            ui.horizontal(|ui| {
+                let copy = ui
+                    .add_enabled(folder.is_some() && !name.trim().is_empty(), egui::Button::new("Edit as a new copy"))
+                    .on_hover_text("A new file next to this model, used here only; others keep the original");
+                ui.add(egui::TextEdit::singleline(name).desired_width(180.0));
+                if copy.clicked() {
+                    if let Some(f) = &folder {
+                        how = Some(How::NewCopy(f.join(name.trim())));
+                    }
+                }
+            });
+            if folder.is_none() {
+                ui.weak("Save this model first to make a copy next to it.");
+            }
+            if ui
+                .button("Make a local copy")
+                .on_hover_text("Written into this model, detached from any file, with the same clock and names")
+                .clicked()
+            {
+                how = Some(How::LocalCopy);
+            }
+            ui.add_space(6.0);
+            if ui.button("Cancel").clicked() {
+                cancel = true;
+            }
+        });
+        if cancel {
+            self.asking = None;
+            self.inside_cache = None;
+            return Vec::new();
+        }
+        let Some(how) = how else {
+            return Vec::new();
+        };
+        let (edits, _) = self.asking.take().expect("asking");
+        self.answer(edits, how, registry, current)
+    }
+
+    /// Carry out the answer `how` to the edit question for the use open,
+    /// then apply `edits` inside it.
+    pub(crate) fn answer(
+        &mut self,
+        edits: Vec<Edit>,
+        how: How,
+        registry: &Registry,
+        current: &dyn Fn() -> Result<String, String>,
+    ) -> Vec<Outcome> {
+        let mut top = match self.base(current) {
+            Ok(f) => f,
+            Err(e) => return vec![Outcome::Error(e)],
+        };
+        top.folder.clone_from(&self.folder);
+        self.remember(top.clone());
+        let mut edited = self.edited.clone();
+        match edit_use::prepare(
+            &mut top,
+            self.folder.as_deref(),
+            &mut edited,
+            &self.inside,
+            how,
+        ) {
+            Ok(target) => {
+                self.edited = edited;
+                self.choices.insert(self.inside.clone(), target.clone());
+                self.edit_inside(Some(top), &target, edits, registry, current)
+            }
+            Err(e) => {
+                self.restore();
+                vec![Outcome::Error(e)]
+            }
+        }
+    }
+
+    /// Undo what was remembered last, without a redo step: an edit that
+    /// did not apply.
+    fn restore(&mut self) {
+        if let Some(snap) = self.undo.pop() {
+            self.edited = snap.edited;
+            simsandbox_file::compose::set_edited(self.edited.clone());
+        }
+    }
+
+    /// Apply `edits` made inside the used model open to `target`; `top`
+    /// is the model as prepared for it (already remembered for undo), or
+    /// the current one.
+    pub(crate) fn edit_inside(
+        &mut self,
+        top: Option<ModelFile>,
+        target: &Target,
+        edits: Vec<Edit>,
+        registry: &Registry,
+        current: &dyn Fn() -> Result<String, String>,
+    ) -> Vec<Outcome> {
+        let mut out = Vec::new();
+        let mut top = match top {
+            Some(t) => t,
+            None => match self.base(current) {
+                Ok(mut t) => {
+                    t.folder.clone_from(&self.folder);
+                    self.remember(t.clone());
+                    t
+                }
+                Err(e) => return vec![Outcome::Error(e)],
+            },
+        };
+        self.inside_cache = None;
+        let mut model = match edit_use::read(&top, &self.edited, target) {
+            Ok(m) => m,
+            Err(e) => {
+                self.restore();
+                return vec![Outcome::Error(e)];
+            }
+        };
+        let mut notes = Vec::new();
+        for e in &edits {
+            match apply_in(&mut model, &Scope::Model, registry, e) {
+                Ok(note) => notes.push(note),
+                Err(err) => out.push(Outcome::Error(err)),
+            }
+        }
+        if notes.is_empty() {
+            self.restore();
+            return out;
+        }
+        if let Err(e) = edit_use::write(&mut top, &mut self.edited, target, &model) {
+            self.restore();
+            out.push(Outcome::Error(e));
+            return out;
+        }
+        let text = top.to_json();
+        match Session::load_in("check", &text, registry, self.folder.as_deref(), true) {
+            Ok(_) => out.push(Outcome::Apply { text, notes }),
+            Err(problem) => {
+                self.restore();
+                out.push(Outcome::Error(format!("Not applied: {problem}")));
             }
         }
         out
@@ -256,6 +467,15 @@ impl DiagramTab {
         self.inside.clear();
         self.inside_cache = None;
         self.canvas.revealed.clear();
+        self.asking = None;
+    }
+
+    /// A different model is opened: drop the used files edited for this
+    /// one and the answers given (the app asked about unsaved changes).
+    pub fn forget_files(&mut self) {
+        self.edited.clear();
+        self.choices.clear();
+        simsandbox_file::compose::set_edited(Edited::new());
     }
 
     /// Draw the tab. `views` are the open tiles as saved; `current` gives
@@ -292,7 +512,7 @@ impl DiagramTab {
             }
         }
         if !self.inside.is_empty() {
-            return self.show_inside(ui, model, registry, views.1);
+            return self.show_inside(ui, model, registry, views.1, current);
         }
         let source = match &self.draft {
             Some((f, _)) => f,
@@ -589,6 +809,7 @@ impl DiagramTab {
         self.undo.push(Snapshot {
             file,
             scope: self.scope.clone(),
+            edited: self.edited.clone(),
         });
         if self.undo.len() > UNDO_DEPTH {
             self.undo.remove(0);
@@ -622,7 +843,17 @@ impl DiagramTab {
         let here = Snapshot {
             file: now.clone(),
             scope: self.scope.clone(),
+            edited: self.edited.clone(),
         };
+        // Used files edited from inside uses go back too; the question is
+        // asked again, since a copy may be gone.
+        let files_changed = snap.edited != self.edited;
+        if files_changed {
+            self.edited = snap.edited.clone();
+            simsandbox_file::compose::set_edited(self.edited.clone());
+            self.choices.clear();
+            self.inside_cache = None;
+        }
         if back {
             self.redo.push(here);
         } else {
@@ -636,7 +867,7 @@ impl DiagramTab {
         self.cache = None;
         self.canvas.selected = None;
         let word = if back { "Undone" } else { "Redone" };
-        let kind = if self.draft.is_some() {
+        let kind = if self.draft.is_some() || files_changed {
             Change::Model
         } else {
             change(&now, &next)

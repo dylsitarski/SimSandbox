@@ -21,6 +21,7 @@ pub mod canvas;
 pub mod compose;
 pub mod describe;
 pub mod diagram;
+pub mod edit_use;
 pub mod examples;
 pub mod filters;
 pub mod observers;

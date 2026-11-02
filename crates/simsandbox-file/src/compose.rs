@@ -151,14 +151,15 @@ fn unique(base: &str, taken: &BTreeMap<String, Subsystem>) -> String {
     name
 }
 
-/// Whether a model file's text uses model files.
+/// Whether a model file's text uses model files (or local copies).
 pub fn is_composition(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
         .and_then(|v| {
-            v.get("blocks")?
-                .as_array()
-                .map(|b| b.iter().any(|e| e.get("file").is_some()))
+            v.get("blocks")?.as_array().map(|b| {
+                b.iter()
+                    .any(|e| e.get("file").is_some() || e.get("model").is_some())
+            })
         })
         .unwrap_or(false)
 }
@@ -171,7 +172,13 @@ pub(crate) fn check_uses(
 ) -> Result<(), FileError> {
     for (k, b) in blocks.iter().enumerate() {
         let path = format!("blocks[{k}]");
-        match &b.file {
+        if b.file.is_some() && b.model.is_some() {
+            return Err(invalid(
+                format!("{path}.model"),
+                "a use names a file or holds a local copy, not both",
+            ));
+        }
+        match b.is_use().then_some(()) {
             None if b.type_name.is_empty() => {
                 return Err(invalid(
                     path,
@@ -212,7 +219,7 @@ pub(crate) fn check_uses(
                 if let Some((key, _)) = block_only.iter().find(|(_, has)| *has) {
                     return Err(invalid(
                         format!("{path}.{key}"),
-                        "a use of a model file has a name, file, files, params, clock and canvas",
+                        "a use of a model has a name, file (or model), files, params, clock and canvas",
                     ));
                 }
                 if let Some(key) = b
@@ -237,7 +244,7 @@ pub(crate) fn check_uses(
         }
     }
     for (name, s) in subsystems {
-        if let Some(k) = s.blocks.iter().position(|b| b.file.is_some()) {
+        if let Some(k) = s.blocks.iter().position(BlockEntry::is_use) {
             return Err(invalid(
                 format!("subsystems.{name}.blocks[{k}]"),
                 "model files are used at a model's level, not inside a subsystem",
@@ -355,7 +362,7 @@ pub fn load_composition(
     folder: Option<&Path>,
 ) -> Result<Composition, FileError> {
     let (file, warnings) = ModelFile::from_json(text)?;
-    if !file.blocks.iter().any(|b| b.file.is_some()) {
+    if !file.blocks.iter().any(BlockEntry::is_use) {
         return Err(invalid("blocks", "this model uses no model files"));
     }
     let folder = folder
@@ -537,6 +544,81 @@ fn digest(bytes: &[u8]) -> String {
     format!("sha256:{hex}")
 }
 
+thread_local! {
+    /// Model files edited in the app and not yet saved, by canonical path
+    /// (ADR 0066 step 4c): read in place of what is on disk.
+    static EDITED: std::cell::RefCell<BTreeMap<PathBuf, String>> =
+        const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+/// Read model files in `edited` (by path) as written there rather than
+/// from disk, on this thread, until set again.
+pub fn set_edited(edited: BTreeMap<PathBuf, String>) {
+    let edited = edited
+        .into_iter()
+        .map(|(p, t)| (canonical(&p), t))
+        .collect();
+    EDITED.with(|e| *e.borrow_mut() = edited);
+}
+
+/// `path` made canonical, also for a file not written yet (by its folder).
+pub fn canonical(path: &Path) -> PathBuf {
+    if let Ok(p) = path.canonicalize() {
+        return p;
+    }
+    match (path.parent().map(Path::canonicalize), path.file_name()) {
+        (Some(Ok(folder)), Some(name)) => folder.join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// A used model file's bytes: as edited (see [`set_edited`]), else from
+/// disk.
+pub fn read_model(path: &Path) -> std::io::Result<Vec<u8>> {
+    let at = canonical(path);
+    if let Some(text) = EDITED.with(|e| e.borrow().get(&at).cloned()) {
+        return Ok(text.into_bytes());
+    }
+    std::fs::read(path)
+}
+
+/// The model a use `u` in a file saved in `folder` reads, as the run
+/// reads it (edited files, its replacements applied), with the file it
+/// came from (`None` for a local copy) and the folder its own files are
+/// found from.
+pub fn used_model(
+    u: &BlockEntry,
+    folder: Option<&Path>,
+) -> Result<(ModelFile, Option<PathBuf>, Option<PathBuf>), String> {
+    let (text, at) = match (&u.model, &u.file) {
+        (Some(inline), _) => (inline.to_string(), None),
+        (None, Some(name)) => {
+            let at = PathBuf::from(name);
+            let at = match folder {
+                Some(f) if at.is_relative() => f.join(at),
+                _ => at,
+            };
+            let bytes = read_model(&at).map_err(|e| format!("{}: {e}", at.display()))?;
+            let text = String::from_utf8(bytes)
+                .map_err(|_| format!("{}: not a text file", at.display()))?;
+            (text, Some(at))
+        }
+        (None, None) => return Err(format!("'{}' uses no model", u.name)),
+    };
+    let shown = at.as_ref().map_or_else(
+        || format!("{} (local copy)", u.name),
+        |p| p.display().to_string(),
+    );
+    let (mut model, _) = ModelFile::from_json(&text).map_err(|e| format!("{shown}: {e}"))?;
+    replace_files(&mut model, &u.files, folder)?;
+    let inner = match &at {
+        Some(p) => p.parent().map(Path::to_path_buf),
+        None => folder.map(Path::to_path_buf),
+    };
+    model.folder.clone_from(&inner);
+    Ok((model, at, inner))
+}
+
 /// Put `files` (replacements written in a use, by path of uses inside
 /// the model it uses; ADR 0066 step 4c) into `model`, the file that use
 /// reads: a replacement of one of its own uses becomes that use's `file`,
@@ -559,7 +641,7 @@ pub fn replace_files(
         let entry = model
             .blocks
             .iter_mut()
-            .find(|b| b.name == first && b.file.is_some())
+            .find(|b| b.name == first && b.is_use())
             .ok_or_else(|| format!("'{key}': '{first}' is not a use of a model file"))?;
         let with = PathBuf::from(&files[key]);
         // Found from the folder of the file it is written in, wherever it
@@ -576,7 +658,10 @@ pub fn replace_files(
         };
         let at = at.to_string_lossy().into_owned();
         match rest {
-            None => entry.file = Some(at),
+            None => {
+                entry.file = Some(at);
+                entry.model = None;
+            }
             Some(rest) => {
                 entry.files.insert(rest.to_string(), at);
             }
@@ -925,7 +1010,7 @@ impl Loader<'_> {
             .blocks
             .iter()
             .enumerate()
-            .filter(|(_, b)| b.file.is_some())
+            .filter(|(_, b)| b.is_use())
             .map(|(k, b)| OwnClock {
                 name: b.name.clone(),
                 entry: b.clone(),
@@ -939,7 +1024,7 @@ impl Loader<'_> {
         // Its own blocks and the connections among them (with probes
         // feeding them) form its domain.
         let own: Vec<usize> = (0..file.blocks.len())
-            .filter(|&k| file.blocks[k].file.is_none())
+            .filter(|&k| !file.blocks[k].is_use())
             .collect();
         let inside: Vec<usize> = (0..file.connections.len())
             .filter(|&k| {
@@ -1051,6 +1136,18 @@ impl Loader<'_> {
         path: &str,
         folder: Option<&Path>,
     ) -> Result<(ModelFile, PathBuf, PathBuf), FileError> {
+        // A local copy: its model is here, its files found from here.
+        if let Some(inline) = &u.model {
+            let text = inline.to_string();
+            let (mut model, _) = ModelFile::from_json(&text)
+                .map_err(|e| invalid("model", format!("the local copy: {e}")))?;
+            replace_files(&mut model, &u.files, folder).map_err(|e| invalid("files", e))?;
+            self.data
+                .insert(format!("{path}.file"), digest(text.as_bytes()));
+            let here = folder.map_or_else(PathBuf::new, Path::to_path_buf);
+            let shown = here.join(format!("{} (local copy)", u.name));
+            return Ok((model, shown.clone(), shown));
+        }
         let name = u.file.as_deref().expect("a use names a file");
         let found = PathBuf::from(name);
         let found = match (folder, found.is_absolute()) {
@@ -1078,8 +1175,8 @@ impl Loader<'_> {
                 format!("a model file uses itself: {}", chain.join(" → ")),
             ));
         }
-        let bytes = std::fs::read(&found)
-            .map_err(|e| invalid("file", format!("{}: {e}", found.display())))?;
+        let bytes =
+            read_model(&found).map_err(|e| invalid("file", format!("{}: {e}", found.display())))?;
         let text =
             String::from_utf8(bytes.clone()).map_err(|_| invalid("file", "not a text file"))?;
         let (mut model, _) = ModelFile::from_json(&text)
@@ -1138,7 +1235,7 @@ impl Loader<'_> {
     ) -> Result<Inlining, FileError> {
         let shared: Vec<usize> = (0..file.blocks.len())
             .filter(|&k| {
-                file.blocks[k].file.is_some()
+                file.blocks[k].is_use()
                     && (self.merge || file.blocks[k].clock == Some(UseClock::Shared))
             })
             .collect();
@@ -1179,7 +1276,7 @@ impl Loader<'_> {
                 .blocks
                 .iter()
                 .enumerate()
-                .filter(|(_, b)| b.file.is_some())
+                .filter(|(_, b)| b.is_use())
                 .map(|(j, b)| OwnClock {
                     name: b.name.clone(),
                     entry: b.clone(),
@@ -1189,7 +1286,7 @@ impl Loader<'_> {
                 })
                 .collect();
             moving.extend(inner_lifted);
-            child.blocks.retain(|b| b.file.is_none());
+            child.blocks.retain(|b| !b.is_use());
             let own_clock: Vec<String> = moving.iter().map(|m| m.name.clone()).collect();
             let own_clock: Vec<&str> = own_clock.iter().map(String::as_str).collect();
             // This use's values: those reaching a model on its own clock

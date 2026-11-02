@@ -248,3 +248,15 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
 - **`check`:** `replaced_files` lists the top file's replacements by full path (`vehicle/plant`); each model's `file` is the one read.
 - **Python:** `Model.add_model(..., files={"plant": "car-2.ssbx.json"})`.
 - **Tests:** a replaced car gives the bits of the original car given the copy's mass by `params`, at one and two levels down and on a shared clock; the nearer replacement wins; the used file is left unchanged; the hash changes; refusals; Python.
+
+**Step 4c, second part (2026-11-02): editing a used model from the model using it.**
+- **A local copy is written in the use**, as `"model": {…}` (the used model file's contents) in place of `"file"`, with the same name, clock, `params` and canvas place. A subsystem cannot hold one: it shares its model's clock and cannot hold models on their own clocks, probes or declared outputs. Its files are found from the folder of the file holding it. `BlockEntry::is_use` covers both kinds of use; `check`, runs, the hash (its contents under the use's path), the diagram ("a local copy") and Python treat them alike.
+- **Unsaved edits to used files** are kept by path and read in place of the disk on the thread that loads models (`compose::set_edited`, `read_model`), so the run, `check` and the diagram see them before Save. `compose::used_model` reads a use as the run does (edited files, replacements), for the diagram and the app.
+- **The answers** (`edit_use::prepare`, headless and tested):
+  - *Edit the original:* edits go to the file the use reads (after replacements), or to the local copy it is.
+  - *Edit as a new copy:* the model as read goes to a new file next to the model open (`car-2.ssbx.json` offered, refused if it exists); this use points to it: `file` for a use at the top, a `files` replacement for a deeper one (Q48). Paths inside it are rebased to its folder (`edit_use::rebase`: uses, replacements, `input.file` data files, nested local copies).
+  - *Make a local copy:* every model along the path becomes a local copy, each held in the one above it, rebased to the model open.
+  - Edits then go where `edit_use::Target` says (a file, then local copies inside it, by name): `edit_use::read`, apply, `edit_use::write`.
+- **The app:** the first edit inside a used model (a value, a block, a wire or a move) opens the question, with Cancel. The answer holds for that use until the model is closed or an edit is undone. The breadcrumb says where edits go. Edits apply as at the top level: refused with the reason if the model no longer loads. Undo and redo cover the used files and the model open together. Save writes the model and every edited file, and the log names each. Unsaved edits to used files count as unsaved changes; opening another model drops them, after asking.
+- **Tests:** each answer gives the bits of the same change made by `params`, leaves the disk alone until saved, and saves what it should (headless); in the app, each answer applies, the next edit does not ask, undo and redo restore the files, and a saved model reopens with the edit.
+

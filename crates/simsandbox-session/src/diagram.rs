@@ -263,7 +263,7 @@ impl Diagram {
             .blocks
             .iter()
             .map(|b| match file.subsystems.get(&b.type_name) {
-                _ if b.file.is_some() => use_node(b, registry, file.folder.as_deref(), 0),
+                _ if b.is_use() => use_node(b, registry, file.folder.as_deref(), 0),
                 Some(_) => instance_node(file, b, registry),
                 None => node(b, registry, file.folder.as_deref()),
             })
@@ -550,7 +550,7 @@ fn use_node(
     depth: usize,
 ) -> Node {
     use simsandbox_file::UseClock;
-    let file_name = b.file.clone().unwrap_or_default();
+    let file_name = b.file.clone().unwrap_or_else(|| "a local copy".into());
     let mut n = Node {
         name: b.name.clone(),
         kind: NodeKind::Use,
@@ -570,25 +570,10 @@ fn use_node(
     let folder = folder
         .map(std::path::Path::to_path_buf)
         .or_else(simsandbox_core::registry::current_folder);
-    let path = std::path::PathBuf::from(&file_name);
-    let path = match &folder {
-        Some(f) if path.is_relative() => f.join(path),
-        _ => path,
-    };
-    let read = std::fs::read_to_string(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))
-        .and_then(|t| {
-            ModelFile::from_json(&t)
-                .map(|(f, _)| f)
-                .map_err(|e| e.to_string())
-        })
-        .and_then(|mut m| {
-            // Files it replaces inside (ADR 0066 step 4c).
-            simsandbox_file::compose::replace_files(&mut m, &b.files, folder.as_deref())?;
-            Ok(m)
-        });
-    let model = match read {
-        Ok(m) if depth < 8 => m,
+    // As the run reads it: edited files and replacements (ADR 0066 4c).
+    let read = simsandbox_file::compose::used_model(b, folder.as_deref());
+    let (model, inner_folder) = match read {
+        Ok((m, _, inner)) if depth < 8 => (m, inner),
         Ok(_) => {
             n.error = Some("model files used too deeply (or using themselves)".into());
             return n;
@@ -598,7 +583,6 @@ fn use_node(
             return n;
         }
     };
-    let inner_folder = path.parent().map(std::path::Path::to_path_buf);
     let mut has_states = false;
     // Every input and output it has, by path; the node shows its
     // interface and keeps the rest reachable (ADR 0066 step 4b).
@@ -606,7 +590,7 @@ fn use_node(
     let mut all_outputs: Vec<Port> = Vec::new();
     let mut own_inputs: Vec<Port> = Vec::new();
     for e in &model.blocks {
-        if e.file.is_some() {
+        if e.is_use() {
             let inner = use_node(e, registry, inner_folder.as_deref(), depth + 1);
             has_states |= !inner.method.contains("new data");
             let prefixed = |p: Port| Port {

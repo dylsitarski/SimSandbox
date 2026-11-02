@@ -231,6 +231,7 @@ impl SimApp {
                     .map_or(path.into(), |n| n.to_string_lossy().into_owned());
                 // Blocks read their files from the model's folder (ADR 0063).
                 let previous = self.path.replace(path.into());
+                self.diagram.forget_files();
                 self.open_text(&title, &text);
                 if self.error.is_none() {
                     self.mark_saved();
@@ -248,6 +249,7 @@ impl SimApp {
             return;
         }
         let e = &EXAMPLES[k];
+        self.diagram.forget_files();
         self.open_text(e.name, e.text);
         if self.error.is_none() {
             self.path = None;
@@ -265,6 +267,10 @@ impl SimApp {
     /// Whether the open model has changes a save would write: parameters,
     /// edits, sliders, views, speed or step.
     fn has_unsaved(&self) -> bool {
+        // Used model files edited from here (ADR 0066 step 4c).
+        if !self.diagram.edited.is_empty() {
+            return true;
+        }
         match (&self.session, &self.baseline) {
             (Some(_), Some(b)) => self.saved_text().is_ok_and(|t| &t != b),
             _ => false,
@@ -1718,9 +1724,15 @@ impl SimApp {
             .saved_text()
             .and_then(|text| std::fs::write(path, text).map_err(|e| e.to_string()));
         let _ = live;
+        // Used model files edited from here go with it (ADR 0066 step 4c).
+        let result =
+            result.and_then(|()| simsandbox_session::edit_use::save(&mut self.diagram.edited));
         match result {
-            Ok(()) => {
+            Ok(written) => {
                 self.error = None;
+                for f in written {
+                    self.log.info(format!("Saved {}", f.display()));
+                }
                 self.log.info(format!("Saved to {}", path.display()));
                 self.path = Some(path.to_path_buf());
                 self.mark_saved();
@@ -2410,8 +2422,9 @@ impl SimApp {
                     .map(|b| b.equations.join("\n"));
                 let agents = entry.filter(|b| b.type_name.starts_with("agents."));
                 let convert = entry.filter(|b| b.type_name == simsandbox_eq::convert::CONVERT);
-                let kind = match entry.and_then(|b| b.file.as_deref()) {
-                    Some(file) => format!("uses {file}"),
+                let kind = match entry.filter(|b| b.is_use()).map(|b| b.file.as_deref()) {
+                    Some(Some(file)) => format!("uses {file}"),
+                    Some(None) => "a local copy of a model".to_string(),
                     None if g.instance => format!("subsystem {}", g.type_name),
                     None => g.type_name.clone(),
                 };
@@ -5711,6 +5724,121 @@ mod tests {
         let inside = crate::diagram::used_file(&top, Some(&dir), &["slow".into()]).unwrap();
         assert_eq!(inside.blocks[1].name, "sum");
         assert!(crate::diagram::used_file(&top, Some(&dir), &["nowhere".into()]).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_used_model_is_edited_from_the_model_using_it() {
+        use simsandbox_session::edit_use::How;
+        let dir =
+            std::env::temp_dir().join(format!("simsandbox-app-edit-use-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, v: serde_json::Value| {
+            std::fs::write(dir.join(name), v.to_string()).unwrap()
+        };
+        write(
+            "hold.ssbx.json",
+            serde_json::json!({"format": 1, "run": {"dt": 0.1},
+            "blocks": [{"name": "sum", "type": "eq.equations", "method": {"name": "euler"},
+                        "equations": ["state z", "dz/dt = 1"], "params": {"z0": 0}}]}),
+        );
+        let model = dir.join("top.ssbx.json");
+        write(
+            "top.ssbx.json",
+            serde_json::json!({"format": 1, "blocks": [{"name": "slow", "file": "hold.ssbx.json"}]}),
+        );
+        let hold = std::fs::read_to_string(dir.join("hold.ssbx.json")).unwrap();
+        let start = |app: &SimApp| {
+            app.session
+                .as_ref()
+                .unwrap()
+                .call(|s, _| {
+                    s.set_view_reads(vec!["slow/sum.z".into()]);
+                    s.restart().unwrap();
+                    s.run_until(0.2).unwrap();
+                    s.flush(true);
+                    let h = s.signals();
+                    h.values(h.resolve("slow/sum.z").unwrap())[0]
+                })
+                .unwrap()
+        };
+        let z0 = |v: f64| {
+            vec![simsandbox_session::diagram::Edit::SetParam {
+                block: "sum".into(),
+                param: "z0".into(),
+                value: v,
+            }]
+        };
+        let answer = |app: &mut SimApp, how: Option<How>, edits| {
+            let live = app.session.as_ref().unwrap();
+            let m = live.model();
+            let text = app.saved_text().unwrap();
+            let current = move || Ok(text.clone());
+            let outcomes = match how {
+                Some(how) => app.diagram.answer(edits, how, &app.registry, &current),
+                None => {
+                    let t = app.diagram.choices[&app.diagram.inside].clone();
+                    app.diagram
+                        .edit_inside(None, &t, edits, &app.registry, &current)
+                }
+            };
+            app.diagram_outcomes(&m, outcomes);
+            assert!(app.error.is_none(), "{:?}", app.error);
+        };
+        for how in [
+            How::NewCopy(dir.join("hold-2.ssbx.json")),
+            How::Original,
+            How::LocalCopy,
+        ] {
+            let mut app = SimApp::new(None, None, None, None);
+            app.open_path(&model.to_string_lossy());
+            assert_eq!(start(&app), 0.0);
+            app.diagram.inside = vec!["slow".into()];
+            answer(&mut app, Some(how.clone()), z0(5.0));
+            assert_eq!(start(&app), 5.0, "{how:?}");
+            // The next edit goes to the same place without asking.
+            answer(&mut app, None, z0(6.0));
+            assert_eq!(start(&app), 6.0, "{how:?}");
+            let saved = app.saved_text().unwrap();
+            match &how {
+                How::NewCopy(_) => assert!(saved.contains("hold-2.ssbx.json"), "{saved}"),
+                How::Original => assert!(saved.contains("\"hold.ssbx.json\"")),
+                How::LocalCopy => {
+                    assert!(saved.contains("\"model\"") && !saved.contains("hold.ssbx.json"))
+                }
+            }
+            assert_eq!(app.diagram.edited.is_empty(), how == How::LocalCopy);
+            assert!(app.has_unsaved());
+            // Undo takes the edits back, used files included.
+            canvas_step(&mut app, true);
+            canvas_step(&mut app, true);
+            assert_eq!(start(&app), 0.0, "{how:?} undone");
+            assert!(app.diagram.edited.is_empty());
+            canvas_step(&mut app, false);
+            assert_eq!(start(&app), 5.0, "{how:?} redone");
+            // Nothing on disk changes until saved; then every file is.
+            assert_eq!(
+                std::fs::read_to_string(dir.join("hold.ssbx.json")).unwrap(),
+                hold
+            );
+            app.save_to(&model);
+            assert!(app.error.is_none(), "{:?}", app.error);
+            assert!(app.diagram.edited.is_empty() && !app.has_unsaved());
+            let reopened = {
+                let mut again = SimApp::new(None, None, None, None);
+                again.open_path(&model.to_string_lossy());
+                start(&again)
+            };
+            assert_eq!(reopened, 5.0, "{how:?} reopened");
+            // Back to the start for the next answer.
+            write("hold.ssbx.json", serde_json::from_str(&hold).unwrap());
+            write(
+                "top.ssbx.json",
+                serde_json::json!({"format": 1, "blocks": [{"name": "slow", "file": "hold.ssbx.json"}]}),
+            );
+            let _ = std::fs::remove_file(dir.join("hold-2.ssbx.json"));
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

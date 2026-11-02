@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0066 step 4c, second part: `BlockEntry::model` (local copies) and `is_use`; `compose::set_edited`/`read_model`/`canonical`/`used_model`; `edit_use` (`prepare`, `read`, `write`, `save`, `rebase`, `copy_name`); app edit question (`DiagramTab::question`/`answer`/`edit_inside`, `edited`, `choices`), undo of used files, Save writes them, unsaved counts them. Tests headless and in the app.
 - 2026-11-02: ADR 0066 step 4c, first part: `BlockEntry::files`, `compose::replace_files` (applied in `read_use`, `diagram::use_node`, the app's `used_file`), `check` `replaced_files`, Python `add_model(files=)`; tests.
 - 2026-11-02: Q47 and Q48 decided by the owner and written into ADR 0066: `files` replaces a deep use's file by path (step 4c); "Expand in place", one level at a time, as step 4d.
 - 2026-11-02: ADR 0066 step 4c's edit question written out with the owner's "edit as a new copy with its own file"; Q47 (expanding uses and subsystems in place) assessed; Q48 (a new copy of a deeply used model) raised.
@@ -109,6 +110,7 @@
 
 ## Decided
 
+- 2026-11-02: a local copy is written in the use as `model` (the used file's contents), not as a subsystem: a subsystem shares its model's clock and cannot hold models on their own clocks, probes or declared outputs.
 - 2026-11-02 (owner): a deep copy is made by the using file replacing the deep use's file by path (`files`), with the other two ways offered (Q48); uses and subsystems expand in place one level at a time, after 4c (Q47).
 - 2026-11-02 (owner, Q46): declared outputs in model files; a used model's node shows inputs, declared outputs and what is wired; the rest from a searchable list by path; parameters as a tree in the Inspector; nested inputs hidden unless wired.
 - 2026-11-02 (owner): ADR 0067: the opened file's `sample` is an experiment over the whole model, a used file's `sample` a curve; final values per point by default, `reduce` and series opt-in; common random numbers by default, per-point seeds and replicates as options; a model without states is driven by its own data files' sample times automatically; `clock: {"times": …}`.

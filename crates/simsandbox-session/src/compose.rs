@@ -633,6 +633,19 @@ mod tests {
         v.iter().map(|x| x.to_bits()).collect()
     }
 
+    /// `vehicle.ssbx.json`: the car and the controller, linked.
+    fn write_file(dir: &Path) {
+        write(
+            dir,
+            "vehicle.ssbx.json",
+            &with(
+                json!({"format": 1,
+                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            ),
+        );
+    }
+
     fn use_of(name: &str, file: &str) -> Value {
         json!({"name": name, "file": file})
     }
@@ -858,6 +871,104 @@ mod tests {
             let e = c["errors"][0].to_string();
             assert!(e.contains(at) && e.contains(says), "{e}");
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_used_model_is_edited_three_ways() {
+        use crate::edit_use::{prepare, read, save, write, Edited, How};
+        let dir = temp_dir("edit-use");
+        cruise_files(&dir);
+        write_file(&dir);
+        let top_text = json!({"format": 1, "run": {"t_end": 5}, "blocks": [use_of("vehicle", "vehicle.ssbx.json")],
+            "controls": {"probes": [{"name": "v", "record": ["vehicle/plant/car.v"]}]}});
+        let top = || {
+            let (mut f, _) = simsandbox_file::ModelFile::from_json(&top_text.to_string()).unwrap();
+            f.folder = Some(dir.clone());
+            f
+        };
+        let path = ["vehicle".to_string(), "plant".to_string()];
+        let v = |f: &simsandbox_file::ModelFile| {
+            let c = run_in(&dir, &serde_json::from_str(&f.to_json()).unwrap());
+            bits(c.values("vehicle/plant/car.v").unwrap())
+        };
+        let mut heavier = top_text.clone();
+        heavier["blocks"][0]["params"] = json!({"plant/car.m": 2000.0});
+        let (heavier, _) = simsandbox_file::ModelFile::from_json(&heavier.to_string()).unwrap();
+        let expected = v(&heavier);
+        let before = v(&top());
+        let disk = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+        let (car, vehicle) = (disk("car.ssbx.json"), disk("vehicle.ssbx.json"));
+        // The edit: the car's mass.
+        let heavy = |t: &mut simsandbox_file::ModelFile| {
+            let car = t.blocks.iter_mut().find(|b| b.name == "car").unwrap();
+            car.params
+                .insert("m".into(), simsandbox_file::ParamValue::Number(2000.0));
+        };
+        for how in [
+            How::Original,
+            How::NewCopy(dir.join("car-2.ssbx.json")),
+            How::LocalCopy,
+        ] {
+            let mut file = top();
+            let mut edited = Edited::new();
+            let target = prepare(&mut file, Some(&dir), &mut edited, &path, how.clone()).unwrap();
+            // Unedited, it runs as before.
+            assert_eq!(v(&file), before, "{how:?}");
+            let mut inside = read(&file, &edited, &target).unwrap();
+            heavy(&mut inside);
+            write(&mut file, &mut edited, &target, &inside).unwrap();
+            assert_eq!(v(&file), expected, "{how:?}");
+            // Nothing on disk changes until saved.
+            assert_eq!(
+                (disk("car.ssbx.json"), disk("vehicle.ssbx.json")),
+                (car.clone(), vehicle.clone())
+            );
+            let text = file.to_json();
+            match &how {
+                How::Original => {
+                    assert_eq!(
+                        edited.keys().collect::<Vec<_>>(),
+                        [&dir.join("car.ssbx.json")]
+                    );
+                    assert_eq!(text, top().to_json());
+                }
+                How::NewCopy(p) => {
+                    assert_eq!(edited.keys().collect::<Vec<_>>(), [p]);
+                    assert!(text.contains("\"plant\": \"car-2.ssbx.json\""), "{text}");
+                }
+                How::LocalCopy => {
+                    assert!(edited.is_empty());
+                    assert!(
+                        text.contains("\"model\"") && !text.contains("vehicle.ssbx.json"),
+                        "{text}"
+                    );
+                }
+            }
+            let written = save(&mut edited).unwrap();
+            assert_eq!(v(&file), expected, "{how:?} saved");
+            match how {
+                How::Original => {
+                    assert_ne!(disk("car.ssbx.json"), car);
+                    std::fs::write(dir.join("car.ssbx.json"), &car).unwrap();
+                }
+                How::NewCopy(p) => {
+                    assert_eq!(written, std::slice::from_ref(&p));
+                    std::fs::remove_file(p).unwrap();
+                }
+                How::LocalCopy => assert!(written.is_empty()),
+            }
+        }
+        // A name already taken is refused.
+        let mut file = top();
+        let e = prepare(
+            &mut file,
+            Some(&dir),
+            &mut Edited::new(),
+            &path,
+            How::NewCopy(dir.join("car.ssbx.json")),
+        );
+        assert!(e.unwrap_err().contains("exists"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

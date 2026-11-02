@@ -681,6 +681,11 @@ pub struct BlockEntry {
     /// (ADR 0066 step 4c): only this use sees them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: BTreeMap<String, String>,
+    /// A local copy of a used model (ADR 0066 step 4c): its model file
+    /// written here, in place of a `file`, detached from any file; its
+    /// files are found from this file's folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<serde_json::Value>,
     /// Absent for a subsystem, whose blocks have their own; for a block,
     /// absent means the type's default method.
     #[serde(default, skip_serializing_if = "MethodEntry::is_empty")]
@@ -717,6 +722,13 @@ pub struct BlockEntry {
     /// `"field/grass"`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub starts: BTreeMap<String, StartEntry>,
+}
+
+impl BlockEntry {
+    /// A use of a model, by file or as a local copy (ADR 0066).
+    pub fn is_use(&self) -> bool {
+        self.file.is_some() || self.model.is_some()
+    }
 }
 
 /// A saved start (ADR 0042): every state, in the block's state order, and
@@ -1401,7 +1413,7 @@ pub fn load_in(
     folder: Option<&std::path::Path>,
 ) -> Result<Loaded, FileError> {
     let (mut file, mut warnings) = ModelFile::from_json(text)?;
-    if let Some(k) = file.blocks.iter().position(|b| b.file.is_some()) {
+    if let Some(k) = file.blocks.iter().position(BlockEntry::is_use) {
         return Err(invalid(
             format!("blocks[{k}]"),
             "this model uses model files (ADR 0066): run it with `simsandbox run` or \
