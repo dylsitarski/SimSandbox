@@ -348,6 +348,13 @@ def test_a_composition_runs_models_on_their_own_clocks(tmp_path):
     nested = outer.run()
     assert list(nested.models) == ["vehicle/plant", "vehicle/controller"]
     assert np.array_equal(nested["vehicle/plant/car.v"], r["plant/car.v"])
+    # Values reach into it by path, as numbers or formulas of this model's
+    # parameters.
+    deep = ss.Model({"format": 1, "run": {"t_end": 10}, "blocks": [],
+                     "params": {"half": {"value": 300, "unit": "N*s/m"}}})
+    deep.add_model("vehicle", "both.ssbx.json", params={"controller/cruise.kp": "2*half"})
+    deep.save(tmp_path / "deep.ssbx.json")
+    assert np.array_equal(deep.run()["vehicle/plant/car.v"], r["plant/car.v"])
     # On one clock: the files flattened into this model, wired directly.
     one = ss.Model({"format": 1, "run": {"dt": 0.05, "t_end": 10}, "blocks": []})
     one.add_model("plant", "car.ssbx.json", shared=True)

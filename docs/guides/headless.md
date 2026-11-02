@@ -115,9 +115,9 @@ A model's `blocks` may use other model files, each running on its own clock, lin
 
 - **Uses:**
   - `file` is found from this file's folder, and data files inside a use from its own file's folder.
-  - `params` set values for this use only.
+  - `params` set values for this use only, by path at any depth (`car.m`, `plant/car.m`, a declared `m`, `plant/m`). Each value is a number or a formula of the declared parameters of the file it is written in. On a shared clock the formula is live. Into a model on its own clock it is evaluated once, when the model is built.
   - `clock` is `{"dt": step}`, or absent for the file's own `run.dt`.
-  - `"clock": "shared"` puts the use on this model's clock instead, flattened into it like a subsystem (fused with its neighbours where possible). Wire straight into its input blocks (`{"from": "controller/cruise.F", "to": "plant/force"}`) and from its own blocks' outputs (`plant/car.v`); models deeper inside it are wired in its own file. Such a used file may not use models on their own clocks yet.
+  - `"clock": "shared"` puts the use on this model's clock instead, flattened into it like a subsystem (fused with its neighbours where possible). Wire straight into its input blocks (`{"from": "controller/cruise.F", "to": "plant/force"}`) and from outputs (`plant/car.v`), at any depth of models on a shared clock (`vehicle/plant/force`). Any model file can be used shared: models on their own clocks inside it keep their clocks under its path (`vehicle/engine`), and its probes, links and groups come along.
   - Everything in a use is named with the path of uses leading to it: `plant/car.v`, `vehicle/plant/car.v`. The top level's own blocks keep plain names, and a model may have blocks of its own beside its uses.
   - A used file may use files itself; a file that ends up using itself is refused.
 - **What is read from a used file:** only `run.dt`, plus the probes that feed its links or its own blocks. The top level's `run` governs, and inner models draw random numbers from seeds mixed from the top level's and the use's path.

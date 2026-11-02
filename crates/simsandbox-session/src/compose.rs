@@ -1025,27 +1025,26 @@ mod tests {
             },
             "wired twice",
         );
+        // A model on its own clock inside a shared use takes a probe link.
         write(
             &dir,
-            "outer.ssbx.json",
-            &json!({"format": 1,
-            "blocks": [use_of("plant", "car.ssbx.json")]}),
-        );
-        refused(
-            &|v| v["blocks"][0]["file"] = "outer.ssbx.json".into(),
-            "cannot use models on their own clocks",
-        );
-        write(
-            &dir,
-            "deep.ssbx.json",
-            &json!({"format": 1, "blocks": [shared("plant", "car.ssbx.json")]}),
+            "own.ssbx.json",
+            &json!({"format": 1, "blocks": [use_of("plant", "car.ssbx.json")]}),
         );
         refused(
             &|v| {
-                v["blocks"][0] = shared("deep", "deep.ssbx.json");
-                v["connections"] = json!([{"from": "deep/plant/car.v", "to": "controller/speed"}]);
+                v["blocks"][0] = shared("deep", "own.ssbx.json");
+                v["connections"] =
+                    json!([{"from": "controller/cruise.F", "to": "deep/plant/force"}]);
             },
-            "models inside it are wired in its own file",
+            "a model on its own clock takes a probe link",
+        );
+        refused(
+            &|v| {
+                v["blocks"][0] = shared("deep", "own.ssbx.json");
+                v["connections"] = json!([{"from": "deep/car.v", "to": "controller/speed"}]);
+            },
+            "no output 'car.v'",
         );
         write(
             &dir,
@@ -1055,6 +1054,213 @@ mod tests {
         refused(
             &|v| v["blocks"][0] = shared("me", "self.ssbx.json"),
             "uses itself",
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn run_alone(dir: &Path, file: &str, t_end: f64) -> Results {
+        let text = std::fs::read_to_string(dir.join(file)).unwrap();
+        crate::run::run(&text, &registry(), Some(t_end), None).unwrap()
+    }
+
+    #[test]
+    fn any_file_can_be_used_on_a_shared_clock() {
+        let dir = temp_dir("any-shared");
+        let whole = cruise_files(&dir);
+        // A file whose models run on their own clocks, linked by probes.
+        write(
+            &dir,
+            "apart.ssbx.json",
+            &with(
+                json!({"format": 1,
+                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            ),
+        );
+        let alone = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"t_end": 20},
+            "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")],
+            "connections": cruise_links("plant", "controller")["connections"],
+            "controls": cruise_links("plant", "controller")["controls"]}),
+        );
+        let used = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"t_end": 20},
+            "blocks": [shared("vehicle", "apart.ssbx.json")]}),
+        );
+        for name in ["plant/car.v", "controller/cruise.F"] {
+            assert_eq!(
+                bits(used.values(&format!("vehicle/{name}")).unwrap()),
+                bits(alone.values(name).unwrap()),
+                "{name}"
+            );
+        }
+        // A file with a probe feeding its own blocks (ADR 0063 step 3).
+        let mut held = whole.clone();
+        held["fusion"] = "off".into();
+        held["controls"]["probes"] =
+            json!([{"name": "sampled", "record": ["car.v"], "every": {"seconds": 1}}]);
+        held["connections"][0]["from"] = "probe:sampled.car.v".into();
+        write(&dir, "held.ssbx.json", &held);
+        let used = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"dt": 0.05, "t_end": 20}, "fusion": "off",
+            "blocks": [shared("c", "held.ssbx.json")]}),
+        );
+        let direct = run_alone(&dir, "held.ssbx.json", 20.0);
+        for name in ["car.v", "cruise.e"] {
+            assert_eq!(
+                bits(used.values(&format!("c/{name}")).unwrap()),
+                bits(series(&direct, name)),
+                "{name}"
+            );
+        }
+        // A file with groups.
+        let mut grouped = whole.clone();
+        grouped["fusion"] = "off".into();
+        grouped["groups"] = json!([{"blocks": ["car", "cruise"], "method": {"name": "rk4"}}]);
+        write(&dir, "grouped.ssbx.json", &grouped);
+        let top = json!({"format": 1, "run": {"dt": 0.05, "t_end": 20}, "fusion": "off",
+            "blocks": [shared("g", "grouped.ssbx.json")]});
+        let used = run_in(&dir, &top);
+        let direct = run_alone(&dir, "grouped.ssbx.json", 20.0);
+        assert_eq!(
+            bits(used.values("g/car.v").unwrap()),
+            bits(series(&direct, "car.v"))
+        );
+        let built = simsandbox_core::registry::in_folder(Some(&dir), || {
+            simsandbox_file::compose::load_composition(&top.to_string(), &registry(), None)
+        })
+        .unwrap();
+        assert_eq!(
+            built.domains[0].loaded.groups[0].blocks,
+            ["g/car", "g/cruise"]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn wires_and_values_reach_any_depth() {
+        let dir = temp_dir("deep");
+        let whole = cruise_files(&dir);
+        // The vehicle uses both on its clock but wires nothing; the top
+        // level wires them two levels down and sets the car's mass there.
+        write(
+            &dir,
+            "parts.ssbx.json",
+            &json!({"format": 1,
+            "blocks": [shared("plant", "car.ssbx.json"), shared("controller", "cruise.ssbx.json")]}),
+        );
+        let top = |mass: Value| {
+            json!({"format": 1, "run": {"dt": 0.05, "t_end": 20},
+            "params": {"mass": {"value": 1200, "unit": "kg"}},
+            "blocks": [{"name": "vehicle", "file": "parts.ssbx.json", "clock": "shared",
+                        "params": {"plant/car.m": mass}}],
+            "connections": wired("vehicle/plant", "vehicle/controller")})
+        };
+        let mut heavier = whole.clone();
+        heavier["blocks"][0]["params"]["m"] = 1200.into();
+        let one = crate::run::run(&heavier.to_string(), &registry(), Some(20.0), None).unwrap();
+        for mass in [json!(1200), json!("mass")] {
+            let deep = run_in(&dir, &top(mass.clone()));
+            assert_eq!(
+                bits(deep.values("vehicle/plant/car.v").unwrap()),
+                bits(series(&one, "car.v")),
+                "mass {mass}"
+            );
+        }
+        // A formula is live on a shared clock: the mass follows the
+        // declared parameter.
+        let built = simsandbox_core::registry::in_folder(Some(&dir), || {
+            simsandbox_file::compose::load_composition(
+                &top(json!("mass")).to_string(),
+                &registry(),
+                None,
+            )
+        })
+        .unwrap();
+        assert!(built.domains[0]
+            .loaded
+            .params
+            .derived
+            .iter()
+            .any(|d| d.block == "vehicle/plant/car" && d.param == "m"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn values_for_models_on_their_own_clocks() {
+        // Paths and formulas into a model on its own clock are evaluated
+        // once, from the declared parameters where they are written.
+        let dir = temp_dir("own-values");
+        cruise_files(&dir);
+        let car: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("car.ssbx.json")).unwrap())
+                .unwrap();
+        let mut declared = car.clone();
+        declared["params"] = json!({"m": {"value": 1000, "unit": "kg"}});
+        declared["blocks"][1]["params"]["m"] = "m".into();
+        write(&dir, "car-m.ssbx.json", &declared);
+        let run = |plant: Value, params: Value| {
+            run_in(
+                &dir,
+                &with(
+                    json!({"format": 1, "run": {"t_end": 10}, "params": params,
+                       "blocks": [plant, use_of("controller", "cruise.ssbx.json")]}),
+                    cruise_links("plant", "controller"),
+                ),
+            )
+            .values("plant/car.v")
+            .unwrap()
+            .to_vec()
+        };
+        let numbers = run(
+            json!({"name": "plant", "file": "car.ssbx.json", "params": {"car.m": 1500}}),
+            json!({}),
+        );
+        let half = json!({"half": {"value": 750, "unit": "kg"}});
+        // A block parameter set by a formula of this file's parameters.
+        let block = run(
+            json!({"name": "plant", "file": "car.ssbx.json", "params": {"car.m": "2*half"}}),
+            half.clone(),
+        );
+        // A declared parameter of the used file set by a formula.
+        let decl = run(
+            json!({"name": "plant", "file": "car-m.ssbx.json", "params": {"m": "2*half"}}),
+            half.clone(),
+        );
+        assert_eq!(bits(&block), bits(&numbers));
+        assert_eq!(bits(&decl), bits(&numbers));
+        // A path into a model the used file uses.
+        write(
+            &dir,
+            "wrap.ssbx.json",
+            &with(
+                json!({"format": 1, "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            ),
+        );
+        let wrapped = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"t_end": 10}, "params": half,
+            "blocks": [{"name": "w", "file": "wrap.ssbx.json", "params": {"plant/car.m": "2*half"}}]}),
+        );
+        assert_eq!(
+            bits(wrapped.values("w/plant/car.v").unwrap()),
+            bits(&numbers)
+        );
+        // A formula naming what is not declared where it is written.
+        let report = check_in(
+            &dir,
+            &json!({"format": 1,
+            "blocks": [{"name": "plant", "file": "car.ssbx.json", "params": {"car.m": "2*nothing"}}]}),
+        );
+        assert!(
+            report["errors"][0]
+                .to_string()
+                .contains("'nothing' is not a parameter"),
+            "{report}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

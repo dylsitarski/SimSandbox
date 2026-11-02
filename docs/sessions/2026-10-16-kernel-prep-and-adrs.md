@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0066 step 2b (owner's request): `inline_shared` moves a shared use's own-clock uses (`OwnClock`), probes (renamed, holds through `hold_N` ports), links and groups up; `Inlined` tree with `expose_input`/`expose_output` for wires at any depth; subsystem flattening takes formulas for inner keys and `use/k` declared keys; `set_params` with paths, `carry`, `evaluate_formula`. Tests: each case against its written-out equivalent, bit for bit.
 - 2026-11-02: ADR 0066 step 2: `Loader::inline_shared` (shared uses as subsystems of the using file, recursive; ports from wires; subsystems renamed; data files absolute), `read_use` factored out, probe connections left alone (found by a test: a link into a shared use's input block was being rewritten). Python `shared=`. Tests: shared, nested shared, mixed with own clock, data folder, refusals.
 - 2026-11-02: [ADR 0066](../decisions/0066-models-nest-as-blocks.md) written (supersedes 0065) and step 1 reworked: `BlockEntry::{file, clock}`, `UseClock`; recursive `load_composition` (levels, domains, `written_at`, cycle chain, `seed_for`, `domain_of`); `Ticks` 128-bit with `steps_within`; runner, `check`, CLI and Python by domain. Tests: split and nested runs bit for bit, two clocks by hand, a 10⁻¹⁶ s tick for 3,000 s, the end rule, seeds per use, refusals.
 - 2026-11-02: ADR 0065 step 1: `simsandbox_core::clock::Ticks`, `Simulator::refresh`; `ModelFile::models` (`ModelUse`, a list for written order), `simsandbox_file::compose` (load, links, order, loops, hash); `simsandbox_session::compose` (runner, `check`); CLI `run --model`, composition `check`; Python `add_model`, `link`, `Composed`. Tests: split cruise control bit for bit against the step-3 hold, two clocks against values by hand, check, hash, refusals, Python.
@@ -99,6 +100,7 @@
 
 ## Decided
 
+- 2026-11-02 (owner): step 2b in ADR 0066: any file usable on a shared clock; wires and values at any depth; formulas live on a shared clock, evaluated once into a model on its own clock (ours, recorded in the ADR).
 - 2026-11-02 (owner): models nest (ADR 0066): one recursive kind of model; uses of model files in `blocks`, on their own clocks by default, shared one setting away; links at any depth; rewind per clock with recorded link values; 128-bit ticks and the end-time rule.
 - 2026-11-02 (owner): ADR 0065 accepted with all four suggestions (links through input blocks; parameter values and clocks per use without asking; "Save as a new model file…"; local copies keep their own clock; rewinding one use alone later).
 - 2026-11-02 (ours, recorded as built in ADR 0065): `models` is a list (written order breaks loops); in a loop the use evaluated first takes the other's same-tick sample right after its own outputs, late only for same-instant feedthrough, which is reported; a linked input keeps its own value until its first sample.
@@ -164,7 +166,7 @@
 ## Notes for the next session
 
 - 2026-11-02: the owner asked whether compositions and models could be one recursive kind of file (Q45); recommended yes (uses in `blocks`, a clock per use); waiting for the owner before ADR 0065 step 2.
-- ADR 0066 step 3 next: models without states evaluated on new data. A shared use may not yet contain uses on their own clocks; probes in such models sample only for links so far.
+- ADR 0066 step 3 next: models without states evaluated on new data. Probes in such models sample only for links so far.
 - ADR 0065 is Proposed: wait for the owner's answers to its open points (Q44) before building step 1 of its order of work.
 - ADR 0063 step 5 next (several models in one session, own ADR first). `input.file` has not been tried in the window; Q42 (units in probe CSV headers) and Q43 (re-reading changed files) are open.
 - ADR 0063 step 4 next: a block reading a probe's file (or any CSV or `.npy`) as an input over time; it also serves external data (ADR 0048). The owner has not yet tried probes in the window.

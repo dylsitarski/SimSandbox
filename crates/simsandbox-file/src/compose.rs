@@ -170,15 +170,11 @@ pub(crate) fn check_uses(
             }
             None => {}
             Some(_) => {
-                let plain = !b.name.is_empty()
-                    && b.name
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
-                if !plain {
+                if !crate::subsystems::valid_name(&b.name) {
                     return Err(invalid(
                         format!("{path}.name"),
                         format!(
-                            "'{}': a used model's name is letters, digits, '_' and '-'",
+                            "'{}': a used model's name is letters, digits and '_'",
                             b.name
                         ),
                     ));
@@ -230,12 +226,17 @@ impl Level {
     /// The domain `name` (relative to this level) lies in, and the name
     /// inside it.
     fn resolve<'a>(&self, name: &'a str) -> Option<(usize, &'a str)> {
-        if let Some((first, rest)) = name.split_once('/') {
-            if let Some(l) = self.uses.get(first) {
-                return l.resolve(rest);
-            }
+        // A use moved up from a model on a shared clock has a path for a
+        // name (`plant/engine`): the longest that fits.
+        let inside = self
+            .uses
+            .iter()
+            .filter(|(k, _)| below(name, k))
+            .max_by_key(|(k, _)| k.len());
+        match inside {
+            Some((k, l)) => l.resolve(&name[k.len() + 1..]),
+            None => self.domain.map(|d| (d, name)),
         }
-        self.domain.map(|d| (d, name))
     }
 }
 
@@ -316,15 +317,214 @@ fn seed_for(seed: u64, path: &str) -> u64 {
     z ^ (z >> 31)
 }
 
+/// Whether `name` lies inside `path`: `path/…`.
+fn below(name: &str, path: &str) -> bool {
+    name.len() > path.len() && name.starts_with(path) && name.as_bytes()[path.len()] == b'/'
+}
+
 /// Whether an end of a connection (relative to a model) lies in one of
-/// its uses: its first segment names one.
-fn in_use(end: &str, uses: &[&BlockEntry]) -> bool {
+/// its uses on their own clocks, named by their paths.
+fn in_use(end: &str, uses: &[&str]) -> bool {
     let name = end
         .strip_prefix("probe:")
         .and_then(|r| r.split_once('.'))
         .map_or(end, |(_, signal)| signal);
-    name.split_once('/')
-        .is_some_and(|(first, _)| uses.iter().any(|u| u.name == first))
+    uses.iter().any(|u| below(name, u))
+}
+
+/// A use on its own clock, to load at a model's level: written there, or
+/// moved up from a model on a shared clock (ADR 0066 step 2b).
+struct OwnClock {
+    /// Its path from the model: `controller`, or `plant/engine`.
+    name: String,
+    entry: BlockEntry,
+    /// The folder its file is found from.
+    folder: Option<PathBuf>,
+    /// The declared parameters formulas in its `params` are of: those of
+    /// the file each was written in.
+    scope: BTreeMap<String, crate::ParamDecl>,
+    /// Where it is written, for errors.
+    at: String,
+}
+
+/// A use on a shared clock put in place as a subsystem, and those inside
+/// it, to pass wires through at any depth.
+struct Inlined {
+    def: String,
+    inner: BTreeMap<String, Inlined>,
+}
+
+impl Inlined {
+    fn renamed(mut self, names: &BTreeMap<String, String>) -> Self {
+        if let Some(n) = names.get(&self.def) {
+            self.def = n.clone();
+        }
+        self.inner = self
+            .inner
+            .into_iter()
+            .map(|(k, v)| (k, v.renamed(names)))
+            .collect();
+        self
+    }
+}
+
+/// A port name not yet used by `def`, from `base` made plain.
+fn port_name(def: &Subsystem, base: &str) -> String {
+    let base: String = base
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let taken =
+        |n: &str| def.inputs.iter().any(|p| p.name == n) || def.outputs.iter().any(|p| p.name == n);
+    let mut name = base.clone();
+    let mut n = 1;
+    while taken(&name) {
+        name = format!("{base}_{n}");
+        n += 1;
+    }
+    name
+}
+
+/// Pass a wire into `inner` (an input block, at any depth of models on a
+/// shared clock) through ports: the port of `inl`'s subsystem to wire to.
+fn expose_input(
+    subs: &mut BTreeMap<String, Subsystem>,
+    inl: &Inlined,
+    inner: &str,
+) -> Result<String, String> {
+    if let Some((first, rest)) = inner.split_once('/') {
+        let child = inl.inner.get(first).ok_or_else(|| {
+            format!(
+                "'{first}' is not a model on a shared clock here: wire into input blocks of \
+                 models on a shared clock; a model on its own clock takes a probe link"
+            )
+        })?;
+        let port = expose_input(subs, child, rest)?;
+        let target = format!("{first}.{port}");
+        let def = subs.get_mut(&inl.def).expect("inlined");
+        if def.inputs.iter().any(|p| p.to == [target.clone()]) {
+            return Err("wired twice".into());
+        }
+        let name = port_name(def, inner);
+        def.inputs.push(crate::InputPort {
+            name: name.clone(),
+            to: vec![target],
+            canvas: None,
+        });
+        return Ok(name);
+    }
+    let def = subs.get_mut(&inl.def).expect("inlined");
+    if def.inputs.iter().any(|p| p.name == inner) {
+        return Err("wired twice".into());
+    }
+    if !def
+        .blocks
+        .iter()
+        .any(|b| b.name == inner && b.type_name == INPUT_VALUE)
+    {
+        return Err(format!(
+            "a wire into a model on a shared clock goes to one of its input blocks ({INPUT_VALUE})"
+        ));
+    }
+    let fed = format!("{inner}.y");
+    let to: Vec<String> = def
+        .connections
+        .iter()
+        .filter(|w| w.from == fed)
+        .map(|w| w.to.clone())
+        .collect();
+    def.connections.retain(|w| w.from != fed);
+    def.blocks.retain(|b| b.name != inner);
+    def.inputs.push(crate::InputPort {
+        name: inner.into(),
+        to,
+        canvas: None,
+    });
+    Ok(inner.into())
+}
+
+/// Pass a wire from `inner` (an output, at any depth of models on a
+/// shared clock) through ports: the port of `inl`'s subsystem to wire
+/// from.
+fn expose_output(
+    subs: &mut BTreeMap<String, Subsystem>,
+    inl: &Inlined,
+    inner: &str,
+) -> Result<String, String> {
+    let from = match inner.split_once('/') {
+        Some((first, rest)) if inl.inner.contains_key(first) => {
+            format!("{first}.{}", expose_output(subs, &inl.inner[first], rest)?)
+        }
+        Some((first, _)) => {
+            return Err(format!(
+                "'{first}' is not a model on a shared clock here: a model on its own clock \
+                 is read through a probe link"
+            ))
+        }
+        None => {
+            let def = &subs[&inl.def];
+            let own = inner
+                .split_once('.')
+                .is_some_and(|(b, _)| def.blocks.iter().any(|e| e.name == b));
+            if !own {
+                return Err(format!("no output '{inner}'"));
+            }
+            inner.to_string()
+        }
+    };
+    let def = subs.get_mut(&inl.def).expect("inlined");
+    if let Some(p) = def.outputs.iter().find(|p| p.from == from) {
+        return Ok(p.name.clone());
+    }
+    let name = port_name(def, inner);
+    def.outputs.push(crate::OutputPort {
+        name: name.clone(),
+        from,
+        canvas: None,
+    });
+    Ok(name)
+}
+
+/// Copy the declared parameters a formula names from `scope` (where it is
+/// written) into `into` (where it will be compiled), so a formula given to
+/// a model one level down keeps its meaning.
+fn carry(
+    value: &crate::ParamValue,
+    scope: &BTreeMap<String, crate::ParamDecl>,
+    into: &mut BTreeMap<String, crate::ParamDecl>,
+    path: &str,
+) -> Result<(), FileError> {
+    let crate::ParamValue::Formula(text) = value else {
+        return Ok(());
+    };
+    let ast = simsandbox_expr::parse(text).map_err(|e| invalid(path, format!("'{text}': {e}")))?;
+    for (name, _) in ast.names() {
+        let name = name.to_string();
+        let Some(d) = scope.get(&name) else {
+            return Err(invalid(
+                path,
+                format!("'{name}' is not a parameter declared where this formula is written"),
+            ));
+        };
+        match into.get(&name) {
+            Some(there) if there != d => {
+                return Err(invalid(
+                    path,
+                    format!("the used model declares '{name}' too: rename one of them"),
+                ))
+            }
+            _ => {
+                into.insert(name, d.clone());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// An error in a model's own blocks, at the place it is written: the
@@ -357,7 +557,7 @@ impl Loader<'_> {
         dt: f64,
     ) -> Result<Level, FileError> {
         let mut file = file.clone();
-        self.inline_shared(&mut file, path, folder)?;
+        let (lifted, _) = self.inline_shared(&mut file, path, folder)?;
         let file = &file;
         let full = |name: &str| {
             if path.is_empty() {
@@ -366,7 +566,23 @@ impl Loader<'_> {
                 format!("{path}/{name}")
             }
         };
-        let uses: Vec<&BlockEntry> = file.blocks.iter().filter(|b| b.file.is_some()).collect();
+        // Its uses on their own clocks: written here, then those moved up
+        // from models on a shared clock.
+        let mut uses: Vec<OwnClock> = file
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.file.is_some())
+            .map(|(k, b)| OwnClock {
+                name: b.name.clone(),
+                entry: b.clone(),
+                folder: folder.map(Path::to_path_buf),
+                scope: file.params.clone(),
+                at: format!("blocks[{k}]"),
+            })
+            .collect();
+        uses.extend(lifted);
+        let names: Vec<&str> = uses.iter().map(|u| u.name.as_str()).collect();
         // Its own blocks and the connections among them (with probes
         // feeding them) form its domain.
         let own: Vec<usize> = (0..file.blocks.len())
@@ -375,7 +591,7 @@ impl Loader<'_> {
         let inside: Vec<usize> = (0..file.connections.len())
             .filter(|&k| {
                 let c = &file.connections[k];
-                !in_use(&c.from, &uses) && !in_use(&c.to, &uses)
+                !in_use(&c.from, &names) && !in_use(&c.to, &names)
             })
             .collect();
         let mut level = Level {
@@ -441,20 +657,14 @@ impl Loader<'_> {
                 dt,
             });
         }
-        for (k, u) in file
-            .blocks
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.file.is_some())
-        {
-            let at = format!("blocks[{k}]");
+        for u in &uses {
             let child = self
-                .use_file(u, &full(&u.name), folder)
+                .use_file(&u.entry, &full(&u.name), u.folder.as_deref(), &u.scope)
                 .map_err(|e| match e {
                     FileError::Invalid { path, message } if path.is_empty() => {
-                        invalid(at.clone(), message)
+                        invalid(u.at.clone(), message)
                     }
-                    e => invalid(at.clone(), e),
+                    e => invalid(u.at.clone(), e),
                 })?;
             level.uses.insert(u.name.clone(), child);
         }
@@ -468,12 +678,10 @@ impl Loader<'_> {
         Ok(level)
     }
 
-    /// Load the model file `u` uses, at `path`.
-    /// Find, read and parse the model file `u` uses from `folder`, with
-    /// the use's parameter values written in; its digest goes into the
-    /// hash under `path`. Returns the model, where it was found, and the
-    /// canonical path to push while it loads (a file that uses itself is
-    /// refused).
+    /// Find, read and parse the model file `u` uses from `folder`; its
+    /// digest goes into the hash under `path`. Returns the model, where it
+    /// was found, and the canonical path to push while it loads (a file
+    /// that uses itself is refused).
     fn read_use(
         &mut self,
         u: &BlockEntry,
@@ -511,21 +719,23 @@ impl Loader<'_> {
             .map_err(|e| invalid("file", format!("{}: {e}", found.display())))?;
         let text =
             String::from_utf8(bytes.clone()).map_err(|_| invalid("file", "not a text file"))?;
-        let (mut model, _) = ModelFile::from_json(&text)
+        let (model, _) = ModelFile::from_json(&text)
             .map_err(|e| invalid("file", format!("{}: {e}", found.display())))?;
-        set_params(&mut model, &u.params)?;
         self.data.insert(format!("{path}.file"), digest(&bytes));
         Ok((model, found, canonical))
     }
 
-    /// Load the model file `u` uses on its own clock, at `path`.
+    /// Load the model file `u` uses on its own clock, at `path`; formulas
+    /// in its `params` are of `scope`.
     fn use_file(
         &mut self,
         u: &BlockEntry,
         path: &str,
         folder: Option<&Path>,
+        scope: &BTreeMap<String, crate::ParamDecl>,
     ) -> Result<Level, FileError> {
-        let (model, found, canonical) = self.read_use(u, path, folder)?;
+        let (mut model, found, canonical) = self.read_use(u, path, folder)?;
+        set_params(&mut model, &u.params, scope)?;
         let dt = match u.clock {
             Some(UseClock::Step(dt)) => dt,
             _ => model.run.dt,
@@ -540,25 +750,28 @@ impl Loader<'_> {
     }
 
     /// Put each use of `file` on a shared clock in place as a subsystem
-    /// of `file` made from the used file (ADR 0066 step 2), so it
+    /// of `file` made from the used file (ADR 0066 steps 2 and 2b), so it
     /// flattens into `file`'s model: named `use/inner`, fused with its
-    /// neighbours where it can be. A wire into `use/input` (an input block
-    /// of the used file) becomes an input port feeding what that block
-    /// fed, the block dropped; a wire from `use/block.port` becomes an
-    /// output port. Uses inside the used file on a shared clock are put
-    /// in place first, in the same way.
+    /// neighbours where it can be. Uses inside it on a shared clock are
+    /// put in place first. What a subsystem cannot hold moves up into
+    /// `file` under the use's name: its uses on their own clocks (returned,
+    /// to load at `file`'s level), its probes and the connections from
+    /// them (holds and links), and its groups. Wires at any depth pass
+    /// through ports: into an input block (the block dropped), from an
+    /// output.
     fn inline_shared(
         &mut self,
         file: &mut ModelFile,
         path: &str,
         folder: Option<&Path>,
-    ) -> Result<(), FileError> {
+    ) -> Result<(Vec<OwnClock>, BTreeMap<String, Inlined>), FileError> {
         let shared: Vec<usize> = (0..file.blocks.len())
             .filter(|&k| {
                 file.blocks[k].file.is_some() && file.blocks[k].clock == Some(UseClock::Shared)
             })
             .collect();
-        let mut defs: BTreeMap<String, String> = BTreeMap::new();
+        let mut tree: BTreeMap<String, Inlined> = BTreeMap::new();
+        let mut lifted: Vec<OwnClock> = Vec::new();
         for k in shared {
             let u = file.blocks[k].clone();
             let at = format!("blocks[{k}]");
@@ -572,28 +785,130 @@ impl Loader<'_> {
                 .map_err(|e| invalid(&at, e))?;
             let child_folder = found.parent().map(Path::to_path_buf);
             let shown = found.display().to_string();
+            let fail = |e: FileError| invalid(&at, format!("{shown}: {e}"));
             self.stack.push(canonical);
             let inner = self.inline_shared(&mut child, &full, child_folder.as_deref());
             self.stack.pop();
-            inner.map_err(|e| invalid(&at, format!("{shown}: {e}")))?;
-            let refuse = |what: &str| {
-                invalid(
-                    &at,
-                    format!("{shown}: a model used on a shared clock {what} yet"),
-                )
-            };
-            if child.blocks.iter().any(|b| b.file.is_some()) {
-                return Err(refuse("cannot use models on their own clocks"));
-            }
-            if child
-                .connections
+            let (inner_lifted, child_tree) = inner.map_err(fail)?;
+            // Its uses on their own clocks move up here.
+            let mut moving: Vec<OwnClock> = child
+                .blocks
                 .iter()
-                .any(|c| c.from.starts_with("probe:"))
-            {
-                return Err(refuse("cannot have probes feeding its own blocks"));
+                .enumerate()
+                .filter(|(_, b)| b.file.is_some())
+                .map(|(j, b)| OwnClock {
+                    name: b.name.clone(),
+                    entry: b.clone(),
+                    folder: child_folder.clone(),
+                    scope: child.params.clone(),
+                    at: format!("{at}: {shown}: blocks[{j}]"),
+                })
+                .collect();
+            moving.extend(inner_lifted);
+            child.blocks.retain(|b| b.file.is_none());
+            let own_clock: Vec<String> = moving.iter().map(|m| m.name.clone()).collect();
+            let own_clock: Vec<&str> = own_clock.iter().map(String::as_str).collect();
+            // This use's values: those reaching a model on its own clock
+            // inside go to it; the rest to the subsystem's use.
+            let mut values = BTreeMap::new();
+            for (key, v) in &u.params {
+                let kpath = format!("{at}.params.{key}");
+                match moving
+                    .iter_mut()
+                    .filter(|m| below(key, &m.name))
+                    .max_by_key(|m| m.name.len())
+                {
+                    Some(m) => {
+                        carry(v, &file.params, &mut m.scope, &kpath)?;
+                        m.entry
+                            .params
+                            .insert(key[m.name.len() + 1..].into(), v.clone());
+                    }
+                    None => {
+                        values.insert(key.clone(), v.clone());
+                    }
+                }
             }
-            if !child.groups.is_empty() {
-                return Err(refuse("cannot have groups"));
+            // Connections from its probes, and reaching its models on their
+            // own clocks, move up, its probes renamed.
+            let (moved, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut child.connections)
+                .into_iter()
+                .partition(|c| {
+                    c.from.starts_with("probe:")
+                        || in_use(&c.from, &own_clock)
+                        || in_use(&c.to, &own_clock)
+                });
+            child.connections = kept;
+            let mut probe_names: BTreeMap<String, String> = BTreeMap::new();
+            let mut hold_ports: Vec<crate::InputPort> = Vec::new();
+            let mut up: Vec<crate::ConnectionEntry> = Vec::new();
+            for c in moved {
+                let Some(rest) = c.from.strip_prefix("probe:") else {
+                    return Err(fail(invalid(
+                        "connections",
+                        format!(
+                            "{} → {}: models on their own clocks are linked only through probes",
+                            c.from, c.to
+                        ),
+                    )));
+                };
+                let (p, signal) = rest.split_once('.').ok_or_else(|| {
+                    fail(invalid(
+                        "connections",
+                        format!("'{}' is not probe:NAME.signal", c.from),
+                    ))
+                })?;
+                let entry = child
+                    .controls
+                    .probes
+                    .iter()
+                    .find(|e| e.name == p)
+                    .ok_or_else(|| fail(invalid("connections", format!("no probe '{p}'"))))?;
+                let renamed = match probe_names.get(p) {
+                    Some(n) => n.clone(),
+                    None => {
+                        let base = format!("{}_{p}", u.name);
+                        let mut name = base.clone();
+                        let mut n = 1;
+                        while file.controls.probes.iter().any(|e| e.name == name) {
+                            name = format!("{base}_{n}");
+                            n += 1;
+                        }
+                        let mut e = entry.clone();
+                        e.name = name.clone();
+                        e.record = e.record.iter().map(|r| format!("{}/{r}", u.name)).collect();
+                        e.to = None;
+                        e.stream = false;
+                        e.canvas = None;
+                        file.controls.probes.push(e);
+                        probe_names.insert(p.into(), name.clone());
+                        name
+                    }
+                };
+                let to = if in_use(&c.to, &own_clock) || in_use(signal, &own_clock) {
+                    // A link between its models on their own clocks and
+                    // its own blocks.
+                    format!("{}/{}", u.name, c.to)
+                } else {
+                    // A probe feeding its own blocks: through a port.
+                    let port = format!("hold_{}", hold_ports.len());
+                    hold_ports.push(crate::InputPort {
+                        name: port.clone(),
+                        to: vec![c.to.clone()],
+                        canvas: None,
+                    });
+                    format!("{}.{port}", u.name)
+                };
+                up.push(crate::ConnectionEntry {
+                    from: format!("probe:{renamed}.{}/{signal}", u.name),
+                    to,
+                });
+            }
+            file.connections.extend(up);
+            for g in &child.groups {
+                let mut g = g.clone();
+                g.blocks = g.blocks.iter().map(|b| format!("{}/{b}", u.name)).collect();
+                file.groups.push(g);
             }
             // Data files are read from the used file's folder.
             self.absolute_files(&mut child.blocks, child_folder.as_deref());
@@ -623,13 +938,13 @@ impl Loader<'_> {
                 file.subsystems.insert(renamed[&n].clone(), d);
             }
             rename(&mut child.blocks);
-            let def = unique(&u.name.replace('-', "_"), &file.subsystems);
+            let def = unique(&u.name, &file.subsystems);
             file.subsystems.insert(
                 def.clone(),
                 Subsystem {
                     description: child.description.clone(),
                     params: child.params.clone(),
-                    inputs: Vec::new(),
+                    inputs: hold_ports,
                     outputs: Vec::new(),
                     blocks: child.blocks,
                     connections: child.connections,
@@ -638,106 +953,50 @@ impl Loader<'_> {
             file.blocks[k] = BlockEntry {
                 name: u.name.clone(),
                 type_name: def.clone(),
+                params: values,
                 canvas: u.canvas,
                 ..Default::default()
             };
-            defs.insert(u.name.clone(), def);
+            tree.insert(
+                u.name.clone(),
+                Inlined {
+                    def,
+                    inner: child_tree
+                        .into_iter()
+                        .map(|(n, t)| (n, t.renamed(&renamed)))
+                        .collect(),
+                },
+            );
+            lifted.extend(moving.into_iter().map(|mut m| {
+                m.name = format!("{}/{}", u.name, m.name);
+                m
+            }));
         }
-        // Wires into and out of them go through ports. Connections from
-        // probes stay: they name flat signals and drive input blocks as
-        // they are.
-        for (ci, c) in file.connections.iter_mut().enumerate() {
+        // Wires into and out of them, at any depth, go through ports.
+        // Connections from probes stay: they name flat signals and drive
+        // input blocks as they are.
+        for ci in 0..file.connections.len() {
+            let c = file.connections[ci].clone();
             if c.from.starts_with("probe:") {
                 continue;
             }
             let at = format!("connections[{ci}]");
             if let Some((name, rest)) = c.to.split_once('/') {
-                if let Some(def_name) = defs.get(name) {
-                    let def = file.subsystems.get_mut(def_name).expect("inlined");
-                    if def.inputs.iter().any(|p| p.name == rest) {
-                        return Err(invalid(
-                            format!("{at}.to"),
-                            format!("{} is wired twice", c.to),
-                        ));
-                    }
-                    let is_input = def
-                        .blocks
-                        .iter()
-                        .any(|b| b.name == rest && b.type_name == INPUT_VALUE);
-                    if !is_input {
-                        return Err(invalid(
-                            format!("{at}.to"),
-                            format!(
-                                "{}: a wire into a model on a shared clock goes to one of its input blocks ({INPUT_VALUE})",
-                                c.to
-                            ),
-                        ));
-                    }
-                    let fed = format!("{rest}.y");
-                    let to: Vec<String> = def
-                        .connections
-                        .iter()
-                        .filter(|w| w.from == fed)
-                        .map(|w| w.to.clone())
-                        .collect();
-                    def.connections.retain(|w| w.from != fed);
-                    def.blocks.retain(|b| b.name != rest);
-                    def.inputs.push(crate::InputPort {
-                        name: rest.into(),
-                        to,
-                        canvas: None,
-                    });
-                    c.to = format!("{name}.{rest}");
+                if let Some(inl) = tree.get(name) {
+                    let port = expose_input(&mut file.subsystems, inl, rest)
+                        .map_err(|m| invalid(format!("{at}.to"), format!("{}: {m}", c.to)))?;
+                    file.connections[ci].to = format!("{name}.{port}");
                 }
             }
             if let Some((name, rest)) = c.from.split_once('/') {
-                if let Some(def_name) = defs.get(name) {
-                    let def = file.subsystems.get_mut(def_name).expect("inlined");
-                    let own = rest
-                        .split_once('.')
-                        .is_some_and(|(b, _)| def.blocks.iter().any(|e| e.name == b));
-                    if !own {
-                        return Err(invalid(
-                            format!("{at}.from"),
-                            format!(
-                                "{}: a wire from a model on a shared clock comes from one of its own blocks; \
-                                 models inside it are wired in its own file",
-                                c.from
-                            ),
-                        ));
-                    }
-                    let port = match def.outputs.iter().find(|p| p.from == rest) {
-                        Some(p) => p.name.clone(),
-                        None => {
-                            let taken: Vec<&str> = def
-                                .inputs
-                                .iter()
-                                .map(|p| p.name.as_str())
-                                .chain(def.outputs.iter().map(|p| p.name.as_str()))
-                                .collect();
-                            let base: String = rest
-                                .chars()
-                                .map(|ch| if ch.is_alphanumeric() { ch } else { '_' })
-                                .collect();
-                            let mut port = base.clone();
-                            let mut n = 1;
-                            while taken.contains(&port.as_str()) {
-                                port = format!("{base}_{n}");
-                                n += 1;
-                            }
-                            def.outputs.push(crate::OutputPort {
-                                name: port.clone(),
-                                from: rest.into(),
-                                canvas: None,
-                            });
-                            port
-                        }
-                    };
-                    c.from = format!("{name}.{port}");
+                if let Some(inl) = tree.get(name) {
+                    let port = expose_output(&mut file.subsystems, inl, rest)
+                        .map_err(|m| invalid(format!("{at}.from"), format!("{}: {m}", c.from)))?;
+                    file.connections[ci].from = format!("{name}.{port}");
                 }
             }
         }
-        Ok(())
+        Ok((lifted, tree))
     }
 
     /// Make the files blocks' settings name absolute, from `folder`.
@@ -885,37 +1144,68 @@ impl Loader<'_> {
     }
 }
 
-/// A use's parameter values, written into its model before it is built.
+/// A use's parameter values, written into the model it uses on its own
+/// clock before it is built. A key is a declared parameter `k`, a
+/// `block.param`, or a path into a use inside (`plant/car.m`,
+/// `plant/k`), passed on to it. A value is a number or a formula of
+/// `scope` (the declared parameters where it is written): a declared
+/// parameter takes the formula's value now, since the model runs in a
+/// simulator of its own; elsewhere the parameters the formula names are
+/// copied into the model so it keeps its meaning (ADR 0066 step 2b).
 fn set_params(
     model: &mut ModelFile,
     params: &BTreeMap<String, crate::ParamValue>,
+    scope: &BTreeMap<String, crate::ParamDecl>,
 ) -> Result<(), FileError> {
     for (key, value) in params {
         let path = format!("params.{key}");
-        let crate::ParamValue::Number(v) = value else {
-            return Err(invalid(path, "a use's parameter values are numbers"));
-        };
+        if let crate::ParamValue::Number(v) = value {
+            if !v.is_finite() {
+                return Err(invalid(path, "must be a finite number"));
+            }
+        }
         if let Some(decl) = model.params.get_mut(key) {
-            decl.value = *v;
+            decl.value = match value {
+                crate::ParamValue::Number(v) => *v,
+                crate::ParamValue::Formula(text) => {
+                    crate::subsystems::evaluate_formula(text, scope, &decl.unit, &path)?
+                }
+            };
             continue;
         }
-        let entry = key.split_once('.').and_then(|(b, p)| {
-            Some((
-                model
-                    .blocks
-                    .iter_mut()
-                    .find(|e| e.name == b && e.file.is_none())?,
-                p,
-            ))
-        });
-        match entry {
-            Some((e, p)) => {
-                e.params.insert(p.into(), value.clone());
-            }
-            None => return Err(invalid(
+        // A use inside (`plant/…`) or a block (`car.m`) of the model.
+        let (target, rest) = match key.split_once('/') {
+            Some((first, rest)) => (first, rest.to_string()),
+            None => match key.split_once('.') {
+                Some((b, _)) => (b, String::new()),
+                None => {
+                    return Err(invalid(
+                        path,
+                        "no such parameter in the used file: a declared parameter's name, \
+                         block.param, or a path into a model it uses",
+                    ))
+                }
+            },
+        };
+        if !model.blocks.iter().any(|e| e.name == target) {
+            return Err(invalid(
                 path,
-                "no such parameter in the used file: a declared parameter's name, or block.param",
-            )),
+                format!("the used file has no block or use '{target}'"),
+            ));
+        }
+        let mut copied = model.params.clone();
+        carry(value, scope, &mut copied, &path)?;
+        model.params = copied;
+        let e = model
+            .blocks
+            .iter_mut()
+            .find(|e| e.name == target)
+            .expect("found above");
+        if rest.is_empty() {
+            let (_, p) = key.split_once('.').expect("block.param");
+            e.params.insert(p.into(), value.clone());
+        } else {
+            e.params.insert(rest, value.clone());
         }
     }
     Ok(())

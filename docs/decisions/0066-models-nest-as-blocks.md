@@ -65,6 +65,11 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
    - a run long enough to overflow 64-bit ticks;
    - the end-time rule.
 2. Shared-clock uses (`"clock": "shared"`): a used file flattened as a subsystem, its input blocks driven by wires.
+   - **2b (owner, 2026-11-02): any model file can be used on a shared clock, and wires and parameter values reach any depth.**
+     - **What a file used shared may contain:** models on their own clocks, probes feeding its own blocks, and `groups`. These move up into the using model under the use's path: its models on their own clocks become clock domains at `plant/engine`, its probes and links are renamed into the using model, and its groups' blocks are prefixed.
+     - **Wires at any depth:** a wire may reach an input block or an output of any model on a shared clock below it (`vehicle/plant/force`, `vehicle/plant/car.v`). The levels in between pass it on through ports of their own. Pass-through blocks are no longer needed. A wire into a model on its own clock is still refused; it takes a probe link.
+     - **Parameter values at any depth:** a use's `params` keys may be paths: `block.param`, a declared parameter `k`, `plant/car.m` or `plant/k`, at any depth. A value may be a number, or a formula of the declared parameters of the file it is written in. On a shared clock a formula is live: it follows those parameters when they change, as subsystem formulas do. A model on its own clock is a separate simulator, so there a formula is evaluated once, when the model is built, from the using file's declared values; values that change during a run go through a probe link into an input block.
+     - **Kept as a rule:** wires go to input blocks and from outputs. Ordinary subsystems are still reached through their ports.
 3. Models without states on new data.
 4. The canvas and the app (ADR 0065 point 6 and the edit question).
 5. The recorder and rewind above; run files.
@@ -116,6 +121,29 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
   - a shared use in `parts/` reads `parts/push.csv`;
   - refusals: a wire into a non-input, an input wired twice, a used file with uses on their own clocks, a deep wire, a file using itself;
   - Python.
+
+**Step 2b (2026-11-02): any file used on a shared clock; wires and values at any depth.**
+
+`inline_shared` returns the uses it put in place as a tree (`Inlined`) and the uses on their own clocks it moved up (`OwnClock`).
+
+- **Uses on their own clocks inside a shared use:** they load at the using model's level under their paths (`vehicle/plant`). `Level::resolve` and `in_use` take multi-segment use names, the longest that fits.
+- **Probes:** connections from a shared use's probes, and those reaching its own-clock models, move up, with the probes renamed `USE_PROBE` and their records prefixed. A hold into its own blocks goes through a generated input port (`hold_N`). A probe connection touching one of its own-clock models stays a link, written by path.
+- **Groups:** a shared use's `groups` move up with their blocks prefixed.
+- **Wires at any depth:** `expose_input` and `expose_output` pass a wire through every level in between with generated ports. A wire into an input block drops the block. A wire reaching a model on its own clock is refused with "takes a probe link".
+- **Values on a shared use:** they go to its subsystem instance. Subsystem flattening now takes formulas for inner `block.param` keys at any depth, compiled in the instance's scope and live, and `use/k` keys setting a parameter declared by an instance inside, as a number or a live formula, found by its flat key.
+- **Values for a use on its own clock** (`set_params` with the scope of the file the value is written in):
+  - a declared parameter of the used file takes a formula's value once (`subsystems::evaluate_formula`, units fitted);
+  - for `block.param` and paths into uses inside, the declared parameters a formula names are copied into the used file (`carry`; a clash of names is refused), so the formula keeps its meaning one level down;
+  - values reaching a model on its own clock inside a shared use go to that model's moved-up entry.
+- **Use names:** letters, digits and `_`, as for blocks, since a shared use becomes a subsystem instance.
+- **Python:** `add_model` passes formula values through.
+- **Tests:**
+  - a file of models on their own clocks used shared gives the same bits as the same uses at the top;
+  - a file with a hold every 1 s used shared gives the same bits as the file alone, and likewise a file with `groups` (its group named `g/car`, `g/cruise`);
+  - wires two levels down, with the car's mass set by `plant/car.m` as a number and as a live formula of the top level's `mass`, give the same bits as the one-file model with that mass;
+  - into a model on its own clock, `car.m = "2*half"`, a declared `m = "2*half"`, and the path `plant/car.m = "2*half"` through a file of uses each give the same bits as `car.m = 1500`;
+  - refusals: a formula naming an undeclared parameter, a wire into a model on its own clock inside a shared use, a wire from a shared use with no such output;
+  - Python, with a deep formula.
 
 ## Consequences
 

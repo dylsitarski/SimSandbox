@@ -332,14 +332,16 @@ class Model:
         self,
         name: str,
         file: "str | os.PathLike",
-        params: dict[str, float] | None = None,
+        params: dict[str, float | str] | None = None,
         dt: float | None = None,
         shared: bool = False,
     ) -> "Model":
         """Use a model file in this model (ADR 0066), under ``name``, which
         prefixes everything in it (``"plant/car.v"``). ``file`` is found
         from this model's folder (or is a full path) and may itself use
-        model files. ``params`` set its parameter values for this use only;
+        model files. ``params`` set its parameter values for this use only,
+        by path at any depth (``"car.m"``, ``"plant/car.m"``), each a number
+        or a formula of this model's declared parameters (``"2*mass"``);
         it runs on its own clock, every ``dt`` (the file's ``run.dt`` if not
         given); link it to other models with :meth:`link`. With ``shared``,
         it runs on this model's clock instead, flattened into it like a
@@ -349,7 +351,7 @@ class Model:
             raise ValueError("a use on a shared clock takes this model's step: no dt")
         use: dict = {"name": name, "file": os.fspath(file)}
         if params:
-            use["params"] = {k: float(v) for k, v in params.items()}
+            use["params"] = {k: v if isinstance(v, str) else float(v) for k, v in params.items()}
         if dt is not None:
             use["clock"] = {"dt": float(dt)}
         if shared:
