@@ -161,6 +161,7 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
   - in a loop, the counter shows the doubled value at the instant it was delivered and holds it, with no delay;
   - a swept model's latest sweep at 1.2 s;
   - refusals: a sweep feeding a link, a sweep with a clock, a model with nothing in time.
+- **Changed by [ADR 0067](0067-experiments-and-time-from-data.md) the same day:** a model with nothing in time is no longer refused. It is one evaluation of every model at t = 0, in link order (tested: a pipeline of two doubling models after an input block gives 3 and 6).
 
 ## Consequences
 

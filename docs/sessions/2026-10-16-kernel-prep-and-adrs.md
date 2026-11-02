@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0067 written (experiments over whole models; time from data) and its step 1: the refusal of a model with nothing in time removed (one evaluation at t = 0 in link order; tested with a two-model pipeline).
 - 2026-11-02: ADR 0066 step 3: `Domain::on_data`/`swept`, `Composition::clocks`; runner evaluates on-data domains on delivery (`Running::evaluate` with `restart(t)`; sweeps replace their results), probes on them count evaluations, loops re-evaluate. Tests: deliveries by hand, clocked variant, top level on data, same-instant loop, latest sweep, refusals.
 - 2026-11-02: ADR 0066 step 2b (owner's request): `inline_shared` moves a shared use's own-clock uses (`OwnClock`), probes (renamed, holds through `hold_N` ports), links and groups up; `Inlined` tree with `expose_input`/`expose_output` for wires at any depth; subsystem flattening takes formulas for inner keys and `use/k` declared keys; `set_params` with paths, `carry`, `evaluate_formula`. Tests: each case against its written-out equivalent, bit for bit.
 - 2026-11-02: ADR 0066 step 2: `Loader::inline_shared` (shared uses as subsystems of the using file, recursive; ports from wires; subsystems renamed; data files absolute), `read_use` factored out, probe connections left alone (found by a test: a link into a shared use's input block was being rewritten). Python `shared=`. Tests: shared, nested shared, mixed with own clock, data folder, refusals.
@@ -101,6 +102,7 @@
 
 ## Decided
 
+- 2026-11-02 (owner): ADR 0067: the opened file's `sample` is an experiment over the whole model, a used file's `sample` a curve; final values per point by default, `reduce` and series opt-in; common random numbers by default, per-point seeds and replicates as options; a model without states is driven by its own data files' sample times automatically; `clock: {"times": …}`.
 - 2026-11-02 (owner): step 2b in ADR 0066: any file usable on a shared clock; wires and values at any depth; formulas live on a shared clock, evaluated once into a model on its own clock (ours, recorded in the ADR).
 - 2026-11-02 (owner): models nest (ADR 0066): one recursive kind of model; uses of model files in `blocks`, on their own clocks by default, shared one setting away; links at any depth; rewind per clock with recorded link values; 128-bit ticks and the end-time rule.
 - 2026-11-02 (owner): ADR 0065 accepted with all four suggestions (links through input blocks; parameter values and clocks per use without asking; "Save as a new model file…"; local copies keep their own clock; rewinding one use alone later).

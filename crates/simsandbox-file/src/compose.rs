@@ -303,13 +303,8 @@ pub fn load_composition(
             dts.push(d.dt);
         }
     }
-    if dts.is_empty() {
-        return Err(invalid(
-            "blocks",
-            "no model here runs in time: models without states run on new data, which a \
-             model with states delivers through probe links",
-        ));
-    }
+    // With nothing in time, the run is one evaluation of every model at
+    // t = 0, in link order (ADR 0067).
     let ticks = Ticks::new(&dts).map_err(|e| invalid("blocks", e))?;
     let (order, loops) = order(&l.domains, &l.links);
     Ok(Composition {

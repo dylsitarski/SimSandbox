@@ -1564,17 +1564,31 @@ mod tests {
         assert!(check_in(&dir, &clocked)["errors"][0]
             .to_string()
             .contains("give its use no clock"));
-        // Something has to run in time.
-        let report = check_in(
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_model_with_nothing_in_time_is_evaluated_once_in_link_order() {
+        // features → model → post-processing, no states anywhere (ADR 0067).
+        let dir = temp_dir("pipeline");
+        on_data_files(&dir);
+        let composed = run_in(
             &dir,
-            &json!({"format": 1, "blocks": [use_of("d", "double.ssbx.json")]}),
+            &json!({"format": 1,
+            "blocks": [
+                {"name": "x", "type": "input.value", "settings": {"unit": "m", "min": "0", "max": "10"}, "params": {"y": 1.5}},
+                use_of("first", "double.ssbx.json"),
+                use_of("second", "double.ssbx.json")],
+            "connections": [
+                {"from": "probe:p.x.y", "to": "first/u"},
+                {"from": "probe:q.first/f.y", "to": "second/u"}],
+            "controls": {"probes": [
+                {"name": "p", "record": ["x.y"]},
+                {"name": "q", "record": ["first/f.y"]}]}}),
         );
-        assert!(
-            report["errors"][0]
-                .to_string()
-                .contains("no model here runs in time"),
-            "{report}"
-        );
+        assert_eq!(composed.model("second").unwrap().rows(), 1);
+        assert_eq!(composed.values("first/f.y").unwrap(), [3.0]);
+        assert_eq!(composed.values("second/f.y").unwrap(), [6.0]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
