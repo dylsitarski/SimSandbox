@@ -99,6 +99,29 @@ An `input.file` block reads recorded data as an input over time: a probe's file,
 
 The file is read when the model is built (opened, or changed on the canvas). Its contents count in a run file's model hash: the same model with a different data file is a different model. `describe input.file` lists the settings that name files (`files`). The value is taken at each step's end and held over the next step, like any block's output; the block never joins a fused group.
 
+## Compositions
+
+A composition runs several model files together, each on its own clock, linked by probes ([ADR 0065](../decisions/0065-several-models-with-own-clocks.md)). It is a file with `models` and no blocks of its own:
+
+```json
+{"format": 1, "run": {"t_end": 60},
+ "models": [{"name": "plant", "file": "car.ssbx.json"},
+            {"name": "controller", "file": "cruise.ssbx.json", "params": {"cruise.kp": 600}, "run": {"dt": 0.5}}],
+ "connections": [{"from": "probe:speed.plant/car.v", "to": "controller/speed"},
+                 {"from": "probe:force.controller/cruise.F", "to": "plant/force"}],
+ "controls": {"probes": [{"name": "speed", "record": ["plant/car.v"]},
+                         {"name": "force", "record": ["controller/cruise.F"]}]}}
+```
+
+- **Uses:** `file` is found from the composition's folder. `params` set values for this use only, and `run.dt` its clock (the model file's `run.dt` if absent). Everything in a use is named with its prefix: `plant/car.v`.
+- **Links:** a link goes from a probe's output to an `input.value` block of another model, which takes the probe's samples in place of its slider. Units must match. Models are linked only this way.
+- **How clocks interleave:** clocks count exact ticks (0.1 and 0.3 s share a tick of 0.1 s). Between points each model steps with its linked inputs held. At a point shared by several models, a model that feeds another evaluates first, so the reading model gets that instant's sample.
+- **Loops:** where two models feed each other, the one written first evaluates first and takes the other's sample right after. It is late only for an output that depends on it at that same instant, which is reported as a warning.
+- **`check`:** lists the models (with their outputs and the `inputs` links can drive), the links, the tick, the evaluation order and the loops.
+- **`run`:** gives every model's results with `--format json`, each at its own times. CSV needs `--model NAME`.
+- **Python:** `Model.add_model(name, file, params=, dt=)` and `Model.link("plant/car.v", "controller/speed", every=)`. `Model.run()` returns `Composed`, read with `.model("plant")`, `.t("plant")` or `composed["plant/car.v"]`.
+- **Not yet:** models without states, opening compositions in the app, run files and probe recordings.
+
 ## Recorder
 
 `"recorder": {"every": 10, "mb": 256}` in `controls` (both optional) lets the model be rewound in the app ([ADR 0064](../decisions/0064-recorder-node.md)): a snapshot of its state every `every` steps, within `mb` megabytes. Without it the app shows no rewind bar. It changes no results; headless runs ignore it.

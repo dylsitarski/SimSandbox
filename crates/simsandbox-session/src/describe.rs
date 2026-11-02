@@ -69,6 +69,19 @@ pub fn block(b: &dyn Block) -> Value {
     })
 }
 
+/// A file error as `check` reports it: where it is and what.
+pub fn file_error(e: &FileError) -> Value {
+    match e {
+        FileError::Syntax {
+            line,
+            column,
+            message,
+        } => json!({"line": line, "column": column, "message": message}),
+        FileError::Invalid { path, message } => json!({"path": path, "message": message}),
+        FileError::UnsupportedFormat(_) => json!({"path": "format", "message": e.to_string()}),
+    }
+}
+
 /// One block type: what it is, its methods (with their labels), settings
 /// and, from an example built with its defaults, its interface.
 pub fn block_type(r: &Registry, name: &str) -> Value {
@@ -222,18 +235,12 @@ pub fn upgrade(text: &str, r: &Registry) -> Result<(String, Vec<String>, Vec<Str
 /// evaluating its sweep) and report every problem found. `ok` is false
 /// when it cannot run.
 pub fn check(text: &str, r: &Registry) -> Value {
+    if simsandbox_file::compose::is_composition(text) {
+        return crate::compose::check(text, r);
+    }
     // File errors carry where they are.
     if let Err(e) = simsandbox_file::load(text, r) {
-        let error = match &e {
-            FileError::Syntax {
-                line,
-                column,
-                message,
-            } => json!({"line": line, "column": column, "message": message}),
-            FileError::Invalid { path, message } => json!({"path": path, "message": message}),
-            FileError::UnsupportedFormat(_) => json!({"path": "format", "message": e.to_string()}),
-        };
-        return json!({"ok": false, "errors": [error], "warnings": []});
+        return json!({"ok": false, "errors": [file_error(&e)], "warnings": []});
     }
     match Session::load("check", text, r) {
         Err(e) => json!({"ok": false, "errors": [{"message": e}], "warnings": []}),

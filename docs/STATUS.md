@@ -1,6 +1,6 @@
 # Status
 
-_Last updated: 2026-10-31_
+_Last updated: 2026-11-02_
 
 **Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0038](decisions/0038-phase-1-revised.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). **Gate met:** 2026-10-22, the grazing example (`eq.grass` and `agents.grazers`) runs live in the desktop app at 4× real time with about 400 sheep (checked headless in the cloud); **confirmed by the owner on Linux and Windows on 2026-10-23**. **All eight Phase 1 items are built** (2026-10-23). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
 
@@ -25,10 +25,11 @@ _Last updated: 2026-10-31_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 362 tests in the workspace plus 19 Python tests, including verification against analytic solutions and convergence order.
+- 367 tests in the workspace plus 20 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-11-02: ADR 0065 accepted with every suggestion; step 1 built: compositions in the file (`models`), the loader, exact ticks, links through probes into input blocks, a headless runner, `check`, `run` and Python. A cruise control split into two files gives the same bits as one file with a hold; two clocks match values computed by hand.
 - 2026-10-30: ADR 0063 step 4: `input.file` reads a probe's file or any CSV or `.npy` as an input over time (held or linear), from the model's folder; its contents count in the run hash. A probe's file read back drives the model bit for bit as the probe did (tested). Inspector fields to name the file.
 - 2026-10-29: probe files written as they record (`stream`), `keep.samples` with the 100 000 default shown, probes holding samples only when read, Hide data keeping probes that feed blocks ([ADR 0063](decisions/0063-probes-on-wires.md) as built).
 - 2026-10-29: ADR 0063 step 3: a probe feeds a block of its own model as a sample-and-hold (kernel `SampleHold`, the probe's own trigger in `simsandbox_core::schedule`), with no delay, exact under rewind and replay, part of the model's hash; wired on the canvas. Also fixed: controls holding only newer sections were not saved.
@@ -113,14 +114,14 @@ _Last updated: 2026-10-31_
 
 ## In progress
 
-- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md), [ADR 0063](decisions/0063-probes-on-wires.md)): ADR 0062 steps 1 and 2 and ADR 0063 steps 1 to 3 built 2026-10-29, step 4 2026-10-30; checked by tests, headless renders and screenshots under Xvfb, not yet by the owner in the window (probe nodes and outputs, the settings window, Save probe data, filters on probes). Next: ADR 0063 step 5, proposed as [ADR 0065](decisions/0065-several-models-with-own-clocks.md) (2026-10-31), waiting for the owner.
+- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md), [ADR 0063](decisions/0063-probes-on-wires.md)): ADR 0062 steps 1 and 2 and ADR 0063 steps 1 to 3 built 2026-10-29, step 4 2026-10-30; checked by tests, headless renders and screenshots under Xvfb, not yet by the owner in the window (probe nodes and outputs, the settings window, Save probe data, filters on probes). Next: ADR 0065 step 2 (compositions; ADR 0063 step 5).
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Probes on wires** ([ADR 0063](decisions/0063-probes-on-wires.md)), in order (steps 1 to 3 done 2026-10-29, step 4 2026-10-30): (5) compositions of model files with their own clocks, linked by probes, proposed in [ADR 0065](decisions/0065-several-models-with-own-clocks.md) (2026-10-31), waiting for the owner; then its order of work.
+1. **Compositions** ([ADR 0065](decisions/0065-several-models-with-own-clocks.md); ADR 0063 step 5), in order (step 1 done 2026-11-02): (2) models without states evaluated on new data; (3) the canvas and the app (use nodes, opening a use, the probe added when wiring, the edit question, saving several files); (4) recorder and rewind at common ticks, run files; (5) several cores between points.
 2. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 3. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 

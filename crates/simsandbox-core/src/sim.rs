@@ -420,6 +420,16 @@ impl Simulator {
         Ok(())
     }
 
+    /// Apply changed parameters now, at the current time, as the next step
+    /// would first: an input block set at a communication point by a link
+    /// from another model (ADR 0065) acts on the outputs at that point.
+    pub fn refresh(&mut self) -> Result<()> {
+        if self.changed.is_empty() {
+            return Ok(());
+        }
+        self.refresh_changed()
+    }
+
     /// Recompute the outputs of Blocks whose parameters changed, then the
     /// outputs that depend on their inputs, and pass them on: a parameter
     /// changed between steps (a slider, an input block, ADR 0058) acts in

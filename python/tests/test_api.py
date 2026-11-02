@@ -312,3 +312,32 @@ def test_a_saved_model_reads_its_data_file_from_its_folder(tmp_path):
     again = ss.Model.load(tmp_path / "model.ssbx.json")
     assert list(again.run()["data.F"]) == [1.0, 1.5, 2.0, 2.5, 3.0, 3.0, 3.0]
     assert ss.check(tmp_path / "model.ssbx.json")["ok"]
+
+
+def test_a_composition_runs_models_on_their_own_clocks(tmp_path):
+    cruise = ss.Model.example("Cruise control")
+    car, pi = cruise.data["blocks"]
+    plant = ss.Model({"format": 1, "run": {"dt": 0.05}, "blocks": [car], "connections": []})
+    plant.add_block("force", "input.value", settings={"unit": "N"}).connect("force.y", "car.F")
+    plant.save(tmp_path / "car.ssbx.json")
+    controller = ss.Model({"format": 1, "run": {"dt": 0.05}, "blocks": [pi], "connections": []})
+    controller.add_block("speed", "input.value", settings={"unit": "m/s"}).connect("speed.y", "cruise.v")
+    controller.save(tmp_path / "cruise.ssbx.json")
+    c = ss.Model({"format": 1, "run": {"t_end": 10}})
+    c.add_model("plant", "car.ssbx.json")
+    c.add_model("controller", "cruise.ssbx.json", params={"cruise.kp": 600}, dt=0.5)
+    c.link("plant/car.v", "controller/speed").link("controller/cruise.F", "plant/force")
+    c.save(tmp_path / "both.ssbx.json")
+    report = c.check()
+    assert report["ok"], report
+    assert report["tick"] == 0.05 and report["order"] == ["plant", "controller"]
+    r = c.run()
+    assert isinstance(r, ss.Composed)
+    assert r.model("plant").rows == 201 and r.model("controller").rows == 21
+    assert r.t("controller")[1] == 0.5
+    # The force changes only at the controller's points, held between.
+    force = r["plant/force.y"]
+    assert len(set(force[1:10])) == 1 and force[10] != force[9]
+    assert r["controller/speed.y"][1] == r["plant/car.v"][10]
+    again = ss.Model.load(tmp_path / "both.ssbx.json").run()
+    assert np.array_equal(again["plant/car.v"], r["plant/car.v"])

@@ -111,6 +111,14 @@ fn run<'py>(
     let r = py
         .detach(|| run_model(text, &registry(), t_end, dt, track))
         .map_err(ModelError::new_err)?;
+    results(py, &r)
+}
+
+/// A run's results as the dict [`run`] returns.
+fn results<'py>(
+    py: Python<'py>,
+    r: &simsandbox_session::run::Results,
+) -> PyResult<Bound<'py, PyDict>> {
     let rows = r.rows();
     let d = PyDict::new(py);
     let index = PyList::empty(py);
@@ -137,6 +145,30 @@ fn run<'py>(
     )?;
     d.set_item("notes", r.notes.clone())?;
     d.set_item("warnings", r.warnings.clone())?;
+    Ok(d)
+}
+
+/// Run a composition (ADR 0065) to `t_end` (the file's, if not given):
+/// a dict of each model's results, as [`run`] gives one model's, under
+/// `models` (in written order), with `tick` and `warnings`.
+#[pyfunction]
+#[pyo3(signature = (text, t_end=None))]
+fn run_composition<'py>(
+    py: Python<'py>,
+    text: &str,
+    t_end: Option<f64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let c = py
+        .detach(|| simsandbox_session::compose::run_composition(text, &registry(), t_end))
+        .map_err(ModelError::new_err)?;
+    let models = PyList::empty(py);
+    for (name, r) in &c.models {
+        models.append((name, results(py, r)?))?;
+    }
+    let d = PyDict::new(py);
+    d.set_item("models", models)?;
+    d.set_item("tick", c.tick)?;
+    d.set_item("warnings", c.warnings.clone())?;
     Ok(d)
 }
 
@@ -368,6 +400,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(describe, m)?)?;
     m.add_function(wrap_pyfunction!(promote, m)?)?;
     m.add_function(wrap_pyfunction!(set_folder, m)?)?;
+    m.add_function(wrap_pyfunction!(run_composition, m)?)?;
     m.add_function(wrap_pyfunction!(schema, m)?)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(examples, m)?)?;

@@ -33,6 +33,7 @@ __all__ = [
     "Probe",
     "ProbeRun",
     "Results",
+    "Composed",
     "Run",
     "ModelError",
     "describe",
@@ -287,7 +288,7 @@ class Model:
         t_end: float | None = None,
         dt: float | None = None,
         inputs: "Iterable[tuple[float, str, float]] | Run | None" = None,
-    ) -> "Results":
+    ) -> "Results | Composed":
         """Run to ``t_end`` in steps of ``dt`` (each defaulting to the file's
         ``run`` section), or through the model's sweep. ``inputs`` are
         changes made during the run (ADR 0058): ``(t, key, value)``
@@ -295,7 +296,18 @@ class Model:
         along with the file's schedule (``run.inputs``); or a :class:`Run`,
         whose schedule and recorded input are applied to this model.
         Raises :class:`ModelError` with every problem :func:`check` finds
-        if it cannot run."""
+        if it cannot run. A composition (ADR 0065) runs every model on its
+        own clock and returns :class:`Composed`."""
+        if self.data.get("models"):
+            if dt is not None or inputs is not None:
+                raise ValueError("a composition's models keep their own clocks: dt and inputs do not apply")
+            try:
+                with _in_folder(self.folder):
+                    return Composed(_native.run_composition(self.to_json(), t_end))
+            except ModelError as e:
+                with _in_folder(self.folder):
+                    report = json.loads(_native.check(self.to_json()))
+                raise ModelError(_errors(report) if not report["ok"] else str(e)) from None
         model, track = self._with_inputs(inputs)
         text = model.to_json()
         try:
@@ -315,6 +327,41 @@ class Model:
         if inputs is not None:
             return self, [(float(t), str(k), float(v)) for t, k, v in inputs]
         return self, []
+
+    def add_model(
+        self,
+        name: str,
+        file: "str | os.PathLike",
+        params: dict[str, float] | None = None,
+        dt: float | None = None,
+    ) -> "Model":
+        """Use a model file in this composition (ADR 0065), under ``name``,
+        which prefixes everything in it (``"plant/car.v"``). ``file`` is
+        found from this file's folder (or is a full path); ``params`` set
+        its parameter values for this use only, ``dt`` its clock (the
+        model file's ``run.dt`` if not given). A composition has no blocks
+        of its own."""
+        use: dict = {"name": name, "file": os.fspath(file)}
+        if params:
+            use["params"] = {k: float(v) for k, v in params.items()}
+        if dt is not None:
+            use["run"] = {"dt": float(dt)}
+        self.data.setdefault("models", []).append(use)
+        self.data.pop("blocks", None)
+        return self
+
+    def link(self, signal: str, to: str, every: dict | None = None, probe: str | None = None) -> "Model":
+        """Link two models of a composition (ADR 0065): a probe records
+        ``signal`` (``"plant/car.v"``) ``every`` as :meth:`add_probe` takes
+        it (every step if not given), and drives the input block ``to``
+        (``"controller/speed"``, an ``input.value``) with its samples, held
+        between them."""
+        name = probe or "link_" + signal.replace("/", "_").replace(".", "_")
+        self.add_probe(name, [signal], every=every)
+        self.data.setdefault("connections", []).append(
+            {"from": f"probe:{name}.{signal}", "to": to}
+        )
+        return self
 
     def add_probe(
         self,
@@ -633,6 +680,32 @@ def _errors(report: dict) -> str:
         )
         lines.append(f"{where}: {e['message']}" if where else e["message"])
     return "; ".join(lines)
+
+
+class Composed:
+    """What a composition's run produced (ADR 0065): each model's
+    :class:`Results` at its own times, by name (``composed.model("plant")``
+    or ``composed.models``), the common ``tick`` and ``warnings``.
+    ``composed["plant/car.v"]`` finds a full name in its model, and
+    ``composed.t("plant")`` gives that model's times."""
+
+    def __init__(self, raw: dict):
+        self.models: dict[str, Results] = {name: Results(r) for name, r in raw["models"]}
+        self.tick: float = raw["tick"]
+        self.warnings: list[str] = list(raw["warnings"])
+
+    def model(self, name: str) -> "Results":
+        return self.models[name]
+
+    def t(self, name: str) -> np.ndarray:
+        return self.models[name]["t"]
+
+    def __getitem__(self, name: str):
+        return self.models[name.split("/", 1)[0]][name]
+
+    def __repr__(self) -> str:
+        rows = ", ".join(f"{n}: {r.rows} rows" for n, r in self.models.items())
+        return f"Composed({rows})"
 
 
 class Results:

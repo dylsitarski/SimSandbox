@@ -1,7 +1,7 @@
 # 0065 — Several models, each with its own clock, referenced from their files and linked by probes
 
-- **Status:** Proposed
-- **Date:** 2026-10-31
+- **Status:** Accepted
+- **Date:** 2026-10-31 (accepted 2026-11-02)
 
 ## Context
 
@@ -104,9 +104,36 @@ The app remembers the choice for that use until the composition is closed.
 4. Recorder and rewind at common ticks; run files of compositions.
 5. Uses stepping on several cores between points (with ADR 0062 step 3), tested for the same bits.
 
-## Open points for the owner
+## As built
 
-These suggestions were added to the owner's choices and wait for confirmation:
+**Step 1 (2026-11-02): compositions in the file, the loader and a headless run.**
+
+- **File:** `ModelFile::models`, a list of `ModelUse` (`name`, `file`, `params`, `run.dt`, `canvas`). It is a list, not the map of the example above, so the written order that breaks loops is kept. A file with models may not have `blocks`, `subsystems`, `params`, `groups` or `sample`. `blocks` is now optional and not written when empty. Use names are letters, digits, `_` and `-`. `load` and `load_in` refuse a composition. The schema lists `models`.
+- **Loader:** `simsandbox_file::compose::load_composition`.
+  - Each used file is read from the composition's folder (or the thread's, `in_folder`) and built with its own folder for data files. The use's `params` are written into its model before building. A failure that goes away without them is reported at `models[k].params`. A used file that is itself a composition, or a model without states (step 2), is refused.
+  - Links come from `connections`: `probe:NAME.use/block.port` to `use/block`, an `input.value` block. The probe must record that signal, which must be a scalar or a vector element. Units must match. A link may not go into its own use, and an input may not be linked twice. A probe records from one use. A direct wire between uses is refused with a message.
+  - `Composition::order` evaluates feeding uses first, breaking loops in written order. `loops` describes each loop broken.
+  - `Composition::hash` covers the composition plus each used file's SHA-256 and its data files' digests (`models.NAME.file`, `NAME/…`).
+- **Exact ticks:** `simsandbox_core::clock::Ticks` reads each `dt` as its shortest decimal and finds their common tick (0.1 and 0.3 → 1/10, steps 1 and 3).
+- **Runner:** `simsandbox_session::compose::run_composition`.
+  - Each use gets its own `Simulator`. The run goes from tick to tick through points where some use has one; each use takes `round(t_end / dt)` steps.
+  - Uses reaching a tick first step apart, with link inputs held. Then, in order, each takes the latest samples of its links (`Simulator::set_param` on the input block's `y`, then the new `Simulator::refresh`, which applies changed parameters at once), and its probes sample (the same `Trigger` as probes in a model). After that pass, each use takes again any sample made after it evaluated (a loop), and is recorded.
+  - Scheduled input `run.inputs` by full name (`controller/push.y`) goes to its use.
+  - **Difference from the decision:** in a loop, the use evaluated first is not held a whole step behind. It takes the later use's sample at that same tick right after its own outputs, so its next step uses it. Only an output that depends on that sample at the same instant (feedthrough) sees it one step late. This is detected (the sampled outputs change on taking it) and reported as a warning. A static note names each loop.
+  - Until its first sample, a linked input block keeps its own value: NaN would stop solvers.
+- **Headless:**
+  - `check` on a composition (`compose::check`) gives `models` (file, `dt`, ticks per step, `params`, `outputs`, the `inputs` links can drive), `links`, `tick`, `order`, `loops` and `model_hash`.
+  - `simsandbox run` runs one. JSON gives `models`, each as `run --format json` gives a model, plus `tick` and `warnings`. CSV needs `--model NAME` when there are several. `--dt`, `--inputs`, `--probe` and `--save-probes` are refused for now.
+  - Python: `Model.add_model(name, file, params=, dt=)`, `Model.link(signal, to, every=)` (adds a probe and the link), and `Model.run()` returning `Composed` (`model(name)`, `t(name)`, `composed["plant/car.v"]`). This replaces the `Composition` class proposed above.
+- **Tests:**
+  - The cruise control split into a plant file and a controller file, linked both ways every step, gives the same bits as the one-file model with the step-3 hold (fusion off in both) for `car.v`, `cruise.e`, `I` and `F`, with no delay reported.
+  - Clocks of 0.1 s and 0.3 s, each reading the other, match values computed by hand bit for bit, including the faster one holding the slower one's samples.
+  - Also tested: `check`'s report, the hash following used files, parameter values and clocks, every refusal above, and Python.
+- **Not yet:** probes in a composition sample only for links (no recordings, files or `run --probe`); run files, `--out DIR`, `render --model`, `localize` and local copies (inline models) come with steps 3 and 4. A used model's own `controls` and `run.inputs` are not used.
+
+## Suggestions accepted by the owner (2026-11-02)
+
+These were added to the owner's choices and accepted with them:
 - **Links enter through input blocks**, not new ports, so every model also runs alone (above).
 - **Parameter values and clocks per use** are not edits of the model and ask nothing.
 - **A third choice, "Save as a new model file…"**, beside copying and editing the original.

@@ -20,6 +20,7 @@
 //! - [`random`]: counter-based random numbers (ADR 0034).
 
 pub mod block;
+pub mod clock;
 pub mod error;
 pub mod fusion;
 pub mod graph;

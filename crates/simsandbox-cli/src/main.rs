@@ -43,7 +43,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json] [--inputs RUN]
-                  [--probe NAME] [--save-probes DIR]
+                  [--probe NAME] [--save-probes DIR] [--model NAME]
   simsandbox check FILE
   simsandbox describe [TYPE | units]
   simsandbox schema [run]
@@ -221,6 +221,7 @@ fn run_file(args: &[String]) -> Result<(), String> {
             "--inputs",
             "--probe",
             "--save-probes",
+            "--model",
         ],
     )?;
     let json = match flags.get("--format") {
@@ -229,6 +230,15 @@ fn run_file(args: &[String]) -> Result<(), String> {
         Some(other) => return Err(format!("unknown format '{other}': csv or json")),
     };
     let (t_end, dt) = (flags.positive("--t-end")?, flags.positive("--dt")?);
+    if !is_run_file(path) {
+        let text = read(path)?;
+        if simsandbox_file::compose::is_composition(&text) {
+            return run_composition_file(path, &text, t_end, &flags, json);
+        }
+    }
+    if flags.has("--model") {
+        return Err("--model picks a model of a composition (ADR 0065); this is one model".into());
+    }
     let (text, track) = model_and_track(path, flags.get("--inputs"))?;
     if flags.has("--probe") || flags.has("--save-probes") {
         return run_file_probes(path, &text, track, (t_end, dt), &flags, json);
@@ -257,6 +267,63 @@ fn run_file(args: &[String]) -> Result<(), String> {
             );
         }
         r.write_csv(&mut out)
+    };
+    written
+        .and_then(|()| out.flush())
+        .map_err(|e| e.to_string())
+}
+
+/// `run` of a composition (ADR 0065): every model on its own clock. JSON
+/// gives every model; CSV one, named by `--model` when there are several.
+fn run_composition_file(
+    path: &str,
+    text: &str,
+    t_end: Option<f64>,
+    flags: &Flags,
+    json: bool,
+) -> Result<(), String> {
+    for f in ["--dt", "--inputs", "--probe", "--save-probes"] {
+        if flags.has(f) {
+            return Err(format!(
+                "{f} does not apply to a composition yet: each model keeps its own clock"
+            ));
+        }
+    }
+    let c = simsandbox_session::compose::run_composition(text, &registry(), t_end)
+        .map_err(|e| format!("{path}: {e}"))?;
+    for w in &c.warnings {
+        eprintln!("warning: {path}: {w}");
+    }
+    let mut out = BufWriter::new(io::stdout().lock());
+    let written = if json && !flags.has("--model") {
+        serde_json::to_writer(&mut out, &c.to_json())
+            .map_err(io::Error::other)
+            .and_then(|()| writeln!(out))
+    } else {
+        let names: Vec<&str> = c.models.iter().map(|(n, _)| n.as_str()).collect();
+        let name = match (flags.get("--model"), names.as_slice()) {
+            (Some(n), _) => n,
+            (None, [one]) => one,
+            (None, _) => {
+                return Err(format!(
+                    "{path} has several models, each at its own times: pick one with --model ({}) or use --format json",
+                    names.join(", ")
+                ))
+            }
+        };
+        let r = c
+            .model(name)
+            .ok_or_else(|| format!("no model '{name}'; models: {}", names.join(", ")))?;
+        for n in &r.notes {
+            eprintln!("note: {name}: {n}");
+        }
+        if json {
+            serde_json::to_writer(&mut out, &r.to_json())
+                .map_err(io::Error::other)
+                .and_then(|()| writeln!(out))
+        } else {
+            r.write_csv(&mut out)
+        }
     };
     written
         .and_then(|()| out.flush())

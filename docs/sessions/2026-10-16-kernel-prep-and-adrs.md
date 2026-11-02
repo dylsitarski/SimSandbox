@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0065 step 1: `simsandbox_core::clock::Ticks`, `Simulator::refresh`; `ModelFile::models` (`ModelUse`, a list for written order), `simsandbox_file::compose` (load, links, order, loops, hash); `simsandbox_session::compose` (runner, `check`); CLI `run --model`, composition `check`; Python `add_model`, `link`, `Composed`. Tests: split cruise control bit for bit against the step-3 hold, two clocks against values by hand, check, hash, refusals, Python.
 - 2026-10-31: [ADR 0065](../decisions/0065-several-models-with-own-clocks.md) proposed (ADR 0063 step 5): `models` beside the main model, links only through probes, exact ticks (each `dt` as a decimal, ordered by whole multiples of their common divisor), models stepping independently between points and in link order at them, time-independent models evaluated on delivery, the recorder snapshotting at common ticks, the canvas and headless forms, and an order of work.
 - 2026-10-30: ADR 0063 step 4: `input.file` (`simsandbox-eq/src/file_input.rs`: CSV and `.npy` readers, hold or linear); kernel `BlockConfig::folder`, `BlockConfig::file`, `TypeInfo::file`, `registry::in_folder`/`set_folder`; `simsandbox_file::load_in`, `Loaded::data`, `runs::model_hash_with`; `Session::load_in`; CLI and Python read files from the model's folder (`Model.folder`); app loads with the saved model's folder, Inspector fields (`file_fields`), `Edit::SetSetting` with empty text clears a setting. Found by the app test: the canvas's edited copy of the model lost its folder, so the diagram pane now holds it. Tests: the block's own, a probe's file read back equals the live probe bit for bit, hash follows contents, Python, app.
 - 2026-10-29: probe streaming (`probe::Stream`, CSV and `.npy` with rewritten headers, cut back on rewind), `keep.samples`, memory only when read (`Session::update_probe_io`, `record_all_probes`, `set_probe_dir`; the app passes the model's folder), Hide data keeping feeding probes (`observers::model_part`). Tests for each.
@@ -96,6 +97,8 @@
 
 ## Decided
 
+- 2026-11-02 (owner): ADR 0065 accepted with all four suggestions (links through input blocks; parameter values and clocks per use without asking; "Save as a new model file…"; local copies keep their own clock; rewinding one use alone later).
+- 2026-11-02 (ours, recorded as built in ADR 0065): `models` is a list (written order breaks loops); in a loop the use evaluated first takes the other's same-tick sample right after its own outputs, late only for same-instant feedthrough, which is reported; a linked input keeps its own value until its first sample.
 - 2026-10-31 (owner): every model is named; models are referenced from their own files; editing a used model inside another file asks whether to copy it or edit the original. ADR 0065 rewritten around compositions (still Proposed; our suggestions in Q44).
 - 2026-10-30 (ours, owner to confirm): headless tools set the model's folder for the thread (`in_folder`) instead of a folder argument on every function that takes a model's text; CSV column names become port names with non-identifier characters made `_`; a file reader never fuses (its value is held over each step, like a probe's hold); data files count in the run hash by content.
 - 2026-10-29: no batch-size setting for streamed probe files; buffered writes already batch (judged not useful, as the owner allowed). The default keep is "thinned past 100 000 samples", editable. Probes feeding blocks belong to the model and stay visible when data is hidden (owner).
@@ -157,6 +160,7 @@
 
 ## Notes for the next session
 
+- ADR 0065 step 2 next: models without states in compositions, evaluated when a link delivers. Probes in compositions sample only for links so far.
 - ADR 0065 is Proposed: wait for the owner's answers to its open points (Q44) before building step 1 of its order of work.
 - ADR 0063 step 5 next (several models in one session, own ADR first). `input.file` has not been tried in the window; Q42 (units in probe CSV headers) and Q43 (re-reading changed files) are open.
 - ADR 0063 step 4 next: a block reading a probe's file (or any CSV or `.npy`) as an input over time; it also serves external data (ADR 0048). The owner has not yet tried probes in the window.

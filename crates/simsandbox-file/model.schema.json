@@ -2,11 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/dylsitarski/SimSandbox/blob/main/crates/simsandbox-file/model.schema.json",
   "title": "SimSandbox model file",
-  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md and docs/decisions/0023-automatic-fusion.md and docs/decisions/0028-sweeps-as-samples.md.",
+  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md and docs/decisions/0023-automatic-fusion.md and docs/decisions/0028-sweeps-as-samples.md and docs/decisions/0065-several-models-with-own-clocks.md.",
   "type": "object",
   "required": [
-    "format",
-    "blocks"
+    "format"
   ],
   "additionalProperties": false,
   "properties": {
@@ -84,6 +83,57 @@
         "$ref": "#/$defs/subsystem"
       },
       "description": "Groups of blocks used like block types by name (ADR 0043)."
+    },
+    "models": {
+      "type": "array",
+      "description": "A composition (ADR 0065): named uses of model files, each with its own clock. A file with models has no blocks, subsystems, params, groups or sample of its own; its connections link probe outputs ('probe:NAME.model/block.port') to input.value blocks of other models ('model/block'). Names inside a use are prefixed with it ('plant/car.v').",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "file"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "file": {
+            "type": "string",
+            "description": "The model file, relative to the composition's folder or a full path."
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "Parameter values for this use only: 'block.param' or a declared parameter's name."
+          },
+          "run": {
+            "type": "object",
+            "required": [
+              "dt"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "dt": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "description": "This use's clock; the model file's run.dt if absent."
+          },
+          "canvas": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      }
     },
     "blocks": {
       "type": "array",

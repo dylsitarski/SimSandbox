@@ -18,6 +18,7 @@
 //!   block type and view this build knows.
 
 pub mod canvas;
+pub mod compose;
 pub mod describe;
 pub mod diagram;
 pub mod examples;
