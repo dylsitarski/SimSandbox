@@ -116,7 +116,8 @@ A model's `blocks` may use other model files, each running on its own clock, lin
 - **Uses:**
   - `file` is found from this file's folder, and data files inside a use from its own file's folder.
   - `params` set values for this use only.
-  - `clock` is `{"dt": step}`, or absent for the file's own `run.dt`. `"shared"` comes later.
+  - `clock` is `{"dt": step}`, or absent for the file's own `run.dt`.
+  - `"clock": "shared"` puts the use on this model's clock instead, flattened into it like a subsystem (fused with its neighbours where possible). Wire straight into its input blocks (`{"from": "controller/cruise.F", "to": "plant/force"}`) and from its own blocks' outputs (`plant/car.v`); models deeper inside it are wired in its own file. Such a used file may not use models on their own clocks yet.
   - Everything in a use is named with the path of uses leading to it: `plant/car.v`, `vehicle/plant/car.v`. The top level's own blocks keep plain names, and a model may have blocks of its own beside its uses.
   - A used file may use files itself; a file that ends up using itself is refused.
 - **What is read from a used file:** only `run.dt`, plus the probes that feed its links or its own blocks. The top level's `run` governs, and inner models draw random numbers from seeds mixed from the top level's and the use's path.
@@ -128,8 +129,8 @@ A model's `blocks` may use other model files, each running on its own clock, lin
   - In a loop, the model written first evaluates first and takes the other's sample right after. Only an output depending on it at that same instant is late, which is reported.
 - **`check`:** lists each model (`name`, which is its path, or `.` for the top level's own blocks; `file`, `dt`, its outputs and the `inputs` links can drive), the links, the tick, the order, the loops and `model_hash`.
 - **`run`:** `--format json` gives every model at its own times. CSV needs `--model NAME`.
-- **Python:** `Model.add_model(name, file, params=, dt=)` and `Model.link("plant/car.v", "controller/speed", every=)`. `Model.run()` returns `Composed`, read with `.model("plant")`, `.t("plant")` or `composed["vehicle/plant/car.v"]`.
-- **Not yet:** shared clocks, models without states, the app, run files, and probe recordings in such models.
+- **Python:** `Model.add_model(name, file, params=, dt=, shared=)` and `Model.link("plant/car.v", "controller/speed", every=)`. `Model.run()` returns `Composed`, read with `.model("plant")`, `.t("plant")` or `composed["vehicle/plant/car.v"]`.
+- **Not yet:** models without states on new data, the app, run files, and probe recordings in such models.
 
 ## Recorder
 

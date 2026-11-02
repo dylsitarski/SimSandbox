@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0066 step 2: `Loader::inline_shared` (shared uses as subsystems of the using file, recursive; ports from wires; subsystems renamed; data files absolute), `read_use` factored out, probe connections left alone (found by a test: a link into a shared use's input block was being rewritten). Python `shared=`. Tests: shared, nested shared, mixed with own clock, data folder, refusals.
 - 2026-11-02: [ADR 0066](../decisions/0066-models-nest-as-blocks.md) written (supersedes 0065) and step 1 reworked: `BlockEntry::{file, clock}`, `UseClock`; recursive `load_composition` (levels, domains, `written_at`, cycle chain, `seed_for`, `domain_of`); `Ticks` 128-bit with `steps_within`; runner, `check`, CLI and Python by domain. Tests: split and nested runs bit for bit, two clocks by hand, a 10⁻¹⁶ s tick for 3,000 s, the end rule, seeds per use, refusals.
 - 2026-11-02: ADR 0065 step 1: `simsandbox_core::clock::Ticks`, `Simulator::refresh`; `ModelFile::models` (`ModelUse`, a list for written order), `simsandbox_file::compose` (load, links, order, loops, hash); `simsandbox_session::compose` (runner, `check`); CLI `run --model`, composition `check`; Python `add_model`, `link`, `Composed`. Tests: split cruise control bit for bit against the step-3 hold, two clocks against values by hand, check, hash, refusals, Python.
 - 2026-10-31: [ADR 0065](../decisions/0065-several-models-with-own-clocks.md) proposed (ADR 0063 step 5): `models` beside the main model, links only through probes, exact ticks (each `dt` as a decimal, ordered by whole multiples of their common divisor), models stepping independently between points and in link order at them, time-independent models evaluated on delivery, the recorder snapshotting at common ticks, the canvas and headless forms, and an order of work.
@@ -163,7 +164,7 @@
 ## Notes for the next session
 
 - 2026-11-02: the owner asked whether compositions and models could be one recursive kind of file (Q45); recommended yes (uses in `blocks`, a clock per use); waiting for the owner before ADR 0065 step 2.
-- ADR 0066 step 2 next: shared-clock uses (a used file flattened like a subsystem; wires into its input blocks). Then models without states. Probes in such models sample only for links so far.
+- ADR 0066 step 3 next: models without states evaluated on new data. A shared use may not yet contain uses on their own clocks; probes in such models sample only for links so far.
 - ADR 0065 is Proposed: wait for the owner's answers to its open points (Q44) before building step 1 of its order of work.
 - ADR 0063 step 5 next (several models in one session, own ADR first). `input.file` has not been tried in the window; Q42 (units in probe CSV headers) and Q43 (re-reading changed files) are open.
 - ADR 0063 step 4 next: a block reading a probe's file (or any CSV or `.npy`) as an input over time; it also serves external data (ADR 0048). The owner has not yet tried probes in the window.

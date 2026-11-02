@@ -124,6 +124,17 @@ impl Composition {
     }
 }
 
+/// A name not yet in `taken`: `base`, else `base_1`, `base_2`, ….
+fn unique(base: &str, taken: &BTreeMap<String, Subsystem>) -> String {
+    let mut name = base.to_string();
+    let mut n = 1;
+    while taken.contains_key(&name) {
+        name = format!("{base}_{n}");
+        n += 1;
+    }
+    name
+}
+
 /// Whether a model file's text uses model files.
 pub fn is_composition(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(text)
@@ -345,6 +356,9 @@ impl Loader<'_> {
         source: Option<&Path>,
         dt: f64,
     ) -> Result<Level, FileError> {
+        let mut file = file.clone();
+        self.inline_shared(&mut file, path, folder)?;
+        let file = &file;
         let full = |name: &str| {
             if path.is_empty() {
                 name.to_string()
@@ -455,12 +469,17 @@ impl Loader<'_> {
     }
 
     /// Load the model file `u` uses, at `path`.
-    fn use_file(
+    /// Find, read and parse the model file `u` uses from `folder`, with
+    /// the use's parameter values written in; its digest goes into the
+    /// hash under `path`. Returns the model, where it was found, and the
+    /// canonical path to push while it loads (a file that uses itself is
+    /// refused).
+    fn read_use(
         &mut self,
         u: &BlockEntry,
         path: &str,
         folder: Option<&Path>,
-    ) -> Result<Level, FileError> {
+    ) -> Result<(ModelFile, PathBuf, PathBuf), FileError> {
         let name = u.file.as_deref().expect("a use names a file");
         let found = PathBuf::from(name);
         let found = match (folder, found.is_absolute()) {
@@ -495,18 +514,22 @@ impl Loader<'_> {
         let (mut model, _) = ModelFile::from_json(&text)
             .map_err(|e| invalid("file", format!("{}: {e}", found.display())))?;
         set_params(&mut model, &u.params)?;
-        let dt = match u.clock {
-            None => model.run.dt,
-            Some(UseClock::Step(dt)) => dt,
-            Some(UseClock::Shared) => {
-                return Err(invalid(
-                    "clock",
-                    "a shared clock (the use flattened into its parent) comes in the next \
-                     step of ADR 0066; give the use its own clock for now",
-                ))
-            }
-        };
         self.data.insert(format!("{path}.file"), digest(&bytes));
+        Ok((model, found, canonical))
+    }
+
+    /// Load the model file `u` uses on its own clock, at `path`.
+    fn use_file(
+        &mut self,
+        u: &BlockEntry,
+        path: &str,
+        folder: Option<&Path>,
+    ) -> Result<Level, FileError> {
+        let (model, found, canonical) = self.read_use(u, path, folder)?;
+        let dt = match u.clock {
+            Some(UseClock::Step(dt)) => dt,
+            _ => model.run.dt,
+        };
         self.stack.push(canonical);
         let child_folder = found.parent().map(Path::to_path_buf);
         let level = self
@@ -514,6 +537,224 @@ impl Loader<'_> {
             .map_err(|e| invalid("", format!("{}: {e}", found.display())));
         self.stack.pop();
         level
+    }
+
+    /// Put each use of `file` on a shared clock in place as a subsystem
+    /// of `file` made from the used file (ADR 0066 step 2), so it
+    /// flattens into `file`'s model: named `use/inner`, fused with its
+    /// neighbours where it can be. A wire into `use/input` (an input block
+    /// of the used file) becomes an input port feeding what that block
+    /// fed, the block dropped; a wire from `use/block.port` becomes an
+    /// output port. Uses inside the used file on a shared clock are put
+    /// in place first, in the same way.
+    fn inline_shared(
+        &mut self,
+        file: &mut ModelFile,
+        path: &str,
+        folder: Option<&Path>,
+    ) -> Result<(), FileError> {
+        let shared: Vec<usize> = (0..file.blocks.len())
+            .filter(|&k| {
+                file.blocks[k].file.is_some() && file.blocks[k].clock == Some(UseClock::Shared)
+            })
+            .collect();
+        let mut defs: BTreeMap<String, String> = BTreeMap::new();
+        for k in shared {
+            let u = file.blocks[k].clone();
+            let at = format!("blocks[{k}]");
+            let full = if path.is_empty() {
+                u.name.clone()
+            } else {
+                format!("{path}/{}", u.name)
+            };
+            let (mut child, found, canonical) = self
+                .read_use(&u, &full, folder)
+                .map_err(|e| invalid(&at, e))?;
+            let child_folder = found.parent().map(Path::to_path_buf);
+            let shown = found.display().to_string();
+            self.stack.push(canonical);
+            let inner = self.inline_shared(&mut child, &full, child_folder.as_deref());
+            self.stack.pop();
+            inner.map_err(|e| invalid(&at, format!("{shown}: {e}")))?;
+            let refuse = |what: &str| {
+                invalid(
+                    &at,
+                    format!("{shown}: a model used on a shared clock {what} yet"),
+                )
+            };
+            if child.blocks.iter().any(|b| b.file.is_some()) {
+                return Err(refuse("cannot use models on their own clocks"));
+            }
+            if child
+                .connections
+                .iter()
+                .any(|c| c.from.starts_with("probe:"))
+            {
+                return Err(refuse("cannot have probes feeding its own blocks"));
+            }
+            if !child.groups.is_empty() {
+                return Err(refuse("cannot have groups"));
+            }
+            // Data files are read from the used file's folder.
+            self.absolute_files(&mut child.blocks, child_folder.as_deref());
+            for d in child.subsystems.values_mut() {
+                self.absolute_files(&mut d.blocks, child_folder.as_deref());
+            }
+            // Its subsystems join file's, under names of their own.
+            let renamed: BTreeMap<String, String> = child
+                .subsystems
+                .keys()
+                .map(|n| {
+                    (
+                        n.clone(),
+                        unique(&format!("{}_{n}", u.name), &file.subsystems),
+                    )
+                })
+                .collect();
+            let rename = |blocks: &mut Vec<BlockEntry>| {
+                for b in blocks {
+                    if let Some(n) = renamed.get(&b.type_name) {
+                        b.type_name = n.clone();
+                    }
+                }
+            };
+            for (n, mut d) in std::mem::take(&mut child.subsystems) {
+                rename(&mut d.blocks);
+                file.subsystems.insert(renamed[&n].clone(), d);
+            }
+            rename(&mut child.blocks);
+            let def = unique(&u.name.replace('-', "_"), &file.subsystems);
+            file.subsystems.insert(
+                def.clone(),
+                Subsystem {
+                    description: child.description.clone(),
+                    params: child.params.clone(),
+                    inputs: Vec::new(),
+                    outputs: Vec::new(),
+                    blocks: child.blocks,
+                    connections: child.connections,
+                },
+            );
+            file.blocks[k] = BlockEntry {
+                name: u.name.clone(),
+                type_name: def.clone(),
+                canvas: u.canvas,
+                ..Default::default()
+            };
+            defs.insert(u.name.clone(), def);
+        }
+        // Wires into and out of them go through ports. Connections from
+        // probes stay: they name flat signals and drive input blocks as
+        // they are.
+        for (ci, c) in file.connections.iter_mut().enumerate() {
+            if c.from.starts_with("probe:") {
+                continue;
+            }
+            let at = format!("connections[{ci}]");
+            if let Some((name, rest)) = c.to.split_once('/') {
+                if let Some(def_name) = defs.get(name) {
+                    let def = file.subsystems.get_mut(def_name).expect("inlined");
+                    if def.inputs.iter().any(|p| p.name == rest) {
+                        return Err(invalid(
+                            format!("{at}.to"),
+                            format!("{} is wired twice", c.to),
+                        ));
+                    }
+                    let is_input = def
+                        .blocks
+                        .iter()
+                        .any(|b| b.name == rest && b.type_name == INPUT_VALUE);
+                    if !is_input {
+                        return Err(invalid(
+                            format!("{at}.to"),
+                            format!(
+                                "{}: a wire into a model on a shared clock goes to one of its input blocks ({INPUT_VALUE})",
+                                c.to
+                            ),
+                        ));
+                    }
+                    let fed = format!("{rest}.y");
+                    let to: Vec<String> = def
+                        .connections
+                        .iter()
+                        .filter(|w| w.from == fed)
+                        .map(|w| w.to.clone())
+                        .collect();
+                    def.connections.retain(|w| w.from != fed);
+                    def.blocks.retain(|b| b.name != rest);
+                    def.inputs.push(crate::InputPort {
+                        name: rest.into(),
+                        to,
+                        canvas: None,
+                    });
+                    c.to = format!("{name}.{rest}");
+                }
+            }
+            if let Some((name, rest)) = c.from.split_once('/') {
+                if let Some(def_name) = defs.get(name) {
+                    let def = file.subsystems.get_mut(def_name).expect("inlined");
+                    let own = rest
+                        .split_once('.')
+                        .is_some_and(|(b, _)| def.blocks.iter().any(|e| e.name == b));
+                    if !own {
+                        return Err(invalid(
+                            format!("{at}.from"),
+                            format!(
+                                "{}: a wire from a model on a shared clock comes from one of its own blocks; \
+                                 models inside it are wired in its own file",
+                                c.from
+                            ),
+                        ));
+                    }
+                    let port = match def.outputs.iter().find(|p| p.from == rest) {
+                        Some(p) => p.name.clone(),
+                        None => {
+                            let taken: Vec<&str> = def
+                                .inputs
+                                .iter()
+                                .map(|p| p.name.as_str())
+                                .chain(def.outputs.iter().map(|p| p.name.as_str()))
+                                .collect();
+                            let base: String = rest
+                                .chars()
+                                .map(|ch| if ch.is_alphanumeric() { ch } else { '_' })
+                                .collect();
+                            let mut port = base.clone();
+                            let mut n = 1;
+                            while taken.contains(&port.as_str()) {
+                                port = format!("{base}_{n}");
+                                n += 1;
+                            }
+                            def.outputs.push(crate::OutputPort {
+                                name: port.clone(),
+                                from: rest.into(),
+                                canvas: None,
+                            });
+                            port
+                        }
+                    };
+                    c.from = format!("{name}.{port}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Make the files blocks' settings name absolute, from `folder`.
+    fn absolute_files(&self, blocks: &mut [BlockEntry], folder: Option<&Path>) {
+        let Some(folder) = folder else { return };
+        for b in blocks {
+            let Some(info) = self.registry.info(&b.type_name) else {
+                continue;
+            };
+            for key in &info.files {
+                if let Some(v) = b.settings.get_mut(key) {
+                    if !Path::new(v.as_str()).is_absolute() {
+                        *v = folder.join(v.as_str()).to_string_lossy().into_owned();
+                    }
+                }
+            }
+        }
     }
 
     /// Check one connection reaching into a use, and add it as a link.

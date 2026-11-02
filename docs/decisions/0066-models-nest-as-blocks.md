@@ -100,6 +100,23 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
   - different seeds for two uses of one file, and different again for another top-level seed;
   - `check`, the hash following files, parameter values and clocks, every refusal, a file using itself through another, and Python, including a file of uses used by another.
 
+**Step 2 (2026-11-02): uses on a shared clock.** `Loader::inline_shared`, run at the start of every model's level, puts each `"clock": "shared"` use in place as a subsystem of the using file, made from the used file, so the existing flattening does the rest. The used file's uses on a shared clock are put in place first, recursively.
+
+- **Contents:** its blocks, connections and declared parameters become the definition, named after the use (made unique). Its own subsystems join the using file's under `USE_NAME` names, with references renamed. Data-file settings (`TypeInfo::file`) are made absolute from the used file's folder. Its `run`, `sample`, `fusion` and `controls` are not used; the using model's fusion setting applies.
+- **Wires in:** a wire into `use/input` must reach an `input.value` block of the used file. It becomes an input port of that name feeding what the block fed, and the block is dropped.
+- **Wires out:** a wire from `use/block.port` (one of its own blocks) becomes a generated output port. Deeper models are wired in their own files.
+- **Probes and links:** connections from probes are left as they are. They name flat signals (`plant/car.v`), and a link from another clock drives `plant/force`, which stays an input block when no wire drives it.
+- **Parameter values:** a use's `params` are written into the used file as for other uses.
+- **Refused for now:** a used file on a shared clock may not itself use models on their own clocks, have probes feeding its own blocks, or have `groups`.
+- **Python:** `Model.add_model(…, shared=True)`.
+- **Tests:**
+  - the car and controller files used shared, wired directly, give the same bits as the cruise control in one file, fused into one group (`plant/car`, `controller/cruise`) with the input blocks gone;
+  - the same one level deeper through a vehicle file;
+  - a shared plant beside a controller on its own clock gives the same bits as both on their own clocks;
+  - a shared use in `parts/` reads `parts/push.csv`;
+  - refusals: a wire into a non-input, an input wired twice, a used file with uses on their own clocks, a deep wire, a file using itself;
+  - Python.
+
 ## Consequences
 
 - `models` (ADR 0065 step 1, never released) goes. A used file is any model file, and any model file can use others.

@@ -830,10 +830,6 @@ mod tests {
             &|v| v["blocks"][1]["type"] = "input.value".into(),
             "blocks[1].type",
         );
-        refused(
-            &|v| v["blocks"][1]["clock"] = "shared".into(),
-            "shared clock",
-        );
         refused(&|v| v["blocks"][0]["clock"] = "fast".into(), "a clock is");
         refused(
             &|v| v["controls"]["probes"][0]["record"] = json!(["a/count.x", "b/sum.z"]),
@@ -873,6 +869,193 @@ mod tests {
             .err()
             .unwrap();
         assert!(e.to_string().contains("uses model files"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn shared(name: &str, file: &str) -> Value {
+        json!({"name": name, "file": file, "clock": "shared"})
+    }
+
+    /// The car and the controller used on the top level's clock, wired
+    /// directly into each other's input blocks.
+    fn wired(plant: &str, controller: &str) -> Value {
+        json!([
+            {"from": format!("{plant}/car.v"), "to": format!("{controller}/speed")},
+            {"from": format!("{controller}/cruise.F"), "to": format!("{plant}/force")}])
+    }
+
+    #[test]
+    fn shared_clock_uses_run_as_the_model_in_one_file() {
+        let dir = temp_dir("shared");
+        let whole = cruise_files(&dir);
+        let top = json!({"format": 1, "run": {"dt": 0.05, "t_end": 20},
+            "blocks": [shared("plant", "car.ssbx.json"), shared("controller", "cruise.ssbx.json")],
+            "connections": wired("plant", "controller")});
+        let one = crate::run::run(&whole.to_string(), &registry(), Some(20.0), None).unwrap();
+        let composed = run_in(&dir, &top);
+        // One clock: the top level's, with both models flattened into it.
+        assert_eq!(composed.models.len(), 1);
+        for (inner, alone) in [
+            ("plant/car.v", "car.v"),
+            ("controller/cruise.F", "cruise.F"),
+        ] {
+            assert_eq!(
+                bits(composed.values(inner).unwrap()),
+                bits(series(&one, alone)),
+                "{inner}"
+            );
+        }
+        // Fused across the boundary, the input blocks dropped.
+        let built = simsandbox_core::registry::in_folder(Some(&dir), || {
+            simsandbox_file::compose::load_composition(&top.to_string(), &registry(), None)
+        })
+        .unwrap();
+        let groups = &built.domains[0].loaded.groups;
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].blocks, ["plant/car", "controller/cruise"]);
+        assert!(!built.domains[0].loaded.ids.contains_key("plant/force"));
+        // One level deeper: a vehicle file wiring the two, used shared.
+        write(
+            &dir,
+            "vehicle.ssbx.json",
+            &json!({"format": 1,
+            "blocks": [shared("plant", "car.ssbx.json"), shared("controller", "cruise.ssbx.json")],
+            "connections": wired("plant", "controller")}),
+        );
+        let nested = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"dt": 0.05, "t_end": 20},
+            "blocks": [shared("vehicle", "vehicle.ssbx.json")]}),
+        );
+        assert_eq!(
+            bits(nested.values("vehicle/plant/car.v").unwrap()),
+            bits(series(&one, "car.v"))
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_shared_use_beside_one_on_its_own_clock() {
+        // The plant on the top level's clock, the controller on its own,
+        // linked by probes: as both on their own clocks.
+        let dir = temp_dir("mixed");
+        cruise_files(&dir);
+        let apart = run_in(
+            &dir,
+            &with(
+                json!({"format": 1, "run": {"t_end": 20},
+                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            ),
+        );
+        let mixed = run_in(
+            &dir,
+            &with(
+                json!({"format": 1, "run": {"dt": 0.05, "t_end": 20}, "fusion": "off",
+                   "blocks": [shared("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            ),
+        );
+        let names: Vec<&str> = mixed.models.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, [".", "controller"]);
+        for name in ["plant/car.v", "controller/cruise.F"] {
+            assert_eq!(
+                bits(mixed.values(name).unwrap()),
+                bits(apart.values(name).unwrap()),
+                "{name}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_shared_use_reads_its_data_from_its_own_folder() {
+        let dir = temp_dir("shared-data");
+        std::fs::create_dir_all(dir.join("parts")).unwrap();
+        std::fs::write(dir.join("parts/push.csv"), "t,F [N]\n0,1\n1,3\n").unwrap();
+        write(
+            &dir,
+            "parts/push.ssbx.json",
+            &json!({"format": 1,
+            "blocks": [{"name": "data", "type": "input.file", "settings": {"file": "push.csv"}}]}),
+        );
+        let composed = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"dt": 0.5, "t_end": 2},
+            "blocks": [
+                shared("push", "parts/push.ssbx.json"),
+                {"name": "sum", "type": "eq.equations", "method": {"name": "euler"},
+                 "equations": ["input u [N]", "state z [N*s]", "dz/dt = u"], "params": {"z0": 0}}],
+            "connections": [{"from": "push/data.F", "to": "sum.u"}]}),
+        );
+        assert_eq!(
+            composed.values("push/data.F").unwrap(),
+            [1.0, 1.0, 3.0, 3.0, 3.0]
+        );
+        assert_eq!(composed.values("sum.z").unwrap(), [0.0, 0.5, 1.0, 2.5, 4.0]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn what_a_shared_use_refuses() {
+        let dir = temp_dir("shared-refuse");
+        cruise_files(&dir);
+        let top = json!({"format": 1,
+            "blocks": [shared("plant", "car.ssbx.json"), shared("controller", "cruise.ssbx.json")],
+            "connections": wired("plant", "controller")});
+        assert_eq!(check_in(&dir, &top)["ok"], true, "{}", check_in(&dir, &top));
+        let refused = |edit: &dyn Fn(&mut Value), says: &str| {
+            let mut v = top.clone();
+            edit(&mut v);
+            let report = check_in(&dir, &v);
+            assert_eq!(report["ok"], false, "{v}");
+            let message = report["errors"][0].to_string();
+            assert!(message.contains(says), "{message}");
+        };
+        refused(
+            &|v| v["connections"][1]["to"] = "plant/car".into(),
+            "one of its input blocks",
+        );
+        refused(
+            &|v| {
+                v["connections"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"from": "controller/cruise.F", "to": "plant/force"}))
+            },
+            "wired twice",
+        );
+        write(
+            &dir,
+            "outer.ssbx.json",
+            &json!({"format": 1,
+            "blocks": [use_of("plant", "car.ssbx.json")]}),
+        );
+        refused(
+            &|v| v["blocks"][0]["file"] = "outer.ssbx.json".into(),
+            "cannot use models on their own clocks",
+        );
+        write(
+            &dir,
+            "deep.ssbx.json",
+            &json!({"format": 1, "blocks": [shared("plant", "car.ssbx.json")]}),
+        );
+        refused(
+            &|v| {
+                v["blocks"][0] = shared("deep", "deep.ssbx.json");
+                v["connections"] = json!([{"from": "deep/plant/car.v", "to": "controller/speed"}]);
+            },
+            "models inside it are wired in its own file",
+        );
+        write(
+            &dir,
+            "self.ssbx.json",
+            &json!({"format": 1, "blocks": [shared("me", "self.ssbx.json")]}),
+        );
+        refused(
+            &|v| v["blocks"][0] = shared("me", "self.ssbx.json"),
+            "uses itself",
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -367,7 +367,7 @@
           "description": "A use of a model file (ADR 0066) in place of a type: found from this file's folder, or a full path. Its params are values for this use only; everything in it is named with this entry's name as a prefix ('plant/car.v'). It runs on its own clock and is linked by probes into input.value blocks."
         },
         "clock": {
-          "description": "A model file use's clock: its own at the used file's run.dt if absent, or {\"dt\": step}; \"shared\" (its parent's clock) comes in a later step.",
+          "description": "A model file use's clock: its own at the used file's run.dt if absent, or {\"dt\": step}; \"shared\" runs it on its parent's clock, flattened into the parent like a subsystem, with wires into its input.value blocks ('plant/force') and from its own blocks' outputs ('plant/car.v').",
           "oneOf": [
             {
               "const": "shared"

@@ -334,18 +334,26 @@ class Model:
         file: "str | os.PathLike",
         params: dict[str, float] | None = None,
         dt: float | None = None,
+        shared: bool = False,
     ) -> "Model":
         """Use a model file in this model (ADR 0066), under ``name``, which
         prefixes everything in it (``"plant/car.v"``). ``file`` is found
         from this model's folder (or is a full path) and may itself use
         model files. ``params`` set its parameter values for this use only;
         it runs on its own clock, every ``dt`` (the file's ``run.dt`` if not
-        given). Link it to other models with :meth:`link`."""
+        given); link it to other models with :meth:`link`. With ``shared``,
+        it runs on this model's clock instead, flattened into it like a
+        subsystem: :meth:`connect` wires straight into its input blocks
+        (``"plant/force"``) and from its blocks' outputs (``"plant/car.v"``)."""
+        if shared and dt is not None:
+            raise ValueError("a use on a shared clock takes this model's step: no dt")
         use: dict = {"name": name, "file": os.fspath(file)}
         if params:
             use["params"] = {k: float(v) for k, v in params.items()}
         if dt is not None:
             use["clock"] = {"dt": float(dt)}
+        if shared:
+            use["clock"] = "shared"
         self.data.setdefault("blocks", []).append(use)
         return self
 
