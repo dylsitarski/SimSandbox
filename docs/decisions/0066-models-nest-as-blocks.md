@@ -192,6 +192,27 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
   - nodes showing only their interface until something wires an inner port;
   - refusals.
 
+**Step 4b, second part (2026-11-02): the app runs models that use files.** Rather than give the session several simulators, the kernel steps several clocks in one model.
+- **The kernel:**
+  - `Model::set_clocks` takes clocks (`Clock`: `dt` with `every` ticks, or `on_data`) and each block's clock; `Model::set_stream` sets a block's random stream.
+  - `Simulator::step` then advances to the next instant of any clock. The clocks reaching it step their blocks (and fused groups) over their own `dt`, at their own times and step counts. Those blocks, and those on new data, resolve in dependency order, each at its own clock's time (`OutputPlan::solve_active`).
+  - A block takes its inputs only at its own instants: `exchange` and the loop solver skip the others, so it holds them over its step, as models apart do.
+  - Snapshots keep each clock's time and steps and every input. `next_instant` and `clock_steps` report the clocks.
+- **The merged model:** `compose::load_merged` puts every use in place, its own clock kept by the kernel.
+  - A link is a probe feeding the model; its hold samples on the source's clock.
+  - An input block a link drives becomes a pass-through of the same name (`input u`, `y = u`), reached through ports at any depth (`expose_link`).
+  - Probe signals named by declared outputs are made flat.
+  - Blocks of used models draw from `seed_for(path)` with their names inside it, as alone.
+  - Its `Loaded` keeps the file as written for saving, and `aliases` (declared names → flat outputs).
+- **The session:** `Session::load_in` loads such a file merged. It records declared outputs under their names too (`fast/x`), from the same outputs. `Session::step_dt` gives the time to the next instant, which the app's worker paces by.
+- **The app** opens and runs these files; sliders reach parameters by full name.
+- **Difference from the headless runner:** a model on new data is evaluated at every instant of the others in the app, not only at deliveries. Its values agree at deliveries, unless its formulas read `t`. A loop of links that is algebraic is solved (Newton) in the app, rather than broken a step late.
+- **Tests:**
+  - the merged simulator gives the runner's bits, at each model's own instants, for the split cruise control, two clocks reading each other, a shared plant beside a controller on its own clock, a nested use, and a model on new data at its deliveries;
+  - the session gives the runner's bits;
+  - rewinding two clocks between their instants replays exactly;
+  - the app opens such a file from disk, runs it, and records a declared output by name.
+
 ## Consequences
 
 - `models` (ADR 0065 step 1, never released) goes. A used file is any model file, and any model file can use others.

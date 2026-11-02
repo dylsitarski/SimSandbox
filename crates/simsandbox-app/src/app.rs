@@ -5628,6 +5628,62 @@ mod tests {
     }
 
     #[test]
+    fn a_model_using_model_files_opens_and_runs() {
+        let dir = std::env::temp_dir().join(format!("simsandbox-app-uses-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, v: serde_json::Value| {
+            std::fs::write(dir.join(name), v.to_string()).unwrap()
+        };
+        write(
+            "count.ssbx.json",
+            serde_json::json!({"format": 1, "run": {"dt": 0.1},
+            "blocks": [{"name": "count", "type": "eq.equations", "method": {"name": "euler"},
+                        "equations": ["state x", "dx/dt = 1"], "params": {"x0": 0}}],
+            "outputs": [{"name": "x", "from": "count.x"}]}),
+        );
+        write(
+            "hold.ssbx.json",
+            serde_json::json!({"format": 1, "run": {"dt": 0.3},
+            "blocks": [{"name": "u", "type": "input.value"},
+                       {"name": "sum", "type": "eq.equations", "method": {"name": "euler"},
+                        "equations": ["input u", "state z", "dz/dt = u"], "params": {"z0": 0}}],
+            "connections": [{"from": "u.y", "to": "sum.u"}]}),
+        );
+        let model = dir.join("both.ssbx.json");
+        write(
+            "both.ssbx.json",
+            serde_json::json!({"format": 1,
+            "blocks": [{"name": "fast", "file": "count.ssbx.json"}, {"name": "slow", "file": "hold.ssbx.json"}],
+            "connections": [{"from": "probe:p.fast/x", "to": "slow/u"}],
+            "controls": {"probes": [{"name": "p", "record": ["fast/x"]}]}}),
+        );
+        let mut app = SimApp::new(None, None, None, None);
+        app.open_path(&model.to_string_lossy());
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let live = app.session.as_ref().unwrap();
+        let (t, u) = live
+            .call(|s, _| {
+                s.set_view_reads(vec!["slow/u.y".into(), "fast/x".into()]);
+                s.restart().unwrap();
+                s.run_until(0.6).unwrap();
+                s.flush(true);
+                let h = s.signals();
+                // A declared output is recorded under its name.
+                let x = h.values(h.resolve("fast/x").unwrap());
+                assert!((x.last().unwrap() - 0.6).abs() < 1e-9, "{x:?}");
+                (s.time(), h.values(h.resolve("slow/u.y").unwrap()))
+            })
+            .unwrap();
+        assert!((t - 0.6).abs() < 1e-9, "{t}");
+        // slow read fast's count at its own instants: 0 at the start,
+        // about 0.3 from 0.3 s.
+        assert_eq!(u[0], 0.0);
+        assert!((u.last().unwrap() - 0.6).abs() < 1e-9, "{u:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn model_parameters_set_every_block_using_them() {
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES

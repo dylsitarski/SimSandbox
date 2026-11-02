@@ -1972,4 +1972,70 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    fn session_values(s: &crate::Session, name: &str) -> Vec<f64> {
+        let h = s.signals();
+        h.values(h.resolve(name).unwrap())
+    }
+
+    #[test]
+    fn the_session_runs_models_that_use_files() {
+        let dir = temp_dir("session-uses");
+        cruise_files(&dir);
+        let model = with(
+            json!({"format": 1, "run": {"t_end": 20},
+                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+            cruise_links("plant", "controller"),
+        );
+        let apart = run_in(&dir, &model);
+        let mut s =
+            crate::Session::load_in("uses", &model.to_string(), &registry(), Some(&dir), false)
+                .unwrap();
+        s.set_view_reads(vec!["plant/car.v".into(), "controller/cruise.F".into()]);
+        s.restart().unwrap();
+        s.run_until(20.0).unwrap();
+        s.flush(true);
+        for name in ["plant/car.v", "controller/cruise.F"] {
+            assert_eq!(
+                bits(&session_values(&s, name)),
+                bits(apart.values(name).unwrap()),
+                "{name}"
+            );
+        }
+        // Sliders by full name.
+        assert!(s.params().iter().any(|p| p.key == "plant/car.m"));
+        // The file as written stays the session's file.
+        assert!(s.file.blocks.iter().any(|b| b.file.is_some()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rewinding_two_clocks_replays_exactly() {
+        let dir = temp_dir("session-rewind");
+        let mut two = pair(&dir, 0.1, 0.3);
+        two["run"] = json!({"t_end": 6});
+        let mut s =
+            crate::Session::load_in("two", &two.to_string(), &registry(), Some(&dir), false)
+                .unwrap();
+        s.set_recorder(Some(Default::default()));
+        s.set_view_reads(vec!["a/count.y".into(), "b/sum.z".into()]);
+        s.restart().unwrap();
+        s.run_until(6.0).unwrap();
+        s.flush(true);
+        let first = (
+            session_values(&s, "a/count.y"),
+            session_values(&s, "b/sum.z"),
+        );
+        // Between b's instants, with a's input latched from b.
+        s.rewind_to(2.75);
+        s.run_until(6.0).unwrap();
+        s.flush(true);
+        let again = (
+            session_values(&s, "a/count.y"),
+            session_values(&s, "b/sum.z"),
+        );
+        assert_eq!(bits(&first.0), bits(&again.0));
+        assert_eq!(bits(&first.1), bits(&again.1));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

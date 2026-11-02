@@ -1377,6 +1377,9 @@ pub struct Loaded {
     /// The files blocks read (ADR 0063), as `block.setting` and the
     /// SHA-256 of the file's contents: part of a run's model hash.
     pub data: BTreeMap<String, String>,
+    /// Declared outputs of the models it uses (ADR 0066 step 4b), by full
+    /// name (`fast/x`), and the flat output each is (`fast/count.x`).
+    pub aliases: BTreeMap<String, String>,
 }
 
 /// Parse a model file and build its model. Blocks that read files accept
@@ -1486,6 +1489,7 @@ pub fn load_in(
         groups,
         plan,
         data,
+        aliases: BTreeMap::new(),
     })
 }
 

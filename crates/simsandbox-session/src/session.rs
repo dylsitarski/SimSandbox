@@ -203,6 +203,7 @@ const REAL_TIME_SWEEP: Duration = Duration::from_millis(33);
 const MAX_SNAPSHOTS: usize = 10_000;
 
 /// Where a recorded signal comes from: an element of an output port.
+#[derive(Clone)]
 struct Source {
     block: BlockId,
     port: String,
@@ -210,6 +211,7 @@ struct Source {
 }
 
 /// A whole output port recorded as a field (a grid or a point set).
+#[derive(Clone)]
 struct FieldSource {
     block: BlockId,
     port: String,
@@ -507,7 +509,14 @@ impl Session {
         folder: Option<&std::path::Path>,
         deferred: bool,
     ) -> Result<Self, String> {
-        let loaded = simsandbox_file::load_in(text, registry, folder).map_err(|e| e.to_string())?;
+        // A model that uses model files runs as one simulator with clocks
+        // (ADR 0066 step 4b).
+        let loaded = if simsandbox_file::compose::is_composition(text) {
+            simsandbox_file::compose::load_merged(text, registry, folder)
+        } else {
+            simsandbox_file::load_in(text, registry, folder)
+        }
+        .map_err(|e| e.to_string())?;
         let mut names = Vec::new();
         let mut sources = Vec::new();
         let mut fields = Vec::new();
@@ -558,6 +567,17 @@ impl Session {
                         index,
                     });
                 }
+            }
+        }
+        // Declared outputs of used models (ADR 0066 step 4b) are recorded
+        // under their names too, from the same outputs.
+        for (alias, target) in &loaded.aliases {
+            if let Some(k) = names.iter().position(|n| n == target) {
+                names.push(alias.clone());
+                sources.push(sources[k].clone());
+            } else if let Some(k) = fields.iter().position(|(n, _)| n == target) {
+                fields.push((alias.clone(), fields[k].1));
+                field_sources.push(field_sources[k].clone());
             }
         }
         // A coordinate needs the field it places, recorded, of the same shape.
@@ -1994,6 +2014,14 @@ impl Session {
     /// Step until the time reaches `t` (within rounding), recording every
     /// step: how headless interfaces run a model (ADR 0039). A swept model
     /// is not run in time; this does nothing for it.
+    /// How long the next step is in simulated time: `dt`, or with several
+    /// clocks the time to the next instant of any (ADR 0066 step 4b).
+    pub fn step_dt(&self) -> f64 {
+        self.sim
+            .next_instant()
+            .map_or(self.dt, |next| (next - self.time()).max(0.0))
+    }
+
     pub fn run_until(&mut self, t: f64) -> Result<(), SimError> {
         if self.sweep.is_some() {
             return Ok(());

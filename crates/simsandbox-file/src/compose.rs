@@ -428,7 +428,35 @@ pub fn load_merged(
         merge: true,
     };
     let mut merged = file.clone();
-    l.inline_shared(&mut merged, "", folder.as_deref())?;
+    let (_, _, mut aliases) = l.inline_shared(&mut merged, "", folder.as_deref())?;
+    for o in &file.outputs {
+        aliases.insert(o.name.clone(), o.from.clone());
+    }
+    // Declared names by the flat outputs they stand for.
+    let flat = |name: &str| {
+        let mut name = name.to_string();
+        for _ in 0..32 {
+            match aliases.get(&name) {
+                Some(to) => name = to.clone(),
+                None => break,
+            }
+        }
+        name
+    };
+    for c in &mut merged.connections {
+        if let Some((p, signal)) = c
+            .from
+            .strip_prefix("probe:")
+            .and_then(|r| r.split_once('.'))
+        {
+            c.from = format!("probe:{p}.{}", flat(signal));
+        }
+    }
+    for p in &mut merged.controls.probes {
+        for r in &mut p.record {
+            *r = flat(r);
+        }
+    }
     merged.run.dt = c
         .domains
         .iter()
@@ -478,6 +506,7 @@ pub fn load_merged(
         .set_clocks(clocks, clock_of)
         .map_err(|e| invalid("blocks", e))?;
     loaded.data = c.data.clone();
+    loaded.aliases = aliases.keys().map(|k| (k.clone(), flat(k))).collect();
     // Saving writes the file as written, not the merged one.
     let mut written = file;
     written.folder = folder;

@@ -390,7 +390,7 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
         let mut recorded = false;
         if c.running && s.sweep().is_none() {
             pacer.speed = c.speed;
-            let dt = s.dt;
+            let dt = s.step_dt();
             let result = pacer.frame(
                 elapsed,
                 dt,

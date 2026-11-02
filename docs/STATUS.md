@@ -25,10 +25,11 @@ _Last updated: 2026-11-02_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 385 tests in the workspace plus 20 Python tests, including verification against analytic solutions and convergence order.
+- 389 tests in the workspace plus 20 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-11-02: ADR 0066 step 4b, second part: the kernel steps several clocks in one model (each block at its clock's instants, inputs taken only then, snapshots exact); models that use files load merged into it, so the app opens and runs them with views, sliders and rewind; the merged run gives the headless runner's bits.
 - 2026-11-02: ADR 0066 step 4b, first part (Q46): declared `outputs` in model files, reached by name by wires and links at any depth; a used model's node shows its input blocks, declared outputs and what is wired, the rest reachable by path.
 - 2026-11-02: ADR 0066 step 4a: uses of model files are nodes on the diagram (input blocks as inputs, outputs by path, clock and file shown), with probe records, links and shared wires drawn; `render --diagram` draws them.
 - 2026-11-02: [ADR 0067](decisions/0067-experiments-and-time-from-data.md) accepted (experiments over whole models; time from data); its step 1: a model with nothing in time is evaluated once, in link order, instead of refused.
@@ -120,14 +121,14 @@ _Last updated: 2026-11-02_
 
 ## In progress
 
-- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md), [ADR 0063](decisions/0063-probes-on-wires.md)): ADR 0062 steps 1 and 2 and ADR 0063 steps 1 to 3 built 2026-10-29, step 4 2026-10-30; checked by tests, headless renders and screenshots under Xvfb, not yet by the owner in the window (probe nodes and outputs, the settings window, Save probe data, filters on probes). Next: ADR 0066 step 4b (the app runs models that use files).
+- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md), [ADR 0063](decisions/0063-probes-on-wires.md)): ADR 0062 steps 1 and 2 and ADR 0063 steps 1 to 3 built 2026-10-29, step 4 2026-10-30; checked by tests, headless renders and screenshots under Xvfb, not yet by the owner in the window (probe nodes and outputs, the settings window, Save probe data, filters on probes). Next: the rest of ADR 0066 step 4b (opening a use, the port list, the parameter tree).
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 3 and 4a done 2026-11-02): (4b) the app runs them (a multi-clock engine behind the session; opening a use); (4c) editing (probe added across clocks, the edit question, saving several files, Add model…); (5) the recorder and rewind per clock with recorded link values, run files; (6) several cores between instants.
+1. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 3 and 4a done 2026-11-02): (4b) the rest: opening a used model's inside, the searchable port list on use nodes, parameters as a tree in the Inspector; (4c) editing (probe added across clocks, the edit question, saving several files, Add model…); (5) the recorder and rewind per clock with recorded link values, run files; (6) several cores between instants.
 2. **Experiments and time from data** ([ADR 0067](decisions/0067-experiments-and-time-from-data.md)), in order (step 1 done 2026-11-02): (2) the experiment over any model (points by path, designs incl. `file`, final values by default, `keep: "series"`, seeds and replicates, several cores); (3) `reduce` formulas; (4) time from data (`input.file` sample times, `clock: {"times": …}`, the end of a data-driven run); (5) adaptive experiments, own ADR.
 3. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 4. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
@@ -161,7 +162,7 @@ In priority order. Each item should end with tests and updated docs.
 - Models that use model files ([ADR 0066](decisions/0066-models-nest-as-blocks.md)), as of step 2b (2026-11-02):
   - A value given by formula to a model on its own clock is taken once, when the model is built. Values that change during a run reach such a model through a probe link.
   - Probes in such models only feed links: no recordings, files or `run --probe`. `run --dt`, `--inputs`, `--probe` and `--save-probes` are refused (ADR 0066 step 5).
-  - Such models open headless only (the app comes in step 4).
+  - In the app a model on new data is evaluated at every instant (values agree with the headless runner at deliveries unless its formulas read `t`); used models cannot yet be opened or edited in the app (steps 4b and 4c).
 
 ## Blockers
 

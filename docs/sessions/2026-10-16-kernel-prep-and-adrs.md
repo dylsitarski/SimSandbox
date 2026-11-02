@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0066 step 4b, second part: kernel clocks (`Clock`, `set_clocks`, `set_stream`, `advance`, `solve_active`, latched inputs, snapshots with clocks and inputs, `next_instant`, `clock_steps`); `compose::load_merged` (all uses inlined, `expose_link`, pass-through input blocks, aliases made flat, per-use streams); `Loaded::aliases`; session loads merged, records aliases, `step_dt`; app worker paces by it. Chose the kernel over several simulators in the session: the session needs no change and rewind stays exact.
 - 2026-11-02: ADR 0066 step 4b, first part: `ModelFile::outputs`, `check_outputs`, load check; `Level::aliases`; declared outputs as ports of shared uses; `Node::reachable`, `reveal_wired`, interface-only use nodes; `check` reports `declared_outputs`. Tests: by name equals by inner name (linked and shared), nested re-declaration, node interface, refusals.
 - 2026-11-02: ADR 0066 step 4 split into 4a/4b/4c; 4a built: `NodeKind::Use`, `diagram::use_node`, wire ends inside uses, data-layer sources and links for uses, canvas styling; test and a headless render.
 - 2026-11-02: ADR 0067 written (experiments over whole models; time from data) and its step 1: the refusal of a model with nothing in time removed (one evaluation at t = 0 in link order; tested with a two-model pipeline).
@@ -172,7 +173,7 @@
 ## Notes for the next session
 
 - 2026-11-02: the owner asked whether compositions and models could be one recursive kind of file (Q45); recommended yes (uses in `blocks`, a clock per use); waiting for the owner before ADR 0065 step 2.
-- ADR 0066 step 4b next: the app runs models that use files (extract a multi-clock engine from `compose::run_composition`, put it behind `Session`, which today holds one `Simulator` and touches it in about 36 places). Then 4c (editing). Probes in such models sample only for links so far.
+- Rest of ADR 0066 step 4b next: open a use's inside (read-only until 4c), the searchable "＋" port list on use nodes (`Node::reachable`), parameters as a tree by path in the Inspector. Then 4c. The headless runner (`compose::run_composition`) and the merged kernel both exist; once on-data evaluation in the kernel matches the runner, the CLI and Python could run through the kernel too.
 - ADR 0065 is Proposed: wait for the owner's answers to its open points (Q44) before building step 1 of its order of work.
 - ADR 0063 step 5 next (several models in one session, own ADR first). `input.file` has not been tried in the window; Q42 (units in probe CSV headers) and Q43 (re-reading changed files) are open.
 - ADR 0063 step 4 next: a block reading a probe's file (or any CSV or `.npy`) as an input over time; it also serves external data (ADR 0048). The owner has not yet tried probes in the window.
