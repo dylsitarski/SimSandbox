@@ -79,6 +79,10 @@ pub enum Request {
     MoveToFile(String),
     /// Make the model file this use reads a model defined in the file.
     PutInFile(String),
+    /// Show the use at this path expanded in place (ADR 0066 step 4d).
+    Expand(String),
+    /// Show it as a node again.
+    Collapse(String),
 }
 
 /// Values show on nodes from this zoom up, and can be edited from this one.
@@ -264,6 +268,31 @@ impl Canvas {
         let pointer = response.hover_pos().or(response.interact_pointer_pos());
         if interactive {
             self.input(ui, &response, d, origin, pointer, &mut edits, &mut requests);
+        }
+
+        // Expanded uses under everything (ADR 0066 step 4d): an outline
+        // coloured by its clock, titled with its path, model and clock.
+        let z = self.zoom;
+        for o in &d.outlines {
+            let r = Rect::from_min_max(
+                self.to_screen(origin, [o.rect[0], o.rect[1]]),
+                self.to_screen(origin, [o.rect[2], o.rect[3]]),
+            );
+            let tint = clock_colour(&o.clock, &visuals);
+            painter.rect_filled(r, 6.0 * z, tint.gamma_multiply(0.08));
+            painter.rect_stroke(
+                r,
+                6.0 * z,
+                Stroke::new(1.5, tint.gamma_multiply(0.8)),
+                StrokeKind::Inside,
+            );
+            painter.text(
+                r.min + Vec2::new(8.0 * z, 6.0 * z),
+                egui::Align2::LEFT_TOP,
+                format!("{} · {} · {}", o.path, o.label, o.clock),
+                egui::FontId::proportional(12.0 * z),
+                visuals.text_color(),
+            );
         }
 
         // Wires under nodes.
@@ -1270,6 +1299,14 @@ impl Canvas {
                             requests.push(Request::Open(name.clone()));
                             ui.close();
                         }
+                        if ui
+                            .button("Expand in place")
+                            .on_hover_text("Show its blocks here, in an outline; edits there change the model it uses")
+                            .clicked()
+                        {
+                            requests.push(Request::Expand(name.clone()));
+                            ui.close();
+                        }
                         // A definition goes to a file and back (ADR 0068).
                         if n.type_name.starts_with("model ") {
                             if ui
@@ -1437,6 +1474,15 @@ impl Canvas {
                 }
             }
             None => {
+                // Inside an expanded use: collapse it (ADR 0066 step 4d).
+                for o in d.outlines.iter().filter(|o| {
+                    at[0] >= o.rect[0] && at[0] <= o.rect[2] && at[1] >= o.rect[1] && at[1] <= o.rect[3]
+                }) {
+                    if ui.button(format!("Collapse {}", o.path)).clicked() {
+                        requests.push(Request::Collapse(o.path.clone()));
+                        ui.close();
+                    }
+                }
                 ui.label("Add block");
                 if let Some(type_name) = type_menu(ui, registry, &d.subsystems) {
                     edits.push(Edit::Add { type_name, at });
@@ -1581,6 +1627,19 @@ impl Canvas {
     }
 }
 
+/// A colour for a clock: the same clock, the same colour; a shared clock
+/// in the selection colour.
+fn clock_colour(clock: &str, visuals: &egui::Visuals) -> Color32 {
+    if clock.contains("shared") {
+        return visuals.selection.bg_fill;
+    }
+    let h = clock.bytes().fold(2166136261u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(16777619)
+    });
+    let hue = (h % 360) as f32 / 360.0;
+    egui::ecolor::Hsva::new(hue, 0.55, 0.85, 1.0).into()
+}
+
 /// What a node is called on the canvas.
 fn title(n: &Node) -> String {
     match n.kind {
@@ -1592,7 +1651,8 @@ fn title(n: &Node) -> String {
             let k = n.name["view:".len()..].parse::<usize>().unwrap_or(0);
             format!("View {}", k + 1)
         }
-        _ => n.name.clone(),
+        // Inside an expanded use its own name; the outline gives the path.
+        _ => n.name.rsplit('/').next().unwrap_or(&n.name).to_string(),
     }
 }
 

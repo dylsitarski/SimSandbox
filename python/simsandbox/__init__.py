@@ -528,17 +528,22 @@ class Model:
         inside: str | None = None,
         data: bool = True,
         values: bool = False,
+        expand: "list[str] | None" = None,
     ) -> bytes:
         """Run to ``t_end`` and draw the model's views (``controls.views``,
         or ``view`` alone) as a PNG, as the app shows them; with
         ``diagram``, draw its block diagram instead (no run needed), or
         with ``inside`` too, the inside of the model used at that path
-        (``"plant"``, ``"vehicle/plant"``). The model's diagram
+        (``"plant"``, ``"vehicle/plant"``). ``expand`` lists uses drawn
+        expanded in place, by path, one level each (ADR 0066), besides those
+        the file lists in ``controls.expand``. The model's diagram
         includes its filters and views (ADR 0050) unless ``data`` is false.
         A diagram shows the values of the nodes the file opens
         (``controls.open``), or of every node with ``values``. Writes it to ``path`` if given; returns the PNG bytes."""
         if inside is not None and not diagram:
             raise ValueError("inside draws a used model's diagram: add diagram=True")
+        if expand and not diagram:
+            raise ValueError("expand draws uses in place on a diagram: add diagram=True")
         if values and not diagram:
             raise ValueError("values shows values on a diagram: add diagram=True")
         if diagram:
@@ -554,6 +559,7 @@ class Model:
                     inside,
                     data,
                     values,
+                    list(expand or []),
                 )
             warnings = []
         else:

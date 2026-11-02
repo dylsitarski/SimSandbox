@@ -202,6 +202,11 @@ pub struct Diagram {
     pub view_types: Vec<(String, String)>,
     /// Data-layer slots that take several signals, as `view:K.slot`.
     pub many: BTreeSet<String>,
+    /// Uses expanded in place (ADR 0066 step 4d), outermost first.
+    pub outlines: Vec<crate::expand::Outline>,
+    /// Nodes pushed aside on screen by an expanded use, by name: what to
+    /// take off their place before it is saved.
+    pub shifted: BTreeMap<String, [f64; 2]>,
 }
 
 /// The blocks and wires of one level.

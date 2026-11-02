@@ -897,6 +897,10 @@ pub struct Controls {
     /// and `subsystem::block` inside a subsystem. Unknown names are ignored.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub open: Vec<String>,
+    /// Uses shown expanded in place on the diagram, by path (`car1`,
+    /// `vehicle/plant`), one level each (ADR 0066 step 4d).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expand: Vec<String>,
     /// Keys and views driving input blocks, by block name (ADR 0058).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, InputBinding>,
@@ -1255,6 +1259,7 @@ impl Controls {
             && self.views.is_empty()
             && self.layout.is_none()
             && self.open.is_empty()
+            && self.expand.is_empty()
             && self.inputs.is_empty()
             && self.filters.is_empty()
             && self.probes.is_empty()

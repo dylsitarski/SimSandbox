@@ -469,6 +469,7 @@ impl SimApp {
                 let opened = self.views.opened.clone();
                 let tile = |k: usize| opened.get(k).copied().flatten();
                 self.diagram.canvas.open = s.file.controls.open.iter().cloned().collect();
+                self.diagram.expanded.clone_from(&s.file.controls.expand);
                 self.dock = match &s.file.controls.layout {
                     Some(l) => Dock::from_layout(l, &tile, &tiles),
                     None => Dock::standard(&tiles),
@@ -1328,6 +1329,11 @@ impl SimApp {
                 Outcome::Opened(open) => {
                     if let Some(live) = &self.session {
                         live.send(None, move |s, _| s.file.controls.open = open);
+                    }
+                }
+                Outcome::Expanded(paths) => {
+                    if let Some(live) = &self.session {
+                        live.send(None, move |s, _| s.file.controls.expand = paths);
                     }
                 }
                 Outcome::ShowView(k) => {
@@ -6015,6 +6021,95 @@ mod tests {
         app.save_to(&model);
         assert!(dir.join("count-2.ssbx.json").exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn edits_inside_an_expanded_use_change_the_model_it_uses() {
+        use simsandbox_session::diagram::{Diagram, Edit};
+        use simsandbox_session::edit_use::How;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        // Expanded, and saved so.
+        let m = app.session.as_ref().unwrap().model();
+        app.diagram.expanded = vec!["car1".into()];
+        app.diagram_outcomes(&m, vec![Outcome::Expanded(vec!["car1".into()])]);
+        let saved = app.saved_text().unwrap();
+        assert!(saved.contains("\"expand\": [\n      \"car1\""), "{saved}");
+        let draw = |app: &mut SimApp| {
+            let m = app.session.as_ref().unwrap().model();
+            let mut d = Diagram::new(&m.file, &app.registry);
+            d.expand(&m.file, &app.registry, &app.diagram.expanded.clone());
+            app.diagram.set_drawn(d.clone());
+            d
+        };
+        let d = draw(&mut app);
+        // A value set on the car inside the outline: the follower is used
+        // three times, so the question is asked for car1.
+        canvas_edits(
+            &mut app,
+            vec![Edit::SetParam {
+                block: "car1/car".into(),
+                param: "c".into(),
+                value: 80.0,
+            }],
+        );
+        let asked = app.diagram.asking.as_ref().expect("asked");
+        assert_eq!(asked.path, ["car1"]);
+        // Answered: every use changes.
+        let live = app.session.as_ref().unwrap();
+        let m = live.model();
+        let text = app.saved_text().unwrap();
+        let current = move || Ok(text.clone());
+        app.diagram.asking = None;
+        app.diagram.inside = vec!["car1".into()];
+        let edit = Edit::SetParam {
+            block: "car".into(),
+            param: "c".into(),
+            value: 80.0,
+        };
+        let outcomes = app
+            .diagram
+            .answer(vec![edit], How::Original, &app.registry, &current);
+        app.diagram.inside.clear();
+        app.diagram_outcomes(&m, outcomes);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let live = app.session.as_ref().unwrap();
+        live.sync();
+        let m = live.model();
+        assert!(m
+            .params
+            .iter()
+            .filter(|r| r.key.ends_with("/car.c"))
+            .all(|r| r.value == 80.0));
+        // A node pushed aside keeps its own place when moved.
+        let _ = draw(&mut app);
+        let car2 = d.nodes[d.node("car2").unwrap()].clone();
+        let pushed = d.shifted["car2"];
+        canvas_edits(
+            &mut app,
+            vec![Edit::Move {
+                block: "car2".into(),
+                at: [car2.at[0] + 10.0, car2.at[1]],
+            }],
+        );
+        let saved = app.saved_text().unwrap();
+        let (f, _) = simsandbox_file::ModelFile::from_json(&saved).unwrap();
+        let at = f
+            .blocks
+            .iter()
+            .find(|b| b.name == "car2")
+            .unwrap()
+            .canvas
+            .unwrap();
+        assert_eq!(at[0], car2.at[0] + 10.0 - pushed[0]);
+        // Reopened, it opens expanded.
+        let mut again = SimApp::new(None, None, None, None);
+        again.open_text("again", &saved);
+        assert_eq!(again.diagram.expanded, ["car1"]);
     }
 
     #[test]

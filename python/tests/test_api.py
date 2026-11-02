@@ -152,6 +152,9 @@ def test_models_defined_in_the_file_and_model_parameters():
     r = platoon.run(t_end=1.0)
     assert r["car3/car.v"].shape == (21,)
     assert platoon.render(diagram=True, inside="car1", width=300, height=200)[1:4] == b"PNG"
+    assert platoon.render(diagram=True, expand=["car1", "car2"], width=300, height=200)[1:4] == b"PNG"
+    with pytest.raises(ValueError):
+        platoon.render(expand=["car1"])
     with pytest.raises(ss.ModelError, match="no model used as 'nope'"):
         platoon.render(diagram=True, inside="nope")
 

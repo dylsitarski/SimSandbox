@@ -23,6 +23,9 @@ pub struct RenderOptions {
     /// For the diagram: the inside of the use at this path (`plant`,
     /// `vehicle/plant`) instead of the model (ADR 0068).
     pub inside: Option<String>,
+    /// For the diagram: uses expanded in place, by path, besides those
+    /// the file lists in `controls.expand` (ADR 0066 step 4d).
+    pub expand: Vec<String>,
     /// For the model's diagram: draw the data layer, its filters and views
     /// (ADR 0050).
     pub data: bool,
@@ -40,6 +43,7 @@ impl Default for RenderOptions {
             view: None,
             light: false,
             inside: None,
+            expand: Vec::new(),
             data: true,
             values: false,
         }
@@ -121,6 +125,13 @@ pub fn render_diagram(
         }
     };
     let mut d = crate::diagram::Diagram::new(file, registry);
+    let expanded: Vec<String> = file
+        .controls
+        .expand
+        .iter()
+        .chain(&o.expand)
+        .cloned()
+        .collect();
     // Without the data layer, probes feeding blocks still show: they are
     // part of the model (ADR 0063).
     let observed = if o.data {
@@ -129,6 +140,9 @@ pub fn render_diagram(
         crate::observers::model_part(file)
     };
     d.observe(&observed, &crate::examples::view_registry());
+    if !expanded.is_empty() {
+        d.expand(file, registry, &expanded);
+    }
     // The nodes the file opens, or all.
     let mut canvas = if o.values {
         crate::canvas::Canvas::all_open()
@@ -398,6 +412,7 @@ mod tests {
             view: Some(0),
             light: true,
             inside: None,
+            expand: Vec::new(),
             data: false,
             values: false,
         };

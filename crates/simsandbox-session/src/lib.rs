@@ -23,6 +23,7 @@ pub mod describe;
 pub mod diagram;
 pub mod edit_use;
 pub mod examples;
+pub mod expand;
 pub mod filters;
 pub mod observers;
 pub mod probe;

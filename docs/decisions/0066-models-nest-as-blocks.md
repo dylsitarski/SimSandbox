@@ -268,3 +268,23 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
 - **Tests:** two models wired on their own clocks from the canvas give the bits of the same links written by hand; on a shared clock they are plain wires; disconnecting removes the probe; refusals; Add model… names and paths.
 - **Not yet tried in the window:** the question, Add model… and wiring between used models, beyond tests.
 
+**Step 4d (2026-11-02): expanding in place.**
+- **The diagram** (`simsandbox_session::expand`, `Diagram::expand(file, registry, paths)`): each use at a listed path is replaced by its model's nodes, named by path (`car1/car`), placed at the use's spot with their own file's layout, inside an `Outline` (path, model, clock, rect, shift). A path inside one (`p/one`) expands only when its outer use is expanded too: one level each.
+  - Wires to the use's ports are drawn to the inner nodes they reach. An input goes to its input block, which gets an input port on the canvas. An output goes from the block its declared output shows, or from a port of a use inside.
+  - Nodes to the right and below make room on screen (`Diagram::shifted`); the file's places stay. The inner nodes carry the run's values by full key.
+- **The canvas:** outlines are drawn under the wires, coloured by clock (a shared clock in the selection colour, others by a colour from their clock's text), titled "path · model · clock". Nodes inside show their own names. "Expand in place" is in a use node's menu; "Collapse PATH" is in the menu on the outline's background, and takes the uses expanded inside it along.
+- **Edits** (`expand::route`):
+  - An edit on nodes inside an outline becomes an edit of the model it uses, in its own names and places, and goes through the edit question as when the use is opened.
+  - A block added inside an outline goes into that model.
+  - An edit reaching across an outline is refused with the reason.
+  - A move of a node pushed aside is saved without the push.
+  - The question can now be asked from the model's level (`Asking::path`).
+- **Saved:** `controls.expand` lists the expanded uses by path. The app reads it on opening and writes it when one is expanded or collapsed. "Edit…" on a block inside an outline opens its equations (`path::block`); "Open" on a use inside an outline opens it by its full path.
+- **Headless:** `render --diagram --expand car1,vehicle/plant` (comma-separated, besides `controls.expand`); Python `render(diagram=True, expand=[...])`.
+- **Tests:**
+  - the Platoon with `car1` expanded: inner nodes in the outline, wires through the input block and the declared output, `car2` pushed aside by a known amount, nothing changed when collapsed;
+  - edits routed inside, adds inside, moves unshifted, refusals across;
+  - nested expansion one level at a time;
+  - in the app: expanded and saved, an edit inside asks the question for that use and changes every use when answered, a pushed node's move saved without the push, reopened expanded;
+  - Python.
+

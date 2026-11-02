@@ -288,6 +288,7 @@ fn render<'py>(
                 view,
                 light,
                 inside: None,
+                expand: Vec::new(),
                 data: false,
                 values: false,
             };
@@ -302,7 +303,7 @@ fn render<'py>(
 /// The block diagram of a model file as a PNG, as the node canvas shows
 /// it (ADR 0042); drawn even if the model cannot run.
 #[pyfunction]
-#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, inside=None, data=true, values=false))]
+#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, inside=None, data=true, values=false, expand=Vec::new()))]
 #[allow(clippy::too_many_arguments)]
 fn render_diagram<'py>(
     py: Python<'py>,
@@ -314,6 +315,7 @@ fn render_diagram<'py>(
     inside: Option<String>,
     data: bool,
     values: bool,
+    expand: Vec<String>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let image = py
         .detach(|| -> Result<_, String> {
@@ -326,6 +328,7 @@ fn render_diagram<'py>(
                 view: None,
                 light,
                 inside,
+                expand,
                 data,
                 values,
             };

@@ -59,6 +59,8 @@ pub enum Outcome {
     ShowView(usize),
     /// Which nodes show their values, to save (ADR 0055).
     Opened(Vec<String>),
+    /// Which uses are expanded in place, to save (ADR 0066 step 4d).
+    Expanded(Vec<String>),
     /// Set a parameter typed on a node (ADR 0053).
     SetValue {
         key: String,
@@ -117,12 +119,17 @@ pub struct DiagramTab {
     /// Edits inside a use waiting for that answer, with the name offered
     /// for a new copy.
     pub(crate) asking: Option<Asking>,
+    /// Uses shown expanded in place, by path (ADR 0066 step 4d); saved in
+    /// `controls.expand`.
+    pub expanded: Vec<String>,
 }
 
 use std::collections::BTreeMap;
 
 /// Edits inside a use waiting for the edit question's answer.
 pub(crate) struct Asking {
+    /// The use the edits are in.
+    pub(crate) path: Vec<String>,
     edits: Vec<Edit>,
     /// The name offered for a new copy.
     name: String,
@@ -347,6 +354,7 @@ impl DiagramTab {
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     self.asking = Some(Asking {
+                        path: self.inside.clone(),
                         edits,
                         name,
                         definition,
@@ -366,15 +374,19 @@ impl DiagramTab {
         current: &dyn Fn() -> Result<String, String>,
     ) -> Vec<Outcome> {
         let Some(Asking {
-            name, definition, ..
+            name,
+            definition,
+            path,
+            ..
         }) = &mut self.asking
         else {
             return Vec::new();
         };
         let definition = definition.clone();
+        let asked_path = path.clone();
         let mut how = None;
         let mut cancel = false;
-        let shown = self.inside.join(" › ");
+        let shown = asked_path.join(" › ");
         let folder = self.folder.clone();
         egui::Modal::new(egui::Id::new("edit-used-model")).show(ui.ctx(), |ui| {
             ui.set_max_width(420.0);
@@ -430,8 +442,13 @@ impl DiagramTab {
         let Some(how) = how else {
             return Vec::new();
         };
-        let Asking { edits, .. } = self.asking.take().expect("asking");
-        self.answer(edits, how, registry, current)
+        let Asking { edits, path, .. } = self.asking.take().expect("asking");
+        // Asked inside a used model, or from an outline on the model's
+        // level (ADR 0066 step 4d): answered for that use.
+        let here = std::mem::replace(&mut self.inside, path);
+        let out = self.answer(edits, how, registry, current);
+        self.inside = here;
+        out
     }
 
     /// Carry out the answer `how` to the edit question for the use open,
@@ -593,6 +610,12 @@ impl DiagramTab {
         out
     }
 
+    /// The diagram as drawn, for tests that edit it without a frame.
+    #[cfg(test)]
+    pub(crate) fn set_drawn(&mut self, d: Diagram) {
+        self.cache = Some(d);
+    }
+
     /// The model changed (opened or rebuilt): draw it afresh, dropping any
     /// draft.
     pub fn reset(&mut self) {
@@ -686,6 +709,8 @@ impl DiagramTab {
         let scope = self.scope.clone();
         let hide_data = self.hide_data;
         let draft = self.draft.is_some();
+        let expanded = self.expanded.clone();
+        let folder = self.folder.clone();
         let built = self.cache.get_or_insert_with(|| {
             let mut d = Diagram::of(source, &scope, registry);
             let mut f = source.clone();
@@ -702,6 +727,14 @@ impl DiagramTab {
                 f = simsandbox_session::observers::model_part(&f);
             }
             d.observe(&f, views.1);
+            // Uses expanded in place (ADR 0066 step 4d).
+            if !expanded.is_empty() {
+                let mut top = source.clone();
+                if top.folder.is_none() {
+                    top.folder.clone_from(&folder);
+                }
+                d.expand(&top, registry, &expanded);
+            }
             d
         });
         // The running values on the nodes (ADR 0053).
@@ -774,6 +807,7 @@ impl DiagramTab {
         let d = self.cache.as_ref().expect("built above");
         // Moving a model to a file or back, after the requests (ADR 0068).
         let mut moves: Vec<(String, Option<std::path::PathBuf>)> = Vec::new();
+        let mut expand_changed = false;
         for r in requests {
             let name = match r {
                 Request::Open(name) => name,
@@ -858,6 +892,21 @@ impl DiagramTab {
                     }
                     continue;
                 }
+                Request::Expand(path) => {
+                    if !self.expanded.contains(&path) {
+                        self.expanded.push(path);
+                    }
+                    expand_changed = true;
+                    continue;
+                }
+                Request::Collapse(path) => {
+                    // Its expanded uses inside go with it.
+                    let inner = format!("{path}/");
+                    self.expanded
+                        .retain(|p| *p != path && !p.starts_with(&inner));
+                    expand_changed = true;
+                    continue;
+                }
                 Request::PutInFile(name) => {
                     moves.push((name, None));
                     continue;
@@ -882,13 +931,20 @@ impl DiagramTab {
             match node {
                 // A used model opens to its file, as written (ADR 0066).
                 Some(n) if n.kind == NodeKind::Use && self.scope == Scope::Model => {
-                    self.inside = vec![name];
+                    // Also a use inside an expanded one (`p/one`).
+                    self.inside = name.split('/').map(str::to_string).collect();
                     self.inside_cache = None;
                     self.canvas.selected = None;
                     self.canvas.refit();
                     return out;
                 }
-                Some(n) if n.kind == NodeKind::Block => out.push(Outcome::Open(name)),
+                // A block inside an expanded use: `use/path::block`.
+                Some(n) if n.kind == NodeKind::Block => {
+                    out.push(Outcome::Open(match name.rsplit_once('/') {
+                        Some((path, block)) => format!("{path}::{block}"),
+                        None => name,
+                    }))
+                }
                 _ => {}
             }
         }
@@ -913,6 +969,14 @@ impl DiagramTab {
                 Some(Done::Close) => self.recorder = None,
                 None => {}
             }
+        }
+        if expand_changed {
+            self.cache = None;
+            out.push(Outcome::Expanded(self.expanded.clone()));
+        }
+        // The edit question for edits made inside an outline.
+        if self.asking.is_some() {
+            out.extend(self.question(ui, registry, current));
         }
         if let Some((name, to)) = moves.pop() {
             out.extend(self.move_use(&name, to, registry, current));
@@ -1048,6 +1112,53 @@ impl DiagramTab {
         if edits.is_empty() {
             return out;
         }
+        // Edits inside an expanded use go to the model it uses, as when it
+        // is opened; places pushed aside on screen are taken off
+        // (ADR 0066 step 4d).
+        let edits = match self
+            .cache
+            .as_ref()
+            .filter(|d| !d.outlines.is_empty() || !d.shifted.is_empty())
+        {
+            None => edits,
+            Some(d) => {
+                let mut top = Vec::new();
+                let mut inner: Option<(Vec<String>, Vec<Edit>)> = None;
+                for e in edits {
+                    match simsandbox_session::expand::route(d, &e) {
+                        Ok((None, e)) => top.push(e),
+                        Ok((Some(path), e)) => match &mut inner {
+                            Some((p, v)) if *p == path => v.push(e),
+                            Some(_) => {
+                                out.push(Outcome::Error(
+                                    "one edit at a time in different expanded models".into(),
+                                ));
+                                return out;
+                            }
+                            None => inner = Some((path, vec![e])),
+                        },
+                        Err(m) => {
+                            out.push(Outcome::Error(m));
+                            return out;
+                        }
+                    }
+                }
+                if let Some((path, v)) = inner {
+                    if !top.is_empty() {
+                        out.push(Outcome::Error(
+                            "edit an expanded model and the model around it one at a time".into(),
+                        ));
+                        return out;
+                    }
+                    let here = std::mem::replace(&mut self.inside, path);
+                    out.extend(self.begin_edit(v, registry, current));
+                    self.inside = here;
+                    self.cache = None;
+                    return out;
+                }
+                top
+            }
+        };
         let base = match self.base(current) {
             Ok(f) => f,
             Err(e) => {
