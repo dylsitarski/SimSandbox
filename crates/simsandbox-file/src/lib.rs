@@ -1736,6 +1736,16 @@ impl ModelFile {
             return Err(FileError::UnsupportedFormat(raw.format));
         }
         raw.run.dt_written = dt_written;
+        // Subsystems became models defined in the file (ADR 0068); the
+        // loader still flattens shared uses through them inside.
+        if !raw.subsystems.is_empty() && !compose::subsystems_allowed() {
+            return Err(invalid(
+                "subsystems",
+                "subsystems became models defined in the file (ADR 0068): write each under \
+                 `models`, its input ports as input.value blocks and its output ports as \
+                 declared `outputs`, and use it as {\"name\": ..., \"model\": ...}",
+            ));
+        }
         let positive = |v: f64| v.is_finite() && v > 0.0;
         for (k, c) in raw.run.inputs.iter().enumerate() {
             if !(c.t.is_finite() && c.t >= 0.0) {

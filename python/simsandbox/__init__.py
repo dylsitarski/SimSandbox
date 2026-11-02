@@ -230,8 +230,8 @@ class Model:
     # Parameters
 
     def set(self, key: str, value: "float | str") -> "Model":
-        """Set a parameter: ``"block.param"``, a subsystem use's
-        ``"instance.param"``, or a declared ``"name"``. A block parameter
+        """Set a parameter: ``"block.param"``, a used model's
+        ``"use.param"``, or a declared ``"name"``. A block parameter
         may be a formula of declared parameters (``"2*size"``)."""
         if key in self.data.get("params", {}):
             self.data["params"][key]["value"] = float(value)
@@ -481,12 +481,12 @@ class Model:
         self.data.setdefault("params", {})[name] = d
         return self
 
-    def group(self, blocks: Iterable[str], subsystem: str | None = None) -> str:
-        """Move ``blocks`` (of the model, or inside ``subsystem``) into a new
-        subsystem used in their place, as "Make subsystem" does on the
-        canvas: wires that cross become its ports. Returns a note naming
-        it."""
-        text, note = _native.group(self.to_json(), list(blocks), subsystem)
+    def group(self, blocks: Iterable[str]) -> str:
+        """Move ``blocks`` into a new model defined in this file (ADR 0068)
+        and use it in their place, as "Make model" does on the canvas:
+        wires that cross become its input blocks and declared outputs.
+        Returns a note naming it."""
+        text, note = _native.group(self.to_json(), list(blocks))
         self.data = json.loads(text)
         return note
 
@@ -525,19 +525,20 @@ class Model:
         scale: float = 1.0,
         light: bool = False,
         diagram: bool = False,
-        subsystem: str | None = None,
+        inside: str | None = None,
         data: bool = True,
         values: bool = False,
     ) -> bytes:
         """Run to ``t_end`` and draw the model's views (``controls.views``,
         or ``view`` alone) as a PNG, as the app shows them; with
         ``diagram``, draw its block diagram instead (no run needed), or
-        with ``subsystem`` too, that subsystem's inside. The model's diagram
+        with ``inside`` too, the inside of the model used at that path
+        (``"plant"``, ``"vehicle/plant"``). The model's diagram
         includes its filters and views (ADR 0050) unless ``data`` is false.
         A diagram shows the values of the nodes the file opens
         (``controls.open``), or of every node with ``values``. Writes it to ``path`` if given; returns the PNG bytes."""
-        if subsystem is not None and not diagram:
-            raise ValueError("subsystem draws a subsystem's diagram: add diagram=True")
+        if inside is not None and not diagram:
+            raise ValueError("inside draws a used model's diagram: add diagram=True")
         if values and not diagram:
             raise ValueError("values shows values on a diagram: add diagram=True")
         if diagram:
@@ -550,7 +551,7 @@ class Model:
                     float(height),
                     float(scale),
                     light,
-                    subsystem,
+                    inside,
                     data,
                     values,
                 )

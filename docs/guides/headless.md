@@ -23,7 +23,7 @@ Build with `cargo build --release -p simsandbox-cli`; the binary is `target/rele
 | `simsandbox run FILE [--t-end S] [--dt S] [--format csv\|json] [--inputs RUN]` | Every output at every step (or sweep sample). `FILE` may be a run file, which is replayed; `--inputs RUN` applies a run's events to a model file. `render` takes `--inputs` too |
 | `simsandbox run FILE --probe NAME [--save-probes DIR] [...]` | What probe `NAME` recorded ([Probes](#probes)) instead of every output: CSV of `t` and its signals, or with `--format json` also its fields. `--save-probes DIR` (with or without `--probe`) writes the files of the probes that have one (`to`) into `DIR` |
 | `simsandbox render FILE --out IMAGE.png [--t-end S] [--view N] [--width P] [--height P] [--scale S] [--light]` | PNG of the views after running to `t_end`, placed as the file's `controls.layout` arranges them ([ADR 0053](../decisions/0053-docked-panes-inspector-and-node-values.md)) or tiled in a grid |
-| `simsandbox render FILE --diagram [--subsystem NAME] [--no-data] [--values] --out IMAGE.png [--width P] [--height P] [--scale S] [--light]` | PNG of the block diagram, or a subsystem's inside, as the app's Diagram tab shows it (also for a file that cannot run), with the filters and views as its data layer unless `--no-data` ([ADR 0050](../decisions/0050-data-layer-and-canvas-undo.md)); the nodes `controls.open` lists show their values, every node with `--values` ([ADR 0055](../decisions/0055-open-nodes-subsystem-values-deferred-windows.md)) |
+| `simsandbox render FILE --diagram [--inside PATH] [--no-data] [--values] --out IMAGE.png [--width P] [--height P] [--scale S] [--light]` | PNG of the block diagram, or the inside of the model used at `PATH` (`car1`, `vehicle/plant`; `--subsystem` is its older name), as the app's Diagram tab shows it (also for a file that cannot run), with the filters and views as its data layer unless `--no-data` ([ADR 0050](../decisions/0050-data-layer-and-canvas-undo.md)); the nodes `controls.open` lists show their values, every node with `--values` ([ADR 0055](../decisions/0055-open-nodes-subsystem-values-deferred-windows.md)) |
 | `simsandbox start-from FILE --t S [--out NEW.json]` | The model file that starts from the state reached at `t` ([ADR 0042](../decisions/0042-node-canvas.md)): initial-condition parameters where they say it exactly, else a `start` entry per block |
 | `simsandbox upgrade FILE [--out NEW.json]` | The file in the current form of the format; what was converted on standard error ([ADR 0044](../decisions/0044-unsaved-changes-and-older-files.md)) |
 
@@ -37,8 +37,8 @@ Notes, warnings and labels go to standard error; data to standard output.
 | `errors` | Each `{path, message}` (file structure) or `{line, column, message}` (JSON syntax) or `{message}` |
 | `warnings` | Problems that were worked around, e.g. a saved view that cannot be shown |
 | `conversions` | Older forms of the format the file was written in, converted on reading; `simsandbox upgrade` writes the current form |
-| `params` | Every parameter: `key` (`block.param`; a model parameter's `name`, a subsystem use's `instance.name`; blocks inside uses `instance/inner.param`), `value`, `formula` (set when a formula computes it), `unit`, `suggested` range, `initial_condition`, `description` |
-| `subsystems`, `blocks` | Each subsystem's parameters, ports and uses ([ADR 0043](../decisions/0043-subsystems.md)); every block after flattening, as signals and sliders name them |
+| `params` | Every parameter: `key` (`block.param`; a model parameter's `name`, a used model's `use.name`; blocks inside uses `use/inner.param`), `value`, `formula` (set when a formula computes it), `unit`, `suggested` range, `initial_condition`, `description` |
+| `definitions`, `blocks` | Each model defined in the file, with its input blocks, declared outputs and uses ([ADR 0068](../decisions/0068-one-kind-of-nested-model.md)); every block after flattening, as signals and sliders name them |
 | `labels` | Speed and accuracy of the model's methods |
 | `recorded` | `signals` (scalars) and `fields` (grids, point sets, populations) that views and probes can take, recorded now or not |
 | `fused_groups`, `swept`, `filters`, `views` | How blocks are solved together, the swept parameters, filter and view names |
@@ -117,7 +117,7 @@ A model's `blocks` may use other model files, each running on its own clock, lin
   - `file` is found from this file's folder, and data files inside a use from its own file's folder.
   - `params` set values for this use only, by path at any depth (`car.m`, `plant/car.m`, a declared `m`, `plant/m`). Each value is a number or a formula of the declared parameters of the file it is written in. On a shared clock the formula is live. Into a model on its own clock it is evaluated once, when the model is built.
   - `clock` is `{"dt": step}`, or absent for the file's own `run.dt`.
-  - `"clock": "shared"` puts the use on this model's clock instead, flattened into it like a subsystem (fused with its neighbours where possible). Wire straight into its input blocks (`{"from": "controller/cruise.F", "to": "plant/force"}`) and from outputs (`plant/car.v`), at any depth of models on a shared clock (`vehicle/plant/force`). Any model file can be used shared: models on their own clocks inside it keep their clocks under its path (`vehicle/engine`), and its probes, links and groups come along.
+  - `"clock": "shared"` puts the use on this model's clock instead, flattened into it (fused with its neighbours where possible). Wire straight into its input blocks (`{"from": "controller/cruise.F", "to": "plant/force"}`) and from outputs (`plant/car.v`), at any depth of models on a shared clock (`vehicle/plant/force`). Any model file can be used shared: models on their own clocks inside it keep their clocks under its path (`vehicle/engine`), and its probes, links and groups come along.
   - Everything in a use is named with the path of uses leading to it: `plant/car.v`, `vehicle/plant/car.v`. The top level's own blocks keep plain names, and a model may have blocks of its own beside its uses.
   - A used file may use files itself; a file that ends up using itself is refused.
 - **What is read from a used file:** only `run.dt`, plus the probes that feed its links or its own blocks. The top level's `run` governs, and inner models draw random numbers from seeds mixed from the top level's and the use's path.
@@ -174,7 +174,7 @@ m.render("decay.png")                            # PNG of the views
 m.render("diagram.png", diagram=True)             # PNG of the block diagram
 m.declare("rate", 0.5)                            # a model parameter (ADR 0043)
 m.set("decay.k", "2*rate")                        # a block parameter as a formula of it
-m.group(["decay"])                                # make a subsystem of blocks
+m.group(["decay"])                                # make a model of blocks, defined in the file
 m.promote("energy", to="spring.u")               # an expression filter becomes a block (ADR 0050)
 settled = m.start_from(10.0)                     # starts from the state at t = 10
 m.schedule(5.0, "decay.k", 2.0)                  # a change at t = 5 in every run (run.inputs)

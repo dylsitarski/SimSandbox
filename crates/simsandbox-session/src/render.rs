@@ -20,9 +20,9 @@ pub struct RenderOptions {
     /// Only this tile (0-based, in `controls.views` order); all if `None`.
     pub view: Option<usize>,
     pub light: bool,
-    /// For the diagram: a subsystem's inside instead of the model
-    /// (ADR 0043).
-    pub subsystem: Option<String>,
+    /// For the diagram: the inside of the use at this path (`plant`,
+    /// `vehicle/plant`) instead of the model (ADR 0068).
+    pub inside: Option<String>,
     /// For the model's diagram: draw the data layer, its filters and views
     /// (ADR 0050).
     pub data: bool,
@@ -39,7 +39,7 @@ impl Default for RenderOptions {
             scale: 1.0,
             view: None,
             light: false,
-            subsystem: None,
+            inside: None,
             data: true,
             values: false,
         }
@@ -106,22 +106,21 @@ pub fn render_diagram(
     o: &RenderOptions,
 ) -> Result<Image, String> {
     check(o)?;
-    let scope = match &o.subsystem {
-        None => crate::diagram::Scope::Model,
-        Some(s) if file.subsystems.contains_key(s) => crate::diagram::Scope::Subsystem(s.clone()),
-        Some(s) => {
-            let known: Vec<&str> = file.subsystems.keys().map(String::as_str).collect();
-            return Err(format!(
-                "no subsystem '{s}' (subsystems: {})",
-                if known.is_empty() {
-                    "none".into()
-                } else {
-                    known.join(", ")
-                }
-            ));
+    // The inside of a use, by its path (ADR 0068), or the model.
+    let inner;
+    let file = match &o.inside {
+        None => file,
+        Some(path) => {
+            let names: Vec<String> = path.split('/').map(str::to_string).collect();
+            let folder = file
+                .folder
+                .clone()
+                .or_else(simsandbox_core::registry::current_folder);
+            inner = crate::edit_use::model_at(file, folder.as_deref(), &names)?;
+            &inner
         }
     };
-    let mut d = crate::diagram::Diagram::of(file, &scope, registry);
+    let mut d = crate::diagram::Diagram::new(file, registry);
     // Without the data layer, probes feeding blocks still show: they are
     // part of the model (ADR 0063).
     let observed = if o.data {
@@ -398,7 +397,7 @@ mod tests {
             scale: 2.0,
             view: Some(0),
             light: true,
-            subsystem: None,
+            inside: None,
             data: false,
             values: false,
         };

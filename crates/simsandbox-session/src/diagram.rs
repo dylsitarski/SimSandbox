@@ -23,23 +23,12 @@ pub const VALUE_ROW: f64 = 16.0;
 const GAP_X: f64 = 90.0;
 const GAP_Y: f64 = 40.0;
 
-/// Which level of the model a diagram shows.
+/// Which level of the model a diagram shows: the model's own. (The inside
+/// of a used model is shown from its own file or definition, ADR 0068.)
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Scope {
     #[default]
     Model,
-    /// The inside of a subsystem, by name; editing it changes every use.
-    Subsystem(String),
-}
-
-/// Inside a subsystem, its ports are nodes named `in:u` and `out:y`, each
-/// with one port named like it (so wires read `in:u.u`, `out:y.y`).
-pub fn input_node(port: &str) -> String {
-    format!("in:{port}")
-}
-
-pub fn output_node(port: &str) -> String {
-    format!("out:{port}")
 }
 
 /// One port on a node.
@@ -54,11 +43,6 @@ pub struct Port {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeKind {
     Block,
-    /// A use of a subsystem.
-    Subsystem,
-    /// A subsystem's input or output, seen from inside.
-    Input,
-    Output,
     /// A filter on the data layer (ADR 0050): reads recorded data.
     Filter,
     /// A view on the data layer: where data is shown.
@@ -158,7 +142,7 @@ impl Node {
     /// Whether it is one of the model's blocks or instances (not a port
     /// node), so it can be grouped.
     pub fn is_block(&self) -> bool {
-        matches!(self.kind, NodeKind::Block | NodeKind::Subsystem)
+        matches!(self.kind, NodeKind::Block | NodeKind::Use)
     }
 
     /// Whether it is on the data layer (ADR 0050).
@@ -208,23 +192,22 @@ pub struct Diagram {
     pub wires: Vec<Wire>,
     /// Connections that name a block or port that does not exist.
     pub dangling: Vec<String>,
-    /// The file's subsystems, which can be added like block types.
+    /// The models defined in the file (ADR 0068), which can be added like
+    /// block types.
     pub subsystems: Vec<String>,
-    /// Inside a subsystem: the blocks using it (`"car1"`, nested
-    /// `"farm/pasture"` as flat names).
-    pub used_by: Vec<String>,
+    /// The outputs the model offers to models using it: name and
+    /// `block.port` (ADR 0066 step 4b).
+    pub offered: Vec<(String, String)>,
     /// View types that can be added on the data layer: name and label.
     pub view_types: Vec<(String, String)>,
     /// Data-layer slots that take several signals, as `view:K.slot`.
     pub many: BTreeSet<String>,
 }
 
-/// The blocks and wires of one level, and its ports inside a subsystem.
+/// The blocks and wires of one level.
 struct Level<'a> {
     blocks: &'a [BlockEntry],
     connections: &'a [ConnectionEntry],
-    inputs: &'a [InputPort],
-    outputs: &'a [OutputPort],
 }
 
 fn level<'a>(file: &'a ModelFile, scope: &Scope) -> Option<Level<'a>> {
@@ -232,14 +215,6 @@ fn level<'a>(file: &'a ModelFile, scope: &Scope) -> Option<Level<'a>> {
         Scope::Model => Some(Level {
             blocks: &file.blocks,
             connections: &file.connections,
-            inputs: &[],
-            outputs: &[],
-        }),
-        Scope::Subsystem(name) => file.subsystems.get(name).map(|d| Level {
-            blocks: &d.blocks,
-            connections: &d.connections,
-            inputs: &d.inputs,
-            outputs: &d.outputs,
         }),
     }
 }
@@ -262,45 +237,16 @@ impl Diagram {
         let mut nodes: Vec<Node> = l
             .blocks
             .iter()
-            .map(|b| match file.subsystems.get(&b.type_name) {
-                _ if b.is_use() => {
+            .map(|b| {
+                if b.is_use() {
                     let wired = simsandbox_file::compose::wired(l.connections, &b.name);
                     use_node(b, registry, file.folder.as_deref(), 0, wired)
+                } else {
+                    node(b, registry, file.folder.as_deref())
                 }
-                Some(_) => instance_node(file, b, registry),
-                None => node(b, registry, file.folder.as_deref()),
             })
             .collect();
-        for p in l.inputs {
-            let port = interface_port(
-                file,
-                l.blocks,
-                p.to.first().map(String::as_str),
-                true,
-                registry,
-                0,
-            );
-            nodes.push(boundary(
-                &input_node(&p.name),
-                NodeKind::Input,
-                &p.name,
-                port,
-                p.canvas,
-            ));
-        }
-        for p in l.outputs {
-            let port = interface_port(file, l.blocks, Some(&p.from), false, registry, 0);
-            nodes.push(boundary(
-                &output_node(&p.name),
-                NodeKind::Output,
-                &p.name,
-                port,
-                p.canvas,
-            ));
-        }
-        if *scope == Scope::Model {
-            reveal_wired(&mut nodes, file);
-        }
+        reveal_wired(&mut nodes, file);
         let index: BTreeMap<String, usize> = nodes
             .iter()
             .enumerate()
@@ -327,23 +273,12 @@ impl Diagram {
             Some((n, ports.iter().position(|q| q.name == p)?))
         };
         // Probes feeding blocks are drawn with the data layer (ADR 0063).
-        let mut links: Vec<(String, String)> = l
+        let links: Vec<(String, String)> = l
             .connections
             .iter()
             .filter(|c| !c.from.starts_with("probe:"))
             .map(|c| (c.from.clone(), c.to.clone()))
             .collect();
-        for p in l.inputs {
-            for t in &p.to {
-                links.push((format!("{}.{}", input_node(&p.name), p.name), t.clone()));
-            }
-        }
-        for p in l.outputs {
-            links.push((
-                p.from.clone(),
-                format!("{}.{}", output_node(&p.name), p.name),
-            ));
-        }
         let mut wires = Vec::new();
         let mut dangling = Vec::new();
         for (from, to) in links {
@@ -361,37 +296,18 @@ impl Diagram {
                 _ => dangling.push(format!("{from} -> {to}")),
             }
         }
-        if let Scope::Subsystem(name) = scope {
-            // Inside a subsystem a value is the default of every use; say
-            // which uses set their own (ADR 0055).
-            let entries: Vec<&BlockEntry> = file
-                .blocks
-                .iter()
-                .chain(file.subsystems.values().flat_map(|d| d.blocks.iter()))
-                .filter(|b| b.type_name == *name)
-                .collect();
-            for n in &mut nodes {
-                for v in &mut n.values {
-                    v.overridden = entries
-                        .iter()
-                        .filter(|u| u.params.contains_key(&v.key))
-                        .map(|u| u.name.clone())
-                        .collect();
-                }
-            }
-        }
         layout(&mut nodes, &wires);
-        let used_by = match scope {
-            Scope::Model => Vec::new(),
-            Scope::Subsystem(name) => uses(file, name),
-        };
         Self {
             scope: scope.clone(),
             nodes,
             wires,
             dangling,
-            subsystems: file.subsystems.keys().cloned().collect(),
-            used_by,
+            subsystems: file.models.keys().cloned().collect(),
+            offered: file
+                .outputs
+                .iter()
+                .map(|o| (o.name.clone(), o.from.clone()))
+                .collect(),
             ..Self::default()
         }
     }
@@ -418,41 +334,6 @@ impl Diagram {
     pub fn node(&self, name: &str) -> Option<usize> {
         self.nodes.iter().position(|n| n.name == name)
     }
-}
-
-/// Flat names of every use of a subsystem (`"car1"`, `"farm/pasture"`).
-pub fn uses(file: &ModelFile, subsystem: &str) -> Vec<String> {
-    fn walk(
-        file: &ModelFile,
-        blocks: &[BlockEntry],
-        prefix: &str,
-        target: &str,
-        out: &mut Vec<String>,
-        depth: usize,
-    ) {
-        if depth > 16 {
-            return;
-        }
-        for b in blocks {
-            if let Some(def) = file.subsystems.get(&b.type_name) {
-                let flat = format!("{prefix}{}", b.name);
-                if b.type_name == target {
-                    out.push(flat.clone());
-                }
-                walk(
-                    file,
-                    &def.blocks,
-                    &format!("{flat}/"),
-                    target,
-                    out,
-                    depth + 1,
-                );
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(file, &file.blocks, "", subsystem, &mut out, 0);
-    out
 }
 
 fn ports(spec: &simsandbox_core::block::BlockSpec, c: Causality) -> Vec<Port> {
@@ -524,7 +405,12 @@ fn reveal_wired(nodes: &mut [Node], file: &ModelFile) {
             continue;
         };
         let shown = if input { &n.inputs } else { &n.outputs };
-        if shown.iter().any(|p| p.name == rest) {
+        if shown.iter().any(|p| p.name == rest)
+            || (!input
+                && n.settings
+                    .iter()
+                    .any(|(k, v)| k.starts_with("output.") && v == rest))
+        {
             continue;
         }
         if let Some(k) = n
@@ -627,10 +513,7 @@ fn use_node(
             });
             continue;
         }
-        let ports: Vec<Port> = if model.subsystems.contains_key(&e.type_name) {
-            has_states = true;
-            instance_node(&model, e, registry).outputs
-        } else {
+        let ports: Vec<Port> = {
             match build(e, registry, inner_folder.as_deref()) {
                 Ok(block) => {
                     let spec = block.spec();
@@ -658,6 +541,30 @@ fn use_node(
             }
         })
         .collect();
+    // The values of this use: its model's declared parameters, as this
+    // use sets them; those a formula sets are not listed (ADR 0068).
+    for (name, decl) in &model.params {
+        let value = match b.params.get(name) {
+            Some(simsandbox_file::ParamValue::Formula(_)) => continue,
+            Some(simsandbox_file::ParamValue::Number(x)) => *x,
+            None => decl.value,
+        };
+        n.values.push(NodeValue {
+            key: format!("{}.{name}", b.name),
+            name: name.clone(),
+            value,
+            formula: None,
+            unit: decl.unit.clone(),
+            initial: false,
+            overridden: Vec::new(),
+        });
+    }
+    // What each declared output shows, so a signal named by it is drawn
+    // from that port (`car1/car.v` from `v`).
+    for o in &model.outputs {
+        n.settings
+            .insert(format!("output.{}", o.name), o.from.clone());
+    }
     n.inputs = own_inputs;
     n.reachable = all_inputs
         .into_iter()
@@ -765,170 +672,6 @@ impl Diagram {
     }
 }
 
-/// A port of a subsystem, typed by the inner port it leads to or from.
-fn interface_port(
-    file: &ModelFile,
-    blocks: &[BlockEntry],
-    inner: Option<&str>,
-    input: bool,
-    registry: &Registry,
-    depth: usize,
-) -> Option<Port> {
-    let (b, p) = inner?.split_once('.')?;
-    let entry = blocks.iter().find(|e| e.name == b)?;
-    if depth > 16 {
-        return None;
-    }
-    match file.subsystems.get(&entry.type_name) {
-        Some(def) => {
-            if input {
-                let port = def.inputs.iter().find(|q| q.name == p)?;
-                interface_port(
-                    file,
-                    &def.blocks,
-                    port.to.first().map(String::as_str),
-                    true,
-                    registry,
-                    depth + 1,
-                )
-            } else {
-                let port = def.outputs.iter().find(|q| q.name == p)?;
-                interface_port(
-                    file,
-                    &def.blocks,
-                    Some(&port.from),
-                    false,
-                    registry,
-                    depth + 1,
-                )
-            }
-        }
-        None => {
-            let block = build(entry, registry, file.folder.as_deref()).ok()?;
-            let want = if input {
-                Causality::Input
-            } else {
-                Causality::Output
-            };
-            ports(block.spec(), want).into_iter().find(|q| q.name == p)
-        }
-    }
-}
-
-fn instance_node(file: &ModelFile, b: &BlockEntry, registry: &Registry) -> Node {
-    let def = &file.subsystems[&b.type_name];
-    let unknown = |name: &str| Port {
-        name: name.into(),
-        unit: String::new(),
-        shape: Shape::Scalar,
-    };
-    let inputs = def
-        .inputs
-        .iter()
-        .map(|p| {
-            let typed = interface_port(
-                file,
-                &def.blocks,
-                p.to.first().map(String::as_str),
-                true,
-                registry,
-                0,
-            );
-            Port {
-                name: p.name.clone(),
-                ..typed.unwrap_or_else(|| unknown(&p.name))
-            }
-        })
-        .collect();
-    let outputs = def
-        .outputs
-        .iter()
-        .map(|p| {
-            let typed = interface_port(file, &def.blocks, Some(&p.from), false, registry, 0);
-            Port {
-                name: p.name.clone(),
-                ..typed.unwrap_or_else(|| unknown(&p.name))
-            }
-        })
-        .collect();
-    // The use's own parameters: given in its entry, else the subsystem's
-    // defaults.
-    let values = def
-        .params
-        .iter()
-        .filter_map(|(name, d)| {
-            let (value, formula) = match b.params.get(name) {
-                Some(ParamValue::Number(v)) => (*v, None),
-                // Set by a formula: not listed.
-                Some(ParamValue::Formula(_)) => return None,
-                None => (d.value, None),
-            };
-            Some(NodeValue {
-                key: format!("{}.{name}", b.name),
-                name: name.clone(),
-                value,
-                formula,
-                unit: d.unit.clone(),
-                initial: false,
-                overridden: Vec::new(),
-            })
-        })
-        .collect();
-    Node {
-        name: b.name.clone(),
-        kind: NodeKind::Subsystem,
-        type_name: b.type_name.clone(),
-        method: "subsystem".into(),
-        inputs,
-        outputs,
-        at: b.canvas.unwrap_or_default(),
-        placed: b.canvas.is_some(),
-        error: None,
-        unreached: Vec::new(),
-        values,
-        open: false,
-        reachable: Vec::new(),
-        settings: BTreeMap::new(),
-    }
-}
-
-fn boundary(
-    name: &str,
-    kind: NodeKind,
-    port: &str,
-    typed: Option<Port>,
-    at: Option<[f64; 2]>,
-) -> Node {
-    let p = Port {
-        name: port.into(),
-        ..typed.unwrap_or(Port {
-            name: String::new(),
-            unit: String::new(),
-            shape: Shape::Scalar,
-        })
-    };
-    let (inputs, outputs, type_name) = match kind {
-        NodeKind::Input => (Vec::new(), vec![p], "input"),
-        _ => (vec![p], Vec::new(), "output"),
-    };
-    Node {
-        name: name.into(),
-        kind,
-        type_name: type_name.into(),
-        method: String::new(),
-        inputs,
-        outputs,
-        at: at.unwrap_or_default(),
-        placed: at.is_some(),
-        error: None,
-        unreached: Vec::new(),
-        values: Vec::new(),
-        open: false,
-        reachable: Vec::new(),
-        settings: BTreeMap::new(),
-    }
-}
-
 /// Place nodes without a saved position: in columns by the longest chain
 /// of wires leading to them (wires that close a loop are ignored), each
 /// column ordered by where its sources sit. If some nodes are placed,
@@ -979,13 +722,6 @@ fn layout(nodes: &mut [Node], wires: &[Wire]) {
                     changed = true;
                 }
             }
-        }
-    }
-    // A subsystem's outputs go in the last column.
-    let last = column.iter().max().copied().unwrap_or(0);
-    for (v, node) in nodes.iter().enumerate() {
-        if node.kind == NodeKind::Output {
-            column[v] = last.max(1);
         }
     }
     let columns = column.iter().max().map_or(0, |c| c + 1);
@@ -1047,16 +783,24 @@ pub enum Edit {
     Connect { from: String, to: String },
     /// Remove the wire into this input.
     Disconnect { to: String },
-    /// Inside a subsystem: a new input or output port.
-    AddPort { input: bool, at: [f64; 2] },
-    /// Move these blocks into a new subsystem and use it in their place.
-    Group { blocks: Vec<String> },
     /// Move these blocks into a new model defined in the file and use it
     /// in their place (ADR 0068): crossing wires become its input blocks
     /// and declared outputs.
     GroupModel { blocks: Vec<String> },
-    /// Rename a subsystem (its uses follow).
-    RenameSubsystem { from: String, to: String },
+    /// Offer an output to models using this one (ADR 0066 step 4b): a
+    /// declared output `name` showing `from` (`block.port`).
+    DeclareOutput { name: String, from: String },
+    /// Stop offering the declared output `name`.
+    RemoveOutput { name: String },
+    /// Rename a model defined in the file (ADR 0068): its uses follow.
+    RenameModel { from: String, to: String },
+    /// A typed-equation block's equations, one per line (ADR 0017): the
+    /// parameters it no longer has are dropped, and its method follows
+    /// its kind.
+    SetEquations {
+        block: String,
+        equations: Vec<String>,
+    },
     /// Data layer (ADR 0050): show the signal an output carries in a
     /// view's slot (`to` is `view:K.slot`), added to the slot's signals if
     /// it takes several (`many`), else in place of its signal.
@@ -1187,18 +931,19 @@ pub fn apply_in(
     if let Some(result) = crate::observers::apply(file, scope, registry, edit) {
         return result;
     }
-    if let Edit::RenameSubsystem { from, to } = edit {
-        let note = rename_subsystem(file, from, to)?;
-        let (old, new) = (format!("{from}::"), format!("{to}::"));
-        for k in &mut file.controls.open {
-            if let Some(rest) = k.strip_prefix(&old) {
-                *k = format!("{new}{rest}");
-            }
+    match edit {
+        Edit::DeclareOutput { name, from } => return declare_output(file, name, from),
+        Edit::RemoveOutput { name } => {
+            let before = file.outputs.len();
+            file.outputs.retain(|o| &o.name != name);
+            return if file.outputs.len() < before {
+                Ok(format!("No longer offers {name}"))
+            } else {
+                Err(format!("it offers no output '{name}'"))
+            };
         }
-        return Ok(note);
-    }
-    if let Edit::Group { blocks } = edit {
-        return group(file, scope, blocks);
+        Edit::RenameModel { from, to } => return rename_model(file, from, to),
+        _ => {}
     }
     if let Edit::GroupModel { blocks } = edit {
         return group_model(file, scope, blocks);
@@ -1276,7 +1021,7 @@ fn apply_level(
                 connections: std::mem::take(&mut file.connections),
                 ..Subsystem::default()
             };
-            let result = edit_level(&mut def, file, registry, edit, false);
+            let result = edit_level(&mut def, file, registry, edit);
             file.blocks = def.blocks;
             file.connections = def.connections;
             let note = result?;
@@ -1288,94 +1033,15 @@ fn apply_level(
             }
             Ok(note)
         }
-        Scope::Subsystem(name) => {
-            let mut def = file
-                .subsystems
-                .remove(name)
-                .ok_or_else(|| format!("no subsystem '{name}'"))?;
-            let result = edit_level(&mut def, file, registry, edit, true);
-            file.subsystems.insert(name.clone(), def);
-            let note = result?;
-            match edit {
-                // Wires to a removed or renamed port, wherever it is used.
-                Edit::Delete { block } if block.starts_with("in:") || block.starts_with("out:") => {
-                    let port = &block[block.find(':').unwrap() + 1..];
-                    for_each_level(file, |blocks, conns| {
-                        let users: Vec<String> = blocks
-                            .iter()
-                            .filter(|b| &b.type_name == name)
-                            .map(|b| format!("{}.{port}", b.name))
-                            .collect();
-                        conns.retain(|c| !users.contains(&c.from) && !users.contains(&c.to));
-                    });
-                }
-                Edit::Rename { from, to }
-                    if from.starts_with("in:") || from.starts_with("out:") =>
-                {
-                    let old = &from[from.find(':').unwrap() + 1..];
-                    for_each_level(file, |blocks, conns| {
-                        for b in blocks.iter().filter(|b| &b.type_name == name) {
-                            let (o, n) = (format!("{}.{old}", b.name), format!("{}.{to}", b.name));
-                            for c in conns.iter_mut() {
-                                if c.from == o {
-                                    c.from = n.clone();
-                                }
-                                if c.to == o {
-                                    c.to = n.clone();
-                                }
-                            }
-                        }
-                    });
-                }
-                Edit::Rename { from, to } => {
-                    // Flat names of its blocks in controls: `inst/old.` →
-                    // `inst/new.` (any block of that name inside an
-                    // instance).
-                    let mut c = serde_json::to_value(&file.controls).map_err(|e| e.to_string())?;
-                    replace_in(&mut c, &format!("/{from}."), &format!("/{to}."));
-                    file.controls = serde_json::from_value(c).map_err(|e| e.to_string())?;
-                }
-                _ => {}
-            }
-            Ok(note)
-        }
     }
 }
 
-/// Run `f` on the blocks and wires of every level: the model and each
-/// subsystem.
-fn for_each_level(
-    file: &mut ModelFile,
-    mut f: impl FnMut(&[BlockEntry], &mut Vec<ConnectionEntry>),
-) {
-    f(&file.blocks, &mut file.connections);
-    for def in file.subsystems.values_mut() {
-        f(&def.blocks, &mut def.connections);
-    }
-}
-
-fn replace_in(v: &mut Value, from: &str, to: &str) {
-    match v {
-        Value::String(s) => *s = s.replace(from, to),
-        Value::Array(items) => items.iter_mut().for_each(|i| replace_in(i, from, to)),
-        Value::Object(map) => {
-            let entries: Vec<(String, Value)> = std::mem::take(map).into_iter().collect();
-            for (k, mut item) in entries {
-                replace_in(&mut item, from, to);
-                map.insert(k.replace(from, to), item);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Edit one level's blocks, wires and (inside a subsystem) ports.
+/// Edit one level's blocks and wires.
 fn edit_level(
     l: &mut Subsystem,
     file: &ModelFile,
     registry: &Registry,
     edit: &Edit,
-    inside: bool,
 ) -> Result<String, String> {
     let has = |l: &Subsystem, name: &str| l.blocks.iter().any(|b| b.name == name);
     let port_of = |node: &str| -> Option<(bool, String)> {
@@ -1460,13 +1126,43 @@ fn edit_level(
             }
             Ok(String::new())
         }
+        Edit::SetEquations { block, equations } => {
+            let entry = l
+                .blocks
+                .iter_mut()
+                .find(|b| &b.name == block)
+                .ok_or_else(|| format!("no block '{block}'"))?;
+            let set =
+                simsandbox_eq::EquationSet::parse(block, equations).map_err(|e| e.to_string())?;
+            let keep: Vec<String> = simsandbox_eq::OdeSystem::spec(&set)
+                .params
+                .iter()
+                .map(|p| p.name.clone())
+                .collect();
+            entry.equations.clone_from(equations);
+            entry.params.retain(|name, _| keep.contains(name));
+            let method = entry.method.name.as_str();
+            let compatible = match set.kind() {
+                simsandbox_eq::Kind::Continuous => !matches!(method, "iterate" | "evaluate"),
+                simsandbox_eq::Kind::Map => method == "iterate",
+                simsandbox_eq::Kind::Formulas => method == "evaluate",
+            };
+            if !compatible {
+                entry.method = set.kind().default_method().into();
+            }
+            Ok(format!("Changed the equations of {block}"))
+        }
         Edit::Add { type_name, at } => {
-            let entry = if file.subsystems.contains_key(type_name) {
+            // A model defined in the file is added as a use of it
+            // (ADR 0068).
+            let entry = if file.models.contains_key(type_name) {
                 let base = type_name.to_lowercase();
                 let name = free_name(&base, |n| has(l, n));
                 BlockEntry {
+                    name,
+                    model: Some(type_name.clone()),
                     canvas: Some(at.map(tidy)),
-                    ..BlockEntry::instance(&name, type_name)
+                    ..Default::default()
                 }
             } else {
                 let info = registry
@@ -1635,38 +1331,10 @@ fn edit_level(
             }
             Ok(format!("Disconnected {to}"))
         }
-        Edit::AddPort { input, at } => {
-            if !inside {
-                return Err("only a subsystem has inputs and outputs".into());
-            }
-            let base = if *input { "in" } else { "out" };
-            let name = if *input {
-                free_name(base, |n| l.inputs.iter().any(|q| q.name == n))
-            } else {
-                free_name(base, |n| l.outputs.iter().any(|q| q.name == n))
-            };
-            let at = Some(at.map(tidy));
-            if *input {
-                l.inputs.push(InputPort {
-                    name: name.clone(),
-                    to: Vec::new(),
-                    canvas: at,
-                });
-            } else {
-                l.outputs.push(OutputPort {
-                    name: name.clone(),
-                    from: String::new(),
-                    canvas: at,
-                });
-            }
-            Ok(format!(
-                "Added the {} {name}",
-                if *input { "input" } else { "output" }
-            ))
-        }
-        Edit::Group { .. }
-        | Edit::GroupModel { .. }
-        | Edit::RenameSubsystem { .. }
+        Edit::GroupModel { .. }
+        | Edit::DeclareOutput { .. }
+        | Edit::RemoveOutput { .. }
+        | Edit::RenameModel { .. }
         | Edit::DeclareParam { .. }
         | Edit::RemoveParam { .. } => unreachable!("handled before"),
         // Data-layer edits are handled by `observers::apply` first.
@@ -1971,34 +1639,71 @@ pub fn rename_refs(s: &str, from: &str, to: &str) -> String {
     out
 }
 
-/// Rename a subsystem, and every use of it.
-fn rename_subsystem(file: &mut ModelFile, from: &str, to: &str) -> Result<String, String> {
-    if !simsandbox_file::subsystems::valid_name(to) {
-        return Err(format!("'{to}': names are letters, digits and '_'"));
-    }
-    if file.subsystems.contains_key(to) {
-        return Err(format!("there is already a subsystem named '{to}'"));
-    }
-    let def = file
-        .subsystems
-        .remove(from)
-        .ok_or_else(|| format!("no subsystem '{from}'"))?;
-    file.subsystems.insert(to.into(), def);
-    let fix = |blocks: &mut Vec<BlockEntry>| {
-        for b in blocks.iter_mut().filter(|b| b.type_name == from) {
-            b.type_name = to.into();
-        }
-    };
-    fix(&mut file.blocks);
-    for d in file.subsystems.values_mut() {
-        fix(&mut d.blocks);
-    }
-    Ok(format!("Renamed the subsystem {from} to {to}"))
-}
-
 /// Move `names` (blocks of one level) into a new subsystem and use it in
 /// their place. Wires crossing the boundary become its ports; declared
 /// parameters the moved formulas use are passed in as its parameters.
+/// Offer `from` (`block.port`) as the declared output `name`.
+fn declare_output(file: &mut ModelFile, name: &str, from: &str) -> Result<String, String> {
+    let name = name.trim();
+    if !simsandbox_file::subsystems::valid_name(name) {
+        return Err(format!(
+            "'{name}': an output's name is letters, digits and '_'"
+        ));
+    }
+    if file.outputs.iter().any(|o| o.name == name)
+        || file
+            .blocks
+            .iter()
+            .any(|b| b.name == name && b.type_name == "input.value")
+    {
+        return Err(format!(
+            "'{name}' is already an output or an input block's name"
+        ));
+    }
+    file.outputs.push(OutputPort {
+        name: name.to_string(),
+        from: from.to_string(),
+        canvas: None,
+    });
+    Ok(format!("Offers {from} as the output {name}"))
+}
+
+/// Rename the model `from` defined in `file` to `to`; its uses in the
+/// file and in its definitions (where the name is not defined again)
+/// follow.
+fn rename_model(file: &mut ModelFile, from: &str, to: &str) -> Result<String, String> {
+    let to = to.trim();
+    if !simsandbox_file::subsystems::valid_name(to) {
+        return Err(format!("'{to}': a model's name is letters, digits and '_'"));
+    }
+    if file.models.contains_key(to) {
+        return Err(format!("a model named '{to}' is already defined"));
+    }
+    let def = file
+        .models
+        .remove(from)
+        .ok_or_else(|| format!("no model named '{from}' is defined here"))?;
+    file.models.insert(to.to_string(), def);
+    fn follow(m: &mut ModelFile, from: &str, to: &str) {
+        for b in &mut m.blocks {
+            if b.model.as_deref() == Some(from) {
+                b.model = Some(to.to_string());
+            }
+        }
+        for (name, v) in m.models.iter_mut() {
+            if let Ok(mut d) = simsandbox_file::compose::read_definition(name, v) {
+                if !d.models.contains_key(from) {
+                    follow(&mut d, from, to);
+                    *v = simsandbox_file::compose::as_definition(&d);
+                }
+            }
+        }
+    }
+    follow(file, from, to);
+    file.resolve_models().map_err(|e| e.to_string())?;
+    Ok(format!("Renamed the model {from} to {to}"))
+}
+
 /// "Make model" (ADR 0068): the selection grouped as a subsystem would
 /// be, then written as a model defined in the file, used in its place on
 /// the same clock.
@@ -2049,14 +1754,6 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
             },
             file.params.clone(),
         ),
-        Scope::Subsystem(s) => {
-            let d = file
-                .subsystems
-                .remove(s)
-                .ok_or_else(|| format!("no subsystem '{s}'"))?;
-            let p = d.params.clone();
-            (d, p)
-        }
     };
     let result = (|| {
         for n in names {
@@ -2064,10 +1761,13 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                 return Err(format!("no block '{n}' here"));
             }
         }
-        let inside = |key: &str| {
-            key.split_once('.')
-                .is_some_and(|(b, _)| names.iter().any(|n| n == b))
+        // `block.port`, or a path into a use (`car1/lead`, ADR 0068).
+        let node_of = |key: &str| key.split(['.', '/']).next().unwrap_or(key).to_string();
+        let port_of = |key: &str| {
+            key.find(['.', '/'])
+                .map_or(key.to_string(), |i| key[i + 1..].to_string())
         };
+        let inside = |key: &str| names.iter().any(|n| *n == node_of(key));
         let instance = if l.blocks.iter().any(|b| b.name == def_name) {
             free_name(&def_name, |n| l.blocks.iter().any(|b| b.name == n))
         } else {
@@ -2113,7 +1813,7 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                     match existing {
                         Some(q) => q.to.push(c.to.clone()),
                         None => {
-                            let base = c.to.split_once('.').map_or("in", |(_, p)| p).to_string();
+                            let base = port_of(&c.to).replace(['/', '.'], "_");
                             let name =
                                 unique(&|n: &str| def.inputs.iter().any(|q| q.name == n), &base);
                             def.inputs.push(InputPort {
@@ -2133,7 +1833,7 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                     let name = match def.outputs.iter().find(|q| q.from == c.from) {
                         Some(q) => q.name.clone(),
                         None => {
-                            let base = c.from.split_once('.').map_or("out", |(_, p)| p).to_string();
+                            let base = port_of(&c.from).replace(['/', '.'], "_");
                             let name =
                                 unique(&|n: &str| def.outputs.iter().any(|q| q.name == n), &base);
                             def.outputs.push(OutputPort {
@@ -2214,9 +1914,6 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
             file.blocks = l.blocks;
             file.connections = l.connections;
         }
-        Scope::Subsystem(s) => {
-            file.subsystems.insert(s.clone(), l);
-        }
     }
     let (instance, def) = result?;
     let count = def.blocks.len();
@@ -2280,19 +1977,6 @@ mod tests {
         }
         assert!(d.height_check());
         assert!(d.nodes.iter().zip(closed).all(|(n, h)| n.height() >= h));
-        // Inside a subsystem: every use's defaults, and which uses set
-        // their own.
-        let mut g = f.clone();
-        g.blocks[2].params.insert("car.c".into(), 70.0.into());
-        let inside = Diagram::of(&g, &Scope::Subsystem("follower".into()), &r);
-        let car = &inside.nodes[inside.node("car").unwrap()];
-        let c = car.values.iter().find(|v| v.name == "c").unwrap();
-        assert_eq!(
-            (c.value, c.overridden.clone()),
-            (50.0, vec!["car2".to_string()])
-        );
-        // `m` is set by a formula: not listed.
-        assert!(car.values.iter().all(|v| v.name != "m"));
         // The running values replace the file's.
         let s = crate::Session::load("p", &f.to_json(), &r).unwrap();
         let mut rows = s.params();
@@ -2531,7 +2215,12 @@ mod tests {
 
     /// The final value of a recorded signal after `t` seconds.
     fn final_value(f: &ModelFile, signal: &str, t: f64) -> f64 {
-        let r = crate::run::run(&f.to_json(), &registry(), Some(t), None).unwrap();
+        let text = f.to_json();
+        if simsandbox_file::compose::is_composition(&text) {
+            let r = crate::compose::run_composition(&text, &registry(), Some(t)).unwrap();
+            return *r.values(signal).unwrap().last().unwrap();
+        }
+        let r = crate::run::run(&text, &registry(), Some(t), None).unwrap();
         let (block, port) = signal.split_once('.').unwrap();
         let _ = block;
         let o = r
@@ -2543,117 +2232,10 @@ mod tests {
     }
 
     #[test]
-    fn subsystems_show_as_one_node_and_open_to_their_inside() {
-        let r = registry();
-        let f = file("Platoon");
-        let d = Diagram::new(&f, &r);
-        let car1 = &d.nodes[d.node("car1").unwrap()];
-        assert_eq!(car1.kind, NodeKind::Subsystem);
-        assert_eq!(car1.type_name, "follower");
-        assert_eq!(car1.inputs[0].name, "lead");
-        assert_eq!(car1.outputs[0].name, "v");
-        // The port carries the unit of the inner port it shows.
-        assert_eq!(car1.outputs[0].unit, "m/s");
-        assert_eq!((d.wires.len(), d.dangling.len()), (3, 0));
-        assert_eq!(d.subsystems, ["follower"]);
-
-        let inside = Diagram::of(&f, &Scope::Subsystem("follower".into()), &r);
-        let names: Vec<&str> = inside.nodes.iter().map(|n| n.name.as_str()).collect();
-        assert_eq!(names, ["car", "control", "in:lead", "out:v"]);
-        assert_eq!((inside.wires.len(), inside.dangling.len()), (4, 0));
-        assert_eq!(inside.used_by, ["car1", "car2", "car3"]);
-        let out = &inside.nodes[inside.node("out:v").unwrap()];
-        assert!(out.at[0] > inside.nodes[0].at[0], "outputs go right");
-    }
-
-    #[test]
-    fn edits_inside_a_subsystem_change_every_use() {
-        let r = registry();
-        let mut f = file("Platoon");
-        let inside = Scope::Subsystem("follower".into());
-        let loads = |f: &ModelFile| crate::Session::load("t", &f.to_json(), &r).map(|_| ());
-        // Rename an input: wires to it everywhere follow.
-        apply_in(
-            &mut f,
-            &inside,
-            &r,
-            &Edit::Rename {
-                from: "in:lead".into(),
-                to: "ahead".into(),
-            },
-        )
-        .unwrap();
-        assert!(f.connections.iter().any(|c| c.to == "car2.ahead"));
-        loads(&f).unwrap();
-        // A new output, fed from the controller's force.
-        apply_in(
-            &mut f,
-            &inside,
-            &r,
-            &Edit::AddPort {
-                input: false,
-                at: [400.0, 0.0],
-            },
-        )
-        .unwrap();
-        loads(&f).unwrap_err();
-        apply_in(
-            &mut f,
-            &inside,
-            &r,
-            &Edit::Connect {
-                from: "control.F".into(),
-                to: "out:out1.out1".into(),
-            },
-        )
-        .unwrap();
-        loads(&f).unwrap();
-        let d = Diagram::new(&f, &r);
-        assert_eq!(d.nodes[d.node("car3").unwrap()].outputs.len(), 2);
-        // Rename an inner block: its flat names in views follow.
-        apply_in(
-            &mut f,
-            &inside,
-            &r,
-            &Edit::Rename {
-                from: "car".into(),
-                to: "body".into(),
-            },
-        )
-        .unwrap();
-        let views = serde_json::to_string(&f.controls.views).unwrap();
-        assert!(views.contains("car2/body.v"), "{views}");
-        loads(&f).unwrap();
-        // Remove the input: the wires into its uses go too, and the inner
-        // input it fed is open.
-        apply_in(
-            &mut f,
-            &inside,
-            &r,
-            &Edit::Delete {
-                block: "in:ahead".into(),
-            },
-        )
-        .unwrap();
-        assert!(!f.connections.iter().any(|c| c.to.ends_with(".ahead")));
-        assert!(loads(&f).unwrap_err().contains("lead"));
-        assert!(apply_in(
-            &mut f,
-            &Scope::Model,
-            &r,
-            &Edit::AddPort {
-                input: true,
-                at: [0.0, 0.0]
-            }
-        )
-        .is_err());
-    }
-
-    #[test]
     fn open_nodes_follow_renames_and_deletions() {
         let r = registry();
         let mut f = file("Platoon");
-        f.controls.open = vec!["car1".into(), "car2".into(), "follower::car".into()];
+        f.controls.open = vec!["car1".into(), "car2".into()];
         let rename = Edit::Rename {
             from: "car1".into(),
             to: "first".into(),
@@ -2667,18 +2249,7 @@ mod tests {
             },
         )
         .unwrap();
-        let inside = Scope::Subsystem("follower".into());
-        let rename = Edit::Rename {
-            from: "car".into(),
-            to: "body".into(),
-        };
-        apply_in(&mut f, &inside, &r, &rename).unwrap();
-        let rename = Edit::RenameSubsystem {
-            from: "follower".into(),
-            to: "car_pi".into(),
-        };
-        apply(&mut f, &r, &rename).unwrap();
-        assert_eq!(f.controls.open, ["first", "car_pi::body"]);
+        assert_eq!(f.controls.open, ["first"]);
     }
 
     #[test]
@@ -2686,69 +2257,106 @@ mod tests {
         let r = registry();
         let before = file("Cruise");
         let v = final_value(&before, "car.v", 5.0);
-        // The controller alone: wires crossing the boundary become ports.
+        // The controller alone: crossing wires become an input block and a
+        // declared output of the model made (ADR 0068).
         let mut f = before.clone();
         let note = apply(
             &mut f,
             &r,
-            &Edit::Group {
+            &Edit::GroupModel {
                 blocks: vec!["cruise".into()],
             },
         )
         .unwrap();
-        assert!(note.contains("group1"), "{note}");
-        let def = &f.subsystems["group1"];
-        assert_eq!(def.inputs[0].name, "v");
+        assert!(note.contains("model1"), "{note}");
+        let def = simsandbox_file::compose::read_definition("model1", &f.models["model1"]).unwrap();
+        assert!(def
+            .blocks
+            .iter()
+            .any(|b| b.name == "v" && b.type_name == "input.value"));
         assert_eq!(def.outputs[0].name, "F");
         assert!(f
             .connections
             .iter()
-            .any(|c| c.from == "car.v" && c.to == "group1.v"));
+            .any(|c| c.from == "car.v" && c.to == "group1/v"));
         assert!(f.controls.params.contains_key("group1/cruise.kp"));
         assert_eq!(final_value(&f, "car.v", 5.0), v);
-        // Both blocks: no ports, the same numbers.
+        // Both blocks: no wires left, the same numbers.
         let mut f = before.clone();
         apply(
             &mut f,
             &r,
-            &Edit::Group {
+            &Edit::GroupModel {
                 blocks: vec!["car".into(), "cruise".into()],
             },
         )
         .unwrap();
         assert!(f.connections.is_empty());
         assert_eq!(final_value(&f, "group1/car.v", 5.0), v);
-        // Instances whose parameters are formulas of the model's: they
-        // come in as the new subsystem's parameters.
+        // Uses whose values are formulas of the model's parameters: they
+        // come in as the new model's parameters.
         let mut p = file("Platoon");
         let v3 = final_value(&p, "car3/car.v", 5.0);
         apply(
             &mut p,
             &r,
-            &Edit::Group {
+            &Edit::GroupModel {
                 blocks: vec!["car1".into(), "car2".into()],
             },
         )
         .unwrap();
-        let def = &p.subsystems["group1"];
+        let def = simsandbox_file::compose::read_definition("model1", &p.models["model1"]).unwrap();
         assert!(def.params.contains_key("kp") && def.params.contains_key("ki"));
         assert_eq!(
             p.blocks.last().unwrap().params["kp"],
             ParamValue::Formula("kp".into())
         );
         assert_eq!(final_value(&p, "car3/car.v", 5.0), v3);
-        // And a subsystem can be renamed.
+        // And a model can be renamed: its uses follow, inside others too.
         apply(
             &mut p,
             &r,
-            &Edit::RenameSubsystem {
+            &Edit::RenameModel {
                 from: "follower".into(),
                 to: "chaser".into(),
             },
         )
         .unwrap();
-        assert!(p.blocks.iter().any(|b| b.type_name == "chaser"));
+        assert!(p
+            .blocks
+            .iter()
+            .any(|b| b.model.as_deref() == Some("chaser")));
+        assert!(p.models["model1"].to_string().contains("chaser"));
         assert_eq!(final_value(&p, "car3/car.v", 5.0), v3);
+        // Outputs offered and withdrawn.
+        apply(
+            &mut p,
+            &r,
+            &Edit::DeclareOutput {
+                name: "speed".into(),
+                from: "leader.v".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(p.outputs[0].from, "leader.v");
+        assert!(apply(
+            &mut p,
+            &r,
+            &Edit::DeclareOutput {
+                name: "speed".into(),
+                from: "leader.v".into()
+            }
+        )
+        .is_err());
+        apply(
+            &mut p,
+            &r,
+            &Edit::RemoveOutput {
+                name: "speed".into(),
+            },
+        )
+        .unwrap();
+        assert!(p.outputs.is_empty());
     }
 
     #[test]

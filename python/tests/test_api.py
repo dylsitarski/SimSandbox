@@ -107,6 +107,9 @@ def test_every_example_loads_runs_briefly_and_round_trips():
         assert again.data == m.data
         swept = "sample" in m.data
         r = m.run() if swept else m.run(t_end=10 * m.data.get("run", {}).get("dt", 0.01))
+        if isinstance(r, ss.Composed):
+            # A model using models (ADR 0068): its first model's results.
+            r = r.model(next(iter(r.models)))
         assert r.rows > 0 and all(math.isfinite(x) for x in next(iter(r.index.values())))
 
 
@@ -139,18 +142,18 @@ def test_start_from_continues_from_a_reached_state():
     assert grazing.check()["ok"]
 
 
-def test_subsystems_and_model_parameters():
+def test_models_defined_in_the_file_and_model_parameters():
     platoon = ss.Model.example("Platoon")
     report = platoon.check()
-    assert report["subsystems"][0]["used_by"] == ["car1", "car2", "car3"]
+    assert report["definitions"]["follower"]["uses"] == ["car1", "car2", "car3"]
     kp = next(p for p in report["params"] if p["key"] == "car2/control.kp")
     assert kp["formula"] == "kp"
     platoon.set("kp", 800.0)
     r = platoon.run(t_end=1.0)
     assert r["car3/car.v"].shape == (21,)
-    assert platoon.render(diagram=True, subsystem="follower", width=300, height=200)[1:4] == b"PNG"
-    with pytest.raises(ss.ModelError, match="no subsystem"):
-        platoon.render(diagram=True, subsystem="nope")
+    assert platoon.render(diagram=True, inside="car1", width=300, height=200)[1:4] == b"PNG"
+    with pytest.raises(ss.ModelError, match="no model used as 'nope'"):
+        platoon.render(diagram=True, inside="nope")
 
     # Q30: one field size for grass and sheep, then the sheep grouped.
     g = ss.Model.example("grazing")
@@ -158,10 +161,10 @@ def test_subsystems_and_model_parameters():
     g.set("grass.size", "size").set("sheep.size", "size")
     assert {p["key"]: p["value"] for p in g.params()}["sheep.size"] == 60
     note = g.group(["sheep"])
-    assert "group1" in note
-    assert g.data["subsystems"]["group1"]["params"]["size"]["value"] == 60
+    assert "model1" in note
+    assert g.data["models"]["model1"]["params"]["size"]["value"] == 60
     assert g.check()["ok"]
-    assert g.run(t_end=0.5).rows == 6
+    assert len(g.run(t_end=0.5).t(".")) == 6
 
 
 def test_older_files_open_and_upgrade():

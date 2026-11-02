@@ -169,6 +169,7 @@ impl DiagramTab {
     ) -> Vec<Outcome> {
         let mut out = Vec::new();
         let mut back = None;
+        let mut renamed = None;
         ui.horizontal(|ui| {
             if ui
                 .link("Model")
@@ -192,13 +193,44 @@ impl DiagramTab {
                     ui.weak(format!("· editing {}", f.display()));
                 }
                 Some(_) => {
-                    ui.weak("· editing a local copy in this model");
+                    ui.weak("· editing a model defined in this file");
                 }
                 None => {
                     ui.weak("· a used model: the first edit asks where it goes");
                 }
             }
+            // A model defined in this file is renamed here; its uses
+            // follow (ADR 0068).
+            let defined = match self.inside.as_slice() {
+                [name] => model
+                    .file
+                    .blocks
+                    .iter()
+                    .find(|b| &b.name == name)
+                    .and_then(|b| b.model.clone()),
+                _ => None,
+            };
+            if let Some(def) = defined {
+                if self.rename.is_empty() {
+                    self.rename = def.clone();
+                }
+                ui.label("model");
+                let field =
+                    ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(100.0));
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.small_button("Rename").clicked() || enter) && self.rename.trim() != def {
+                    renamed = Some(Edit::RenameModel {
+                        from: def,
+                        to: self.rename.trim().to_string(),
+                    });
+                }
+            }
         });
+        if let Some(e) = renamed {
+            self.rename.clear();
+            self.inside_cache = None;
+            return self.handle(vec![e], registry, current);
+        }
         if let Some(k) = back {
             self.inside.truncate(k);
             self.inside_cache = None;
@@ -238,15 +270,19 @@ impl DiagramTab {
         let (_, d) = self.inside_cache.as_mut().expect("built above");
         d.live_values(&rows);
         let (edits, requests) = self.canvas.show(ui, d, registry, true);
-        let opened = requests.into_iter().find_map(|r| match r {
-            Request::Open(name)
-                if d.node(&name)
-                    .is_some_and(|k| d.nodes[k].kind == NodeKind::Use) =>
-            {
-                Some(name)
+        let mut opened = None;
+        for r in requests {
+            if let Request::Open(name) = r {
+                match d.node(&name).map(|k| d.nodes[k].kind) {
+                    Some(NodeKind::Use) => opened = Some(name),
+                    // A block's equations, edited where it is (ADR 0068).
+                    Some(NodeKind::Block) => {
+                        out.push(Outcome::Open(format!("{}::{name}", self.inside.join("/"))))
+                    }
+                    _ => {}
+                }
             }
-            _ => None,
-        });
+        }
         if !edits.is_empty() {
             out.extend(self.begin_edit(edits, registry, current));
         }
@@ -632,53 +668,6 @@ impl DiagramTab {
             Some((f, _)) => f,
             None => &model.file,
         };
-        // A subsystem that is gone (renamed, or not in a new model).
-        if let Scope::Subsystem(s) = &self.scope {
-            if !source.subsystems.contains_key(s) {
-                self.scope = Scope::Model;
-                self.cache = None;
-                self.canvas.refit();
-            }
-        }
-        if let Scope::Subsystem(s) = self.scope.clone() {
-            if self.rename.is_empty() {
-                self.rename = s.clone();
-            }
-            let uses = simsandbox_session::diagram::uses(source, &s);
-            ui.horizontal(|ui| {
-                if ui
-                    .link("Model")
-                    .on_hover_text("Back to the whole model")
-                    .clicked()
-                {
-                    self.scope = Scope::Model;
-                    self.cache = None;
-                    self.canvas.refit();
-                }
-                ui.label("›");
-                ui.strong(&s).on_hover_text(if uses.is_empty() {
-                    "Blocks and wires drawn here apply to every use of this subsystem".to_string()
-                } else {
-                    format!(
-                        "Blocks and wires drawn here apply to every use ({}); each use keeps \
-                         its own values, set in the inspector",
-                        uses.join(", ")
-                    )
-                });
-                let field =
-                    ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(100.0));
-                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.small_button("Rename").clicked() || enter) && self.rename != s {
-                    edits.push(Edit::RenameSubsystem {
-                        from: s.clone(),
-                        to: self.rename.trim().to_string(),
-                    });
-                }
-                if uses.is_empty() {
-                    ui.weak("not used yet");
-                }
-            });
-        }
         if self.cache.as_ref().is_some_and(|d| d.scope != self.scope) {
             self.cache = None;
         }
@@ -899,21 +888,7 @@ impl DiagramTab {
                     self.canvas.refit();
                     return out;
                 }
-                // A subsystem opens to its inside.
-                Some(n) if n.kind == NodeKind::Subsystem => {
-                    self.scope = Scope::Subsystem(n.type_name.clone());
-                    self.rename = n.type_name.clone();
-                    self.cache = None;
-                    self.canvas.selected = None;
-                    self.canvas.refit();
-                    return out;
-                }
-                Some(n) if n.kind == NodeKind::Block => {
-                    out.push(Outcome::Open(match &self.scope {
-                        Scope::Model => name,
-                        Scope::Subsystem(s) => format!("{s}::{name}"),
-                    }))
-                }
+                Some(n) if n.kind == NodeKind::Block => out.push(Outcome::Open(name)),
                 _ => {}
             }
         }
@@ -1019,10 +994,7 @@ impl DiagramTab {
             self.undo.push(here);
         }
         let next = canvas_state(&now, &snap.file);
-        self.scope = match snap.scope {
-            Scope::Subsystem(s) if !next.subsystems.contains_key(&s) => Scope::Model,
-            s => s,
-        };
+        self.scope = snap.scope;
         self.cache = None;
         self.canvas.selected = None;
         let word = if back { "Undone" } else { "Redone" };
@@ -1187,12 +1159,7 @@ impl DiagramTab {
         let mut notes = Vec::new();
         for e in &changes {
             match apply_in(&mut file, &scope, registry, e) {
-                Ok(note) => {
-                    notes.push(note);
-                    if let Edit::RenameSubsystem { to, .. } = e {
-                        self.scope = Scope::Subsystem(to.clone());
-                    }
-                }
+                Ok(note) => notes.push(note),
                 Err(err) => out.push(Outcome::Error(err)),
             }
         }

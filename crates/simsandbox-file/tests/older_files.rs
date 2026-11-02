@@ -62,7 +62,11 @@ fn the_examples_are_in_the_current_form() {
     for e in std::fs::read_dir(dir).unwrap() {
         let path = e.unwrap().path();
         let text = std::fs::read_to_string(&path).unwrap();
-        let loaded = load(&text, &registry()).unwrap();
+        let loaded = if simsandbox_file::compose::is_composition(&text) {
+            simsandbox_file::compose::load_merged(&text, &registry(), None).unwrap()
+        } else {
+            load(&text, &registry()).unwrap()
+        };
         assert!(
             loaded.conversions.is_empty(),
             "{}: {:?}",

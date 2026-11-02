@@ -61,7 +61,12 @@ fn examples_load_without_warnings() {
         PLATOON,
         UNITS,
     ] {
-        let loaded = load(text, &registry()).unwrap();
+        // A model that uses models (ADR 0068) loads as the app loads it.
+        let loaded = if simsandbox_file::compose::is_composition(text) {
+            simsandbox_file::compose::load_merged(text, &registry(), None).unwrap()
+        } else {
+            load(text, &registry()).unwrap()
+        };
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
         Simulator::new(loaded.model, 0.0).unwrap();
     }
@@ -469,11 +474,11 @@ fn schema_is_valid_json_and_lists_the_file_fields() {
             "format",
             "fusion",
             "groups",
+            "models",
             "outputs",
             "params",
             "run",
-            "sample",
-            "subsystems"
+            "sample"
         ]
     );
     assert_eq!(schema["properties"]["format"]["const"], 1);

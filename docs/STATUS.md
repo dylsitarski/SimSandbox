@@ -25,10 +25,11 @@ _Last updated: 2026-11-02_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 401 tests in the workspace plus 21 Python tests, including verification against analytic solutions and convergence order.
+- 399 tests in the workspace plus 21 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-11-02: ADR 0068 step 3: subsystems removed (refused on reading; none were saved); Platoon defines its follower; diagram, canvas and app without subsystem scopes and nodes; offered outputs and renaming in the editor; the equation editor inside used models; errors inside used models where written; `render --inside`, Python `render(inside=)`, `group` making a model. ADR 0043's subsystems superseded.
 - 2026-11-02: ADR 0068 step 2: definitions in the diagram and the app: use nodes, the edit question for definitions (used once: no question), "Make model", moving a definition to its own file and back; replacing `Scope::Subsystem` by paths moved to step 3.
 - 2026-11-02: ADR 0069 (repetition and recursion belong in blocks; Q50) decided with the owner.
 - 2026-11-02: ADR 0068 (one kind of nested model; Q49) written; step 1 built: models defined in the file (`models`, `model` uses), lookup, default clock by wiring and `run.dt`, `starts` on uses, local copies as definitions, `check` `definitions`, Python `define`; the subsystem conversion written (not yet applied on reading).
@@ -135,12 +136,11 @@ _Last updated: 2026-11-02_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **One kind of nested model** ([ADR 0068](decisions/0068-one-kind-of-nested-model.md)), in order (steps 1 and 2 done 2026-11-02): (3) older `subsystems` converted on reading (`compose::convert_subsystems`, same bits), the Platoon example, names, headless renames (`render --inside`, Python `group` making a definition), `Scope::Subsystem` replaced by paths of uses; then the subsystem code goes.
+1. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 4c done 2026-11-02): (4d) expanding uses in place, one level at a time; (5) the recorder and rewind per clock with recorded link values, run files; (6) several cores between instants.
 2. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)): Duplicate on the canvas; array parameters and neighbours by index, checked by the Platoon as one array block; network grids when a model needs them.
-3. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 4c done 2026-11-02): (4d, after ADR 0068) expanding uses and subsystems in place, one level at a time; (5) the recorder and rewind per clock with recorded link values, run files; (6) several cores between instants.
-4. **Experiments and time from data** ([ADR 0067](decisions/0067-experiments-and-time-from-data.md)), in order (step 1 done 2026-11-02): (2) the experiment over any model (points by path, designs incl. `file`, final values by default, `keep: "series"`, seeds and replicates, several cores); (3) `reduce` formulas; (4) time from data (`input.file` sample times, `clock: {"times": …}`, the end of a data-driven run); (5) adaptive experiments, own ADR.
-5. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
-6. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
+3. **Experiments and time from data** ([ADR 0067](decisions/0067-experiments-and-time-from-data.md)), in order (step 1 done 2026-11-02): (2) the experiment over any model (points by path, designs incl. `file`, final values by default, `keep: "series"`, seeds and replicates, several cores); (3) `reduce` formulas; (4) time from data (`input.file` sample times, `clock: {"times": …}`, the end of a data-driven run); (5) adaptive experiments, own ADR.
+4. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
+5. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
 
@@ -172,6 +172,7 @@ In priority order. Each item should end with tests and updated docs.
   - A value given by formula to a model on its own clock is taken once, when the model is built. Values that change during a run reach such a model through a probe link.
   - Probes in such models only feed links: no recordings, files or `run --probe`. `run --dt`, `--inputs`, `--probe` and `--save-probes` are refused (ADR 0066 step 5).
   - In the app a model on new data is evaluated at every instant (values agree with the headless runner at deliveries unless its formulas read `t`); used models are edited in the app at their own top level only (not inside their subsystems); Save As to another folder does not rebase the files the model names. A port shown from a use's list is forgotten on reload.
+  - Open nodes inside used models are not saved by path. A model defined in a file that no use names is read but not built, so a problem inside it shows once it is used.
 
 ## Blockers
 

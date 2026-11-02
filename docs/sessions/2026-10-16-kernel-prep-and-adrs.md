@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0068 step 3: `subsystems` refused (`compose::with_subsystems` for the loader's own), schema, Platoon rewritten, `Loader::inside_error` and `compose::nest`; `Scope` = Model only, subsystem nodes/edits removed; `Edit::DeclareOutput`/`RemoveOutput`/`RenameModel`/`SetEquations`; `group` understands paths; use nodes show their values; declared outputs carry `output.*`; `render --inside`; Python `render(inside=)`, `group`; tests ported.
 - 2026-11-02: ADR 0069 written (Q50). ADR 0068 step 2: `Asking`/`begin_edit` and definition wording in the question; `Edit::GroupModel`/`group_model`, `compose::convert_some_subsystems`; `edit_use::uses_of`, `definition_to_file`, `file_to_definition`; canvas `Request::MoveToFile`/`PutInFile`; app `move_use`. Tests headless and in the app.
 - 2026-11-02: ADR 0068 written (Q49 resolved) and step 1 built: `ModelFile::models`, `BlockEntry::model`/`resolved`, `compose::resolve_models`/`read_definition`/`as_definition`/`runs_shared`/`wired`/`set_starts`/`convert_subsystems`, `RunSettings::dt_written` and conditional `dt`; `edit_use` rewritten for definitions; `check` `definitions`; Python `define`. Tests incl. Platoon converted = same bits.
 - 2026-11-02: ADR 0066 step 4c, third part: `diagram::use_end`, `connect_uses` (wire or probe link by clock), `disconnect_use`; `Edit::AddUse`, `Request::AddModel` and the app's file chooser. Step 4c done.
@@ -113,6 +114,7 @@
 
 ## Decided
 
+- 2026-11-02 (owner): no saved file has subsystems, so ADR 0068 step 3 refuses them instead of converting.
 - 2026-11-02 (owner): repetition and recursion of structure belong in blocks (ADR 0069): no self-use; arrays gain parameters, neighbours by index and network grids as models need them; Duplicate on the canvas; `count` on uses waits.
 - 2026-11-02 (owner): one kind of nested model (ADR 0068): subsystems become models defined in the file. As built, the default clock was narrowed: a wired model without `run.dt` shares; otherwise ADR 0066 holds (own clock with states, on new data without), since saved files always wrote `run.dt` and ADR 0067 keeps models without states on new data.
 - 2026-11-02: a local copy is written in the use as `model` (the used file's contents), not as a subsystem: a subsystem shares its model's clock and cannot hold models on their own clocks, probes or declared outputs.
@@ -185,7 +187,7 @@
 ## Notes for the next session
 
 - 2026-11-02: the owner asked whether compositions and models could be one recursive kind of file (Q45); recommended yes (uses in `blocks`, a clock per use); waiting for the owner before ADR 0065 step 2.
-- ADR 0068 step 3 next (convert `subsystems` on reading; `convert_subsystems` exists and gives the Platoon's bits), then ADR 0066 step 4d (expand in place, one level at a time), then step 5 (rewind per clock, run files). Earlier note, done: editing used models (the edit question: make a subsystem copy or edit the file; saving several files; a probe added when wiring across clocks; Add model…). Ports shown from a use's list are not saved; decide in 4c whether the file should keep them. The headless runner (`compose::run_composition`) and the merged kernel both exist; once on-data evaluation in the kernel matches the runner, the CLI and Python could run through the kernel too.
+- ADR 0066 step 4d next (expand in place, one level at a time), then ADR 0069 (Duplicate; array parameters and neighbours by index, checked by the Platoon as one array block). Open nodes inside used models are not yet saved by path. Earlier: ADR 0068 step 3 then ADR 0066 step 4d (expand in place, one level at a time), then step 5 (rewind per clock, run files). Earlier note, done: editing used models (the edit question: make a subsystem copy or edit the file; saving several files; a probe added when wiring across clocks; Add model…). Ports shown from a use's list are not saved; decide in 4c whether the file should keep them. The headless runner (`compose::run_composition`) and the merged kernel both exist; once on-data evaluation in the kernel matches the runner, the CLI and Python could run through the kernel too.
 - ADR 0065 is Proposed: wait for the owner's answers to its open points (Q44) before building step 1 of its order of work.
 - ADR 0063 step 5 next (several models in one session, own ADR first). `input.file` has not been tried in the window; Q42 (units in probe CSV headers) and Q43 (re-reading changed files) are open.
 - ADR 0063 step 4 next: a block reading a probe's file (or any CSV or `.npy`) as an input over time; it also serves external data (ADR 0048). The owner has not yet tried probes in the window.

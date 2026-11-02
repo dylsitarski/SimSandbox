@@ -362,6 +362,22 @@ struct Loader<'a> {
     /// ([`load_merged`]), instead of loading uses on their own clocks as
     /// models apart.
     merge: bool,
+    /// The subsystems made for uses on a shared clock, by name: where the
+    /// model is written and its blocks' names as written, to report
+    /// problems inside it where they are written (ADR 0068).
+    inlined: BTreeMap<String, Written>,
+}
+
+/// Where a model put in place as a subsystem is written.
+struct Written {
+    /// `models.NAME` for a definition; else the use and its file.
+    at: WrittenAt,
+    blocks: Vec<String>,
+}
+
+enum WrittenAt {
+    Definition(String),
+    File { at: String, shown: String },
 }
 
 /// Read and build a model that uses model files, saved in `folder` (or the
@@ -391,6 +407,7 @@ pub fn load_composition(
         warnings,
         stack: Vec::new(),
         merge: false,
+        inlined: BTreeMap::new(),
     };
     l.level(&file, "", folder.as_deref(), None, file.run.dt, false)?;
     let mut clocks = Vec::new();
@@ -459,6 +476,7 @@ pub fn load_merged(
         warnings: Vec::new(),
         stack: Vec::new(),
         merge: true,
+        inlined: BTreeMap::new(),
     };
     let mut merged = file.clone();
     let (_, _, mut aliases) = l.inline_shared(&mut merged, "", folder.as_deref())?;
@@ -490,14 +508,18 @@ pub fn load_merged(
             *r = flat(r);
         }
     }
-    merged.run.dt = c
+    let shortest = c
         .domains
         .iter()
         .filter(|d| !d.on_data)
         .map(|d| d.dt)
         .fold(f64::INFINITY, f64::min);
-    let mut loaded = load_in(&merged.to_json(), registry, folder.as_deref())?;
-    let clocks: Vec<simsandbox_core::graph::Clock> = c
+    // With nothing in time, the file's own step paces it.
+    if shortest.is_finite() {
+        merged.run.dt = shortest;
+    }
+    let mut loaded = with_subsystems(|| load_in(&merged.to_json(), registry, folder.as_deref()))?;
+    let mut clocks: Vec<simsandbox_core::graph::Clock> = c
         .domains
         .iter()
         .enumerate()
@@ -507,6 +529,15 @@ pub fn load_merged(
             on_data: d.on_data,
         })
         .collect();
+    // With nothing in time (ADR 0067), the app evaluates every model at
+    // each step of the file's own: its values do not change.
+    if clocks.iter().all(|k| k.on_data) {
+        clocks.fill(simsandbox_core::graph::Clock {
+            dt: merged.run.dt,
+            every: 1,
+            on_data: false,
+        });
+    }
     let mut clock_of = Vec::new();
     for id in loaded.model.block_ids() {
         let name = loaded
@@ -552,6 +583,24 @@ fn digest(bytes: &[u8]) -> String {
     let d = Sha256::digest(bytes);
     let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
     format!("sha256:{hex}")
+}
+
+thread_local! {
+    /// Whether files read on this thread may hold `subsystems`: only the
+    /// loader's own, which flattens shared uses through them.
+    static SUBSYSTEMS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` reading the loader's own files, which hold subsystems.
+fn with_subsystems<R>(f: impl FnOnce() -> R) -> R {
+    let before = SUBSYSTEMS.with(|s| s.replace(true));
+    let r = f();
+    SUBSYSTEMS.with(|s| s.set(before));
+    r
+}
+
+pub(crate) fn subsystems_allowed() -> bool {
+    SUBSYSTEMS.with(std::cell::Cell::get)
 }
 
 thread_local! {
@@ -699,7 +748,7 @@ pub(crate) fn resolve_models(
         stack.push(name.clone());
         let inner = resolve_models(&mut m, &scope, stack);
         stack.pop();
-        inner.map_err(|e| invalid(format!("models.{name}"), e))?;
+        inner.map_err(|e| nest(&format!("models.{name}"), e))?;
         b.resolved = Some(Box::new(m));
     }
     Ok(())
@@ -829,7 +878,16 @@ fn definition(name: &str, v: &serde_json::Value) -> Result<ModelFile, FileError>
     }
     ModelFile::from_json_unresolved(&v.to_string())
         .map(|(m, _)| m)
-        .map_err(|e| invalid(&at, e))
+        .map_err(|e| nest(&at, e))
+}
+
+/// `e`, found inside what is written at `prefix`, at its full path.
+fn nest(prefix: &str, e: FileError) -> FileError {
+    match e {
+        FileError::Invalid { path, message } if path.is_empty() => invalid(prefix, message),
+        FileError::Invalid { path, message } => invalid(format!("{prefix}.{path}"), message),
+        e => invalid(prefix, e),
+    }
 }
 
 /// Put a use's start states (`starts`, by the path of the inner block;
@@ -1235,6 +1293,42 @@ fn written_at(e: FileError, blocks: &[usize], connections: &[usize]) -> FileErro
 }
 
 impl Loader<'_> {
+    /// A problem inside a model put in place on a shared clock, reported
+    /// where it is written: `models.follower.blocks[0].equations`, or the
+    /// use of a file with the file's path (ADR 0068).
+    fn inside_error(&self, e: FileError, built: &ModelFile) -> FileError {
+        let FileError::Invalid { path, message } = &e else {
+            return e;
+        };
+        let Some(rest) = path.strip_prefix("subsystems.") else {
+            return e;
+        };
+        let (def, rest) = rest.split_once('.').unwrap_or((rest, ""));
+        let Some(w) = self.inlined.get(def) else {
+            return e;
+        };
+        // `blocks[i]` of the subsystem: the block of that name as written.
+        let rest = (|| {
+            let tail = rest.strip_prefix("blocks[")?;
+            let (i, tail) = tail.split_once(']')?;
+            let name = &built
+                .subsystems
+                .get(def)?
+                .blocks
+                .get(i.parse::<usize>().ok()?)?
+                .name;
+            let j = w.blocks.iter().position(|b| b == name)?;
+            Some(format!("blocks[{j}]{tail}"))
+        })()
+        .unwrap_or_else(|| rest.to_string());
+        match &w.at {
+            WrittenAt::Definition(m) => invalid(format!("models.{m}.{rest}"), message),
+            WrittenAt::File { at, shown } => {
+                invalid(at.clone(), format!("{shown}: {rest}: {message}"))
+            }
+        }
+    }
+
     /// Load one model at `path` (its own blocks as a domain, then each
     /// use, then its links) and return what its names resolve to.
     fn level(
@@ -1326,8 +1420,10 @@ impl Loader<'_> {
             if !path.is_empty() {
                 f.run.seed = Some(seed_for(self.seed, path));
             }
-            let loaded = load_in(&f.to_json(), self.registry, folder)
-                .map_err(|e| written_at(e, &own, &inside))?;
+            let loaded = match with_subsystems(|| load_in(&f.to_json(), self.registry, folder)) {
+                Ok(l) => l,
+                Err(e) => return Err(self.inside_error(written_at(e, &own, &inside), &f)),
+            };
             // A model without states runs on new data, unless its use
             // gives it a clock: then it is evaluated at each step.
             let on_data = loaded.plan.is_some() && !clocked;
@@ -1545,6 +1641,7 @@ impl Loader<'_> {
                 })
                 .collect();
             moving.extend(inner_lifted);
+            let written_blocks: Vec<String> = child.blocks.iter().map(|b| b.name.clone()).collect();
             child.blocks.retain(|b| !b.is_use());
             let own_clock: Vec<String> = moving.iter().map(|m| m.name.clone()).collect();
             let own_clock: Vec<&str> = own_clock.iter().map(String::as_str).collect();
@@ -1679,6 +1776,19 @@ impl Loader<'_> {
             }
             rename(&mut child.blocks);
             let def = unique(&u.name, &file.subsystems);
+            self.inlined.insert(
+                def.clone(),
+                Written {
+                    at: match &u.model {
+                        Some(m) => WrittenAt::Definition(m.clone()),
+                        None => WrittenAt::File {
+                            at: at.clone(),
+                            shown: shown.clone(),
+                        },
+                    },
+                    blocks: written_blocks,
+                },
+            );
             let declared = std::mem::take(&mut child.outputs);
             file.subsystems.insert(
                 def.clone(),

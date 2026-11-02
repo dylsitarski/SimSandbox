@@ -116,6 +116,15 @@ pub fn check(text: &str, registry: &Registry) -> Value {
             .flat_map(|b| b.files.iter().map(move |(k, f)| (format!("{}/{k}", b.name), f.clone())))
             .collect::<std::collections::BTreeMap<_, _>>(),
         "definitions": definitions(&c.file),
+        // Every parameter by full name, as the app lists them (ADR 0068).
+        "params": crate::Session::load_in("check", text, registry, None, true)
+            .map(|s| {
+                s.params()
+                    .iter()
+                    .map(|p| json!({"key": p.key, "value": p.value, "formula": p.formula, "unit": p.unit}))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
         "models": models,
         "links": links,
         "tick": c.ticks.seconds(),
@@ -1122,46 +1131,24 @@ mod tests {
         assert_eq!(f.blocks[0].canvas, Some([10.0, 20.0]));
         let c = check_in(&dir, &serde_json::from_str(&f.to_json()).unwrap());
         assert_eq!(c["ok"], true, "{c}");
-        let inside = apply_in(
-            &mut f,
-            &Scope::Subsystem("s".into()),
-            &r,
-            &Edit::AddUse {
-                file: "car.ssbx.json".into(),
-                at: [0.0, 0.0],
-            },
-        );
-        assert!(inside.is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn a_subsystem_written_as_a_model_defined_in_the_file_runs_the_same() {
-        let text = EXAMPLES
+    fn the_platoon_uses_one_model_defined_in_the_file() {
+        let written = EXAMPLES
             .iter()
             .find(|e| e.name.contains("Platoon"))
             .unwrap()
             .text;
-        let (mut file, _) = simsandbox_file::ModelFile::from_json(text).unwrap();
-        assert!(simsandbox_file::compose::convert_subsystems(&mut file));
-        let written = file.to_json();
         assert!(written.contains("\"models\"") && !written.contains("\"subsystems\""));
-        assert!(written.contains("\"model\": \"follower\"") && written.contains("\"car1/lead\""));
-        // Read back as written: one clock, wired through the input blocks.
-        let (again, _) = simsandbox_file::ModelFile::from_json(&written).unwrap();
-        assert_eq!(again.to_json(), written);
-        let one = crate::run::run(text, &registry(), Some(20.0), None).unwrap();
-        let two = run_composition(&written, &registry(), Some(20.0)).unwrap();
+        // One clock, wired through the input blocks. (Its bits equal the
+        // subsystem it was, tested before subsystems were removed.)
+        let two = run_composition(written, &registry(), Some(20.0)).unwrap();
         assert_eq!(two.models.len(), 1, "one clock");
-        for name in ["car1/car.v", "car2/car.v", "car3/control.I"] {
-            assert_eq!(
-                bits(series(&one, name)),
-                bits(two.values(name).unwrap()),
-                "{name}"
-            );
-        }
+        assert!(two.values("car3/control.I").is_some());
         // check lists the definition, its ports and its uses.
-        let c = check(&written, &registry());
+        let c = check(written, &registry());
         assert_eq!(c["ok"], true, "{c}");
         assert_eq!(c["definitions"]["follower"]["inputs"], json!(["lead"]));
         assert_eq!(
@@ -1169,7 +1156,7 @@ mod tests {
             json!(["car1", "car2", "car3"])
         );
         // The session runs it as the app would.
-        let s = crate::Session::load_in("p", &written, &registry(), None, true).unwrap();
+        let s = crate::Session::load_in("p", written, &registry(), None, true).unwrap();
         assert!(s.signals().resolve("car3/car.v").is_some());
     }
 
@@ -2427,7 +2414,9 @@ mod tests {
         let wired = diagram(&json!({"format": 1,
             "blocks": [use_of("plant", "car.ssbx.json")],
             "controls": {"probes": [{"name": "p", "record": ["plant/car.v"]}]}}));
-        assert_eq!(names(&wired.nodes[0].outputs), ["speed", "car.v"]);
+        // Wired by an inner name its declared output shows: drawn from
+        // that port, nothing more revealed.
+        assert_eq!(names(&wired.nodes[0].outputs), ["speed"]);
         // A port chosen from the list joins the node; the rest stay listed.
         let mut canvas = crate::canvas::Canvas::default();
         canvas

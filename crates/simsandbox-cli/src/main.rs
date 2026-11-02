@@ -16,7 +16,7 @@
 //! simsandbox schema [run]           (the model file's, or a run file's, JSON Schema)
 //! simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--inputs RUN]
 //!                   [--width POINTS] [--height POINTS] [--scale S] [--light]
-//!                   [--diagram [--subsystem NAME] [--no-data] [--values]]  (the block diagram instead of the views)
+//!                   [--diagram [--inside PATH] [--no-data] [--values]]  (the block diagram instead of the views; --inside: a used model's inside)
 //! simsandbox start-from FILE --t SECONDS [--out NEW.json]
 //!                                   (the model file that starts from the state at t)
 //! simsandbox upgrade FILE [--out NEW.json]
@@ -47,7 +47,7 @@ const USAGE: &str = "usage:
   simsandbox check FILE
   simsandbox describe [TYPE | units]
   simsandbox schema [run]
-  simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--inputs RUN] [--width POINTS] [--height POINTS] [--scale S] [--light] [--diagram [--subsystem NAME] [--no-data] [--values]]
+  simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--inputs RUN] [--width POINTS] [--height POINTS] [--scale S] [--light] [--diagram [--inside PATH] [--no-data] [--values]]
   simsandbox start-from FILE --t SECONDS [--out NEW.json]
   simsandbox upgrade FILE [--out NEW.json]
   simsandbox lorenz [--t-end SECONDS] [--dt SECONDS] [--method euler|rk4|dopri5] [--rho VALUE]";
@@ -453,6 +453,7 @@ fn render_file(args: &[String]) -> Result<(), String> {
             "--light",
             "--diagram",
             "--subsystem",
+            "--inside",
             "--no-data",
             "--values",
             "--inputs",
@@ -464,8 +465,8 @@ fn render_file(args: &[String]) -> Result<(), String> {
     let size = |flag: &str, default: f32| -> Result<f32, String> {
         Ok(flags.positive(flag)?.map_or(default, |v| v as f32))
     };
-    if flags.has("--subsystem") && !flags.has("--diagram") {
-        return Err("--subsystem draws a subsystem's diagram: add --diagram".into());
+    if (flags.has("--inside") || flags.has("--subsystem")) && !flags.has("--diagram") {
+        return Err("--inside draws a used model's diagram: add --diagram".into());
     }
     if flags.has("--values") && !flags.has("--diagram") {
         return Err("--values shows values on the diagram: add --diagram".into());
@@ -483,7 +484,11 @@ fn render_file(args: &[String]) -> Result<(), String> {
             scale: size("--scale", defaults.scale)?,
             view: None,
             light: flags.has("--light"),
-            subsystem: flags.get("--subsystem").map(str::to_string),
+            // `--subsystem` is the older name (ADR 0068).
+            inside: flags
+                .get("--inside")
+                .or_else(|| flags.get("--subsystem"))
+                .map(str::to_string),
             data: !flags.has("--no-data"),
             values: flags.has("--values"),
         };
@@ -520,7 +525,7 @@ fn render_file(args: &[String]) -> Result<(), String> {
             })
             .transpose()?,
         light: flags.has("--light"),
-        subsystem: None,
+        inside: None,
         data: false,
         values: false,
     };

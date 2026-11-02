@@ -3651,6 +3651,11 @@ mod subsystem_tests {
     use crate::examples::{registry, EXAMPLES};
     use simsandbox_file::ParamValue;
 
+    /// The model the cars use, as the file defines it (ADR 0068).
+    fn follower(f: &ModelFile) -> ModelFile {
+        simsandbox_file::compose::read_definition("follower", &f.models["follower"]).unwrap()
+    }
+
     fn platoon() -> Session {
         let e = EXAMPLES
             .iter()
@@ -3706,10 +3711,7 @@ mod subsystem_tests {
         let car1 = &f.blocks[1].params;
         assert_eq!(car1["car.c"], ParamValue::Number(80.0));
         assert_eq!(car1.len(), 4, "{car1:?}");
-        assert_eq!(
-            f.subsystems["follower"].blocks[0].params["c"],
-            ParamValue::Number(50.0)
-        );
+        assert_eq!(follower(&f).blocks[0].params["c"], ParamValue::Number(50.0));
         let again = Session::load("again", &text, &registry()).unwrap();
         assert_eq!(
             again.sim.model().param(again.ids["car1/car"], "c").unwrap(),
@@ -3735,10 +3737,7 @@ mod subsystem_tests {
         let (f, _) = ModelFile::from_json(&text).unwrap();
         // The cars' initial speeds are parameters, set for each instance.
         assert_eq!(f.blocks[3].params["car.v0"], ParamValue::Number(v[0]));
-        assert_eq!(
-            f.subsystems["follower"].blocks[0].params["v0"],
-            ParamValue::Number(0.0)
-        );
+        assert_eq!(follower(&f).blocks[0].params["v0"], ParamValue::Number(0.0));
         let again = Session::load("again", &text, &registry()).unwrap();
         assert_eq!(again.sim.state(again.ids["car3/car"]), v);
     }

@@ -113,24 +113,27 @@ pub fn organise(rows: &[ParamRow], file: &ModelFile, show_computed: bool) -> Org
         .filter(|r| r.owner.is_empty())
         .map(|r| (*r).clone())
         .collect();
-    // Uses by subsystem, on the model level.
+    // Uses by the model defined in the file they use (ADR 0068).
     let mut uses: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for b in &file.blocks {
-        if file.subsystems.contains_key(&b.type_name) {
-            uses.entry(b.type_name.as_str()).or_default().push(&b.name);
+        if let Some(m) = &b.model {
+            uses.entry(m.as_str()).or_default().push(&b.name);
         }
     }
     let starting_last = |v: &mut Vec<(String, ParamRow)>| {
         v.sort_by_key(|(_, r)| r.initial_condition);
     };
     for b in &file.blocks {
-        let instance = file.subsystems.contains_key(&b.type_name);
+        let instance = b.is_use();
         let mine: Vec<(String, ParamRow)> = shown
             .iter()
             .filter(|r| !r.owner.is_empty() && top(r) == b.name)
             .map(|r| (relative(r), (*r).clone()))
             .collect();
-        let shared = instance && uses.get(b.type_name.as_str()).is_some_and(|u| u.len() > 1);
+        let shared = b
+            .model
+            .as_deref()
+            .is_some_and(|m| uses.get(m).is_some_and(|u| u.len() > 1));
         if shared {
             continue;
         }
@@ -226,7 +229,7 @@ pub fn selected(
         Some(s) => (
             file.blocks
                 .iter()
-                .filter(|b| b.type_name == s)
+                .filter(|b| b.model.as_deref() == Some(s))
                 .map(|b| b.name.clone())
                 .collect(),
             Some(name),

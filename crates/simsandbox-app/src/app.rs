@@ -1396,13 +1396,19 @@ impl SimApp {
 
     /// Open a block's definition: the equation editor for typed equations.
     fn open_block(&mut self, m: &crate::live::Model, name: &str) {
-        // `subsystem::block` for a block inside a subsystem (ADR 0043).
-        let blocks = match name.split_once("::") {
-            Some((def, _)) => m.file.subsystems.get(def).map(|d| &d.blocks),
-            None => Some(&m.file.blocks),
+        // `use/path::block` for a block inside a used model (ADR 0068).
+        let inside = match name.split_once("::") {
+            Some((path, _)) => {
+                let path: Vec<String> = path.split('/').map(str::to_string).collect();
+                crate::diagram::used_file(&m.file, self.diagram.folder.as_deref(), &path).ok()
+            }
+            None => Some(m.file.clone()),
         };
         let inner = name.rsplit("::").next().unwrap_or(name);
-        let Some(b) = blocks.and_then(|bs| bs.iter().find(|b| b.name == inner)) else {
+        let Some(b) = inside
+            .as_ref()
+            .and_then(|f| f.blocks.iter().find(|b| b.name == inner))
+        else {
             return;
         };
         if b.type_name == simsandbox_eq::registry::EQUATIONS {
@@ -2296,10 +2302,7 @@ impl SimApp {
             let canvas = self.diagram.canvas.selected.clone();
             if canvas != self.last_canvas {
                 self.last_canvas = canvas.clone();
-                let scope = match &self.diagram.scope {
-                    Scope::Model => None,
-                    Scope::Subsystem(s) => Some(s.clone()),
-                };
+                let scope: Option<String> = None;
                 self.picked = canvas
                     .map(|s| s.blocks())
                     .unwrap_or_default()
@@ -2321,7 +2324,7 @@ impl SimApp {
                     .default_open(true)
                     .show(ui, |ui| {
                         for (scope, name) in &picked {
-                            let at = scope.clone().map_or(Scope::Model, Scope::Subsystem);
+                            let at = Scope::Model;
                             if picked.len() > 1 {
                                 ui.strong(name);
                             }
@@ -2691,6 +2694,42 @@ impl SimApp {
         if block.is_none() && self.ask_first(Discard::NewModel) {
             return;
         }
+        // Inside a used model: an edit there, which may ask where it goes
+        // (ADR 0068).
+        if let Some((path, inner)) = block.as_deref().and_then(|b| b.split_once("::")) {
+            let Some(live) = &self.session else {
+                return;
+            };
+            let m = live.model();
+            let (speed, views, layout) = (self.speed, self.views.entries(), self.layout());
+            let current = || {
+                let (views, layout) = (views.clone(), layout.clone());
+                live.call(move |s, _| s.save_json_with(speed, Some(views), Some(layout)))?
+            };
+            self.diagram.inside = path.split('/').map(str::to_string).collect();
+            let edit = Edit::SetEquations {
+                block: inner.to_string(),
+                equations: lines,
+            };
+            let outcomes = self
+                .diagram
+                .begin_edit(vec![edit], &self.registry, &current);
+            let previous_error = self.error.take();
+            self.diagram_outcomes(&m, outcomes);
+            match self.error.take() {
+                Some(e) => {
+                    self.error = previous_error;
+                    if let Some(ed) = self.editor.as_mut() {
+                        ed.error = Some(e);
+                    }
+                }
+                None => {
+                    self.editor = None;
+                    self.log.info("Equations applied");
+                }
+            }
+            return;
+        }
         let result = match &block {
             None => {
                 let mut file = simsandbox_file::ModelFile::new();
@@ -2796,11 +2835,7 @@ impl SimApp {
             Some(live) => live.model().title.clone(),
             None => return Err("no model is open".into()),
         };
-        // `subsystem::block` edits a block inside a subsystem (ADR 0043).
-        let (def, inner) = match block.split_once("::") {
-            Some((d, b)) => (Some(d.to_string()), b),
-            None => (None, block),
-        };
+        let inner = block;
         let set = simsandbox_eq::EquationSet::parse(inner, &lines).map_err(|e| e.to_string())?;
         let keep: Vec<String> = simsandbox_eq::OdeSystem::spec(&set)
             .params
@@ -2810,17 +2845,8 @@ impl SimApp {
         let text = self.saved_text()?;
         let (mut file, _) =
             simsandbox_file::ModelFile::from_json(&text).map_err(|e| e.to_string())?;
-        let blocks = match &def {
-            Some(d) => {
-                &mut file
-                    .subsystems
-                    .get_mut(d)
-                    .ok_or_else(|| format!("no subsystem '{d}'"))?
-                    .blocks
-            }
-            None => &mut file.blocks,
-        };
-        let entry = blocks
+        let entry = file
+            .blocks
             .iter_mut()
             .find(|b| b.name == inner)
             .ok_or_else(|| format!("no block '{block}'"))?;
@@ -3426,11 +3452,8 @@ fn block_entry<'a>(
     scope: Option<&str>,
     name: &str,
 ) -> Option<&'a simsandbox_file::BlockEntry> {
-    let blocks = match scope {
-        None => &file.blocks,
-        Some(s) => &file.subsystems.get(s)?.blocks,
-    };
-    blocks.iter().find(|b| b.name == name)
+    let _ = scope;
+    file.blocks.iter().find(|b| b.name == name)
 }
 
 /// A text field for one setting of block `b`; a changed value is an edit
@@ -5048,6 +5071,7 @@ mod tests {
 
     #[test]
     fn open_nodes_are_saved_and_inner_values_are_every_uses_default() {
+        use simsandbox_session::edit_use::How;
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES
             .iter()
@@ -5055,7 +5079,7 @@ mod tests {
             .unwrap();
         app.open_text(e.name, e.text);
         let m = app.session.as_ref().unwrap().model();
-        let open = vec!["car1".to_string(), "follower::car".to_string()];
+        let open = vec!["car1".to_string(), "leader".to_string()];
         app.diagram_outcomes(&m, vec![Outcome::Opened(open.clone())]);
         let text = app.saved_text().unwrap();
         let (file, _) = simsandbox_file::ModelFile::from_json(&text).unwrap();
@@ -5064,13 +5088,22 @@ mod tests {
         let mut again = SimApp::new(None, None, None, None);
         again.open_text("again", &text);
         assert_eq!(again.diagram.canvas.open, open.into_iter().collect());
-        // Inside the subsystem, a value is the default of every use.
+        // Inside the model the cars use, a value changes every use.
         let e = Edit::SetParam {
             block: "car".into(),
             param: "c".into(),
             value: 80.0,
         };
-        app.edit_at(Scope::Subsystem("follower".into()), e);
+        app.diagram.inside = vec!["car1".into()];
+        let live = app.session.as_ref().unwrap();
+        let m = live.model();
+        let text = app.saved_text().unwrap();
+        let current = move || Ok(text.clone());
+        let outcomes = app
+            .diagram
+            .answer(vec![e], How::Original, &app.registry, &current);
+        app.diagram_outcomes(&m, outcomes);
+        assert!(app.error.is_none(), "{:?}", app.error);
         let live = app.session.as_ref().unwrap();
         live.sync();
         let m = live.model();
@@ -5181,7 +5214,6 @@ mod tests {
     #[test]
     fn the_inspector_draws_selection_search_and_computed_values() {
         use simsandbox_session::canvas::Selection;
-        use simsandbox_session::diagram::Scope;
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES
             .iter()
@@ -5190,9 +5222,6 @@ mod tests {
         app.open_text(e.name, e.text);
         inspect(&mut app);
         app.diagram.canvas.selected = Some(Selection::Block("car2".into()));
-        inspect(&mut app);
-        app.diagram.scope = Scope::Subsystem("follower".into());
-        app.diagram.canvas.selected = Some(Selection::Block("control".into()));
         inspect(&mut app);
         app.show_computed = true;
         app.inspect_query = "mass".into();
@@ -5531,37 +5560,37 @@ mod tests {
     }
 
     #[test]
-    fn subsystems_are_grouped_opened_and_edited_from_the_canvas() {
-        use simsandbox_session::diagram::{Edit, Scope};
+    fn models_are_made_opened_and_edited_from_the_canvas() {
+        use simsandbox_session::diagram::Edit;
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES.iter().find(|e| e.name.contains("Cruise")).unwrap();
         app.open_text(e.name, e.text);
-        // Group both blocks: the model now uses a subsystem, and runs.
+        // Make a model of both blocks: the file now defines and uses it.
         canvas_edits(
             &mut app,
-            vec![Edit::Group {
+            vec![Edit::GroupModel {
                 blocks: vec!["car".into(), "cruise".into()],
             }],
         );
         assert!(app.error.is_none(), "{:?}", app.error);
         let m = app.session.as_ref().unwrap().model();
-        assert!(m.file.subsystems.contains_key("group1"));
+        assert!(m.file.models.contains_key("model1"));
         assert!(m.params.iter().any(|r| r.key == "group1/cruise.kp"));
-        // Inside it, an edit changes the subsystem.
-        app.diagram.scope = Scope::Subsystem("group1".into());
-        canvas_edits(
-            &mut app,
-            vec![Edit::Rename {
-                from: "car".into(),
-                to: "body".into(),
-            }],
-        );
+        // Inside it (used once: no question), an edit changes the model.
+        app.diagram.inside = vec!["group1".into()];
+        let live = app.session.as_ref().unwrap();
+        let text = app.saved_text().unwrap();
+        let current = move || Ok(text.clone());
+        let rename = Edit::Rename {
+            from: "car".into(),
+            to: "body".into(),
+        };
+        let outcomes = app
+            .diagram
+            .begin_edit(vec![rename], &app.registry, &current);
+        app.diagram_outcomes(&live.model(), outcomes);
         assert!(app.error.is_none(), "{:?}", app.error);
         let m = app.session.as_ref().unwrap().model();
-        assert!(m.file.subsystems["group1"]
-            .blocks
-            .iter()
-            .any(|b| b.name == "body"));
         assert!(m.params.iter().any(|r| r.key == "group1/body.m"));
         // And the equation editor works on a block inside it.
         app.open_block(&m, "group1::body");
@@ -5569,6 +5598,7 @@ mod tests {
         ed.text = ed.text.replace("(F - c*v)/m", "(F - drag2*c*v)/m");
         app.apply_equations();
         assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(app.editor.is_none(), "applied");
         let m = app.session.as_ref().unwrap().model();
         assert!(m.params.iter().any(|r| r.key == "group1/body.drag2"));
     }

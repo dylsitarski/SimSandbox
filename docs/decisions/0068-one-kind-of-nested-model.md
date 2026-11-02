@@ -1,6 +1,6 @@
 # 0068 — One kind of nested model: subsystems become models defined in the file
 
-- **Status:** Accepted
+- **Status:** Accepted; built 2026-11-02 (steps 1 to 3)
 - **Date:** 2026-11-02
 - **Supersedes:** the form of [ADR 0043](0043-subsystems.md) (subsystems, their ports and instances), once its order of work is done; declared parameters with formulas stay as ADR 0043 and [ADR 0056](0056-formulas-and-parameters-in-the-app.md) decided.
 - **Extends:** [ADR 0066](0066-models-nest-as-blocks.md) (models nest as blocks)
@@ -119,4 +119,26 @@ Results are the same bits as before. Saving writes the new form.
   - a file moved in and out again gives the same bits, the new file written only on Save;
   - in the app: a definition used twice asks and changes both, a local copy changes one, and one used once is edited without asking;
   - moving in and out in the app, with undo and Save.
+
+**Step 3 (2026-11-02): subsystems removed.** No saved file had subsystems (owner, 2026-11-02), so they are refused rather than converted.
+- **The format:** a file with `subsystems` is refused, saying how to write it under `models`. The JSON Schema lists `models`, `model` and `files` and no longer `subsystems`. The flattening keeps subsystems inside: the loader alone reads its own files holding them (`compose::with_subsystems`).
+- **Errors inside a model on a shared clock** are reported where they are written: `models.follower.blocks[0].equations`, or the use and its file's path (`Loader::inside_error`, by the names of the blocks as written). Errors inside a definition's text carry the full path (`compose::nest`).
+- **The Platoon example** defines `follower` once (an input block `lead`, the declared output `v`) and uses it three times.
+- **Diagram, canvas, app:** `Scope` keeps only `Model`. Instance and port nodes, `Edit::Group`, `AddPort` and `RenameSubsystem` are gone, with the subsystem breadcrumb.
+  - "Make model" is the only grouping. It understands ends written by path, so uses of definitions can be grouped too.
+  - Added to the editor: "Offer X as an output" and "Stop offering X" on a block (`Edit::DeclareOutput`, `RemoveOutput`); renaming a definition from its inside view (`Edit::RenameModel`; uses follow, in nested definitions too); the type menu adding a definition as a use.
+  - "Edit…" on a block inside a used model opens the equation editor (`use/path::block`). Applying goes through the edit question (`Edit::SetEquations`).
+  - Use nodes show the values set for their use (declared parameters, not those set by formulas). A declared output carries what it shows, so a view of `car1/car.v` is drawn from `car1`'s `v`.
+- **The merged model:** a model with nothing in time is paced by its file's step in the app.
+- **Headless:** `render --diagram --inside PATH` (`--subsystem` stays as an older name); Python `render(inside=...)` and `Model.group` making a definition. `check` lists `definitions`, and for models that use models also `params`.
+- **Not yet:** open nodes inside used models are not saved by path (the canvas's open set is shared with the model's level). A definition no use names is read but not built, so a problem inside it shows once it is used.
+- **Tests** moved to definitions with the same checks:
+  - flattening equal to the model written by hand;
+  - declared parameters and formulas;
+  - nesting;
+  - problems where written;
+  - saving only what changed;
+  - units through a used model's parameters;
+  - Make model on blocks and on uses, renaming, offered outputs;
+  - the equation editor inside a used model.
 

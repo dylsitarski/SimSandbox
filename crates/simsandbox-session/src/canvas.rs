@@ -395,12 +395,7 @@ impl Canvas {
             );
         }
         if d.nodes.is_empty() {
-            let empty = match d.scope {
-                Scope::Model => "Empty model: right-click to add a block",
-                Scope::Subsystem(_) => {
-                    "Empty subsystem: right-click to add blocks, inputs and outputs"
-                }
-            };
+            let empty = "Empty model: right-click to add a block";
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -465,9 +460,7 @@ impl Canvas {
         let header = Rect::from_min_size(r.min, Vec2::new(r.width(), HEADER as f32 * z));
         let header_fill = match n.kind {
             NodeKind::Block => visuals.widgets.inactive.bg_fill,
-            NodeKind::Subsystem => visuals.selection.bg_fill.gamma_multiply(0.45),
             NodeKind::Use => visuals.selection.bg_fill.gamma_multiply(0.7),
-            NodeKind::Input | NodeKind::Output => visuals.warn_fg_color.gamma_multiply(0.25),
             NodeKind::Filter => visuals.hyperlink_color.gamma_multiply(0.3),
             NodeKind::View => visuals.hyperlink_color.gamma_multiply(0.15),
             NodeKind::Probe => visuals.warn_fg_color.gamma_multiply(0.18),
@@ -514,7 +507,7 @@ impl Canvas {
         } else {
             painter.rect_stroke(r, radius, border, StrokeKind::Inside);
         }
-        if matches!(n.kind, NodeKind::Subsystem | NodeKind::Use) {
+        if n.kind == NodeKind::Use {
             // A second outline: there is more inside.
             painter.rect_stroke(
                 r.shrink(3.0 * z),
@@ -539,11 +532,8 @@ impl Canvas {
         } else {
             match n.kind {
                 NodeKind::Block => format!("{} · {}", n.type_name, n.method),
-                NodeKind::Subsystem => format!("{} · subsystem", n.type_name),
                 // A model file used here: its file and its clock.
                 NodeKind::Use => format!("{} · {}", n.method, n.type_name),
-                NodeKind::Input => "subsystem input".into(),
-                NodeKind::Output => "subsystem output".into(),
                 NodeKind::Filter => format!("filter · {}", n.method),
                 NodeKind::View => format!("view · {}", n.method),
                 NodeKind::Probe => n.method.clone(),
@@ -1235,19 +1225,45 @@ impl Canvas {
                 let shown = name[name.find(':').map_or(0, |k| k + 1)..].to_string();
                 ui.label(egui::RichText::new(&shown).strong());
                 match n.kind {
-                    NodeKind::Subsystem => {
-                        if ui.button("Open").on_hover_text("Edit what is inside (every use changes)").clicked() {
-                            requests.push(Request::Open(name.clone()));
-                            ui.close();
-                        }
-                    }
                     NodeKind::Block => {
                         if ui.button("Edit…").on_hover_text("Its equations or settings").clicked() {
                             requests.push(Request::Open(name.clone()));
                             ui.close();
                         }
+                        // Outputs offered to models using this one
+                        // (ADR 0068): they are its ports there.
+                        for p in &n.outputs {
+                            let from = format!("{name}.{}", p.name);
+                            match d.offered.iter().find(|(_, f)| *f == from) {
+                                Some((o, _)) => {
+                                    if ui
+                                        .button(format!("Stop offering {o}"))
+                                        .on_hover_text("Models using this one no longer see it")
+                                        .clicked()
+                                    {
+                                        edits.push(Edit::RemoveOutput { name: o.clone() });
+                                        ui.close();
+                                    }
+                                }
+                                None => {
+                                    if ui
+                                        .button(format!("Offer {} as an output", p.name))
+                                        .on_hover_text("A port of this model where other models use it")
+                                        .clicked()
+                                    {
+                                        let taken = |x: &str| d.offered.iter().any(|(o, _)| o == x);
+                                        let out = if taken(&p.name) {
+                                            crate::diagram::free_name(&format!("{name}_{}", p.name), taken)
+                                        } else {
+                                            p.name.clone()
+                                        };
+                                        edits.push(Edit::DeclareOutput { name: out, from });
+                                        ui.close();
+                                    }
+                                }
+                            }
+                        }
                     }
-                    NodeKind::Input | NodeKind::Output => {}
                     NodeKind::Use => {
                         ui.weak(format!("Uses {}, {}", n.type_name, n.method));
                         if ui.button("Open").on_hover_text("See inside the model it uses").clicked() {
@@ -1391,25 +1407,17 @@ impl Canvas {
                     } else {
                         vec![name.clone()]
                     };
-                    // At a model's level a model defined in the file
-                    // (ADR 0068); inside a subsystem, a subsystem.
-                    let model = d.scope == crate::diagram::Scope::Model;
-                    let word = if model { "model" } else { "subsystem" };
+                    // A model defined in the file (ADR 0068).
                     let label = match group.len() {
-                        1 => format!("Make {word}"),
-                        k => format!("Make {word} of {k} blocks"),
+                        1 => "Make model".to_string(),
+                        k => format!("Make model of {k} blocks"),
                     };
-                    let hover = if model {
-                        "Move into a new model defined in this file; wires that cross become its input blocks and outputs (Shift-click or Shift-drag to select several)"
-                    } else {
-                        "Move into a new subsystem; wires that cross become its ports (Shift-click or Shift-drag to select several)"
-                    };
-                    if ui.button(label).on_hover_text(hover).clicked() {
-                        edits.push(if model {
-                            Edit::GroupModel { blocks: group }
-                        } else {
-                            Edit::Group { blocks: group }
-                        });
+                    if ui
+                        .button(label)
+                        .on_hover_text("Move into a new model defined in this file; wires that cross become its input blocks and outputs (Shift-click or Shift-drag to select several)")
+                        .clicked()
+                    {
+                        edits.push(Edit::GroupModel { blocks: group });
                         ui.close();
                     }
                 }
@@ -1486,17 +1494,6 @@ impl Canvas {
                             }
                         }
                     });
-                }
-                if matches!(d.scope, Scope::Subsystem(_)) {
-                    ui.separator();
-                    if ui.button("Add input").clicked() {
-                        edits.push(Edit::AddPort { input: true, at });
-                        ui.close();
-                    }
-                    if ui.button("Add output").clicked() {
-                        edits.push(Edit::AddPort { input: false, at });
-                        ui.close();
-                    }
                 }
             }
         });
@@ -1588,7 +1585,7 @@ impl Canvas {
 fn title(n: &Node) -> String {
     match n.kind {
         NodeKind::Recorder => "Recorder".into(),
-        NodeKind::Input | NodeKind::Output | NodeKind::Filter | NodeKind::Probe => {
+        NodeKind::Filter | NodeKind::Probe => {
             n.name[n.name.find(':').map_or(0, |i| i + 1)..].to_string()
         }
         NodeKind::View => {
@@ -1683,7 +1680,6 @@ fn unit_setting(n: &Node, c: Causality) -> Option<&'static str> {
 pub fn open_key(scope: &Scope, name: &str) -> String {
     match scope {
         Scope::Model => name.to_string(),
-        Scope::Subsystem(s) => format!("{s}::{name}"),
     }
 }
 

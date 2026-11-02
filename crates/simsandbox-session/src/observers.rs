@@ -167,6 +167,10 @@ fn sources(file: &ModelFile, d: &Diagram) -> BTreeMap<String, (usize, usize)> {
         if n.kind == NodeKind::Use {
             for (k, p) in n.outputs.iter().enumerate() {
                 out.insert(format!("{}/{}", n.name, p.name), (i, k));
+                // A declared output carries what it shows (ADR 0068).
+                if let Some(from) = n.settings.get(&format!("output.{}", p.name)) {
+                    out.entry(format!("{}/{from}", n.name)).or_insert((i, k));
+                }
             }
             continue;
         }
@@ -1519,16 +1523,6 @@ mod tests {
         .data_only());
         assert!(!Edit::Delete { block: "a".into() }.data_only());
         assert!(!Edit::Promote { filter: "x".into() }.data_only());
-        // Not inside a subsystem.
-        let mut p = file("Platoon");
-        let err = crate::diagram::apply_in(
-            &mut p,
-            &Scope::Subsystem("follower".into()),
-            &r,
-            &Edit::AddFilter { at: [0.0, 0.0] },
-        )
-        .unwrap_err();
-        assert!(err.contains("whole model"), "{err}");
     }
 
     #[test]

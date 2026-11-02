@@ -40,8 +40,17 @@ fn driven(unit: &str, convert: Option<(&str, &str)>) -> String {
     )
 }
 
+/// Load a model, also one that uses models (ADR 0068), as the app does.
+fn load_any(text: &str) -> Result<simsandbox_file::Loaded, FileError> {
+    if simsandbox_file::compose::is_composition(text) {
+        simsandbox_file::compose::load_merged(text, &registry(), None)
+    } else {
+        load(text, &registry())
+    }
+}
+
 fn error(text: &str) -> (String, String) {
-    match load(text, &registry()) {
+    match load_any(text) {
         Err(FileError::Invalid { path, message }) => (path, message),
         Err(e) => panic!("{e}"),
         Ok(_) => panic!("expected an error"),
@@ -107,7 +116,7 @@ fn sized(size_unit: &str, formula: &str) -> String {
 }
 
 fn param(text: &str, block: &str, name: &str) -> f64 {
-    let loaded = load(text, &registry()).unwrap();
+    let loaded = load_any(text).unwrap();
     loaded.model.param(loaded.ids[block], name).unwrap()
 }
 
@@ -144,38 +153,32 @@ fn nested(side_unit: &str, inner: &str) -> String {
     format!(
         r#"{{"format": 1, "run": {{"dt": 0.1}},
           "params": {{"size": {{"value": 2.0, "unit": "km"}}}},
-          "subsystems": {{"pond": {{
+          "models": {{"pond": {{
             "params": {{"side": {{"value": 1.0, "unit": "{side_unit}"}}}},
             "blocks": [{{"name": "tank", "type": "eq.equations",
               "equations": ["param L [m] = 1", "area = L^2 [m^2]"],
               "params": {{"L": "{inner}"}}}}]
           }}}},
-          "blocks": [{{"name": "p", "type": "pond", "params": {{"side": "size"}}}}]}}"#
+          "blocks": [{{"name": "p", "model": "pond", "clock": "shared", "params": {{"side": "size"}}}}]}}"#
     )
 }
 
 #[test]
-fn subsystem_parameters_are_checked_on_the_way_in_and_out() {
-    // km → the subsystem's cm → the block's m.
+fn parameters_of_used_models_are_checked_on_the_way_in_and_out() {
+    // km → the used model's cm → the block's m (ADR 0068).
     let v = param(&nested("cm", "side"), "p/tank", "L");
     assert!((v - 2000.0).abs() < 1e-9, "{v}");
-    // Into a subsystem parameter of another kind.
+    // Into the used model's parameter of another kind.
     let (path, message) = error(&nested("s", "side"));
     assert_eq!(path, "blocks[0].params.side");
     assert_eq!(message, "p.side is in s but 'size' is in m");
-    // From a subsystem parameter into a block of another kind, also when
-    // the subsystem is checked on its own.
+    // From the used model's parameter into a block of another kind,
+    // reported where the definition writes it.
     let (path, message) = error(&nested("m", "side*side"));
-    assert_eq!(path, "subsystems.pond.blocks[0].params.L");
+    assert_eq!(path, "models.pond.blocks[0].params.L");
     assert!(message.contains("tank.L is in m"), "{message}");
-    let unused = nested("m", "side*side").replace(
-        r#""blocks": [{"name": "p", "type": "pond", "params": {"side": "size"}}]"#,
-        r#""blocks": []"#,
-    );
-    let (path, _) = error(&unused);
-    assert_eq!(path, "subsystems.pond.blocks[0].params.L");
     let (path, _) = error(&nested("acres", "side"));
-    assert_eq!(path, "subsystems.pond.params.side.unit");
+    assert_eq!(path, "models.pond.params.side.unit");
 }
 
 #[test]

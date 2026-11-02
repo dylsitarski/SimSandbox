@@ -287,7 +287,7 @@ fn render<'py>(
                 scale,
                 view,
                 light,
-                subsystem: None,
+                inside: None,
                 data: false,
                 values: false,
             };
@@ -302,7 +302,7 @@ fn render<'py>(
 /// The block diagram of a model file as a PNG, as the node canvas shows
 /// it (ADR 0042); drawn even if the model cannot run.
 #[pyfunction]
-#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, subsystem=None, data=true, values=false))]
+#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, inside=None, data=true, values=false))]
 #[allow(clippy::too_many_arguments)]
 fn render_diagram<'py>(
     py: Python<'py>,
@@ -311,7 +311,7 @@ fn render_diagram<'py>(
     height: f32,
     scale: f32,
     light: bool,
-    subsystem: Option<String>,
+    inside: Option<String>,
     data: bool,
     values: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
@@ -325,7 +325,7 @@ fn render_diagram<'py>(
                 scale,
                 view: None,
                 light,
-                subsystem,
+                inside,
                 data,
                 values,
             };
@@ -347,17 +347,20 @@ fn start_from(py: Python<'_>, text: &str, t: f64) -> PyResult<(String, Vec<Strin
         .map_err(ModelError::new_err)
 }
 
-/// Group blocks into a new subsystem, as "Make subsystem" on the canvas
-/// does (ADR 0043). Returns the changed model file and a note.
+/// Move blocks into a new model defined in the file, as "Make model" on
+/// the canvas does (ADR 0068). Returns the changed model file and a note.
 #[pyfunction]
-#[pyo3(signature = (text, blocks, subsystem=None))]
-fn group(text: &str, blocks: Vec<String>, subsystem: Option<String>) -> PyResult<(String, String)> {
+fn group(text: &str, blocks: Vec<String>) -> PyResult<(String, String)> {
     use simsandbox_session::diagram::{apply_in, Edit, Scope};
     let (mut file, _) = simsandbox_session::ModelFile::from_json(text)
         .map_err(|e| ModelError::new_err(e.to_string()))?;
-    let scope = subsystem.map_or(Scope::Model, Scope::Subsystem);
-    let note = apply_in(&mut file, &scope, &registry(), &Edit::Group { blocks })
-        .map_err(ModelError::new_err)?;
+    let note = apply_in(
+        &mut file,
+        &Scope::Model,
+        &registry(),
+        &Edit::GroupModel { blocks },
+    )
+    .map_err(ModelError::new_err)?;
     Ok((file.to_json(), note))
 }
 

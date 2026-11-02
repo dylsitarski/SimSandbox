@@ -4,6 +4,10 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+- Subsystems are replaced by models defined in the file (ADR 0068): `subsystems` is refused with how to write it under `models`; "Make subsystem" is "Make model"; a model's inputs are input blocks and its outputs are offered from a block's menu ("Offer X as an output"); `render --diagram --inside PATH` (and Python `render(inside=)`) draws a used model's inside; Python `Model.group` makes a model. The Platoon example defines its follower once. Problems inside a used model are reported where they are written (`models.follower.blocks[0].equations`). "Edit…" on a block inside a used model opens its equations.
+
 ### Added
 
 - Models defined in a model file (ADR 0068): a `models` section holds definitions written like model files, used from `blocks` by name (`{"name": "front", "model": "wheel"}`), any number of times. Their inputs are their input blocks and their outputs their declared `outputs`. Wired, a model with no `run.dt` of its own runs on its user's clock. Uses set start states inside by path (`starts`). "Make a local copy" now adds such a definition. `check` lists `definitions`; Python: `Model.define`, `add_model(model=...)`. Saving writes `run.dt` only when the file had it or it differs from the default. In the app, "Make model" moves a selection into such a definition; editing inside a definition used several times asks whether to change every use, make a new file or make a local copy; a definition moves to its own file ("Move to its own file…") and a used file into the model ("Put in this file").

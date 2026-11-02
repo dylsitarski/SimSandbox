@@ -77,12 +77,13 @@
       },
       "description": "Parameters of the model itself, which block parameters can use in formulas, e.g. a field size shared by two blocks (ADR 0043). Sliders may name them."
     },
-    "subsystems": {
+    "models": {
       "type": "object",
       "additionalProperties": {
-        "$ref": "#/$defs/subsystem"
+        "type": "object",
+        "description": "Written like a model file ('format' optional): blocks, connections, params, outputs, groups, fusion, optionally run, sample and its own models. Its controls hold only probes. Its input blocks are its inputs, its declared outputs its outputs."
       },
-      "description": "Groups of blocks used like block types by name (ADR 0043)."
+      "description": "Models defined in this file, used from 'blocks' by name with 'model' (ADR 0068), any number of times. A use finds a definition in the model it is written in, then in the models holding it."
     },
     "blocks": {
       "type": "array",
@@ -277,7 +278,7 @@
         },
         "type": {
           "type": "string",
-          "description": "A registered block type, or the name of a subsystem in 'subsystems'."
+          "description": "A registered block type (see simsandbox describe). A use of a model has 'file' or 'model' instead."
         },
         "method": {
           "type": "object",
@@ -358,7 +359,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/paramValue"
           },
-          "description": "Values in each parameter's declared unit; omitted parameters take their defaults. A value may be a formula of the declared parameters in scope (the model's 'params', or inside a subsystem its own), e.g. \"2*capacity\". For a subsystem: its declared parameters, plus inner values for this instance only as 'block.param' (numbers)."
+          "description": "Values in each parameter's declared unit; omitted parameters take their defaults. A value may be a formula of the declared parameters of the model it is written in, e.g. \"2*capacity\". For a use of a model: its declared parameters, and values inside it for this use only by path ('block.param', 'plant/car.m'), numbers or formulas."
         },
         "starts": {
           "type": "object",
@@ -389,14 +390,14 @@
             },
             "additionalProperties": false
           },
-          "description": "A subsystem's start states by inner block ('grass', nested 'field/grass'), written by 'Start from here'."
+          "description": "A use's start states inside it, by the path of the inner block ('hub', 'axle/hub') (ADR 0068)."
         },
         "file": {
           "type": "string",
           "description": "A use of a model file (ADR 0066) in place of a type: found from this file's folder, or a full path. Its params are values for this use only; everything in it is named with this entry's name as a prefix ('plant/car.v'). It runs on its own clock and is linked by probes into input.value blocks."
         },
         "clock": {
-          "description": "A model file use's clock: its own at the used file's run.dt if absent, or {\"dt\": step}; \"shared\" runs it on its parent's clock, flattened into the parent like a subsystem, with wires into its input.value blocks ('plant/force') and from its own blocks' outputs ('plant/car.v').",
+          "description": "A use's clock: {\"dt\": step}, or \"shared\" to run on its user's clock, flattened in, with wires into its input.value blocks ('plant/force') and from its outputs ('plant/car.v'). If absent: shared when a wire reaches it and its model writes no run.dt; else its own at run.dt if it has states, on new data if not (ADR 0066, ADR 0068).",
           "oneOf": [
             {
               "const": "shared"
@@ -415,9 +416,20 @@
               }
             }
           ]
+        },
+        "model": {
+          "type": "string",
+          "description": "A use of a model defined in this file ('models') or in a model holding this one, by name (ADR 0068), in place of 'type' or 'file'."
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "A use's replacements of the files of uses inside it, by path ('plant', 'plant/engine'), found from this file's folder; only this use sees them (ADR 0066 step 4c)."
         }
       },
-      "description": "A block: a registered type (e.g. 'eq.equations', see simsandbox describe), which needs a method, or a subsystem of this file by name (ADR 0043), which has none. An entry has a type (a block or a subsystem use) or a file (a use of a model file)."
+      "description": "A block of a registered type (e.g. 'eq.equations', see simsandbox describe), or a use of a model: a 'file', or a 'model' defined in this file (ADR 0066, ADR 0068)."
     },
     "connection": {
       "type": "object",
@@ -888,7 +900,7 @@
       "properties": {
         "value": {
           "type": "number",
-          "description": "The model's value, or a subsystem's default."
+          "description": "The model's value; for a model used elsewhere, its default."
         },
         "unit": {
           "type": "string",
@@ -905,96 +917,6 @@
           "minItems": 2,
           "maxItems": 2,
           "description": "Suggested range for sliders."
-        }
-      }
-    },
-    "subsystem": {
-      "type": "object",
-      "required": [
-        "blocks"
-      ],
-      "additionalProperties": false,
-      "description": "Blocks and wires with parameters and ports of their own, used like a block type (ADR 0043). Loading expands each use into its blocks, named 'instance/inner'.",
-      "properties": {
-        "description": {
-          "type": "string"
-        },
-        "params": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/paramDecl"
-          },
-          "description": "Parameters each use can set; inner block parameters use them in formulas."
-        },
-        "inputs": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": [
-              "name"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "name": {
-                "$ref": "#/$defs/name"
-              },
-              "to": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/ref"
-                },
-                "description": "Inner inputs it feeds."
-              },
-              "canvas": {
-                "type": "array",
-                "items": {
-                  "type": "number"
-                },
-                "minItems": 2,
-                "maxItems": 2
-              }
-            }
-          }
-        },
-        "outputs": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": [
-              "name",
-              "from"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "name": {
-                "$ref": "#/$defs/name"
-              },
-              "from": {
-                "$ref": "#/$defs/ref",
-                "description": "The inner output it shows."
-              },
-              "canvas": {
-                "type": "array",
-                "items": {
-                  "type": "number"
-                },
-                "minItems": 2,
-                "maxItems": 2
-              }
-            }
-          }
-        },
-        "blocks": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/block"
-          }
-        },
-        "connections": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/connection"
-          }
         }
       }
     },
