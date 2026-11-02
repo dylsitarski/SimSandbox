@@ -89,6 +89,7 @@ pub fn check(text: &str, registry: &Registry) -> Value {
                 "dt": (!d.on_data).then_some(d.dt),
                 "ticks_per_step": steps,
                 "on_new_data": d.on_data,
+                "declared_outputs": d.declared.iter().map(|o| json!({"name": o.name, "from": o.from})).collect::<Vec<_>>(),
                 "swept": d.swept(),
                 "outputs": outputs,
                 "inputs": inputs,
@@ -105,6 +106,7 @@ pub fn check(text: &str, registry: &Registry) -> Value {
         "errors": [],
         "warnings": c.warnings,
         "composition": true,
+        "declared_outputs": c.file.outputs.iter().map(|o| json!({"name": o.name, "from": o.from})).collect::<Vec<_>>(),
         "models": models,
         "links": links,
         "tick": c.ticks.seconds(),
@@ -1661,5 +1663,162 @@ mod tests {
 
     fn wired_pair() -> Value {
         wired("plant", "controller")
+    }
+
+    /// The car and the controller declaring what they offer: `speed` and
+    /// `force` (ADR 0066 step 4b).
+    fn declared_files(dir: &Path) -> Value {
+        let whole = cruise_files(dir);
+        for (file, name, from) in [
+            ("car.ssbx.json", "speed", "car.v"),
+            ("cruise.ssbx.json", "force", "cruise.F"),
+        ] {
+            let mut v: Value =
+                serde_json::from_str(&std::fs::read_to_string(dir.join(file)).unwrap()).unwrap();
+            v["outputs"] = json!([{"name": name, "from": from}]);
+            write(dir, file, &v);
+        }
+        whole
+    }
+
+    #[test]
+    fn declared_outputs_are_reached_by_name() {
+        let dir = temp_dir("declared");
+        let whole = declared_files(&dir);
+        // Linked across clocks by name: as by the inner names.
+        let by_name = |plant: &str, controller: &str| {
+            json!({
+            "format": 1, "run": {"t_end": 20},
+            "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")],
+            "connections": [
+                {"from": format!("probe:speed.{plant}"), "to": "controller/speed"},
+                {"from": format!("probe:force.{controller}"), "to": "plant/force"}],
+            "controls": {"probes": [
+                {"name": "speed", "record": [plant]},
+                {"name": "force", "record": [controller]}]}})
+        };
+        let named = run_in(&dir, &by_name("plant/speed", "controller/force"));
+        let inner = run_in(&dir, &by_name("plant/car.v", "controller/cruise.F"));
+        assert_eq!(
+            bits(named.values("plant/car.v").unwrap()),
+            bits(inner.values("plant/car.v").unwrap())
+        );
+        // Wired by name on a shared clock: as the model in one file.
+        let shared_named = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"dt": 0.05, "t_end": 20},
+            "blocks": [shared("plant", "car.ssbx.json"), shared("controller", "cruise.ssbx.json")],
+            "connections": [
+                {"from": "plant/speed", "to": "controller/speed"},
+                {"from": "controller/force", "to": "plant/force"}]}),
+        );
+        let one = crate::run::run(&whole.to_string(), &registry(), Some(20.0), None).unwrap();
+        assert_eq!(
+            bits(shared_named.values("plant/car.v").unwrap()),
+            bits(series(&one, "car.v"))
+        );
+        // Through a file that declares what a model inside it offers.
+        write(
+            &dir,
+            "vehicle.ssbx.json",
+            &json!({"format": 1, "run": {"dt": 0.05},
+            "blocks": [shared("plant", "car.ssbx.json"), shared("controller", "cruise.ssbx.json")],
+            "outputs": [{"name": "v", "from": "plant/speed"}],
+            "connections": [
+                {"from": "plant/speed", "to": "controller/speed"},
+                {"from": "controller/force", "to": "plant/force"}]}),
+        );
+        let watched = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"dt": 0.05, "t_end": 5},
+            "blocks": [
+                {"name": "watch", "type": "input.value", "settings": {"unit": "m/s"}},
+                {"name": "odo", "type": "eq.equations", "method": {"name": "euler"},
+                 "equations": ["input v [m/s]", "state d [m]", "dd/dt = v"], "params": {"d0": 0}},
+                use_of("vehicle", "vehicle.ssbx.json")],
+            "connections": [
+                {"from": "watch.y", "to": "odo.v"},
+                {"from": "probe:p.vehicle/v", "to": "watch"}],
+            "controls": {"probes": [{"name": "p", "record": ["vehicle/v"]}]}}),
+        );
+        assert_eq!(
+            bits(watched.values("watch.y").unwrap()),
+            bits(&series(&one, "car.v")[..101])
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_used_models_node_shows_its_interface() {
+        use crate::diagram::Diagram;
+        let dir = temp_dir("interface");
+        declared_files(&dir);
+        let diagram = |v: &Value| {
+            let (file, _) = simsandbox_file::ModelFile::from_json(&v.to_string()).unwrap();
+            simsandbox_core::registry::in_folder(Some(&dir), || {
+                let mut d = Diagram::new(&file, &registry());
+                d.observe(&file, &crate::examples::view_registry());
+                d
+            })
+        };
+        let alone = diagram(&json!({"format": 1, "blocks": [use_of("plant", "car.ssbx.json")]}));
+        let plant = &alone.nodes[0];
+        let names = |ports: &[crate::diagram::Port]| {
+            ports.iter().map(|p| p.name.clone()).collect::<Vec<_>>()
+        };
+        // Its input block and its declared output; nothing else, and
+        // never an input block's own y.
+        assert_eq!(names(&plant.inputs), ["force"]);
+        assert_eq!(names(&plant.outputs), ["speed"]);
+        assert_eq!(plant.outputs[0].unit, "m/s");
+        assert!(plant
+            .reachable
+            .iter()
+            .any(|(i, p)| !*i && p.name == "car.v"));
+        assert!(!plant.reachable.iter().any(|(_, p)| p.name == "force.y"));
+        // What is wired by an inner name shows too.
+        let wired = diagram(&json!({"format": 1,
+            "blocks": [use_of("plant", "car.ssbx.json")],
+            "controls": {"probes": [{"name": "p", "record": ["plant/car.v"]}]}}));
+        assert_eq!(names(&wired.nodes[0].outputs), ["speed", "car.v"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn what_declared_outputs_refuse() {
+        let dir = temp_dir("declared-refuse");
+        cruise_files(&dir);
+        let car: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("car.ssbx.json")).unwrap())
+                .unwrap();
+        let refused = |outputs: Value, says: &str| {
+            let mut v = car.clone();
+            v["outputs"] = outputs;
+            let report = crate::describe::check(&v.to_string(), &registry());
+            assert_eq!(report["ok"], false, "{v}");
+            let message = report["errors"][0].to_string();
+            assert!(message.contains(says), "{message}");
+        };
+        refused(
+            json!([{"name": "s", "from": "car.v"}, {"name": "s", "from": "car.v"}]),
+            "unique",
+        );
+        refused(
+            json!([{"name": "force", "from": "car.v"}]),
+            "an input block's name",
+        );
+        refused(
+            json!([{"name": "s", "from": "wheel.v"}]),
+            "one of its blocks' outputs",
+        );
+        refused(
+            json!([{"name": "s", "from": "car.w"}]),
+            "is not an output of the model",
+        );
+        let mut ok = car.clone();
+        ok["outputs"] = json!([{"name": "speed", "from": "car.v"}]);
+        let report = crate::describe::check(&ok.to_string(), &registry());
+        assert_eq!(report["declared_outputs"][0]["from"], "car.v", "{report}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

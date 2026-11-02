@@ -100,6 +100,9 @@ pub struct Node {
     pub open: bool,
     /// The block's text settings, such as a conversion's units.
     pub settings: BTreeMap<String, String>,
+    /// A used model's ports not shown on its node (ADR 0066 step 4b),
+    /// reachable by path from its list: `true` for an input.
+    pub reachable: Vec<(bool, Port)>,
 }
 
 /// A parameter value shown on a node.
@@ -292,6 +295,9 @@ impl Diagram {
                 p.canvas,
             ));
         }
+        if *scope == Scope::Model {
+            reveal_wired(&mut nodes, file);
+        }
         let index: BTreeMap<String, usize> = nodes
             .iter()
             .enumerate()
@@ -475,6 +481,64 @@ fn build(
         .map_err(|e| e.to_string())
 }
 
+/// Show on a used model's node the ports something reaches by path
+/// (ADR 0066 step 4b): wires and links into and out of it, what probes
+/// record, what views and filters read.
+fn reveal_wired(nodes: &mut [Node], file: &ModelFile) {
+    let mut ends: Vec<(bool, String)> = Vec::new();
+    for c in &file.connections {
+        let from = c
+            .from
+            .strip_prefix("probe:")
+            .and_then(|r| r.split_once('.'))
+            .map_or(c.from.as_str(), |(_, s)| s);
+        ends.push((false, from.to_string()));
+        ends.push((true, c.to.clone()));
+    }
+    for p in &file.controls.probes {
+        ends.extend(p.record.iter().map(|r| (false, r.clone())));
+    }
+    for v in &file.controls.views {
+        for b in v.bind.values() {
+            ends.extend(b.signals().into_iter().map(|s| (false, s)));
+        }
+    }
+    for f in &file.controls.filters {
+        ends.extend(
+            crate::observers::filter_reads(f)
+                .into_iter()
+                .map(|s| (false, s)),
+        );
+    }
+    for (input, end) in ends {
+        let Some((u, rest)) = end.split_once('/') else {
+            continue;
+        };
+        let Some(n) = nodes
+            .iter_mut()
+            .find(|n| n.kind == NodeKind::Use && n.name == u)
+        else {
+            continue;
+        };
+        let shown = if input { &n.inputs } else { &n.outputs };
+        if shown.iter().any(|p| p.name == rest) {
+            continue;
+        }
+        if let Some(k) = n
+            .reachable
+            .iter()
+            .position(|(i, p)| *i == input && p.name == rest)
+        {
+            let (_, port) = n.reachable.remove(k);
+            if input {
+                n.inputs.push(port);
+            } else {
+                n.outputs.push(port);
+            }
+        }
+    }
+}
+
 /// A use of a model file (ADR 0066): read from `folder` (or the thread's,
 /// `in_folder`); its input blocks are its inputs, the outputs of its
 /// blocks and of the uses inside it (`engine/x.y`) its outputs. Shown
@@ -500,6 +564,7 @@ fn use_node(
         unreached: Vec::new(),
         values: Vec::new(),
         open: false,
+        reachable: Vec::new(),
         settings: Default::default(),
     };
     let folder = folder
@@ -530,18 +595,38 @@ fn use_node(
     };
     let inner_folder = path.parent().map(std::path::Path::to_path_buf);
     let mut has_states = false;
+    // Every input and output it has, by path; the node shows its
+    // interface and keeps the rest reachable (ADR 0066 step 4b).
+    let mut all_inputs: Vec<Port> = Vec::new();
+    let mut all_outputs: Vec<Port> = Vec::new();
+    let mut own_inputs: Vec<Port> = Vec::new();
     for e in &model.blocks {
         if e.file.is_some() {
             let inner = use_node(e, registry, inner_folder.as_deref(), depth + 1);
             has_states |= !inner.method.contains("new data");
-            n.inputs.extend(inner.inputs.into_iter().map(|p| Port {
+            let prefixed = |p: Port| Port {
                 name: format!("{}/{}", e.name, p.name),
                 ..p
-            }));
-            n.outputs.extend(inner.outputs.into_iter().map(|p| Port {
-                name: format!("{}/{}", e.name, p.name),
-                ..p
-            }));
+            };
+            all_inputs.extend(inner.inputs.into_iter().map(prefixed));
+            all_outputs.extend(inner.outputs.into_iter().map(prefixed));
+            for (input, p) in inner.reachable {
+                if input {
+                    all_inputs.push(prefixed(p));
+                } else {
+                    all_outputs.push(prefixed(p));
+                }
+            }
+            continue;
+        }
+        if e.type_name == simsandbox_eq::input::VALUE {
+            // An input block is an input; its own `y` is not an output.
+            let unit = e.settings.get("unit").cloned().unwrap_or_default();
+            own_inputs.push(Port {
+                name: e.name.clone(),
+                unit,
+                shape: Shape::Scalar,
+            });
             continue;
         }
         let ports: Vec<Port> = if model.subsystems.contains_key(&e.type_name) {
@@ -557,19 +642,31 @@ fn use_node(
                 Err(_) => Vec::new(),
             }
         };
-        if e.type_name == simsandbox_eq::input::VALUE {
-            let unit = e.settings.get("unit").cloned().unwrap_or_default();
-            n.inputs.push(Port {
-                name: e.name.clone(),
-                unit,
-                shape: Shape::Scalar,
-            });
-        }
-        n.outputs.extend(ports.into_iter().map(|p| Port {
+        all_outputs.extend(ports.into_iter().map(|p| Port {
             name: format!("{}.{}", e.name, p.name),
             ..p
         }));
     }
+    // Declared outputs, shaped like what they stand for.
+    let declared: Vec<Port> = model
+        .outputs
+        .iter()
+        .map(|o| {
+            let source = all_outputs.iter().find(|p| p.name == o.from);
+            Port {
+                name: o.name.clone(),
+                unit: source.map(|p| p.unit.clone()).unwrap_or_default(),
+                shape: source.map_or(Shape::Scalar, |p| p.shape),
+            }
+        })
+        .collect();
+    n.inputs = own_inputs;
+    n.reachable = all_inputs
+        .into_iter()
+        .map(|p| (true, p))
+        .chain(all_outputs.into_iter().map(|p| (false, p)))
+        .collect();
+    n.outputs = declared;
     n.method = match b.clock {
         Some(UseClock::Step(dt)) => format!("every {dt} s"),
         Some(UseClock::Shared) => "shared clock".into(),
@@ -631,6 +728,7 @@ fn node(b: &BlockEntry, registry: &Registry, folder: Option<&std::path::Path>) -
         unreached: Vec::new(),
         values,
         open: false,
+        reachable: Vec::new(),
         settings: b.settings.clone(),
     }
 }
@@ -789,6 +887,7 @@ fn instance_node(file: &ModelFile, b: &BlockEntry, registry: &Registry) -> Node 
         unreached: Vec::new(),
         values,
         open: false,
+        reachable: Vec::new(),
         settings: BTreeMap::new(),
     }
 }
@@ -825,6 +924,7 @@ fn boundary(
         unreached: Vec::new(),
         values: Vec::new(),
         open: false,
+        reachable: Vec::new(),
         settings: BTreeMap::new(),
     }
 }

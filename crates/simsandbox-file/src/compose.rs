@@ -32,6 +32,8 @@ pub struct Domain {
     /// sample, at that time; with a `sample` section, it runs its whole
     /// sweep then.
     pub on_data: bool,
+    /// The outputs its file declares (ADR 0066 step 4b).
+    pub declared: Vec<crate::OutputPort>,
 }
 
 impl Domain {
@@ -229,17 +231,75 @@ pub(crate) fn check_uses(
     Ok(())
 }
 
+/// Declared outputs checked as the file is read: plain names, unique and
+/// apart from its input blocks' names; `from` a block's output or a path
+/// into a model it uses (ADR 0066 step 4b).
+pub(crate) fn check_outputs(
+    outputs: &[crate::OutputPort],
+    blocks: &[BlockEntry],
+) -> Result<(), FileError> {
+    for (k, o) in outputs.iter().enumerate() {
+        let path = format!("outputs[{k}]");
+        if !crate::subsystems::valid_name(&o.name) || outputs[..k].iter().any(|p| p.name == o.name)
+        {
+            return Err(invalid(
+                format!("{path}.name"),
+                format!(
+                    "'{}': output names are unique letters, digits and '_'",
+                    o.name
+                ),
+            ));
+        }
+        if blocks
+            .iter()
+            .any(|b| b.name == o.name && b.type_name == INPUT_VALUE)
+        {
+            return Err(invalid(
+                format!("{path}.name"),
+                format!(
+                    "'{}' is an input block's name: name the output apart",
+                    o.name
+                ),
+            ));
+        }
+        let first = o.from.split(['/', '.']).next().unwrap_or("");
+        if !blocks.iter().any(|b| b.name == first)
+            || !(o.from.contains('.') || o.from.contains('/'))
+        {
+            return Err(invalid(
+                format!("{path}.from"),
+                format!(
+                    "'{}': one of its blocks' outputs (block.port) or a path into a model it uses",
+                    o.from
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// What one model's names resolve to: its own domain (if it has blocks of
 /// its own) and each use's level.
 struct Level {
     domain: Option<usize>,
     uses: BTreeMap<String, Level>,
+    /// Declared outputs (ADR 0066 step 4b), its own and those of uses on
+    /// a shared clock in it (`plant/speed`), by name: what each stands
+    /// for, relative to this level.
+    aliases: BTreeMap<String, String>,
 }
 
 impl Level {
     /// The domain `name` (relative to this level) lies in, and the name
     /// inside it.
-    fn resolve<'a>(&self, name: &'a str) -> Option<(usize, &'a str)> {
+    fn resolve<'a>(&'a self, name: &'a str) -> Option<(usize, &'a str)> {
+        self.resolve_within(name, 0)
+    }
+
+    fn resolve_within<'a>(&'a self, name: &'a str, depth: usize) -> Option<(usize, &'a str)> {
+        if let Some(to) = self.aliases.get(name).filter(|_| depth < 32) {
+            return self.resolve_within(to, depth + 1);
+        }
         // A use moved up from a model on a shared clock has a path for a
         // name (`plant/engine`): the longest that fits.
         let inside = self
@@ -248,7 +308,7 @@ impl Level {
             .filter(|(k, _)| below(name, k))
             .max_by_key(|(k, _)| k.len());
         match inside {
-            Some((k, l)) => l.resolve(&name[k.len() + 1..]),
+            Some((k, l)) => l.resolve_within(&name[k.len() + 1..], depth),
             None => self.domain.map(|d| (d, name)),
         }
     }
@@ -371,6 +431,15 @@ struct OwnClock {
     at: String,
 }
 
+/// What putting uses on a shared clock in place gives: the uses on their
+/// own clocks moved up, the uses put in place (to pass wires through),
+/// and the declared outputs reached through them, by path.
+type Inlining = (
+    Vec<OwnClock>,
+    BTreeMap<String, Inlined>,
+    BTreeMap<String, String>,
+);
+
 /// A use on a shared clock put in place as a subsystem, and those inside
 /// it, to pass wires through at any depth.
 struct Inlined {
@@ -491,6 +560,9 @@ fn expose_output(
                  is read through a probe link"
             ))
         }
+        None if !inner.contains('.') && subs[&inl.def].outputs.iter().any(|p| p.name == inner) => {
+            return Ok(inner.to_string());
+        }
         None => {
             let def = &subs[&inl.def];
             let own = inner
@@ -582,7 +654,7 @@ impl Loader<'_> {
         clocked: bool,
     ) -> Result<Level, FileError> {
         let mut file = file.clone();
-        let (lifted, _) = self.inline_shared(&mut file, path, folder)?;
+        let (lifted, _, aliases) = self.inline_shared(&mut file, path, folder)?;
         let file = &file;
         let full = |name: &str| {
             if path.is_empty() {
@@ -622,7 +694,11 @@ impl Loader<'_> {
         let mut level = Level {
             domain: None,
             uses: BTreeMap::new(),
+            aliases,
         };
+        for o in &file.outputs {
+            level.aliases.insert(o.name.clone(), o.from.clone());
+        }
         if !own.is_empty() {
             let mut f = file.clone();
             f.blocks = own.iter().map(|&k| file.blocks[k].clone()).collect();
@@ -648,6 +724,8 @@ impl Loader<'_> {
                 .cloned()
                 .collect();
             f.controls = Default::default();
+            // Declared outputs resolve at this level, not in the domain.
+            f.outputs.clear();
             f.controls.probes = probes;
             f.run.dt = dt;
             f.run.t_end = None;
@@ -683,6 +761,7 @@ impl Loader<'_> {
                 loaded,
                 dt,
                 on_data,
+                declared: file.outputs.clone(),
             });
         }
         for u in &uses {
@@ -799,7 +878,7 @@ impl Loader<'_> {
         file: &mut ModelFile,
         path: &str,
         folder: Option<&Path>,
-    ) -> Result<(Vec<OwnClock>, BTreeMap<String, Inlined>), FileError> {
+    ) -> Result<Inlining, FileError> {
         let shared: Vec<usize> = (0..file.blocks.len())
             .filter(|&k| {
                 file.blocks[k].file.is_some() && file.blocks[k].clock == Some(UseClock::Shared)
@@ -807,6 +886,7 @@ impl Loader<'_> {
             .collect();
         let mut tree: BTreeMap<String, Inlined> = BTreeMap::new();
         let mut lifted: Vec<OwnClock> = Vec::new();
+        let mut aliases: BTreeMap<String, String> = BTreeMap::new();
         for k in shared {
             let u = file.blocks[k].clone();
             let at = format!("blocks[{k}]");
@@ -824,7 +904,18 @@ impl Loader<'_> {
             self.stack.push(canonical);
             let inner = self.inline_shared(&mut child, &full, child_folder.as_deref());
             self.stack.pop();
-            let (inner_lifted, child_tree) = inner.map_err(fail)?;
+            let (inner_lifted, child_tree, child_aliases) = inner.map_err(fail)?;
+            // Its declared outputs, and those of its shared uses, by path
+            // from here.
+            for (k2, v) in child_aliases {
+                aliases.insert(format!("{}/{k2}", u.name), format!("{}/{v}", u.name));
+            }
+            for o in &child.outputs {
+                aliases.insert(
+                    format!("{}/{}", u.name, o.name),
+                    format!("{}/{}", u.name, o.from),
+                );
+            }
             // Its uses on their own clocks move up here.
             let mut moving: Vec<OwnClock> = child
                 .blocks
@@ -974,6 +1065,7 @@ impl Loader<'_> {
             }
             rename(&mut child.blocks);
             let def = unique(&u.name, &file.subsystems);
+            let declared = std::mem::take(&mut child.outputs);
             file.subsystems.insert(
                 def.clone(),
                 Subsystem {
@@ -985,6 +1077,38 @@ impl Loader<'_> {
                     connections: child.connections,
                 },
             );
+            let inner_tree: BTreeMap<String, Inlined> = child_tree
+                .into_iter()
+                .map(|(n, t)| (n, t.renamed(&renamed)))
+                .collect();
+            // Its declared outputs are ports of its subsystem, so wires
+            // reach them by name (`plant/speed`).
+            for o in declared {
+                let from = match o.from.split_once('/') {
+                    None => o.from.clone(),
+                    Some((first, rest)) => match inner_tree.get(first) {
+                        Some(inl) => {
+                            let port =
+                                expose_output(&mut file.subsystems, inl, rest).map_err(|m| {
+                                    fail(invalid("outputs", format!("{}: {m}", o.from)))
+                                })?;
+                            format!("{first}.{port}")
+                        }
+                        // From a model on its own clock inside: reached by
+                        // links, through the alias.
+                        None => continue,
+                    },
+                };
+                file.subsystems
+                    .get_mut(&def)
+                    .expect("inserted")
+                    .outputs
+                    .push(crate::OutputPort {
+                        name: o.name,
+                        from,
+                        canvas: None,
+                    });
+            }
             file.blocks[k] = BlockEntry {
                 name: u.name.clone(),
                 type_name: def.clone(),
@@ -996,10 +1120,7 @@ impl Loader<'_> {
                 u.name.clone(),
                 Inlined {
                     def,
-                    inner: child_tree
-                        .into_iter()
-                        .map(|(n, t)| (n, t.renamed(&renamed)))
-                        .collect(),
+                    inner: inner_tree,
                 },
             );
             lifted.extend(moving.into_iter().map(|mut m| {
@@ -1031,7 +1152,7 @@ impl Loader<'_> {
                 }
             }
         }
-        Ok((lifted, tree))
+        Ok((lifted, tree, aliases))
     }
 
     /// Make the files blocks' settings name absolute, from `folder`.

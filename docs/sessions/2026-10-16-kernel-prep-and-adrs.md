@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0066 step 4b, first part: `ModelFile::outputs`, `check_outputs`, load check; `Level::aliases`; declared outputs as ports of shared uses; `Node::reachable`, `reveal_wired`, interface-only use nodes; `check` reports `declared_outputs`. Tests: by name equals by inner name (linked and shared), nested re-declaration, node interface, refusals.
 - 2026-11-02: ADR 0066 step 4 split into 4a/4b/4c; 4a built: `NodeKind::Use`, `diagram::use_node`, wire ends inside uses, data-layer sources and links for uses, canvas styling; test and a headless render.
 - 2026-11-02: ADR 0067 written (experiments over whole models; time from data) and its step 1: the refusal of a model with nothing in time removed (one evaluation at t = 0 in link order; tested with a two-model pipeline).
 - 2026-11-02: ADR 0066 step 3: `Domain::on_data`/`swept`, `Composition::clocks`; runner evaluates on-data domains on delivery (`Running::evaluate` with `restart(t)`; sweeps replace their results), probes on them count evaluations, loops re-evaluate. Tests: deliveries by hand, clocked variant, top level on data, same-instant loop, latest sweep, refusals.
@@ -103,6 +104,7 @@
 
 ## Decided
 
+- 2026-11-02 (owner, Q46): declared outputs in model files; a used model's node shows inputs, declared outputs and what is wired; the rest from a searchable list by path; parameters as a tree in the Inspector; nested inputs hidden unless wired.
 - 2026-11-02 (owner): ADR 0067: the opened file's `sample` is an experiment over the whole model, a used file's `sample` a curve; final values per point by default, `reduce` and series opt-in; common random numbers by default, per-point seeds and replicates as options; a model without states is driven by its own data files' sample times automatically; `clock: {"times": …}`.
 - 2026-11-02 (owner): step 2b in ADR 0066: any file usable on a shared clock; wires and values at any depth; formulas live on a shared clock, evaluated once into a model on its own clock (ours, recorded in the ADR).
 - 2026-11-02 (owner): models nest (ADR 0066): one recursive kind of model; uses of model files in `blocks`, on their own clocks by default, shared one setting away; links at any depth; rewind per clock with recorded link values; 128-bit ticks and the end-time rule.

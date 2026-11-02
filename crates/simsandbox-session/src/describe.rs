@@ -253,6 +253,8 @@ pub fn check(text: &str, r: &Registry) -> Value {
                 "conversions": s.conversions,
                 "labels": labels.map(self::labels),
                 "swept": s.sweep().map(|sw| sw.keys().to_vec()),
+                // What it offers to models that use it (ADR 0066 step 4b).
+                "declared_outputs": s.file.outputs.iter().map(|o| json!({"name": o.name, "from": o.from})).collect::<Vec<_>>(),
                 "fused_groups": s.groups.iter().map(|g| json!({"blocks": g.blocks, "method": g.method.to_string()})).collect::<Vec<_>>(),
                 // What views and probes can take (ADR 0063); what the history
                 // records follows the views.

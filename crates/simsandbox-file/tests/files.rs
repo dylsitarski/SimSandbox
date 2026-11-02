@@ -469,6 +469,7 @@ fn schema_is_valid_json_and_lists_the_file_fields() {
             "format",
             "fusion",
             "groups",
+            "outputs",
             "params",
             "run",
             "sample",

@@ -90,6 +90,35 @@
         "$ref": "#/$defs/block"
       }
     },
+    "outputs": {
+      "type": "array",
+      "description": "The outputs the model offers to models that use it (ADR 0066 step 4b), by name: 'from' is one of its blocks' outputs ('car.v') or a path into a model it uses ('plant/car.v'). Users wire and link to 'use/name'.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "from"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_]+$"
+          },
+          "from": {
+            "type": "string"
+          },
+          "canvas": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      }
+    },
     "connections": {
       "type": "array",
       "items": {

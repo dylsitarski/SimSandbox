@@ -74,6 +74,12 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
 4. The canvas and the app (ADR 0065 point 6 and the edit question), in three parts:
    - **4a:** uses as nodes on the diagram, with their input blocks as inputs, their outputs by path, and their clocks; wires, links and probe records drawn; headless `render --diagram`.
    - **4b:** the app's session runs models that use files: a multi-clock engine taken out of the headless runner (same results), behind the session, so such files open and run with views, sliders and inputs by full name, and uses open to show their insides.
+     - **The interface of a used model (owner, 2026-11-02, Q46):**
+       - **Declared outputs:** a model file may declare the outputs it offers, `"outputs": [{"name": "speed", "from": "car.v"}]`, as a subsystem does. `from` is one of its blocks' outputs, or a path into a model it uses. Users wire and link to `plant/speed`; the names stay valid when the file's insides change.
+       - **What its node shows:** its input blocks as inputs, its declared outputs, and whatever is wired, even deep paths. Input blocks' own `y` is not listed. Inputs of models nested inside it show only when wired.
+       - **The rest:** every output and input stays reachable by path from a searchable list on the node ("＋"), grouped by nested model.
+       - **Parameters:** the node lists the values set for that use. The Inspector shows every parameter as a tree by path (`vehicle ▸ plant ▸ car.m`), with search.
+       - **Headless:** `check` lists a model's declared outputs apart from the full list by path.
    - **4c:** editing: a probe added when wiring across clocks, the edit question (edit the original, make a local copy, save as a new model file), saving several files, "Add model…".
 5. The recorder and rewind above; run files.
 6. Domains stepping on several cores between instants (ADR 0062 step 3).
@@ -172,6 +178,19 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
 - **Wires:** wire ends inside a use (`plant/car.v`, `controller/speed`) find the use's port by the rest of the path. On the data layer, `sources` give a use's outputs by full name, so probes record from them, and links from probes into a use's input blocks are drawn solid like other probes that feed the model.
 - **Canvas:** a use is drawn with a double outline, like a subsystem use, in a stronger colour. Its menu names its file and clock. Opening it comes with 4b.
 - **Tested:** nodes, ports and units, clocks (own, set, shared, on new data), probe records and links, direct wires between shared uses with nothing dangling, and a missing file. A headless render of the cruise control from two files was looked at.
+
+**Step 4b, first part (2026-11-02): a used model's interface.**
+- **The file:** `ModelFile::outputs` (`OutputPort`: `name`, `from`) is checked when the file is read (`compose::check_outputs`): names plain, unique and apart from input blocks' names, and `from` starting at one of its blocks. When a model is loaded alone, `from` must be a real output (a block's, or a subsystem use's port).
+- **Links:** they resolve declared outputs as aliases on each level of the loader (`Level::aliases`, its own and those of shared uses in it, by path), so `plant/speed` links like `plant/car.v`.
+- **Shared uses:** a shared use's declared outputs become ports of its subsystem, passed through nested shared uses (`expose_output` knows them by name), so wires reach `plant/speed` and `vehicle/v`.
+- **Nodes:** `diagram::use_node` shows a used model's input blocks (never their own `y`) and its declared outputs, with units taken from what they stand for. Every other port, nested ones included, goes to `Node::reachable`. `reveal_wired` moves onto the node whatever connections, probe records, views or filters reach by path.
+- **`check`:** reports `declared_outputs`, for a model alone and for each model in a composition.
+- **Tests:**
+  - linked by declared names, the same bits as by inner names;
+  - wired by declared names on a shared clock, the same bits as the model in one file;
+  - a vehicle file re-declaring a nested output, read through a probe link;
+  - nodes showing only their interface until something wires an inner port;
+  - refusals.
 
 ## Consequences
 

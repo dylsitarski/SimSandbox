@@ -93,6 +93,11 @@ pub struct ModelFile {
     pub subsystems: BTreeMap<String, Subsystem>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<BlockEntry>,
+    /// The outputs it offers to models that use it (ADR 0066 step 4b), by
+    /// name: `from` is one of its blocks' outputs (`car.v`), or a path
+    /// into a model it uses (`plant/car.v`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<OutputPort>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<ConnectionEntry>,
     /// Whether connected equation blocks are solved together
@@ -1411,6 +1416,29 @@ pub fn load_in(
     // Errors name the place in the file as written.
     let origin = |e: FileError| origin(e, &block_origins, &connection_origins);
     let (mut model, ids) = flat.build(registry, folder).map_err(origin)?;
+    // Declared outputs name real outputs (ADR 0066 step 4b).
+    for (k, o) in file.outputs.iter().enumerate() {
+        let Some((block, port)) = o.from.split_once('.').filter(|(b, _)| !b.contains('/')) else {
+            continue;
+        };
+        let found = match file.blocks.iter().find(|b| b.name == block) {
+            Some(b) if file.subsystems.contains_key(&b.type_name) => file.subsystems[&b.type_name]
+                .outputs
+                .iter()
+                .any(|p| p.name == port),
+            _ => ids.get(block).is_some_and(|&id| {
+                model
+                    .block(id)
+                    .is_ok_and(|b| b.spec().outputs().any(|p| p.name == port))
+            }),
+        };
+        if !found {
+            return Err(invalid(
+                format!("outputs[{k}].from"),
+                format!("'{}' is not an output of the model", o.from),
+            ));
+        }
+    }
     let data = data_digests(&flat, registry, folder);
     // Formulas give each block parameter in its unit (ADR 0045).
     params.fit_blocks(&mut model, &ids)?;
@@ -1538,6 +1566,8 @@ struct RawFile {
     #[serde(default)]
     blocks: Vec<BlockEntry>,
     #[serde(default)]
+    outputs: Vec<OutputPort>,
+    #[serde(default)]
     connections: Vec<ConnectionEntry>,
     #[serde(default)]
     fusion: Fusion,
@@ -1558,6 +1588,7 @@ impl ModelFile {
             params: BTreeMap::new(),
             subsystems: BTreeMap::new(),
             blocks: Vec::new(),
+            outputs: Vec::new(),
             connections: Vec::new(),
             fusion: Fusion::Auto,
             groups: Vec::new(),
@@ -1645,6 +1676,7 @@ impl ModelFile {
             return Err(invalid("run.t_end", format!("must be positive, got {t}")));
         }
         compose::check_uses(&raw.blocks, &raw.subsystems)?;
+        compose::check_outputs(&raw.outputs, &raw.blocks)?;
         let mut warnings = Vec::new();
         let mut controls: Controls = match raw.controls {
             None => Controls::default(),
@@ -1688,6 +1720,7 @@ impl ModelFile {
                 params: raw.params,
                 subsystems: raw.subsystems,
                 blocks: raw.blocks,
+                outputs: raw.outputs,
                 connections: raw.connections,
                 fusion: raw.fusion,
                 groups: raw.groups,
