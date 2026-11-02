@@ -1822,6 +1822,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// An instant of a merged run: its time, each clock's steps, and every
+    /// block's outputs then.
+    type Instant = (f64, Vec<u128>, Vec<Vec<f64>>);
+
     /// Run `model` merged into one simulator with clocks (ADR 0066 step
     /// 4b) and check every value the headless runner records, at each
     /// model's own instants, bit for bit.
@@ -1836,7 +1840,7 @@ mod tests {
         let mut sim = Simulator::new(loaded.model, 0.0).unwrap();
         // Every instant: its time, each clock's steps, and the
         // simulator's outputs then.
-        let mut instants: Vec<(f64, Vec<u128>, Vec<Vec<f64>>)> = Vec::new();
+        let mut instants: Vec<Instant> = Vec::new();
         let grab = |sim: &Simulator| -> Vec<Vec<f64>> {
             ids.values()
                 .map(|&id| {
@@ -1903,11 +1907,7 @@ mod tests {
     }
 
     /// Whether domain `d` runs on new data: its clock takes no steps.
-    fn model_on_data(
-        _apart: &Composed,
-        d: usize,
-        instants: &[(f64, Vec<u128>, Vec<Vec<f64>>)],
-    ) -> bool {
+    fn model_on_data(_apart: &Composed, d: usize, instants: &[Instant]) -> bool {
         instants.last().is_some_and(|(_, steps, _)| steps[d] == 0)
     }
 
