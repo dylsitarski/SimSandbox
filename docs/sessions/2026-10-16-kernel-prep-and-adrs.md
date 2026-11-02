@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0069 step 1: `Edit::Duplicate` (names, wires among copies, clock kept), canvas menu and Ctrl+D, routed inside outlines, Python `duplicate`; tests.
 - 2026-11-02: ADR 0066 step 4d: `expand` module (`Outline`, `Diagram::expand`, `splice`, `find`, `route`), `Diagram::outlines`/`shifted`, `controls.expand`; canvas outlines, `clock_colour`, Expand/Collapse requests, short titles; app `expanded`, routing in `handle`, `Asking::path`, `Outcome::Expanded`; `render --expand`, Python `expand=`; tests.
 - 2026-11-02: ADR 0068 step 3: `subsystems` refused (`compose::with_subsystems` for the loader's own), schema, Platoon rewritten, `Loader::inside_error` and `compose::nest`; `Scope` = Model only, subsystem nodes/edits removed; `Edit::DeclareOutput`/`RemoveOutput`/`RenameModel`/`SetEquations`; `group` understands paths; use nodes show their values; declared outputs carry `output.*`; `render --inside`; Python `render(inside=)`, `group`; tests ported.
 - 2026-11-02: ADR 0069 written (Q50). ADR 0068 step 2: `Asking`/`begin_edit` and definition wording in the question; `Edit::GroupModel`/`group_model`, `compose::convert_some_subsystems`; `edit_use::uses_of`, `definition_to_file`, `file_to_definition`; canvas `Request::MoveToFile`/`PutInFile`; app `move_use`. Tests headless and in the app.

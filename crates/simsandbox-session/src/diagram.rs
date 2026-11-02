@@ -782,6 +782,9 @@ pub enum Edit {
     AddUse { file: String, at: [f64; 2] },
     /// A block, or a port node (removing the port).
     Delete { block: String },
+    /// Copies of these blocks or uses, with their values and the wires
+    /// among them, beside the originals (ADR 0069); edited apart after.
+    Duplicate { blocks: Vec<String> },
     /// A block, or a port node (renaming the port).
     Rename { from: String, to: String },
     /// `"node.port"` to `"node.port"`; replaces whatever fed the input.
@@ -1156,6 +1159,61 @@ fn edit_level(
                 entry.method = set.kind().default_method().into();
             }
             Ok(format!("Changed the equations of {block}"))
+        }
+        Edit::Duplicate { blocks } => {
+            let mut renamed: BTreeMap<String, String> = BTreeMap::new();
+            for name in blocks {
+                let entry = l
+                    .blocks
+                    .iter()
+                    .find(|b| &b.name == name)
+                    .cloned()
+                    .ok_or_else(|| format!("no block '{name}'"))?;
+                // `car1` → `car2`, or the next number free.
+                let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
+                let stem = if stem.is_empty() { name.as_str() } else { stem };
+                let new = free_name(stem, |n| has(l, n) || renamed.values().any(|r| r == n));
+                let mut copy = entry;
+                copy.name.clone_from(&new);
+                copy.canvas = copy.canvas.map(|[x, y]| [x + 40.0, y + 60.0]);
+                l.blocks.push(copy);
+                renamed.insert(name.clone(), new);
+            }
+            // Wires among the copied, copied too.
+            let end = |e: &str| -> Option<String> {
+                let i = e.find(['.', '/'])?;
+                renamed.get(&e[..i]).map(|n| format!("{n}{}", &e[i..]))
+            };
+            let copies: Vec<ConnectionEntry> = l
+                .connections
+                .iter()
+                .filter_map(|c| {
+                    Some(ConnectionEntry {
+                        from: end(&c.from)?,
+                        to: end(&c.to)?,
+                    })
+                })
+                .collect();
+            l.connections.extend(copies);
+            // A copy of a use keeps its original's clock, wired or not.
+            for (orig, new) in &renamed {
+                let shared = l.blocks.iter().find(|b| &b.name == orig).is_some_and(|b| {
+                    b.is_use()
+                        && simsandbox_file::compose::runs_shared(
+                            b,
+                            file.folder.as_deref(),
+                            simsandbox_file::compose::wired(&l.connections, orig),
+                        )
+                });
+                let wired = simsandbox_file::compose::wired(&l.connections, new);
+                if let Some(c) = l.blocks.iter_mut().find(|b| &b.name == new) {
+                    if shared && !wired && c.clock.is_none() {
+                        c.clock = Some(simsandbox_file::UseClock::Shared);
+                    }
+                }
+            }
+            let names: Vec<&str> = renamed.values().map(String::as_str).collect();
+            Ok(format!("Duplicated as {}", names.join(", ")))
         }
         Edit::Add { type_name, at } => {
             // A model defined in the file is added as a use of it
@@ -2234,6 +2292,57 @@ mod tests {
             .find(|o| o.name == signal)
             .unwrap_or_else(|| panic!("no {signal} ({port})"));
         *o.values.last().unwrap()
+    }
+
+    #[test]
+    fn duplicated_blocks_and_uses_keep_their_values_and_wires_among_them() {
+        let r = registry();
+        let mut f = file("Platoon");
+        let note = apply(
+            &mut f,
+            &r,
+            &Edit::Duplicate {
+                blocks: vec!["car3".into()],
+            },
+        )
+        .unwrap();
+        assert!(note.contains("car4"), "{note}");
+        let car4 = f.blocks.iter().find(|b| b.name == "car4").unwrap();
+        assert_eq!(car4.model.as_deref(), Some("follower"));
+        assert_eq!(car4.params["mass"], ParamValue::Number(2500.0));
+        // Not wired, it keeps car3's clock: the model's.
+        assert_eq!(car4.clock, Some(simsandbox_file::UseClock::Shared));
+        assert!(final_value(&f, "car4/car.v", 1.0).is_finite());
+        // Two at once: the wire between them is copied, the ones to the
+        // rest are not.
+        let mut f = file("Platoon");
+        apply(
+            &mut f,
+            &r,
+            &Edit::Duplicate {
+                blocks: vec!["car1".into(), "car2".into()],
+            },
+        )
+        .unwrap();
+        let names: Vec<&str> = f.blocks.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(&names[4..], ["car4", "car5"]);
+        assert!(f
+            .connections
+            .iter()
+            .any(|c| c.from == "car4/v" && c.to == "car5/lead"));
+        assert!(!f.connections.iter().any(|c| c.to == "car4/lead"));
+        // A block with equations.
+        let mut f = file("Cruise");
+        apply(
+            &mut f,
+            &r,
+            &Edit::Duplicate {
+                blocks: vec!["car".into()],
+            },
+        )
+        .unwrap();
+        let copy = f.blocks.iter().find(|b| b.name == "car1").unwrap();
+        assert_eq!(copy.equations, f.blocks[0].equations);
     }
 
     #[test]

@@ -34,3 +34,12 @@ ADR 0068 refuses a model that uses itself. The owner asked on 2026-11-02 whether
 - Large repeated structures stay fast, compact and visible as fields.
 - Nesting stays for parts that differ, as ADR 0066 and ADR 0068 have it.
 - A part combining block types repeated many times takes copies by hand (Duplicate) until `count` is built.
+
+## As built
+
+**Step 1 (2026-11-02): Duplicate.**
+- `Edit::Duplicate { blocks }` copies blocks or uses beside themselves (40, 60 canvas units off), named by the next free number (`car3` → `car4`), with their values, equations, settings and start states. The wires among the copied blocks are copied too; wires to the rest are not.
+- A copy of a use keeps its original's clock: a use sharing its user's clock because it is wired, copied unwired, is written `"clock": "shared"`.
+- On the canvas: "Duplicate" (or "Duplicate N blocks") in a block's or use's menu, and Ctrl+D on the selection. Inside an expanded use the edit goes to the model it uses. Python: `Model.duplicate(blocks)`.
+- Tests: a use and its values copied; two copied with the wire between them; equations copied; Python.
+

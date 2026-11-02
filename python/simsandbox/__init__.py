@@ -481,6 +481,15 @@ class Model:
         self.data.setdefault("params", {})[name] = d
         return self
 
+    def duplicate(self, blocks: Iterable[str]) -> str:
+        """Copy ``blocks`` (blocks or uses of models) beside themselves, with
+        their values and the wires among them, as "Duplicate" does on the
+        canvas (ADR 0069); the copies are named like ``car4``. Returns a
+        note naming them."""
+        text, note = _native.duplicate(self.to_json(), list(blocks))
+        self.data = json.loads(text)
+        return note
+
     def group(self, blocks: Iterable[str]) -> str:
         """Move ``blocks`` into a new model defined in this file (ADR 0068)
         and use it in their place, as "Make model" does on the canvas:

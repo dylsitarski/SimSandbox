@@ -1212,6 +1212,25 @@ impl Canvas {
         let delete =
             ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
         let typing = ui.ctx().egui_wants_keyboard_input();
+        // Ctrl+D duplicates the selected blocks (ADR 0069).
+        let duplicate = ui.input_mut(|i| {
+            i.consume_shortcut(&egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND,
+                egui::Key::D,
+            ))
+        });
+        if duplicate && !typing && response.hovered() {
+            if let Some(s) = &self.selected {
+                let blocks: Vec<String> = s
+                    .blocks()
+                    .into_iter()
+                    .filter(|b| d.node(b).is_some_and(|k| d.nodes[k].is_block()))
+                    .collect();
+                if !blocks.is_empty() {
+                    edits.push(Edit::Duplicate { blocks });
+                }
+            }
+        }
         if delete && !typing && response.hovered() {
             match self.selected.take() {
                 Some(Selection::Wire(key)) => edits.push(match key.split_once('<') {
@@ -1455,6 +1474,19 @@ impl Canvas {
                         .clicked()
                     {
                         edits.push(Edit::GroupModel { blocks: group });
+                        ui.close();
+                    }
+                }
+                if n.is_block() {
+                    let many = selection.len() > 1 && selection.contains(&name);
+                    let label = if many {
+                        format!("Duplicate {} blocks", selection.len())
+                    } else {
+                        "Duplicate".to_string()
+                    };
+                    if ui.button(label).on_hover_text("Copies beside it, with its values (Ctrl+D)").clicked() {
+                        let blocks = if many { selection.clone() } else { vec![name.clone()] };
+                        edits.push(Edit::Duplicate { blocks });
                         ui.close();
                     }
                 }

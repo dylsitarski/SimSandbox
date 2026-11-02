@@ -416,6 +416,18 @@ pub fn route(d: &Diagram, edit: &Edit) -> Result<(Option<Vec<String>>, Edit), St
                 None => top(edit),
             }
         }
+        Edit::Duplicate { blocks } => {
+            let names: Vec<&str> = blocks.iter().map(String::as_str).collect();
+            match one(&names)? {
+                Some(o) => Ok((
+                    Some(inside(o)),
+                    Edit::Duplicate {
+                        blocks: blocks.iter().map(|b| strip(o, b)).collect(),
+                    },
+                )),
+                None => top(edit),
+            }
+        }
         Edit::DeclareOutput { name, from } => match by_name(from) {
             Some(o) => Ok((
                 Some(inside(o)),
