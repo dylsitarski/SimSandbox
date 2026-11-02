@@ -65,8 +65,9 @@ pub fn check(text: &str, registry: &Registry) -> Value {
     let models: Vec<Value> = c
         .domains
         .iter()
-        .zip(&c.ticks.steps)
-        .map(|(d, steps)| {
+        .enumerate()
+        .map(|(k, d)| {
+            let steps = c.clocks[k].map(|i| c.ticks.steps[i].to_string());
             let flat = &d.loaded.flat;
             let mut outputs = Vec::new();
             for b in &flat.blocks {
@@ -85,8 +86,10 @@ pub fn check(text: &str, registry: &Registry) -> Value {
             json!({
                 "name": d.name(),
                 "file": d.file.as_ref().map(|f| f.display().to_string()),
-                "dt": d.dt,
-                "ticks_per_step": steps.to_string(),
+                "dt": (!d.on_data).then_some(d.dt),
+                "ticks_per_step": steps,
+                "on_new_data": d.on_data,
+                "swept": d.swept(),
                 "outputs": outputs,
                 "inputs": inputs,
             })
@@ -111,7 +114,7 @@ pub fn check(text: &str, registry: &Registry) -> Value {
     })
 }
 
-/// One used model while it runs.
+/// One clock domain while it runs.
 struct Running {
     sim: Simulator,
     plan: simsandbox_file::subsystems::ParamPlan,
@@ -122,10 +125,22 @@ struct Running {
     times: Vec<f64>,
     events: Track,
     dt: f64,
-    /// Its step in ticks, the steps it takes, and those taken.
+    /// Its step in ticks, the steps it takes, and those taken; all 0 for
+    /// one that runs on new data.
     every: u128,
     total: u128,
     taken: u128,
+    /// Run on new data (ADR 0066 step 3): how many times it has been
+    /// evaluated, and when last.
+    on_data: bool,
+    evaluations: u64,
+    /// For one that sweeps at each delivery: its sweep, and what indexes
+    /// the latest one's rows.
+    sweep: Option<simsandbox_file::Plan>,
+    sweep_index: Vec<(String, Vec<f64>)>,
+    swept_at: Option<f64>,
+    /// Its path and a slash, prefixing its names.
+    prefix: String,
 }
 
 impl Running {
@@ -141,21 +156,91 @@ impl Running {
         }
     }
 
-    /// Apply scheduled input due now; whether any was.
-    fn apply(&mut self) -> Result<bool, String> {
-        let now = self.sim.time();
+    /// Apply scheduled input due at `now`; whether any was.
+    fn apply(&mut self, now: f64) -> Result<bool, String> {
         let mut any = false;
-        while let Some(e) = self.events.take_due(now, 1e-9 * self.dt.max(now.abs())) {
+        while let Some(e) = self
+            .events
+            .take_due(now, 1e-9 * self.dt.max(now.abs()).max(1e-300))
+        {
             set_key(&mut self.sim, &mut self.plan, &self.ids, &e.key, e.value)
                 .map_err(|err| format!("input at t = {}: {err}", e.t))?;
             any = true;
         }
         Ok(any)
     }
+
+    /// Evaluate a model that runs on new data at `t`: once, recorded, or
+    /// its whole sweep, which replaces the last.
+    fn evaluate(&mut self, t: f64) -> Result<(), String> {
+        self.apply(t)?;
+        self.evaluations += 1;
+        let Some(plan) = self.sweep.clone() else {
+            self.sim.restart(t).map_err(|e| e.to_string())?;
+            self.record();
+            return Ok(());
+        };
+        for o in &mut self.results.outputs {
+            o.values.clear();
+        }
+        for p in &mut self.results.populations {
+            p.frames.clear();
+        }
+        self.times.clear();
+        let mut index = vec![("sample".to_string(), Vec::new())];
+        index.extend(
+            plan.keys
+                .iter()
+                .map(|k| (format!("{}{k}", self.prefix), Vec::new())),
+        );
+        let held: Vec<(simsandbox_core::graph::BlockId, String, f64)> = plan
+            .keys
+            .iter()
+            .map(|k| {
+                let (block, param) = k.split_once('.').expect("plan keys are block.param");
+                let id = self.ids[block];
+                (
+                    id,
+                    param.to_string(),
+                    self.sim.param(id, param).unwrap_or(f64::NAN),
+                )
+            })
+            .collect();
+        for (k, point) in plan.points.iter().enumerate() {
+            for ((id, param, _), &v) in held.iter().zip(point) {
+                self.sim
+                    .set_param(*id, param, v)
+                    .map_err(|e| e.to_string())?;
+            }
+            self.sim.restart(t).map_err(|e| e.to_string())?;
+            index[0].1.push(k as f64);
+            for (column, &v) in index[1..].iter_mut().zip(point) {
+                column.1.push(v);
+            }
+            self.record();
+        }
+        // The swept parameters go back to their values.
+        for (id, param, v) in &held {
+            self.sim
+                .set_param(*id, param, *v)
+                .map_err(|e| e.to_string())?;
+        }
+        self.sweep_index = index;
+        self.swept_at = Some(t);
+        Ok(())
+    }
 }
 
-/// Run a composition to `t_end` (the file's, if not given). Used files
-/// are found from the composition's folder (see
+/// What a point pass carries from one instant to the next: each probe's
+/// trigger, and what each link last received.
+struct Links {
+    triggers: Vec<Trigger>,
+    latest: Vec<f64>,
+    delayed: bool,
+}
+
+/// Run a model that uses model files to `t_end` (the file's, if not
+/// given). Used files are found from its folder (see
 /// [`simsandbox_core::registry::in_folder`]).
 pub fn run_composition(
     text: &str,
@@ -170,67 +255,50 @@ pub fn run_composition(
     let mut warnings = c.warnings.clone();
     warnings.extend(c.loops.iter().map(|l| format!("loop between models: {l}")));
     let mut runs = start(&mut c, t_end)?;
-
-    // The probes that feed links: when they sample, and what each link
-    // last received.
-    let mut triggers: Vec<Option<Trigger>> = c
-        .probes
-        .iter()
-        .map(|p| Some(Trigger::new(p.every.clone())))
-        .collect();
-    let probe_use: Vec<Option<usize>> = c.probes.iter().map(|p| Some(p.domain)).collect();
-    let mut latest: Vec<f64> = vec![f64::NAN; c.links.len()];
-    let mut delayed = false;
-
+    let mut links = Links {
+        triggers: c
+            .probes
+            .iter()
+            .map(|p| Trigger::new(p.every.clone()))
+            .collect(),
+        latest: vec![f64::NAN; c.links.len()],
+        delayed: false,
+    };
     // The start: every model has a point at t = 0.
-    for r in &mut runs {
-        if r.apply()? {
+    for r in runs.iter_mut().filter(|r| !r.on_data) {
+        if r.apply(0.0)? {
             r.sim.restart(0.0).map_err(|e| e.to_string())?;
         }
     }
-    let all: Vec<usize> = (0..runs.len()).collect();
-    point(
-        &c,
-        &mut runs,
-        &all,
-        &mut triggers,
-        &probe_use,
-        &mut latest,
-        &mut delayed,
-    )?;
+    let clocked: Vec<usize> = (0..runs.len()).filter(|&u| !runs[u].on_data).collect();
+    point(&c, &mut runs, &clocked, true, &mut links)?;
     loop {
         let next = runs
             .iter()
-            .filter(|r| r.taken < r.total)
+            .filter(|r| !r.on_data && r.taken < r.total)
             .map(|r| (r.taken + 1) * r.every)
             .min();
         let Some(tick) = next else { break };
         let reaching: Vec<usize> = (0..runs.len())
             .filter(|&u| {
-                runs[u].taken < runs[u].total && (runs[u].taken + 1) * runs[u].every == tick
+                let r = &runs[u];
+                !r.on_data && r.taken < r.total && (r.taken + 1) * r.every == tick
             })
             .collect();
         // Between points the models step apart, their link inputs held.
         for &u in &reaching {
             let r = &mut runs[u];
-            r.apply()?;
+            let now = r.sim.time();
+            r.apply(now)?;
             let dt = r.dt;
             r.sim
                 .step(dt)
                 .map_err(|e| format!("{}: {e}", c.domains[u].name()))?;
             r.taken += 1;
         }
-        point(
-            &c,
-            &mut runs,
-            &reaching,
-            &mut triggers,
-            &probe_use,
-            &mut latest,
-            &mut delayed,
-        )?;
+        point(&c, &mut runs, &reaching, false, &mut links)?;
     }
-    if delayed {
+    if links.delayed {
         warnings.push(
             "an output depending at the same instant on a model evaluated after it saw that \
              model's samples one step late (see the loop above)"
@@ -243,7 +311,16 @@ pub fn run_composition(
             .iter()
             .zip(runs)
             .map(|(d, mut r)| {
-                r.results.index = vec![("t".into(), std::mem::take(&mut r.times))];
+                r.results.index = if r.sweep.is_some() {
+                    if let Some(t) = r.swept_at {
+                        r.results
+                            .notes
+                            .push(format!("the latest sweep, evaluated at t = {t}"));
+                    }
+                    std::mem::take(&mut r.sweep_index)
+                } else {
+                    vec![("t".into(), std::mem::take(&mut r.times))]
+                };
                 (d.name().to_string(), r.results)
             })
             .collect(),
@@ -268,14 +345,25 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
     }
     let mut runs = Vec::new();
     for (k, (u, schedule)) in c.domains.iter_mut().zip(schedules).enumerate() {
-        let every = c.ticks.steps[k];
-        let total = c.ticks.steps_within(k, t_end).map_err(|e| e.to_string())?;
+        let (every, total) = match c.clocks[k] {
+            Some(i) => (
+                c.ticks.steps[i],
+                c.ticks.steps_within(i, t_end).map_err(|e| e.to_string())?,
+            ),
+            None => (0, 0),
+        };
+        let sweep = if u.swept() {
+            u.loaded.plan.clone()
+        } else {
+            None
+        };
         let prefix = if u.path.is_empty() {
             String::new()
         } else {
             format!("{}/", u.path)
         };
         let name = u.name().to_string();
+        let on_data = u.on_data;
         let loaded = &mut u.loaded;
         let mut fixed = Vec::new();
         let mut variable = Vec::new();
@@ -328,46 +416,65 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
             every,
             total,
             taken: 0,
+            on_data,
+            evaluations: 0,
+            sweep,
+            sweep_index: Vec::new(),
+            swept_at: None,
+            prefix: prefix.clone(),
         });
     }
     Ok(runs)
 }
 
-/// A communication point of the models in `reaching`, all at the same
-/// tick: in link order, each takes its link inputs, evaluates, and its
-/// probes sample. A model that read a model evaluated after it (a loop)
-/// then takes those samples too, for its next step.
-#[allow(clippy::too_many_arguments)]
+/// One instant: the clocked models in `reaching` (all at the same tick)
+/// and the models on new data, in link order. A clocked model takes its
+/// link inputs and evaluates; a model on new data is evaluated if a link
+/// into it delivered a sample during this pass (or at the start), at the
+/// time of the model that delivered it; then its probes sample. A model
+/// that read one evaluated after it (a loop) then takes those samples
+/// too: for its next step, or, on new data, evaluated again.
 fn point(
     c: &Composition,
     runs: &mut [Running],
     reaching: &[usize],
-    triggers: &mut [Option<Trigger>],
-    probe_use: &[Option<usize>],
-    latest: &mut [f64],
-    delayed: &mut bool,
+    start: bool,
+    links: &mut Links,
 ) -> Result<(), String> {
     let order: Vec<usize> = c
         .order
         .iter()
         .copied()
-        .filter(|u| reaching.contains(u))
+        .filter(|&u| reaching.contains(&u) || runs[u].on_data)
         .collect();
+    // When each link last received a sample in this pass, and which
+    // models on new data were evaluated, at what time.
+    let mut fresh = vec![false; c.links.len()];
+    let mut evaluated: Vec<Option<f64>> = vec![None; runs.len()];
+    let delivery = |runs: &[Running], fresh: &[bool], u: usize| -> Option<f64> {
+        c.links
+            .iter()
+            .enumerate()
+            .find(|(k, l)| l.to == u && fresh[*k])
+            .map(|(_, l)| runs[l.from].sim.time())
+    };
     for &u in &order {
-        take_links(c, runs, u, latest)?;
-        let r = &mut runs[u];
-        let (t, step) = (r.sim.time(), r.sim.step_count());
-        let eps = 1e-9 * r.dt.max(t.abs());
-        for (p, trigger) in triggers.iter_mut().enumerate() {
-            let Some(trigger) = trigger.as_mut().filter(|_| probe_use[p] == Some(u)) else {
-                continue;
+        if runs[u].on_data {
+            let at = if start {
+                Some(0.0)
+            } else {
+                delivery(runs, &fresh, u)
             };
-            if trigger.due(t, step, eps) {
-                for (k, l) in c.links.iter().enumerate().filter(|(_, l)| l.probe == p) {
-                    latest[k] = value(&r.sim, &l.source);
-                }
-            }
+            let Some(t) = at else { continue };
+            take_links(c, runs, u, &links.latest)?;
+            runs[u]
+                .evaluate(t)
+                .map_err(|e| format!("{}: {e}", c.domains[u].name()))?;
+            evaluated[u] = Some(t);
+        } else {
+            take_links(c, runs, u, &links.latest)?;
         }
+        sample(c, runs, u, links, &mut fresh);
     }
     // Loops: samples taken after a model evaluated reach it now.
     for &u in &order {
@@ -377,7 +484,29 @@ fn point(
             .filter(|l| l.from == u)
             .map(|l| value(&runs[u].sim, &l.source))
             .collect();
-        take_links(c, runs, u, latest)?;
+        let changed = take_links(c, runs, u, &links.latest)?;
+        if runs[u].on_data && changed {
+            let Some(t) = evaluated[u].or_else(|| delivery(runs, &fresh, u)) else {
+                continue;
+            };
+            // Evaluated again with what arrived: its record for this
+            // instant is the new one.
+            if evaluated[u].is_some() && runs[u].sweep.is_none() {
+                let r = &mut runs[u];
+                r.times.pop();
+                for o in &mut r.results.outputs {
+                    let n = o.shape.len();
+                    o.values.truncate(o.values.len() - n);
+                }
+                for p in &mut r.results.populations {
+                    p.frames.pop();
+                }
+            }
+            runs[u]
+                .evaluate(t)
+                .map_err(|e| format!("{}: {e}", c.domains[u].name()))?;
+            evaluated[u] = Some(t);
+        }
         let again: Vec<f64> = c
             .links
             .iter()
@@ -389,7 +518,7 @@ fn point(
             .zip(&again)
             .any(|(a, b)| a.to_bits() != b.to_bits())
         {
-            *delayed = true;
+            links.delayed = true;
         }
     }
     for &u in reaching {
@@ -398,14 +527,39 @@ fn point(
     Ok(())
 }
 
-/// Set a model's linked input blocks to the latest samples and apply them.
+/// The probes on model `u` sample if due: each link they feed takes the
+/// value, marked as fresh in this pass.
+fn sample(c: &Composition, runs: &[Running], u: usize, links: &mut Links, fresh: &mut [bool]) {
+    let r = &runs[u];
+    let t = r.sim.time();
+    // A model on new data counts its evaluations as its steps.
+    let step = if r.on_data {
+        r.evaluations.saturating_sub(1)
+    } else {
+        r.sim.step_count()
+    };
+    let eps = 1e-9 * r.dt.max(t.abs()).max(1e-300);
+    for (p, probe) in c.probes.iter().enumerate() {
+        if probe.domain != u || !links.triggers[p].due(t, step, eps) {
+            continue;
+        }
+        for (k, l) in c.links.iter().enumerate().filter(|(_, l)| l.probe == p) {
+            links.latest[k] = value(&r.sim, &l.source);
+            fresh[k] = true;
+        }
+    }
+}
+
+/// Set a model's linked input blocks to the latest samples and apply them;
+/// whether any changed.
 fn take_links(
     c: &Composition,
     runs: &mut [Running],
     u: usize,
     latest: &[f64],
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let r = &mut runs[u];
+    let mut changed = false;
     for (k, l) in c.links.iter().enumerate().filter(|(_, l)| l.to == u) {
         // Until its first sample, an input block keeps its own value.
         if latest[k].is_nan() {
@@ -416,11 +570,13 @@ fn take_links(
             r.sim
                 .set_param(l.id, "y", latest[k])
                 .map_err(|e| format!("{}: {e}", l.block))?;
+            changed = true;
         }
     }
     r.sim
         .refresh()
-        .map_err(|e| format!("{}: {e}", c.domains[u].name()))
+        .map_err(|e| format!("{}: {e}", c.domains[u].name()))?;
+    Ok(changed)
 }
 
 fn value(sim: &Simulator, s: &simsandbox_file::compose::Source) -> f64 {
@@ -1260,6 +1416,163 @@ mod tests {
             report["errors"][0]
                 .to_string()
                 .contains("'nothing' is not a parameter"),
+            "{report}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `a` counting time every 0.1 s (from [`pair`]) and `double.ssbx.json`,
+    /// a model without states: `y = 2·u`, `u` an input block.
+    fn on_data_files(dir: &Path) {
+        pair(dir, 0.1, 0.3);
+        write(
+            dir,
+            "double.ssbx.json",
+            &json!({"format": 1,
+            "blocks": [
+                {"name": "u", "type": "input.value", "settings": {"unit": "m"}},
+                {"name": "f", "type": "eq.equations", "equations": [
+                    "input u [m]", "param k = 2", "y = k*u [m]"]}],
+            "connections": [{"from": "u.y", "to": "f.u"}]}),
+        );
+    }
+
+    /// x of `a` after n steps of 0.1 s, as Euler computes it.
+    fn counted(n: usize) -> Vec<f64> {
+        let mut x = vec![0.0f64];
+        for _ in 0..n {
+            x.push(x.last().unwrap() + 0.1 * 1.0);
+        }
+        x
+    }
+
+    #[test]
+    fn a_model_without_states_is_evaluated_when_a_link_delivers() {
+        let dir = temp_dir("on-data");
+        on_data_files(&dir);
+        let feeds = |every: Value| {
+            json!({"format": 1, "run": {"t_end": 1.2},
+            "blocks": [use_of("a", "a.ssbx.json"), use_of("d", "double.ssbx.json")],
+            "connections": [{"from": "probe:p.a/count.x", "to": "d/u"}],
+            "controls": {"probes": [{"name": "p", "record": ["a/count.x"], "every": every}]}})
+        };
+        let composed = run_in(&dir, &feeds(json!({"seconds": 0.3})));
+        let x = counted(12);
+        let d = composed.model("d").unwrap();
+        // At the start and at each delivery, at the delivery's time.
+        let t: Vec<f64> = [0, 3, 6, 9, 12]
+            .iter()
+            .map(|&n| composed.model("a").unwrap().index[0].1[n])
+            .collect();
+        assert_eq!(d.index[0].1, t);
+        let y: Vec<f64> = [0, 3, 6, 9, 12].iter().map(|&n| 2.0 * x[n]).collect();
+        assert_eq!(bits(series(d, "d/f.y")), bits(&y));
+        let report = check_in(&dir, &feeds(json!({"seconds": 0.3})));
+        assert_eq!(report["models"][1]["on_new_data"], true, "{report}");
+        assert_eq!(report["models"][1]["dt"], Value::Null);
+        // The top level's own blocks without states run on new data too.
+        let top = json!({"format": 1, "run": {"t_end": 1.2},
+            "blocks": [
+                {"name": "u", "type": "input.value", "settings": {"unit": "m"}},
+                {"name": "f", "type": "eq.equations", "equations": ["input u [m]", "y = 3*u [m]"]},
+                use_of("a", "a.ssbx.json")],
+            "connections": [{"from": "u.y", "to": "f.u"}, {"from": "probe:p.a/count.x", "to": "u"}],
+            "controls": {"probes": [{"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.6}}]}});
+        let composed = run_in(&dir, &top);
+        let y: Vec<f64> = [0, 6, 12].iter().map(|&n| 3.0 * x[n]).collect();
+        assert_eq!(bits(composed.values("f.y").unwrap()), bits(&y));
+        // Given a clock, it is evaluated at each of its steps instead.
+        let mut clocked = feeds(json!({"steps": 1}));
+        clocked["blocks"][1]["clock"] = json!({"dt": 0.2});
+        let composed = run_in(&dir, &clocked);
+        let d = composed.model("d").unwrap();
+        assert_eq!(d.rows(), 7);
+        let y: Vec<f64> = (0..=6).map(|k| 2.0 * x[2 * k]).collect();
+        assert_eq!(bits(series(d, "d/f.y")), bits(&y));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_model_on_new_data_answers_in_the_same_instant() {
+        // a → d (every 0.3 s) → a's w: a shows d's answer at the instant
+        // it delivered, and holds it, with no delay.
+        let dir = temp_dir("on-data-loop");
+        on_data_files(&dir);
+        let mut double: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("double.ssbx.json")).unwrap())
+                .unwrap();
+        double["blocks"][1]["equations"] = json!(["input u [m]", "param k [s] = 2", "y = k*u"]);
+        write(&dir, "double.ssbx.json", &double);
+        let composed = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"t_end": 1.2},
+            "blocks": [use_of("a", "a.ssbx.json"), use_of("d", "double.ssbx.json")],
+            "connections": [
+                {"from": "probe:p.a/count.x", "to": "d/u"},
+                {"from": "probe:q.d/f.y", "to": "a/w"}],
+            "controls": {"probes": [
+                {"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.3}},
+                {"name": "q", "record": ["d/f.y"]}]}}),
+        );
+        let x = counted(12);
+        let w: Vec<f64> = (0..=12).map(|n| 2.0 * x[3 * (n / 3)]).collect();
+        assert_eq!(bits(composed.values("a/count.y").unwrap()), bits(&w));
+        assert!(!composed
+            .warnings
+            .iter()
+            .any(|w| w.contains("saw that model")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_swept_model_runs_its_sweep_at_each_delivery() {
+        let dir = temp_dir("on-data-sweep");
+        on_data_files(&dir);
+        let mut double: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("double.ssbx.json")).unwrap())
+                .unwrap();
+        double["sample"] =
+            json!({"design": "grid", "params": [{"param": "f.k", "range": [1, 3], "points": 3}]});
+        write(&dir, "sweep.ssbx.json", &double);
+        let top = json!({"format": 1, "run": {"t_end": 1.2},
+            "blocks": [use_of("a", "a.ssbx.json"), use_of("s", "sweep.ssbx.json")],
+            "connections": [{"from": "probe:p.a/count.x", "to": "s/u"}],
+            "controls": {"probes": [{"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.6}}]}});
+        let composed = run_in(&dir, &top);
+        let s = composed.model("s").unwrap();
+        // The latest sweep: at 1.2 s, over k = 1, 2, 3.
+        let x = counted(12);
+        assert_eq!(s.index[1], ("s/f.k".to_string(), vec![1.0, 2.0, 3.0]));
+        let y: Vec<f64> = [1.0, 2.0, 3.0].iter().map(|k| k * x[12]).collect();
+        assert_eq!(bits(series(s, "s/f.y")), bits(&y));
+        assert!(
+            s.notes.iter().any(|n| n.contains("latest sweep")),
+            "{:?}",
+            s.notes
+        );
+        let report = check_in(&dir, &top);
+        assert_eq!(report["models"][1]["swept"], true);
+        // A sweep feeds no link, and runs on new data only.
+        let mut feeding = top.clone();
+        feeding["connections"] = json!([{"from": "probe:q.s/f.y", "to": "a/w"}]);
+        feeding["controls"]["probes"] = json!([{"name": "q", "record": ["s/f.y"]}]);
+        assert!(check_in(&dir, &feeding)["errors"][0]
+            .to_string()
+            .contains("cannot feed a link"));
+        let mut clocked = top.clone();
+        clocked["blocks"][1]["clock"] = json!({"dt": 0.1});
+        assert!(check_in(&dir, &clocked)["errors"][0]
+            .to_string()
+            .contains("give its use no clock"));
+        // Something has to run in time.
+        let report = check_in(
+            &dir,
+            &json!({"format": 1, "blocks": [use_of("d", "double.ssbx.json")]}),
+        );
+        assert!(
+            report["errors"][0]
+                .to_string()
+                .contains("no model here runs in time"),
             "{report}"
         );
         std::fs::remove_dir_all(&dir).unwrap();

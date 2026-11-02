@@ -145,6 +145,23 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
   - refusals: a formula naming an undeclared parameter, a wire into a model on its own clock inside a shared use, a wire from a shared use with no such output;
   - Python, with a deep formula.
 
+**Step 3 (2026-11-02): models without states on new data.** A domain whose model has no states (`Loaded::plan`) and whose use gives no clock runs on new data (`Domain::on_data`); so does the top level's own blocks without states.
+
+- **Ticks:** they count only clocked domains (`Composition::clocks` maps each domain to its clock, or none). With no clocked domain at all the model is refused, since nothing would deliver.
+- **When it is evaluated:** at the start, and at every instant where a link into it delivered a sample during the pass. Domains are taken in link order, so its feeders go first. It is evaluated at the time of the domain that delivered (`Simulator::restart(t)` at that time, so `t` in its formulas is right). Its probes then sample, counting evaluations as steps.
+- **Loops:** in a loop it is evaluated again when a later domain delivers in the same instant, and its record for that instant is replaced.
+- **Scheduled input** for it applies at its evaluations.
+- **With a clock:** a model without states whose use gives `clock: {"dt": …}` is evaluated at each step instead.
+- **Swept models:** a model with a `sample` section runs its whole sweep at each delivery (`Running::evaluate`). Its results are the latest sweep, indexed by `sample` and the swept parameters by full name, with a note giving when it ran. It cannot feed links, and its use may not have a clock.
+- **Difference from ADR 0065 point 4:** until a link's first sample, the input block keeps its own value rather than NaN, as for clocked models since step 1.
+- **`check`:** each model gets `on_new_data` and `swept`, and `dt` and `ticks_per_step` are null on new data.
+- **Tests:**
+  - a doubling model fed every 0.3 s by a counter is evaluated at 0, 0.3, 0.6, 0.9 and 1.2 s with the values by hand; given a 0.2 s clock, it is evaluated every 0.2 s instead;
+  - the top level's own blocks without states are evaluated on new data;
+  - in a loop, the counter shows the doubled value at the instant it was delivered and holds it, with no delay;
+  - a swept model's latest sweep at 1.2 s;
+  - refusals: a sweep feeding a link, a sweep with a clock, a model with nothing in time.
+
 ## Consequences
 
 - `models` (ADR 0065 step 1, never released) goes. A used file is any model file, and any model file can use others.

@@ -25,10 +25,11 @@ _Last updated: 2026-11-02_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 377 tests in the workspace plus 20 Python tests, including verification against analytic solutions and convergence order.
+- 380 tests in the workspace plus 20 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-11-02: ADR 0066 step 3: models without states run on new data: evaluated at the start and whenever a link delivers, at that time, in link order (an answer reaches others in the same instant); swept models run their sweep at each delivery; given a clock, evaluated at each step.
 - 2026-11-02: ADR 0066 step 2b: any model file can be used on a shared clock (its models on their own clocks, probes and groups come along); wires and parameter values reach any depth, values as numbers or formulas (live on a shared clock, evaluated once into a model on its own clock). Each case gives the same bits as the equivalent model written out.
 - 2026-11-02: ADR 0066 step 2: uses on a shared clock, flattened into the using model as subsystems (wires into input blocks and from outputs become ports; data read from the used file's folder); the cruise control from two files used shared gives the same bits as one file, fused; a shared plant beside a controller on its own clock gives the same bits as both on their own clocks.
 - 2026-11-02: models nest ([ADR 0066](decisions/0066-models-nest-as-blocks.md), superseding ADR 0065 after the owner's question): uses of model files in `blocks` on their own clocks, to any depth, linked by probes at any depth; 128-bit exact ticks; each model stops at its last step at or before the end; seeds per use. Step 1 built and tested: a split model and a nested one give the same bits as one file and as uses side by side; two clocks match values by hand; 3,000 s at a 10⁻¹⁶ s tick.
@@ -116,14 +117,14 @@ _Last updated: 2026-11-02_
 
 ## In progress
 
-- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md), [ADR 0063](decisions/0063-probes-on-wires.md)): ADR 0062 steps 1 and 2 and ADR 0063 steps 1 to 3 built 2026-10-29, step 4 2026-10-30; checked by tests, headless renders and screenshots under Xvfb, not yet by the owner in the window (probe nodes and outputs, the settings window, Save probe data, filters on probes). Next: ADR 0066 step 3 (models without states on new data).
+- Probes ([ADR 0062](decisions/0062-probes-recording-and-replay.md), [ADR 0063](decisions/0063-probes-on-wires.md)): ADR 0062 steps 1 and 2 and ADR 0063 steps 1 to 3 built 2026-10-29, step 4 2026-10-30; checked by tests, headless renders and screenshots under Xvfb, not yet by the owner in the window (probe nodes and outputs, the settings window, Save probe data, filters on probes). Next: ADR 0066 step 4 (the canvas and the app).
 - `faer` (the sparse LU of the implicit methods) has been built on Linux only; the next pull request's CI checks Windows and macOS.
 
 ## Next up
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1, 2 and 2b done 2026-11-02): (3) models without states on new data; (4) the canvas and the app; (5) the recorder and rewind per clock with recorded link values, run files; (6) several cores between instants.
+1. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 3 done 2026-11-02): (4) the canvas and the app; (5) the recorder and rewind per clock with recorded link values, run files; (6) several cores between instants.
 2. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 3. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 

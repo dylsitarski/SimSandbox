@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0066 step 3: `Domain::on_data`/`swept`, `Composition::clocks`; runner evaluates on-data domains on delivery (`Running::evaluate` with `restart(t)`; sweeps replace their results), probes on them count evaluations, loops re-evaluate. Tests: deliveries by hand, clocked variant, top level on data, same-instant loop, latest sweep, refusals.
 - 2026-11-02: ADR 0066 step 2b (owner's request): `inline_shared` moves a shared use's own-clock uses (`OwnClock`), probes (renamed, holds through `hold_N` ports), links and groups up; `Inlined` tree with `expose_input`/`expose_output` for wires at any depth; subsystem flattening takes formulas for inner keys and `use/k` declared keys; `set_params` with paths, `carry`, `evaluate_formula`. Tests: each case against its written-out equivalent, bit for bit.
 - 2026-11-02: ADR 0066 step 2: `Loader::inline_shared` (shared uses as subsystems of the using file, recursive; ports from wires; subsystems renamed; data files absolute), `read_use` factored out, probe connections left alone (found by a test: a link into a shared use's input block was being rewritten). Python `shared=`. Tests: shared, nested shared, mixed with own clock, data folder, refusals.
 - 2026-11-02: [ADR 0066](../decisions/0066-models-nest-as-blocks.md) written (supersedes 0065) and step 1 reworked: `BlockEntry::{file, clock}`, `UseClock`; recursive `load_composition` (levels, domains, `written_at`, cycle chain, `seed_for`, `domain_of`); `Ticks` 128-bit with `steps_within`; runner, `check`, CLI and Python by domain. Tests: split and nested runs bit for bit, two clocks by hand, a 10⁻¹⁶ s tick for 3,000 s, the end rule, seeds per use, refusals.
@@ -166,7 +167,7 @@
 ## Notes for the next session
 
 - 2026-11-02: the owner asked whether compositions and models could be one recursive kind of file (Q45); recommended yes (uses in `blocks`, a clock per use); waiting for the owner before ADR 0065 step 2.
-- ADR 0066 step 3 next: models without states evaluated on new data. Probes in such models sample only for links so far.
+- ADR 0066 step 4 next: the canvas and the app (use nodes with clock badges, opening a use, the probe added when wiring across clocks, the edit question). Probes in such models sample only for links so far.
 - ADR 0065 is Proposed: wait for the owner's answers to its open points (Q44) before building step 1 of its order of work.
 - ADR 0063 step 5 next (several models in one session, own ADR first). `input.file` has not been tried in the window; Q42 (units in probe CSV headers) and Q43 (re-reading changed files) are open.
 - ADR 0063 step 4 next: a block reading a probe's file (or any CSV or `.npy`) as an input over time; it also serves external data (ADR 0048). The owner has not yet tried probes in the window.

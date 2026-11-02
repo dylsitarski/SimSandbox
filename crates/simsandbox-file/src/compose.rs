@@ -25,11 +25,22 @@ pub struct Domain {
     /// The model file it comes from; `None` at the top level.
     pub file: Option<PathBuf>,
     pub loaded: Loaded,
-    /// Its communication step.
+    /// Its communication step; unused when it runs on new data.
     pub dt: f64,
+    /// A model without states used with no clock (ADR 0066 step 3): it is
+    /// evaluated at the start and whenever a link into it delivers a
+    /// sample, at that time; with a `sample` section, it runs its whole
+    /// sweep then.
+    pub on_data: bool,
 }
 
 impl Domain {
+    /// Whether it runs its sweep at each delivery: on new data, with a
+    /// `sample` section.
+    pub fn swept(&self) -> bool {
+        self.on_data && self.loaded.file.sample.is_some()
+    }
+
     /// Its name in results and reports: its path, or `.` at the top level.
     pub fn name(&self) -> &str {
         if self.path.is_empty() {
@@ -87,8 +98,11 @@ pub struct Composition {
     pub domains: Vec<Domain>,
     pub probes: Vec<LinkProbe>,
     pub links: Vec<Link>,
-    /// The domains' clocks in a common tick.
+    /// The clocks of the domains that run in time, in a common tick.
     pub ticks: Ticks,
+    /// Each domain's clock in `ticks` (its index there); `None` for one
+    /// that runs on new data.
+    pub clocks: Vec<Option<usize>>,
     /// The order domains evaluate in at a shared instant: a domain that
     /// feeds another first; a loop is broken in written order.
     pub order: Vec<usize>,
@@ -280,9 +294,23 @@ pub fn load_composition(
         warnings,
         stack: Vec::new(),
     };
-    l.level(&file, "", folder.as_deref(), None, file.run.dt)?;
-    let ticks = Ticks::new(&l.domains.iter().map(|d| d.dt).collect::<Vec<_>>())
-        .map_err(|e| invalid("blocks", e))?;
+    l.level(&file, "", folder.as_deref(), None, file.run.dt, false)?;
+    let mut clocks = Vec::new();
+    let mut dts = Vec::new();
+    for d in &l.domains {
+        clocks.push((!d.on_data).then_some(dts.len()));
+        if !d.on_data {
+            dts.push(d.dt);
+        }
+    }
+    if dts.is_empty() {
+        return Err(invalid(
+            "blocks",
+            "no model here runs in time: models without states run on new data, which a \
+             model with states delivers through probe links",
+        ));
+    }
+    let ticks = Ticks::new(&dts).map_err(|e| invalid("blocks", e))?;
     let (order, loops) = order(&l.domains, &l.links);
     Ok(Composition {
         file,
@@ -290,6 +318,7 @@ pub fn load_composition(
         probes: l.probes,
         links: l.links,
         ticks,
+        clocks,
         order,
         loops,
         data: l.data,
@@ -555,6 +584,7 @@ impl Loader<'_> {
         folder: Option<&Path>,
         source: Option<&Path>,
         dt: f64,
+        clocked: bool,
     ) -> Result<Level, FileError> {
         let mut file = file.clone();
         let (lifted, _) = self.inline_shared(&mut file, path, folder)?;
@@ -632,11 +662,13 @@ impl Loader<'_> {
             }
             let loaded = load_in(&f.to_json(), self.registry, folder)
                 .map_err(|e| written_at(e, &own, &inside))?;
-            if loaded.plan.is_some() {
+            // A model without states runs on new data, unless its use
+            // gives it a clock: then it is evaluated at each step.
+            let on_data = loaded.plan.is_some() && !clocked;
+            if loaded.plan.is_some() && clocked && loaded.file.sample.is_some() {
                 return Err(invalid(
-                    "blocks",
-                    "a model without states runs on new data, which comes in a later step \
-                     (ADR 0066); this build runs models in time only",
+                    "sample",
+                    "a swept model runs on new data: give its use no clock",
                 ));
             }
             for w in &loaded.warnings {
@@ -655,6 +687,7 @@ impl Loader<'_> {
                 file: source.map(Path::to_path_buf),
                 loaded,
                 dt,
+                on_data,
             });
         }
         for u in &uses {
@@ -736,14 +769,21 @@ impl Loader<'_> {
     ) -> Result<Level, FileError> {
         let (mut model, found, canonical) = self.read_use(u, path, folder)?;
         set_params(&mut model, &u.params, scope)?;
-        let dt = match u.clock {
-            Some(UseClock::Step(dt)) => dt,
-            _ => model.run.dt,
+        let (dt, clocked) = match u.clock {
+            Some(UseClock::Step(dt)) => (dt, true),
+            _ => (model.run.dt, false),
         };
         self.stack.push(canonical);
         let child_folder = found.parent().map(Path::to_path_buf);
         let level = self
-            .level(&model, path, child_folder.as_deref(), Some(&found), dt)
+            .level(
+                &model,
+                path,
+                child_folder.as_deref(),
+                Some(&found),
+                dt,
+                clocked,
+            )
             .map_err(|e| invalid("", format!("{}: {e}", found.display())));
         self.stack.pop();
         level
@@ -1059,6 +1099,15 @@ impl Loader<'_> {
                 format!("{at}.from"),
                 format!(
                     "probe '{probe_name}' records from several models; a probe records from one"
+                ),
+            ));
+        }
+        if self.domains[from].swept() {
+            return Err(invalid(
+                format!("{at}.from"),
+                format!(
+                    "{signal}: a swept model gives a curve at each delivery, not one value per \
+                     time; it cannot feed a link"
                 ),
             ));
         }
