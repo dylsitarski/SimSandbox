@@ -288,3 +288,20 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
   - in the app: expanded and saved, an edit inside asks the question for that use and changes every use when answered, a pushed node's move saved without the push, reopened expanded;
   - Python.
 
+**Step 5 (2026-11-02): rewind, inputs, probes and run files.**
+- **Rewind per clock** came with step 4b: the app runs a model that uses models as one kernel model on several clocks. Its snapshots hold every clock's time and steps and every input, so rewinding between instants replays exactly (tested then). Point 6's design was for models run apart and stays unbuilt: per-model recorders, links keeping what they delivered, and replay with models held at their restored ticks.
+- **One loader** (`simsandbox_file::load_any`): a plain model, or a model using models put in place as one ([`compose::load_merged`]). Plain runs with inputs, probe runs, model hashes and run files' checks use it, in the CLI, the session and the app.
+- **Runs:** `run_with` steps a model with clocks from instant to instant (`Simulator::next_instant`), each up to the end. It does not count steps of `dt`, so the rows are every instant of any clock, with each model's values at its own instants equal to the headless runner's.
+- **Headless:**
+  - `run` keeps giving each model at its own times.
+  - With `--inputs`, `--probe`, `--save-probes` or a run file, the models run as one. Keys and recorded signals are full names (`slow/u.y`, `car3/car.v`), and `--model` does not apply.
+  - `--dt` is refused: each model keeps its own step.
+  - Python: `run(inputs=...)` returns `Results` for such a model.
+- **Run files** of such models record the model hash with each used file's digest by path, so changing a used file shows the run as stale.
+- **Tests:**
+  - a schedule and a recorded track reach an input block inside a use;
+  - the merged run gives each model's own-instant values bit for bit;
+  - a probe inside a use records and writes its file;
+  - the hash changes with a used file;
+  - Python inputs.
+

@@ -143,8 +143,9 @@ fn model_and_track(path: &str, inputs: Option<&str>) -> Result<(String, Vec<Inpu
         }
         let (run, model_path, text) = read_run(path)?;
         let (file, _) = ModelFile::from_json(&text).map_err(|e| format!("{model_path}: {e}"))?;
-        let loaded =
-            simsandbox_file::load(&text, &registry()).map_err(|e| format!("{model_path}: {e}"))?;
+        let folder = std::path::Path::new(&model_path).parent();
+        let loaded = simsandbox_file::load_any(&text, &registry(), folder)
+            .map_err(|e| format!("{model_path}: {e}"))?;
         if !run.fits(&loaded).map_err(|e| e.to_string())? {
             eprintln!(
                 "warning: {path}: {model_path} has changed since this run was recorded; \
@@ -182,7 +183,7 @@ fn check_run(path: &str) -> Result<Value, String> {
         return Ok(report);
     }
     let mut warnings: Vec<Value> = report["warnings"].as_array().cloned().unwrap_or_default();
-    if let Ok(loaded) = simsandbox_file::load(&text, &registry()) {
+    if let Ok(loaded) = simsandbox_file::load_any(&text, &registry(), None) {
         if !run.fits(&loaded).unwrap_or(false) {
             warnings.push(Value::from(format!(
                 "{model_path} has changed since this run was recorded"
@@ -230,13 +231,25 @@ fn run_file(args: &[String]) -> Result<(), String> {
         Some(other) => return Err(format!("unknown format '{other}': csv or json")),
     };
     let (t_end, dt) = (flags.positive("--t-end")?, flags.positive("--dt")?);
-    if !is_run_file(path) {
-        let text = read(path)?;
-        if simsandbox_file::compose::is_composition(&text) {
-            return run_composition_file(path, &text, t_end, &flags, json);
-        }
+    // A model using models (ADR 0066): each model at its own times; with
+    // inputs or probes, as one model on several clocks, as the app runs it
+    // (step 5).
+    let composed = if is_run_file(path) {
+        read_run(path).is_ok_and(|(_, _, t)| simsandbox_file::compose::is_composition(&t))
+    } else {
+        simsandbox_file::compose::is_composition(&read(path)?)
+    };
+    if composed && flags.has("--dt") {
+        return Err("--dt does not apply to a model using models: each keeps its own clock".into());
     }
-    if flags.has("--model") {
+    let merged = flags.has("--inputs") || flags.has("--probe") || flags.has("--save-probes");
+    if composed && !merged && !is_run_file(path) {
+        return run_composition_file(path, &read(path)?, t_end, &flags, json);
+    }
+    if composed && flags.has("--model") {
+        return Err("--model picks one model's own times; with inputs, probes or a run file the models run as one: drop --model".into());
+    }
+    if flags.has("--model") && !composed {
         return Err(
             "--model picks a model on its own clock (ADR 0066); this model uses no model files"
                 .into(),
@@ -286,13 +299,6 @@ fn run_composition_file(
     flags: &Flags,
     json: bool,
 ) -> Result<(), String> {
-    for f in ["--dt", "--inputs", "--probe", "--save-probes"] {
-        if flags.has(f) {
-            return Err(format!(
-                "{f} does not apply yet to a model using model files: each keeps its own clock"
-            ));
-        }
-    }
     let c = simsandbox_session::compose::run_composition(text, &registry(), t_end)
         .map_err(|e| format!("{path}: {e}"))?;
     for w in &c.warnings {

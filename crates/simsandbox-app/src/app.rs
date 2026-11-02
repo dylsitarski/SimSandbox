@@ -4631,7 +4631,7 @@ fn runs_beside(model: &Path) -> Vec<(PathBuf, simsandbox_file::runs::RunFile)> {
 fn run_fits_disk(run: &simsandbox_file::runs::RunFile, model: &Path, registry: &Registry) -> bool {
     std::fs::read_to_string(model)
         .ok()
-        .and_then(|t| simsandbox_file::load_in(&t, registry, model.parent()).ok())
+        .and_then(|t| simsandbox_file::load_any(&t, registry, model.parent()).ok())
         .and_then(|l| run.fits(&l).ok())
         .unwrap_or(false)
 }

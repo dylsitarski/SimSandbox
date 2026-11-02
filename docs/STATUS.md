@@ -25,10 +25,11 @@ _Last updated: 2026-11-02_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 405 tests in the workspace plus 21 Python tests, including verification against analytic solutions and convergence order.
+- 406 tests in the workspace plus 21 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-11-02: ADR 0066 step 5: models using models take scheduled and recorded inputs by full name, record and save probes inside uses, and have run files (hashes cover the used files), headless and in Python, through the merged model the app runs; rewind per clock was already exact there.
 - 2026-11-02: ADR 0069 step 2: array parameters (`param m[k] = …`, one parameter per cell) and `prev`/`next` along an axis with edges; the Platoon as one array block gives its three uses' bits.
 - 2026-11-02: ADR 0069 step 1: Duplicate on the canvas (menu, Ctrl+D) and in Python; copies keep values, the wires among them and their original's clock.
 - 2026-11-02: ADR 0066 step 4d: expand in place (outlines coloured by clock, wires through, neighbours pushed on screen only, edits inside routed to the used model with the edit question, `controls.expand`, `render --expand`, Python `expand=`).
@@ -139,7 +140,7 @@ _Last updated: 2026-11-02_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 4d done 2026-11-02): (5) the recorder and rewind per clock with recorded link values, run files; (6) several cores between instants.
+1. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 5 done 2026-11-02): (6) several cores between instants.
 2. **Experiments and time from data** ([ADR 0067](decisions/0067-experiments-and-time-from-data.md)), in order (step 1 done 2026-11-02): (2) the experiment over any model (points by path, designs incl. `file`, final values by default, `keep: "series"`, seeds and replicates, several cores); (3) `reduce` formulas; (4) time from data (`input.file` sample times, `clock: {"times": …}`, the end of a data-driven run); (5) adaptive experiments, own ADR.
 3. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 4. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)), Duplicate, array parameters and neighbours done 2026-11-02: network grids (nodes and edges from a file) and array parameters read from a data file when a model needs them; `count` on uses waits.
@@ -173,7 +174,7 @@ In priority order. Each item should end with tests and updated docs.
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)): no `input.gamepad` yet; only `plot.xy` and the pendulum view send the pointer, and the pendulum view only for `eq.pendulum` models; keys drive `input.value` blocks only (two keys each). Input faster than one step is not seen. The rewind slider does not yet show where recorded input lies. Opening a saved run puts its seed, step and schedule into the open model, so Save would write them (the log says so when they differ). The Runs menu does not mark stale runs; opening one warns in the log.
 - Models that use model files ([ADR 0066](decisions/0066-models-nest-as-blocks.md)), as of step 2b (2026-11-02):
   - A value given by formula to a model on its own clock is taken once, when the model is built. Values that change during a run reach such a model through a probe link.
-  - Probes in such models only feed links: no recordings, files or `run --probe`. `run --dt`, `--inputs`, `--probe` and `--save-probes` are refused (ADR 0066 step 5).
+  - `run --dt` is refused for them (each model keeps its own step). With inputs, probes or a run file they run as one model on several clocks, so `--model` does not apply then.
   - In the app a model on new data is evaluated at every instant (values agree with the headless runner at deliveries unless its formulas read `t`); used models are edited in the app at their own top level only (not inside their subsystems); Save As to another folder does not rebase the files the model names. A port shown from a use's list is forgotten on reload.
   - Open nodes inside used models are not saved by path. A model defined in a file that no use names is read but not built, so a problem inside it shows once it is used.
 

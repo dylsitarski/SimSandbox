@@ -1457,6 +1457,24 @@ pub struct Loaded {
     pub aliases: BTreeMap<String, String>,
 }
 
+/// Parse a model file and build its model, one that uses models too
+/// (ADR 0066 step 5): those are put in place as one model, each part on
+/// its own clock ([`compose::load_merged`]), as the app runs them. Files
+/// are found from `folder`, else the thread's ([`registry::in_folder`]).
+///
+/// [`registry::in_folder`]: simsandbox_core::registry::in_folder
+pub fn load_any(
+    text: &str,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+) -> Result<Loaded, FileError> {
+    if compose::is_composition(text) {
+        compose::load_merged(text, registry, folder)
+    } else {
+        load_in(text, registry, folder)
+    }
+}
+
 /// Parse a model file and build its model. Blocks that read files accept
 /// only absolute names: see [`load_in`].
 pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {

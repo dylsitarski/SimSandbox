@@ -1323,6 +1323,87 @@ mod tests {
     }
 
     #[test]
+    fn models_using_models_take_inputs_probes_and_run_files() {
+        use crate::run::{model_hash, run_probes, run_with};
+        use crate::session::InputEvent;
+        let dir = temp_dir("step5");
+        cruise_files(&dir);
+        write(
+            &dir,
+            "sum.ssbx.json",
+            &json!({"format": 1, "run": {"dt": 0.1},
+            "blocks": [{"name": "u", "type": "input.value"},
+                       {"name": "acc", "type": "eq.equations", "method": {"name": "euler"},
+                        "equations": ["input u", "state z", "dz/dt = u"], "params": {"z0": 0}}],
+            "connections": [{"from": "u.y", "to": "acc.u"}]}),
+        );
+        let top = with(
+            json!({"format": 1, "run": {"t_end": 1, "inputs": [{"t": 0.3, "set": "slow/u.y", "to": 2.0}]},
+                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json"),
+                              use_of("slow", "sum.ssbx.json")]}),
+            cruise_links("plant", "controller"),
+        );
+        let mut top = top;
+        top["controls"]["probes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "rec", "record": ["slow/acc.z"]}));
+        let text = top.to_string();
+        simsandbox_core::registry::in_folder(Some(&dir), || {
+            // The schedule reaches an input block inside a use, by path.
+            let r = run_with(&text, &registry(), None, None, Vec::new()).unwrap();
+            let z = series(&r, "slow/acc.z");
+            assert_eq!(*z.last().unwrap(), 2.0 * 0.7, "{z:?}");
+            // So does a recorded track, as a run file replays it.
+            let track = vec![InputEvent {
+                t: 0.5,
+                key: "slow/u.y".into(),
+                value: 1.0,
+            }];
+            let r = run_with(&text, &registry(), None, None, track).unwrap();
+            assert!((series(&r, "slow/acc.z").last().unwrap() - (0.4 + 0.5)).abs() < 1e-12);
+            // The merged run gives each model's values at its own instants.
+            let apart = run_composition(&text, &registry(), None).unwrap();
+            let t: Vec<f64> = r.index[0].1.clone();
+            let v = series(&r, "plant/car.v");
+            let own = apart.model("plant").unwrap();
+            for (k, ti) in own.index[0].1.iter().enumerate() {
+                let j = t.iter().position(|x| (x - ti).abs() < 1e-9).unwrap();
+                assert_eq!(
+                    v[j].to_bits(),
+                    series(own, "plant/car.v")[k].to_bits(),
+                    "t = {ti}"
+                );
+            }
+            // A probe inside a use records, and writes its file.
+            let out = dir.join("probes");
+            std::fs::create_dir_all(&out).unwrap();
+            let p = run_probes(
+                &text,
+                &registry(),
+                None,
+                None,
+                Vec::new(),
+                &["rec".into()],
+                Some(&out),
+            )
+            .unwrap();
+            let (spec, h) = p.probes.iter().find(|(s, _)| s.name == "rec").unwrap();
+            assert_eq!(spec.record, ["slow/acc.z"]);
+            assert!(h.read().len() > 5);
+            // A run file's hash covers the files used: changing one changes it.
+            let before = model_hash(&text).unwrap();
+            let mut sum: Value =
+                serde_json::from_str(&std::fs::read_to_string(dir.join("sum.ssbx.json")).unwrap())
+                    .unwrap();
+            sum["blocks"][1]["params"]["z0"] = json!(1.0);
+            write(&dir, "sum.ssbx.json", &sum);
+            assert_ne!(model_hash(&text).unwrap(), before);
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn models_defined_in_a_file_are_found_used_and_refused() {
         let gain = |k: f64| {
             json!({"blocks": [

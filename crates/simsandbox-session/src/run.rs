@@ -141,8 +141,8 @@ pub fn run(
 /// The hash a run file records of a model file (ADR 0059), with the
 /// built-in types.
 pub fn model_hash(text: &str) -> Result<String, String> {
-    let loaded =
-        simsandbox_file::load(text, &crate::examples::registry()).map_err(|e| e.to_string())?;
+    let loaded = simsandbox_file::load_any(text, &crate::examples::registry(), None)
+        .map_err(|e| e.to_string())?;
     simsandbox_file::runs::loaded_hash(&loaded).map_err(|e| e.to_string())
 }
 
@@ -164,7 +164,7 @@ pub fn run_with(
             return Err("the end time and step must be positive".into());
         }
     }
-    let loaded = simsandbox_file::load(text, registry).map_err(|e| e.to_string())?;
+    let loaded = simsandbox_file::load_any(text, registry, None).map_err(|e| e.to_string())?;
     if loaded.plan.is_some() && (dt.is_some() || t_end.is_some()) {
         return Err("the end time and step do not apply to a swept model".into());
     }
@@ -201,6 +201,9 @@ pub fn run_with(
             }
         }
     }
+    // A model using models steps from instant to instant of its clocks
+    // (ADR 0066 step 5), not by `dt`.
+    let clocked = !loaded.model.clocks().0.is_empty();
     let mut sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
     let mut r = Results {
         index: Vec::new(),
@@ -274,11 +277,24 @@ pub fn run_with(
         }
         let mut t = vec![sim.time()];
         record(&mut r, &sim);
-        for _ in 0..(t_end / dt).round() as usize {
-            apply(&mut sim)?;
-            sim.step(dt).map_err(|e| e.to_string())?;
-            t.push(sim.time());
-            record(&mut r, &sim);
+        if clocked {
+            // Each instant up to the end, the last at or before it.
+            while sim
+                .next_instant()
+                .is_some_and(|next| next <= t_end * (1.0 + 1e-12))
+            {
+                apply(&mut sim)?;
+                sim.step(dt).map_err(|e| e.to_string())?;
+                t.push(sim.time());
+                record(&mut r, &sim);
+            }
+        } else {
+            for _ in 0..(t_end / dt).round() as usize {
+                apply(&mut sim)?;
+                sim.step(dt).map_err(|e| e.to_string())?;
+                t.push(sim.time());
+                record(&mut r, &sim);
+            }
         }
         r.index = vec![("t".to_string(), t)];
     }

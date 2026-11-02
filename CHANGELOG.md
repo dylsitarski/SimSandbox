@@ -10,6 +10,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Models that use models take inputs, probes and run files (ADR 0066 step 5): `run --inputs`, `--probe`, `--save-probes` and run files work on them, with keys and signals by full name (`slow/u.y`); Python `run(inputs=...)` too; a run file notices when a used file changed.
 - Array parameters and neighbours in typed equations (ADR 0069): `param m[k] [kg] = 1000` is a value per cell, each its own parameter `m[0]`, `m[1]`, …; `prev(v)` and `next(v)` read the neighbouring cells, beyond an end the edge's value (`edge v: k- = lead`). The Platoon written as one array block gives the same numbers as its three cars.
 - Duplicate (ADR 0069): a block's or a used model's menu, or Ctrl+D, copies the selection beside itself with its values and the wires among the copies; Python `Model.duplicate`.
 - Expand in place (ADR 0066 step 4d): "Expand in place" on a used model's node shows its blocks in an outline coloured by its clock, wired through, with neighbours making room; edits there change the model it uses, asking where as when it is opened. Expanded uses are saved in `controls.expand`. Headless: `render --diagram --expand PATHS`, Python `render(diagram=True, expand=[...])`.

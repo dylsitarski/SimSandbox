@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0066 step 5: `simsandbox_file::load_any`; `run_with` steps clocked models by instants; CLI routes inputs/probes/run files through the merged model, refuses `--dt`; Python `run(inputs=)`; test of schedule, track, probe, hash.
 - 2026-11-02: ADR 0069 step 2: `ArrayOp::Shift`/`ArrIns::Shift` (prev/next, edges as values), array params in `EquationSet::parse` (elements `m[i]`, alias span), `describe` text, guide; Platoon array test bit-equal.
 - 2026-11-02: ADR 0069 step 1: `Edit::Duplicate` (names, wires among copies, clock kept), canvas menu and Ctrl+D, routed inside outlines, Python `duplicate`; tests.
 - 2026-11-02: ADR 0066 step 4d: `expand` module (`Outline`, `Diagram::expand`, `splice`, `find`, `route`), `Diagram::outlines`/`shifted`, `controls.expand`; canvas outlines, `clock_colour`, Expand/Collapse requests, short titles; app `expanded`, routing in `handle`, `Asking::path`, `Outcome::Expanded`; `render --expand`, Python `expand=`; tests.

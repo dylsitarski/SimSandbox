@@ -297,10 +297,13 @@ class Model:
         whose schedule and recorded input are applied to this model.
         Raises :class:`ModelError` with every problem :func:`check` finds
         if it cannot run. A model that uses model files (ADR 0066) runs each
-        on its own clock and returns :class:`Composed`."""
-        if any("file" in b or "model" in b for b in self.data.get("blocks", [])):
-            if dt is not None or inputs is not None:
-                raise ValueError("a composition's models keep their own clocks: dt and inputs do not apply")
+        on its own clock and returns :class:`Composed`; given ``inputs``, it
+        runs as one model on its clocks, as the app does, and returns
+        :class:`Results` at every instant of any clock (keys by full name,
+        ``"slow/u.y"``)."""
+        if any("file" in b or "model" in b for b in self.data.get("blocks", [])) and inputs is None:
+            if dt is not None:
+                raise ValueError("a model using models keeps each model's own clock: dt does not apply")
             try:
                 with _in_folder(self.folder):
                     return Composed(_native.run_composition(self.to_json(), t_end))
