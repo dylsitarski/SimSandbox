@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: Q47 and Q48 decided by the owner and written into ADR 0066: `files` replaces a deep use's file by path (step 4c); "Expand in place", one level at a time, as step 4d.
 - 2026-11-02: ADR 0066 step 4c's edit question written out with the owner's "edit as a new copy with its own file"; Q47 (expanding uses and subsystems in place) assessed; Q48 (a new copy of a deeply used model) raised.
 - 2026-11-02: ADR 0066 step 4b, third part: app `DiagramTab::inside`/`show_inside`/`used_file` (read-only view inside a use, breadcrumb, nested uses); canvas "Show a port" search, `Canvas::revealed`, `Canvas::reveal`; `inspector::nest` and collapsible rows by path, use groups labelled with their file. Tests for each.
 - 2026-11-02: ADR 0066 step 4b, second part: kernel clocks (`Clock`, `set_clocks`, `set_stream`, `advance`, `solve_active`, latched inputs, snapshots with clocks and inputs, `next_instant`, `clock_steps`); `compose::load_merged` (all uses inlined, `expose_link`, pass-through input blocks, aliases made flat, per-use streams); `Loaded::aliases`; session loads merged, records aliases, `step_dt`; app worker paces by it. Chose the kernel over several simulators in the session: the session needs no change and rewind stays exact.
@@ -107,6 +108,7 @@
 
 ## Decided
 
+- 2026-11-02 (owner): a deep copy is made by the using file replacing the deep use's file by path (`files`), with the other two ways offered (Q48); uses and subsystems expand in place one level at a time, after 4c (Q47).
 - 2026-11-02 (owner, Q46): declared outputs in model files; a used model's node shows inputs, declared outputs and what is wired; the rest from a searchable list by path; parameters as a tree in the Inspector; nested inputs hidden unless wired.
 - 2026-11-02 (owner): ADR 0067: the opened file's `sample` is an experiment over the whole model, a used file's `sample` a curve; final values per point by default, `reduce` and series opt-in; common random numbers by default, per-point seeds and replicates as options; a model without states is driven by its own data files' sample times automatically; `clock: {"times": …}`.
 - 2026-11-02 (owner): step 2b in ADR 0066: any file usable on a shared clock; wires and values at any depth; formulas live on a shared clock, evaluated once into a model on its own clock (ours, recorded in the ADR).

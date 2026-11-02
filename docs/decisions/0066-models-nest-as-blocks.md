@@ -85,7 +85,17 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
        - **Edit the original:** the edit goes to the used file, which every model using it sees. Save writes both files; undo covers both.
        - **Edit as a new copy with its own file:** the used file's contents are written to a new file next to the using file (named after the original, e.g. `car-2.ssbx.json`, changeable), this use's `file` points to it, then the edit applies. Other uses of the original, here or elsewhere, are untouched. The copy is an ordinary model file, reusable by other models.
        - **Make a local copy:** the contents are written inline as a subsystem of this file, with the use's clock and names unchanged, detached from any file.
-     - **A copy deep inside another used model** (`vehicle/plant`, where `vehicle.ssbx.json` uses `car.ssbx.json`): pointing that use at a copy changes `vehicle.ssbx.json` too, which is itself a used model. How this is handled is open ([Q48](../open-questions.md)).
+     - **A copy deep inside another used model (owner, 2026-11-02, Q48):** for `vehicle/plant`, where `vehicle.ssbx.json` uses `car.ssbx.json`, the file being edited replaces the deep use's file by path, as `params` reach any depth: `{"name": "vehicle", "file": "vehicle.ssbx.json", "files": {"plant": "car-2.ssbx.json"}}`. `vehicle.ssbx.json` is left alone, so only this use sees the copy.
+       - Keys are paths of uses below this one (`plant`, `plant/engine`); a path that is not a use of a model file, or a file that cannot be read, is an error at `blocks[i].files`.
+       - A replacement holds for everything under it: a deeper replacement in the replaced file still applies, and the nearer one wins when two name the same path.
+       - The question also offers the other two ways: edit the file in between to point at the copy (it reaches every model using that file, and says so), or copy every file on the way down (`vehicle-2` using `car-2`).
+       - `check` lists the replacements; the hash already covers each used file by path. Python: `add_model(..., files={"plant": "car-2.ssbx.json"})`.
+   - **4d (owner, 2026-11-02, Q47): expanding in place.** "Expand in place" on a use or subsystem node draws an outline at its place showing its inner diagram one level down; nested uses and subsystems inside it stay nodes until expanded in turn, one level at a time.
+     - **The outline:** labelled with the file (or subsystem) and clock, coloured by clock, so models apart and models sharing a clock show at a glance. Inner nodes keep their own file's positions; neighbours are pushed aside on screen only, never written to the file.
+     - **Wires:** a wire to a port of the expanded node is drawn to the inner node it reaches (an input block, or the output a declared output stands for). Live values inside show as when opened.
+     - **Editing inside:** the same rules as when opened: a subsystem's edits reach every use of its definition, and the outline says how many; a used model's edits ask the edit question.
+     - **Kept:** expanded nodes are listed in `controls` (as `controls.open` lists open nodes, ADR 0055), by path.
+     - **Headless:** `render --diagram --expand NAME` (repeatable, by path); Python `render(diagram=True, expand=[...])`.
 5. The recorder and rewind above; run files.
 6. Domains stepping on several cores between instants (ADR 0062 step 3).
 
