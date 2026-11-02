@@ -131,7 +131,8 @@ A model's `blocks` may use other model files, each running on its own clock, lin
 - **`run`:** `--format json` gives every model at its own times. CSV needs `--model NAME`.
 - **Python:** `Model.add_model(name, file, params=, dt=, shared=)` and `Model.link("plant/car.v", "controller/speed", every=)`. `Model.run()` returns `Composed`, read with `.model("plant")`, `.t("plant")` or `composed["vehicle/plant/car.v"]`.
 - **Models without states** (formulas, input blocks) run on new data. Given no clock, such a model is evaluated at the start and whenever a link into it delivers a sample, at that time. A model that feeds it is evaluated first, and its answer reaches others in the same instant. Given a clock, it is evaluated at each step instead. With a `sample` section it runs its whole sweep at each delivery: its results are the latest sweep, it cannot feed links, and its use has no clock. With nothing in time anywhere, the run is one evaluation of every model at t = 0, in link order: a pipeline such as features → an ML model → post-processing ([ADR 0067](../decisions/0067-experiments-and-time-from-data.md)).
-- **Not yet:** the app, run files, and probe recordings in such models.
+- **`render --diagram`** draws uses as nodes, with their clock and file, input blocks as inputs and outputs by path, and the probes and links between them.
+- **Not yet:** opening and running them in the app, run files, and probe recordings in such models.
 
 ## Recorder
 

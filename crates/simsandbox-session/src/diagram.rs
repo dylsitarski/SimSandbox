@@ -68,6 +68,9 @@ pub enum NodeKind {
     Probe,
     /// The recorder (ADR 0064): with it, the model can be rewound.
     Recorder,
+    /// A use of a model file (ADR 0066): its input blocks as inputs, its
+    /// outputs by `block.port`, titled with its clock.
+    Use,
 }
 
 /// One node.
@@ -257,6 +260,7 @@ impl Diagram {
             .blocks
             .iter()
             .map(|b| match file.subsystems.get(&b.type_name) {
+                _ if b.file.is_some() => use_node(b, registry, file.folder.as_deref(), 0),
                 Some(_) => instance_node(file, b, registry),
                 None => node(b, registry, file.folder.as_deref()),
             })
@@ -294,6 +298,17 @@ impl Diagram {
             .map(|(i, n)| (n.name.clone(), i))
             .collect();
         let find = |key: &str, causality: Causality, nodes: &[Node]| {
+            // Inside a use of a model file: the rest of the path is its
+            // port (`plant/car.v`, `controller/speed`).
+            if let Some((u, rest)) = key.split_once('/') {
+                if let Some(&n) = index.get(u).filter(|&&n| nodes[n].kind == NodeKind::Use) {
+                    let ports = match causality {
+                        Causality::Input => &nodes[n].inputs,
+                        Causality::Output => &nodes[n].outputs,
+                    };
+                    return Some((n, ports.iter().position(|q| q.name == rest)?));
+                }
+            }
             let (b, p) = key.split_once('.')?;
             let &n = index.get(b)?;
             let ports = match causality {
@@ -458,6 +473,110 @@ fn build(
     registry
         .build(&b.type_name, &b.name, &config)
         .map_err(|e| e.to_string())
+}
+
+/// A use of a model file (ADR 0066): read from `folder` (or the thread's,
+/// `in_folder`); its input blocks are its inputs, the outputs of its
+/// blocks and of the uses inside it (`engine/x.y`) its outputs. Shown
+/// with its clock; an error if the file cannot be read.
+fn use_node(
+    b: &BlockEntry,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+    depth: usize,
+) -> Node {
+    use simsandbox_file::UseClock;
+    let file_name = b.file.clone().unwrap_or_default();
+    let mut n = Node {
+        name: b.name.clone(),
+        kind: NodeKind::Use,
+        type_name: file_name.clone(),
+        method: String::new(),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        at: b.canvas.unwrap_or_default(),
+        placed: b.canvas.is_some(),
+        error: None,
+        unreached: Vec::new(),
+        values: Vec::new(),
+        open: false,
+        settings: Default::default(),
+    };
+    let folder = folder
+        .map(std::path::Path::to_path_buf)
+        .or_else(simsandbox_core::registry::current_folder);
+    let path = std::path::PathBuf::from(&file_name);
+    let path = match folder {
+        Some(f) if path.is_relative() => f.join(path),
+        _ => path,
+    };
+    let read = std::fs::read_to_string(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))
+        .and_then(|t| {
+            ModelFile::from_json(&t)
+                .map(|(f, _)| f)
+                .map_err(|e| e.to_string())
+        });
+    let model = match read {
+        Ok(m) if depth < 8 => m,
+        Ok(_) => {
+            n.error = Some("model files used too deeply (or using themselves)".into());
+            return n;
+        }
+        Err(e) => {
+            n.error = Some(e);
+            return n;
+        }
+    };
+    let inner_folder = path.parent().map(std::path::Path::to_path_buf);
+    let mut has_states = false;
+    for e in &model.blocks {
+        if e.file.is_some() {
+            let inner = use_node(e, registry, inner_folder.as_deref(), depth + 1);
+            has_states |= !inner.method.contains("new data");
+            n.inputs.extend(inner.inputs.into_iter().map(|p| Port {
+                name: format!("{}/{}", e.name, p.name),
+                ..p
+            }));
+            n.outputs.extend(inner.outputs.into_iter().map(|p| Port {
+                name: format!("{}/{}", e.name, p.name),
+                ..p
+            }));
+            continue;
+        }
+        let ports: Vec<Port> = if model.subsystems.contains_key(&e.type_name) {
+            has_states = true;
+            instance_node(&model, e, registry).outputs
+        } else {
+            match build(e, registry, inner_folder.as_deref()) {
+                Ok(block) => {
+                    let spec = block.spec();
+                    has_states |= !spec.states.is_empty() || !spec.tables.is_empty();
+                    ports(spec, Causality::Output)
+                }
+                Err(_) => Vec::new(),
+            }
+        };
+        if e.type_name == simsandbox_eq::input::VALUE {
+            let unit = e.settings.get("unit").cloned().unwrap_or_default();
+            n.inputs.push(Port {
+                name: e.name.clone(),
+                unit,
+                shape: Shape::Scalar,
+            });
+        }
+        n.outputs.extend(ports.into_iter().map(|p| Port {
+            name: format!("{}.{}", e.name, p.name),
+            ..p
+        }));
+    }
+    n.method = match b.clock {
+        Some(UseClock::Step(dt)) => format!("every {dt} s"),
+        Some(UseClock::Shared) => "shared clock".into(),
+        None if has_states => format!("every {} s", model.run.dt),
+        None => "on new data".into(),
+    };
+    n
 }
 
 fn node(b: &BlockEntry, registry: &Registry, folder: Option<&std::path::Path>) -> Node {

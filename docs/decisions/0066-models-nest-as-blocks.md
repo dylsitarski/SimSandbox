@@ -71,7 +71,10 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
      - **Parameter values at any depth:** a use's `params` keys may be paths: `block.param`, a declared parameter `k`, `plant/car.m` or `plant/k`, at any depth. A value may be a number, or a formula of the declared parameters of the file it is written in. On a shared clock a formula is live: it follows those parameters when they change, as subsystem formulas do. A model on its own clock is a separate simulator, so there a formula is evaluated once, when the model is built, from the using file's declared values; values that change during a run go through a probe link into an input block.
      - **Kept as a rule:** wires go to input blocks and from outputs. Ordinary subsystems are still reached through their ports.
 3. Models without states on new data.
-4. The canvas and the app (ADR 0065 point 6 and the edit question).
+4. The canvas and the app (ADR 0065 point 6 and the edit question), in three parts:
+   - **4a:** uses as nodes on the diagram, with their input blocks as inputs, their outputs by path, and their clocks; wires, links and probe records drawn; headless `render --diagram`.
+   - **4b:** the app's session runs models that use files: a multi-clock engine taken out of the headless runner (same results), behind the session, so such files open and run with views, sliders and inputs by full name, and uses open to show their insides.
+   - **4c:** editing: a probe added when wiring across clocks, the edit question (edit the original, make a local copy, save as a new model file), saving several files, "Add model…".
 5. The recorder and rewind above; run files.
 6. Domains stepping on several cores between instants (ADR 0062 step 3).
 
@@ -162,6 +165,13 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
   - a swept model's latest sweep at 1.2 s;
   - refusals: a sweep feeding a link, a sweep with a clock, a model with nothing in time.
 - **Changed by [ADR 0067](0067-experiments-and-time-from-data.md) the same day:** a model with nothing in time is no longer refused. It is one evaluation of every model at t = 0, in link order (tested: a pipeline of two doubling models after an input block gives 3 and 6).
+
+**Step 4a (2026-11-02): uses on the diagram.**
+- **Nodes:** `NodeKind::Use` nodes (`diagram::use_node`) read the used file from the using file's folder, or the thread's. Their inputs are its `input.value` blocks, with units from their settings. Their outputs are its blocks' outputs (`car.v`), including subsystem uses, and those of the uses inside it by path (`engine/x.y`), to depth 8. A file that cannot be read shows its error on the node.
+- **Clocks:** the node's line shows the clock first: "every 0.05 s", "shared clock", or "on new data" for a model without states, then the file.
+- **Wires:** wire ends inside a use (`plant/car.v`, `controller/speed`) find the use's port by the rest of the path. On the data layer, `sources` give a use's outputs by full name, so probes record from them, and links from probes into a use's input blocks are drawn solid like other probes that feed the model.
+- **Canvas:** a use is drawn with a double outline, like a subsystem use, in a stronger colour. Its menu names its file and clock. Opening it comes with 4b.
+- **Tested:** nodes, ports and units, clocks (own, set, shared, on new data), probe records and links, direct wires between shared uses with nothing dangling, and a missing file. A headless render of the cruise control from two files was looked at.
 
 ## Consequences
 

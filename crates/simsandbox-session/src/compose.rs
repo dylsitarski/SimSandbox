@@ -1591,4 +1591,75 @@ mod tests {
         assert_eq!(composed.values("second/f.y").unwrap(), [6.0]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn uses_are_nodes_on_the_diagram() {
+        use crate::diagram::{Diagram, NodeKind};
+        let dir = temp_dir("use-nodes");
+        cruise_files(&dir);
+        let diagram = |v: &Value| {
+            let (file, _) = simsandbox_file::ModelFile::from_json(&v.to_string()).unwrap();
+            simsandbox_core::registry::in_folder(Some(&dir), || {
+                let mut d = Diagram::new(&file, &registry());
+                d.observe(&file, &crate::examples::view_registry());
+                d
+            })
+        };
+        let linked = with(
+            json!({"format": 1, "blocks": [
+                use_of("plant", "car.ssbx.json"),
+                {"name": "controller", "file": "cruise.ssbx.json", "clock": {"dt": 0.5}}]}),
+            cruise_links("plant", "controller"),
+        );
+        let d = diagram(&linked);
+        let plant = &d.nodes[d.node("plant").unwrap()];
+        assert_eq!(plant.kind, NodeKind::Use);
+        assert_eq!(plant.method, "every 0.05 s");
+        assert_eq!(plant.inputs[0].name, "force");
+        assert!(plant
+            .outputs
+            .iter()
+            .any(|p| p.name == "car.v" && p.unit == "m/s"));
+        assert_eq!(d.nodes[d.node("controller").unwrap()].method, "every 0.5 s");
+        // The probe records the car and drives the controller's input.
+        let wired = |from: &str, to: &str| {
+            d.wires
+                .iter()
+                .any(|w| w.from_name == from && w.to_name == to)
+        };
+        assert!(wired("plant.car.v", "probe:speed.record"), "{:?}", d.wires);
+        assert!(
+            wired("probe:speed.plant/car.v", "controller/speed"),
+            "{:?}",
+            d.wires
+        );
+        // Shared: wired directly.
+        let shared_top = json!({"format": 1,
+            "blocks": [shared("plant", "car.ssbx.json"), shared("controller", "cruise.ssbx.json")],
+            "connections": wired_pair()});
+        let d = diagram(&shared_top);
+        assert_eq!(d.nodes[d.node("plant").unwrap()].method, "shared clock");
+        assert!(d
+            .wires
+            .iter()
+            .any(|w| w.from_name == "plant/car.v" && w.to_name == "controller/speed"));
+        assert!(d.dangling.is_empty(), "{:?}", d.dangling);
+        // A file that cannot be read shows its error on the node.
+        let missing = json!({"format": 1, "blocks": [use_of("gone", "nothing.ssbx.json")]});
+        let d = diagram(&missing);
+        assert!(d.nodes[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("nothing.ssbx.json"));
+        // A model without states on new data says so.
+        on_data_files(&dir);
+        let d = diagram(&json!({"format": 1, "blocks": [use_of("d", "double.ssbx.json")]}));
+        assert_eq!(d.nodes[0].method, "on new data");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn wired_pair() -> Value {
+        wired("plant", "controller")
+    }
 }

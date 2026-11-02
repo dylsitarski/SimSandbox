@@ -163,6 +163,13 @@ fn signal_of(file: &ModelFile, from: &str) -> Result<String, String> {
 fn sources(file: &ModelFile, d: &Diagram) -> BTreeMap<String, (usize, usize)> {
     let mut out = BTreeMap::new();
     for (i, n) in d.nodes.iter().enumerate() {
+        // A use of a model file (ADR 0066): its outputs by path.
+        if n.kind == NodeKind::Use {
+            for (k, p) in n.outputs.iter().enumerate() {
+                out.insert(format!("{}/{}", n.name, p.name), (i, k));
+            }
+            continue;
+        }
         if !n.is_block() {
             continue;
         }
@@ -472,10 +479,21 @@ impl Diagram {
                     .position(|p| p.name == signal)?;
                 Some((n, k))
             });
-            let to = c.to.split_once('.').and_then(|(b, port)| {
-                let n = self.node(b)?;
+            // Into a block's input, or a link into an input block of a
+            // model file used here (`controller/speed`, ADR 0066).
+            let into_use = c.to.split_once('/').and_then(|(u, port)| {
+                let n = self
+                    .node(u)
+                    .filter(|&n| self.nodes[n].kind == NodeKind::Use)?;
                 let k = self.nodes[n].inputs.iter().position(|p| p.name == port)?;
                 Some((n, k))
+            });
+            let to = into_use.or_else(|| {
+                c.to.split_once('.').and_then(|(b, port)| {
+                    let n = self.node(b)?;
+                    let k = self.nodes[n].inputs.iter().position(|p| p.name == port)?;
+                    Some((n, k))
+                })
             });
             if let (Some(from), Some(to)) = (from, to) {
                 self.wires.push(Wire {

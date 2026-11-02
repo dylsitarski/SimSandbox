@@ -431,6 +431,7 @@ impl Canvas {
         let header_fill = match n.kind {
             NodeKind::Block => visuals.widgets.inactive.bg_fill,
             NodeKind::Subsystem => visuals.selection.bg_fill.gamma_multiply(0.45),
+            NodeKind::Use => visuals.selection.bg_fill.gamma_multiply(0.7),
             NodeKind::Input | NodeKind::Output => visuals.warn_fg_color.gamma_multiply(0.25),
             NodeKind::Filter => visuals.hyperlink_color.gamma_multiply(0.3),
             NodeKind::View => visuals.hyperlink_color.gamma_multiply(0.15),
@@ -478,7 +479,7 @@ impl Canvas {
         } else {
             painter.rect_stroke(r, radius, border, StrokeKind::Inside);
         }
-        if n.kind == NodeKind::Subsystem {
+        if matches!(n.kind, NodeKind::Subsystem | NodeKind::Use) {
             // A second outline: there is more inside.
             painter.rect_stroke(
                 r.shrink(3.0 * z),
@@ -504,6 +505,8 @@ impl Canvas {
             match n.kind {
                 NodeKind::Block => format!("{} · {}", n.type_name, n.method),
                 NodeKind::Subsystem => format!("{} · subsystem", n.type_name),
+                // A model file used here: its file and its clock.
+                NodeKind::Use => format!("{} · {}", n.method, n.type_name),
                 NodeKind::Input => "subsystem input".into(),
                 NodeKind::Output => "subsystem output".into(),
                 NodeKind::Filter => format!("filter · {}", n.method),
@@ -1210,6 +1213,9 @@ impl Canvas {
                         }
                     }
                     NodeKind::Input | NodeKind::Output => {}
+                    NodeKind::Use => {
+                        ui.weak(format!("Uses {}, {}", n.type_name, n.method));
+                    }
                     NodeKind::Filter => {
                         if ui.button("Edit in Data…").on_hover_text("Its formula or cuts").clicked() {
                             requests.push(open_request(n));
