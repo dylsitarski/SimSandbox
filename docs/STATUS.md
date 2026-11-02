@@ -152,6 +152,11 @@ In priority order. Each item should end with tests and updated docs.
 - Typed equations without units are dimensionless and unchecked; formulas feeding a block that gives no units are not checked ([ADR 0046](decisions/0046-units-of-declared-parameters.md)). There are no symbolic Jacobians yet ([ADR 0017](decisions/0017-typed-equations.md)). Applying edited equations restarts the run from t = 0.
 - Integer method options are written as numbers with a decimal point (`"substeps": 4.0`).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)): no `input.gamepad` yet; only `plot.xy` and the pendulum view send the pointer, and the pendulum view only for `eq.pendulum` models; keys drive `input.value` blocks only (two keys each). Input faster than one step is not seen. The rewind slider does not yet show where recorded input lies. Opening a saved run puts its seed, step and schedule into the open model, so Save would write them (the log says so when they differ). The Runs menu does not mark stale runs; opening one warns in the log.
+- Models that use model files ([ADR 0066](decisions/0066-models-nest-as-blocks.md)), as of step 2 (2026-11-02):
+  - A file used on a shared clock may not itself use models on their own clocks, have probes feeding its own blocks, or have `groups`. So whether a file can be used shared depends on what is inside it.
+  - Wires from the using model reach only a shared use's own blocks and input blocks, not models nested deeper.
+  - Probes in such models only feed links: no recordings, files or `run --probe`. `run --dt`, `--inputs`, `--probe` and `--save-probes` are refused.
+  - Such models open headless only (the app comes in step 4).
 
 ## Blockers
 
