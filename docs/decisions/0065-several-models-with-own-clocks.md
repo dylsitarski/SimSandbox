@@ -1,6 +1,6 @@
 # 0065 — Several models, each with its own clock, referenced from their files and linked by probes
 
-- **Status:** Accepted
+- **Status:** Superseded by [0066](0066-models-nest-as-blocks.md)
 - **Date:** 2026-10-31 (accepted 2026-11-02)
 
 ## Context

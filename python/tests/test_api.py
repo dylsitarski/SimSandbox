@@ -323,7 +323,7 @@ def test_a_composition_runs_models_on_their_own_clocks(tmp_path):
     controller = ss.Model({"format": 1, "run": {"dt": 0.05}, "blocks": [pi], "connections": []})
     controller.add_block("speed", "input.value", settings={"unit": "m/s"}).connect("speed.y", "cruise.v")
     controller.save(tmp_path / "cruise.ssbx.json")
-    c = ss.Model({"format": 1, "run": {"t_end": 10}})
+    c = ss.Model({"format": 1, "run": {"t_end": 10}, "blocks": []})
     c.add_model("plant", "car.ssbx.json")
     c.add_model("controller", "cruise.ssbx.json", params={"cruise.kp": 600}, dt=0.5)
     c.link("plant/car.v", "controller/speed").link("controller/cruise.F", "plant/force")
@@ -341,3 +341,10 @@ def test_a_composition_runs_models_on_their_own_clocks(tmp_path):
     assert r["controller/speed.y"][1] == r["plant/car.v"][10]
     again = ss.Model.load(tmp_path / "both.ssbx.json").run()
     assert np.array_equal(again["plant/car.v"], r["plant/car.v"])
+    # A model using model files is itself a model file others can use.
+    outer = ss.Model({"format": 1, "run": {"t_end": 10}, "blocks": []})
+    outer.add_model("vehicle", "both.ssbx.json")
+    outer.save(tmp_path / "outer.ssbx.json")
+    nested = outer.run()
+    assert list(nested.models) == ["vehicle/plant", "vehicle/controller"]
+    assert np.array_equal(nested["vehicle/plant/car.v"], r["plant/car.v"])

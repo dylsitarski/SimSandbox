@@ -237,7 +237,10 @@ fn run_file(args: &[String]) -> Result<(), String> {
         }
     }
     if flags.has("--model") {
-        return Err("--model picks a model of a composition (ADR 0065); this is one model".into());
+        return Err(
+            "--model picks a model on its own clock (ADR 0066); this model uses no model files"
+                .into(),
+        );
     }
     let (text, track) = model_and_track(path, flags.get("--inputs"))?;
     if flags.has("--probe") || flags.has("--save-probes") {
@@ -273,8 +276,9 @@ fn run_file(args: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// `run` of a composition (ADR 0065): every model on its own clock. JSON
-/// gives every model; CSV one, named by `--model` when there are several.
+/// `run` of a model that uses model files (ADR 0066): every model on its
+/// own clock. JSON gives every one; CSV one, named by `--model` (`.` for
+/// the top level's own blocks) when there are several.
 fn run_composition_file(
     path: &str,
     text: &str,
@@ -285,7 +289,7 @@ fn run_composition_file(
     for f in ["--dt", "--inputs", "--probe", "--save-probes"] {
         if flags.has(f) {
             return Err(format!(
-                "{f} does not apply to a composition yet: each model keeps its own clock"
+                "{f} does not apply yet to a model using model files: each keeps its own clock"
             ));
         }
     }

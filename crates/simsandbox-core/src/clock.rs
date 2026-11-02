@@ -40,8 +40,9 @@ fn gcd(a: u128, b: u128) -> u128 {
 pub struct Ticks {
     /// The tick in seconds, as `num / den`.
     pub tick: (u128, u128),
-    /// Each clock's step in ticks, in the order given.
-    pub steps: Vec<u64>,
+    /// Each clock's step in ticks, in the order given. Counts are 128-bit:
+    /// at the smallest tick (10⁻¹⁸ s) they last over 10¹² years.
+    pub steps: Vec<u128>,
 }
 
 impl Ticks {
@@ -55,19 +56,27 @@ impl Ticks {
         let lcm = fractions.iter().fold(1u128, |l, &(_, d)| l / gcd(l, d) * d);
         let scaled: Vec<u128> = fractions.iter().map(|&(n, d)| n * (lcm / d)).collect();
         let g = scaled.iter().fold(0u128, |g, &s| gcd(g, s)).max(1);
-        let steps = scaled
-            .iter()
-            .map(|&s| u64::try_from(s / g))
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| SimError::InvalidSetting {
-                setting: "run.dt".into(),
-                reason: "these clocks share too small a tick".into(),
-            })?;
+        let steps = scaled.iter().map(|&s| s / g).collect();
         let h = gcd(g, lcm);
         Ok(Self {
             tick: (g / h, lcm / h),
             steps,
         })
+    }
+
+    /// How many whole steps of clock `k` fit in `t` seconds, `t` read as
+    /// its decimal: the last step at or before `t`, never past it.
+    pub fn steps_within(&self, k: usize, t: f64) -> Result<u128> {
+        let (n, d) = fraction(t)?;
+        let (a, b) = self.tick;
+        // t / tick = (n / d) / (a / b) = n·b / (d·a), in whole ticks.
+        let too_long = || SimError::InvalidSetting {
+            setting: "run.t_end".into(),
+            reason: format!("{t} s is too long for these clocks' tick"),
+        };
+        let ticks =
+            n.checked_mul(b).ok_or_else(too_long)? / d.checked_mul(a).ok_or_else(too_long)?;
+        Ok(ticks / self.steps[k])
     }
 
     /// The tick in seconds, rounded to the nearest `f64`.
@@ -93,6 +102,14 @@ mod tests {
         assert_eq!(t.steps, [7, 10]);
         assert_eq!(Ticks::new(&[0.01]).unwrap().steps, [1]);
         assert!(Ticks::new(&[0.0]).is_err());
+        // Clocks that rarely meet: a tick of 10⁻¹⁶ s.
+        let t = Ticks::new(&[0.1, 0.3333333333333333]).unwrap();
+        assert_eq!(t.tick, (1, 10u128.pow(16)));
+        assert_eq!(t.steps_within(1, 1.0).unwrap(), 3);
+        // The last step at or before the end, never past it.
+        let t = Ticks::new(&[0.4, 0.2]).unwrap();
+        assert_eq!(t.steps_within(0, 1.0).unwrap(), 2);
+        assert_eq!(t.steps_within(1, 0.6).unwrap(), 3);
         assert!(Ticks::new(&[f64::NAN]).is_err());
     }
 }

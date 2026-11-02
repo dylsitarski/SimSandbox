@@ -1,31 +1,55 @@
-//! Compositions (ADR 0065): a file whose `models` use model files, each
-//! under a name and with its own clock, linked by probes into the models'
-//! input blocks. Loading reads and builds each used model from its own
-//! folder, applies the use's parameter values and clock, and checks the
-//! links; running is the session's.
+//! Models that use model files (ADR 0066): an entry of a model's `blocks`
+//! may name a `file` in place of a `type`. Each use runs on its own clock
+//! and may itself use files, to any depth; uses are linked by probes into
+//! input blocks. Loading walks the tree and gives a flat list of clock
+//! domains (each one `Simulator`) and of links; running is the session's.
 
-use crate::{invalid, load_in, FileError, Loaded, ModelFile, ModelUse};
+use crate::{invalid, load_in, BlockEntry, FileError, Loaded, ModelFile, Subsystem, UseClock};
 use simsandbox_core::block::Shape;
 use simsandbox_core::clock::Ticks;
 use simsandbox_core::graph::BlockId;
 use simsandbox_core::registry::Registry;
+use simsandbox_core::schedule::Every;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// The block type a link drives (ADR 0058's `input.value`).
 const INPUT_VALUE: &str = "input.value";
 
-/// One used model, built.
-pub struct Use {
-    pub name: String,
-    /// The model file, as found.
-    pub path: PathBuf,
+/// A model on its own clock: the blocks of one model file (or of the
+/// top level), built.
+pub struct Domain {
+    /// The path of uses leading to it: empty at the top level, `plant`,
+    /// `vehicle/plant`.
+    pub path: String,
+    /// The model file it comes from; `None` at the top level.
+    pub file: Option<PathBuf>,
     pub loaded: Loaded,
     /// Its communication step.
     pub dt: f64,
 }
 
-/// Where a scalar comes from in a use's model.
+impl Domain {
+    /// Its name in results and reports: its path, or `.` at the top level.
+    pub fn name(&self) -> &str {
+        if self.path.is_empty() {
+            "."
+        } else {
+            &self.path
+        }
+    }
+
+    /// A name inside it, as seen from the top level (`plant/car.v`).
+    pub fn full(&self, inner: &str) -> String {
+        if self.path.is_empty() {
+            inner.into()
+        } else {
+            format!("{}/{inner}", self.path)
+        }
+    }
+}
+
+/// Where a scalar comes from in a domain's model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Source {
     pub block: BlockId,
@@ -33,8 +57,17 @@ pub struct Source {
     pub index: usize,
 }
 
-/// A link: probe `probe` samples `signal` (`use/block.port`) of use
-/// `from` and drives the input block `block` of use `to`.
+/// A probe that feeds links: its full name (`vehicle/speed`), when it
+/// samples, and the domain it records from.
+#[derive(Debug, Clone)]
+pub struct LinkProbe {
+    pub name: String,
+    pub every: Every,
+    pub domain: usize,
+}
+
+/// A link: probe `probe` samples `signal` (a full name) in domain `from`
+/// and drives the input block `block` (a full name) of domain `to`.
 #[derive(Debug, Clone)]
 pub struct Link {
     pub probe: usize,
@@ -42,174 +75,213 @@ pub struct Link {
     pub from: usize,
     pub source: Source,
     pub to: usize,
-    /// The input block, by its name in the use (`speed`).
     pub block: String,
     pub id: BlockId,
 }
 
-/// A composition, ready to run.
+/// A model that uses model files, ready to run.
 pub struct Composition {
+    /// The top-level file.
     pub file: ModelFile,
-    pub uses: Vec<Use>,
+    /// Depth first, in written order, the top level's own blocks first.
+    pub domains: Vec<Domain>,
+    pub probes: Vec<LinkProbe>,
     pub links: Vec<Link>,
-    /// The uses' clocks in a common tick.
+    /// The domains' clocks in a common tick.
     pub ticks: Ticks,
-    /// The order uses evaluate in at a shared point: a use that feeds
-    /// another first; a loop is broken in written order.
+    /// The order domains evaluate in at a shared instant: a domain that
+    /// feeds another first; a loop is broken in written order.
     pub order: Vec<usize>,
-    /// Each loop between uses, by name, as it is broken.
+    /// Each loop between domains, as it is broken.
     pub loops: Vec<String>,
-    /// Digests of the used files and their data: part of the hash.
+    /// Digests of the used files and the data they read.
     pub data: BTreeMap<String, String>,
     pub warnings: Vec<String>,
 }
 
 impl Composition {
     /// The hash a run file records (ADR 0059), covering every used model
-    /// file and the data it reads.
+    /// file and the data each reads.
     pub fn hash(&self) -> String {
         crate::runs::model_hash_with(&self.file, &self.data)
     }
+
+    /// The domain a full name lies in, and the name inside it.
+    pub fn domain_of<'a>(&self, name: &'a str) -> Option<(usize, &'a str)> {
+        self.domains
+            .iter()
+            .enumerate()
+            .filter_map(|(k, d)| {
+                if d.path.is_empty() {
+                    Some((k, name, 0))
+                } else {
+                    let rest = name.strip_prefix(&d.path)?.strip_prefix('/')?;
+                    Some((k, rest, d.path.len()))
+                }
+            })
+            .max_by_key(|(_, _, depth)| *depth)
+            .map(|(k, rest, _)| (k, rest))
+    }
 }
 
-/// Whether a model file's text is a composition.
+/// Whether a model file's text uses model files.
 pub fn is_composition(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
         .and_then(|v| {
-            v.get("models")
-                .and_then(|m| m.as_array())
-                .map(|m| !m.is_empty())
+            v.get("blocks")?
+                .as_array()
+                .map(|b| b.iter().any(|e| e.get("file").is_some()))
         })
         .unwrap_or(false)
 }
 
-/// Uses checked as the file is read: names unique and plain, clocks
-/// positive.
-pub(crate) fn check_uses(uses: &[ModelUse]) -> Result<(), FileError> {
-    for (k, u) in uses.iter().enumerate() {
-        let path = format!("models[{k}]");
-        let plain = !u.name.is_empty()
-            && u.name
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
-        if !plain {
-            return Err(invalid(
-                format!("{path}.name"),
-                format!(
-                    "'{}': a model's name is letters, digits, '_' and '-'",
-                    u.name
-                ),
-            ));
-        }
-        if uses[..k].iter().any(|o| o.name == u.name) {
-            return Err(invalid(
-                format!("{path}.name"),
-                format!("'{}' is used twice", u.name),
-            ));
-        }
-        if let Some(r) = &u.run {
-            if !(r.dt.is_finite() && r.dt > 0.0) {
+/// Block entries checked as the file is read: a block has a type, or a
+/// use has a file with nothing a block has.
+pub(crate) fn check_uses(
+    blocks: &[BlockEntry],
+    subsystems: &BTreeMap<String, Subsystem>,
+) -> Result<(), FileError> {
+    for (k, b) in blocks.iter().enumerate() {
+        let path = format!("blocks[{k}]");
+        match &b.file {
+            None if b.type_name.is_empty() => {
                 return Err(invalid(
-                    format!("{path}.run.dt"),
-                    format!("must be positive, got {}", r.dt),
-                ));
+                    path,
+                    "a block needs a type, or a file to use (ADR 0066)",
+                ))
             }
+            None if b.clock.is_some() => {
+                return Err(invalid(
+                    format!("{path}.clock"),
+                    "only a use of a model file has a clock",
+                ))
+            }
+            None => {}
+            Some(_) => {
+                let plain = !b.name.is_empty()
+                    && b.name
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
+                if !plain {
+                    return Err(invalid(
+                        format!("{path}.name"),
+                        format!(
+                            "'{}': a used model's name is letters, digits, '_' and '-'",
+                            b.name
+                        ),
+                    ));
+                }
+                let block_only = [
+                    ("type", !b.type_name.is_empty()),
+                    ("method", !b.method.is_empty()),
+                    ("equations", !b.equations.is_empty()),
+                    ("update", b.update.is_some()),
+                    ("settings", !b.settings.is_empty()),
+                    ("start", b.start.is_some() || !b.starts.is_empty()),
+                ];
+                if let Some((key, _)) = block_only.iter().find(|(_, has)| *has) {
+                    return Err(invalid(
+                        format!("{path}.{key}"),
+                        "a use of a model file has a name, file, params, clock and canvas",
+                    ));
+                }
+                if let Some(UseClock::Step(dt)) = b.clock {
+                    if !(dt.is_finite() && dt > 0.0) {
+                        return Err(invalid(
+                            format!("{path}.clock.dt"),
+                            format!("must be positive, got {dt}"),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    for (name, s) in subsystems {
+        if let Some(k) = s.blocks.iter().position(|b| b.file.is_some()) {
+            return Err(invalid(
+                format!("subsystems.{name}.blocks[{k}]"),
+                "model files are used at a model's level, not inside a subsystem",
+            ));
         }
     }
     Ok(())
 }
 
-/// Read and build a composition saved in `folder` (its used files are
-/// found from there; without a folder, only absolute paths).
+/// What one model's names resolve to: its own domain (if it has blocks of
+/// its own) and each use's level.
+struct Level {
+    domain: Option<usize>,
+    uses: BTreeMap<String, Level>,
+}
+
+impl Level {
+    /// The domain `name` (relative to this level) lies in, and the name
+    /// inside it.
+    fn resolve<'a>(&self, name: &'a str) -> Option<(usize, &'a str)> {
+        if let Some((first, rest)) = name.split_once('/') {
+            if let Some(l) = self.uses.get(first) {
+                return l.resolve(rest);
+            }
+        }
+        self.domain.map(|d| (d, name))
+    }
+}
+
+struct Loader<'a> {
+    registry: &'a Registry,
+    seed: u64,
+    domains: Vec<Domain>,
+    probes: Vec<LinkProbe>,
+    links: Vec<Link>,
+    data: BTreeMap<String, String>,
+    warnings: Vec<String>,
+    /// The files being loaded, outermost first, to find a file that uses
+    /// itself.
+    stack: Vec<PathBuf>,
+}
+
+/// Read and build a model that uses model files, saved in `folder` (or the
+/// thread's folder, `in_folder`; without one, only absolute paths).
 pub fn load_composition(
     text: &str,
     registry: &Registry,
     folder: Option<&Path>,
 ) -> Result<Composition, FileError> {
-    let (file, mut warnings) = ModelFile::from_json(text)?;
-    if file.models.is_empty() {
-        return Err(invalid("models", "not a composition: it uses no models"));
+    let (file, warnings) = ModelFile::from_json(text)?;
+    if !file.blocks.iter().any(|b| b.file.is_some()) {
+        return Err(invalid("blocks", "this model uses no model files"));
     }
     let folder = folder
         .map(Path::to_path_buf)
         .or_else(simsandbox_core::registry::current_folder);
-    let mut uses = Vec::new();
-    let mut data = BTreeMap::new();
-    for (k, u) in file.models.iter().enumerate() {
-        let at = format!("models[{k}]");
-        let path = PathBuf::from(&u.file);
-        let path = match (&folder, path.is_absolute()) {
-            (_, true) => path,
-            (Some(f), false) => f.join(path),
-            (None, false) => {
-                return Err(invalid(
-                    format!("{at}.file"),
-                    format!(
-                        "'{}' is found from the composition's folder: save it first, or give a full path",
-                        u.file
-                    ),
-                ))
-            }
-        };
-        let bytes = std::fs::read(&path)
-            .map_err(|e| invalid(format!("{at}.file"), format!("{}: {e}", path.display())))?;
-        let own = String::from_utf8(bytes.clone())
-            .map_err(|_| invalid(format!("{at}.file"), "not a text file"))?;
-        if is_composition(&own) {
-            return Err(invalid(
-                format!("{at}.file"),
-                "a composition cannot use another composition (yet): use model files",
-            ));
-        }
-        let (mut model, _) = ModelFile::from_json(&own)
-            .map_err(|e| invalid(format!("{at}.file"), format!("{}: {e}", path.display())))?;
-        let model_folder = path.parent().map(Path::to_path_buf);
-        let as_written = model.to_json();
-        set_params(&mut model, &u.params, &at)?;
-        let loaded = load_in(&model.to_json(), registry, model_folder.as_deref()).map_err(|e| {
-            // A model that loads without this use's values: they are wrong.
-            if !u.params.is_empty()
-                && load_in(&as_written, registry, model_folder.as_deref()).is_ok()
-            {
-                invalid(format!("{at}.params"), e)
-            } else {
-                invalid(&at, format!("{}: {e}", path.display()))
-            }
-        })?;
-        if loaded.plan.is_some() {
-            return Err(invalid(
-                &at,
-                "a model without states is evaluated on new data, which compositions do from \
-                 ADR 0065 step 2; this build runs models in time only",
-            ));
-        }
-        warnings.extend(loaded.warnings.iter().map(|w| format!("{}: {w}", u.name)));
-        data.insert(format!("{}.file", u.name), digest(&bytes));
-        for (key, d) in &loaded.data {
-            data.insert(format!("{}/{key}", u.name), d.clone());
-        }
-        let dt = u.run.as_ref().map_or(loaded.file.run.dt, |r| r.dt);
-        uses.push(Use {
-            name: u.name.clone(),
-            path,
-            loaded,
-            dt,
-        });
-    }
-    let ticks = Ticks::new(&uses.iter().map(|u| u.dt).collect::<Vec<_>>())
-        .map_err(|e| invalid("models", e))?;
-    let links = links(&file, &uses)?;
-    let (order, loops) = order(&uses, &links);
+    let mut l = Loader {
+        registry,
+        seed: file
+            .run
+            .seed
+            .unwrap_or(simsandbox_core::graph::DEFAULT_SEED),
+        domains: Vec::new(),
+        probes: Vec::new(),
+        links: Vec::new(),
+        data: BTreeMap::new(),
+        warnings,
+        stack: Vec::new(),
+    };
+    l.level(&file, "", folder.as_deref(), None, file.run.dt)?;
+    let ticks = Ticks::new(&l.domains.iter().map(|d| d.dt).collect::<Vec<_>>())
+        .map_err(|e| invalid("blocks", e))?;
+    let (order, loops) = order(&l.domains, &l.links);
     Ok(Composition {
         file,
-        uses,
-        links,
+        domains: l.domains,
+        probes: l.probes,
+        links: l.links,
         ticks,
         order,
         loops,
-        data,
-        warnings,
+        data: l.data,
+        warnings: l.warnings,
     })
 }
 
@@ -220,48 +292,403 @@ fn digest(bytes: &[u8]) -> String {
     format!("sha256:{hex}")
 }
 
+/// A seed for the domain at `path`, mixed from the top level's: two uses
+/// of one file draw differently (SplitMix64 over FNV-1a of the path).
+fn seed_for(seed: u64, path: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in path.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    let mut z = (seed ^ h).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// Whether an end of a connection (relative to a model) lies in one of
+/// its uses: its first segment names one.
+fn in_use(end: &str, uses: &[&BlockEntry]) -> bool {
+    let name = end
+        .strip_prefix("probe:")
+        .and_then(|r| r.split_once('.'))
+        .map_or(end, |(_, signal)| signal);
+    name.split_once('/')
+        .is_some_and(|(first, _)| uses.iter().any(|u| u.name == first))
+}
+
+/// An error in a model's own blocks, at the place it is written: the
+/// own-blocks file leaves uses and links out, so indices move back.
+fn written_at(e: FileError, blocks: &[usize], connections: &[usize]) -> FileError {
+    let FileError::Invalid { path, message } = e else {
+        return e;
+    };
+    let remap = |path: &str, key: &str, map: &[usize]| -> Option<String> {
+        let rest = path.strip_prefix(key)?.strip_prefix('[')?;
+        let (i, tail) = rest.split_once(']')?;
+        let i: usize = i.parse().ok()?;
+        Some(format!("{key}[{}]{tail}", map.get(i)?))
+    };
+    let path = remap(&path, "blocks", blocks)
+        .or_else(|| remap(&path, "connections", connections))
+        .unwrap_or(path);
+    FileError::Invalid { path, message }
+}
+
+impl Loader<'_> {
+    /// Load one model at `path` (its own blocks as a domain, then each
+    /// use, then its links) and return what its names resolve to.
+    fn level(
+        &mut self,
+        file: &ModelFile,
+        path: &str,
+        folder: Option<&Path>,
+        source: Option<&Path>,
+        dt: f64,
+    ) -> Result<Level, FileError> {
+        let full = |name: &str| {
+            if path.is_empty() {
+                name.to_string()
+            } else {
+                format!("{path}/{name}")
+            }
+        };
+        let uses: Vec<&BlockEntry> = file.blocks.iter().filter(|b| b.file.is_some()).collect();
+        // Its own blocks and the connections among them (with probes
+        // feeding them) form its domain.
+        let own: Vec<usize> = (0..file.blocks.len())
+            .filter(|&k| file.blocks[k].file.is_none())
+            .collect();
+        let inside: Vec<usize> = (0..file.connections.len())
+            .filter(|&k| {
+                let c = &file.connections[k];
+                !in_use(&c.from, &uses) && !in_use(&c.to, &uses)
+            })
+            .collect();
+        let mut level = Level {
+            domain: None,
+            uses: BTreeMap::new(),
+        };
+        if !own.is_empty() {
+            let mut f = file.clone();
+            f.blocks = own.iter().map(|&k| file.blocks[k].clone()).collect();
+            f.connections = inside
+                .iter()
+                .map(|&k| file.connections[k].clone())
+                .collect();
+            let holds: Vec<&str> = f
+                .connections
+                .iter()
+                .filter_map(|c| {
+                    c.from
+                        .strip_prefix("probe:")?
+                        .split_once('.')
+                        .map(|(p, _)| p)
+                })
+                .collect();
+            let probes = file
+                .controls
+                .probes
+                .iter()
+                .filter(|p| holds.contains(&p.name.as_str()))
+                .cloned()
+                .collect();
+            f.controls = Default::default();
+            f.controls.probes = probes;
+            f.run.dt = dt;
+            f.run.t_end = None;
+            f.run.inputs.clear();
+            if !path.is_empty() {
+                f.run.seed = Some(seed_for(self.seed, path));
+            }
+            let loaded = load_in(&f.to_json(), self.registry, folder)
+                .map_err(|e| written_at(e, &own, &inside))?;
+            if loaded.plan.is_some() {
+                return Err(invalid(
+                    "blocks",
+                    "a model without states runs on new data, which comes in a later step \
+                     (ADR 0066); this build runs models in time only",
+                ));
+            }
+            for w in &loaded.warnings {
+                self.warnings.push(if path.is_empty() {
+                    w.clone()
+                } else {
+                    format!("{path}: {w}")
+                });
+            }
+            for (key, d) in &loaded.data {
+                self.data.insert(full(key), d.clone());
+            }
+            level.domain = Some(self.domains.len());
+            self.domains.push(Domain {
+                path: path.into(),
+                file: source.map(Path::to_path_buf),
+                loaded,
+                dt,
+            });
+        }
+        for (k, u) in file
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.file.is_some())
+        {
+            let at = format!("blocks[{k}]");
+            let child = self
+                .use_file(u, &full(&u.name), folder)
+                .map_err(|e| match e {
+                    FileError::Invalid { path, message } if path.is_empty() => {
+                        invalid(at.clone(), message)
+                    }
+                    e => invalid(at.clone(), e),
+                })?;
+            level.uses.insert(u.name.clone(), child);
+        }
+        // Links: connections reaching into a use.
+        for (k, c) in file.connections.iter().enumerate() {
+            if inside.contains(&k) {
+                continue;
+            }
+            self.link(file, &level, path, &format!("connections[{k}]"), c)?;
+        }
+        Ok(level)
+    }
+
+    /// Load the model file `u` uses, at `path`.
+    fn use_file(
+        &mut self,
+        u: &BlockEntry,
+        path: &str,
+        folder: Option<&Path>,
+    ) -> Result<Level, FileError> {
+        let name = u.file.as_deref().expect("a use names a file");
+        let found = PathBuf::from(name);
+        let found = match (folder, found.is_absolute()) {
+            (_, true) => found,
+            (Some(f), false) => f.join(found),
+            (None, false) => {
+                return Err(invalid(
+                    "file",
+                    format!(
+                    "'{name}' is found from the model's folder: save it first, or give a full path"
+                ),
+                ))
+            }
+        };
+        let canonical = found.canonicalize().unwrap_or_else(|_| found.clone());
+        if self.stack.contains(&canonical) {
+            let chain: Vec<String> = self
+                .stack
+                .iter()
+                .chain([&canonical])
+                .map(|p| p.display().to_string())
+                .collect();
+            return Err(invalid(
+                "file",
+                format!("a model file uses itself: {}", chain.join(" → ")),
+            ));
+        }
+        let bytes = std::fs::read(&found)
+            .map_err(|e| invalid("file", format!("{}: {e}", found.display())))?;
+        let text =
+            String::from_utf8(bytes.clone()).map_err(|_| invalid("file", "not a text file"))?;
+        let (mut model, _) = ModelFile::from_json(&text)
+            .map_err(|e| invalid("file", format!("{}: {e}", found.display())))?;
+        set_params(&mut model, &u.params)?;
+        let dt = match u.clock {
+            None => model.run.dt,
+            Some(UseClock::Step(dt)) => dt,
+            Some(UseClock::Shared) => {
+                return Err(invalid(
+                    "clock",
+                    "a shared clock (the use flattened into its parent) comes in the next \
+                     step of ADR 0066; give the use its own clock for now",
+                ))
+            }
+        };
+        self.data.insert(format!("{path}.file"), digest(&bytes));
+        self.stack.push(canonical);
+        let child_folder = found.parent().map(Path::to_path_buf);
+        let level = self
+            .level(&model, path, child_folder.as_deref(), Some(&found), dt)
+            .map_err(|e| invalid("", format!("{}: {e}", found.display())));
+        self.stack.pop();
+        level
+    }
+
+    /// Check one connection reaching into a use, and add it as a link.
+    fn link(
+        &mut self,
+        file: &ModelFile,
+        level: &Level,
+        path: &str,
+        at: &str,
+        c: &crate::ConnectionEntry,
+    ) -> Result<(), FileError> {
+        let Some(rest) = c.from.strip_prefix("probe:") else {
+            return Err(invalid(
+                format!("{at}.from"),
+                "models on their own clocks are linked only through probes: record the \
+                 output with a probe and link the probe's output (ADR 0066)",
+            ));
+        };
+        let (probe_name, signal) = rest
+            .split_once('.')
+            .ok_or_else(|| invalid(format!("{at}.from"), "write probe:NAME.model/block.port"))?;
+        let entry = file
+            .controls
+            .probes
+            .iter()
+            .find(|p| p.name == probe_name)
+            .ok_or_else(|| invalid(format!("{at}.from"), format!("no probe '{probe_name}'")))?;
+        if !entry.record.iter().any(|r| r == signal) {
+            return Err(invalid(
+                format!("{at}.from"),
+                format!("probe '{probe_name}' does not record {signal}"),
+            ));
+        }
+        let (from, inner) = level
+            .resolve(signal)
+            .ok_or_else(|| invalid(format!("{at}.from"), format!("{signal} is in no model")))?;
+        if entry
+            .record
+            .iter()
+            .any(|r| level.resolve(r).map(|(d, _)| d) != Some(from))
+        {
+            return Err(invalid(
+                format!("{at}.from"),
+                format!(
+                    "probe '{probe_name}' records from several models; a probe records from one"
+                ),
+            ));
+        }
+        let (source, unit) = scalar(&self.domains[from].loaded, inner).ok_or_else(|| {
+            invalid(
+                format!("{at}.from"),
+                format!("{signal} is not a scalar output"),
+            )
+        })?;
+        let (to, block) = level
+            .resolve(&c.to)
+            .ok_or_else(|| invalid(format!("{at}.to"), format!("{} is in no model", c.to)))?;
+        if to == from {
+            return Err(invalid(
+                format!("{at}.to"),
+                "a probe feeding its own model is wired inside that model's file (ADR 0063)",
+            ));
+        }
+        let loaded = &self.domains[to].loaded;
+        let entry_to = loaded
+            .flat
+            .blocks
+            .iter()
+            .find(|b| b.name == block && b.type_name == INPUT_VALUE)
+            .ok_or_else(|| {
+                invalid(
+                    format!("{at}.to"),
+                    format!("{} is not an input block ({INPUT_VALUE})", c.to),
+                )
+            })?;
+        let id = loaded.ids[&entry_to.name];
+        let want = loaded
+            .model
+            .block(id)
+            .map_err(|e| invalid(format!("{at}.to"), e))?
+            .spec()
+            .outputs()
+            .next()
+            .map_or(simsandbox_core::units::Unit::DIMENSIONLESS, |p| p.unit);
+        if want != unit {
+            return Err(invalid(
+                at,
+                format!(
+                    "{signal} is in {unit}, {} is in {want}: units must match",
+                    c.to
+                ),
+            ));
+        }
+        if self.links.iter().any(|l| l.to == to && l.id == id) {
+            return Err(invalid(
+                format!("{at}.to"),
+                format!("{} is linked twice", c.to),
+            ));
+        }
+        let full_probe = if path.is_empty() {
+            probe_name.to_string()
+        } else {
+            format!("{path}/{probe_name}")
+        };
+        let probe = match self.probes.iter().position(|p| p.name == full_probe) {
+            Some(p) => p,
+            None => {
+                self.probes.push(LinkProbe {
+                    name: full_probe,
+                    every: entry.schedule(),
+                    domain: from,
+                });
+                self.probes.len() - 1
+            }
+        };
+        let signal = self.domains[from].full(inner);
+        let block = self.domains[to].full(block);
+        self.links.push(Link {
+            probe,
+            signal,
+            from,
+            source,
+            to,
+            block,
+            id,
+        });
+        Ok(())
+    }
+}
+
 /// A use's parameter values, written into its model before it is built.
 fn set_params(
     model: &mut ModelFile,
-    params: &BTreeMap<String, f64>,
-    at: &str,
+    params: &BTreeMap<String, crate::ParamValue>,
 ) -> Result<(), FileError> {
-    for (key, &value) in params {
-        let path = format!("{at}.params.{key}");
-        if !value.is_finite() {
-            return Err(invalid(path, "must be a finite number"));
-        }
+    for (key, value) in params {
+        let path = format!("params.{key}");
+        let crate::ParamValue::Number(v) = value else {
+            return Err(invalid(path, "a use's parameter values are numbers"));
+        };
         if let Some(decl) = model.params.get_mut(key) {
-            decl.value = value;
+            decl.value = *v;
             continue;
         }
-        let entry = key
-            .split_once('.')
-            .and_then(|(b, p)| Some((model.blocks.iter_mut().find(|e| e.name == b)?, p)));
+        let entry = key.split_once('.').and_then(|(b, p)| {
+            Some((
+                model
+                    .blocks
+                    .iter_mut()
+                    .find(|e| e.name == b && e.file.is_none())?,
+                p,
+            ))
+        });
         match entry {
             Some((e, p)) => {
-                e.params.insert(p.into(), crate::ParamValue::Number(value));
+                e.params.insert(p.into(), value.clone());
             }
-            None => {
-                return Err(invalid(
-                    path,
-                    "no such parameter: a declared parameter's name, or block.param",
-                ))
-            }
+            None => return Err(invalid(
+                path,
+                "no such parameter in the used file: a declared parameter's name, or block.param",
+            )),
         }
     }
     Ok(())
 }
 
-/// Find `block.port` or `block.port[i]`, a scalar, in a use.
-fn scalar(u: &Use, signal: &str) -> Option<(Source, simsandbox_core::units::Unit)> {
+/// Find `block.port` or `block.port[i]`, a scalar, in a built model.
+fn scalar(loaded: &Loaded, signal: &str) -> Option<(Source, simsandbox_core::units::Unit)> {
     let (block, port) = signal.split_once('.')?;
     let (port, index) = match port.strip_suffix(']').and_then(|p| p.rsplit_once('[')) {
         Some((p, i)) => (p, i.parse().ok()?),
         None => (port, 0),
     };
-    let id = *u.loaded.ids.get(block)?;
-    let spec = u.loaded.model.block(id).ok()?.spec();
+    let id = *loaded.ids.get(block)?;
+    let spec = loaded.model.block(id).ok()?.spec();
     let p = spec.outputs().find(|p| p.name == port)?;
     let fits = match p.shape {
         Shape::Scalar => index == 0 && !signal.ends_with(']'),
@@ -280,161 +707,36 @@ fn scalar(u: &Use, signal: &str) -> Option<(Source, simsandbox_core::units::Unit
     })
 }
 
-fn links(file: &ModelFile, uses: &[Use]) -> Result<Vec<Link>, FileError> {
-    let find = |name: &str| uses.iter().position(|u| u.name == name);
-    let mut out: Vec<Link> = Vec::new();
-    for (k, c) in file.connections.iter().enumerate() {
-        let at = format!("connections[{k}]");
-        let Some(rest) = c.from.strip_prefix("probe:") else {
-            return Err(invalid(
-                format!("{at}.from"),
-                "models are linked only through probes: record the output with a probe and \
-                 link the probe's output (ADR 0065)",
-            ));
-        };
-        let (probe_name, signal) = rest
-            .split_once('.')
-            .ok_or_else(|| invalid(format!("{at}.from"), "write probe:NAME.model/block.port"))?;
-        let probe = file
-            .controls
-            .probes
-            .iter()
-            .position(|p| p.name == probe_name)
-            .ok_or_else(|| invalid(format!("{at}.from"), format!("no probe '{probe_name}'")))?;
-        if !file.controls.probes[probe]
-            .record
-            .iter()
-            .any(|r| r == signal)
-        {
-            return Err(invalid(
-                format!("{at}.from"),
-                format!("probe '{probe_name}' does not record {signal}"),
-            ));
-        }
-        let (from_use, inner) = signal.split_once('/').ok_or_else(|| {
-            invalid(
-                format!("{at}.from"),
-                format!("'{signal}': name the model, model/block.port"),
-            )
-        })?;
-        let from = find(from_use)
-            .ok_or_else(|| invalid(format!("{at}.from"), format!("no model '{from_use}'")))?;
-        let (source, unit) = scalar(&uses[from], inner).ok_or_else(|| {
-            invalid(
-                format!("{at}.from"),
-                format!("{signal} is not a scalar output of model '{from_use}'"),
-            )
-        })?;
-        let (to_use, block) = c.to.split_once('/').ok_or_else(|| {
-            invalid(
-                format!("{at}.to"),
-                "write model/input, an input block of a model",
-            )
-        })?;
-        let to = find(to_use)
-            .ok_or_else(|| invalid(format!("{at}.to"), format!("no model '{to_use}'")))?;
-        if to == from {
-            return Err(invalid(
-                format!("{at}.to"),
-                "a probe feeds its own model inside the model file (ADR 0063)",
-            ));
-        }
-        let u = &uses[to];
-        let entry = u
-            .loaded
-            .flat
-            .blocks
-            .iter()
-            .find(|b| b.name == block)
-            .filter(|b| b.type_name == INPUT_VALUE)
-            .ok_or_else(|| {
-                invalid(
-                    format!("{at}.to"),
-                    format!("model '{to_use}' has no input block '{block}' ({INPUT_VALUE})"),
-                )
-            })?;
-        let id = u.loaded.ids[&entry.name];
-        let want = u
-            .loaded
-            .model
-            .block(id)
-            .map_err(|e| invalid(format!("{at}.to"), e))?
-            .spec()
-            .outputs()
-            .next()
-            .map(|p| p.unit)
-            .unwrap_or(simsandbox_core::units::Unit::DIMENSIONLESS);
-        if want != unit {
-            return Err(invalid(
-                at,
-                format!(
-                    "{signal} is in {unit}, {} is in {want}: units must match",
-                    c.to
-                ),
-            ));
-        }
-        if out.iter().any(|l| l.to == to && l.block == block) {
-            return Err(invalid(
-                format!("{at}.to"),
-                format!("{} is linked twice", c.to),
-            ));
-        }
-        out.push(Link {
-            probe,
-            signal: signal.into(),
-            from,
-            source,
-            to,
-            block: block.into(),
-            id,
-        });
-    }
-    // A probe records from one model.
-    for (k, p) in file.controls.probes.iter().enumerate() {
-        let models: Vec<&str> = p
-            .record
-            .iter()
-            .map(|r| r.split_once('/').map_or("", |(m, _)| m))
-            .collect();
-        if models.iter().any(|m| find(m).is_none()) || models.windows(2).any(|w| w[0] != w[1]) {
-            return Err(invalid(
-                format!("controls.probes[{k}].record"),
-                "a probe records from one model, by model/block.port",
-            ));
-        }
-    }
-    Ok(out)
-}
-
-/// Uses in the order they evaluate at a shared point: each after the uses
-/// that feed it, in written order; where uses feed each other, the first
-/// written goes first. Returns the loops so broken.
-fn order(uses: &[Use], links: &[Link]) -> (Vec<usize>, Vec<String>) {
+/// Domains in the order they evaluate at a shared instant: each after the
+/// domains that feed it, in written order; where domains feed each other,
+/// the first written goes first. Returns the loops so broken.
+fn order(domains: &[Domain], links: &[Link]) -> (Vec<usize>, Vec<String>) {
     let mut placed: Vec<usize> = Vec::new();
     let mut loops = Vec::new();
-    while placed.len() < uses.len() {
+    while placed.len() < domains.len() {
         let waiting = |u: usize| {
             links
                 .iter()
                 .any(|l| l.to == u && !placed.contains(&l.from) && l.from != u)
         };
-        let next = (0..uses.len()).find(|u| !placed.contains(u) && !waiting(*u));
+        let next = (0..domains.len()).find(|u| !placed.contains(u) && !waiting(*u));
         let u = next.unwrap_or_else(|| {
-            let u = (0..uses.len())
+            let u = (0..domains.len())
                 .find(|u| !placed.contains(u))
-                .expect("some use is left");
-            let late: Vec<&str> = links
+                .expect("some domain is left");
+            let mut late: Vec<&str> = links
                 .iter()
                 .filter(|l| l.to == u && !placed.contains(&l.from))
-                .map(|l| uses[l.from].name.as_str())
+                .map(|l| domains[l.from].name())
                 .collect();
+            late.dedup();
             loops.push(format!(
-                "{} evaluates before {}, which it reads: at a shared point it takes their \
+                "{} evaluates before {}, which it reads: at a shared instant it takes their \
                  samples after its own outputs, so an output of {} depending on them at the \
                  same instant sees them one step late",
-                uses[u].name,
+                domains[u].name(),
                 late.join(", "),
-                uses[u].name
+                domains[u].name()
             ));
             u
         });

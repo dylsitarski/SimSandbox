@@ -91,11 +91,6 @@ pub struct ModelFile {
     /// Groups of blocks used like block types by name (ADR 0043).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub subsystems: BTreeMap<String, Subsystem>,
-    /// A composition's models (ADR 0065): named uses of model files, each
-    /// with its own clock. A file with models has no blocks of its own; its
-    /// connections are links from probes into the models' input blocks.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub models: Vec<ModelUse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<BlockEntry>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -119,31 +114,42 @@ pub struct ModelFile {
     pub folder: Option<std::path::PathBuf>,
 }
 
-/// One model a composition uses (ADR 0065): a model file, by a path
-/// relative to the composition, under a name that prefixes everything in
-/// it (`plant/car.v`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelUse {
-    pub name: String,
-    pub file: String,
-    /// Parameter values for this use only (`block.param`, or a declared
-    /// parameter's name); the model file keeps its own.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub params: BTreeMap<String, f64>,
-    /// This use's clock; the model file's `run.dt` if absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<UseRun>,
-    /// Where its node sits on the composition's canvas.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub canvas: Option<[f64; 2]>,
+/// The clock of a model file's use (ADR 0066): its own, at the used
+/// file's `run.dt` or a step given here, or its parent's (`"shared"`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawClock", into = "RawClock")]
+pub enum UseClock {
+    /// Its own clock, at this step.
+    Step(f64),
+    /// Its parent's clock: flattened into the parent's model.
+    Shared,
 }
 
-/// A use's own clock.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UseRun {
-    pub dt: f64,
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum RawClock {
+    Word(String),
+    Step { dt: f64 },
+}
+
+impl TryFrom<RawClock> for UseClock {
+    type Error = String;
+    fn try_from(r: RawClock) -> Result<Self, String> {
+        match r {
+            RawClock::Word(w) if w == "shared" => Ok(Self::Shared),
+            RawClock::Word(w) => Err(format!("'{w}': a clock is \"shared\" or {{\"dt\": step}}")),
+            RawClock::Step { dt } => Ok(Self::Step(dt)),
+        }
+    }
+}
+
+impl From<UseClock> for RawClock {
+    fn from(c: UseClock) -> Self {
+        match c {
+            UseClock::Step(dt) => RawClock::Step { dt },
+            UseClock::Shared => RawClock::Word("shared".into()),
+        }
+    }
 }
 
 /// Automatic fusion of equation blocks (ADR 0023).
@@ -654,9 +660,17 @@ pub struct InputBinding {
 #[serde(deny_unknown_fields)]
 pub struct BlockEntry {
     pub name: String,
-    /// A registered block type, or a subsystem of this file (ADR 0043).
-    #[serde(rename = "type")]
+    /// A registered block type, or a subsystem of this file (ADR 0043);
+    /// empty for a use of a model file.
+    #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
     pub type_name: String,
+    /// A use of a model file (ADR 0066), found from this file's folder, in
+    /// place of a `type`; its `params` are values for this use only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// A model file use's clock: its own at the file's `run.dt` if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<UseClock>,
     /// Absent for a subsystem, whose blocks have their own; for a block,
     /// absent means the type's default method.
     #[serde(default, skip_serializing_if = "MethodEntry::is_empty")]
@@ -1374,11 +1388,11 @@ pub fn load_in(
     folder: Option<&std::path::Path>,
 ) -> Result<Loaded, FileError> {
     let (mut file, mut warnings) = ModelFile::from_json(text)?;
-    if !file.models.is_empty() {
+    if let Some(k) = file.blocks.iter().position(|b| b.file.is_some()) {
         return Err(invalid(
-            "models",
-            "this is a composition of models (ADR 0065): run it with `simsandbox run`; \
-             it opens in the app later",
+            format!("blocks[{k}]"),
+            "this model uses model files (ADR 0066): run it with `simsandbox run` or \
+             Python; the app opens such models later",
         ));
     }
     file.folder = folder
@@ -1522,8 +1536,6 @@ struct RawFile {
     #[serde(default)]
     subsystems: BTreeMap<String, Subsystem>,
     #[serde(default)]
-    models: Vec<ModelUse>,
-    #[serde(default)]
     blocks: Vec<BlockEntry>,
     #[serde(default)]
     connections: Vec<ConnectionEntry>,
@@ -1545,7 +1557,6 @@ impl ModelFile {
             sample: None,
             params: BTreeMap::new(),
             subsystems: BTreeMap::new(),
-            models: Vec::new(),
             blocks: Vec::new(),
             connections: Vec::new(),
             fusion: Fusion::Auto,
@@ -1633,23 +1644,7 @@ impl ModelFile {
         if let Some(t) = raw.run.t_end.filter(|&t| !positive(t)) {
             return Err(invalid("run.t_end", format!("must be positive, got {t}")));
         }
-        compose::check_uses(&raw.models)?;
-        if !raw.models.is_empty() {
-            let own = [
-                ("blocks", !raw.blocks.is_empty()),
-                ("subsystems", !raw.subsystems.is_empty()),
-                ("params", !raw.params.is_empty()),
-                ("groups", !raw.groups.is_empty()),
-                ("sample", raw.sample.is_some()),
-            ];
-            if let Some((k, _)) = own.iter().find(|(_, has)| *has) {
-                return Err(invalid(
-                    *k,
-                    "a composition (a file with models) has no blocks of its own: its models \
-                     are model files, linked by probes (ADR 0065)",
-                ));
-            }
-        }
+        compose::check_uses(&raw.blocks, &raw.subsystems)?;
         let mut warnings = Vec::new();
         let mut controls: Controls = match raw.controls {
             None => Controls::default(),
@@ -1692,7 +1687,6 @@ impl ModelFile {
                 sample: raw.sample,
                 params: raw.params,
                 subsystems: raw.subsystems,
-                models: raw.models,
                 blocks: raw.blocks,
                 connections: raw.connections,
                 fusion: raw.fusion,

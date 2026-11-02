@@ -1,8 +1,9 @@
-//! Running a composition headless (ADR 0065): every used model on its own
-//! clock, in exact ticks. Between communication points the models step
-//! apart, each with its link inputs held from the start of its step; at a
-//! point, the models reaching it evaluate in link order, each taking the
-//! latest sample of the probes feeding it, and its probes sample.
+//! Running a model that uses model files headless (ADR 0066): every clock
+//! domain on its own clock, in exact ticks. Between their steps the
+//! domains advance apart, each with its link inputs held from the start of
+//! its step; at an instant several share, they evaluate in link order,
+//! each taking the latest samples of the probes feeding it, and its probes
+//! sample.
 
 use crate::run::{Output, Population, Results, DEFAULT_T_END};
 use crate::session::{set_key, InputEvent, Track};
@@ -13,8 +14,9 @@ use simsandbox_core::schedule::Trigger;
 use simsandbox_core::sim::Simulator;
 use simsandbox_file::compose::{load_composition, Composition};
 
-/// What a composition's run produced: each model's results at its own
-/// times, in written order.
+/// What a run produced: each domain's results at its own times, by its
+/// name (`.` for the top level's own blocks, else its path, `plant`), in
+/// written order, depth first.
 pub struct Composed {
     pub models: Vec<(String, Results)>,
     /// The common tick, in seconds.
@@ -23,9 +25,19 @@ pub struct Composed {
 }
 
 impl Composed {
-    /// One model's results.
+    /// One domain's results.
     pub fn model(&self, name: &str) -> Option<&Results> {
         self.models.iter().find(|(n, _)| n == name).map(|(_, r)| r)
+    }
+
+    /// A full name's values (`plant/car.v`), from the domain holding it.
+    pub fn values(&self, name: &str) -> Option<&[f64]> {
+        self.models.iter().rev().find_map(|(_, r)| {
+            r.outputs
+                .iter()
+                .find(|o| o.name == name)
+                .map(|o| o.values.as_slice())
+        })
     }
 
     /// JSON: each model's results as `run --format json` gives one model's.
@@ -39,10 +51,10 @@ impl Composed {
     }
 }
 
-/// `check` of a composition (ADR 0065): its models with their files,
-/// clocks and parameter values, what each records and the input blocks
-/// links can drive, the links, the common tick, the order models evaluate
-/// in at a shared point and the loops that order breaks.
+/// `check` of a model that uses model files (ADR 0066): its domains with
+/// their files, clocks, outputs and the input blocks links can drive, the
+/// links, the common tick, the order domains evaluate in at a shared
+/// instant, the loops that order breaks, and the model hash.
 pub fn check(text: &str, registry: &Registry) -> Value {
     let c = match load_composition(text, registry, None) {
         Ok(c) => c,
@@ -51,17 +63,16 @@ pub fn check(text: &str, registry: &Registry) -> Value {
         }
     };
     let models: Vec<Value> = c
-        .uses
+        .domains
         .iter()
-        .zip(&c.file.models)
         .zip(&c.ticks.steps)
-        .map(|((u, entry), steps)| {
-            let flat = &u.loaded.flat;
+        .map(|(d, steps)| {
+            let flat = &d.loaded.flat;
             let mut outputs = Vec::new();
             for b in &flat.blocks {
-                if let Ok(block) = u.loaded.model.block(u.loaded.ids[&b.name]) {
+                if let Ok(block) = d.loaded.model.block(d.loaded.ids[&b.name]) {
                     for p in block.spec().outputs() {
-                        outputs.push(format!("{}/{}.{}", u.name, b.name, p.name));
+                        outputs.push(d.full(&format!("{}.{}", b.name, p.name)));
                     }
                 }
             }
@@ -69,14 +80,13 @@ pub fn check(text: &str, registry: &Registry) -> Value {
                 .blocks
                 .iter()
                 .filter(|b| b.type_name == simsandbox_eq::input::VALUE)
-                .map(|b| format!("{}/{}", u.name, b.name))
+                .map(|b| d.full(&b.name))
                 .collect();
             json!({
-                "name": u.name,
-                "file": entry.file,
-                "dt": u.dt,
-                "ticks_per_step": steps,
-                "params": entry.params,
+                "name": d.name(),
+                "file": d.file.as_ref().map(|f| f.display().to_string()),
+                "dt": d.dt,
+                "ticks_per_step": steps.to_string(),
                 "outputs": outputs,
                 "inputs": inputs,
             })
@@ -85,13 +95,7 @@ pub fn check(text: &str, registry: &Registry) -> Value {
     let links: Vec<Value> = c
         .links
         .iter()
-        .map(|l| {
-            json!({
-                "probe": c.file.controls.probes[l.probe].name,
-                "from": l.signal,
-                "to": format!("{}/{}", c.uses[l.to].name, l.block),
-            })
-        })
+        .map(|l| json!({"probe": c.probes[l.probe].name, "from": l.signal, "to": l.block}))
         .collect();
     json!({
         "ok": true,
@@ -101,7 +105,7 @@ pub fn check(text: &str, registry: &Registry) -> Value {
         "models": models,
         "links": links,
         "tick": c.ticks.seconds(),
-        "order": c.order.iter().map(|&u| &c.uses[u].name).collect::<Vec<_>>(),
+        "order": c.order.iter().map(|&d| c.domains[d].name()).collect::<Vec<_>>(),
         "loops": c.loops,
         "model_hash": c.hash(),
     })
@@ -119,9 +123,9 @@ struct Running {
     events: Track,
     dt: f64,
     /// Its step in ticks, the steps it takes, and those taken.
-    every: u64,
-    total: u64,
-    taken: u64,
+    every: u128,
+    total: u128,
+    taken: u128,
 }
 
 impl Running {
@@ -169,14 +173,12 @@ pub fn run_composition(
 
     // The probes that feed links: when they sample, and what each link
     // last received.
-    let mut triggers: Vec<Option<Trigger>> = c.file.controls.probes.iter().map(|_| None).collect();
-    for l in &c.links {
-        triggers[l.probe]
-            .get_or_insert_with(|| Trigger::new(c.file.controls.probes[l.probe].schedule()));
-    }
-    let probe_use: Vec<Option<usize>> = (0..triggers.len())
-        .map(|p| c.links.iter().find(|l| l.probe == p).map(|l| l.from))
+    let mut triggers: Vec<Option<Trigger>> = c
+        .probes
+        .iter()
+        .map(|p| Some(Trigger::new(p.every.clone())))
         .collect();
+    let probe_use: Vec<Option<usize>> = c.probes.iter().map(|p| Some(p.domain)).collect();
     let mut latest: Vec<f64> = vec![f64::NAN; c.links.len()];
     let mut delayed = false;
 
@@ -215,7 +217,7 @@ pub fn run_composition(
             let dt = r.dt;
             r.sim
                 .step(dt)
-                .map_err(|e| format!("{}: {e}", c.uses[u].name))?;
+                .map_err(|e| format!("{}: {e}", c.domains[u].name()))?;
             r.taken += 1;
         }
         point(
@@ -237,12 +239,12 @@ pub fn run_composition(
     }
     Ok(Composed {
         models: c
-            .uses
+            .domains
             .iter()
             .zip(runs)
-            .map(|(u, mut r)| {
+            .map(|(d, mut r)| {
                 r.results.index = vec![("t".into(), std::mem::take(&mut r.times))];
-                (u.name.clone(), r.results)
+                (d.name().to_string(), r.results)
             })
             .collect(),
         tick: c.ticks.seconds(),
@@ -250,25 +252,30 @@ pub fn run_composition(
     })
 }
 
-/// Each used model's simulator and recording, before the first point.
+/// Each domain's simulator and recording, before the first step.
 fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
+    // Scheduled input by full name goes to the domain holding it.
+    let mut schedules: Vec<Vec<InputEvent>> = c.domains.iter().map(|_| Vec::new()).collect();
+    for e in &c.file.run.inputs {
+        let (d, key) = c
+            .domain_of(&e.set)
+            .ok_or_else(|| format!("run.inputs: {} is in no model", e.set))?;
+        schedules[d].push(InputEvent {
+            t: e.t,
+            key: key.to_string(),
+            value: e.to,
+        });
+    }
     let mut runs = Vec::new();
-    for (u, every) in c.uses.iter_mut().zip(&c.ticks.steps) {
-        let prefix = format!("{}/", u.name);
-        // Scheduled input by full name goes to the model it names.
-        let schedule = c
-            .file
-            .run
-            .inputs
-            .iter()
-            .filter_map(|e| {
-                Some(InputEvent {
-                    t: e.t,
-                    key: e.set.strip_prefix(&prefix)?.to_string(),
-                    value: e.to,
-                })
-            })
-            .collect();
+    for (k, (u, schedule)) in c.domains.iter_mut().zip(schedules).enumerate() {
+        let every = c.ticks.steps[k];
+        let total = c.ticks.steps_within(k, t_end).map_err(|e| e.to_string())?;
+        let prefix = if u.path.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", u.path)
+        };
+        let name = u.name().to_string();
         let loaded = &mut u.loaded;
         let mut fixed = Vec::new();
         let mut variable = Vec::new();
@@ -299,7 +306,7 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
         // The simulator takes the built model; the composition keeps the
         // rest (names, links) for the run.
         let model = std::mem::take(&mut loaded.model);
-        let sim = Simulator::new(model, 0.0).map_err(|e| format!("{}: {e}", u.name))?;
+        let sim = Simulator::new(model, 0.0).map_err(|e| format!("{name}: {e}"))?;
         let results = Results {
             index: Vec::new(),
             outputs,
@@ -318,8 +325,8 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
             times: Vec::new(),
             events: Track::new(schedule, Vec::new()),
             dt: u.dt,
-            every: *every,
-            total: (t_end / u.dt).round() as u64,
+            every,
+            total,
             taken: 0,
         });
     }
@@ -408,12 +415,12 @@ fn take_links(
         if latest[k].to_bits() != now.to_bits() {
             r.sim
                 .set_param(l.id, "y", latest[k])
-                .map_err(|e| format!("{}/{}: {e}", c.uses[u].name, l.block))?;
+                .map_err(|e| format!("{}: {e}", l.block))?;
         }
     }
     r.sim
         .refresh()
-        .map_err(|e| format!("{}: {e}", c.uses[u].name))
+        .map_err(|e| format!("{}: {e}", c.domains[u].name()))
 }
 
 fn value(sim: &Simulator, s: &simsandbox_file::compose::Source) -> f64 {
@@ -441,11 +448,15 @@ mod tests {
         std::fs::write(dir.join(name), v.to_string()).unwrap();
     }
 
-    fn run_in(dir: &Path, composition: &Value) -> Composed {
+    fn run_in(dir: &Path, model: &Value) -> Composed {
         simsandbox_core::registry::in_folder(Some(dir), || {
-            run_composition(&composition.to_string(), &registry(), None)
+            run_composition(&model.to_string(), &registry(), None)
         })
         .unwrap()
+    }
+
+    fn check_in(dir: &Path, v: &Value) -> Value {
+        simsandbox_core::registry::in_folder(Some(dir), || check(&v.to_string(), &registry()))
     }
 
     fn series<'a>(r: &'a Results, name: &str) -> &'a [f64] {
@@ -456,8 +467,13 @@ mod tests {
         v.iter().map(|x| x.to_bits()).collect()
     }
 
-    #[test]
-    fn a_model_split_in_two_runs_as_the_model_with_a_hold() {
+    fn use_of(name: &str, file: &str) -> Value {
+        json!({"name": name, "file": file})
+    }
+
+    /// The cruise control's car and controller as two model files in `dir`,
+    /// each reading the other through an input block.
+    fn cruise_files(dir: &Path) -> Value {
         let text = EXAMPLES
             .iter()
             .find(|e| e.name.contains("Cruise control"))
@@ -465,11 +481,10 @@ mod tests {
             .text;
         let whole: Value = serde_json::from_str(text).unwrap();
         let (car, cruise) = (&whole["blocks"][0], &whole["blocks"][1]);
-        let dir = temp_dir("split");
         let input = |name: &str, unit: &str| json!({"name": name, "type": "input.value", "settings": {"unit": unit}});
         let run = json!({"dt": 0.05, "t_end": 20});
         write(
-            &dir,
+            dir,
             "car.ssbx.json",
             &json!({
             "format": 1, "run": run, "fusion": "off",
@@ -477,25 +492,46 @@ mod tests {
             "connections": [{"from": "force.y", "to": "car.F"}]}),
         );
         write(
-            &dir,
+            dir,
             "cruise.ssbx.json",
             &json!({
             "format": 1, "run": run, "fusion": "off",
             "blocks": [input("speed", "m/s"), cruise],
             "connections": [{"from": "speed.y", "to": "cruise.v"}]}),
         );
+        whole
+    }
+
+    /// Two uses linked both ways every step, under `prefix` (`plant` or
+    /// `vehicle/plant`).
+    fn cruise_links(plant: &str, controller: &str) -> Value {
+        json!({
+            "connections": [
+                {"from": format!("probe:speed.{plant}/car.v"), "to": format!("{controller}/speed")},
+                {"from": format!("probe:force.{controller}/cruise.F"), "to": format!("{plant}/force")}],
+            "controls": {"probes": [
+                {"name": "speed", "record": [format!("{plant}/car.v")]},
+                {"name": "force", "record": [format!("{controller}/cruise.F")]}]}})
+    }
+
+    fn with(mut base: Value, more: Value) -> Value {
+        for (k, v) in more.as_object().unwrap() {
+            base[k] = v.clone();
+        }
+        base
+    }
+
+    #[test]
+    fn a_model_split_in_two_runs_as_the_model_with_a_hold() {
+        let dir = temp_dir("split");
+        let whole = cruise_files(&dir);
         let composed = run_in(
             &dir,
-            &json!({
-            "format": 1, "run": {"t_end": 20},
-            "models": [{"name": "plant", "file": "car.ssbx.json"},
-                       {"name": "controller", "file": "cruise.ssbx.json"}],
-            "connections": [
-                {"from": "probe:speed.plant/car.v", "to": "controller/speed"},
-                {"from": "probe:force.controller/cruise.F", "to": "plant/force"}],
-            "controls": {"probes": [
-                {"name": "speed", "record": ["plant/car.v"]},
-                {"name": "force", "record": ["controller/cruise.F"]}]}}),
+            &with(
+                json!({"format": 1, "run": {"t_end": 20},
+                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            ),
         );
         // The model in one file, the controller reading the speed through
         // a probe every step (ADR 0063 step 3), solved apart.
@@ -534,52 +570,113 @@ mod tests {
     }
 
     #[test]
-    fn two_clocks_hold_each_others_samples() {
-        // fast (0.1 s) counts time, x' = 1, and shows what it reads from
-        // slow, y = w; slow (0.3 s) integrates what it reads from fast,
-        // z' = u. Euler, so every value can be computed by hand.
-        let dir = temp_dir("clocks");
+    fn a_nested_use_runs_as_its_models_side_by_side() {
+        // vehicle.ssbx.json uses the car and the controller and links them;
+        // the top level uses the vehicle and adds a block of its own.
+        let dir = temp_dir("nested");
+        cruise_files(&dir);
         write(
             &dir,
-            "fast.ssbx.json",
-            &json!({
-            "format": 1, "run": {"dt": 0.1},
+            "vehicle.ssbx.json",
+            &with(
+                json!({"format": 1,
+                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            ),
+        );
+        let flat = run_in(
+            &dir,
+            &with(
+                json!({"format": 1, "run": {"t_end": 5},
+                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            ),
+        );
+        let top = json!({"format": 1, "run": {"t_end": 5, "dt": 0.1},
             "blocks": [
-                {"name": "w", "type": "input.value"},
+                {"name": "watch", "type": "input.value", "settings": {"unit": "m/s"}},
+                {"name": "odo", "type": "eq.equations", "method": {"name": "euler"},
+                 "equations": ["input v [m/s]", "state d [m]", "dd/dt = v"], "params": {"d0": 0}},
+                use_of("vehicle", "vehicle.ssbx.json")],
+            "connections": [
+                {"from": "watch.y", "to": "odo.v"},
+                {"from": "probe:v.vehicle/plant/car.v", "to": "watch"}],
+            "controls": {"probes": [{"name": "v", "record": ["vehicle/plant/car.v"]}]}});
+        let nested = run_in(&dir, &top);
+        let names: Vec<&str> = nested.models.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, [".", "vehicle/plant", "vehicle/controller"]);
+        assert_eq!(
+            bits(nested.values("vehicle/plant/car.v").unwrap()),
+            bits(flat.values("plant/car.v").unwrap())
+        );
+        assert_eq!(
+            bits(nested.values("vehicle/controller/cruise.F").unwrap()),
+            bits(flat.values("controller/cruise.F").unwrap())
+        );
+        // The top level's own block reads the car every 0.1 s.
+        let watch = nested.values("watch.y").unwrap();
+        let v = flat.values("plant/car.v").unwrap();
+        assert_eq!(watch.len(), 51);
+        assert_eq!(watch[10], v[20]);
+        let report = check_in(&dir, &top);
+        assert_eq!(report["ok"], true, "{report}");
+        assert_eq!(report["links"][2]["to"], "watch");
+        assert!(report["models"][1]["file"]
+            .as_str()
+            .unwrap()
+            .ends_with("car.ssbx.json"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Two models in `dir`: `a` counts (`count.x`, and `count.y` showing
+    /// what it reads into `w`), `b` integrates (`sum.z` from `u`), Euler,
+    /// so every value can be computed by hand.
+    fn pair(dir: &Path, dt_a: f64, dt_b: f64) -> Value {
+        write(
+            dir,
+            "a.ssbx.json",
+            &json!({
+            "format": 1, "run": {"dt": dt_a},
+            "blocks": [
+                {"name": "w", "type": "input.value", "settings": {"unit": "m*s"}},
                 {"name": "count", "type": "eq.equations", "method": {"name": "euler"}, "equations": [
-                    "input w", "state x", "dx/dt = 1", "y = w"], "params": {"x0": 0}}],
+                    "input w [m*s]", "param r [m/s] = 1", "state x [m]", "dx/dt = r", "y = w"],
+                 "params": {"x0": 0}}],
             "connections": [{"from": "w.y", "to": "count.w"}]}),
         );
         write(
-            &dir,
-            "slow.ssbx.json",
+            dir,
+            "b.ssbx.json",
             &json!({
-            "format": 1, "run": {"dt": 0.3},
+            "format": 1, "run": {"dt": dt_b},
             "blocks": [
-                {"name": "u", "type": "input.value"},
+                {"name": "u", "type": "input.value", "settings": {"unit": "m"}},
                 {"name": "sum", "type": "eq.equations", "method": {"name": "euler"}, "equations": [
-                    "input u", "state z", "dz/dt = u"], "params": {"z0": 0}}],
+                    "input u [m]", "state z [m*s]", "dz/dt = u"], "params": {"z0": 0}}],
             "connections": [{"from": "u.y", "to": "sum.u"}]}),
         );
-        let composed = run_in(
-            &dir,
-            &json!({
-            "format": 1, "run": {"t_end": 3},
-            "models": [{"name": "fast", "file": "fast.ssbx.json"},
-                       {"name": "slow", "file": "slow.ssbx.json"}],
+        json!({
+            "format": 1,
+            "blocks": [use_of("a", "a.ssbx.json"), use_of("b", "b.ssbx.json")],
             "connections": [
-                {"from": "probe:x.fast/count.x", "to": "slow/u"},
-                {"from": "probe:z.slow/sum.z", "to": "fast/w"}],
+                {"from": "probe:p.a/count.x", "to": "b/u"},
+                {"from": "probe:q.b/sum.z", "to": "a/w"}],
             "controls": {"probes": [
-                {"name": "x", "record": ["fast/count.x"]},
-                {"name": "z", "record": ["slow/sum.z"]}]}}),
-        );
+                {"name": "p", "record": ["a/count.x"]},
+                {"name": "q", "record": ["b/sum.z"]}]}})
+    }
+
+    #[test]
+    fn two_clocks_hold_each_others_samples() {
+        let dir = temp_dir("clocks");
+        let mut c = pair(&dir, 0.1, 0.3);
+        c["run"] = json!({"t_end": 3});
+        let composed = run_in(&dir, &c);
         assert_eq!(composed.tick, 0.1);
-        let fast = composed.model("fast").unwrap();
-        let slow = composed.model("slow").unwrap();
-        assert_eq!((fast.rows(), slow.rows()), (31, 11));
-        // By hand: x after n fast steps; z after k slow steps, each
-        // adding 0.3 × x where slow last took it (at 0.3 k).
+        let (a, b) = (composed.model("a").unwrap(), composed.model("b").unwrap());
+        assert_eq!((a.rows(), b.rows()), (31, 11));
+        // By hand: x after n steps of a; z after k steps of b, each adding
+        // 0.3 × the x it took at 0.3 k.
         let mut x = vec![0.0f64];
         for _ in 0..30 {
             x.push(x.last().unwrap() + 0.1 * 1.0);
@@ -588,67 +685,83 @@ mod tests {
         for k in 0..10 {
             z.push(z[k] + 0.3 * x[3 * k]);
         }
-        assert_eq!(bits(series(fast, "fast/count.x")), bits(&x));
-        assert_eq!(bits(series(slow, "slow/sum.z")), bits(&z));
-        // fast reads slow's latest sample at or before each of its points.
+        assert_eq!(bits(series(a, "a/count.x")), bits(&x));
+        assert_eq!(bits(series(b, "b/sum.z")), bits(&z));
+        // a reads b's latest sample at or before each of its steps.
         let y: Vec<f64> = (0..=30).map(|n| z[n / 3]).collect();
-        assert_eq!(bits(series(fast, "fast/count.y")), bits(&y));
-        assert_eq!(series(slow, "slow/u.y")[1], x[3]);
+        assert_eq!(bits(series(a, "a/count.y")), bits(&y));
+        assert_eq!(series(b, "b/u.y")[1], x[3]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Two models in `dir`: `a` counts (`count.x`, `count.y` showing what
-    /// it reads into `w`), `b` integrates (`sum.z` from `u`).
-    fn pair(dir: &Path) -> Value {
-        write(
-            dir,
-            "a.ssbx.json",
-            &json!({
-            "format": 1, "run": {"dt": 0.1},
-            "blocks": [
-                {"name": "w", "type": "input.value", "settings": {"unit": "m"}},
-                {"name": "count", "type": "eq.equations", "equations": [
-                    "input w [m]", "param r [m/s] = 1", "state x [m]", "dx/dt = r", "y = w"]}],
-            "connections": [{"from": "w.y", "to": "count.w"}]}),
-        );
-        write(
-            dir,
-            "b.ssbx.json",
-            &json!({
-            "format": 1, "run": {"dt": 0.2},
-            "blocks": [
-                {"name": "u", "type": "input.value", "settings": {"unit": "m"}},
-                {"name": "sum", "type": "eq.equations", "equations": [
-                    "input u [m]", "state z [m*s]", "dz/dt = u"]}],
-            "connections": [{"from": "u.y", "to": "sum.u"}]}),
-        );
-        json!({
-            "format": 1,
-            "models": [{"name": "a", "file": "a.ssbx.json"}, {"name": "b", "file": "b.ssbx.json"}],
-            "connections": [{"from": "probe:p.a/count.x", "to": "b/u"}],
-            "controls": {"probes": [{"name": "p", "record": ["a/count.x"]}]}})
+    #[test]
+    fn clocks_that_rarely_meet_run_long_and_stop_at_the_end() {
+        // A tick of 10⁻¹⁶ s: 64-bit counts would overflow after about
+        // 1 800 s.
+        let dir = temp_dir("rarely");
+        let mut c = pair(&dir, 0.1, 0.3333333333333333);
+        c["run"] = json!({"t_end": 3000});
+        let composed = run_in(&dir, &c);
+        let (a, b) = (composed.model("a").unwrap(), composed.model("b").unwrap());
+        assert_eq!((a.rows(), b.rows()), (30_001, 9_001));
+        // b's step at 1 (three of 0.3333333333333333) comes just before a's,
+        // so it takes a's sample at 0.9.
+        assert_eq!(series(b, "b/u.y")[3], series(a, "a/count.x")[9]);
+        // The last step at or before the end, never past it.
+        let mut c = pair(&dir, 0.4, 0.2);
+        c["run"] = json!({"t_end": 1.0});
+        let composed = run_in(&dir, &c);
+        let t = &composed.model("a").unwrap().index[0].1;
+        assert_eq!((t.len(), *t.last().unwrap()), (3, 0.8));
+        assert_eq!(composed.model("b").unwrap().rows(), 6);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    fn check_in(dir: &Path, v: &Value) -> Value {
-        simsandbox_core::registry::in_folder(Some(dir), || check(&v.to_string(), &registry()))
+    #[test]
+    fn two_uses_of_one_file_draw_differently() {
+        let dir = temp_dir("seeds");
+        let mut c = pair(&dir, 0.1, 0.2);
+        c["blocks"] = json!([
+            use_of("a", "a.ssbx.json"),
+            use_of("b", "b.ssbx.json"),
+            use_of("b2", "b.ssbx.json")
+        ]);
+        c["run"] = json!({"seed": 7});
+        let built = simsandbox_core::registry::in_folder(Some(&dir), || {
+            simsandbox_file::compose::load_composition(&c.to_string(), &registry(), None)
+        })
+        .unwrap();
+        let seeds: Vec<u64> = built
+            .domains
+            .iter()
+            .map(|d| d.loaded.model.seed())
+            .collect();
+        assert_ne!(seeds[1], seeds[2]);
+        // From the top level's seed: another seed, other draws.
+        c["run"] = json!({"seed": 8});
+        let other = simsandbox_core::registry::in_folder(Some(&dir), || {
+            simsandbox_file::compose::load_composition(&c.to_string(), &registry(), None)
+        })
+        .unwrap();
+        assert_ne!(other.domains[1].loaded.model.seed(), seeds[1]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn check_lists_models_links_and_the_tick() {
         let dir = temp_dir("compose-check");
-        let c = pair(&dir);
+        let c = pair(&dir, 0.1, 0.2);
         let report = check_in(&dir, &c);
         assert_eq!(report["ok"], true, "{report}");
         assert_eq!(report["tick"], 0.1);
         assert_eq!(report["order"], json!(["a", "b"]));
-        assert_eq!(report["models"][1]["ticks_per_step"], 2);
+        assert_eq!(report["models"][1]["ticks_per_step"], "2");
         assert_eq!(report["models"][1]["inputs"], json!(["b/u"]));
         assert!(report["models"][0]["outputs"]
             .as_array()
             .unwrap()
             .contains(&json!("a/count.x")));
         assert_eq!(report["links"][0]["to"], "b/u");
-        // describe's check sends compositions here.
         let via = simsandbox_core::registry::in_folder(Some(&dir), || {
             crate::describe::check(&c.to_string(), &registry())
         });
@@ -662,10 +775,10 @@ mod tests {
         };
         let before = hash(&c);
         let mut faster = c.clone();
-        faster["models"][1]["run"] = json!({"dt": 0.1});
+        faster["blocks"][1]["clock"] = json!({"dt": 0.1});
         assert_ne!(hash(&faster), before);
         let mut set = c.clone();
-        set["models"][1]["params"] = json!({"sum.z0": 2});
+        set["blocks"][1]["params"] = json!({"sum.z0": 2});
         assert_ne!(hash(&set), before);
         let a = std::fs::read_to_string(dir.join("a.ssbx.json")).unwrap();
         std::fs::write(
@@ -678,9 +791,9 @@ mod tests {
     }
 
     #[test]
-    fn what_a_composition_refuses() {
+    fn what_a_model_using_files_refuses() {
         let dir = temp_dir("compose-refuse");
-        let c = pair(&dir);
+        let c = pair(&dir, 0.1, 0.2);
         let refused = |edit: &dyn Fn(&mut Value), says: &str| {
             let mut v = c.clone();
             edit(&mut v);
@@ -695,50 +808,71 @@ mod tests {
         );
         refused(
             &|v| v["connections"][0]["to"] = "b/sum".into(),
-            "no input block",
+            "not an input block",
         );
         refused(
             &|v| v["connections"][0]["from"] = "probe:p.a/count.y".into(),
             "does not record",
         );
         refused(
-            &|v| v["models"][1]["file"] = "missing.ssbx.json".into(),
+            &|v| v["blocks"][1]["file"] = "missing.ssbx.json".into(),
             "missing.ssbx.json",
         );
-        refused(&|v| v["models"][1]["name"] = "a".into(), "used twice");
         refused(
-            &|v| v["models"][1]["name"] = "b/c".into(),
+            &|v| v["blocks"][1]["name"] = "b/c".into(),
             "letters, digits",
         );
         refused(
-            &|v| v["models"][1]["params"] = json!({"sum.nope": 1}),
+            &|v| v["blocks"][1]["params"] = json!({"sum.nope": 1}),
             "has no parameter 'nope'",
         );
         refused(
-            &|v| v["blocks"] = json!([{"name": "x", "type": "input.value"}]),
-            "no blocks of its own",
+            &|v| v["blocks"][1]["type"] = "input.value".into(),
+            "blocks[1].type",
         );
         refused(
+            &|v| v["blocks"][1]["clock"] = "shared".into(),
+            "shared clock",
+        );
+        refused(&|v| v["blocks"][0]["clock"] = "fast".into(), "a clock is");
+        refused(
             &|v| v["controls"]["probes"][0]["record"] = json!(["a/count.x", "b/sum.z"]),
-            "one model",
+            "records from several models",
         );
         refused(
             &|v| v["connections"][0]["to"] = "a/w".into(),
             "its own model",
         );
-        // Units must match: z is m*s, w takes m.
         refused(
             &|v| {
-                v["connections"] = json!([{"from": "probe:q.b/sum.z", "to": "a/w"}]);
-                v["controls"]["probes"] = json!([{"name": "q", "record": ["b/sum.z"]}]);
+                v["connections"] = json!([{"from": "probe:r.a/count.y", "to": "b/u"}]);
+                v["controls"]["probes"] = json!([{"name": "r", "record": ["a/count.y"]}]);
             },
             "units must match",
         );
-        // A model alone still runs as a model; a composition is not one.
+        // A file that uses itself, through another.
+        write(
+            &dir,
+            "loop.ssbx.json",
+            &json!({"format": 1, "blocks": [use_of("again", "top.ssbx.json")]}),
+        );
+        write(
+            &dir,
+            "top.ssbx.json",
+            &json!({"format": 1, "blocks": [use_of("inner", "loop.ssbx.json")]}),
+        );
+        let text = std::fs::read_to_string(dir.join("top.ssbx.json")).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let report = check_in(&dir, &v);
+        assert!(
+            report["errors"][0].to_string().contains("uses itself"),
+            "{report}"
+        );
+        // The app does not open such a model yet; it says so.
         let e = simsandbox_file::load(&c.to_string(), &registry())
             .err()
             .unwrap();
-        assert!(e.to_string().contains("composition"), "{e}");
+        assert!(e.to_string().contains("uses model files"), "{e}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

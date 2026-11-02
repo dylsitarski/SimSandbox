@@ -296,9 +296,9 @@ class Model:
         along with the file's schedule (``run.inputs``); or a :class:`Run`,
         whose schedule and recorded input are applied to this model.
         Raises :class:`ModelError` with every problem :func:`check` finds
-        if it cannot run. A composition (ADR 0065) runs every model on its
-        own clock and returns :class:`Composed`."""
-        if self.data.get("models"):
+        if it cannot run. A model that uses model files (ADR 0066) runs each
+        on its own clock and returns :class:`Composed`."""
+        if any("file" in b for b in self.data.get("blocks", [])):
             if dt is not None or inputs is not None:
                 raise ValueError("a composition's models keep their own clocks: dt and inputs do not apply")
             try:
@@ -335,23 +335,22 @@ class Model:
         params: dict[str, float] | None = None,
         dt: float | None = None,
     ) -> "Model":
-        """Use a model file in this composition (ADR 0065), under ``name``,
-        which prefixes everything in it (``"plant/car.v"``). ``file`` is
-        found from this file's folder (or is a full path); ``params`` set
-        its parameter values for this use only, ``dt`` its clock (the
-        model file's ``run.dt`` if not given). A composition has no blocks
-        of its own."""
+        """Use a model file in this model (ADR 0066), under ``name``, which
+        prefixes everything in it (``"plant/car.v"``). ``file`` is found
+        from this model's folder (or is a full path) and may itself use
+        model files. ``params`` set its parameter values for this use only;
+        it runs on its own clock, every ``dt`` (the file's ``run.dt`` if not
+        given). Link it to other models with :meth:`link`."""
         use: dict = {"name": name, "file": os.fspath(file)}
         if params:
             use["params"] = {k: float(v) for k, v in params.items()}
         if dt is not None:
-            use["run"] = {"dt": float(dt)}
-        self.data.setdefault("models", []).append(use)
-        self.data.pop("blocks", None)
+            use["clock"] = {"dt": float(dt)}
+        self.data.setdefault("blocks", []).append(use)
         return self
 
     def link(self, signal: str, to: str, every: dict | None = None, probe: str | None = None) -> "Model":
-        """Link two models of a composition (ADR 0065): a probe records
+        """Link two models on their own clocks (ADR 0066): a probe records
         ``signal`` (``"plant/car.v"``) ``every`` as :meth:`add_probe` takes
         it (every step if not given), and drives the input block ``to``
         (``"controller/speed"``, an ``input.value``) with its samples, held
@@ -683,11 +682,13 @@ def _errors(report: dict) -> str:
 
 
 class Composed:
-    """What a composition's run produced (ADR 0065): each model's
-    :class:`Results` at its own times, by name (``composed.model("plant")``
-    or ``composed.models``), the common ``tick`` and ``warnings``.
-    ``composed["plant/car.v"]`` finds a full name in its model, and
-    ``composed.t("plant")`` gives that model's times."""
+    """What a model using model files produced (ADR 0066): each model on
+    its own clock as :class:`Results` at its own times, by name (``"."``
+    for the top level's own blocks, else its path, ``"plant"`` or
+    ``"vehicle/plant"``) in ``models`` or ``model(name)``, the common
+    ``tick`` and ``warnings``. ``composed["plant/car.v"]`` finds a full
+    name in the model holding it, and ``composed.t("plant")`` gives that
+    model's times."""
 
     def __init__(self, raw: dict):
         self.models: dict[str, Results] = {name: Results(r) for name, r in raw["models"]}
@@ -701,7 +702,10 @@ class Composed:
         return self.models[name]["t"]
 
     def __getitem__(self, name: str):
-        return self.models[name.split("/", 1)[0]][name]
+        for r in self.models.values():
+            if name in r.outputs or name in r.populations:
+                return r[name]
+        raise KeyError(name)
 
     def __repr__(self) -> str:
         rows = ", ".join(f"{n}: {r.rows} rows" for n, r in self.models.items())

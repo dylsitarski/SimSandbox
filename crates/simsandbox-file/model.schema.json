@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/dylsitarski/SimSandbox/blob/main/crates/simsandbox-file/model.schema.json",
   "title": "SimSandbox model file",
-  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md and docs/decisions/0023-automatic-fusion.md and docs/decisions/0028-sweeps-as-samples.md and docs/decisions/0065-several-models-with-own-clocks.md.",
+  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md and docs/decisions/0023-automatic-fusion.md and docs/decisions/0028-sweeps-as-samples.md and docs/decisions/0066-models-nest-as-blocks.md.",
   "type": "object",
   "required": [
     "format"
@@ -83,57 +83,6 @@
         "$ref": "#/$defs/subsystem"
       },
       "description": "Groups of blocks used like block types by name (ADR 0043)."
-    },
-    "models": {
-      "type": "array",
-      "description": "A composition (ADR 0065): named uses of model files, each with its own clock. A file with models has no blocks, subsystems, params, groups or sample of its own; its connections link probe outputs ('probe:NAME.model/block.port') to input.value blocks of other models ('model/block'). Names inside a use are prefixed with it ('plant/car.v').",
-      "items": {
-        "type": "object",
-        "required": [
-          "name",
-          "file"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "name": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_-]+$"
-          },
-          "file": {
-            "type": "string",
-            "description": "The model file, relative to the composition's folder or a full path."
-          },
-          "params": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "number"
-            },
-            "description": "Parameter values for this use only: 'block.param' or a declared parameter's name."
-          },
-          "run": {
-            "type": "object",
-            "required": [
-              "dt"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "dt": {
-                "type": "number",
-                "exclusiveMinimum": 0
-              }
-            },
-            "description": "This use's clock; the model file's run.dt if absent."
-          },
-          "canvas": {
-            "type": "array",
-            "items": {
-              "type": "number"
-            },
-            "minItems": 2,
-            "maxItems": 2
-          }
-        }
-      }
     },
     "blocks": {
       "type": "array",
@@ -290,8 +239,7 @@
     "block": {
       "type": "object",
       "required": [
-        "name",
-        "type"
+        "name"
       ],
       "additionalProperties": false,
       "properties": {
@@ -413,9 +361,34 @@
             "additionalProperties": false
           },
           "description": "A subsystem's start states by inner block ('grass', nested 'field/grass'), written by 'Start from here'."
+        },
+        "file": {
+          "type": "string",
+          "description": "A use of a model file (ADR 0066) in place of a type: found from this file's folder, or a full path. Its params are values for this use only; everything in it is named with this entry's name as a prefix ('plant/car.v'). It runs on its own clock and is linked by probes into input.value blocks."
+        },
+        "clock": {
+          "description": "A model file use's clock: its own at the used file's run.dt if absent, or {\"dt\": step}; \"shared\" (its parent's clock) comes in a later step.",
+          "oneOf": [
+            {
+              "const": "shared"
+            },
+            {
+              "type": "object",
+              "required": [
+                "dt"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "dt": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            }
+          ]
         }
       },
-      "description": "A block: a registered type (e.g. 'eq.equations', see simsandbox describe), which needs a method, or a subsystem of this file by name (ADR 0043), which has none."
+      "description": "A block: a registered type (e.g. 'eq.equations', see simsandbox describe), which needs a method, or a subsystem of this file by name (ADR 0043), which has none. An entry has a type (a block or a subsystem use) or a file (a use of a model file)."
     },
     "connection": {
       "type": "object",
