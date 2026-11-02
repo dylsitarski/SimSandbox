@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0066 step 4c's edit question written out with the owner's "edit as a new copy with its own file"; Q47 (expanding uses and subsystems in place) assessed; Q48 (a new copy of a deeply used model) raised.
 - 2026-11-02: ADR 0066 step 4b, third part: app `DiagramTab::inside`/`show_inside`/`used_file` (read-only view inside a use, breadcrumb, nested uses); canvas "Show a port" search, `Canvas::revealed`, `Canvas::reveal`; `inspector::nest` and collapsible rows by path, use groups labelled with their file. Tests for each.
 - 2026-11-02: ADR 0066 step 4b, second part: kernel clocks (`Clock`, `set_clocks`, `set_stream`, `advance`, `solve_active`, latched inputs, snapshots with clocks and inputs, `next_instant`, `clock_steps`); `compose::load_merged` (all uses inlined, `expose_link`, pass-through input blocks, aliases made flat, per-use streams); `Loaded::aliases`; session loads merged, records aliases, `step_dt`; app worker paces by it. Chose the kernel over several simulators in the session: the session needs no change and rewind stays exact.
 - 2026-11-02: ADR 0066 step 4b, first part: `ModelFile::outputs`, `check_outputs`, load check; `Level::aliases`; declared outputs as ports of shared uses; `Node::reachable`, `reveal_wired`, interface-only use nodes; `check` reports `declared_outputs`. Tests: by name equals by inner name (linked and shared), nested re-declaration, node interface, refusals.

@@ -80,7 +80,12 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
        - **The rest:** every output and input stays reachable by path from a searchable list on the node ("＋"), grouped by nested model.
        - **Parameters:** the node lists the values set for that use. The Inspector shows every parameter as a tree by path (`vehicle ▸ plant ▸ car.m`), with search.
        - **Headless:** `check` lists a model's declared outputs apart from the full list by path.
-   - **4c:** editing: a probe added when wiring across clocks, the edit question (edit the original, make a local copy, save as a new model file), saving several files, "Add model…".
+   - **4c:** editing: a probe added when wiring across clocks, the edit question, saving several files, "Add model…".
+     - **The edit question (owner, 2026-11-02):** the first edit inside a used model asks, once per use until the model is closed:
+       - **Edit the original:** the edit goes to the used file, which every model using it sees. Save writes both files; undo covers both.
+       - **Edit as a new copy with its own file:** the used file's contents are written to a new file next to the using file (named after the original, e.g. `car-2.ssbx.json`, changeable), this use's `file` points to it, then the edit applies. Other uses of the original, here or elsewhere, are untouched. The copy is an ordinary model file, reusable by other models.
+       - **Make a local copy:** the contents are written inline as a subsystem of this file, with the use's clock and names unchanged, detached from any file.
+     - **A copy deep inside another used model** (`vehicle/plant`, where `vehicle.ssbx.json` uses `car.ssbx.json`): pointing that use at a copy changes `vehicle.ssbx.json` too, which is itself a used model. How this is handled is open ([Q48](../open-questions.md)).
 5. The recorder and rewind above; run files.
 6. Domains stepping on several cores between instants (ADR 0062 step 3).
 
