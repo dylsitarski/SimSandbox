@@ -143,7 +143,10 @@ fn describe(r: &mut Registry) -> Result<()> {
              cells; 'state T[x] [K] = expression' and 'input q[x]' have a value per cell; \
              'edge T: x- = value, x+ gradient = 0' (or 'x periodic') sets the ends, insulated \
              if not given; 'lap(T)' and 'ddx(T)' are stencils, 'sum', 'mean', 'minof', \
-             'maxof' and 'at(T, i)' give one value, 'spacing(x)' the cell width. Stiff \
+             'maxof' and 'at(T, i)' give one value, 'spacing(x)' the cell width; \
+             'prev(v)' and 'next(v)' are the neighbours along an axis, beyond the ends \
+             the edge's value (ADR 0069); 'param m[k] [kg] = 1000' is a value per cell, \
+             each its own parameter 'm[0]', 'm[1]', …. Stiff \
              systems (diffusion on fine grids) take long steps with 'trbdf2' or \
              'backward_euler'. The method may be left out.",
         )

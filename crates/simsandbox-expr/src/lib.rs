@@ -162,7 +162,9 @@ pub fn is_reserved(name: &str) -> bool {
 /// reductions, one element, an axis's spacing. A derivative along an
 /// axis is `dd` and the axis name (`ddx`). Only typed equations with a
 /// grid give them a meaning ([`Ast::resolve_with`]).
-pub const ARRAY_OPS: &[&str] = &["lap", "sum", "mean", "minof", "maxof", "at", "spacing"];
+pub const ARRAY_OPS: &[&str] = &[
+    "lap", "sum", "mean", "minof", "maxof", "at", "spacing", "prev", "next",
+];
 
 /// Whether `name(...)` is an array operation: one of [`ARRAY_OPS`] or
 /// `dd` followed by a name.
@@ -223,6 +225,15 @@ pub enum ArrayOp {
     First {
         line: Line,
         edges: [Edge; 2],
+    },
+    /// The neighbour along an axis (ADR 0069): the cell before (`up`
+    /// false, `prev`) or after (`next`); arguments as for `Second`. Beyond
+    /// an end: the held value itself, the end cell plus gradient times
+    /// spacing, or the far end (periodic).
+    Shift {
+        line: Line,
+        edges: [Edge; 2],
+        up: bool,
     },
     Sum,
     Mean,

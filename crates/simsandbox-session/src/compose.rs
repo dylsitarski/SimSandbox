@@ -1261,6 +1261,68 @@ mod tests {
     }
 
     #[test]
+    fn the_platoon_as_one_array_block_runs_as_its_three_uses() {
+        use simsandbox_core::sim::Simulator;
+        // ADR 0069: the followers as arrays (the same bits), each car reading the one
+        // ahead with prev(v); the first reads the leader through v's edge.
+        let platoon = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap()
+            .text;
+        let whole: Value = serde_json::from_str(platoon).unwrap();
+        let leader = whole["blocks"][0].clone();
+        let cars = json!({"name": "cars", "type": "eq.equations", "method": {"name": "rk4"},
+            "equations": [
+                "grid k = 0 .. 3, 3",
+                "input lead [m/s]",
+                "param kp [N*s/m] = 400",
+                "param ki [N/m] = 40",
+                "param c [N*s/m] = 50",
+                "param mass[k] [kg] = 1000",
+                "state v[k] [m/s] = 0",
+                "state I[k] [m] = 0",
+                "edge v: k- = lead",
+                "e = prev(v) - v",
+                "F = kp*e + ki*I [N]",
+                "dv/dt = (F - c*v)/mass",
+                "dI/dt = e"],
+            "params": {"kp": "kp", "ki": "ki", "mass[1]": 1500.0, "mass[2]": 2500.0}});
+        let arrays = json!({"format": 1, "run": {"dt": 0.05}, "params": whole["params"],
+            "blocks": [leader, cars], "connections": [{"from": "leader.v", "to": "cars.lead"}]});
+        let one = simsandbox_file::load(&arrays.to_string(), &registry()).unwrap();
+        // One parameter per car, as files and sliders name them.
+        assert_eq!(one.model.param(one.ids["cars"], "mass[2]").unwrap(), 2500.0);
+        assert_eq!(one.model.param(one.ids["cars"], "mass[0]").unwrap(), 1000.0);
+        let three = simsandbox_file::compose::load_merged(platoon, &registry(), None).unwrap();
+        let (a, b) = (one.ids["cars"], three.ids.clone());
+        let mut s1 = Simulator::new(one.model, 0.0).unwrap();
+        let mut s3 = Simulator::new(three.model, 0.0).unwrap();
+        for step in 0..400 {
+            s1.step(0.05).unwrap();
+            s3.step(0.05).unwrap();
+            let v = s1.output(a, "v").unwrap().to_vec();
+            for (k, car) in ["car1", "car2", "car3"].iter().enumerate() {
+                let w = s3.output(b[&format!("{car}/car")], "v").unwrap()[0];
+                assert_eq!(
+                    v[k].to_bits(),
+                    w.to_bits(),
+                    "step {step}, {car}: {} vs {w}",
+                    v[k]
+                );
+            }
+        }
+        // next() reads the car behind; past the end, insulated: itself.
+        let tail = json!({"format": 1, "blocks": [{"name": "s", "type": "eq.equations",
+            "equations": ["grid k = 0 .. 3, 3", "param x[k] = 1", "y = next(x) - x"],
+            "params": {"x[0]": 1.0, "x[1]": 4.0, "x[2]": 9.0}}]});
+        let l = simsandbox_file::load(&tail.to_string(), &registry()).unwrap();
+        let id = l.ids["s"];
+        let sim = Simulator::new(l.model, 0.0).unwrap();
+        assert_eq!(sim.output(id, "y").unwrap(), [3.0, 5.0, 0.0]);
+    }
+
+    #[test]
     fn models_defined_in_a_file_are_found_used_and_refused() {
         let gain = |k: f64| {
             json!({"blocks": [

@@ -439,7 +439,10 @@ fn reads(e: &Expr, out: &mut Vec<usize>) {
         }
         Expr::Call(_, args) => args.iter().for_each(|a| reads(a, out)),
         Expr::Array(op, args) => {
-            if let ArrayOp::Second { edges, .. } | ArrayOp::First { edges, .. } = op {
+            if let ArrayOp::Second { edges, .. }
+            | ArrayOp::First { edges, .. }
+            | ArrayOp::Shift { edges, .. } = op
+            {
                 for e in edges {
                     match e {
                         Edge::Value(v) | Edge::Gradient(Some(v)) => out.push(*v),
@@ -489,7 +492,9 @@ fn is_array(ast: &Ast, arrays: &[String]) -> bool {
         Ast::Neg(a) => is_array(a, arrays),
         Ast::Bin(_, a, b) => is_array(a, arrays) || is_array(b, arrays),
         Ast::Call(_, args) => args.iter().any(|a| is_array(a, arrays)),
-        Ast::Apply(name, ..) => name == "lap" || name.starts_with("dd"),
+        Ast::Apply(name, ..) => {
+            name == "lap" || name.starts_with("dd") || name == "prev" || name == "next"
+        }
     }
 }
 
@@ -519,7 +524,9 @@ fn check_array_ops(
             let names: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
             let all = names.join(", ");
             let want = if name == "at" { 1 + grid.len() } else { 1 };
-            if args.len() != want {
+            // `prev(v)` along the first axis, or `prev(v, y)` (ADR 0069).
+            let shift = name == "prev" || name == "next";
+            if !(args.len() == want || shift && args.len() == 2) {
                 return Err((
                     col,
                     format!("'{name}' takes {want} argument(s), got {}", args.len()),
@@ -536,6 +543,18 @@ fn check_array_ops(
             };
             match name.as_str() {
                 "lap" => named_array("'lap'")?,
+                "prev" | "next" => {
+                    named_array(&format!("'{name}'"))?;
+                    if let Some(a) = args.get(1) {
+                        if !matches!(a, Ast::Name(n, _) if names.contains(&n.as_str())) {
+                            return Err((
+                                col,
+                                format!("'{name}' runs along an axis of the grid ({all}): {name}(v, {})", names[0]),
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
                 d if d.starts_with("dd") => {
                     if !names.contains(&&d[2..]) {
                         return Err((col, format!("'{d}' is a derivative along '{}', which is not an axis of the grid ({all}): write dd{}", &d[2..], names[0])));
@@ -651,6 +670,8 @@ impl EquationSet {
         let mut arrays: Vec<String> = axes.iter().map(|a| a.to_string()).collect();
         let mut array_init: Vec<(String, Option<Written>)> = Vec::new();
         let mut edges: Vec<EdgeLine> = Vec::new();
+        // Array parameters (ADR 0069): name and number of cells.
+        let mut array_params: Vec<(String, usize)> = Vec::new();
         // Units given for a rate, `dx/dt = … [m/s]`: unit, line, column.
         let mut rates: Vec<(String, Unit, usize, usize)> = Vec::new();
         for (k, text) in lines.iter().enumerate() {
@@ -723,6 +744,10 @@ impl EquationSet {
                     }
                     None => (rest, 1.0),
                 };
+                // `param m[k] [kg] = 1000` (ADR 0069): a value per cell,
+                // each its own parameter `m[0]`, `m[1]`, ….
+                let (head, array) = split_dims(head, &axes, number)?;
+                let head = head.as_str();
                 let (n, unit) = name_and_unit(head);
                 if !is_name(&n) || n == "t" || is_reserved(&n) || axes.contains(&n.as_str()) {
                     return Err(definition_error(
@@ -746,6 +771,19 @@ impl EquationSet {
                 }
                 if let Some(u) = unit {
                     units.insert(n.clone(), read_unit(&u, number, 1)?);
+                }
+                if array {
+                    let cells: usize = grid.iter().map(|a| a.cells).product();
+                    for k in 0..cells {
+                        let e = format!("{n}[{k}]");
+                        if let Some(u) = units.get(&n).copied() {
+                            units.insert(e.clone(), u);
+                        }
+                        declared.push((e, value, number));
+                    }
+                    array_params.push((n.clone(), cells));
+                    arrays.push(n);
+                    continue;
                 }
                 declared.push((n, value, number));
                 continue;
@@ -1003,6 +1041,7 @@ impl EquationSet {
         // Declared parameters, then every other name in order of first use.
         let known = |n: &str| {
             n == "t"
+                || array_params.iter().any(|a| a.0 == n)
                 || states.iter().any(|s| s == n)
                 || defined.iter().any(|s| s == n)
                 || inputs.iter().any(|s| s == n)
@@ -1350,6 +1389,23 @@ impl EquationSet {
             .iter()
             .map(|n| add(len_of(n), unit_of(n).scale))
             .collect();
+        // An array parameter reads its elements' registers, one after
+        // another (ADR 0069).
+        let array_param_vars: Vec<usize> = array_params
+            .iter()
+            .map(|(n, _)| {
+                let first = params
+                    .iter()
+                    .position(|p| *p == format!("{n}[0]"))
+                    .expect("declared");
+                spans.push(Span {
+                    at: spans[param_vars[first]].at,
+                    len: cells,
+                });
+                scales.push(unit_of(n).scale);
+                spans.len() - 1
+            })
+            .collect();
         let layout = Layout {
             states: state_vars.iter().map(|&v| spans[v].len).sum(),
             inputs: input_vars.iter().map(|&v| spans[v].len).sum(),
@@ -1377,6 +1433,9 @@ impl EquationSet {
             }
             if let Some(i) = params.iter().position(|p| p == n) {
                 return Some(param_vars[i]);
+            }
+            if let Some(i) = array_params.iter().position(|a| a.0 == n) {
+                return Some(array_param_vars[i]);
             }
             if let Some(i) = axes.iter().position(|a| *a == n) {
                 return Some(axis_vars[i]);
@@ -1429,6 +1488,22 @@ impl EquationSet {
             }
             if name == "spacing" {
                 return Ok(Expr::Var(spacing_of(axis_named(first_name))));
+            }
+            if name == "prev" || name == "next" {
+                let axis = match args.get(1) {
+                    Some(Ast::Name(n, _)) => axis_named(n),
+                    _ => 0,
+                };
+                let a = slot_of(first_name, defined.len()).expect("checked: an array");
+                let op = ArrayOp::Shift {
+                    line: lines_of[axis],
+                    edges: edges_of(first_name, axis),
+                    up: name == "next",
+                };
+                return Ok(Expr::Array(
+                    op,
+                    vec![Expr::Var(a), Expr::Var(spacing_of(axis))],
+                ));
             }
             if let Some(ax) = name.strip_prefix("dd") {
                 return Ok(along(axis_named(ax), false));

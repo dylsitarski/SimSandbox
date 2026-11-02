@@ -43,3 +43,9 @@ ADR 0068 refuses a model that uses itself. The owner asked on 2026-11-02 whether
 - On the canvas: "Duplicate" (or "Duplicate N blocks") in a block's or use's menu, and Ctrl+D on the selection. Inside an expanded use the edit goes to the model it uses. Python: `Model.duplicate(blocks)`.
 - Tests: a use and its values copied; two copied with the wire between them; equations copied; Python.
 
+**Step 2 (2026-11-02): array parameters and neighbours by index.**
+- **Array parameters:** `param mass[k] [kg] = 1000` declares one parameter per cell, `mass[0]`, `mass[1]`, …, each with the default and the unit. Files, sliders, sweeps and the Inspector set them like any parameter (`"params": {"mass[2]": 2500}`, a formula too). In the equations `mass` is the array of them, read in place from their registers.
+- **Neighbours:** `prev(v)` and `next(v)` are the cell before and after along the first axis, or along a named one (`prev(v, y)`), as `ArrayOp::Shift` and one array instruction. Beyond an end they take the array's edge: a held value as it is (`edge v: k- = lead`), not mirrored as a stencil does; a gradient extends the end cell (insulated: the end cell itself); periodic wraps. Units follow the array; edge values may be inputs, so a scalar input feeds the first cell.
+- **The check:** the Platoon as one block (`grid k = 0 .. 3, 3`, `e = prev(v) - v`, the leader's speed through `v`'s edge, `mass[1]` and `mass[2]` set) gives the same bits at every step as its three uses of `follower`.
+- `describe eq.equations` and the headless guide list both. A data file as an array parameter's values, and network grids, wait for a model that needs them.
+

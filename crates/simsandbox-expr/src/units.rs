@@ -191,6 +191,7 @@ pub fn in_si(e: Expr, scales: &[f64]) -> Expr {
             let (factor, args) = match op {
                 ArrayOp::Second { .. } => (scale(0) / (scale(1) * scale(1)), args),
                 ArrayOp::First { .. } => (scale(0) / scale(1), args),
+                ArrayOp::Shift { .. } => (scale(0), args),
                 ArrayOp::Axis { .. } => (1.0, args),
                 _ => (1.0, args.into_iter().map(|a| in_si(a, scales)).collect()),
             };

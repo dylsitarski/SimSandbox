@@ -125,6 +125,16 @@ enum ArrIns {
         line: Line,
         edges: [EdgeAt; 2],
     },
+    /// The neighbour before or after (`up`) along `line`.
+    Shift {
+        up: bool,
+        d: usize,
+        a: usize,
+        h: usize,
+        n: usize,
+        line: Line,
+        edges: [EdgeAt; 2],
+    },
     /// A reduction to one value.
     Reduce {
         op: Reduce,
@@ -254,6 +264,40 @@ impl ArrIns {
                     }
                 }
             }
+            ArrIns::Shift {
+                up,
+                d,
+                a,
+                h,
+                n,
+                line,
+                edges,
+            } => {
+                let h = r[h];
+                // Beyond an end: the value itself, not mirrored as for a
+                // stencil (ADR 0069).
+                let beyond = |e: EdgeAt, end: f64, far: f64, r: &[f64]| match e {
+                    EdgeAt::Value(v) => r[v],
+                    EdgeAt::Gradient(g) => end + g.map_or(0.0, |g| r[g]) * h,
+                    EdgeAt::Periodic => far,
+                };
+                let (s, c) = (line.stride, line.count);
+                let mut out = vec![0.0; n];
+                for l in 0..n / c {
+                    let base = (l / s) * s * c + l % s;
+                    let at = |j: usize| a + base + j * s;
+                    for j in 0..c {
+                        let v = match (up, j) {
+                            (false, 0) => beyond(edges[0], r[at(0)], r[at(c - 1)], r),
+                            (false, j) => r[at(j - 1)],
+                            (true, j) if j + 1 == c => beyond(edges[1], r[at(c - 1)], r[at(0)], r),
+                            (true, j) => r[at(j + 1)],
+                        };
+                        out[base + j * s] = v;
+                    }
+                }
+                r[d..d + n].copy_from_slice(&out);
+            }
             ArrIns::Reduce { op, d, a, n } => {
                 let cells = &r[a..a + n];
                 r[d] = match op {
@@ -334,6 +378,43 @@ impl ArrIns {
                     deps[d + k] = c;
                 }
             }
+            ArrIns::Shift {
+                up,
+                d,
+                a,
+                h,
+                n,
+                line,
+                edges,
+            } => {
+                let (s, c) = (line.stride, line.count);
+                let mut cells: Vec<Vec<usize>> = vec![Vec::new(); n];
+                let beyond = |e: EdgeAt, end: usize, far: usize| -> Vec<usize> {
+                    match e {
+                        EdgeAt::Value(v) => deps[v].clone(),
+                        EdgeAt::Gradient(g) => {
+                            let g = g.map(|g| deps[g].clone()).unwrap_or_default();
+                            union(&[&deps[end], &deps[h], &g])
+                        }
+                        EdgeAt::Periodic => deps[far].clone(),
+                    }
+                };
+                for l in 0..n / c {
+                    let base = (l / s) * s * c + l % s;
+                    let at = |j: usize| a + base + j * s;
+                    for j in 0..c {
+                        cells[base + j * s] = match (up, j) {
+                            (false, 0) => beyond(edges[0], at(0), at(c - 1)),
+                            (false, j) => deps[at(j - 1)].clone(),
+                            (true, j) if j + 1 == c => beyond(edges[1], at(c - 1), at(0)),
+                            (true, j) => deps[at(j + 1)].clone(),
+                        };
+                    }
+                }
+                for (k, c) in cells.into_iter().enumerate() {
+                    deps[d + k] = c;
+                }
+            }
             ArrIns::Reduce { d, a, n, .. } => {
                 let all: Vec<&Vec<usize>> = deps[a..a + n].iter().collect();
                 deps[d] = union(&all);
@@ -392,7 +473,9 @@ impl Builder<'_> {
             Expr::Call(_, args) => args.iter().map(|a| self.len(a)).max().unwrap_or(1),
             Expr::Array(op, args) => match op {
                 ArrayOp::Axis { cells, .. } => *cells,
-                ArrayOp::Second { .. } | ArrayOp::First { .. } => self.len(&args[0]),
+                ArrayOp::Second { .. } | ArrayOp::First { .. } | ArrayOp::Shift { .. } => {
+                    self.len(&args[0])
+                }
                 _ => 1,
             },
         }
@@ -527,6 +610,15 @@ impl Builder<'_> {
                             edges: [edge(e[0], self.vars), edge(e[1], self.vars)],
                         })
                     }
+                    ArrayOp::Shift { line, edges: e, up } => self.array(ArrIns::Shift {
+                        up,
+                        d,
+                        a: one(0),
+                        h: one(1),
+                        n: len,
+                        line,
+                        edges: [edge(e[0], self.vars), edge(e[1], self.vars)],
+                    }),
                     ArrayOp::At(i) => {
                         let at = one(0) + i.min(len - 1);
                         let a = Src { at, array: false };
