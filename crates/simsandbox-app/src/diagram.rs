@@ -132,6 +132,8 @@ pub(crate) fn used_file(
         let text = std::fs::read_to_string(&at).map_err(|e| format!("{}: {e}", at.display()))?;
         let (mut used, _) =
             ModelFile::from_json(&text).map_err(|e| format!("{}: {e}", at.display()))?;
+        // As the run reads it: with the files its use replaces inside it.
+        simsandbox_file::compose::replace_files(&mut used, &entry.files, folder.as_deref())?;
         used.folder = at.parent().map(std::path::Path::to_path_buf);
         folder = used.folder.clone();
         file = used;

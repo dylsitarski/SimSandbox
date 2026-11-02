@@ -355,6 +355,18 @@ def test_a_composition_runs_models_on_their_own_clocks(tmp_path):
     deep.add_model("vehicle", "both.ssbx.json", params={"controller/cruise.kp": "2*half"})
     deep.save(tmp_path / "deep.ssbx.json")
     assert np.array_equal(deep.run()["vehicle/plant/car.v"], r["plant/car.v"])
+    # A copy of the car replaces the one inside, for this use only.
+    heavy = ss.Model.load(tmp_path / "car.ssbx.json")
+    heavy.data["blocks"][0]["params"]["m"] = 2000.0
+    heavy.save(tmp_path / "car-2.ssbx.json")
+    swapped = ss.Model({"format": 1, "run": {"t_end": 10}, "blocks": []})
+    swapped.add_model("vehicle", "both.ssbx.json", files={"plant": "car-2.ssbx.json"})
+    swapped.save(tmp_path / "swapped.ssbx.json")
+    assert swapped.check()["replaced_files"] == {"vehicle/plant": "car-2.ssbx.json"}
+    by_params = ss.Model({"format": 1, "run": {"t_end": 10}, "blocks": []})
+    by_params.add_model("vehicle", "both.ssbx.json", params={"plant/car.m": 2000})
+    by_params.save(tmp_path / "by_params.ssbx.json")
+    assert np.array_equal(swapped.run()["vehicle/plant/car.v"], by_params.run()["vehicle/plant/car.v"])
     # On one clock: the files flattened into this model, wired directly.
     one = ss.Model({"format": 1, "run": {"dt": 0.05, "t_end": 10}, "blocks": []})
     one.add_model("plant", "car.ssbx.json", shared=True)

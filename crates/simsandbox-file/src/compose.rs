@@ -184,6 +184,12 @@ pub(crate) fn check_uses(
                     "only a use of a model file has a clock",
                 ))
             }
+            None if !b.files.is_empty() => {
+                return Err(invalid(
+                    format!("{path}.files"),
+                    "only a use of a model file replaces files inside it",
+                ))
+            }
             None => {}
             Some(_) => {
                 if !crate::subsystems::valid_name(&b.name) {
@@ -206,7 +212,17 @@ pub(crate) fn check_uses(
                 if let Some((key, _)) = block_only.iter().find(|(_, has)| *has) {
                     return Err(invalid(
                         format!("{path}.{key}"),
-                        "a use of a model file has a name, file, params, clock and canvas",
+                        "a use of a model file has a name, file, files, params, clock and canvas",
+                    ));
+                }
+                if let Some(key) = b
+                    .files
+                    .keys()
+                    .find(|k| k.split('/').any(|p| !crate::subsystems::valid_name(p)))
+                {
+                    return Err(invalid(
+                        format!("{path}.files"),
+                        format!("'{key}': a path of used models' names, e.g. plant/engine"),
                     ));
                 }
                 if let Some(UseClock::Step(dt)) = b.clock {
@@ -519,6 +535,54 @@ fn digest(bytes: &[u8]) -> String {
     let d = Sha256::digest(bytes);
     let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
     format!("sha256:{hex}")
+}
+
+/// Put `files` (replacements written in a use, by path of uses inside
+/// the model it uses; ADR 0066 step 4c) into `model`, the file that use
+/// reads: a replacement of one of its own uses becomes that use's `file`,
+/// found from `folder` (the folder of the file the replacements are
+/// written in); a deeper one goes into that use's own `files`, where it
+/// wins over one of the same path written there.
+pub fn replace_files(
+    model: &mut ModelFile,
+    files: &BTreeMap<String, String>,
+    folder: Option<&Path>,
+) -> Result<(), String> {
+    // Shallow first, so a deeper replacement lands in the replaced use.
+    let mut keys: Vec<&String> = files.keys().collect();
+    keys.sort_by_key(|k| k.matches('/').count());
+    for key in keys {
+        let (first, rest) = match key.split_once('/') {
+            Some((f, r)) => (f, Some(r)),
+            None => (key.as_str(), None),
+        };
+        let entry = model
+            .blocks
+            .iter_mut()
+            .find(|b| b.name == first && b.file.is_some())
+            .ok_or_else(|| format!("'{key}': '{first}' is not a use of a model file"))?;
+        let with = PathBuf::from(&files[key]);
+        // Found from the folder of the file it is written in, wherever it
+        // is passed down to.
+        let at = match (folder, with.is_absolute()) {
+            (_, true) => with,
+            (Some(f), false) => f.join(with),
+            (None, false) => {
+                return Err(format!(
+                    "'{}' is found from the model's folder: save it first, or give a full path",
+                    files[key]
+                ))
+            }
+        };
+        let at = at.to_string_lossy().into_owned();
+        match rest {
+            None => entry.file = Some(at),
+            Some(rest) => {
+                entry.files.insert(rest.to_string(), at);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A seed for the domain at `path`, mixed from the top level's: two uses
@@ -1018,8 +1082,9 @@ impl Loader<'_> {
             .map_err(|e| invalid("file", format!("{}: {e}", found.display())))?;
         let text =
             String::from_utf8(bytes.clone()).map_err(|_| invalid("file", "not a text file"))?;
-        let (model, _) = ModelFile::from_json(&text)
+        let (mut model, _) = ModelFile::from_json(&text)
             .map_err(|e| invalid("file", format!("{}: {e}", found.display())))?;
+        replace_files(&mut model, &u.files, folder).map_err(|e| invalid("files", e))?;
         self.data.insert(format!("{path}.file"), digest(&bytes));
         Ok((model, found, canonical))
     }

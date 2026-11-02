@@ -107,6 +107,14 @@ pub fn check(text: &str, registry: &Registry) -> Value {
         "warnings": c.warnings,
         "composition": true,
         "declared_outputs": c.file.outputs.iter().map(|o| json!({"name": o.name, "from": o.from})).collect::<Vec<_>>(),
+        // Files of uses replaced by this file, by full path (ADR 0066
+        // step 4c); each model's `file` is the one read.
+        "replaced_files": c
+            .file
+            .blocks
+            .iter()
+            .flat_map(|b| b.files.iter().map(move |(k, f)| (format!("{}/{k}", b.name), f.clone())))
+            .collect::<std::collections::BTreeMap<_, _>>(),
         "models": models,
         "links": links,
         "tick": c.ticks.seconds(),
@@ -724,6 +732,132 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.contains("saw that model")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_use_replaces_the_files_of_uses_inside_it() {
+        let dir = temp_dir("replace");
+        cruise_files(&dir);
+        // A heavier copy of the car, in a folder of its own.
+        let mut heavy: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("car.ssbx.json")).unwrap())
+                .unwrap();
+        heavy["blocks"][1]["params"]["m"] = json!(2000.0);
+        std::fs::create_dir_all(dir.join("copies")).unwrap();
+        write(&dir.join("copies"), "car-2.ssbx.json", &heavy);
+        let vehicle = |plant: Value| {
+            with(
+                json!({"format": 1, "blocks": [plant, use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            )
+        };
+        write(
+            &dir,
+            "vehicle.ssbx.json",
+            &vehicle(use_of("plant", "car.ssbx.json")),
+        );
+        let top = |entry: Value| {
+            json!({"format": 1, "run": {"t_end": 5}, "blocks": [entry],
+                   "controls": {"probes": [{"name": "v", "record": ["vehicle/plant/car.v"]}]}})
+        };
+        let replaced = run_in(
+            &dir,
+            &top(json!({"name": "vehicle", "file": "vehicle.ssbx.json",
+                        "files": {"plant": "copies/car-2.ssbx.json"}})),
+        );
+        // As a vehicle file using the copy, and as the car given m = 2000.
+        let by_params = run_in(
+            &dir,
+            &top(json!({"name": "vehicle", "file": "vehicle.ssbx.json",
+                        "params": {"plant/car.m": 2000.0}})),
+        );
+        let original = run_in(&dir, &top(use_of("vehicle", "vehicle.ssbx.json")));
+        let v = |c: &Composed| bits(c.values("vehicle/plant/car.v").unwrap());
+        assert_eq!(v(&replaced), v(&by_params));
+        assert_ne!(v(&replaced), v(&original));
+        // The vehicle file is left alone.
+        assert!(std::fs::read_to_string(dir.join("vehicle.ssbx.json"))
+            .unwrap()
+            .contains("\"car.ssbx.json\""));
+        // On a shared clock too, and from two levels up.
+        write(
+            &dir,
+            "fleet.ssbx.json",
+            &json!({"format": 1,
+            "blocks": [{"name": "vehicle", "file": "vehicle.ssbx.json", "clock": "shared"}]}),
+        );
+        let deep = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"t_end": 5},
+                    "blocks": [{"name": "fleet", "file": "fleet.ssbx.json",
+                                "files": {"vehicle/plant": "copies/car-2.ssbx.json"}}]}),
+        );
+        let deep_params = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"t_end": 5},
+                    "blocks": [{"name": "fleet", "file": "fleet.ssbx.json",
+                                "params": {"vehicle/plant/car.m": 2000.0}}]}),
+        );
+        let fv = |c: &Composed| bits(c.values("fleet/vehicle/plant/car.v").unwrap());
+        assert_eq!(fv(&deep), fv(&deep_params));
+        // The nearer replacement wins over one written further down.
+        let mut vehicle_b = vehicle(use_of("plant", "car.ssbx.json"));
+        vehicle_b["blocks"][0]["files"] = json!({});
+        write(
+            &dir,
+            "fleet.ssbx.json",
+            &json!({"format": 1,
+            "blocks": [{"name": "vehicle", "file": "vehicle.ssbx.json", "clock": "shared",
+                        "files": {"plant": "car.ssbx.json"}}]}),
+        );
+        let nearer = run_in(
+            &dir,
+            &json!({"format": 1, "run": {"t_end": 5},
+                    "blocks": [{"name": "fleet", "file": "fleet.ssbx.json",
+                                "files": {"vehicle/plant": "copies/car-2.ssbx.json"}}]}),
+        );
+        assert_eq!(fv(&nearer), fv(&deep_params));
+        // check lists them; the hash follows the file read.
+        let c = check_in(
+            &dir,
+            &top(json!({"name": "vehicle", "file": "vehicle.ssbx.json",
+                        "files": {"plant": "copies/car-2.ssbx.json"}})),
+        );
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(
+            c["replaced_files"]["vehicle/plant"], "copies/car-2.ssbx.json",
+            "{c}"
+        );
+        assert!(c["models"][0]["file"]
+            .as_str()
+            .unwrap()
+            .ends_with("car-2.ssbx.json"));
+        let o = check_in(&dir, &top(use_of("vehicle", "vehicle.ssbx.json")));
+        assert_ne!(c["model_hash"], o["model_hash"]);
+        // Refused: a path that is not a used model, and files on a block.
+        for (entry, at, says) in [
+            (
+                json!({"name": "vehicle", "file": "vehicle.ssbx.json", "files": {"wheel": "car.ssbx.json"}}),
+                "blocks[0]",
+                "not a use of a model file",
+            ),
+            (
+                json!({"name": "vehicle", "file": "vehicle.ssbx.json", "files": {"plant/../x": "car.ssbx.json"}}),
+                "blocks[0].files",
+                "a path of used models' names",
+            ),
+            (
+                json!({"name": "k", "type": "input.value", "files": {"plant": "car.ssbx.json"}}),
+                "blocks[0].files",
+                "only a use of a model file",
+            ),
+        ] {
+            let c = check_in(&dir, &top(entry));
+            assert_eq!(c["ok"], false, "{c}");
+            let e = c["errors"][0].to_string();
+            assert!(e.contains(at) && e.contains(says), "{e}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

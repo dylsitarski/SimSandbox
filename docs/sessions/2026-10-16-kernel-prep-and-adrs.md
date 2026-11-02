@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0066 step 4c, first part: `BlockEntry::files`, `compose::replace_files` (applied in `read_use`, `diagram::use_node`, the app's `used_file`), `check` `replaced_files`, Python `add_model(files=)`; tests.
 - 2026-11-02: Q47 and Q48 decided by the owner and written into ADR 0066: `files` replaces a deep use's file by path (step 4c); "Expand in place", one level at a time, as step 4d.
 - 2026-11-02: ADR 0066 step 4c's edit question written out with the owner's "edit as a new copy with its own file"; Q47 (expanding uses and subsystems in place) assessed; Q48 (a new copy of a deeply used model) raised.
 - 2026-11-02: ADR 0066 step 4b, third part: app `DiagramTab::inside`/`show_inside`/`used_file` (read-only view inside a use, breadcrumb, nested uses); canvas "Show a port" search, `Canvas::revealed`, `Canvas::reveal`; `inspector::nest` and collapsible rows by path, use groups labelled with their file. Tests for each.

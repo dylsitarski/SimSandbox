@@ -571,7 +571,7 @@ fn use_node(
         .map(std::path::Path::to_path_buf)
         .or_else(simsandbox_core::registry::current_folder);
     let path = std::path::PathBuf::from(&file_name);
-    let path = match folder {
+    let path = match &folder {
         Some(f) if path.is_relative() => f.join(path),
         _ => path,
     };
@@ -581,6 +581,11 @@ fn use_node(
             ModelFile::from_json(&t)
                 .map(|(f, _)| f)
                 .map_err(|e| e.to_string())
+        })
+        .and_then(|mut m| {
+            // Files it replaces inside (ADR 0066 step 4c).
+            simsandbox_file::compose::replace_files(&mut m, &b.files, folder.as_deref())?;
+            Ok(m)
         });
     let model = match read {
         Ok(m) if depth < 8 => m,

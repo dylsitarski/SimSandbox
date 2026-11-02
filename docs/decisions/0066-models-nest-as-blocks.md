@@ -240,3 +240,11 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
 - Subsystems stay for definitions inside a file. Model files used on a shared clock are subsystems kept in their own files.
 - The runtime stays flat: one list of domains and one list of links, whatever the nesting, so ordering, replay and multi-core stepping do not depend on depth.
 - ADR 0065's suggestions accepted by the owner stand: links through input blocks, parameter values and clocks per use, the three edit choices, and rewinding one use alone later.
+
+**Step 4c, first part (2026-11-02): replacing the files of deep uses.**
+- **The file:** `BlockEntry::files` (written `files`), on a use of a model file only, maps paths of uses inside it to files. Keys are names joined by `/`, checked when the file is read; on a block with a `type` it is refused.
+- **The loader:** `compose::replace_files` puts a use's replacements into the model it reads, before that model loads: a key naming one of its own uses becomes that use's `file`; a deeper key goes into that use's own `files`, overwriting one of the same path written there (the nearer to the top wins). Paths are made full from the folder of the file they are written in. Shallow keys go first, so `plant` and `plant/engine` together replace both. A key that is not a use of a model file is an error at the use (`blocks[i]`).
+- **Everything reading a used file applies them:** the loader for own and shared clocks (so runs, `check`, the hash and the app's merged model), the use node on the diagram, and opening a use in the app.
+- **`check`:** `replaced_files` lists the top file's replacements by full path (`vehicle/plant`); each model's `file` is the one read.
+- **Python:** `Model.add_model(..., files={"plant": "car-2.ssbx.json"})`.
+- **Tests:** a replaced car gives the bits of the original car given the copy's mass by `params`, at one and two levels down and on a shared clock; the nearer replacement wins; the used file is left unchanged; the hash changes; refusals; Python.

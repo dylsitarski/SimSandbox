@@ -676,6 +676,11 @@ pub struct BlockEntry {
     /// A model file use's clock: its own at the file's `run.dt` if absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clock: Option<UseClock>,
+    /// A model file use's replacements of the files of uses inside it, by
+    /// path (`plant`, `plant/engine`), found from this file's folder
+    /// (ADR 0066 step 4c): only this use sees them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, String>,
     /// Absent for a subsystem, whose blocks have their own; for a block,
     /// absent means the type's default method.
     #[serde(default, skip_serializing_if = "MethodEntry::is_empty")]
