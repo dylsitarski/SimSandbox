@@ -137,6 +137,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0066-models-nest-as-blocks.md](decisions/0066-models-nest-as-blocks.md) | Decision record | Models nest as uses of model files with their own or shared clocks |
 | [decisions/0067-experiments-and-time-from-data.md](decisions/0067-experiments-and-time-from-data.md) | Decision record | Experiments over whole models; time from data |
 | [decisions/0068-one-kind-of-nested-model.md](decisions/0068-one-kind-of-nested-model.md) | Decision record | One kind of nested model: subsystems become models defined in the file |
+| [decisions/0069-repetition-in-blocks.md](decisions/0069-repetition-in-blocks.md) | Decision record | Repetition and recursion of structure belong in blocks |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 

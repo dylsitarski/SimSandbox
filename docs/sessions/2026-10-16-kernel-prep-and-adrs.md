@@ -112,6 +112,7 @@
 
 ## Decided
 
+- 2026-11-02 (owner): repetition and recursion of structure belong in blocks (ADR 0069): no self-use; arrays gain parameters, neighbours by index and network grids as models need them; Duplicate on the canvas; `count` on uses waits.
 - 2026-11-02 (owner): one kind of nested model (ADR 0068): subsystems become models defined in the file. As built, the default clock was narrowed: a wired model without `run.dt` shares; otherwise ADR 0066 holds (own clock with states, on new data without), since saved files always wrote `run.dt` and ADR 0067 keeps models without states on new data.
 - 2026-11-02: a local copy is written in the use as `model` (the used file's contents), not as a subsystem: a subsystem shares its model's clock and cannot hold models on their own clocks, probes or declared outputs.
 - 2026-11-02 (owner): a deep copy is made by the using file replacing the deep use's file by path (`files`), with the other two ways offered (Q48); uses and subsystems expand in place one level at a time, after 4c (Q47).

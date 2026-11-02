@@ -29,6 +29,7 @@ _Last updated: 2026-11-02_
 
 ## Done recently
 
+- 2026-11-02: ADR 0069 (repetition and recursion belong in blocks; Q50) decided with the owner.
 - 2026-11-02: ADR 0068 (one kind of nested model; Q49) written; step 1 built: models defined in the file (`models`, `model` uses), lookup, default clock by wiring and `run.dt`, `starts` on uses, local copies as definitions, `check` `definitions`, Python `define`; the subsystem conversion written (not yet applied on reading).
 - 2026-11-02: ADR 0066 step 4c, third part: wires drawn to used models' ports are written by path; across clocks they become probe links into input blocks; "Add model…" on the canvas. Step 4c done.
 - 2026-11-02: ADR 0066 step 4c, second part: editing a used model from the app, with the edit question (original, new copy with its own file, local copy written in the use as `model`); unsaved used files read in place of the disk; Save writes them all; undo covers them.
@@ -134,10 +135,11 @@ _Last updated: 2026-11-02_
 In priority order. Each item should end with tests and updated docs.
 
 1. **One kind of nested model** ([ADR 0068](decisions/0068-one-kind-of-nested-model.md)), in order (step 1 done 2026-11-02): (2) the diagram and the app treat definitions as uses with the full editor inside any use, the edit question for definitions, "Make model", moving a definition to a file and back; (3) older `subsystems` converted on reading (`compose::convert_subsystems`, same bits), the Platoon example, names, headless renames; then the subsystem code goes.
-2. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 4c done 2026-11-02): (4d, after ADR 0068) expanding uses and subsystems in place, one level at a time; (5) the recorder and rewind per clock with recorded link values, run files; (6) several cores between instants.
-3. **Experiments and time from data** ([ADR 0067](decisions/0067-experiments-and-time-from-data.md)), in order (step 1 done 2026-11-02): (2) the experiment over any model (points by path, designs incl. `file`, final values by default, `keep: "series"`, seeds and replicates, several cores); (3) `reduce` formulas; (4) time from data (`input.file` sample times, `clock: {"times": …}`, the end of a data-driven run); (5) adaptive experiments, own ADR.
-4. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
-5. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
+2. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)): Duplicate on the canvas; array parameters and neighbours by index, checked by the Platoon as one array block; network grids when a model needs them.
+3. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 4c done 2026-11-02): (4d, after ADR 0068) expanding uses and subsystems in place, one level at a time; (5) the recorder and rewind per clock with recorded link values, run files; (6) several cores between instants.
+4. **Experiments and time from data** ([ADR 0067](decisions/0067-experiments-and-time-from-data.md)), in order (step 1 done 2026-11-02): (2) the experiment over any model (points by path, designs incl. `file`, final values by default, `keep: "series"`, seeds and replicates, several cores); (3) `reduce` formulas; (4) time from data (`input.file` sample times, `clock: {"times": …}`, the end of a data-driven run); (5) adaptive experiments, own ADR.
+5. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
+6. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
 
