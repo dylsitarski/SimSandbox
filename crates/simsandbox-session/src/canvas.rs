@@ -72,6 +72,8 @@ pub enum Request {
         key: String,
         text: String,
     },
+    /// Choose a model file to use here, at this place (ADR 0066 step 4c).
+    AddModel([f64; 2]),
 }
 
 /// Values show on nodes from this zoom up, and can be edited from this one.
@@ -1398,6 +1400,14 @@ impl Canvas {
                 ui.label("Add block");
                 if let Some(type_name) = type_menu(ui, registry, &d.subsystems) {
                     edits.push(Edit::Add { type_name, at });
+                    ui.close();
+                }
+                if ui
+                    .button("Add model…")
+                    .on_hover_text("Use a model file here, on its own clock (ADR 0066)")
+                    .clicked()
+                {
+                    requests.push(Request::AddModel(at));
                     ui.close();
                 }
                 if !d.view_types.is_empty() {

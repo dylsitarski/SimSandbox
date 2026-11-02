@@ -260,3 +260,11 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
 - **The app:** the first edit inside a used model (a value, a block, a wire or a move) opens the question, with Cancel. The answer holds for that use until the model is closed or an edit is undone. The breadcrumb says where edits go. Edits apply as at the top level: refused with the reason if the model no longer loads. Undo and redo cover the used files and the model open together. Save writes the model and every edited file, and the log names each. Unsaved edits to used files count as unsaved changes; opening another model drops them, after asking.
 - **Tests:** each answer gives the bits of the same change made by `params`, leaves the disk alone until saved, and saves what it should (headless); in the app, each answer applies, the next edit does not ask, undo and redo restore the files, and a saved model reopens with the edit.
 
+**Step 4c, third part (2026-11-02): wiring between used models, and Add model….**
+- **Wires drawn to a used model's ports** are written by path (`plant/car.v`, `controller/speed`): the canvas names them `node.port`, which the model level turns into paths (`diagram::use_end`). Disconnecting works the same way.
+- **On one clock** (both ends on the model's clock, or in the same use): a wire.
+- **Across clocks** (`diagram::connect_uses`): the wire becomes a link. A probe recording the output (one already recording it, or a new `link_…` probe) feeds the input block. The log says so. Into a block that is not an input block it is refused, with the reason. Removing the link removes a `link_…` probe that then feeds nothing.
+- **Add model…** in the canvas's menu chooses a model file (`Request::AddModel`) and adds a use named after it (`car`, `car_2`), on its own clock, at that place, its path relative to the model's folder when inside it (`Edit::AddUse`). Inside a subsystem it is refused.
+- **Tests:** two models wired on their own clocks from the canvas give the bits of the same links written by hand; on a shared clock they are plain wires; disconnecting removes the probe; refusals; Add model… names and paths.
+- **Not yet tried in the window:** the question, Add model… and wiring between used models, beyond tests.
+

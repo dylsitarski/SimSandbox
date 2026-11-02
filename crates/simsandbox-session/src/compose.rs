@@ -973,6 +973,135 @@ mod tests {
     }
 
     #[test]
+    fn wires_drawn_between_used_models_link_them_across_clocks() {
+        use crate::diagram::{apply_in, Edit, Scope};
+        let dir = temp_dir("wire-uses");
+        cruise_files(&dir);
+        let r = registry();
+        let wired = |shared: bool| {
+            let clock = |v: Value| {
+                if shared {
+                    with(v, json!({"clock": "shared"}))
+                } else {
+                    v
+                }
+            };
+            let (mut f, _) = simsandbox_file::ModelFile::from_json(
+                &json!({"format": 1, "run": {"t_end": 5, "dt": 0.05}, "fusion": "off",
+                        "blocks": [clock(use_of("plant", "car.ssbx.json")), clock(use_of("controller", "cruise.ssbx.json"))]})
+                .to_string(),
+            )
+            .unwrap();
+            let mut notes = Vec::new();
+            for (from, to) in [
+                ("plant.car.v", "controller.speed"),
+                ("controller.cruise.F", "plant.force"),
+            ] {
+                let e = Edit::Connect {
+                    from: from.into(),
+                    to: to.into(),
+                };
+                notes.push(apply_in(&mut f, &Scope::Model, &r, &e).unwrap());
+            }
+            (f, notes)
+        };
+        // On their own clocks: linked through probes, as written by hand.
+        let (linked, notes) = wired(false);
+        assert!(notes[0].contains("through the probe"), "{notes:?}");
+        assert_eq!(
+            linked.connections[0].from,
+            "probe:link_plant_car_v.plant/car.v"
+        );
+        assert_eq!(linked.connections[0].to, "controller/speed");
+        let by_hand = run_in(
+            &dir,
+            &with(
+                json!({"format": 1, "run": {"t_end": 5},
+                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
+                cruise_links("plant", "controller"),
+            ),
+        );
+        let drawn = run_in(&dir, &serde_json::from_str(&linked.to_json()).unwrap());
+        assert_eq!(
+            bits(drawn.values("plant/car.v").unwrap()),
+            bits(by_hand.values("plant/car.v").unwrap())
+        );
+        // Disconnecting removes the link and the probe made for it.
+        let mut f = linked.clone();
+        apply_in(
+            &mut f,
+            &Scope::Model,
+            &r,
+            &Edit::Disconnect {
+                to: "controller.speed".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(f.connections.len(), 1);
+        assert_eq!(f.controls.probes.len(), 1);
+        // On a shared clock: plain wires.
+        let (shared, _) = wired(true);
+        assert_eq!(shared.connections[0].from, "plant/car.v");
+        assert!(shared.controls.probes.is_empty());
+        let c = check_in(&dir, &serde_json::from_str(&shared.to_json()).unwrap());
+        assert_eq!(c["ok"], true, "{c}");
+        // Across clocks into a block that is not an input block: refused.
+        let (mut f, _) = simsandbox_file::ModelFile::from_json(
+            &json!({"format": 1, "blocks": [use_of("plant", "car.ssbx.json"),
+                {"name": "odo", "type": "eq.equations", "equations": ["input v [m/s]", "state d [m]", "dd/dt = v"]}]})
+            .to_string(),
+        )
+        .unwrap();
+        let e = apply_in(
+            &mut f,
+            &Scope::Model,
+            &r,
+            &Edit::Connect {
+                from: "plant.car.v".into(),
+                to: "odo.v".into(),
+            },
+        );
+        assert!(e.unwrap_err().contains("input block"));
+        // Add model…: named after its file, kept relative to the folder.
+        let (mut f, _) =
+            simsandbox_file::ModelFile::from_json(r#"{"format": 1, "blocks": []}"#).unwrap();
+        f.folder = Some(dir.clone());
+        for _ in 0..2 {
+            let e = Edit::AddUse {
+                file: dir.join("car.ssbx.json").to_string_lossy().into_owned(),
+                at: [10.0, 20.0],
+            };
+            apply_in(&mut f, &Scope::Model, &r, &e).unwrap();
+        }
+        let names: Vec<(&str, Option<&str>)> = f
+            .blocks
+            .iter()
+            .map(|b| (b.name.as_str(), b.file.as_deref()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("car", Some("car.ssbx.json")),
+                ("car_2", Some("car.ssbx.json"))
+            ]
+        );
+        assert_eq!(f.blocks[0].canvas, Some([10.0, 20.0]));
+        let c = check_in(&dir, &serde_json::from_str(&f.to_json()).unwrap());
+        assert_eq!(c["ok"], true, "{c}");
+        let inside = apply_in(
+            &mut f,
+            &Scope::Subsystem("s".into()),
+            &r,
+            &Edit::AddUse {
+                file: "car.ssbx.json".into(),
+                at: [0.0, 0.0],
+            },
+        );
+        assert!(inside.is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_nested_use_runs_as_its_models_side_by_side() {
         // vehicle.ssbx.json uses the car and the controller and links them;
         // the top level uses the vehicle and adds a block of its own.

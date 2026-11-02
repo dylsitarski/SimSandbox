@@ -1025,6 +1025,9 @@ pub enum Edit {
     Move { block: String, at: [f64; 2] },
     /// A registered type or one of the file's subsystems.
     Add { type_name: String, at: [f64; 2] },
+    /// A use of a model file (ADR 0066), named after it, on its own clock;
+    /// the path is kept relative to the model's folder when inside it.
+    AddUse { file: String, at: [f64; 2] },
     /// A block, or a port node (removing the port).
     Delete { block: String },
     /// A block, or a port node (renaming the port).
@@ -1148,6 +1151,24 @@ pub fn apply_in(
     registry: &Registry,
     edit: &Edit,
 ) -> Result<String, String> {
+    if let Edit::AddUse { file: path, at } = edit {
+        return add_use(file, scope, path, *at);
+    }
+    // Wires to and from used models (ADR 0066 step 4c).
+    if *scope == Scope::Model {
+        match edit {
+            Edit::Connect { from, to }
+                if use_end(file, from).is_some() || use_end(file, to).is_some() =>
+            {
+                return connect_uses(file, scope, registry, from, to);
+            }
+            Edit::Disconnect { to } if use_end(file, to).is_some() => {
+                let to = use_end(file, to).expect("checked");
+                return disconnect_use(file, &to);
+            }
+            _ => {}
+        }
+    }
     if let Some(result) = crate::observers::apply(file, scope, registry, edit) {
         return result;
     }
@@ -1640,8 +1661,187 @@ fn edit_level(
         | Edit::AddRecorder { .. }
         | Edit::SetRecorder { .. }
         | Edit::Promote { .. }
-        | Edit::PromoteConnect { .. } => unreachable!("handled before"),
+        | Edit::PromoteConnect { .. }
+        | Edit::AddUse { .. } => unreachable!("handled before"),
     }
+}
+
+/// Add a use of the model file at `path` (ADR 0066 step 4c).
+fn add_use(
+    file: &mut ModelFile,
+    scope: &Scope,
+    path: &str,
+    at: [f64; 2],
+) -> Result<String, String> {
+    if *scope != Scope::Model {
+        return Err("model files are used at a model's level, not inside a subsystem".into());
+    }
+    let full = std::path::PathBuf::from(path);
+    let written = match &file.folder {
+        Some(f) => full.strip_prefix(f).unwrap_or(&full).to_path_buf(),
+        None => full.clone(),
+    };
+    let stem = full
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem = stem.split('.').next().unwrap_or_default();
+    let mut base: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if base.is_empty() || base.starts_with(|c: char| c.is_ascii_digit()) {
+        base = format!("model_{base}");
+    }
+    let mut name = base.clone();
+    let mut k = 2;
+    while file.blocks.iter().any(|b| b.name == name) {
+        name = format!("{base}_{k}");
+        k += 1;
+    }
+    file.blocks.push(simsandbox_file::BlockEntry {
+        name: name.clone(),
+        file: Some(written.to_string_lossy().into_owned()),
+        canvas: Some(at),
+        ..Default::default()
+    });
+    Ok(format!("Added {name}, using {}", written.display()))
+}
+
+/// A wire end on a used model's node (`plant.car.v`, `controller.speed`)
+/// as the file writes it (`plant/car.v`, `controller/speed`); `None` for
+/// any other end.
+fn use_end(file: &ModelFile, key: &str) -> Option<String> {
+    let (node, rest) = key.split_once('.')?;
+    file.blocks
+        .iter()
+        .any(|b| b.name == node && b.is_use())
+        .then(|| format!("{node}/{rest}"))
+}
+
+/// The clock an end at the model's level runs on: a use's own, or the
+/// model's (`None`) for its blocks and uses on a shared clock.
+fn clock_of<'a>(file: &'a ModelFile, end: &str) -> Option<&'a str> {
+    let (first, _) = end.split_once('/')?;
+    file.blocks
+        .iter()
+        .find(|b| b.name == first && b.is_use())
+        .filter(|b| b.clock != Some(simsandbox_file::UseClock::Shared))
+        .map(|b| b.name.as_str())
+}
+
+/// Connect two ends of which one or both are in used models: a wire on
+/// one clock, or across clocks a probe recording the output, linked into
+/// the input block (ADR 0066 step 4c).
+fn connect_uses(
+    file: &mut ModelFile,
+    scope: &Scope,
+    registry: &Registry,
+    from: &str,
+    to: &str,
+) -> Result<String, String> {
+    let src = use_end(file, from).unwrap_or_else(|| from.to_string());
+    let dst = use_end(file, to).unwrap_or_else(|| to.to_string());
+    if clock_of(file, &src) == clock_of(file, &dst) {
+        // One clock: a wire, as between blocks.
+        file.connections.retain(|c| c.to != dst);
+        file.connections.push(ConnectionEntry {
+            from: src.clone(),
+            to: dst.clone(),
+        });
+        let _ = (scope, registry);
+        return Ok(format!("Connected {src} -> {dst}"));
+    }
+    // Across clocks: into an input block only.
+    let input = dst
+        .split_once('/')
+        .map(|(u, b)| (u, b.trim_end_matches(".u")));
+    let into_input_block = match input {
+        Some(_) => !dst.contains('.') || dst.ends_with(".u"),
+        None => file.blocks.iter().any(|b| {
+            Some(b.name.as_str()) == dst.split_once('.').map(|(n, _)| n)
+                && b.type_name == simsandbox_eq::input::VALUE
+        }),
+    };
+    if !into_input_block {
+        return Err(format!(
+            "{src} runs on another clock than {dst}: it reaches it through an input block \
+             (an input.value) that takes its samples"
+        ));
+    }
+    let dst = match dst.split_once('.') {
+        // An input block of the model's own is fed by name.
+        Some((b, _)) if !dst.contains('/') => b.to_string(),
+        _ => dst.trim_end_matches(".u").to_string(),
+    };
+    // A probe already recording it, or a new one.
+    let probe = match file
+        .controls
+        .probes
+        .iter()
+        .find(|p| p.record.iter().any(|r| r == &src))
+    {
+        Some(p) => p.name.clone(),
+        None => {
+            let base = format!("link_{}", src.replace(['/', '.'], "_"));
+            let mut name = base.clone();
+            let mut k = 2;
+            while file.controls.probes.iter().any(|p| p.name == name) {
+                name = format!("{base}_{k}");
+                k += 1;
+            }
+            file.controls.probes.push(simsandbox_file::ProbeEntry {
+                name: name.clone(),
+                record: vec![src.clone()],
+                every: None,
+                keep: None,
+                to: None,
+                stream: false,
+                canvas: None,
+            });
+            name
+        }
+    };
+    file.connections.retain(|c| c.to != dst);
+    file.connections.push(ConnectionEntry {
+        from: format!("probe:{probe}.{src}"),
+        to: dst.clone(),
+    });
+    Ok(format!(
+        "Linked {src} -> {dst} through the probe {probe}: they run on different clocks, so {dst} \
+         takes its samples, held between them"
+    ))
+}
+
+/// Remove the wire or link into an input of a used model; a probe made
+/// for a link and feeding nothing else goes too.
+fn disconnect_use(file: &mut ModelFile, to: &str) -> Result<String, String> {
+    let bare = to.trim_end_matches(".u");
+    let before = file.connections.len();
+    file.connections.retain(|c| c.to != to && c.to != bare);
+    if file.connections.len() == before {
+        return Err(format!("nothing is connected to '{to}'"));
+    }
+    let used: Vec<String> = file
+        .connections
+        .iter()
+        .filter_map(|c| {
+            c.from
+                .strip_prefix("probe:")
+                .and_then(|p| p.split_once('.'))
+                .map(|(p, _)| p.to_string())
+        })
+        .collect();
+    file.controls
+        .probes
+        .retain(|p| !p.name.starts_with("link_") || used.contains(&p.name));
+    Ok(format!("Disconnected {bare}"))
 }
 
 /// Remove whatever feeds an input at this level. Returns whether anything

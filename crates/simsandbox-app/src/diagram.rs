@@ -733,6 +733,21 @@ impl DiagramTab {
                     edits.push(Edit::SetSetting { block, key, text });
                     continue;
                 }
+                Request::AddModel(at) => {
+                    let mut dialog = rfd::FileDialog::new()
+                        .set_title("Use a model file")
+                        .add_filter("SimSandbox model", &["json"]);
+                    if let Some(dir) = &self.folder {
+                        dialog = dialog.set_directory(dir);
+                    }
+                    if let Some(path) = dialog.pick_file() {
+                        edits.push(Edit::AddUse {
+                            file: path.to_string_lossy().into_owned(),
+                            at,
+                        });
+                    }
+                    continue;
+                }
             };
             let node = d.node(&name).map(|k| d.nodes[k].clone());
             match node {

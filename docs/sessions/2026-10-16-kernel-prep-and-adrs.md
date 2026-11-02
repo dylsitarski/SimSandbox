@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-02: ADR 0066 step 4c, third part: `diagram::use_end`, `connect_uses` (wire or probe link by clock), `disconnect_use`; `Edit::AddUse`, `Request::AddModel` and the app's file chooser. Step 4c done.
 - 2026-11-02: ADR 0066 step 4c, second part: `BlockEntry::model` (local copies) and `is_use`; `compose::set_edited`/`read_model`/`canonical`/`used_model`; `edit_use` (`prepare`, `read`, `write`, `save`, `rebase`, `copy_name`); app edit question (`DiagramTab::question`/`answer`/`edit_inside`, `edited`, `choices`), undo of used files, Save writes them, unsaved counts them. Tests headless and in the app.
 - 2026-11-02: ADR 0066 step 4c, first part: `BlockEntry::files`, `compose::replace_files` (applied in `read_use`, `diagram::use_node`, the app's `used_file`), `check` `replaced_files`, Python `add_model(files=)`; tests.
 - 2026-11-02: Q47 and Q48 decided by the owner and written into ADR 0066: `files` replaces a deep use's file by path (step 4c); "Expand in place", one level at a time, as step 4d.
@@ -180,7 +181,7 @@
 ## Notes for the next session
 
 - 2026-11-02: the owner asked whether compositions and models could be one recursive kind of file (Q45); recommended yes (uses in `blocks`, a clock per use); waiting for the owner before ADR 0065 step 2.
-- ADR 0066 step 4c next: editing used models (the edit question: make a subsystem copy or edit the file; saving several files; a probe added when wiring across clocks; Add model…). Ports shown from a use's list are not saved; decide in 4c whether the file should keep them. The headless runner (`compose::run_composition`) and the merged kernel both exist; once on-data evaluation in the kernel matches the runner, the CLI and Python could run through the kernel too.
+- ADR 0066 step 4d next (expand in place, one level at a time), then step 5 (rewind per clock, run files). Earlier note, done: editing used models (the edit question: make a subsystem copy or edit the file; saving several files; a probe added when wiring across clocks; Add model…). Ports shown from a use's list are not saved; decide in 4c whether the file should keep them. The headless runner (`compose::run_composition`) and the merged kernel both exist; once on-data evaluation in the kernel matches the runner, the CLI and Python could run through the kernel too.
 - ADR 0065 is Proposed: wait for the owner's answers to its open points (Q44) before building step 1 of its order of work.
 - ADR 0063 step 5 next (several models in one session, own ADR first). `input.file` has not been tried in the window; Q42 (units in probe CSV headers) and Q43 (re-reading changed files) are open.
 - ADR 0063 step 4 next: a block reading a probe's file (or any CSV or `.npy`) as an input over time; it also serves external data (ADR 0048). The owner has not yet tried probes in the window.
