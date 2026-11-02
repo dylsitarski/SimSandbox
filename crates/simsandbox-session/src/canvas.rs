@@ -20,7 +20,7 @@ use crate::diagram::{Diagram, Edit, Node, NodeKind, Scope, HEADER, NODE_WIDTH, R
 use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use simsandbox_core::block::{Causality, Shape};
 use simsandbox_core::registry::Registry;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What is selected.
 #[derive(Clone, Debug, PartialEq)]
@@ -118,6 +118,10 @@ pub struct Canvas {
     /// The value being typed on a node: its key (`unit:block:from` for a
     /// conversion's unit) and the text so far.
     editing: Option<(String, String)>,
+    /// Ports of used models shown on their nodes by choice (ADR 0066 step
+    /// 4b), by node: `(input, port)`; and the text searched for one.
+    pub revealed: BTreeMap<String, Vec<(bool, String)>>,
+    port_search: String,
 }
 
 impl Default for Canvas {
@@ -137,6 +141,8 @@ impl Default for Canvas {
             open: BTreeSet::new(),
             open_all: false,
             editing: None,
+            revealed: BTreeMap::new(),
+            port_search: String::new(),
         }
     }
 }
@@ -196,6 +202,27 @@ impl Canvas {
     /// Draw the diagram filling `ui`'s space. With `interactive`, handle
     /// input and return the edits and requests the user made; `diagram`
     /// node positions follow drags as they happen.
+    /// Put the ports chosen from a used model's list on its node; they
+    /// stay there while the canvas lives (ADR 0066 step 4b).
+    pub fn reveal(&self, d: &mut Diagram) {
+        for n in d.nodes.iter_mut().filter(|n| n.kind == NodeKind::Use) {
+            for (input, port) in self.revealed.get(&n.name).into_iter().flatten() {
+                if let Some(k) = n
+                    .reachable
+                    .iter()
+                    .position(|(i, p)| i == input && &p.name == port)
+                {
+                    let (_, q) = n.reachable.remove(k);
+                    if *input {
+                        n.inputs.push(q);
+                    } else {
+                        n.outputs.push(q);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -210,6 +237,7 @@ impl Canvas {
         } else {
             Sense::hover()
         };
+        self.reveal(d);
         for n in &mut d.nodes {
             let key = open_key(&d.scope, &n.name);
             n.open = !n.values.is_empty() && (self.open_all || self.open.contains(&key));
@@ -1215,6 +1243,42 @@ impl Canvas {
                     NodeKind::Input | NodeKind::Output => {}
                     NodeKind::Use => {
                         ui.weak(format!("Uses {}, {}", n.type_name, n.method));
+                        if ui.button("Open").on_hover_text("See inside the model it uses").clicked() {
+                            requests.push(Request::Open(name.clone()));
+                            ui.close();
+                        }
+                        // Every other port, by path (ADR 0066 step 4b).
+                        if !n.reachable.is_empty() {
+                            ui.separator();
+                            ui.label("Show a port");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.port_search)
+                                    .hint_text("Search by path")
+                                    .desired_width(180.0),
+                            );
+                            let q = self.port_search.to_lowercase();
+                            let found: Vec<&(bool, crate::diagram::Port)> = n
+                                .reachable
+                                .iter()
+                                .filter(|(_, p)| p.name.to_lowercase().contains(&q))
+                                .collect();
+                            egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                                for (input, p) in found.iter().take(200) {
+                                    let arrow = if *input { "→" } else { "←" };
+                                    let unit = if p.unit.is_empty() { String::new() } else { format!(" [{}]", p.unit) };
+                                    if ui.button(format!("{arrow} {}{unit}", p.name)).clicked() {
+                                        self.revealed
+                                            .entry(name.clone())
+                                            .or_default()
+                                            .push((*input, p.name.clone()));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                            if found.len() > 200 {
+                                ui.weak(format!("{} more: narrow the search", found.len() - 200));
+                            }
+                        }
                     }
                     NodeKind::Filter => {
                         if ui.button("Edit in Data…").on_hover_text("Its formula or cuts").clicked() {

@@ -176,7 +176,7 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
 - **Nodes:** `NodeKind::Use` nodes (`diagram::use_node`) read the used file from the using file's folder, or the thread's. Their inputs are its `input.value` blocks, with units from their settings. Their outputs are its blocks' outputs (`car.v`), including subsystem uses, and those of the uses inside it by path (`engine/x.y`), to depth 8. A file that cannot be read shows its error on the node.
 - **Clocks:** the node's line shows the clock first: "every 0.05 s", "shared clock", or "on new data" for a model without states, then the file.
 - **Wires:** wire ends inside a use (`plant/car.v`, `controller/speed`) find the use's port by the rest of the path. On the data layer, `sources` give a use's outputs by full name, so probes record from them, and links from probes into a use's input blocks are drawn solid like other probes that feed the model.
-- **Canvas:** a use is drawn with a double outline, like a subsystem use, in a stronger colour. Its menu names its file and clock. Opening it comes with 4b.
+- **Canvas:** a use is drawn with a double outline, like a subsystem use, in a stronger colour. Its menu names its file and clock. Opening it came with 4b.
 - **Tested:** nodes, ports and units, clocks (own, set, shared, on new data), probe records and links, direct wires between shared uses with nothing dangling, and a missing file. A headless render of the cruise control from two files was looked at.
 
 **Step 4b, first part (2026-11-02): a used model's interface.**
@@ -212,6 +212,12 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
   - the session gives the runner's bits;
   - rewinding two clocks between their instants replays exactly;
   - the app opens such a file from disk, runs it, and records a declared output by name.
+
+**Step 4b, third part (2026-11-02): looking inside, the port list, the parameter tree.**
+- **Opening a use:** "Open" in a use node's menu, or a double-click, shows the used model's diagram as its file is written, with the run's values (its names inside, without the path of uses). A breadcrumb leads back. Uses inside open the same way, to any depth. The file is read from the folder of the file using it (`diagram::used_file` in the app). The view is read-only: an edit says that editing a used model comes with step 4c.
+- **The port list:** a use node's menu has "Show a port", a search over `Node::reachable` by path (at most 200 shown). A port chosen stays on the node while the canvas lives (`Canvas::revealed`, applied by `Canvas::reveal`); undo history and reloading forget it.
+- **The Inspector:** a group's parameters nest by the path of uses in their names (`inspector::nest`): `plant/car.m` shows as `car.m` under a collapsed `plant`, to any depth. The Inspector's search covers every level. A use's group is labelled "uses FILE".
+- **Tests:** rows nesting by path; a port chosen moving from the list onto the node; opening a use reads its file, and an unknown name is an error.
 
 ## Consequences
 

@@ -2410,10 +2410,10 @@ impl SimApp {
                     .map(|b| b.equations.join("\n"));
                 let agents = entry.filter(|b| b.type_name.starts_with("agents."));
                 let convert = entry.filter(|b| b.type_name == simsandbox_eq::convert::CONVERT);
-                let kind = if g.instance {
-                    format!("subsystem {}", g.type_name)
-                } else {
-                    g.type_name.clone()
+                let kind = match entry.and_then(|b| b.file.as_deref()) {
+                    Some(file) => format!("uses {file}"),
+                    None if g.instance => format!("subsystem {}", g.type_name),
+                    None => g.type_name.clone(),
                 };
                 let header = egui::RichText::new(format!("{}  ({kind})", g.name)).strong();
                 egui::CollapsingHeader::new(header)
@@ -2465,18 +2465,15 @@ impl SimApp {
                                 canvas_edits.push((Scope::Model, e));
                             }
                         }
-                        egui::Grid::new(("params", &g.name))
-                            .num_columns(4)
-                            .spacing([6.0, 4.0])
-                            .show(ui, |ui| {
-                                // Starting values come last, each marked ↻.
-                                for (name, row) in &g.rows {
-                                    let mut r = row.clone();
-                                    r.name = name.clone();
-                                    let used = o.used_by.get(&row.key);
-                                    param_row(ui, &m, &r, Place::Tree, used, edits!());
-                                }
-                            });
+                        // Starting values come last, each marked ↻; a used
+                        // model's parameters nest by path (ADR 0066).
+                        let nested = crate::inspector::nest(&g.rows);
+                        nested_rows(ui, &nested, &g.name, &mut |ui, name, row| {
+                            let mut r = row.clone();
+                            r.name = name.to_string();
+                            let used = o.used_by.get(&row.key);
+                            param_row(ui, &m, &r, Place::Tree, used, edits!());
+                        });
                     });
             }
             // Blocks added on the diagram that wait, as a draft, for the
@@ -3553,6 +3550,33 @@ fn file_fields(
         });
     }
     out
+}
+
+/// Parameter rows nested by path: this level's in a grid, then each
+/// level inside, collapsed, by name (ADR 0066 step 4b).
+fn nested_rows(
+    ui: &mut egui::Ui,
+    n: &crate::inspector::Nested,
+    salt: &str,
+    row: &mut dyn FnMut(&mut egui::Ui, &str, &simsandbox_session::session::ParamRow),
+) {
+    if !n.rows.is_empty() {
+        egui::Grid::new(("params", salt))
+            .num_columns(4)
+            .spacing([6.0, 4.0])
+            .show(ui, |ui| {
+                for (name, r) in &n.rows {
+                    row(ui, name, r);
+                }
+            });
+    }
+    for (name, inner) in &n.inner {
+        let salt = format!("{salt}/{name}");
+        egui::CollapsingHeader::new(name)
+            .id_salt(("nested", &salt))
+            .default_open(false)
+            .show(ui, |ui| nested_rows(ui, inner, &salt, row));
+    }
 }
 
 /// A conversion block's `from` and `to` units (ADR 0045) as text fields;
@@ -5680,6 +5704,13 @@ mod tests {
         // about 0.3 from 0.3 s.
         assert_eq!(u[0], 0.0);
         assert!((u.last().unwrap() - 0.6).abs() < 1e-9, "{u:?}");
+        // Opening a use reads its file, from the folder of the file using it.
+        let (top, _) =
+            simsandbox_file::ModelFile::from_json(&std::fs::read_to_string(&model).unwrap())
+                .unwrap();
+        let inside = crate::diagram::used_file(&top, Some(&dir), &["slow".into()]).unwrap();
+        assert_eq!(inside.blocks[1].name, "sum");
+        assert!(crate::diagram::used_file(&top, Some(&dir), &["nowhere".into()]).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

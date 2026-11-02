@@ -100,9 +100,136 @@ pub struct DiagramTab {
     /// The saved model's folder, where blocks read the files they name
     /// (ADR 0063); set by the app.
     pub folder: Option<std::path::PathBuf>,
+    /// A used model opened to see inside (ADR 0066 step 4b), by the path
+    /// of uses leading to it; empty at the model's own levels.
+    pub inside: Vec<String>,
+    /// Its diagram, for that path.
+    inside_cache: Option<(Vec<String>, Diagram)>,
+}
+
+/// The model file at the end of `path`, a chain of uses of model files
+/// from `top` (saved in `folder`), read from disk.
+pub(crate) fn used_file(
+    top: &ModelFile,
+    folder: Option<&std::path::Path>,
+    path: &[String],
+) -> Result<ModelFile, String> {
+    let mut file = top.clone();
+    let mut folder = folder
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| top.folder.clone());
+    for name in path {
+        let entry = file
+            .blocks
+            .iter()
+            .find(|b| &b.name == name && b.file.is_some())
+            .ok_or_else(|| format!("no model file used as '{name}'"))?;
+        let at = std::path::PathBuf::from(entry.file.as_deref().unwrap_or_default());
+        let at = match &folder {
+            Some(f) if at.is_relative() => f.join(at),
+            _ => at,
+        };
+        let text = std::fs::read_to_string(&at).map_err(|e| format!("{}: {e}", at.display()))?;
+        let (mut used, _) =
+            ModelFile::from_json(&text).map_err(|e| format!("{}: {e}", at.display()))?;
+        used.folder = at.parent().map(std::path::Path::to_path_buf);
+        folder = used.folder.clone();
+        file = used;
+    }
+    Ok(file)
 }
 
 impl DiagramTab {
+    /// Inside a used model: its file's diagram as written, with what the
+    /// run gives its values; navigation only, since editing a used model
+    /// asks first (ADR 0066 step 4c).
+    fn show_inside(
+        &mut self,
+        ui: &mut egui::Ui,
+        model: &Model,
+        registry: &Registry,
+        views: &ViewRegistry,
+    ) -> Vec<Outcome> {
+        let mut out = Vec::new();
+        let mut back = None;
+        ui.horizontal(|ui| {
+            if ui.link("Model").on_hover_text("Back to the whole model").clicked() {
+                back = Some(0);
+            }
+            for (k, name) in self.inside.iter().enumerate() {
+                ui.label("›");
+                if k + 1 < self.inside.len() {
+                    if ui.link(name).clicked() {
+                        back = Some(k + 1);
+                    }
+                } else {
+                    ui.strong(name);
+                }
+            }
+            ui.weak("· a model file used here, as written; editing it comes with the question of where (ADR 0066 step 4c)");
+        });
+        if let Some(k) = back {
+            self.inside.truncate(k);
+            self.inside_cache = None;
+            self.canvas.refit();
+            return out;
+        }
+        if self
+            .inside_cache
+            .as_ref()
+            .is_none_or(|(p, _)| *p != self.inside)
+        {
+            match used_file(&model.file, self.folder.as_deref(), &self.inside) {
+                Ok(file) => {
+                    let mut d = Diagram::new(&file, registry);
+                    d.observe(&file, views);
+                    self.inside_cache = Some((self.inside.clone(), d));
+                }
+                Err(e) => {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                    if ui.button("Back").clicked() {
+                        self.inside.clear();
+                    }
+                    return out;
+                }
+            }
+        }
+        // The run's values, by their names inside it.
+        let prefix = format!("{}/", self.inside.join("/"));
+        let rows: Vec<simsandbox_session::session::ParamRow> = model
+            .params
+            .iter()
+            .filter_map(|r| {
+                let key = r.key.strip_prefix(&prefix)?.to_string();
+                Some(simsandbox_session::session::ParamRow { key, ..r.clone() })
+            })
+            .collect();
+        let (_, d) = self.inside_cache.as_mut().expect("built above");
+        d.live_values(&rows);
+        let (edits, requests) = self.canvas.show(ui, d, registry, true);
+        if !edits.is_empty() {
+            out.push(Outcome::Error(
+                "A used model is shown as written: open its own file to edit it (editing it \
+                 from here comes later)"
+                    .into(),
+            ));
+        }
+        for r in requests {
+            if let Request::Open(name) = r {
+                if d.node(&name)
+                    .is_some_and(|k| d.nodes[k].kind == NodeKind::Use)
+                {
+                    self.inside.push(name);
+                    self.inside_cache = None;
+                    self.canvas.selected = None;
+                    self.canvas.refit();
+                    break;
+                }
+            }
+        }
+        out
+    }
+
     /// The model changed (opened or rebuilt): draw it afresh, dropping any
     /// draft.
     pub fn reset(&mut self) {
@@ -124,6 +251,9 @@ impl DiagramTab {
     pub fn forget_history(&mut self) {
         self.undo.clear();
         self.redo.clear();
+        self.inside.clear();
+        self.inside_cache = None;
+        self.canvas.revealed.clear();
     }
 
     /// Draw the tab. `views` are the open tiles as saved; `current` gives
@@ -158,6 +288,9 @@ impl DiagramTab {
             if revert {
                 self.reset();
             }
+        }
+        if !self.inside.is_empty() {
+            return self.show_inside(ui, model, registry, views.1);
         }
         let source = match &self.draft {
             Some((f, _)) => f,
@@ -381,6 +514,14 @@ impl DiagramTab {
             };
             let node = d.node(&name).map(|k| d.nodes[k].clone());
             match node {
+                // A used model opens to its file, as written (ADR 0066).
+                Some(n) if n.kind == NodeKind::Use && self.scope == Scope::Model => {
+                    self.inside = vec![name];
+                    self.inside_cache = None;
+                    self.canvas.selected = None;
+                    self.canvas.refit();
+                    return out;
+                }
                 // A subsystem opens to its inside.
                 Some(n) if n.kind == NodeKind::Subsystem => {
                     self.scope = Scope::Subsystem(n.type_name.clone());

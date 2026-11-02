@@ -1781,6 +1781,18 @@ mod tests {
             "blocks": [use_of("plant", "car.ssbx.json")],
             "controls": {"probes": [{"name": "p", "record": ["plant/car.v"]}]}}));
         assert_eq!(names(&wired.nodes[0].outputs), ["speed", "car.v"]);
+        // A port chosen from the list joins the node; the rest stay listed.
+        let mut canvas = crate::canvas::Canvas::default();
+        canvas
+            .revealed
+            .insert("plant".into(), vec![(false, "car.v".into())]);
+        let mut shown = alone.clone();
+        canvas.reveal(&mut shown);
+        assert_eq!(names(&shown.nodes[0].outputs), ["speed", "car.v"]);
+        assert!(!shown.nodes[0]
+            .reachable
+            .iter()
+            .any(|(_, p)| p.name == "car.v"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

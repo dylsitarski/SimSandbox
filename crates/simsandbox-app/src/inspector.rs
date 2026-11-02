@@ -178,6 +178,30 @@ pub fn organise(rows: &[ParamRow], file: &ModelFile, show_computed: bool) -> Org
     o
 }
 
+/// A group's rows nested by the path in their names (ADR 0066 step 4b):
+/// `plant/car.m` under `plant` as `car.m`, each level's own rows first.
+#[derive(Debug, Default, Clone)]
+pub struct Nested {
+    pub rows: Vec<(String, ParamRow)>,
+    pub inner: BTreeMap<String, Nested>,
+}
+
+/// Nest `rows` by the path before each name's last part.
+pub fn nest(rows: &[(String, ParamRow)]) -> Nested {
+    let mut n = Nested::default();
+    for (name, row) in rows {
+        let mut at = &mut n;
+        let mut rest = name.as_str();
+        // The path is what comes before the block or parameter's name.
+        while let Some((first, more)) = rest.split_once('/') {
+            at = at.inner.entry(first.to_string()).or_default();
+            rest = more;
+        }
+        at.rows.push((rest.to_string(), row.clone()));
+    }
+    n
+}
+
 /// Rows whose key or description contains `query` (any case).
 pub fn search(rows: &[ParamRow], query: &str) -> Vec<ParamRow> {
     let q = query.trim().to_lowercase();
@@ -267,6 +291,21 @@ mod tests {
             .find(|e| e.name.contains("Platoon"))
             .unwrap();
         Session::load(e.name, e.text, &registry()).unwrap()
+    }
+
+    #[test]
+    fn rows_nest_by_path() {
+        let s = platoon();
+        let names = ["m", "plant/car.m", "vehicle/plant/car.c"];
+        let rows: Vec<(String, ParamRow)> = names
+            .iter()
+            .zip(s.params())
+            .map(|(n, r)| (n.to_string(), r))
+            .collect();
+        let n = nest(&rows);
+        assert_eq!(n.rows[0].0, "m");
+        assert_eq!(n.inner["plant"].rows[0].0, "car.m");
+        assert_eq!(n.inner["vehicle"].inner["plant"].rows[0].0, "car.c");
     }
 
     #[test]
