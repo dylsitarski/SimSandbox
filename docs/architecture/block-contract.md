@@ -1,6 +1,6 @@
 # Block contract
 
-_Last updated: 2026-10-23_
+_Last updated: 2026-11-03_
 
 Every simulation, from a pendulum to a CFD solver to a neural network, is wrapped as a **Block**. Blocks in the same domain are fused and solved together using that domain's native approach; different domains are coupled through an FMI-style step interface run by a co-simulation master. Rationale and rejected alternatives: [ADR 0002](../decisions/0002-layered-block-contract.md). Code: `crates/simsandbox-core/src/block.rs`.
 
@@ -72,6 +72,8 @@ Measured effect (test `cosimulation_adds_coupling_error`): two coupled oscillato
 ## Composition
 
 - Models nest ([ADR 0066](../decisions/0066-models-nest-as-blocks.md), [ADR 0068](../decisions/0068-one-kind-of-nested-model.md)): a model file uses other models, defined in it (`models`) or in files of their own, with their input blocks and declared outputs as ports. Loading flattens each use on its user's clock into its blocks (`use/inner`), through internal subsystems (`crates/simsandbox-file/src/subsystems.rs`, never written in files), so Blocks never see nesting; parameters of the model and of each use reach block parameters through formulas (`ParamPlan`). Uses on their own clocks stay apart and are stepped by the kernel's clocks.
+- A **study** is a block (`study`) whose definition is a model and a `sample`: its inputs are the model's input blocks, its outputs arrays with one value per run ([ADR 0070](../decisions/0070-studies-are-blocks.md)).
+- **Models over sets of members** (array cells, agents, study points, later mesh cells) are rows with ids seen from outside as arrays; structure changes only between steps, through labelled transfers, and different structures meet only through explicit mapping blocks ([ADR 0070](../decisions/0070-studies-are-blocks.md) point 4).
 - In code, the equation domain can also collapse a group into one Block: `FusedSystem` exposes `<member>.<name>` ports and parameters.
 - The saved model will be a JSON file naming each Block by a registered type ([ADR 0007](../decisions/0007-json-model-files.md)), with an optional `controls` section for sliders, playback speed, default plots and the opening view ([ADR 0012](../decisions/0012-controls-in-model-files.md), [ADR 0014](../decisions/0014-view-in-controls.md)).
 

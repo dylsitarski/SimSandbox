@@ -1,6 +1,6 @@
 # Architecture overview
 
-_Last updated: 2026-10-23_
+_Last updated: 2026-11-03_
 
 SimSandbox has five layers. Only the kernel and the model graph are new code; interfaces and backends are replaceable around them. The kernel never contains physics: it schedules Blocks, checks units, stores state and records provenance, which is what lets a CFD solver, an ODE and a neural network sit in one graph.
 
@@ -24,6 +24,21 @@ flowchart TB
   end
   I -->|edit and drive| M -->|compiled into a schedule| K -->|step and exchange data| B -->|runs on| R
 ```
+
+## Concepts
+
+The user-visible concepts, kept few on purpose ([ADR 0070](../decisions/0070-studies-are-blocks.md)). An ADR that adds one says why these cannot express it; removing one is a gain.
+
+| Concept | What it is |
+| --- | --- |
+| Block | A machine: typed input and output ports with units and shapes, parameters, kernel-owned state and tables, one labelled method. Every kind of physics, math and ML is a block type registered by a domain; so are input blocks, conversions and studies |
+| Model | A graph of blocks in a file or a definition (`models`); used in another model it is a block of that model (a use), on its own clock or its user's |
+| Connection | A wire from an output to an input, checked for direction, shape and unit |
+| Parameter | A named, unit-aware value of a block, or declared by a model with formulas |
+| Study | A block whose definition is a model and a `sample`: it runs the model at each point and outputs arrays by run |
+| Members | A model over a set of members (array cells, agents, study points): rows with ids, collapsed by array functions; how they interact and how time passes are choices of the family |
+| Observer | Reads results without changing them, outside the model hash: probes (record), filters (derive) and views (show) |
+| Run settings | `run`: step, end, seed, scheduled inputs |
 
 ## Crate map
 

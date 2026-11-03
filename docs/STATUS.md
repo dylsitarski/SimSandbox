@@ -2,7 +2,7 @@
 
 _Last updated: 2026-11-03_
 
-**Phase:** 1 · Composition ([roadmap](roadmap.md#phase-1--composition), order and scope in [ADR 0038](decisions/0038-phase-1-revised.md)). **Gate:** an ODE model and an agent model run in one graph (the grazing model). **Gate met:** 2026-10-22, the grazing example (`eq.grass` and `agents.grazers`) runs live in the desktop app at 4× real time with about 400 sheep (checked headless in the cloud); **confirmed by the owner on Linux and Windows on 2026-10-23**. **All eight Phase 1 items are built** (2026-10-23). Phase 0's gate (Lorenz live on the desktop with sliders) was met 2026-10-16 and confirmed by the owner on Windows and Linux on 2026-10-19.
+**Phase:** 2 · Breadth ([roadmap](roadmap.md#phase-2--breadth), order and scope in [ADR 0057](decisions/0057-phase-2-plan.md)). **Gate:** an interactive cart-pole replayed bit for bit. Items 1 (inputs) and 2 (typed arrays, implicit methods) done; probes, nested models and experiments were added on the way. Phase 1's gate (the grazing model, an ODE and agents in one graph) was met 2026-10-22 and confirmed by the owner on Linux and Windows on 2026-10-23; Phase 0's (Lorenz live with sliders) on 2026-10-16.
 
 ## What works
 

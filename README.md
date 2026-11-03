@@ -2,9 +2,9 @@
 
 A desktop environment for building, connecting and exploring simulations of all kinds — for fun, for learning and for research.
 
-SimSandbox is a small, solver-agnostic kernel that only knows how to **connect, schedule and observe** models; every kind of physics, math and ML lives behind plugins. Users build models from deliberately chosen methods, and every method is labelled for **speed** and **accuracy**, so it is always clear what a model can be trusted for.
+SimSandbox is a small, solver-agnostic kernel that only knows how to **connect, schedule and step** blocks: machines with typed inputs and outputs, parameters and kernel-owned state. Every kind of physics, math and ML is a block type supplied by a domain (through a registry today, plugins later). A model is a graph of blocks and is itself a block, so models nest, repeat and are studied with the same parts. Users build models from deliberately chosen methods, and every method is labelled for **speed** and **accuracy**, so it is always clear what a model can be trusted for.
 
-> **Status:** Phase 0 (foundations). The kernel, the first equation-domain methods, model files and a first desktop app (run, pause, rewind, live plots) exist and are tested; parameter controls are next. Details: [docs/STATUS.md](docs/STATUS.md).
+> **Status:** Phase 2 (breadth). Typed equations with arrays, agents, nested models with their own clocks, inputs and run files, probes, experiments and a desktop app with a node canvas exist and are tested; rigid bodies and a plugin interface are next. Details: [docs/STATUS.md](docs/STATUS.md).
 
 ## Quick start
 

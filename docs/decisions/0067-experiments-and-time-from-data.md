@@ -1,6 +1,6 @@
 # 0067 — Experiments over whole models, and time from data
 
-- **Status:** Accepted
+- **Status:** Accepted; where an experiment lives and what `sample` means in a used file amended by [0070](0070-studies-are-blocks.md)
 - **Date:** 2026-11-02
 - **Extends:** [ADR 0027](0027-explicit-experiments.md) and [ADR 0028](0028-sweeps-as-samples.md) (experiments and samples, now over any model), [ADR 0066](0066-models-nest-as-blocks.md) (clocks of models that use model files)
 
