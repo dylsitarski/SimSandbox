@@ -28,6 +28,7 @@ pub mod filters;
 pub mod observers;
 pub mod probe;
 pub mod raster;
+pub mod reduce;
 pub mod render;
 pub mod run;
 pub mod session;

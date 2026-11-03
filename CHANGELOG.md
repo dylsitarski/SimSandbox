@@ -10,6 +10,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- `reduce` in an experiment (ADR 0067): named results, one per run, such as `"v_max": "max(plant/car.v)"` or `"settle": "first_time(abs(cruise.e) < 0.1)"` (also `final`, `mean`, `min`, `amplitude`, `period`); signal expressions read paths such as `plant/car.v` as one name.
 - Experiments over any model (ADR 0067): a `sample` on a model that runs in time, or uses models, now runs the whole model at each point, in parallel with the same results on any number of cores, keeping each output's final value (or each run, `keep: "series"`); points set parameters by path or declared name, or come from a CSV (`design: "file"`); `seeds: "per point"` and `replicates` for Monte Carlo. `check` describes it; Python `Results.series`.
 - Models that use models take inputs, probes and run files (ADR 0066 step 5): `run --inputs`, `--probe`, `--save-probes` and run files work on them, with keys and signals by full name (`slow/u.y`); Python `run(inputs=...)` too; a run file notices when a used file changed.
 - Array parameters and neighbours in typed equations (ADR 0069): `param m[k] [kg] = 1000` is a value per cell, each its own parameter `m[0]`, `m[1]`, …; `prev(v)` and `next(v)` read the neighbouring cells, beyond an end the edge's value (`edge v: k- = lead`). The Platoon written as one array block gives the same numbers as its three cars.

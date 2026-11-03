@@ -90,6 +90,13 @@
           "type": "integer",
           "minimum": 1,
           "description": "An experiment's runs of each point, each replicate with a seed mixed from its number."
+        },
+        "reduce": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "An experiment's named results, one value per run (ADR 0067), each one reduction of an expression over the run's signals by full name and t: final, mean (over time), min, max, amplitude (half of max − min), period (mean time between upward crossings of the mean), first_time(a < b) (also >, <=, >=; NaN if never). Given, the rows hold these instead of final values. E.g. {\"v_max\": \"max(plant/car.v)\", \"settle\": \"first_time(abs(cruise.e) < 0.1)\"}."
         }
       }
     },

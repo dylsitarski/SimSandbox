@@ -383,19 +383,32 @@ pub fn run_experiment(
         all.extend(c?);
     }
     let first = loaded_outputs(&loaded)?;
+    let reduced = reducers(&plan, &first)?;
     let mut index = vec![("sample".to_string(), Vec::new())];
     if plan.replicates > 1 {
         index.push(("replicate".to_string(), Vec::new()));
     }
     index.extend(plan.keys.iter().map(|k| (k.clone(), Vec::new())));
-    let mut outputs: Vec<Output> = first
-        .iter()
-        .map(|(_, _, name, shape)| Output {
-            name: name.clone(),
-            shape: *shape,
-            values: Vec::new(),
-        })
-        .collect();
+    // The rows hold the reductions if there are any, else final values.
+    let mut outputs: Vec<Output> = if reduced.is_empty() {
+        first
+            .iter()
+            .map(|(_, _, name, shape)| Output {
+                name: name.clone(),
+                shape: *shape,
+                values: Vec::new(),
+            })
+            .collect()
+    } else {
+        reduced
+            .iter()
+            .map(|(r, _)| Output {
+                name: r.name.clone(),
+                shape: Shape::Scalar,
+                values: Vec::new(),
+            })
+            .collect()
+    };
     let mut series = Vec::new();
     for (row, r) in all.into_iter().enumerate() {
         let (p, j) = (row / plan.replicates, row % plan.replicates);
@@ -444,16 +457,52 @@ pub fn experiment_report(text: &str, registry: &Registry) -> Value {
                 simsandbox_file::Seeds::Common => "common",
                 simsandbox_file::Seeds::PerPoint => "per point",
             },
+            "reduce": p.reduce.keys().collect::<Vec<_>>(),
         }),
         _ => Value::Null,
     }
 }
 
-/// One experiment run: each output's final value, and the whole run if
-/// kept.
+/// One experiment run: each output's final value (or each reduction's),
+/// and the whole run if kept.
 struct Row {
     finals: Vec<Vec<f64>>,
     series: Option<Results>,
+}
+
+/// The `reduce` formulas of `plan` parsed, with where each name they read
+/// is among `fixed` (output and element), `None` for `t`.
+type Reducers = Vec<(crate::reduce::Reducer, Vec<Option<(usize, usize)>>)>;
+
+fn reducers(plan: &simsandbox_file::Plan, fixed: &Outputs) -> Result<Reducers, String> {
+    let mut out = Vec::new();
+    for (name, text) in &plan.reduce {
+        let r =
+            crate::reduce::Reducer::parse(name, text).map_err(|e| format!("sample.reduce.{e}"))?;
+        let mut at = Vec::new();
+        for n in &r.names {
+            if n == "t" {
+                at.push(None);
+                continue;
+            }
+            // `block.port`, or one element `block.port[k]`.
+            let (base, k) = match n.strip_suffix(']').and_then(|s| s.rsplit_once('[')) {
+                Some((b, k)) => (
+                    b,
+                    k.parse::<usize>()
+                        .map_err(|_| format!("sample.reduce.{name}: '{n}'"))?,
+                ),
+                None => (n.as_str(), 0),
+            };
+            let o = fixed
+                .iter()
+                .position(|(_, _, full, shape)| full == base && k < shape.len().max(1))
+                .ok_or_else(|| format!("sample.reduce.{name}: no output '{n}'"))?;
+            at.push(Some((o, k)));
+        }
+        out.push((r, at));
+    }
+    Ok(out)
 }
 
 /// The fixed-shape outputs of a loaded model: block, port, full name and
@@ -509,6 +558,7 @@ fn run_rows(
         .collect();
     let ids = loaded.ids.clone();
     let mut params = loaded.params.clone();
+    let reduced = reducers(plan, &fixed)?;
     let mut sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
     let values = |sim: &Simulator| -> Vec<Vec<f64>> {
         fixed
@@ -545,16 +595,38 @@ fn run_rows(
             sim.restart(0.0).map_err(|e| e.to_string())?;
         }
         let keep = plan.keep == simsandbox_file::Keep::Series;
+        // Reductions need the run too, kept or not.
+        let record = keep || !reduced.is_empty();
         let mut t = vec![sim.time()];
-        let mut kept: Vec<Vec<f64>> = if keep { values(&sim) } else { Vec::new() };
+        let mut kept: Vec<Vec<f64>> = if record { values(&sim) } else { Vec::new() };
         advance(&mut sim, (dt, t_end, clocked), &mut apply, |sim| {
-            if keep {
+            if record {
                 t.push(sim.time());
                 for (k, v) in kept.iter_mut().zip(values(sim)) {
                     k.extend(v);
                 }
             }
         })?;
+        let finals = if reduced.is_empty() {
+            values(&sim)
+        } else {
+            reduced
+                .iter()
+                .map(|(r, at)| {
+                    let series: Vec<Vec<f64>> = at
+                        .iter()
+                        .map(|a| match a {
+                            None => t.clone(),
+                            Some((o, k)) => {
+                                let n = fixed[*o].3.len().max(1);
+                                kept[*o].iter().skip(*k).step_by(n).copied().collect()
+                            }
+                        })
+                        .collect();
+                    vec![r.eval(&t, &series)]
+                })
+                .collect()
+        };
         let series = keep.then(|| Results {
             index: vec![("t".to_string(), t)],
             outputs: fixed
@@ -572,10 +644,7 @@ fn run_rows(
             warnings: Vec::new(),
             series: Vec::new(),
         });
-        out.push(Row {
-            finals: values(&sim),
-            series,
-        });
+        out.push(Row { finals, series });
     }
     Ok(out)
 }

@@ -1514,6 +1514,66 @@ mod tests {
     }
 
     #[test]
+    fn an_experiment_reduces_each_run_to_named_values() {
+        use crate::run::{experiment_report, run_experiment};
+        let ex = |name: &str| -> Value {
+            serde_json::from_str(
+                EXAMPLES
+                    .iter()
+                    .find(|e| e.name.contains(name))
+                    .unwrap()
+                    .text,
+            )
+            .unwrap()
+        };
+        let r = registry();
+        let mut cruise = ex("Cruise control");
+        cruise["sample"] = json!({"design": "list", "params": [{"param": "cruise.kp"}],
+            "values": [[200.0], [800.0]], "keep": "series",
+            "reduce": {"v_max": "max(car.v)", "v_end": "final(car.v)",
+                       "settle": "first_time(abs(cruise.e) < 0.5)", "e_mean": "mean(cruise.e)"}});
+        let x = run_experiment(&cruise.to_string(), &r, Some(30.0), None, None).unwrap();
+        // The rows hold the reductions, in name order.
+        let names: Vec<&str> = x.outputs.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["e_mean", "settle", "v_end", "v_max"]);
+        for k in 0..2 {
+            let run = &x.series[k];
+            let v = series(run, "car.v");
+            let max = v.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            assert_eq!(series(&x, "v_max")[k], max);
+            assert_eq!(series(&x, "v_end")[k], *v.last().unwrap());
+            let e = series(run, "cruise.e");
+            let t = &run.index[0].1;
+            let first = (0..e.len())
+                .find(|&i| e[i].abs() < 0.5)
+                .map(|i| t[i])
+                .unwrap();
+            assert_eq!(series(&x, "settle")[k], first);
+        }
+        // A firmer controller settles sooner.
+        let settle = series(&x, "settle");
+        assert!(settle[1] < settle[0], "{settle:?}");
+        assert_eq!(
+            experiment_report(&cruise.to_string(), &r)["reduce"],
+            json!(["e_mean", "settle", "v_end", "v_max"])
+        );
+        // By path, in a model using models.
+        let mut platoon = ex("Platoon");
+        platoon["sample"] = json!({"design": "list", "params": [{"param": "kp"}], "values": [[300.0], [900.0]],
+            "reduce": {"lag": "max(abs(leader.v - car3/car.v))"}});
+        let p = run_experiment(&platoon.to_string(), &r, Some(20.0), None, None).unwrap();
+        assert_eq!(p.outputs.len(), 1);
+        assert!(series(&p, "lag").iter().all(|v| *v > 0.0));
+        // Refused with where and why.
+        cruise["sample"]["reduce"] = json!({"bad": "max(car.w)"});
+        let e = run_experiment(&cruise.to_string(), &r, Some(1.0), None, None).unwrap_err();
+        assert!(
+            e.contains("sample.reduce.bad") && e.contains("car.w"),
+            "{e}"
+        );
+    }
+
+    #[test]
     fn models_defined_in_a_file_are_found_used_and_refused() {
         let gain = |k: f64| {
             json!({"blocks": [

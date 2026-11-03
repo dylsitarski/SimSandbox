@@ -149,6 +149,7 @@ A `sample` section on a model that runs in time (or uses models) is an experimen
 - **Points:** the designs of sweeps (`grid`, `list`, `random`, `latin_hypercube`, `sobol`), or `"design": "file", "file": "points.csv"`, a CSV whose header names the parameters. A parameter is `block.param` by full name (`plant/car.m`) or a declared parameter (`kp`).
 - **Rows:** one per run, indexed by `sample` (and `replicate`) and the parameters, with each output's final value. `"keep": "series"` also keeps each whole run (JSON `series`; Python `results.series`).
 - **Seeds:** `"common"` (default) gives every point the run's seed; `"per point"` mixes in the row's number. `"replicates": n` runs each point n times, replicate j drawing alike at every point.
+- **Reductions:** `"reduce": {"v_max": "max(plant/car.v)", "settle": "first_time(abs(cruise.e) < 0.1)"}` gives each row these named values instead of final ones. The reductions are `final`, `mean` (over time), `min`, `max`, `amplitude` (half of max − min), `period` (mean time between upward crossings of the mean) and `first_time(a < b)` (also `>`, `<=`, `>=`; NaN if never), each over an expression of signals by full name and `t`.
 - `check` reports `experiment`. The app runs such a model in time; it has no view of the experiment yet.
 
 ## Recorder

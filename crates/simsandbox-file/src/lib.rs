@@ -293,6 +293,11 @@ pub struct Sampling {
     /// mixed from its replicate's number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicates: Option<usize>,
+    /// For a model that runs in time: named results, each one reduction
+    /// of an expression over the run (`"v_max": "max(plant/car.v)"`,
+    /// ADR 0067 step 3); given, the rows hold these instead of final values.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reduce: BTreeMap<String, String>,
 }
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
@@ -362,6 +367,8 @@ pub struct Plan {
     pub replicates: usize,
     pub keep: Keep,
     pub seeds: Seeds,
+    /// Named reductions of each run (ADR 0067 step 3).
+    pub reduce: BTreeMap<String, String>,
 }
 
 impl Sampling {
@@ -549,6 +556,7 @@ impl Sampling {
             replicates,
             keep: self.keep,
             seeds: self.seeds,
+            reduce: self.reduce.clone(),
         })
     }
 }

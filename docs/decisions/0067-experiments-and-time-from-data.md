@@ -114,3 +114,15 @@ The owner agreed (2026-11-02) to the proposal below, with its four defaults.
   - refusals;
   - Python.
 
+**Step 3 (2026-11-03): `reduce` formulas.**
+- `sample.reduce` names results, each **one reduction** of an expression over the run (`simsandbox_session::reduce::Reducer`):
+  - `final`, `min`, `max`;
+  - `mean`, over time by trapezoids;
+  - `amplitude`, half of max − min;
+  - `period`, the mean time between upward crossings of the mean, NaN with fewer than two;
+  - `first_time(a < b)`, also `>`, `<=`, `>=`: the first sample time the comparison holds, NaN if never.
+- **Expressions** are those of filters, over signals by full name and `t`. A comparison is read only by `first_time`, at its top level: the expression language itself has none. Composites (`max(x) - min(x)`) are not reductions: write two results.
+- **Paths in signal expressions:** `plant/car.v` is one name. A segment with no dot that is not `t`, followed by `/` and a name, continues a path. So `car.v/car.m` and `t/tau` stay divisions (this holds in expression filters too).
+- **Rows:** given `reduce`, each row holds its results (scalars, in name order) in place of final values; `keep: "series"` still keeps each run. Each run records what the reductions read, whether kept or not. A name that is no output is refused at `sample.reduce.NAME`. `check` lists the names under `experiment.reduce`.
+- **Tests:** each reduction against a sine's known values; results equal to the kept run's own maximum, final value and first crossing; a firmer controller settling sooner; a reduction by path in the Platoon; refusals; Python.
+

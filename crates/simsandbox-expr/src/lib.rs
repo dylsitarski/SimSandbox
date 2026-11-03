@@ -429,6 +429,25 @@ fn lex(src: &str, dotted: bool) -> Result<Vec<(Tok, usize)>, Error> {
             if dotted {
                 let starts_name =
                     |j: usize| chars.get(j).is_some_and(|c| c.is_alphabetic() || *c == '_');
+                // A path through used models (ADR 0066), `plant/car.v`: a
+                // use's name has no dot and is not `t`, so `car.v/car.m`
+                // and `t/tau` stay divisions.
+                loop {
+                    let segment: String = chars[start..i].iter().collect();
+                    let last = segment.rsplit('/').next().unwrap_or(&segment);
+                    if chars.get(i) == Some(&'/')
+                        && starts_name(i + 1)
+                        && segment != "t"
+                        && !last.contains('.')
+                    {
+                        i += 1;
+                        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                            i += 1;
+                        }
+                    } else {
+                        break;
+                    }
+                }
                 while chars.get(i) == Some(&'.') && starts_name(i + 1) {
                     i += 1;
                     while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {

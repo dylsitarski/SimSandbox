@@ -418,3 +418,13 @@ def test_an_experiment_runs_the_model_at_each_point():
     assert len(r.series) == 2 and r.series[1].rows == 101
     assert r["car.v"][1] == r.series[1]["car.v"][-1]
 
+
+def test_an_experiment_reduces_each_run():
+    cruise = ss.Model.example("Cruise control")
+    cruise.data["sample"] = {"design": "list", "params": [{"param": "cruise.kp"}],
+                             "values": [[200.0], [800.0]],
+                             "reduce": {"settle": "first_time(abs(cruise.e) < 0.5)", "v_max": "max(car.v)"}}
+    r = cruise.run(t_end=30.0)
+    assert list(r.outputs) == ["settle", "v_max"]
+    assert r["settle"][1] < r["settle"][0]
+
