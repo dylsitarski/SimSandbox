@@ -1661,12 +1661,21 @@ pub fn load_any(
 
 /// Whether no block has states. A study block counts as having some
 /// (ADR 0070): a model holding one is not swept by default.
+/// A use (ADR 0066) is stateless when every block it was merged into
+/// (`use/…`) is.
 fn stateless(blocks: &[BlockEntry], model: &Model, ids: &BTreeMap<String, BlockId>) -> bool {
+    let no_states = |id: &BlockId| model.block(*id).is_ok_and(|x| x.spec().states.is_empty());
     blocks.iter().all(|b| {
-        b.type_name != STUDY
-            && model
-                .block(ids[&b.name])
-                .is_ok_and(|x| x.spec().states.is_empty())
+        if b.type_name == STUDY {
+            false
+        } else if b.is_use() {
+            let prefix = format!("{}/", b.name);
+            ids.iter()
+                .filter(|(n, _)| n.starts_with(&prefix))
+                .all(|(_, id)| no_states(id))
+        } else {
+            ids.get(&b.name).is_some_and(no_states)
+        }
     })
 }
 

@@ -104,3 +104,10 @@ Later, when a model needs them: ids and structure versions on variable ports; ed
 - **The default sweep:** a model holding a study counts as having states, so it runs in time rather than being swept over its first parameter (the rule ADR 0070 step 2 removes).
 - **Tests:** a study of a definition and of a file gives the experiment's values bit for bit, once per change of inputs; a study re-runs when a scheduled input changes (halving times ln(2·x0)/k); a study of a study (ln 4/k at three rates); refusals; files studying themselves or each other refused; ten definitions deep, each studying the one before; the file in the run hash; Python.
 
+**Step 2 (2026-11-03): one meaning of `sample`.**
+- **Uses run as written:** a used file's `sample` is dropped as the composition is loaded, with a warning (`r: its model's sample is not run …`). The runner that swept used models at each delivery, their `swept` report and the errors about their links and clocks are removed.
+- **A file's `sample` is the study of its model**, read as such rather than rewritten: the file keeps its `sample` (the app's live sweep and its views of swept results are the study's view until step 5), and every headless run of it goes through `run::run_study`, sweeps included. Tests: the resonance's swept rows equal a study block's over it as a definition, bit for bit; the app's sweep of every swept example equals the headless rows bit for bit; a wrapper with its own `sample` around the resonance (which has one) runs the wrapper's, with the warning.
+- **Rows:** a model whose only runs are its studies (no states or tables, no clocks, no scheduled input, no `--t-end`/`--dt`) is evaluated once, and `run` writes a row per run, indexed by `run`, a column per study output; studies of different sizes are refused; other outputs become notes.
+- **`check`** reports a sweep under `experiment` too, with `each_run`: "in time" or "one evaluation".
+- **Found on the way:** the stateless test behind the default sweep looked blocks up by name and panicked on a use; it now looks at the blocks a use was merged into.
+

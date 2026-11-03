@@ -441,7 +441,7 @@ def test_a_study_block_runs_a_definition_at_each_point():
                   "run": {"dt": 1.0, "t_end": 1.0}})
     assert m.check()["ok"]
     r = m.run()
-    # One array per output, one value per run: the firmer controller settles sooner.
-    settle = r["s.settle"][-1]
+    # Nothing else runs in time: a row per run. The firmer controller settles sooner.
+    settle = list(r["s.settle"])
     assert len(settle) == 2 and settle[1] < settle[0]
-    assert list(r["s.cruise_kp"][-1]) == [200.0, 800.0]
+    assert list(r["s.cruise_kp"]) == [200.0, 800.0]

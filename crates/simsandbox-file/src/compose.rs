@@ -37,12 +37,6 @@ pub struct Domain {
 }
 
 impl Domain {
-    /// Whether it runs its sweep at each delivery: on new data, with a
-    /// `sample` section.
-    pub fn swept(&self) -> bool {
-        self.on_data && self.loaded.file.sample.is_some()
-    }
-
     /// Its name in results and reports: its path, or `.` at the top level.
     pub fn name(&self) -> &str {
         if self.path.is_empty() {
@@ -449,15 +443,6 @@ pub fn load_merged(
     folder: Option<&Path>,
 ) -> Result<Loaded, FileError> {
     let c = load_composition(text, registry, folder)?;
-    if let Some(d) = c.domains.iter().find(|d| d.swept()) {
-        return Err(invalid(
-            "blocks",
-            format!(
-                "{} sweeps at each delivery, which runs headless only for now",
-                d.name()
-            ),
-        ));
-    }
     let (file, _) = ModelFile::from_json(text)?;
     let folder = folder
         .map(Path::to_path_buf)
@@ -575,6 +560,13 @@ pub fn load_merged(
     let mut written = file;
     written.folder = folder;
     loaded.file = written;
+    // What the uses' own loading noticed, such as a used model's sample
+    // not run (ADR 0070).
+    for w in &c.warnings {
+        if !loaded.warnings.contains(w) {
+            loaded.warnings.push(w.clone());
+        }
+    }
     Ok(loaded)
 }
 
@@ -1421,8 +1413,17 @@ impl Loader<'_> {
         for o in &file.outputs {
             level.aliases.insert(o.name.clone(), o.from.clone());
         }
+        // A use runs its model as written (ADR 0070): a `sample` of its own
+        // is not run. The top level's is its experiment, run apart.
+        if file.sample.is_some() && !path.is_empty() {
+            self.warnings.push(format!(
+                "{path}: its model's `sample` is not run: a use runs its model as written; \
+                 put a study block around it to study it (ADR 0070)"
+            ));
+        }
         if !own.is_empty() {
             let mut f = file.clone();
+            f.sample = None;
             f.blocks = own.iter().map(|&k| file.blocks[k].clone()).collect();
             f.connections = inside
                 .iter()
@@ -1462,12 +1463,6 @@ impl Loader<'_> {
             // A model without states runs on new data, unless its use
             // gives it a clock: then it is evaluated at each step.
             let on_data = loaded.plan.is_some() && !clocked;
-            if loaded.plan.is_some() && clocked && loaded.file.sample.is_some() {
-                return Err(invalid(
-                    "sample",
-                    "a swept model runs on new data: give its use no clock",
-                ));
-            }
             for w in &loaded.warnings {
                 self.warnings.push(if path.is_empty() {
                     w.clone()
@@ -2001,15 +1996,6 @@ impl Loader<'_> {
                 format!("{at}.from"),
                 format!(
                     "probe '{probe_name}' records from several models; a probe records from one"
-                ),
-            ));
-        }
-        if self.domains[from].swept() {
-            return Err(invalid(
-                format!("{at}.from"),
-                format!(
-                    "{signal}: a swept model gives a curve at each delivery, not one value per \
-                     time; it cannot feed a link"
                 ),
             ));
         }

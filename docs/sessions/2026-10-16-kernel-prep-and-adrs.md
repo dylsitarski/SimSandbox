@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-03: ADR 0070 step 2: used models' samples dropped with a warning (swept-use runner removed); sweeps through `run_study`; `study_rows`; `experiment_report` with `each_run`; the stateless test fixed for uses; tests.
 - 2026-11-03: ADR 0070 written (studies as blocks, member families, concept list, README/vision/STATUS phase lines); step 1: `study.rs`, `BlockEntry::sample`/`study_definition`, `run_study` shared with experiments, schema; tests.
 - 2026-11-03: ADR 0067 step 3: `reduce` module (`Reducer`), `Sampling::reduce`/`Plan::reduce`, run_rows records what reductions read; path names in `parse_signals`; schema; tests.
 - 2026-11-03: ADR 0067 step 2 (headless): `Keep`, `Seeds`, `Design::File`, `Sampling::{file, keep, seeds, replicates}`, `Plan::{replicates, keep, seeds}`, declared keys, `read_points`; `ModelFile::experiment`, `Loaded::experiment`; `Simulator::reseed`; `run::run_experiment`, `advance`, `experiment_report`, `Results::series`; CLI and Python routing; schema; tests (bits equal across threads and to runs alone).

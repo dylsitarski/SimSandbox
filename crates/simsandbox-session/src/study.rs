@@ -492,22 +492,6 @@ mod tests {
                "reduce": {"v_max": "max(car.v)", "settle": "first_time(abs(cruise.e) < 0.5)"}})
     }
 
-    /// The last `n` values of output `name`: its value at the end.
-    fn last(r: &Results, name: &str) -> Vec<f64> {
-        let o = r
-            .outputs
-            .iter()
-            .find(|o| o.name == name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "no {name} in {:?}",
-                    r.outputs.iter().map(|o| &o.name).collect::<Vec<_>>()
-                )
-            });
-        let n = o.shape.len();
-        o.values[o.values.len() - n..].to_vec()
-    }
-
     fn value(r: &Results, name: &str) -> Vec<f64> {
         r.outputs
             .iter()
@@ -529,11 +513,15 @@ mod tests {
             "blocks": [{"name": "s", "type": "study", "settings": {"model": "cruise"}, "sample": sample()}],
             "run": {"dt": 0.5, "t_end": 1.0}});
         let y = run(&file.to_string(), &r, None, None).unwrap();
-        assert_eq!(last(&y, "s.cruise_kp"), [200.0, 800.0]);
-        assert_eq!(last(&y, "s.v_max"), value(&x, "v_max"));
-        assert_eq!(last(&y, "s.settle"), value(&x, "settle"));
-        // The same at every step: run once, kept while the inputs stay.
-        let all = value(&y, "s.settle");
+        // Nothing else runs in time: one evaluation, a row per run.
+        assert_eq!(y.index[0], ("run".to_string(), vec![0.0, 1.0]));
+        assert_eq!(value(&y, "s.cruise_kp"), [200.0, 800.0]);
+        assert_eq!(value(&y, "s.v_max"), value(&x, "v_max"));
+        assert_eq!(value(&y, "s.settle"), value(&x, "settle"));
+        // In time, the same at every step: run once, kept while the inputs
+        // stay.
+        let timed = run(&file.to_string(), &r, Some(1.0), Some(0.5)).unwrap();
+        let all = value(&timed, "s.settle");
         assert_eq!(all.len(), 3 * 2);
         assert_eq!(all[0..2], all[4..6]);
         // Units: a speed, and seconds.
@@ -548,7 +536,7 @@ mod tests {
             run(&by_file.to_string(), &r, None, None)
         })
         .unwrap();
-        assert_eq!(last(&z, "s.v_max"), value(&x, "v_max"));
+        assert_eq!(value(&z, "s.v_max"), value(&x, "v_max"));
         // The file studied is part of the run hash, as a data file is.
         let loaded = simsandbox_file::load_in(&by_file.to_string(), &r, Some(&examples)).unwrap();
         assert!(loaded.data.contains_key("s.file"), "{:?}", loaded.data);
@@ -568,6 +556,60 @@ mod tests {
     fn halves() -> Value {
         json!({"design": "list", "params": [{"param": "x.x0"}], "values": [[1.0], [2.0]],
                "reduce": {"half": "first_time(x.x < 0.5)"}})
+    }
+
+    #[test]
+    fn a_files_sample_is_the_study_of_its_model() {
+        // One meaning of `sample` (ADR 0070): the swept resonance and the
+        // study of it as a definition give the same rows, bit for bit.
+        let r = registry();
+        let text = include_str!("../../../examples/resonance.ssbx.json");
+        let swept = run(text, &r, None, None).unwrap();
+        let mut model: Value = serde_json::from_str(text).unwrap();
+        let sample = model["sample"].clone();
+        let o = model.as_object_mut().unwrap();
+        for k in ["format", "description", "controls", "sample"] {
+            o.remove(k);
+        }
+        let file = json!({"format": 1, "models": {"resonance": model},
+            "blocks": [{"name": "s", "type": "study", "settings": {"model": "resonance"}, "sample": sample}]});
+        let rows = run(&file.to_string(), &r, None, None).unwrap();
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let mut compared = 0;
+        for o in swept.outputs.iter().filter(|o| o.shape.len() == 1) {
+            let study = format!("s.{}", o.name.replace('.', "_"));
+            assert_eq!(bits(&value(&rows, &study)), bits(&o.values), "{}", o.name);
+            compared += 1;
+        }
+        assert!(compared >= 2);
+        assert_eq!(value(&rows, "s.spring_w"), swept.index[1].1);
+    }
+
+    #[test]
+    fn a_wrapper_studies_a_model_that_has_its_own_sample() {
+        // The case that showed `sample` meant two things (ADR 0070): the
+        // used resonance runs as written, the wrapper's sample over it.
+        let r = registry();
+        let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let wrapper = json!({"format": 1, "blocks": [{"name": "r", "file": "resonance.ssbx.json"}],
+            "sample": {"design": "list", "params": [{"param": "r/spring.w"}], "values": [[1.0], [2.0]]}});
+        let (rows, report) = simsandbox_core::registry::in_folder(Some(&examples), || {
+            (
+                run(&wrapper.to_string(), &r, None, None).unwrap(),
+                crate::describe::check(&wrapper.to_string(), &r),
+            )
+        });
+        assert_eq!(rows.index[1], ("r/spring.w".to_string(), vec![1.0, 2.0]));
+        assert!(
+            rows.warnings
+                .iter()
+                .any(|w| w.contains("r: its model's `sample` is not run")),
+            "{:?}",
+            rows.warnings
+        );
+        assert_eq!(report["ok"], true, "{report}");
+        assert_eq!(report["experiment"]["runs"], 2);
+        assert_eq!(report["experiment"]["each_run"], "one evaluation");
     }
 
     #[test]
@@ -607,7 +649,7 @@ mod tests {
                            "reduce": {"h2": "final(inner.half[1])"}}}],
             "run": {"dt": 1.0, "t_end": 1.0}});
         let y = run(&file.to_string(), &r, None, None).unwrap();
-        let h2 = last(&y, "outer.h2");
+        let h2 = value(&y, "outer.h2");
         let ln4 = 2.0 * std::f64::consts::LN_2;
         for (h, k) in h2.iter().zip([1.0, 2.0, 4.0]) {
             assert!((h - ln4 / k).abs() <= 0.0011, "{h} against {}", ln4 / k);
@@ -670,7 +712,7 @@ mod tests {
             "run": {"dt": 1.0, "t_end": 1.0}});
         let y = run(&file.to_string(), &r, None, None).unwrap();
         // l1's first run doubles k = 1; every level above keeps it.
-        assert_eq!(last(&y, "top.r"), [2.0]);
+        assert_eq!(value(&y, "top.r"), [2.0]);
     }
 
     #[test]

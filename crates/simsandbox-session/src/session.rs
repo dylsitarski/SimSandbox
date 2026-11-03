@@ -3148,6 +3148,36 @@ mod tests {
         s.signals().values(r)
     }
 
+    #[test]
+    fn the_app_sweeps_as_the_headless_study_runs() {
+        // One meaning of `sample` (ADR 0070): the window's sweep of every
+        // swept example gives the headless study's values bit for bit.
+        let r = registry();
+        let mut swept = 0;
+        for e in EXAMPLES {
+            let Ok(loaded) = simsandbox_file::load(e.text, &r) else {
+                continue;
+            };
+            if loaded.plan.is_none() {
+                continue;
+            }
+            swept += 1;
+            let session = Session::load(e.name, e.text, &r).unwrap();
+            let rows = crate::run::run(e.text, &r, None, None).unwrap();
+            for o in rows.outputs.iter().filter(|o| o.shape.len() == 1) {
+                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(
+                    bits(&values(&session, &o.name)),
+                    bits(&o.values),
+                    "{}: {}",
+                    e.name,
+                    o.name
+                );
+            }
+        }
+        assert!(swept >= 3, "{swept}");
+    }
+
     /// A grid over the given `(key, range, points)`.
     fn grid_of(params: &[(&str, [f64; 2], usize)]) -> Sampling {
         Sampling {

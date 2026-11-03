@@ -181,8 +181,32 @@ pub fn run_with(
         }
         return run_experiment(text, registry, t_end, dt, None);
     }
-    if loaded.plan.is_some() && (dt.is_some() || t_end.is_some()) {
-        return Err("the end time and step do not apply to a swept model".into());
+    // A model with no states, swept (ADR 0027, ADR 0028): the study of a
+    // model with nothing in time, each point one evaluation (ADR 0070).
+    if let Some(plan) = loaded.plan.clone() {
+        if dt.is_some() || t_end.is_some() {
+            return Err("the end time and step do not apply to a swept model".into());
+        }
+        if !(loaded.file.run.inputs.is_empty() && track.is_empty()) {
+            return Err("a swept model is not run in time, so it takes no inputs".into());
+        }
+        let study = Study {
+            plan,
+            timeless: true,
+            set: Vec::new(),
+            t_end: None,
+            dt: None,
+        };
+        return run_study(text, registry, &loaded, &study, None);
+    }
+    // Nothing in time but studies: one evaluation, a row per run.
+    let untimed = dt.is_none()
+        && t_end.is_none()
+        && track.is_empty()
+        && loaded.file.run.inputs.is_empty()
+        && loaded.model.clocks().0.is_empty();
+    if untimed && only_studies_in_time(&loaded) {
+        return study_rows(loaded);
     }
     let dt = dt.unwrap_or(loaded.file.run.dt);
     let t_end = t_end.or(loaded.file.run.t_end).unwrap_or(DEFAULT_T_END);
@@ -197,9 +221,6 @@ pub fn run_with(
             value: c.to,
         })
         .collect();
-    if loaded.plan.is_some() && !(schedule.is_empty() && track.is_empty()) {
-        return Err("a swept model is not run in time, so it takes no inputs".into());
-    }
     let mut events = Track::new(schedule, track);
     let mut plan = loaded.params.clone();
 
@@ -253,54 +274,105 @@ pub fn run_with(
             p.frames.push(sim.output(*id, port).unwrap_or(&[]).to_vec());
         }
     };
-    if let Some(plan) = &loaded.plan {
-        let targets: Vec<_> = plan
-            .keys
-            .iter()
-            .map(|k| {
-                let (block, param) = k.split_once('.').expect("plan keys are block.param");
-                (loaded.ids[block], param)
-            })
-            .collect();
-        let mut index = vec![("sample".to_string(), Vec::new())];
-        index.extend(plan.keys.iter().map(|k| (k.clone(), Vec::new())));
-        for (k, point) in plan.points.iter().enumerate() {
-            for (&(id, param), &v) in targets.iter().zip(point) {
-                sim.set_param(id, param, v).map_err(|e| e.to_string())?;
-            }
-            sim.restart(0.0).map_err(|e| e.to_string())?;
-            index[0].1.push(k as f64);
-            for (column, &v) in index[1..].iter_mut().zip(point) {
-                column.1.push(v);
-            }
-            record(&mut r, &sim);
+    let ids = &loaded.ids;
+    let mut apply = |sim: &mut Simulator| -> Result<bool, String> {
+        let now = sim.time();
+        let mut any = false;
+        while let Some(e) = events.take_due(now, 1e-9 * dt.max(now.abs())) {
+            set_key(sim, &mut plan, ids, &e.key, e.value)
+                .map_err(|err| format!("input at t = {}: {err}", e.t))?;
+            any = true;
         }
-        r.index = index;
-    } else {
-        let ids = &loaded.ids;
-        let mut apply = |sim: &mut Simulator| -> Result<bool, String> {
-            let now = sim.time();
-            let mut any = false;
-            while let Some(e) = events.take_due(now, 1e-9 * dt.max(now.abs())) {
-                set_key(sim, &mut plan, ids, &e.key, e.value)
-                    .map_err(|err| format!("input at t = {}: {err}", e.t))?;
-                any = true;
-            }
-            Ok(any)
-        };
-        // Input at t = 0 sets where the run starts.
-        if apply(&mut sim)? {
-            sim.restart(0.0).map_err(|e| e.to_string())?;
-        }
-        let mut t = vec![sim.time()];
-        record(&mut r, &sim);
-        advance(&mut sim, (dt, t_end, clocked), &mut apply, |sim| {
-            t.push(sim.time());
-            record(&mut r, sim);
-        })?;
-        r.index = vec![("t".to_string(), t)];
+        Ok(any)
+    };
+    // Input at t = 0 sets where the run starts.
+    if apply(&mut sim)? {
+        sim.restart(0.0).map_err(|e| e.to_string())?;
     }
+    let mut t = vec![sim.time()];
+    record(&mut r, &sim);
+    advance(&mut sim, (dt, t_end, clocked), &mut apply, |sim| {
+        t.push(sim.time());
+        record(&mut r, sim);
+    })?;
+    r.index = vec![("t".to_string(), t)];
     Ok(r)
+}
+
+/// Whether a model has studies and nothing else that runs in time (no
+/// states or tables anywhere): a separate experiment file, say.
+fn only_studies_in_time(loaded: &simsandbox_file::Loaded) -> bool {
+    let mut studies = 0;
+    for b in &loaded.flat.blocks {
+        let Some(block) = loaded
+            .ids
+            .get(&b.name)
+            .and_then(|id| loaded.model.block(*id).ok())
+        else {
+            return false;
+        };
+        if !(block.spec().states.is_empty() && block.spec().tables.is_empty()) {
+            return false;
+        }
+        studies += usize::from(b.type_name == crate::study::STUDY);
+    }
+    studies > 0
+}
+
+/// Evaluate a model whose only runs are its studies' (ADR 0070 step 2)
+/// once, and lay out their arrays as rows: indexed by `run`, a column per
+/// study output (`kp.v_max`). Every study must make the same number of
+/// runs. Other outputs, evaluated once, are notes.
+fn study_rows(loaded: simsandbox_file::Loaded) -> Result<Results, String> {
+    let mut columns = Vec::new();
+    let mut others = Vec::new();
+    for entry in &loaded.flat.blocks {
+        let id = loaded.ids[&entry.name];
+        let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
+        for port in spec.outputs() {
+            let name = format!("{}.{}", entry.name, port.name);
+            if entry.type_name == crate::study::STUDY {
+                columns.push((id, port.name.clone(), name, port.shape.len()));
+            } else if !port.shape.is_variable() {
+                others.push((id, port.name.clone(), name));
+            }
+        }
+    }
+    let runs = columns[0].3;
+    if let Some((_, _, name, n)) = columns.iter().find(|c| c.3 != runs) {
+        return Err(format!(
+            "{name} has {n} runs and {} has {runs}: studies written as rows make as many runs \
+             each; run them from separate files",
+            columns[0].2
+        ));
+    }
+    let warnings = loaded.warnings.clone();
+    let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
+    let mut notes = crate::session::loop_notes(&sim);
+    for (id, port, name) in &others {
+        let v = sim.output(*id, port).unwrap_or(&[]);
+        let v = match v {
+            [one] => one.to_string(),
+            many => format!("{many:?}"),
+        };
+        notes.push(format!("{name} = {v} (evaluated once)"));
+    }
+    Ok(Results {
+        index: vec![("run".to_string(), (0..runs).map(|k| k as f64).collect())],
+        outputs: columns
+            .iter()
+            .map(|(id, port, name, _)| Output {
+                name: name.clone(),
+                shape: Shape::Scalar,
+                values: sim.output(*id, port).unwrap_or(&[]).to_vec(),
+            })
+            .collect(),
+        populations: Vec::new(),
+        labels: sim.labels(),
+        notes,
+        warnings,
+        series: Vec::new(),
+    })
 }
 
 /// Step `sim` to `t_end`: by `dt`, or from instant to instant of its
@@ -477,22 +549,36 @@ pub(crate) fn run_study(
             series.push(s);
         }
     }
+    // As fast and accurate as the model's methods.
+    let labels = MethodLabels::combine(loaded.flat.blocks.iter().filter_map(|b| {
+        let id = loaded.ids.get(&b.name)?;
+        Some(loaded.model.block(*id).ok()?.method().labels)
+    }));
     Ok(Results {
         index,
         outputs,
         populations: Vec::new(),
-        labels: None,
+        labels,
         notes: Vec::new(),
         warnings: loaded.warnings.clone(),
         series,
     })
 }
 
-/// What `check` says of a model's experiment (ADR 0067), `null` if it has
-/// none: its parameters, points, runs, what each keeps and its seeds.
+/// What `check` says of a model's `sample` (ADR 0067, ADR 0070), `null`
+/// if it has none: its parameters, points, runs, what each keeps and its
+/// seeds, and whether each run is in time or one evaluation.
 pub fn experiment_report(text: &str, registry: &Registry) -> Value {
-    match simsandbox_file::load_any(text, registry, None).map(|l| l.experiment) {
-        Ok(Some(p)) => json!({
+    let plan = simsandbox_file::load_any(text, registry, None).map(|l| {
+        let timeless = l.experiment.is_none();
+        let sampled = l.file.sample.is_some();
+        l.experiment
+            .or(l.plan.filter(|_| sampled))
+            .map(|p| (p, timeless))
+    });
+    match plan {
+        Ok(Some((p, timeless))) => json!({
+            "each_run": if timeless { "one evaluation" } else { "in time" },
             "params": p.keys,
             "points": p.points.len(),
             "replicates": p.replicates,

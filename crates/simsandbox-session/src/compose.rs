@@ -90,7 +90,6 @@ pub fn check(text: &str, registry: &Registry) -> Value {
                 "ticks_per_step": steps,
                 "on_new_data": d.on_data,
                 "declared_outputs": d.declared.iter().map(|o| json!({"name": o.name, "from": o.from})).collect::<Vec<_>>(),
-                "swept": d.swept(),
                 "outputs": outputs,
                 "inputs": inputs,
             })
@@ -188,13 +187,6 @@ struct Running {
     /// evaluated, and when last.
     on_data: bool,
     evaluations: u64,
-    /// For one that sweeps at each delivery: its sweep, and what indexes
-    /// the latest one's rows.
-    sweep: Option<simsandbox_file::Plan>,
-    sweep_index: Vec<(String, Vec<f64>)>,
-    swept_at: Option<f64>,
-    /// Its path and a slash, prefixing its names.
-    prefix: String,
 }
 
 impl Running {
@@ -224,63 +216,12 @@ impl Running {
         Ok(any)
     }
 
-    /// Evaluate a model that runs on new data at `t`: once, recorded, or
-    /// its whole sweep, which replaces the last.
+    /// Evaluate a model that runs on new data at `t`, recorded.
     fn evaluate(&mut self, t: f64) -> Result<(), String> {
         self.apply(t)?;
         self.evaluations += 1;
-        let Some(plan) = self.sweep.clone() else {
-            self.sim.restart(t).map_err(|e| e.to_string())?;
-            self.record();
-            return Ok(());
-        };
-        for o in &mut self.results.outputs {
-            o.values.clear();
-        }
-        for p in &mut self.results.populations {
-            p.frames.clear();
-        }
-        self.times.clear();
-        let mut index = vec![("sample".to_string(), Vec::new())];
-        index.extend(
-            plan.keys
-                .iter()
-                .map(|k| (format!("{}{k}", self.prefix), Vec::new())),
-        );
-        let held: Vec<(simsandbox_core::graph::BlockId, String, f64)> = plan
-            .keys
-            .iter()
-            .map(|k| {
-                let (block, param) = k.split_once('.').expect("plan keys are block.param");
-                let id = self.ids[block];
-                (
-                    id,
-                    param.to_string(),
-                    self.sim.param(id, param).unwrap_or(f64::NAN),
-                )
-            })
-            .collect();
-        for (k, point) in plan.points.iter().enumerate() {
-            for ((id, param, _), &v) in held.iter().zip(point) {
-                self.sim
-                    .set_param(*id, param, v)
-                    .map_err(|e| e.to_string())?;
-            }
-            self.sim.restart(t).map_err(|e| e.to_string())?;
-            index[0].1.push(k as f64);
-            for (column, &v) in index[1..].iter_mut().zip(point) {
-                column.1.push(v);
-            }
-            self.record();
-        }
-        // The swept parameters go back to their values.
-        for (id, param, v) in &held {
-            self.sim
-                .set_param(*id, param, *v)
-                .map_err(|e| e.to_string())?;
-        }
-        self.sweep_index = index;
-        self.swept_at = Some(t);
+        self.sim.restart(t).map_err(|e| e.to_string())?;
+        self.record();
         Ok(())
     }
 }
@@ -365,16 +306,7 @@ pub fn run_composition(
             .iter()
             .zip(runs)
             .map(|(d, mut r)| {
-                r.results.index = if r.sweep.is_some() {
-                    if let Some(t) = r.swept_at {
-                        r.results
-                            .notes
-                            .push(format!("the latest sweep, evaluated at t = {t}"));
-                    }
-                    std::mem::take(&mut r.sweep_index)
-                } else {
-                    vec![("t".into(), std::mem::take(&mut r.times))]
-                };
+                r.results.index = vec![("t".into(), std::mem::take(&mut r.times))];
                 (d.name().to_string(), r.results)
             })
             .collect(),
@@ -405,11 +337,6 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
                 c.ticks.steps_within(i, t_end).map_err(|e| e.to_string())?,
             ),
             None => (0, 0),
-        };
-        let sweep = if u.swept() {
-            u.loaded.plan.clone()
-        } else {
-            None
         };
         let prefix = if u.path.is_empty() {
             String::new()
@@ -473,10 +400,6 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
             taken: 0,
             on_data,
             evaluations: 0,
-            sweep,
-            sweep_index: Vec::new(),
-            swept_at: None,
-            prefix: prefix.clone(),
         });
     }
     Ok(runs)
@@ -546,7 +469,7 @@ fn point(
             };
             // Evaluated again with what arrived: its record for this
             // instant is the new one.
-            if evaluated[u].is_some() && runs[u].sweep.is_none() {
+            if evaluated[u].is_some() {
                 let r = &mut runs[u];
                 r.times.pop();
                 for o in &mut r.results.outputs {
@@ -2474,45 +2397,53 @@ mod tests {
     }
 
     #[test]
-    fn a_swept_model_runs_its_sweep_at_each_delivery() {
+    fn a_use_runs_its_model_as_written_and_a_study_sweeps_it() {
         let dir = temp_dir("on-data-sweep");
         on_data_files(&dir);
         let mut double: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("double.ssbx.json")).unwrap())
                 .unwrap();
-        double["sample"] =
+        let sample =
             json!({"design": "grid", "params": [{"param": "f.k", "range": [1, 3], "points": 3}]});
+        double["sample"] = sample.clone();
         write(&dir, "sweep.ssbx.json", &double);
+        // A use of it runs it plain (k = 2), with a warning (ADR 0070).
         let top = json!({"format": 1, "run": {"t_end": 1.2},
             "blocks": [use_of("a", "a.ssbx.json"), use_of("s", "sweep.ssbx.json")],
             "connections": [{"from": "probe:p.a/count.x", "to": "s/u"}],
             "controls": {"probes": [{"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.6}}]}});
         let composed = run_in(&dir, &top);
-        let s = composed.model("s").unwrap();
-        // The latest sweep: at 1.2 s, over k = 1, 2, 3.
         let x = counted(12);
-        assert_eq!(s.index[1], ("s/f.k".to_string(), vec![1.0, 2.0, 3.0]));
-        let y: Vec<f64> = [1.0, 2.0, 3.0].iter().map(|k| k * x[12]).collect();
-        assert_eq!(bits(series(s, "s/f.y")), bits(&y));
+        let s = composed.model("s").unwrap();
+        assert_eq!(series(s, "s/f.y").last(), Some(&(2.0 * x[12])));
         assert!(
-            s.notes.iter().any(|n| n.contains("latest sweep")),
+            composed
+                .warnings
+                .iter()
+                .any(|w| w.contains("s: its model's `sample` is not run")),
             "{:?}",
-            s.notes
+            composed.warnings
         );
-        let report = check_in(&dir, &top);
-        assert_eq!(report["models"][1]["swept"], true);
-        // A sweep feeds no link, and runs on new data only.
+        // It feeds links like any model.
         let mut feeding = top.clone();
-        feeding["connections"] = json!([{"from": "probe:q.s/f.y", "to": "a/w"}]);
-        feeding["controls"]["probes"] = json!([{"name": "q", "record": ["s/f.y"]}]);
-        assert!(check_in(&dir, &feeding)["errors"][0]
-            .to_string()
-            .contains("cannot feed a link"));
-        let mut clocked = top.clone();
-        clocked["blocks"][1]["clock"] = json!({"dt": 0.1});
-        assert!(check_in(&dir, &clocked)["errors"][0]
-            .to_string()
-            .contains("give its use no clock"));
+        feeding["blocks"][0] = use_of("a", "a.ssbx.json");
+        feeding["controls"]["probes"] = json!([
+            {"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.6}},
+            {"name": "q", "record": ["s/f.y"]}]);
+        assert_eq!(check_in(&dir, &feeding)["ok"], true);
+        // A study block sweeps it: over k = 1, 2, 3 at the latest delivery.
+        let study = json!({"format": 1, "run": {"t_end": 1.2},
+            "blocks": [use_of("a", "a.ssbx.json"),
+                {"name": "x", "type": "input.value", "settings": {"unit": "m"}},
+                {"name": "s", "type": "study", "settings": {"file": "sweep.ssbx.json"}, "sample": sample}],
+            "connections": [{"from": "probe:p.a/count.x", "to": "x"}, {"from": "x.y", "to": "s.u"}],
+            "controls": {"probes": [{"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.6}}]}});
+        let composed = run_in(&dir, &study);
+        let top = composed.model(".").unwrap();
+        let y = series(top, "s.f_y");
+        let expect: Vec<f64> = [1.0, 2.0, 3.0].iter().map(|k| k * x[12]).collect();
+        assert_eq!(bits(&y[y.len() - 3..]), bits(&expect));
+        assert_eq!(series(top, "s.f_k")[..3], [1.0, 2.0, 3.0]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
