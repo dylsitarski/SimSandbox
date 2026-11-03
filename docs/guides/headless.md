@@ -167,7 +167,7 @@ A **study** is a block that runs a model at each point of its own `sample` and o
 - **Inputs:** the model's input blocks (`input.value`), one scalar input each, named as the block; every point takes their values. An input block the sample sweeps is not an input.
 - **Outputs:** arrays with one value per run (points times replicates): each swept parameter (`cruise.kp` becomes `kp.cruise_kp`), then each `reduce` result, or without `reduce` each scalar output's final value (`car.v` becomes `car_v`). Units: a parameter's or output's own; `period` and `first_time` in seconds; a reduction of one signal in its unit; other expressions dimensionless.
 - **When it runs:** whenever its inputs change, each point from the model's start to the model's `t_end` (one evaluation if the model has nothing in time). The results are kept until the inputs change. Only the outermost study uses several cores; the results never depend on how many.
-- **Studies of studies:** a definition holding a study can itself be studied: the outer study's points set the inner one's inputs through input blocks, and its `reduce` reads one run of the inner arrays by element (`final(inner.half[1])`).
+- **Studies of studies:** studies nest to any depth; a model file whose studies lead back to itself is refused, naming the chain. A definition holding a study can itself be studied: the outer study's points set the inner one's inputs through input blocks, and its `reduce` reads one run of the inner arrays by element (`final(inner.half[1])`).
 - A model holding a study runs in time; it is not swept by default. The app runs such models; it has no view of a study's arrays yet, and formulas cannot yet read them (ADR 0070 step 3).
 
 ## Recorder

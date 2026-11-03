@@ -31,12 +31,11 @@ pub use simsandbox_file::STUDY;
 /// The one method: every run as its model's methods compute it.
 pub const RUNS: &str = "runs";
 
-/// How deep studies may nest: deeper is taken for definitions studying
-/// each other.
-const MAX_DEPTH: usize = 8;
-
 thread_local! {
-    static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The models whose studies are being built on this thread, outermost
+    /// first: each one's folder and text, and a name for messages.
+    static CHAIN: std::cell::RefCell<Vec<(Option<PathBuf>, String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Register the study type.
@@ -79,6 +78,8 @@ pub struct StudyBlock {
     /// The model with the study's sample, and the folder it reads from.
     text: String,
     folder: Option<PathBuf>,
+    /// Its model's name for messages: a file's path or a definition's name.
+    label: String,
     plan: simsandbox_file::Plan,
     timeless: bool,
     /// The input block keys set from the inputs (`u.y`).
@@ -129,14 +130,21 @@ impl StudyBlock {
         }
         // Its model: a definition's text (found by the loader from
         // `settings.model`), or a file's.
-        let (model, folder) = match (defined, c.file("file")) {
+        let (model, folder, label) = match (defined, c.file("file")) {
             (Some(_), Some(_)) => {
                 return Err(SimError::InvalidSetting {
                     setting: "settings.file".into(),
                     reason: "a study names a model or a file, not both".into(),
                 })
             }
-            (Some(text), None) => (text.clone(), c.folder.clone()),
+            (Some(text), None) => (
+                text.clone(),
+                c.folder.clone(),
+                format!(
+                    "model '{}'",
+                    c.settings.get("model").map_or("", String::as_str)
+                ),
+            ),
             (None, Some(path)) => {
                 let path = path?;
                 let bytes = simsandbox_file::compose::read_model(&path).map_err(|e| {
@@ -149,7 +157,8 @@ impl StudyBlock {
                     setting: "settings.file".into(),
                     reason: format!("{}: not a text file", path.display()),
                 })?;
-                (text, path.parent().map(Into::into))
+                let label = path.display().to_string();
+                (text, path.parent().map(Into::into), label)
             }
             (None, None) => {
                 return Err(SimError::InvalidSetting {
@@ -169,7 +178,7 @@ impl StudyBlock {
             .ok_or_else(|| invalid("its model is not an object"))?
             .insert("sample".into(), sample);
         let text = v.to_string();
-        let loaded = load(&text, folder.as_deref())?;
+        let loaded = load(&text, folder.as_deref(), &label)?;
         let plan = loaded
             .experiment
             .clone()
@@ -287,6 +296,7 @@ impl StudyBlock {
             },
             text,
             folder,
+            label,
             plan,
             timeless,
             keys,
@@ -318,19 +328,17 @@ impl StudyBlock {
             dt: None,
         };
         let folder = self.folder.as_deref();
-        let results = nested(|| {
-            let loaded = load(&self.text, folder)?;
-            simsandbox_core::registry::in_folder(folder, || {
-                run_study(
-                    &self.text,
-                    &crate::examples::registry(),
-                    &loaded,
-                    &study,
-                    None,
-                )
-            })
-            .map_err(|e| SimError::Block(format!("{}: {e}", self.spec.name)))
-        })?;
+        let loaded = load(&self.text, folder, &self.label)?;
+        let results = simsandbox_core::registry::in_folder(folder, || {
+            run_study(
+                &self.text,
+                &crate::examples::registry(),
+                &loaded,
+                &study,
+                None,
+            )
+        })
+        .map_err(|e| SimError::Block(format!("{}: {e}", self.spec.name)))?;
         let mut values = Vec::with_capacity(self.from.len() * self.runs);
         for f in &self.from {
             let column = match f {
@@ -349,28 +357,40 @@ impl StudyBlock {
     }
 }
 
-/// Run `f` one study deeper, refusing studies nested past [`MAX_DEPTH`].
-fn nested<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let depth = DEPTH.with(std::cell::Cell::get);
-    if depth >= MAX_DEPTH {
-        return Err(invalid(format!(
-            "studies nest more than {MAX_DEPTH} deep: does a model study itself?"
-        )));
+/// Load a study's model (`label` in messages), refusing a loop. Loading
+/// builds the model's own studies, which load theirs, on this thread, so a
+/// loop shows as the same text from the same folder twice in the chain;
+/// the same text builds the same studies, so a repeat is always a loop.
+/// (Definitions cannot loop: a study of one sees every definition in scope
+/// but itself.)
+fn load(
+    text: &str,
+    folder: Option<&std::path::Path>,
+    label: &str,
+) -> Result<simsandbox_file::Loaded> {
+    let folder_buf = folder.map(PathBuf::from);
+    let looped = CHAIN.with(|c| {
+        let c = c.borrow();
+        let at = c
+            .iter()
+            .position(|(f, t, _)| *f == folder_buf && t == text)?;
+        let mut names: Vec<&str> = c[at..].iter().map(|(_, _, n)| n.as_str()).collect();
+        names.push(label);
+        Some(names.join(" → "))
+    });
+    if let Some(chain) = looped {
+        return Err(invalid(format!("a study studies itself: {chain}")));
     }
-    DEPTH.with(|d| d.set(depth + 1));
-    let r = f();
-    DEPTH.with(|d| d.set(depth));
-    r
-}
-
-/// Load a study's model, one study deeper.
-fn load(text: &str, folder: Option<&std::path::Path>) -> Result<simsandbox_file::Loaded> {
-    nested(|| {
-        simsandbox_core::registry::in_folder(folder, || {
-            simsandbox_file::load_any(text, &crate::examples::registry(), folder)
-        })
-        .map_err(|e| invalid(format!("its model: {e}")))
+    CHAIN.with(|c| {
+        c.borrow_mut()
+            .push((folder_buf, text.to_string(), label.to_string()))
+    });
+    let r = simsandbox_core::registry::in_folder(folder, || {
+        simsandbox_file::load_any(text, &crate::examples::registry(), folder)
     })
+    .map_err(|e| invalid(format!("its model: {e}")));
+    CHAIN.with(|c| c.borrow_mut().pop());
+    r
 }
 
 /// The unit of parameter `param` of flat block `block`, dimensionless if
@@ -592,6 +612,65 @@ mod tests {
         for (h, k) in h2.iter().zip([1.0, 2.0, 4.0]) {
             assert!((h - ln4 / k).abs() <= 0.0011, "{h} against {}", ln4 / k);
         }
+    }
+
+    #[test]
+    fn files_that_study_each_other_are_refused_and_deep_chains_run() {
+        let r = registry();
+        let dir =
+            std::env::temp_dir().join(format!("simsandbox-study-loop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let studying = |file: &str| {
+            json!({"format": 1, "blocks": [
+                {"name": "k", "type": "input.value"},
+                {"name": "s", "type": "study", "settings": {"file": file},
+                 "sample": {"design": "list", "params": [{"param": "k.y"}], "values": [[1.0]]}}]})
+            .to_string()
+        };
+        std::fs::write(dir.join("me.ssbx.json"), studying("me.ssbx.json")).unwrap();
+        std::fs::write(dir.join("a.ssbx.json"), studying("b.ssbx.json")).unwrap();
+        std::fs::write(dir.join("b.ssbx.json"), studying("a.ssbx.json")).unwrap();
+        for (file, chain) in [("me", "me.ssbx.json → "), ("a", "b.ssbx.json → ")] {
+            let text = std::fs::read_to_string(dir.join(format!("{file}.ssbx.json"))).unwrap();
+            let e = simsandbox_file::load_in(&text, &r, Some(&dir))
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(
+                e.contains("a study studies itself") && e.contains(chain),
+                "{e}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        // Ten definitions, each studying the one before: deep, no loop.
+        let mut models = serde_json::Map::new();
+        models.insert(
+            "l0".into(),
+            json!({"blocks": [
+            {"name": "k", "type": "input.value"},
+            {"name": "f", "type": "eq.equations", "equations": ["input k", "y = 2*k"]}],
+            "connections": [{"from": "k.y", "to": "f.k"}]}),
+        );
+        for n in 1..10 {
+            let inner = if n == 1 {
+                "final(f.y)"
+            } else {
+                "final(s.r[0])"
+            };
+            models.insert(format!("l{n}"), json!({"blocks": [
+                {"name": "k", "type": "input.value"},
+                {"name": "s", "type": "study", "settings": {"model": format!("l{}", n - 1)},
+                 "sample": {"design": "list", "params": [{"param": "k.y"}], "values": [[1.0], [2.0]],
+                            "reduce": {"r": inner}}}]}));
+        }
+        let file = json!({"format": 1, "models": models,
+            "blocks": [{"name": "top", "type": "study", "settings": {"model": "l9"},
+                "sample": {"design": "list", "params": [{"param": "k.y"}], "values": [[1.0]],
+                           "reduce": {"r": "final(s.r[0])"}}}],
+            "run": {"dt": 1.0, "t_end": 1.0}});
+        let y = run(&file.to_string(), &r, None, None).unwrap();
+        // l1's first run doubles k = 1; every level above keeps it.
+        assert_eq!(last(&y, "top.r"), [2.0]);
     }
 
     #[test]
