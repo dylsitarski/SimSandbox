@@ -408,9 +408,7 @@ mod tests {
         let mut sampling = Sampling {
             design: Design::Grid,
             params: vec![param("spring.w"), param("spring.c")],
-            count: None,
-            seed: None,
-            values: Vec::new(),
+            ..Default::default()
         };
         s.set_sampling(sampling.clone()).unwrap();
         // Two on a grid: a heat map over both.

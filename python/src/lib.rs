@@ -145,6 +145,12 @@ fn results<'py>(
     )?;
     d.set_item("notes", r.notes.clone())?;
     d.set_item("warnings", r.warnings.clone())?;
+    // An experiment's whole runs (ADR 0067).
+    let series = PyList::empty(py);
+    for s in &r.series {
+        series.append(results(py, s)?)?;
+    }
+    d.set_item("series", series)?;
     Ok(d)
 }
 

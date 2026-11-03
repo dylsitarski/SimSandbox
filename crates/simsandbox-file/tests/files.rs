@@ -840,12 +840,17 @@ fn sample_sections_are_checked_strictly() {
             .unwrap();
     assert_eq!(list.points, [[1.0, 0.5], [2.0, 0.1]]);
 
-    // Only models without states are sampled for now.
+    // A model with states runs in time; its `sample` is an experiment,
+    // each point a whole run (ADR 0067), not a sweep.
     let mut v: serde_json::Value = serde_json::from_str(LORENZ).unwrap();
-    v["sample"] = json!({"params": [{"param": "lorenz.rho"}]});
+    v["sample"] = json!({"params": [{"param": "lorenz.rho", "points": 3}]});
+    let l = load(&v.to_string(), &registry()).unwrap();
+    assert!(l.plan.is_none());
+    assert_eq!(l.experiment.unwrap().points.len(), 3);
+    v["sample"]["replicates"] = json!(0);
     assert!(matches!(
         load(&v.to_string(), &registry()),
-        Err(FileError::Invalid { path, .. }) if path == "sample"
+        Err(FileError::Invalid { path, .. }) if path == "sample.replicates"
     ));
     assert!(load(LORENZ, &registry()).unwrap().plan.is_none());
 }

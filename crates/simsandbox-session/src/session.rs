@@ -3160,9 +3160,7 @@ mod tests {
                     points: Some(n),
                 })
                 .collect(),
-            count: None,
-            seed: None,
-            values: Vec::new(),
+            ..Default::default()
         }
     }
 

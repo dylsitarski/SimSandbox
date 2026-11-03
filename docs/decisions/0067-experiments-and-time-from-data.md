@@ -77,3 +77,40 @@ The owner agreed (2026-11-02) to the proposal below, with its four defaults.
 - The same `sample` section means "experiment" in the file opened and "this model is a sweep" in a file used. `check` says which.
 - Experiments that change nothing about a model run on several cores without changing its results.
 - ADR 0066's order of work is unchanged. Its step 4 (the app) and step 5 (rewind, run files) apply to experiments too: a run file records the experiment's points and seeds.
+
+## As built
+
+**Step 2 (2026-11-03): the experiment over any model, headless.**
+- **When:** a model with states, or one using models (whatever their states), with a `sample` section has an experiment (`Loaded::experiment`, `ModelFile::experiment`). It loads and runs in time as before; only the headless runner makes the experiment. A model without states keeps its sweep (`Loaded::plan`).
+- **Points:**
+  - The designs of ADR 0028, plus `file`: a CSV from the model's folder whose header names the parameters (`sample.file`; `params` are then its columns).
+  - Keys are `block.param` by full name (`plant/car.m`, `car3/control.kp`) or a declared parameter (`kp`), whose formulas then follow. A value set by a formula is refused with its formula.
+- **Runs** (`run::run_experiment`, which `run_with` calls): each row (point × replicate) sets its keys, takes its seeds, restarts from the file's start and runs to the end, by `dt` or from instant to instant of the clocks (`run::advance`, shared with plain runs), with the file's schedule.
+  - Each row's run depends only on its row, so the rows split into chunks over the machine's threads (`std::thread::scope`, each thread with its own model) and give the same bits on any number of threads.
+  - Each row equals the model run alone with those values.
+- **Kept:** by default each fixed-shape output's final value, one row per run. The index is `sample`, then `replicate` if there are several, then each key. With `keep: "series"`, `Results::series` holds each run.
+- **Seeds:**
+  - `seeds: "common"` (the default): the run's seed at every point; with replicates, replicate j draws alike at every point.
+  - `seeds: "per point"`: the row's number mixed in (`Simulator::reseed`).
+  - `replicates: n` runs each point n times.
+  - Written `seeds`, not `seed` as point 5 has it, since `seed` is already the random designs' generator seed.
+- **Headless:**
+  - `run` (CSV or JSON, with `series`) runs it.
+  - `check` reports `experiment` (params, points, replicates, runs, keep, seeds).
+  - A model using models with a `sample` runs as one model.
+  - Python: `Model.run()` returns `Results` with `.series`.
+  - The JSON Schema lists `file`, `keep`, `seeds` and `replicates`.
+- **Not yet:**
+  - views of an experiment in the app (it runs such a model in time);
+  - `reduce` (step 3);
+  - the `file` design's CSV in a run file's hash.
+- **Tests:**
+  - each point equals the model alone, bit for bit;
+  - one and three threads give the same bits;
+  - series kept;
+  - points from a CSV;
+  - a declared parameter of the Platoon;
+  - common seeds agree at equal points, per point draws apart, replicates draw alike across points;
+  - refusals;
+  - Python.
+

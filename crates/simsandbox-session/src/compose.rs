@@ -116,6 +116,7 @@ pub fn check(text: &str, registry: &Registry) -> Value {
             .flat_map(|b| b.files.iter().map(move |(k, f)| (format!("{}/{k}", b.name), f.clone())))
             .collect::<std::collections::BTreeMap<_, _>>(),
         "definitions": definitions(&c.file),
+        "experiment": crate::run::experiment_report(text, registry),
         // Every parameter by full name, as the app lists them (ADR 0068).
         "params": crate::Session::load_in("check", text, registry, None, true)
             .map(|s| {
@@ -455,6 +456,7 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
             labels: sim.labels(),
             notes: crate::session::loop_notes(&sim),
             warnings: Vec::new(),
+            series: Vec::new(),
         };
         runs.push(Running {
             sim,
@@ -1401,6 +1403,114 @@ mod tests {
             assert_ne!(model_hash(&text).unwrap(), before);
         });
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_experiment_runs_each_point_as_the_model_alone_on_any_number_of_threads() {
+        use crate::run::{experiment_report, run, run_experiment};
+        let ex = |name: &str| -> Value {
+            serde_json::from_str(
+                EXAMPLES
+                    .iter()
+                    .find(|e| e.name.contains(name))
+                    .unwrap()
+                    .text,
+            )
+            .unwrap()
+        };
+        let r = registry();
+        let mut cruise = ex("Cruise control");
+        cruise["sample"] = json!({"design": "list", "params": [{"param": "cruise.kp"}],
+                                  "values": [[200.0], [400.0], [800.0]]});
+        let text = cruise.to_string();
+        let one = run_experiment(&text, &r, Some(5.0), None, Some(1)).unwrap();
+        let three = run_experiment(&text, &r, Some(5.0), None, Some(3)).unwrap();
+        assert_eq!(one.rows(), 3);
+        let finals = |x: &crate::run::Results| bits(series(x, "car.v"));
+        assert_eq!(
+            finals(&one),
+            finals(&three),
+            "the same on any number of threads"
+        );
+        // Each point is the model run alone with that value.
+        for (k, kp) in [200.0, 400.0, 800.0].iter().enumerate() {
+            let mut alone = ex("Cruise control");
+            alone["blocks"][1]["params"]["kp"] = json!(kp);
+            let a = run(&alone.to_string(), &r, Some(5.0), None).unwrap();
+            assert_eq!(
+                series(&one, "car.v")[k].to_bits(),
+                series(&a, "car.v").last().unwrap().to_bits()
+            );
+        }
+        assert_eq!(one.index[1].0, "cruise.kp");
+        // run gives the experiment; check describes it.
+        let via = crate::run::run_with(&text, &r, Some(5.0), None, Vec::new()).unwrap();
+        assert_eq!(finals(&via), finals(&one));
+        let rep = experiment_report(&text, &r);
+        assert_eq!(
+            (rep["points"].clone(), rep["keep"].clone()),
+            (json!(3), json!("final"))
+        );
+        // Whole runs kept.
+        cruise["sample"]["keep"] = json!("series");
+        let kept = run_experiment(&cruise.to_string(), &r, Some(5.0), None, Some(2)).unwrap();
+        assert_eq!(kept.series.len(), 3);
+        assert_eq!(kept.series[2].rows(), 101);
+        assert_eq!(
+            series(&kept.series[2], "car.v").last().unwrap().to_bits(),
+            series(&one, "car.v")[2].to_bits()
+        );
+        // Points from a CSV, columns named by path.
+        let dir = temp_dir("experiment");
+        std::fs::write(
+            dir.join("gains.csv"),
+            "cruise.kp,cruise.ki\n200,10\n400,20\n",
+        )
+        .unwrap();
+        let mut from_file = ex("Cruise control");
+        from_file["sample"] = json!({"design": "file", "file": "gains.csv"});
+        let f = simsandbox_core::registry::in_folder(Some(&dir), || {
+            run_experiment(&from_file.to_string(), &r, Some(2.0), None, None)
+        })
+        .unwrap();
+        assert_eq!(f.rows(), 2);
+        assert_eq!(f.index[2], ("cruise.ki".to_string(), vec![10.0, 20.0]));
+        std::fs::remove_dir_all(&dir).unwrap();
+        // A declared parameter of a model that uses models, by its name.
+        let mut platoon = ex("Platoon");
+        platoon["sample"] =
+            json!({"design": "list", "params": [{"param": "kp"}], "values": [[300.0], [900.0]]});
+        let p = run_experiment(&platoon.to_string(), &r, Some(3.0), None, None).unwrap();
+        let v = series(&p, "car3/car.v");
+        assert!(v[0] != v[1], "{v:?}");
+        // Seeds: common by default, so equal points agree; per point and
+        // replicates draw apart.
+        let mut grazing = ex("grazing");
+        grazing["sample"] =
+            json!({"design": "list", "params": [{"param": "size"}], "values": [[40.0], [40.0]]});
+        let count = |g: &Value| {
+            series(
+                &run_experiment(&g.to_string(), &r, Some(20.0), None, None).unwrap(),
+                "sheep.count",
+            )
+            .to_vec()
+        };
+        let c = count(&grazing);
+        assert_eq!(c[0], c[1]);
+        grazing["sample"]["seeds"] = json!("per point");
+        let c = count(&grazing);
+        assert_ne!(c[0], c[1], "{c:?}");
+        grazing["sample"]["seeds"] = json!("common");
+        grazing["sample"]["replicates"] = json!(2);
+        let g = run_experiment(&grazing.to_string(), &r, Some(20.0), None, None).unwrap();
+        assert_eq!(g.index[1].0, "replicate");
+        let c = series(&g, "sheep.count");
+        assert_eq!(
+            (c[0], c[1]),
+            (c[2], c[3]),
+            "replicate j draws alike at every point"
+        );
+        assert_ne!(c[0], c[1], "{c:?}");
     }
 
     #[test]

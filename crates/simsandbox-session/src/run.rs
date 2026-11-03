@@ -44,6 +44,9 @@ pub struct Results {
     /// Algebraic loops and how they are solved (ADR 0040).
     pub notes: Vec<String>,
     pub warnings: Vec<String>,
+    /// An experiment's whole run at each row, with `keep: "series"`
+    /// (ADR 0067); empty otherwise.
+    pub series: Vec<Results>,
 }
 
 impl Results {
@@ -111,7 +114,7 @@ impl Results {
                 (p.name.clone(), json!({"dim": p.dim, "frames": frames}))
             })
             .collect();
-        json!({
+        let mut out = json!({
             "rows": self.rows(),
             "index": index,
             "outputs": outputs,
@@ -119,7 +122,11 @@ impl Results {
             "labels": self.labels.map(crate::describe::labels),
             "notes": self.notes,
             "warnings": self.warnings,
-        })
+        });
+        if !self.series.is_empty() {
+            out["series"] = Value::Array(self.series.iter().map(Results::to_json).collect());
+        }
+        out
     }
 }
 
@@ -165,6 +172,15 @@ pub fn run_with(
         }
     }
     let loaded = simsandbox_file::load_any(text, registry, None).map_err(|e| e.to_string())?;
+    // A model that runs in time with a `sample`: an experiment (ADR 0067).
+    if loaded.experiment.is_some() {
+        if !track.is_empty() {
+            return Err(
+                "an experiment runs each point from its file: give inputs in run.inputs".into(),
+            );
+        }
+        return run_experiment(text, registry, t_end, dt, None);
+    }
     if loaded.plan.is_some() && (dt.is_some() || t_end.is_some()) {
         return Err("the end time and step do not apply to a swept model".into());
     }
@@ -226,6 +242,7 @@ pub fn run_with(
         labels: sim.labels(),
         notes: crate::session::loop_notes(&sim),
         warnings: loaded.warnings.clone(),
+        series: Vec::new(),
     };
     let record = |r: &mut Results, sim: &Simulator| {
         for (o, (id, port, _, _)) in r.outputs.iter_mut().zip(&fixed) {
@@ -277,28 +294,290 @@ pub fn run_with(
         }
         let mut t = vec![sim.time()];
         record(&mut r, &sim);
-        if clocked {
-            // Each instant up to the end, the last at or before it.
-            while sim
-                .next_instant()
-                .is_some_and(|next| next <= t_end * (1.0 + 1e-12))
-            {
-                apply(&mut sim)?;
-                sim.step(dt).map_err(|e| e.to_string())?;
-                t.push(sim.time());
-                record(&mut r, &sim);
-            }
-        } else {
-            for _ in 0..(t_end / dt).round() as usize {
-                apply(&mut sim)?;
-                sim.step(dt).map_err(|e| e.to_string())?;
-                t.push(sim.time());
-                record(&mut r, &sim);
-            }
-        }
+        advance(&mut sim, (dt, t_end, clocked), &mut apply, |sim| {
+            t.push(sim.time());
+            record(&mut r, sim);
+        })?;
         r.index = vec![("t".to_string(), t)];
     }
     Ok(r)
+}
+
+/// Step `sim` to `t_end`: by `dt`, or from instant to instant of its
+/// clocks (`clocked`, the last at or before the end), applying the inputs
+/// due before each step and calling `each` after it.
+fn advance(
+    sim: &mut Simulator,
+    (dt, t_end, clocked): (f64, f64, bool),
+    apply: &mut dyn FnMut(&mut Simulator) -> Result<bool, String>,
+    mut each: impl FnMut(&Simulator),
+) -> Result<(), String> {
+    if clocked {
+        while sim
+            .next_instant()
+            .is_some_and(|next| next <= t_end * (1.0 + 1e-12))
+        {
+            apply(sim)?;
+            sim.step(dt).map_err(|e| e.to_string())?;
+            each(sim);
+        }
+    } else {
+        for _ in 0..(t_end / dt).round() as usize {
+            apply(sim)?;
+            sim.step(dt).map_err(|e| e.to_string())?;
+            each(sim);
+        }
+    }
+    Ok(())
+}
+
+/// Run the experiment a model's `sample` makes of it (ADR 0067): every
+/// point (times its replicates) a whole run to `t_end` from the file's
+/// start, its seed the run's (common) or mixed from its row, on `threads`
+/// threads (all the machine's if `None`). Each row's run depends only on
+/// its row, so the results are the same on any number of threads. Rows
+/// keep each output's final value; with `keep: "series"`, `series` holds
+/// each run.
+pub fn run_experiment(
+    text: &str,
+    registry: &Registry,
+    t_end: Option<f64>,
+    dt: Option<f64>,
+    threads: Option<usize>,
+) -> Result<Results, String> {
+    for v in [t_end, dt].into_iter().flatten() {
+        if !(v.is_finite() && v > 0.0) {
+            return Err("the end time and step must be positive".into());
+        }
+    }
+    let loaded = simsandbox_file::load_any(text, registry, None).map_err(|e| e.to_string())?;
+    let plan = loaded
+        .experiment
+        .clone()
+        .ok_or("this model has no experiment (`sample`)")?;
+    let rows = plan.points.len() * plan.replicates;
+    let threads = threads
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+        .clamp(1, rows.max(1));
+    let per = rows.div_ceil(threads);
+    let folder = simsandbox_core::registry::current_folder();
+    let chunks: Vec<Result<Vec<Row>, String>> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..threads)
+            .map(|k| {
+                let (plan, folder) = (&plan, folder.clone());
+                let range = k * per..((k + 1) * per).min(rows);
+                s.spawn(move || {
+                    simsandbox_core::registry::in_folder(folder.as_deref(), || {
+                        run_rows(text, registry, plan, range, t_end, dt)
+                    })
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_else(|_| Err("a run panicked".into())))
+            .collect()
+    });
+    let mut all: Vec<Row> = Vec::with_capacity(rows);
+    for c in chunks {
+        all.extend(c?);
+    }
+    let first = loaded_outputs(&loaded)?;
+    let mut index = vec![("sample".to_string(), Vec::new())];
+    if plan.replicates > 1 {
+        index.push(("replicate".to_string(), Vec::new()));
+    }
+    index.extend(plan.keys.iter().map(|k| (k.clone(), Vec::new())));
+    let mut outputs: Vec<Output> = first
+        .iter()
+        .map(|(_, _, name, shape)| Output {
+            name: name.clone(),
+            shape: *shape,
+            values: Vec::new(),
+        })
+        .collect();
+    let mut series = Vec::new();
+    for (row, r) in all.into_iter().enumerate() {
+        let (p, j) = (row / plan.replicates, row % plan.replicates);
+        index[0].1.push(p as f64);
+        let at = if plan.replicates > 1 {
+            index[1].1.push(j as f64);
+            2
+        } else {
+            1
+        };
+        for (column, &v) in index[at..].iter_mut().zip(&plan.points[p]) {
+            column.1.push(v);
+        }
+        for (o, v) in outputs.iter_mut().zip(&r.finals) {
+            o.values.extend_from_slice(v);
+        }
+        if let Some(s) = r.series {
+            series.push(s);
+        }
+    }
+    Ok(Results {
+        index,
+        outputs,
+        populations: Vec::new(),
+        labels: None,
+        notes: Vec::new(),
+        warnings: loaded.warnings.clone(),
+        series,
+    })
+}
+
+/// What `check` says of a model's experiment (ADR 0067), `null` if it has
+/// none: its parameters, points, runs, what each keeps and its seeds.
+pub fn experiment_report(text: &str, registry: &Registry) -> Value {
+    match simsandbox_file::load_any(text, registry, None).map(|l| l.experiment) {
+        Ok(Some(p)) => json!({
+            "params": p.keys,
+            "points": p.points.len(),
+            "replicates": p.replicates,
+            "runs": p.points.len() * p.replicates,
+            "keep": match p.keep {
+                simsandbox_file::Keep::Final => "final",
+                simsandbox_file::Keep::Series => "series",
+            },
+            "seeds": match p.seeds {
+                simsandbox_file::Seeds::Common => "common",
+                simsandbox_file::Seeds::PerPoint => "per point",
+            },
+        }),
+        _ => Value::Null,
+    }
+}
+
+/// One experiment run: each output's final value, and the whole run if
+/// kept.
+struct Row {
+    finals: Vec<Vec<f64>>,
+    series: Option<Results>,
+}
+
+/// The fixed-shape outputs of a loaded model: block, port, full name and
+/// shape.
+type Outputs = Vec<(simsandbox_core::graph::BlockId, String, String, Shape)>;
+
+fn loaded_outputs(loaded: &simsandbox_file::Loaded) -> Result<Outputs, String> {
+    let mut fixed = Vec::new();
+    for entry in &loaded.flat.blocks {
+        let id = loaded.ids[&entry.name];
+        let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
+        for port in spec.outputs() {
+            if !matches!(port.shape, Shape::Population { .. }) {
+                fixed.push((
+                    id,
+                    port.name.clone(),
+                    format!("{}.{}", entry.name, port.name),
+                    port.shape,
+                ));
+            }
+        }
+    }
+    Ok(fixed)
+}
+
+/// The experiment's rows in `range`, on a model built for them.
+fn run_rows(
+    text: &str,
+    registry: &Registry,
+    plan: &simsandbox_file::Plan,
+    range: std::ops::Range<usize>,
+    t_end: Option<f64>,
+    dt: Option<f64>,
+) -> Result<Vec<Row>, String> {
+    if range.is_empty() {
+        return Ok(Vec::new());
+    }
+    let loaded = simsandbox_file::load_any(text, registry, None).map_err(|e| e.to_string())?;
+    let fixed = loaded_outputs(&loaded)?;
+    let dt = dt.unwrap_or(loaded.file.run.dt);
+    let t_end = t_end.or(loaded.file.run.t_end).unwrap_or(DEFAULT_T_END);
+    let clocked = !loaded.model.clocks().0.is_empty();
+    let schedule: Vec<InputEvent> = loaded
+        .file
+        .run
+        .inputs
+        .iter()
+        .map(|c| InputEvent {
+            t: c.t,
+            key: c.set.clone(),
+            value: c.to,
+        })
+        .collect();
+    let ids = loaded.ids.clone();
+    let mut params = loaded.params.clone();
+    let mut sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
+    let values = |sim: &Simulator| -> Vec<Vec<f64>> {
+        fixed
+            .iter()
+            .map(|(id, port, _, _)| sim.output(*id, port).unwrap_or(&[]).to_vec())
+            .collect()
+    };
+    let mut out = Vec::new();
+    for row in range {
+        let (p, j) = (row / plan.replicates, row % plan.replicates);
+        for (key, &v) in plan.keys.iter().zip(&plan.points[p]) {
+            set_key(&mut sim, &mut params, &ids, key, v).map_err(|e| format!("{key}: {e}"))?;
+        }
+        // Common random numbers, or a seed mixed from the row (ADR 0067).
+        let salt = match plan.seeds {
+            simsandbox_file::Seeds::PerPoint => Some(row as u64),
+            simsandbox_file::Seeds::Common if plan.replicates > 1 => Some(j as u64),
+            simsandbox_file::Seeds::Common => None,
+        };
+        sim.reseed(salt);
+        sim.restart(0.0).map_err(|e| e.to_string())?;
+        let mut events = Track::new(schedule.clone(), Vec::new());
+        let mut apply = |sim: &mut Simulator| -> Result<bool, String> {
+            let now = sim.time();
+            let mut any = false;
+            while let Some(e) = events.take_due(now, 1e-9 * dt.max(now.abs())) {
+                set_key(sim, &mut params, &ids, &e.key, e.value)
+                    .map_err(|err| format!("input at t = {}: {err}", e.t))?;
+                any = true;
+            }
+            Ok(any)
+        };
+        if apply(&mut sim)? {
+            sim.restart(0.0).map_err(|e| e.to_string())?;
+        }
+        let keep = plan.keep == simsandbox_file::Keep::Series;
+        let mut t = vec![sim.time()];
+        let mut kept: Vec<Vec<f64>> = if keep { values(&sim) } else { Vec::new() };
+        advance(&mut sim, (dt, t_end, clocked), &mut apply, |sim| {
+            if keep {
+                t.push(sim.time());
+                for (k, v) in kept.iter_mut().zip(values(sim)) {
+                    k.extend(v);
+                }
+            }
+        })?;
+        let series = keep.then(|| Results {
+            index: vec![("t".to_string(), t)],
+            outputs: fixed
+                .iter()
+                .zip(kept)
+                .map(|((_, _, name, shape), values)| Output {
+                    name: name.clone(),
+                    shape: *shape,
+                    values,
+                })
+                .collect(),
+            populations: Vec::new(),
+            labels: None,
+            notes: Vec::new(),
+            warnings: Vec::new(),
+            series: Vec::new(),
+        });
+        out.push(Row {
+            finals: values(&sim),
+            series,
+        });
+    }
+    Ok(out)
 }
 
 /// What a run's probes recorded (ADR 0062).

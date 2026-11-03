@@ -137,6 +137,20 @@ A model's `blocks` may use other model files, each running on its own clock, lin
 - **`render --diagram`** draws uses as nodes with their clock and file. A node shows the used model's input blocks, its declared outputs, and whatever is wired by path. Every other port stays reachable by path. To see inside a used model, render its own file (the app's "Open" shows the same diagram).
 - **Inputs, probes and run files** ([ADR 0066](../decisions/0066-models-nest-as-blocks.md) step 5): `run --inputs RUN`, `--probe NAME`, `--save-probes DIR` and run files work, the models then running as one on their clocks, with every instant of any clock as a row; keys and signals are full names (`slow/u.y`, `car3/car.v`). `--dt` is refused (each model keeps its own step). Python: `run(inputs=[(t, "slow/u.y", v)])` returns `Results`.
 
+## Experiments
+
+A `sample` section on a model that runs in time (or uses models) is an experiment ([ADR 0067](../decisions/0067-experiments-and-time-from-data.md)): `run` runs the whole model at each point to `t_end`, from the file's start, on all cores (the results do not depend on how many).
+
+```json
+"sample": {"design": "list", "params": [{"param": "cruise.kp"}], "values": [[200], [400], [800]],
+           "keep": "final", "seeds": "common", "replicates": 1}
+```
+
+- **Points:** the designs of sweeps (`grid`, `list`, `random`, `latin_hypercube`, `sobol`), or `"design": "file", "file": "points.csv"`, a CSV whose header names the parameters. A parameter is `block.param` by full name (`plant/car.m`) or a declared parameter (`kp`).
+- **Rows:** one per run, indexed by `sample` (and `replicate`) and the parameters, with each output's final value. `"keep": "series"` also keeps each whole run (JSON `series`; Python `results.series`).
+- **Seeds:** `"common"` (default) gives every point the run's seed; `"per point"` mixes in the row's number. `"replicates": n` runs each point n times, replicate j drawing alike at every point.
+- `check` reports `experiment`. The app runs such a model in time; it has no view of the experiment yet.
+
 ## Recorder
 
 `"recorder": {"every": 10, "mb": 256}` in `controls` (both optional) lets the model be rewound in the app ([ADR 0064](../decisions/0064-recorder-node.md)): a snapshot of its state every `every` steps, within `mb` megabytes. Without it the app shows no rewind bar. It changes no results; headless runs ignore it.

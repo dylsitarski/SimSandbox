@@ -301,7 +301,8 @@ class Model:
         runs as one model on its clocks, as the app does, and returns
         :class:`Results` at every instant of any clock (keys by full name,
         ``"slow/u.y"``)."""
-        if any("file" in b or "model" in b for b in self.data.get("blocks", [])) and inputs is None:
+        uses = any("file" in b or "model" in b for b in self.data.get("blocks", []))
+        if uses and inputs is None and "sample" not in self.data:
             if dt is not None:
                 raise ValueError("a model using models keeps each model's own clock: dt does not apply")
             try:
@@ -779,6 +780,9 @@ class Results:
       ``(n, dim)`` arrays (n varies).
     - ``labels`` (speed and accuracy), ``notes`` (algebraic loops) and
       ``warnings``.
+    - ``series``: for an experiment (a model that runs in time with a
+      ``sample``, ADR 0067) keeping ``"series"``, each point's whole run;
+      the rows are then one per point, with each output's final value.
 
     ``results[name]`` looks in the index, then the outputs, then the
     populations.
@@ -802,6 +806,8 @@ class Results:
         self.labels: dict | None = json.loads(raw["labels"])
         self.notes: list[str] = raw["notes"]
         self.warnings: list[str] = raw["warnings"]
+        # An experiment with ``keep: "series"`` (ADR 0067): each point's run.
+        self.series: list[Results] = [Results(s) for s in raw.get("series", [])]
 
     @property
     def t(self) -> np.ndarray:

@@ -221,6 +221,33 @@ pub enum Design {
     LatinHypercube,
     /// The first `count` points of the Sobol sequence.
     Sobol,
+    /// The rows of a CSV file (`file`), its columns named by path
+    /// (ADR 0067): measured conditions, a test set.
+    File,
+}
+
+/// What an experiment keeps of each run (ADR 0067).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Keep {
+    /// Each output's value at the end: one row per point.
+    #[default]
+    Final,
+    /// Each point's whole run.
+    Series,
+}
+
+/// The seeds an experiment's runs draw from (ADR 0067).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Seeds {
+    /// The run's seed at every point (common random numbers): differences
+    /// between points come from the parameters.
+    #[default]
+    #[serde(rename = "common")]
+    Common,
+    /// The point's index mixed into the seed (Monte Carlo).
+    #[serde(rename = "per point")]
+    PerPoint,
 }
 
 impl Design {
@@ -234,13 +261,15 @@ impl Design {
 /// A sweep (ADR 0027, ADR 0028): the swept parameters and how their values
 /// are chosen. Unlike `controls`, this decides what is computed, so invalid
 /// values are load errors.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sampling {
     #[serde(default)]
     pub design: Design,
     /// The swept parameters: range (the slider's or the suggested range if
-    /// absent) and, for grids, number of values.
+    /// absent) and, for grids, number of values; for a file design, its
+    /// columns.
+    #[serde(default)]
     pub params: Vec<SweepControl>,
     /// Random, Latin hypercube and Sobol: how many points.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,6 +280,65 @@ pub struct Sampling {
     /// List: the points, one value per parameter each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<Vec<f64>>,
+    /// File: the CSV of points, from the model's folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// For a model that runs in time (ADR 0067): what each run keeps.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub keep: Keep,
+    /// For a model that runs in time: the seed at each point.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub seeds: Seeds,
+    /// For a model that runs in time: runs of each point, each with a seed
+    /// mixed from its replicate's number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replicates: Option<usize>,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+/// The columns and rows of a CSV of points (ADR 0067), from the model's
+/// folder (or the thread's).
+fn read_points(file: &ModelFile, name: &str) -> Result<(Vec<String>, Vec<Vec<f64>>), FileError> {
+    let at = std::path::PathBuf::from(name);
+    let at = match file
+        .folder
+        .clone()
+        .or_else(simsandbox_core::registry::current_folder)
+    {
+        Some(f) if at.is_relative() => f.join(at),
+        _ => at,
+    };
+    let text = std::fs::read_to_string(&at)
+        .map_err(|e| invalid("sample.file", format!("{}: {e}", at.display())))?;
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let columns: Vec<String> = lines
+        .next()
+        .ok_or_else(|| invalid("sample.file", format!("{} is empty", at.display())))?
+        .split(',')
+        .map(|c| c.trim().to_string())
+        .collect();
+    let mut rows = Vec::new();
+    for (k, line) in lines.enumerate() {
+        let row: Result<Vec<f64>, _> = line.split(',').map(|v| v.trim().parse::<f64>()).collect();
+        match row {
+            Ok(r) if r.len() == columns.len() && r.iter().all(|v| v.is_finite()) => rows.push(r),
+            _ => {
+                return Err(invalid(
+                    "sample.file",
+                    format!(
+                        "{} row {}: give {} numbers",
+                        at.display(),
+                        k + 1,
+                        columns.len()
+                    ),
+                ))
+            }
+        }
+    }
+    Ok((columns, rows))
 }
 
 /// Points in a design that takes a count, unless the file says otherwise.
@@ -270,6 +358,10 @@ pub struct Plan {
     /// For a grid design: values per parameter (first varies fastest).
     pub grid: Option<Vec<usize>>,
     pub design: Design,
+    /// An experiment's runs of each point (ADR 0067), 1 for a sweep.
+    pub replicates: usize,
+    pub keep: Keep,
+    pub seeds: Seeds,
 }
 
 impl Sampling {
@@ -282,13 +374,46 @@ impl Sampling {
         ids: &BTreeMap<String, BlockId>,
     ) -> Result<Plan, FileError> {
         use simsandbox_core::sampling as design;
-        if self.params.is_empty() {
+        // From a file: its columns are the parameters (ADR 0067).
+        let from_file = match (self.design, &self.file) {
+            (Design::File, Some(name)) => Some(read_points(file, name)?),
+            (Design::File, None) => {
+                return Err(invalid(
+                    "sample.file",
+                    "a file design names its CSV of points",
+                ))
+            }
+            _ => None,
+        };
+        let params: Vec<SweepControl> = match &from_file {
+            Some((columns, _)) => columns
+                .iter()
+                .map(|c| SweepControl {
+                    param: c.clone(),
+                    range: None,
+                    points: None,
+                })
+                .collect(),
+            None => self.params.clone(),
+        };
+        if params.is_empty() {
             return Err(invalid("sample.params", "sweep at least one parameter"));
         }
         let mut keys: Vec<String> = Vec::new();
         let mut ranges = Vec::new();
-        for (i, p) in self.params.iter().enumerate() {
+        for (i, p) in params.iter().enumerate() {
             let path = format!("sample.params[{i}]");
+            // A declared parameter of the model (ADR 0067: by path).
+            if let Some(d) = file.params.get(&p.param) {
+                let [lo, hi] = p
+                    .range
+                    .or(d.range)
+                    .or_else(|| file.controls.params.get(&p.param).and_then(|c| c.range))
+                    .unwrap_or([0.0, 2.0 * d.value.abs().max(1.0)]);
+                keys.push(p.param.clone());
+                ranges.push([lo, hi]);
+                continue;
+            }
             let spec = port_ref(&p.param, ids).ok().and_then(|(id, name)| {
                 model
                     .block(id)
@@ -380,6 +505,16 @@ impl Sampling {
                     .map_err(|e| invalid("sample.params", e))?,
                 None,
             ),
+            Design::File => {
+                let (_, rows) = from_file.expect("read above");
+                if rows.is_empty() || rows.len() > MAX_SAMPLES {
+                    return Err(invalid(
+                        "sample.file",
+                        format!("give 1 to {MAX_SAMPLES} rows of points"),
+                    ));
+                }
+                (rows, None)
+            }
             Design::List => {
                 if self.values.is_empty() || self.values.len() > MAX_SAMPLES {
                     return Err(invalid(
@@ -398,12 +533,22 @@ impl Sampling {
                 (self.values.clone(), None)
             }
         };
+        let replicates = self.replicates.unwrap_or(1);
+        if replicates == 0 || replicates.saturating_mul(points.len()) > MAX_SAMPLES {
+            return Err(invalid(
+                "sample.replicates",
+                format!("1 or more, and at most {MAX_SAMPLES} runs in all"),
+            ));
+        }
         Ok(Plan {
             keys,
             ranges,
             points,
             grid,
             design: self.design,
+            replicates,
+            keep: self.keep,
+            seeds: self.seeds,
         })
     }
 }
@@ -1449,6 +1594,9 @@ pub struct Loaded {
     /// Where a model without states is evaluated (ADR 0027); `None` for one
     /// that runs in time.
     pub plan: Option<Plan>,
+    /// For a model that runs in time, its `sample` (ADR 0067): an
+    /// experiment, each point a whole run, made by the headless runner.
+    pub experiment: Option<Plan>,
     /// The files blocks read (ADR 0063), as `block.setting` and the
     /// SHA-256 of the file's contents: part of a run's model hash.
     pub data: BTreeMap<String, String>,
@@ -1568,6 +1716,13 @@ pub fn load_in(
     warnings.extend(flat.check_controls(&model, &ids, &params, &mut conversions));
     file.controls = flat.controls.clone();
     let plan = flat.plan(&model, &ids)?;
+    // Declared parameters are points' keys too (ADR 0067): the flat file
+    // has turned them into formulas.
+    let experiment = {
+        let mut f = flat.clone();
+        f.params.clone_from(&file.params);
+        f.experiment(&model, &ids)?
+    };
     // Older sweep controls become a `sample` section as the file is read.
     file.sample = flat.sample.clone();
     file.controls = flat.controls.clone();
@@ -1581,6 +1736,7 @@ pub fn load_in(
         warnings,
         groups,
         plan,
+        experiment,
         data,
         aliases: BTreeMap::new(),
     })
@@ -2240,6 +2396,25 @@ impl ModelFile {
         }
     }
 
+    /// The experiment over a model that runs in time (ADR 0067): its
+    /// `sample`, each point a whole run; `None` without one, or for a
+    /// model without states (whose `sample` is a sweep).
+    pub fn experiment(
+        &self,
+        model: &Model,
+        ids: &BTreeMap<String, BlockId>,
+    ) -> Result<Option<Plan>, FileError> {
+        let stateless = self.blocks.iter().all(|b| {
+            model
+                .block(ids[&b.name])
+                .is_ok_and(|x| x.spec().states.is_empty())
+        });
+        match &self.sample {
+            Some(s) if !stateless => s.plan(self, model, ids).map(Some),
+            _ => Ok(None),
+        }
+    }
+
     /// How `model` is sampled: the file's `sample`, or for a model without
     /// states a grid over its first parameter; `None` for a model that runs
     /// in time.
@@ -2254,11 +2429,8 @@ impl ModelFile {
                 .is_ok_and(|x| x.spec().states.is_empty())
         });
         match (&self.sample, stateless) {
-            (Some(_), false) => Err(invalid(
-                "sample",
-                "sampling models with states is not supported yet (ADR 0027); remove \
-                 'sample' to run in time",
-            )),
+            // Runs in time; its `sample` is an experiment (ADR 0067).
+            (Some(_), false) => Ok(None),
             (Some(s), true) => Ok(Some(s.clone())),
             (None, false) => Ok(None),
             (None, true) => {
@@ -2275,9 +2447,7 @@ impl ModelFile {
                         range: None,
                         points: None,
                     }],
-                    count: None,
-                    seed: None,
-                    values: Vec::new(),
+                    ..Default::default()
                 }))
             }
         }
@@ -2504,9 +2674,7 @@ impl ModelFile {
             self.sample = Some(Sampling {
                 design: Design::Grid,
                 params,
-                count: None,
-                seed: None,
-                values: Vec::new(),
+                ..Default::default()
             });
         }
         let c = &mut self.controls;

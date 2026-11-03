@@ -242,7 +242,11 @@ fn run_file(args: &[String]) -> Result<(), String> {
     if composed && flags.has("--dt") {
         return Err("--dt does not apply to a model using models: each keeps its own clock".into());
     }
-    let merged = flags.has("--inputs") || flags.has("--probe") || flags.has("--save-probes");
+    // An experiment over it (ADR 0067) runs it as one model too.
+    let experiment = !is_run_file(path)
+        && serde_json::from_str::<Value>(&read(path)?).is_ok_and(|v| v.get("sample").is_some());
+    let merged =
+        flags.has("--inputs") || flags.has("--probe") || flags.has("--save-probes") || experiment;
     if composed && !merged && !is_run_file(path) {
         return run_composition_file(path, &read(path)?, t_end, &flags, json);
     }

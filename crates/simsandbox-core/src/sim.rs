@@ -205,6 +205,8 @@ pub struct Simulator {
     population_outputs: Vec<Vec<Vec<f64>>>,
     /// Each Block's random stream (ADR 0034).
     seeds: Vec<u64>,
+    /// The seeds the model gives, before [`Simulator::reseed`].
+    base_seeds: Vec<u64>,
     t: f64,
     /// Steps taken since the run started.
     step: u64,
@@ -384,6 +386,7 @@ impl Simulator {
             outputs,
             population_inputs,
             population_outputs,
+            base_seeds: seeds.clone(),
             seeds,
             t: t0,
             step: 0,
@@ -391,6 +394,20 @@ impl Simulator {
         };
         sim.restart(t0)?;
         Ok(sim)
+    }
+
+    /// Draw from the model's seeds mixed with `salt` (an experiment's
+    /// point or replicate, ADR 0067), or from them as they are (`None`),
+    /// from the next [`Simulator::restart`] on.
+    pub fn reseed(&mut self, salt: Option<u64>) {
+        self.seeds = self
+            .base_seeds
+            .iter()
+            .map(|&s| match salt {
+                Some(k) => crate::random::stream(s, &format!("run {k}")),
+                None => s,
+            })
+            .collect();
     }
 
     /// Start the run again at `t0` from the current parameter values: every

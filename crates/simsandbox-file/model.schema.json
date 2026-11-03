@@ -20,10 +20,7 @@
     },
     "sample": {
       "type": "object",
-      "description": "Where a model with no states is evaluated (ADR 0027, ADR 0028); without it such a model is swept over its first parameter. Each sample is recorded with the swept parameters as signals; a grid over two parameters also offers every signal as a grid named 'grid.<signal>'. At most 250000 samples. Invalid values are load errors.",
-      "required": [
-        "params"
-      ],
+      "description": "For a model without states: where it is evaluated (ADR 0027, ADR 0028), each sample recorded with the swept parameters as signals (a grid over two parameters also offers every signal as 'grid.<signal>'); without it such a model is swept over its first parameter. For a model that runs in time, or uses models: an experiment (ADR 0067), each point a whole run, keeping each output's final value (or each run, keep 'series'). Points set any parameter by path ('block.param', 'use/inner.param') or a declared parameter. At most 250000 samples or runs. Invalid values are load errors.",
       "additionalProperties": false,
       "properties": {
         "design": {
@@ -32,7 +29,8 @@
             "list",
             "random",
             "latin_hypercube",
-            "sobol"
+            "sobol",
+            "file"
           ],
           "default": "grid",
           "description": "grid: every combination of evenly spaced values; list: the points in 'values'; random: independent uniform values; latin_hypercube: one value in each of 'count' slices of every parameter; sobol: the first 'count' points of the Sobol sequence (at most 10 parameters)."
@@ -67,6 +65,31 @@
               "type": "number"
             }
           }
+        },
+        "file": {
+          "type": "string",
+          "description": "Design 'file': a CSV from the model's folder, one point per row, its header naming each column by path."
+        },
+        "keep": {
+          "enum": [
+            "final",
+            "series"
+          ],
+          "default": "final",
+          "description": "An experiment's runs: each output's value at the end (one row per point), or each whole run as well."
+        },
+        "seeds": {
+          "enum": [
+            "common",
+            "per point"
+          ],
+          "default": "common",
+          "description": "An experiment's seeds: the run's at every point (common random numbers), or mixed from each point's index (Monte Carlo)."
+        },
+        "replicates": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "An experiment's runs of each point, each replicate with a seed mixed from its number."
         }
       }
     },

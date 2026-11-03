@@ -407,3 +407,14 @@ def test_models_defined_in_the_file_are_used_by_name():
     with pytest.raises(ValueError):
         m.add_model("c", "x.ssbx.json", model="gain")
 
+
+def test_an_experiment_runs_the_model_at_each_point():
+    cruise = ss.Model.example("Cruise control")
+    cruise.data["sample"] = {"design": "list", "params": [{"param": "cruise.kp"}],
+                             "values": [[200.0], [800.0]], "keep": "series"}
+    assert cruise.check()["experiment"]["runs"] == 2
+    r = cruise.run(t_end=5.0)
+    assert r.rows == 2 and list(r["cruise.kp"]) == [200.0, 800.0]
+    assert len(r.series) == 2 and r.series[1].rows == 101
+    assert r["car.v"][1] == r.series[1]["car.v"][-1]
+

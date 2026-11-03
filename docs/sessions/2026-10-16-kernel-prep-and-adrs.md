@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-03: ADR 0067 step 2 (headless): `Keep`, `Seeds`, `Design::File`, `Sampling::{file, keep, seeds, replicates}`, `Plan::{replicates, keep, seeds}`, declared keys, `read_points`; `ModelFile::experiment`, `Loaded::experiment`; `Simulator::reseed`; `run::run_experiment`, `advance`, `experiment_report`, `Results::series`; CLI and Python routing; schema; tests (bits equal across threads and to runs alone).
 - 2026-11-02: ADR 0066 step 5: `simsandbox_file::load_any`; `run_with` steps clocked models by instants; CLI routes inputs/probes/run files through the merged model, refuses `--dt`; Python `run(inputs=)`; test of schedule, track, probe, hash.
 - 2026-11-02: ADR 0069 step 2: `ArrayOp::Shift`/`ArrIns::Shift` (prev/next, edges as values), array params in `EquationSet::parse` (elements `m[i]`, alias span), `describe` text, guide; Platoon array test bit-equal.
 - 2026-11-02: ADR 0069 step 1: `Edit::Duplicate` (names, wires among copies, clock kept), canvas menu and Ctrl+D, routed inside outlines, Python `duplicate`; tests.
