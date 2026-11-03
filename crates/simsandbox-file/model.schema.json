@@ -457,6 +457,10 @@
             "type": "string"
           },
           "description": "A use's replacements of the files of uses inside it, by path ('plant', 'plant/engine'), found from this file's folder; only this use sees them (ADR 0066 step 4c)."
+        },
+        "sample": {
+          "$ref": "#/properties/sample",
+          "description": "A study block's points and what it keeps of each run (ADR 0070): as the top-level `sample`. Only a `study` block has one."
         }
       },
       "description": "A block of a registered type (e.g. 'eq.equations', see simsandbox describe), or a use of a model: a 'file', or a 'model' defined in this file (ADR 0066, ADR 0068)."

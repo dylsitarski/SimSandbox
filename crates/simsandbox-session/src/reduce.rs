@@ -74,7 +74,29 @@ fn comparison(s: &str) -> Option<(usize, usize, Cmp)> {
     None
 }
 
+/// What a result's unit is (ADR 0070).
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnitOf {
+    /// Seconds: `period`, `first_time`.
+    Time,
+    /// That of the one signal reduced, as in `max(car.v)`.
+    Signal(String),
+    /// An expression of several names or of numbers.
+    Unknown,
+}
+
 impl Reducer {
+    /// The unit of this result.
+    pub fn unit_of(&self) -> UnitOf {
+        match self.kind {
+            Kind::Period | Kind::FirstTime => UnitOf::Time,
+            _ => match &self.sides[0] {
+                Expr::Var(k) => UnitOf::Signal(self.names[*k].clone()),
+                _ => UnitOf::Unknown,
+            },
+        }
+    }
+
     /// Parse `text` (one reduction call) as the formula `name`.
     pub fn parse(name: &str, text: &str) -> Result<Self, String> {
         let text = text.trim();

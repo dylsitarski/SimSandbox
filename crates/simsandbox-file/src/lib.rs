@@ -50,6 +50,11 @@ pub use subsystems::{
 /// The format version this crate reads and writes.
 pub const FORMAT_VERSION: u32 = 1;
 
+/// The block type of a study (ADR 0070): its model (`settings.model`, a
+/// definition in scope, or `settings.file`) run at each point of its
+/// `sample`.
+pub const STUDY: &str = "study";
+
 /// Conventional file extension.
 pub const EXTENSION: &str = ".ssbx.json";
 
@@ -904,6 +909,15 @@ pub struct BlockEntry {
     /// `units.convert` (ADR 0045); see `simsandbox describe TYPE`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, String>,
+    /// A study's points and what it keeps of each run (ADR 0070); only a
+    /// `study` block has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<Sampling>,
+    /// A study's model when `settings.model` names a definition: its text,
+    /// with the definitions in scope; found as the file was read, never
+    /// written.
+    #[serde(skip)]
+    pub study_model: Option<String>,
     /// The equations of an `eq.equations` block, one per line (ADR 0017),
     /// e.g. `"dx/dt = sigma*(y - x)"`. Absent for types with built-in
     /// equations.
@@ -931,6 +945,20 @@ pub struct BlockEntry {
 }
 
 impl BlockEntry {
+    /// What a study block is built from (ADR 0070): its `sample` as JSON
+    /// (empty if none), then its model's text when `settings.model` names
+    /// a definition, then its equations (which it refuses).
+    pub fn study_definition(&self) -> Vec<String> {
+        let mut d = vec![self
+            .sample
+            .as_ref()
+            .map(|s| serde_json::to_string(s).expect("samples serialize"))
+            .unwrap_or_default()];
+        d.push(self.study_model.clone().unwrap_or_default());
+        d.extend(self.equations.iter().cloned());
+        d
+    }
+
     /// A use of a model, by file or as a local copy (ADR 0066).
     pub fn is_use(&self) -> bool {
         self.file.is_some() || self.model.is_some()
@@ -1631,6 +1659,17 @@ pub fn load_any(
     }
 }
 
+/// Whether no block has states. A study block counts as having some
+/// (ADR 0070): a model holding one is not swept by default.
+fn stateless(blocks: &[BlockEntry], model: &Model, ids: &BTreeMap<String, BlockId>) -> bool {
+    blocks.iter().all(|b| {
+        b.type_name != STUDY
+            && model
+                .block(ids[&b.name])
+                .is_ok_and(|x| x.spec().states.is_empty())
+    })
+}
+
 /// Parse a model file and build its model. Blocks that read files accept
 /// only absolute names: see [`load_in`].
 pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
@@ -2108,9 +2147,19 @@ impl ModelFile {
                     ),
                 ));
             }
+            if entry.sample.is_some() && entry.type_name != STUDY {
+                return Err(invalid(
+                    format!("{path}.sample"),
+                    "only a study block has a sample (ADR 0070)",
+                ));
+            }
             let config = BlockConfig {
                 method: (&entry.method).into(),
-                definition: entry.equations.clone(),
+                definition: if entry.type_name == STUDY {
+                    entry.study_definition()
+                } else {
+                    entry.equations.clone()
+                },
                 update: entry.update.clone(),
                 settings: entry.settings.clone(),
                 folder: folder.map(Into::into),
@@ -2412,11 +2461,7 @@ impl ModelFile {
         model: &Model,
         ids: &BTreeMap<String, BlockId>,
     ) -> Result<Option<Plan>, FileError> {
-        let stateless = self.blocks.iter().all(|b| {
-            model
-                .block(ids[&b.name])
-                .is_ok_and(|x| x.spec().states.is_empty())
-        });
+        let stateless = stateless(&self.blocks, model, ids);
         match &self.sample {
             Some(s) if !stateless => s.plan(self, model, ids).map(Some),
             _ => Ok(None),
@@ -2431,11 +2476,7 @@ impl ModelFile {
         model: &Model,
         ids: &BTreeMap<String, BlockId>,
     ) -> Result<Option<Sampling>, FileError> {
-        let stateless = self.blocks.iter().all(|b| {
-            model
-                .block(ids[&b.name])
-                .is_ok_and(|x| x.spec().states.is_empty())
-        });
+        let stateless = stateless(&self.blocks, model, ids);
         match (&self.sample, stateless) {
             // Runs in time; its `sample` is an experiment (ADR 0067).
             (Some(_), false) => Ok(None),
@@ -2597,11 +2638,7 @@ impl ModelFile {
             conversions
                 .push("controls.sweep became the sample section (ADR 0027, ADR 0028)".into());
         }
-        let stateless = self.blocks.iter().all(|b| {
-            model
-                .block(ids[&b.name])
-                .is_ok_and(|x| x.spec().states.is_empty())
-        });
+        let stateless = stateless(&self.blocks, model, ids);
         if !old_sweep.is_empty() && !stateless {
             warnings
                 .push("controls.sweep: the model has states, so it runs in time; ignored".into());

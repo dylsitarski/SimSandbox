@@ -355,21 +355,69 @@ pub fn run_experiment(
         .experiment
         .clone()
         .ok_or("this model has no experiment (`sample`)")?;
+    let study = Study {
+        plan,
+        timeless: false,
+        set: Vec::new(),
+        t_end,
+        dt,
+    };
+    run_study(text, registry, &loaded, &study, threads)
+}
+
+/// How a study runs its model (ADR 0070): the plan, whether the model has
+/// nothing in time (each point one evaluation), values set before every
+/// point (its input blocks, `block.param`), and the end and step.
+pub(crate) struct Study {
+    pub plan: simsandbox_file::Plan,
+    pub timeless: bool,
+    pub set: Vec<(String, f64)>,
+    pub t_end: Option<f64>,
+    pub dt: Option<f64>,
+}
+
+thread_local! {
+    /// Set on the threads running a study's points: a study inside runs
+    /// on its caller's thread (ADR 0070).
+    static IN_STUDY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread runs a study's points.
+pub(crate) fn in_study() -> bool {
+    IN_STUDY.with(std::cell::Cell::get)
+}
+
+/// Run `study` over `text` (loaded as `loaded`) on `threads` threads (all
+/// the machine's if `None`; one inside another study).
+pub(crate) fn run_study(
+    text: &str,
+    registry: &Registry,
+    loaded: &simsandbox_file::Loaded,
+    study: &Study,
+    threads: Option<usize>,
+) -> Result<Results, String> {
+    let plan = &study.plan;
     let rows = plan.points.len() * plan.replicates;
-    let threads = threads
-        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
-        .clamp(1, rows.max(1));
+    let threads = if in_study() {
+        1
+    } else {
+        threads.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+    }
+    .clamp(1, rows.max(1));
     let per = rows.div_ceil(threads);
     let folder = simsandbox_core::registry::current_folder();
     let chunks: Vec<Result<Vec<Row>, String>> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads)
             .map(|k| {
-                let (plan, folder) = (&plan, folder.clone());
+                let folder = folder.clone();
                 let range = k * per..((k + 1) * per).min(rows);
                 s.spawn(move || {
-                    simsandbox_core::registry::in_folder(folder.as_deref(), || {
-                        run_rows(text, registry, plan, range, t_end, dt)
-                    })
+                    let was = IN_STUDY.with(|c| c.replace(true));
+                    let r = simsandbox_core::registry::in_folder(folder.as_deref(), || {
+                        run_rows(text, registry, study, range)
+                    });
+                    IN_STUDY.with(|c| c.set(was));
+                    r
                 })
             })
             .collect();
@@ -382,8 +430,8 @@ pub fn run_experiment(
     for c in chunks {
         all.extend(c?);
     }
-    let first = loaded_outputs(&loaded)?;
-    let reduced = reducers(&plan, &first)?;
+    let first = loaded_outputs(loaded)?;
+    let reduced = reducers(plan, &first)?;
     let mut index = vec![("sample".to_string(), Vec::new())];
     if plan.replicates > 1 {
         index.push(("replicate".to_string(), Vec::new()));
@@ -507,9 +555,9 @@ fn reducers(plan: &simsandbox_file::Plan, fixed: &Outputs) -> Result<Reducers, S
 
 /// The fixed-shape outputs of a loaded model: block, port, full name and
 /// shape.
-type Outputs = Vec<(simsandbox_core::graph::BlockId, String, String, Shape)>;
+pub(crate) type Outputs = Vec<(simsandbox_core::graph::BlockId, String, String, Shape)>;
 
-fn loaded_outputs(loaded: &simsandbox_file::Loaded) -> Result<Outputs, String> {
+pub(crate) fn loaded_outputs(loaded: &simsandbox_file::Loaded) -> Result<Outputs, String> {
     let mut fixed = Vec::new();
     for entry in &loaded.flat.blocks {
         let id = loaded.ids[&entry.name];
@@ -528,15 +576,14 @@ fn loaded_outputs(loaded: &simsandbox_file::Loaded) -> Result<Outputs, String> {
     Ok(fixed)
 }
 
-/// The experiment's rows in `range`, on a model built for them.
+/// The study's rows in `range`, on a model built for them.
 fn run_rows(
     text: &str,
     registry: &Registry,
-    plan: &simsandbox_file::Plan,
+    study: &Study,
     range: std::ops::Range<usize>,
-    t_end: Option<f64>,
-    dt: Option<f64>,
 ) -> Result<Vec<Row>, String> {
+    let (plan, t_end, dt) = (&study.plan, study.t_end, study.dt);
     if range.is_empty() {
         return Ok(Vec::new());
     }
@@ -569,6 +616,9 @@ fn run_rows(
     let mut out = Vec::new();
     for row in range {
         let (p, j) = (row / plan.replicates, row % plan.replicates);
+        for (key, v) in &study.set {
+            set_key(&mut sim, &mut params, &ids, key, *v).map_err(|e| format!("{key}: {e}"))?;
+        }
         for (key, &v) in plan.keys.iter().zip(&plan.points[p]) {
             set_key(&mut sim, &mut params, &ids, key, v).map_err(|e| format!("{key}: {e}"))?;
         }
@@ -599,6 +649,8 @@ fn run_rows(
         let record = keep || !reduced.is_empty();
         let mut t = vec![sim.time()];
         let mut kept: Vec<Vec<f64>> = if record { values(&sim) } else { Vec::new() };
+        // A model with nothing in time is one evaluation (ADR 0067).
+        let t_end = if study.timeless { 0.0 } else { t_end };
         advance(&mut sim, (dt, t_end, clocked), &mut apply, |sim| {
             if record {
                 t.push(sim.time());

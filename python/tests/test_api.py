@@ -428,3 +428,20 @@ def test_an_experiment_reduces_each_run():
     assert list(r.outputs) == ["settle", "v_max"]
     assert r["settle"][1] < r["settle"][0]
 
+
+
+def test_a_study_block_runs_a_definition_at_each_point():
+    cruise = ss.Model.example("Cruise control").data
+    for k in ("format", "description", "controls"):
+        cruise.pop(k, None)
+    sample = {"design": "list", "params": [{"param": "cruise.kp"}], "values": [[200.0], [800.0]],
+              "reduce": {"settle": "first_time(abs(cruise.e) < 0.5)"}}
+    m = ss.Model({"format": 1, "models": {"cruise": cruise},
+                  "blocks": [{"name": "s", "type": "study", "settings": {"model": "cruise"}, "sample": sample}],
+                  "run": {"dt": 1.0, "t_end": 1.0}})
+    assert m.check()["ok"]
+    r = m.run()
+    # One array per output, one value per run: the firmer controller settles sooner.
+    settle = r["s.settle"][-1]
+    assert len(settle) == 2 and settle[1] < settle[0]
+    assert list(r["s.cruise_kp"][-1]) == [200.0, 800.0]

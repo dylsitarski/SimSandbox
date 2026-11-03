@@ -10,6 +10,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Study blocks (ADR 0070): `{"type": "study", "settings": {"model": "cruise"}, "sample": {...}}` runs a model (a definition or `settings.file`) at each point of its sample and outputs arrays with one value per run; the model's input blocks are its inputs, so studies feed and nest in other models.
 - `reduce` in an experiment (ADR 0067): named results, one per run, such as `"v_max": "max(plant/car.v)"` or `"settle": "first_time(abs(cruise.e) < 0.1)"` (also `final`, `mean`, `min`, `amplitude`, `period`); signal expressions read paths such as `plant/car.v` as one name.
 - Experiments over any model (ADR 0067): a `sample` on a model that runs in time, or uses models, now runs the whole model at each point, in parallel with the same results on any number of cores, keeping each output's final value (or each run, `keep: "series"`); points set parameters by path or declared name, or come from a CSV (`design: "file"`); `seeds: "per point"` and `replicates` for Monte Carlo. `check` describes it; Python `Results.series`.
 - Models that use models take inputs, probes and run files (ADR 0066 step 5): `run --inputs`, `--probe`, `--save-probes` and run files work on them, with keys and signals by full name (`slow/u.y`); Python `run(inputs=...)` too; a run file notices when a used file changed.

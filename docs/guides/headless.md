@@ -152,6 +152,24 @@ A `sample` section on a model that runs in time (or uses models) is an experimen
 - **Reductions:** `"reduce": {"v_max": "max(plant/car.v)", "settle": "first_time(abs(cruise.e) < 0.1)"}` gives each row these named values instead of final ones. The reductions are `final`, `mean` (over time), `min`, `max`, `amplitude` (half of max − min), `period` (mean time between upward crossings of the mean) and `first_time(a < b)` (also `>`, `<=`, `>=`; NaN if never), each over an expression of signals by full name and `t`.
 - `check` reports `experiment`. The app runs such a model in time; it has no view of the experiment yet.
 
+### Study blocks
+
+A **study** is a block that runs a model at each point of its own `sample` and outputs the results as arrays ([ADR 0070](../decisions/0070-studies-are-blocks.md)). It is how a model is studied without changing its file, and how studies nest.
+
+```json
+"models": {"cruise": {"blocks": [...], "connections": [...], "run": {"dt": 0.05, "t_end": 60}}},
+"blocks": [{"name": "kp", "type": "study", "settings": {"model": "cruise"},
+            "sample": {"design": "list", "params": [{"param": "cruise.kp"}], "values": [[200], [800]],
+                       "reduce": {"v_max": "max(car.v)", "settle": "first_time(abs(cruise.e) < 0.5)"}}}]
+```
+
+- **Model:** `settings.model`, a definition in scope, or `settings.file`, a model file found from this file's folder (its contents are part of the run hash). The study's `sample` replaces the model's own; designs, `seeds`, `replicates` and `reduce` are an experiment's. `keep: "series"` is refused: a study keeps one value per run.
+- **Inputs:** the model's input blocks (`input.value`), one scalar input each, named as the block; every point takes their values. An input block the sample sweeps is not an input.
+- **Outputs:** arrays with one value per run (points times replicates): each swept parameter (`cruise.kp` becomes `kp.cruise_kp`), then each `reduce` result, or without `reduce` each scalar output's final value (`car.v` becomes `car_v`). Units: a parameter's or output's own; `period` and `first_time` in seconds; a reduction of one signal in its unit; other expressions dimensionless.
+- **When it runs:** whenever its inputs change, each point from the model's start to the model's `t_end` (one evaluation if the model has nothing in time). The results are kept until the inputs change. Only the outermost study uses several cores; the results never depend on how many.
+- **Studies of studies:** a definition holding a study can itself be studied: the outer study's points set the inner one's inputs through input blocks, and its `reduce` reads one run of the inner arrays by element (`final(inner.half[1])`).
+- A model holding a study runs in time; it is not swept by default. The app runs such models; it has no view of a study's arrays yet, and formulas cannot yet read them (ADR 0070 step 3).
+
 ## Recorder
 
 `"recorder": {"every": 10, "mb": 256}` in `controls` (both optional) lets the model be rewound in the app ([ADR 0064](../decisions/0064-recorder-node.md)): a snapshot of its state every `every` steps, within `mb` megabytes. Without it the app shows no rewind bar. It changes no results; headless runs ignore it.

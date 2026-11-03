@@ -88,6 +88,7 @@ pub fn registry() -> Registry {
     let mut r = Registry::new();
     simsandbox_eq::register(&mut r).expect("equation types register once");
     simsandbox_agents::register(&mut r).expect("agent types register once");
+    crate::study::register(&mut r).expect("the study type registers once");
     r
 }
 

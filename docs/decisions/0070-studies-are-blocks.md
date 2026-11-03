@@ -93,3 +93,13 @@ Later, when a model needs them: ids and structure versions on variable ports; ed
 - A study's results are arrays; formulas that reduce them need array inputs indexed by point (step 3).
 - A study that is re-run at every step is costly; it is kept until its inputs change, and `check` reports its runs.
 - Updated: [architecture overview](../architecture/overview.md) (concept list), [block contract](../architecture/block-contract.md), the ADR template, the README and the [headless guide](../guides/headless.md).
+
+## As built
+
+**Step 1 (2026-11-03): the study block, headless** (`crates/simsandbox-session/src/study.rs`, registered with the built-in types).
+- **Definition:** the loader gives the block its `sample` as JSON and, for `settings.model`, the definition's text with the definitions in scope but itself (`BlockEntry::study_definition`, `compose::resolve_models`); for `settings.file` the block reads the file (as edited, if open) and the registry hashes it like a data file. A `sample` on any other block is refused.
+- **Running:** `run::run_study`, which `run_experiment` now also uses: every row sets the input values, then the point; a model with nothing in time (no states or tables) is evaluated once per point. Points run on threads only outside a study (`IN_STUDY`); studies nest at most 8 deep, which stops definitions studying each other.
+- **Ports:** inputs from the model's input blocks not swept; outputs `Vector(runs)`, named by key with `.` and `/` as `_`, every output depending on every input. Labels: the model's accuracy, at least Responsive.
+- **The default sweep:** a model holding a study counts as having states, so it runs in time rather than being swept over its first parameter (the rule ADR 0070 step 2 removes).
+- **Tests:** a study of a definition and of a file gives the experiment's values bit for bit, once per change of inputs; a study re-runs when a scheduled input changes (halving times ln(2·x0)/k); a study of a study (ln 4/k at three rates); refusals; the file in the run hash; Python.
+

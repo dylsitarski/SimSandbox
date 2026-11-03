@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-03: ADR 0070 written (studies as blocks, member families, concept list, README/vision/STATUS phase lines); step 1: `study.rs`, `BlockEntry::sample`/`study_definition`, `run_study` shared with experiments, schema; tests.
 - 2026-11-03: ADR 0067 step 3: `reduce` module (`Reducer`), `Sampling::reduce`/`Plan::reduce`, run_rows records what reductions read; path names in `parse_signals`; schema; tests.
 - 2026-11-03: ADR 0067 step 2 (headless): `Keep`, `Seeds`, `Design::File`, `Sampling::{file, keep, seeds, replicates}`, `Plan::{replicates, keep, seeds}`, declared keys, `read_points`; `ModelFile::experiment`, `Loaded::experiment`; `Simulator::reseed`; `run::run_experiment`, `advance`, `experiment_report`, `Results::series`; CLI and Python routing; schema; tests (bits equal across threads and to runs alone).
 - 2026-11-02: ADR 0066 step 5: `simsandbox_file::load_any`; `run_with` steps clocked models by instants; CLI routes inputs/probes/run files through the merged model, refuses `--dt`; Python `run(inputs=)`; test of schedule, track, probe, hash.
@@ -120,6 +121,7 @@
 
 ## Decided
 
+- 2026-11-03 (owner): a study is a block, a use always runs its model plain, and arrays, agents and studies are models over sets of members whose structure changes only between steps through labelled transfers; a concept list keeps concepts few (ADR 0070).
 - 2026-11-02 (owner): no saved file has subsystems, so ADR 0068 step 3 refuses them instead of converting.
 - 2026-11-02 (owner): repetition and recursion of structure belong in blocks (ADR 0069): no self-use; arrays gain parameters, neighbours by index and network grids as models need them; Duplicate on the canvas; `count` on uses waits.
 - 2026-11-02 (owner): one kind of nested model (ADR 0068): subsystems become models defined in the file. As built, the default clock was narrowed: a wired model without `run.dt` shares; otherwise ADR 0066 holds (own clock with states, on new data without), since saved files always wrote `run.dt` and ADR 0067 keeps models without states on new data.
