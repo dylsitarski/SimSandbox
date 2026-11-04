@@ -128,6 +128,7 @@
 
 ## Decided
 
+- 2026-11-04 (owner): sweeps and experiments are studies; the `sample` section, the default sweep and the app's sweep are removed with no conversion; studies run within their step in the app (ADR 0071).
 - 2026-11-04 (owner): `controls.plots` leaves the format with no conversion: no file relies on it (Q51).
 - 2026-11-03 (owner): a study is a block, a use always runs its model plain, and arrays, agents and studies are models over sets of members whose structure changes only between steps through labelled transfers; a concept list keeps concepts few (ADR 0070).
 - 2026-11-02 (owner): no saved file has subsystems, so ADR 0068 step 3 refuses them instead of converting.

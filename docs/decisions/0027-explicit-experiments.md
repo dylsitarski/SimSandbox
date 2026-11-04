@@ -1,6 +1,6 @@
 # 0027 — Explicit experiments: sampling, run and reduction
 
-- **Status:** Accepted
+- **Status:** Superseded by [0071](0071-sweeps-are-studies.md)
 - **Date:** 2026-10-18
 
 ## Context

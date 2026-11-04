@@ -1,6 +1,6 @@
 # 0021 — Maps, formula blocks and parameter sweeps
 
-- **Status:** Accepted
+- **Status:** Accepted; sweeps superseded by [0071](0071-sweeps-are-studies.md)
 - **Date:** 2026-10-17
 
 ## Context

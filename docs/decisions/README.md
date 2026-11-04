@@ -32,7 +32,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0024](0024-heat-map-axes-and-coordinates.md) | Heat map axes and coordinate fields | Accepted | 2026-10-18 |
 | [0025](0025-index-aware-view-settings.md) | View settings that depend on the index | Accepted | 2026-10-18 |
 | [0026](0026-profile-slices.md) | Profiles of 2D grids as slices | Superseded by 0029 | 2026-10-18 |
-| [0027](0027-explicit-experiments.md) | Explicit experiments: sampling, run and reduction | Accepted | 2026-10-18 |
+| [0027](0027-explicit-experiments.md) | Explicit experiments: sampling, run and reduction | Superseded by 0071 | 2026-10-18 |
 | [0028](0028-sweeps-as-samples.md) | Sweeps recorded as samples | Accepted | 2026-10-18 |
 | [0029](0029-profile-cuts.md) | Profiles as cuts in any direction | Superseded by 0031 | 2026-10-18 |
 | [0030](0030-filters-and-native-visualization.md) | Filters feed views; native visualization grows with need | Superseded by 0032 | 2026-10-18 |
@@ -71,6 +71,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0068](0068-one-kind-of-nested-model.md) | One kind of nested model: subsystems become models defined in the file (`models`, used by `model`), ports as input blocks and declared outputs, default clock by `run.dt`, local copies as definitions, one editor; older `subsystems` converted (resolves Q49) | Accepted | 2026-11-02 |
 | [0069](0069-repetition-in-blocks.md) | Repetition and recursion of structure belong in blocks: no self-use; arrays extended (array parameters, neighbours by index, network grids); Duplicate for a few copies; `count` on uses waits (resolves Q50) | Accepted | 2026-11-02 |
 | [0070](0070-studies-are-blocks.md) | A study is a block (a model and a `sample` as its definition, inputs from the model's input blocks, arrays by run as outputs); a use always runs its model plain; arrays, agents and studies are models over sets of members (rows with ids, edges as tables, structure changed between steps by labelled transfers); a concept list kept in the overview | Accepted | 2026-11-03 |
+| [0071](0071-sweeps-are-studies.md) | Sweeps and experiments are studies: the `sample` section, the default sweep and the app's sweep removed; study outputs shaped by their design (2D grids for two-parameter grids); studies run within their step in the app, with progress, given up for newer changes | Accepted | 2026-11-04 |
 | [0066](0066-models-nest-as-blocks.md) | Models nest: a model's blocks may be uses of model files, on their own clocks (default) or their parent's; links through probes at any depth; 128-bit exact ticks; rewind per clock with recorded link values | Accepted | 2026-11-02 |
 | [0065](0065-several-models-with-own-clocks.md) | Several models with their own clocks: compositions reference model files as named uses; links only through probes into input blocks; clocks ordered in exact ticks; editing a used model asks: edit the original, copy locally or save as new | Superseded by 0066 | 2026-11-02 |
 | [0064](0064-recorder-node.md) | Rewind is opt-in: a recorder node holds the replay state's settings; without one no snapshots are taken and the rewind bar is hidden | Accepted | 2026-10-29 |

@@ -29,6 +29,7 @@ _Last updated: 2026-11-04_
 
 ## Done recently
 
+- 2026-11-04: ADR 0071 (owner): sweeps and experiments are studies; the `sample` section, the default sweep and the app's sweep go.
 - 2026-11-04: a study names its model as a use does (`model`/`file`) and opens to it on the canvas, to see and edit it with a used model's choices (owner).
 - 2026-11-04: `controls.plots` removed from the format (Q51, owner).
 - 2026-11-04: the examples brought to the current form, with results unchanged bit for bit: no `controls.plots` (it does nothing since ADR 0063; Q51); each value written once (typed equations hold parameters and starts, `state v [m/s] = 0`; block `params` only what differs); default methods left out; units on the resonance formulas and on predator–prey; no `run.dt` where nothing runs in time; the Platoon named for what it is (a model defined once, used three times). New example: tuning a controller's gain (a study of a model defined in the file, its arrays read by a formula that picks the fastest gain under a peak limit). A test checks that every built-in example is current, warns of nothing and runs. Found on the way: canvas undo now keeps slider values of parameters left at their defaults.
@@ -151,11 +152,12 @@ _Last updated: 2026-11-04_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 5 done 2026-11-02): (6) several cores between instants.
-2. **Adaptive experiments** (ADR 0067 step 5): optimisation, fitting and continuation as strategies that choose points in rounds (ADR 0070 point 4); needs its own ADR.
-3. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
-4. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)), Duplicate, array parameters and neighbours done 2026-11-02: network grids (nodes and edges from a file) and array parameters read from a data file when a model needs them; `count` on uses waits.
-5. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
+1. **Sweeps are studies** ([ADR 0071](decisions/0071-sweeps-are-studies.md)), in order: (1) study outputs shaped by their design (2D grids for two-parameter grids), `plot.xy` over line fields; (2) studies in the app with progress, given up for newer changes; (3) the `sample` section, the default sweep and the app's sweep removed, "Study this model" on the whole model and `Model.as_study`, the resonance examples rewritten.
+2. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 5 done 2026-11-02): (6) several cores between instants.
+3. **Adaptive experiments** (ADR 0067 step 5): optimisation, fitting and continuation as strategies that choose points in rounds (ADR 0070 point 4); needs its own ADR.
+4. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
+5. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)), Duplicate, array parameters and neighbours done 2026-11-02: network grids (nodes and edges from a file) and array parameters read from a data file when a model needs them; `count` on uses waits.
+6. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
 
