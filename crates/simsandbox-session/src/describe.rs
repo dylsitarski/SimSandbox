@@ -135,6 +135,7 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
 fn slot_kind(k: SlotKind) -> &'static str {
     match k {
         SlotKind::Scalar => "scalar",
+        SlotKind::Values => "scalar or line",
         SlotKind::Grid => "grid",
         SlotKind::Points => "points",
         SlotKind::Line => "line",

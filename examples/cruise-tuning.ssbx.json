@@ -132,6 +132,14 @@
       {
         "type": "plot.xy",
         "bind": {
+          "x": "tuning.reach",
+          "y": "tuning.peak",
+          "colour": "tuning.cruise_ki"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
           "x": "t",
           "y": "best.best_ki"
         }

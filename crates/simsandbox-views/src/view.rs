@@ -13,6 +13,9 @@ use std::collections::BTreeMap;
 pub enum SlotKind {
     /// A scalar signal or `t`.
     Scalar,
+    /// A scalar signal, `t`, or a line of cells, which a view draws cell
+    /// by cell (a study's runs, ADR 0071).
+    Values,
     /// A grid field.
     Grid,
     /// A point set.
@@ -220,6 +223,11 @@ impl Available<'_> {
         let name = split_source(name).1;
         match kind {
             SlotKind::Scalar => name == TIME || self.scalars.iter().any(|s| s == name),
+            SlotKind::Values => {
+                name == TIME
+                    || self.scalars.iter().any(|s| s == name)
+                    || self.lines.iter().any(|s| s == name)
+            }
             SlotKind::Grid => self.grids.iter().any(|s| s == name),
             SlotKind::Points => self.points.iter().any(|s| s == name),
             SlotKind::Line => self.lines.iter().any(|s| s == name),
@@ -270,6 +278,10 @@ impl Available<'_> {
         match kind {
             SlotKind::Scalar => std::iter::once(TIME)
                 .chain(self.scalars.iter().map(String::as_str))
+                .collect(),
+            SlotKind::Values => std::iter::once(TIME)
+                .chain(self.scalars.iter().map(String::as_str))
+                .chain(self.lines.iter().map(String::as_str))
                 .collect(),
             SlotKind::Grid => self.grids.iter().map(String::as_str).collect(),
             SlotKind::Points => self.points.iter().map(String::as_str).collect(),
@@ -784,6 +796,33 @@ mod tests {
         // A 2D grid cannot be drawn over t.
         let flat = Available { lines: &[], ..a };
         assert!(heat.check(&bind("t", "rod.x"), &none, &flat).is_err());
+    }
+
+    #[test]
+    fn plot_xy_draws_lines_of_cells_against_each_other() {
+        // A study's results: lines of cells, plotted cell by cell (ADR 0071).
+        let r = ViewRegistry::builtin();
+        let xy = r.get("plot.xy").unwrap();
+        let lines: Vec<String> = ["s.ki", "s.reach", "s.peak"].map(String::from).to_vec();
+        let a = Available {
+            grids: &lines,
+            lines: &lines,
+            ..Default::default()
+        };
+        let bind: Bindings = [
+            ("x".to_string(), vec!["s.ki".to_string()]),
+            ("y".to_string(), vec!["s.reach".to_string()]),
+            ("colour".to_string(), vec!["s.peak".to_string()]),
+        ]
+        .into();
+        assert!(xy.check(&bind, &BTreeMap::new(), &a).is_ok());
+        let cells = xy
+            .presets
+            .iter()
+            .position(|p| p.label == "Cell by cell")
+            .unwrap();
+        let v = ViewState::from_preset(xy, cells, &a).unwrap();
+        assert_eq!(v.bind, bind);
     }
 
     #[test]

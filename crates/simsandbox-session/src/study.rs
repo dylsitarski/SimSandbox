@@ -196,6 +196,12 @@ impl StudyBlock {
             ));
         }
         let runs = plan.points.len() * plan.replicates;
+        // A grid over two parameters, run once each: 2D results, the first
+        // parameter fastest (ADR 0071).
+        let grid2 = match plan.grid.as_deref() {
+            Some(&[nx, ny]) if plan.replicates == 1 && plan.keys.len() == 2 => Some((nx, ny)),
+            _ => None,
+        };
         // Inputs: the model's own input blocks.
         let mut ports = Vec::new();
         let mut keys = Vec::new();
@@ -223,7 +229,10 @@ impl StudyBlock {
             }
             // A line of cells, one per run, as array formulas read them
             // (`grid k = runs`, `input a[k]`).
-            let shape = Shape::Grid { nx: runs, ny: 1 };
+            let shape = match grid2 {
+                Some((nx, ny)) => Shape::Grid { nx, ny },
+                None => Shape::Grid { nx: runs, ny: 1 },
+            };
             ports.push(PortSpec::output(&name, unit, shape).depends_on(&inputs));
             from.push(f);
             Ok(())
@@ -273,18 +282,25 @@ impl StudyBlock {
         }
         // One parameter on a grid, run once each: its values are the
         // coordinate of every result, as an axis is of a field.
-        if plan.keys.len() == 1
-            && plan.replicates == 1
-            && plan.design == simsandbox_file::Design::Grid
-        {
-            let first_result = ports.len() - from.len() + 1;
+        // On a grid over two, each parameter places the results' cells
+        // along its axis.
+        let keys_placing = match (plan.keys.len(), grid2) {
+            (1, _) if plan.replicates == 1 && plan.design == simsandbox_file::Design::Grid => 1,
+            (2, Some(_)) => 2,
+            _ => 0,
+        };
+        if keys_placing > 0 {
+            let first_key = ports.len() - from.len() + usize::from(plan.ids.is_some());
+            let first_result = first_key + keys_placing;
             let results: Vec<String> = ports[first_result..]
                 .iter()
                 .map(|p| p.name.clone())
                 .collect();
-            let key = &mut ports[first_result - 1];
-            for r in results {
-                *key = key.clone().coordinate_of(&r, 0);
+            for axis in 0..keys_placing {
+                let key = &mut ports[first_key + axis];
+                for r in &results {
+                    *key = key.clone().coordinate_of(r, axis);
+                }
             }
         }
         // As slow as running many runs, and as accurate as its model.
@@ -493,6 +509,7 @@ mod tests {
     use crate::examples::registry;
     use crate::run::{run, run_experiment, Results};
     use serde_json::{json, Value};
+    use simsandbox_core::block::Shape;
 
     const CRUISE: &str = include_str!("../../../examples/cruise-control.ssbx.json");
 
@@ -753,6 +770,66 @@ mod tests {
         assert_eq!(study.model.as_deref(), Some(target.def[0].as_str()));
         assert_ne!(target.def[0], "cruise");
         assert!(crate::run::run(&top.to_json(), &r, None, None).is_ok());
+    }
+
+    #[test]
+    fn a_grid_over_two_parameters_gives_2d_results() {
+        // ADR 0071: n1 × n2 cells, the first parameter fastest, both
+        // parameters placing the cells along their axes.
+        let r = registry();
+        let mut model: Value =
+            serde_json::from_str(include_str!("../../../examples/resonance.ssbx.json")).unwrap();
+        for k in ["format", "description", "controls", "sample"] {
+            model.as_object_mut().unwrap().remove(k);
+        }
+        let file = json!({"format": 1, "models": {"resonance": model},
+            "blocks": [{"name": "s", "type": "study", "model": "resonance",
+                "sample": {"design": "grid", "params": [
+                    {"param": "spring.w", "range": [0.5, 1.5], "points": 5},
+                    {"param": "spring.c", "range": [0.1, 0.4], "points": 4}]}}]});
+        let loaded = simsandbox_file::load(&file.to_string(), &r).unwrap();
+        let spec = loaded.model.block(loaded.ids["s"]).unwrap().spec().clone();
+        let port = |n: &str| spec.ports.iter().find(|p| p.name == n).unwrap().clone();
+        assert_eq!(port("spring_amplitude").shape, Shape::Grid { nx: 5, ny: 4 });
+        let w = port("spring_w");
+        let c = port("spring_c");
+        assert!(w
+            .coordinate
+            .iter()
+            .any(|k| k.port == "spring_amplitude" && k.axis == 0));
+        assert!(c
+            .coordinate
+            .iter()
+            .any(|k| k.port == "spring_amplitude" && k.axis == 1));
+        let rows = run(&file.to_string(), &r, None, None).unwrap();
+        let (w, c, a) = (
+            value(&rows, "s.spring_w"),
+            value(&rows, "s.spring_c"),
+            value(&rows, "s.spring_amplitude"),
+        );
+        // Cell (i, j): w_i and c_j; the amplitude of that spring.
+        for j in 0..4 {
+            for i in 0..5 {
+                let k = j * 5 + i;
+                assert_eq!(w[k], 0.5 + 0.25 * i as f64);
+                assert!((c[k] - (0.1 + 0.1 * j as f64)).abs() < 1e-12);
+                let (wi, cj) = (w[k], c[k]);
+                let expect = 1.0 / ((1.0 - wi * wi).powi(2) + (cj * wi).powi(2)).sqrt();
+                assert!((a[k] - expect).abs() < 1e-12, "{k}");
+            }
+        }
+        // Any other design, or replicates: a line of runs.
+        let mut listed = file.clone();
+        listed["blocks"][0]["sample"] = json!({"design": "sobol", "count": 8,
+            "params": [{"param": "spring.w", "range": [0.5, 1.5]}, {"param": "spring.c", "range": [0.1, 0.4]}]});
+        let loaded = simsandbox_file::load(&listed.to_string(), &r).unwrap();
+        let spec = loaded.model.block(loaded.ids["s"]).unwrap().spec().clone();
+        let a = spec
+            .ports
+            .iter()
+            .find(|p| p.name == "spring_amplitude")
+            .unwrap();
+        assert_eq!(a.shape, Shape::Grid { nx: 8, ny: 1 });
     }
 
     #[test]

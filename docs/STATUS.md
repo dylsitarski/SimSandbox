@@ -25,10 +25,11 @@ _Last updated: 2026-11-04_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 431 tests in the workspace plus 25 Python tests, including verification against analytic solutions and convergence order.
+- 433 tests in the workspace plus 25 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-11-04: ADR 0071 step 1: a study over a two-parameter grid gives 2D results placed by both parameters (heat maps, surfaces, contours and cuts read them); `plot.xy` draws lines of cells against each other cell by cell ("Cell by cell"); the tuning example shows reach against peak coloured by gain.
 - 2026-11-04: ADR 0071 (owner): sweeps and experiments are studies; the `sample` section, the default sweep and the app's sweep go.
 - 2026-11-04: a study names its model as a use does (`model`/`file`) and opens to it on the canvas, to see and edit it with a used model's choices (owner).
 - 2026-11-04: `controls.plots` removed from the format (Q51, owner).
@@ -152,7 +153,7 @@ _Last updated: 2026-11-04_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Sweeps are studies** ([ADR 0071](decisions/0071-sweeps-are-studies.md)), in order: (1) study outputs shaped by their design (2D grids for two-parameter grids), `plot.xy` over line fields; (2) studies in the app with progress, given up for newer changes; (3) the `sample` section, the default sweep and the app's sweep removed, "Study this model" on the whole model and `Model.as_study`, the resonance examples rewritten.
+1. **Sweeps are studies** ([ADR 0071](decisions/0071-sweeps-are-studies.md)), in the owner's order (step 1 done 2026-11-04): (3) the `sample` section, the default sweep and the app's sweep removed, "Study this model" on the whole model and `Model.as_study`, the resonance examples rewritten; then (2) studies in the app with progress, given up for newer changes.
 2. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 5 done 2026-11-02): (6) several cores between instants.
 3. **Adaptive experiments** (ADR 0067 step 5): optimisation, fitting and continuation as strategies that choose points in rounds (ADR 0070 point 4); needs its own ADR.
 4. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).

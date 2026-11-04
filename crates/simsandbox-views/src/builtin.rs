@@ -56,11 +56,11 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
     r.register(ViewType {
         name: "plot.xy",
         label: "Plot",
-        description: "Signals against time or against each other",
+        description: "Signals against time or against each other; lines of cells against each other cell by cell (a study's runs)",
         slots: &[
             Slot {
                 name: "x",
-                kind: SlotKind::Scalar,
+                kind: SlotKind::Values,
                 of: None,
                 applies: always,
                 many: false,
@@ -69,14 +69,17 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             },
             Slot {
                 name: "y",
-                kind: SlotKind::Scalar,
+                kind: SlotKind::Values,
                 of: None,
                 applies: always,
                 many: true,
                 required: true,
                 description: "Vertical axis: one or more signals",
             },
-            COLOUR,
+            Slot {
+                kind: SlotKind::Values,
+                ..COLOUR
+            },
         ],
         style: &[TRAIL_LENGTH, REACH, EQUAL_SCALES],
         applies_to: &[],
@@ -118,6 +121,20 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
                     };
                     let colour = results(a).into_iter().next()?;
                     Some(bindings(&[("x", x), ("y", y), ("colour", &colour)]))
+                },
+            },
+            Preset {
+                label: "Cell by cell",
+                description: "One line of cells against another, a point per cell, coloured by a third: a study's runs",
+                bindings: |a| {
+                    let [x, y, rest @ ..] = a.lines else {
+                        return None;
+                    };
+                    let mut b = bindings(&[("x", x), ("y", y)]);
+                    if let Some(c) = rest.first() {
+                        b.insert("colour".into(), vec![c.clone()]);
+                    }
+                    Some(b)
                 },
             },
             Preset {
@@ -321,12 +338,94 @@ impl Curve {
     }
 }
 
+impl Xy {
+    /// `plot.xy` over lines of cells: each `y` against `x` at their latest
+    /// frame, a marker per cell, coloured by `colour`'s cells if bound.
+    fn cells(
+        &mut self,
+        ui: &mut egui::Ui,
+        input: &ViewInput<'_>,
+        x: Bound<'_>,
+        fx: usize,
+        colour: Option<Bound<'_>>,
+    ) {
+        let latest = |b: Bound<'_>, f: usize| -> Vec<f64> {
+            let h = b.history;
+            if h.is_empty() {
+                return Vec::new();
+            }
+            h.fields()[f].frame(h.len() - 1).to_vec()
+        };
+        let xs = latest(x, fx);
+        let key = match colour {
+            Some(c) => match c.signal {
+                SignalRef::Field(fc) => ColourKey::Value(latest(c, fc)),
+                _ => ColourKey::Constant,
+            },
+            None => ColourKey::Constant,
+        };
+        let tr = self.transposed;
+        let at = move |a: f64, b: f64| if tr { [b, a] } else { [a, b] };
+        let ys: Vec<(String, Vec<f64>)> = input
+            .many_any("y")
+            .iter()
+            .filter_map(|&y| match y.signal {
+                SignalRef::Field(fy) => Some((label(y.name), latest(y, fy))),
+                _ => None,
+            })
+            .collect();
+        let mut plot = Plot::new("plot.xy.cells").allow_scroll(false);
+        let (across, up) = (label(x.name), (ys.len() == 1).then(|| ys[0].0.clone()));
+        let (across, up) = if tr {
+            (up, Some(across))
+        } else {
+            (Some(across), up)
+        };
+        if let Some(l) = across {
+            plot = plot.x_axis_label(l);
+        }
+        if let Some(l) = up {
+            plot = plot.y_axis_label(l);
+        }
+        if ys.len() > 1 {
+            plot = plot.legend(Legend::default());
+        }
+        plot.show(ui, |plot| {
+            scroll_to_zoom(plot);
+            for (k, (name, y)) in ys.iter().enumerate() {
+                let n = xs.len().min(y.len());
+                let point = |i: usize| at(xs[i], y[i]);
+                let finite = |p: &[f64; 2]| p.iter().all(|v| v.is_finite());
+                if ys.len() == 1 && !matches!(key, ColourKey::Constant) {
+                    for (c, cells) in bins(0, n, &key, COLOUR_CHUNKS) {
+                        let pts: Vec<[f64; 2]> =
+                            cells.into_iter().map(point).filter(finite).collect();
+                        plot.points(Points::new(name.clone(), pts).radius(2.5).color(c));
+                    }
+                } else {
+                    let pts: Vec<[f64; 2]> = (0..n).map(point).filter(finite).collect();
+                    plot.points(
+                        Points::new(name.clone(), pts)
+                            .radius(2.5)
+                            .color(series_colour(k)),
+                    );
+                }
+            }
+        });
+    }
+}
+
 impl View for Xy {
     fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>) {
         let Some(x) = input.one_any("x") else {
             return;
         };
         let colour = input.one_any("colour");
+        // Lines of cells: their latest values, cell by cell (ADR 0071).
+        if let SignalRef::Field(fx) = x.signal {
+            self.cells(ui, input, x, fx, colour);
+            return;
+        }
         // Each curve from its own recording, paired with x (and colour) at
         // the times both recorded.
         let curves: Vec<Curve> = input
