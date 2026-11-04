@@ -341,19 +341,15 @@ fn bad_controls_are_dropped_with_warnings() {
 
     let dangling = LORENZ
         .replace("lorenz.sigma", "lorenz.sigmaa")
-        .replace(
-            r#""speed": 1.0"#,
-            r#""speed": -1.0, "plots": ["lorenz.nope"]"#,
-        )
+        .replace(r#""speed": 1.0"#, r#""speed": -1.0"#)
         .replace("0.0,\n          30.0", "30.0,\n          0.0");
     let loaded = load(&dangling, &registry()).unwrap();
-    assert_eq!(loaded.warnings.len(), 4, "{:?}", loaded.warnings);
+    assert_eq!(loaded.warnings.len(), 3, "{:?}", loaded.warnings);
     let c = &loaded.file.controls;
     assert_eq!(c.params.len(), 1);
     assert!(c.params["lorenz.rho"].slider);
     assert_eq!(c.params["lorenz.rho"].range, None);
     assert_eq!(c.speed, None);
-    assert!(c.plots.is_empty());
 }
 
 #[test]

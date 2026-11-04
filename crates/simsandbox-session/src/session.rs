@@ -532,7 +532,7 @@ impl Session {
             let spec = block.spec();
             for port in spec.outputs() {
                 // Every output can be recorded; what is, wiring decides
-                // (ADR 0063), so `controls.plots` no longer limits it.
+                // (ADR 0063).
                 let key = format!("{}.{}", entry.name, port.name);
                 let field = match port.shape {
                     Shape::Grid { nx, ny } => Some(FieldShape::Grid { nx, ny }),

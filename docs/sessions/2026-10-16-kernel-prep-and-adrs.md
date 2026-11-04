@@ -127,6 +127,7 @@
 
 ## Decided
 
+- 2026-11-04 (owner): `controls.plots` leaves the format with no conversion: no file relies on it (Q51).
 - 2026-11-03 (owner): a study is a block, a use always runs its model plain, and arrays, agents and studies are models over sets of members whose structure changes only between steps through labelled transfers; a concept list keeps concepts few (ADR 0070).
 - 2026-11-02 (owner): no saved file has subsystems, so ADR 0068 step 3 refuses them instead of converting.
 - 2026-11-02 (owner): repetition and recursion of structure belong in blocks (ADR 0069): no self-use; arrays gain parameters, neighbours by index and network grids as models need them; Duplicate on the canvas; `count` on uses waits.

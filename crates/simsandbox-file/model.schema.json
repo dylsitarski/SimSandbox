@@ -533,12 +533,6 @@
           "exclusiveMinimum": 0,
           "description": "Simulated seconds per wall-clock second."
         },
-        "plots": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ref"
-          }
-        },
         "filters": {
           "type": "array",
           "description": "Filters turning recorded data into new signals and fields (ADR 0030, ADR 0032). Each names its inputs; order carries no meaning.",

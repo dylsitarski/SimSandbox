@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- `controls.plots` is removed from the format (it did nothing since ADR 0063); a file that still has it loads, the key ignored.
 - The examples are written as SimSandbox now builds models, with the same results: values and starts once, in the typed equations; units on the resonance and predator–prey formulas; no `controls.plots`, default methods or unused `run.dt`. The Platoon is listed as a model defined once and used three times.
 - A model with no states that reads an `input.file` is no longer swept over its first parameter by default: it runs in time at its data's samples (ADR 0067 step 4).
 - A model used by another runs as written (ADR 0070): its own `sample` is no longer run at each delivery but ignored with a warning; study it with a study block. A file's `sample` is the study of its model: sweeps and experiments run through one runner, `check` reports both under `experiment` with `each_run`, and a model whose only runs are its studies writes a row per run.

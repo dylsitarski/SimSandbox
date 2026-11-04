@@ -32,7 +32,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use simsandbox_core::block::{Causality, Shape};
+use simsandbox_core::block::Shape;
 use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::registry::{BlockConfig, MethodSettings, Registry};
 use simsandbox_core::SimError;
@@ -1146,9 +1146,6 @@ pub struct Controls {
     /// Default playback speed: simulated seconds per wall-clock second.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
-    /// Outputs plotted by default, as `"block.port"`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub plots: Vec<String>,
     /// The views the model opens with (ADR 0015); the app shows the first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<ViewEntry>,
@@ -1518,7 +1515,6 @@ impl Controls {
     pub fn is_empty(&self) -> bool {
         self.params.is_empty()
             && self.speed.is_none()
-            && self.plots.is_empty()
             && self.views.is_empty()
             && self.layout.is_none()
             && self.open.is_empty()
@@ -2742,20 +2738,6 @@ impl ModelFile {
                 c.speed = None;
             }
         }
-        c.plots.retain(|key| {
-            let known = port_ref(key, ids).ok().is_some_and(|(id, name)| {
-                model.block(id).is_ok_and(|b| {
-                    b.spec()
-                        .ports
-                        .iter()
-                        .any(|p| p.name == name && p.causality == Causality::Output)
-                })
-            });
-            if !known {
-                warnings.push(format!("controls.plots: no output '{key}'; ignored"));
-            }
-            known
-        });
         if let Some(v) = c.view.take() {
             conversions.push("controls.view became the first of controls.views (ADR 0016)".into());
             match view_problem(&v, model, ids) {
