@@ -15,6 +15,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- A study over a grid of two parameters gives 2D results (`n1 × n2` cells) with both parameters as coordinates, so heat maps, surfaces, contours and cuts read them directly (ADR 0071).
+- `plot.xy` takes lines of cells, such as a study's results, for `x`, `y` and `colour` and draws them against each other cell by cell (preset "Cell by cell"); the tuning example shows reach against peak, coloured by gain.
 - Example "Tuning a controller's gain": a study of the cruise-control model, defined once in the file, over the integral gain; a formula reads the study's arrays and picks the fastest gain whose peak stays under a limit you can slide.
 - Time from data (ADR 0067 step 4): a model with no states that reads recorded data steps at the data's own sample times, even irregular ones, and without `t_end` ends at the last sample; a used model on new data is evaluated at its data's samples too; a use may step at listed times with `"clock": {"times": [0.5, 1.2, 4]}`.
 - Studies in the app (ADR 0070 step 5): "Study this model" on a used model's node adds a study block over it (Python `Model.study`); the Inspector edits a study's model and sample; a model holding a study opens on a profile of its results; study nodes say what they study and how many runs. A study's points file and its model's data files are part of the run hash.

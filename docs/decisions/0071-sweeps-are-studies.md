@@ -49,3 +49,7 @@ On 2026-11-04 the owner asked why sweeps were still built in, and agreed they mo
 - Sweeps of formulas are no longer immediate in the app: a study runs within a step. For the examples' sizes (up to a few thousand points of a formula) this is well under a second.
 - The resonance examples become a definition and a study each; a heat map of the resonance map reads the study's 2D fields.
 - Python code writing `data["sample"]` uses a study block or `Model.as_study`.
+
+## As built
+
+- **Step 1 (2026-11-04).** A grid design over two parameters with one replicate gives `Grid { nx: n1, ny: n2 }` outputs; the two parameters' outputs are the coordinates of every result on axes 0 and 1 (`crates/simsandbox-session/src/study.rs`). Slot kind `Values` (a scalar, `t` or a line of cells) takes `plot.xy`'s `x`, `y` and `colour`; when `x` is a line, the view draws the newest frame of each `y` against it, a marker per cell, coloured in bins by the `colour` line when one `y` is drawn (`Xy::cells`, preset "Cell by cell"). The tuning example adds reach against peak, coloured by gain.
