@@ -7,7 +7,7 @@
 
 use serde_json::Value;
 use simsandbox_core::block::{Causality, Shape};
-use simsandbox_core::registry::{BlockConfig, Registry};
+use simsandbox_core::registry::Registry;
 use simsandbox_file::{
     BlockEntry, ConnectionEntry, InputPort, ModelFile, OutputPort, ParamDecl, ParamValue, Subsystem,
 };
@@ -358,13 +358,7 @@ fn build(
     registry: &Registry,
     folder: Option<&std::path::Path>,
 ) -> Result<Box<dyn simsandbox_core::block::Block>, String> {
-    let config = BlockConfig {
-        method: (&b.method).into(),
-        definition: b.equations.clone(),
-        update: b.update.clone(),
-        settings: b.settings.clone(),
-        folder: folder.map(Into::into),
-    };
+    let config = b.config(folder);
     registry
         .build(&b.type_name, &b.name, &config)
         .map_err(|e| e.to_string())
@@ -627,6 +621,18 @@ fn node(b: &BlockEntry, registry: &Registry, folder: Option<&std::path::Path>) -
     if let (Some(from), Some(to)) = (b.settings.get("from"), b.settings.get("to")) {
         method = format!("{from} to {to}");
     }
+    // A study says what it studies and how many runs it makes (ADR 0070).
+    if b.type_name == crate::study::STUDY {
+        let what = b
+            .settings
+            .get("model")
+            .or_else(|| b.settings.get("file"))
+            .map_or("?", String::as_str);
+        method = match outputs.first() {
+            Some(p) => format!("of {what} · {} runs", p.shape.len()),
+            None => format!("of {what}"),
+        };
+    }
     Node {
         name: b.name.clone(),
         kind: NodeKind::Block,
@@ -785,6 +791,12 @@ pub enum Edit {
     /// Copies of these blocks or uses, with their values and the wires
     /// among them, beside the originals (ADR 0069); edited apart after.
     Duplicate { blocks: Vec<String> },
+    /// A study block beside a used model, of the same model (ADR 0070):
+    /// a grid of 20 points over its first parameter, its inputs fed as
+    /// the use's are.
+    Study { block: String },
+    /// A study's `sample` (ADR 0070), as JSON.
+    SetSample { block: String, sample: String },
     /// A block, or a port node (renaming the port).
     Rename { from: String, to: String },
     /// `"node.port"` to `"node.port"`; replaces whatever fed the input.
@@ -918,6 +930,23 @@ pub fn apply_in(
     registry: &Registry,
     edit: &Edit,
 ) -> Result<String, String> {
+    let note = apply_in_level(file, scope, registry, edit)?;
+    // A study names its model by `settings.model`: found again (ADR 0070).
+    if matches!(
+        edit,
+        Edit::Study { .. } | Edit::SetSetting { .. } | Edit::Duplicate { .. }
+    ) {
+        file.resolve_models().map_err(|e| e.to_string())?;
+    }
+    Ok(note)
+}
+
+fn apply_in_level(
+    file: &mut ModelFile,
+    scope: &Scope,
+    registry: &Registry,
+    edit: &Edit,
+) -> Result<String, String> {
     if let Edit::AddUse { file: path, at } = edit {
         return add_use(file, scope, path, *at);
     }
@@ -1044,6 +1073,49 @@ fn apply_level(
     }
 }
 
+/// What a new study of `model` varies (ADR 0070): its first declared
+/// parameter, else the first parameter of its first block that has one
+/// (input blocks aside), with a range around its value.
+fn study_parameter(
+    model: &ModelFile,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+) -> Option<(String, [f64; 2])> {
+    let around = |v: f64| {
+        if v == 0.0 {
+            [0.0, 1.0]
+        } else {
+            let [a, b] = [v / 2.0, v * 2.0];
+            [a.min(b), a.max(b)]
+        }
+    };
+    if let Some((k, d)) = model.params.iter().next() {
+        return Some((k.clone(), d.range.unwrap_or_else(|| around(d.value))));
+    }
+    for b in &model.blocks {
+        if b.is_use() || b.type_name == simsandbox_eq::input::VALUE {
+            continue;
+        }
+        let Ok(block) = registry.build(&b.type_name, &b.name, &b.config(folder)) else {
+            continue;
+        };
+        let Some(p) = block.spec().params.iter().find(|p| !p.initial_condition) else {
+            continue;
+        };
+        let value = match b.params.get(&p.name) {
+            Some(ParamValue::Number(v)) => *v,
+            _ => p.default,
+        };
+        let range = if p.suggested_min < p.suggested_max && !b.params.contains_key(&p.name) {
+            [p.suggested_min, p.suggested_max]
+        } else {
+            around(value)
+        };
+        return Some((format!("{}.{}", b.name, p.name), range));
+    }
+    None
+}
+
 /// Edit one level's blocks and wires.
 fn edit_level(
     l: &mut Subsystem,
@@ -1090,6 +1162,17 @@ fn edit_level(
             b.params
                 .insert(param.clone(), ParamValue::Formula(formula.to_string()));
             Ok(format!("{block}.{param} = {formula}"))
+        }
+        Edit::SetSample { block, sample } => {
+            let parsed: simsandbox_file::Sampling =
+                serde_json::from_str(sample).map_err(|e| format!("{block}'s sample: {e}"))?;
+            let b = l
+                .blocks
+                .iter_mut()
+                .find(|b| b.name == *block && b.type_name == simsandbox_file::STUDY)
+                .ok_or_else(|| format!("no study '{block}'"))?;
+            b.sample = Some(parsed);
+            Ok(format!("{block}: sample changed"))
         }
         Edit::SetSetting { block, key, text } => {
             let b = l
@@ -1159,6 +1242,60 @@ fn edit_level(
                 entry.method = set.kind().default_method().into();
             }
             Ok(format!("Changed the equations of {block}"))
+        }
+        Edit::Study { block } => {
+            let u = l
+                .blocks
+                .iter()
+                .find(|b| &b.name == block)
+                .filter(|b| b.is_use())
+                .cloned()
+                .ok_or_else(|| format!("'{block}' is not a used model"))?;
+            let (model, _, inner) =
+                simsandbox_file::compose::used_model(&u, file.folder.as_deref())?;
+            let (key, range) = study_parameter(&model, registry, inner.as_deref())
+                .ok_or_else(|| format!("{block}'s model has no parameter to vary"))?;
+            let base = format!("{block}_study");
+            let name = if has(l, &base) {
+                free_name(&format!("{base}_"), |n| has(l, n))
+            } else {
+                base
+            };
+            let mut settings = BTreeMap::new();
+            match (&u.model, &u.file) {
+                (Some(m), _) => settings.insert("model".to_string(), m.clone()),
+                (None, Some(f)) => settings.insert("file".to_string(), f.clone()),
+                (None, None) => unreachable!("a use names a model or a file"),
+            };
+            let sample: simsandbox_file::Sampling = serde_json::from_value(serde_json::json!({
+                "design": "grid", "params": [{"param": key, "range": range, "points": 20}]}))
+            .map_err(|e| e.to_string())?;
+            // Its inputs fed as the use's input blocks are.
+            let fed: Vec<ConnectionEntry> = l
+                .connections
+                .iter()
+                .filter_map(|c| {
+                    let input = c.to.strip_prefix(&format!("{block}/"))?;
+                    (!input.contains(['/', '.']) && format!("{input}.y") != key).then(|| {
+                        ConnectionEntry {
+                            from: c.from.clone(),
+                            to: format!("{name}.{input}"),
+                        }
+                    })
+                })
+                .collect();
+            l.blocks.push(BlockEntry {
+                name: name.clone(),
+                type_name: simsandbox_file::STUDY.into(),
+                settings,
+                sample: Some(sample),
+                canvas: u.canvas.map(|[x, y]| [x + 260.0, y]),
+                ..Default::default()
+            });
+            l.connections.extend(fed);
+            Ok(format!(
+                "Added {name}, a study of {block}'s model over {key}"
+            ))
         }
         Edit::Duplicate { blocks } => {
             let mut renamed: BTreeMap<String, String> = BTreeMap::new();
@@ -1752,6 +1889,12 @@ fn rename_model(file: &mut ModelFile, from: &str, to: &str) -> Result<String, St
             if b.model.as_deref() == Some(from) {
                 b.model = Some(to.to_string());
             }
+            // A study of it (ADR 0070).
+            if b.type_name == simsandbox_file::STUDY
+                && b.settings.get("model").map(String::as_str) == Some(from)
+            {
+                b.settings.insert("model".into(), to.to_string());
+            }
         }
         for (name, v) in m.models.iter_mut() {
             if let Ok(mut d) = simsandbox_file::compose::read_definition(name, v) {
@@ -2292,6 +2435,111 @@ mod tests {
             .find(|o| o.name == signal)
             .unwrap_or_else(|| panic!("no {signal} ({port})"));
         *o.values.last().unwrap()
+    }
+
+    #[test]
+    fn a_study_of_a_used_model_is_added_set_and_follows_renames() {
+        // ADR 0070 step 5: "Study this model" on a follower of the Platoon.
+        let r = registry();
+        let mut f = file("Platoon");
+        let note = apply(
+            &mut f,
+            &r,
+            &Edit::Study {
+                block: "car1".into(),
+            },
+        )
+        .unwrap();
+        assert!(note.contains("car1_study") && note.contains("ki"), "{note}");
+        let s = f
+            .blocks
+            .iter()
+            .find(|b| b.name == "car1_study")
+            .unwrap()
+            .clone();
+        assert_eq!(s.settings["model"], "follower");
+        let sample = serde_json::to_value(s.sample.as_ref().unwrap()).unwrap();
+        assert_eq!(sample["params"][0]["param"], "ki");
+        assert_eq!(
+            sample["params"][0]["range"],
+            serde_json::json!([20.0, 80.0])
+        );
+        assert_eq!(sample["params"][0]["points"], 20);
+        // Its input fed as car1's: from the leader.
+        assert!(f
+            .connections
+            .iter()
+            .any(|c| c.from == "leader.v" && c.to == "car1_study.lead"));
+        // The node says what it studies; it runs, 20 runs.
+        let d = Diagram::of(&f, &Scope::Model, &r);
+        let n = d.nodes.iter().find(|n| n.name == "car1_study").unwrap();
+        assert!(n.error.is_none(), "{:?}", n.error);
+        assert_eq!(n.method, "of follower · 20 runs");
+        let run = |f: &ModelFile| crate::run::run(&f.to_json(), &r, Some(0.2), None).unwrap();
+        let ki = run(&f)
+            .outputs
+            .into_iter()
+            .find(|o| o.name == "car1_study.ki")
+            .unwrap();
+        assert_eq!(ki.shape.len(), 20);
+        assert_eq!(ki.values[..2], [20.0, 20.0 + 60.0 / 19.0]);
+        // Its sample set from JSON; bad JSON refused with why.
+        apply(
+            &mut f,
+            &r,
+            &Edit::SetSample {
+                block: "car1_study".into(),
+                sample: r#"{"design": "list", "params": [{"param": "mass"}], "values": [[800], [1600], [3200]],
+                           "reduce": {"v_max": "max(car.v)"}}"#
+                    .into(),
+            },
+        )
+        .unwrap();
+        let v = run(&f)
+            .outputs
+            .into_iter()
+            .find(|o| o.name == "car1_study.v_max")
+            .unwrap();
+        assert_eq!(v.shape.len(), 3);
+        let e = apply(
+            &mut f,
+            &r,
+            &Edit::SetSample {
+                block: "car1_study".into(),
+                sample: "{design: grid".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("car1_study's sample"), "{e}");
+        // Renaming the model renames what the study studies.
+        apply(
+            &mut f,
+            &r,
+            &Edit::RenameModel {
+                from: "follower".into(),
+                to: "chaser".into(),
+            },
+        )
+        .unwrap();
+        let s = f.blocks.iter().find(|b| b.name == "car1_study").unwrap();
+        assert_eq!(s.settings["model"], "chaser");
+        // Still running: mass and v_max, three runs each.
+        let outs: Vec<usize> = run(&f)
+            .outputs
+            .iter()
+            .filter(|o| o.name.starts_with("car1_study."))
+            .map(|o| o.shape.len())
+            .collect();
+        assert_eq!(outs, [3, 3]);
+        // Only a used model is studied.
+        assert!(apply(
+            &mut f,
+            &r,
+            &Edit::Study {
+                block: "leader".into()
+            }
+        )
+        .is_err());
     }
 
     #[test]

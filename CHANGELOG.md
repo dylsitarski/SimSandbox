@@ -11,6 +11,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Studies in the app (ADR 0070 step 5): "Study this model" on a used model's node adds a study block over it (Python `Model.study`); the Inspector edits a study's model and sample; a model holding a study opens on a profile of its results; study nodes say what they study and how many runs. A study's points file and its model's data files are part of the run hash.
 - Point ids (ADR 0070 step 4): a points file may give each point an `id`; per-point seeds mix in the id rather than the row, so a point's random draws do not depend on where it is in the file (unchanged for designs without ids). The points file is now part of the run hash.
 - Study arrays in formulas (ADR 0070 step 3): study outputs are lines of cells; typed equations number them with `grid k = n` and read them as arrays; `argmaxof`, `argminof` and `at(T, i)` with a computed cell (`at(w, argmaxof(amp))`). Comparisons `<`, `<=`, `>`, `>=` (1 or 0) in every expression. `reduce` results are any expression of reductions (`max(car.v) - final(car.v)`); `first_time(e)` takes any condition.
 - Study blocks (ADR 0070): `{"type": "study", "settings": {"model": "cruise"}, "sample": {...}}` runs a model (a definition or `settings.file`) at each point of its sample and outputs arrays with one value per run; the model's input blocks are its inputs, so studies feed and nest in other models.

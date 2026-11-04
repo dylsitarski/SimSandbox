@@ -25,10 +25,11 @@ _Last updated: 2026-11-04_
 - Node canvas ([ADR 0042](decisions/0042-node-canvas.md)): the app's Diagram tab shows blocks with typed ports and wires (backward wires routed underneath) and edits them with the mouse; edits rebuild and restart, or wait as a draft with the reason; "Start from here" and "Forget start state" in the toolbar; `--view diagram` opens on it.
 - Python package `simsandbox` (`python/`, [ADR 0041](decisions/0041-headless-interface.md)): `describe`, `check`, `schema`, `examples`; `Model` (the file as a dict, with `add_block`, `connect`, `set`, `sweep`, `set_run`, `save`) with `run` (numpy arrays, populations as lists of arrays) and `render` (PNG).
 - Inputs ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)) and run files ([ADR 0059](decisions/0059-run-files.md)): `input.value` and `input.pointer` blocks; keys and views (`plot.xy`, the pendulum view) bound in `controls.inputs`; every change during a run recorded at step boundaries and replayed after a rewind ("Replaying input"); `run.inputs` as the model's default schedule; Runs menu (Save run…, replay a saved run, use a run as the model's schedule); `simsandbox run RUN.run.json`, `--inputs`, `check` and `schema run`; Python `Run`, `Model.run(inputs=...)`, `Model.schedule`. Examples "Drag the bob" and "Steer the car with keys".
-- 422 tests in the workspace plus 24 Python tests, including verification against analytic solutions and convergence order.
+- 424 tests in the workspace plus 25 Python tests, including verification against analytic solutions and convergence order.
 
 ## Done recently
 
+- 2026-11-04: ADR 0070 step 5 (ADR 0070 done): study blocks in the app: the node builds and says what it studies and how many runs; "Study this model" on a used model's node (Python `Model.study`); the Inspector edits a study's model and sample; models holding a study open on a profile of its results; renaming a definition renames it in studies. A study's points file and its model's data files are in the run hash of the model holding it.
 - 2026-11-04: ADR 0070 step 4: point ids (an `id` column in a points file; otherwise a point's place), seeds mixed from ids (unchanged for designs without ids), the points file in the run hash; a study of a definition keeps the thread's folder.
 - 2026-11-04: ADR 0070 step 3: study outputs as lines of cells read by typed equations (`grid k = n`, `argmaxof`, `argminof`, `at` by a computed cell); comparisons in the expression language; `reduce` results as expressions of reductions.
 - 2026-11-03: ADR 0070 step 2: one meaning of `sample`: a use runs its model as written (a used file's `sample` ignored with a warning, swept used models removed); every file's `sample` runs as the study of its model through one runner, the app's sweep equal bit for bit; a model whose only runs are studies writes a row per run.
@@ -147,14 +148,14 @@ _Last updated: 2026-11-04_
 In priority order. Each item should end with tests and updated docs.
 
 1. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 5 done 2026-11-02): (6) several cores between instants.
-2. **Studies as blocks** ([ADR 0070](decisions/0070-studies-are-blocks.md)), in order (steps 1 and 2 done 2026-11-03, 3 and 4 on 2026-11-04): (5) the app. Then **time from data** ([ADR 0067](decisions/0067-experiments-and-time-from-data.md) step 4: `input.file` sample times, `clock: {"times": …}`, the end of a data-driven run). (5) adaptive experiments, own ADR.
+2. **Time from data** ([ADR 0067](decisions/0067-experiments-and-time-from-data.md) step 4: `input.file` sample times, `clock: {"times": …}`, the end of a data-driven run). (5) adaptive experiments, own ADR.
 3. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 4. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)), Duplicate, array parameters and neighbours done 2026-11-02: network grids (nodes and edges from a file) and array parameters read from a data file when a model needs them; `count` on uses waits.
 5. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
 
-- Study blocks (ADR 0070): the app has no view of their arrays; a formula reading them declares the number of runs itself (`grid k = n`); a study re-runs all its points whenever any input changes.
+- Study blocks (ADR 0070): the app edits a study's sample as JSON (no form yet) and shows results only as profiles (no scatter of a result against parameters for designs other than a grid over one parameter); a formula reading them declares the number of runs itself (`grid k = n`); a study re-runs all its points whenever any input changes. The sample editor was checked by tests of its edit, not yet seen in the window.
 - Population ports cannot have direct feedthrough, and code-built `EquationGroup`s refuse members with it ([ADR 0040](decisions/0040-feedthrough-and-algebraic-loops.md)). Loops are solved with a finite-difference Jacobian each time, which costs one pass per loop value per Newton iteration.
 - Physical (acausal) ports are not implemented.
 - The master uses a fixed step with no coupling-error estimate, iteration or rollback.

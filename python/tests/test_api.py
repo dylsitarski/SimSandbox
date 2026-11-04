@@ -445,3 +445,17 @@ def test_a_study_block_runs_a_definition_at_each_point():
     settle = list(r["s.settle"])
     assert len(settle) == 2 and settle[1] < settle[0]
     assert list(r["s.cruise_kp"]) == [200.0, 800.0]
+
+
+def test_studying_a_used_model_as_on_the_canvas():
+    m = ss.Model.example("Platoon")
+    note = m.study("car1")
+    assert "car1_study" in note
+    block = next(b for b in m.data["blocks"] if b["name"] == "car1_study")
+    assert block["settings"] == {"model": "follower"}
+    block["sample"] = {"design": "list", "params": [{"param": "mass"}], "values": [[800.0], [3200.0]],
+                       "reduce": {"v_max": "max(car.v)"}}
+    r = m.run(t_end=0.2)
+    v_max = r["car1_study.v_max"]
+    assert v_max[-1].size == 2  # a line of cells, one per run
+

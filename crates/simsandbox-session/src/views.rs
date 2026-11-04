@@ -64,8 +64,15 @@ impl Views {
         if self.tiles.is_empty() {
             // A grid over two swept parameters is best seen as a heat map.
             let heat = (available.swept.len() == 2).then_some(("plot.heatmap", 0));
+            // A study's results against what it varies (ADR 0070).
+            let study = available
+                .block_types
+                .iter()
+                .any(|t| t == crate::study::STUDY)
+                .then_some(("plot.profile", 0));
             let first_fit = heat
                 .into_iter()
+                .chain(study)
                 .chain(
                     self.registry
                         .types()
@@ -280,6 +287,29 @@ pub fn grid(n: usize) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_model_holding_a_study_opens_on_its_results_against_what_it_varies() {
+        // ADR 0070 step 5: a profile of the study's results, its swept
+        // parameter as the coordinate.
+        use crate::examples::{registry, view_registry};
+        use crate::session::Session;
+        let mut model: serde_json::Value =
+            serde_json::from_str(include_str!("../../../examples/resonance.ssbx.json")).unwrap();
+        for k in ["format", "description", "controls", "sample"] {
+            model.as_object_mut().unwrap().remove(k);
+        }
+        let file = serde_json::json!({"format": 1, "models": {"resonance": model},
+            "blocks": [{"name": "s", "type": "study", "settings": {"model": "resonance"},
+                "sample": {"design": "grid", "params": [{"param": "spring.w", "range": [0.5, 1.5], "points": 11}]}}]});
+        let s = Session::load("study", &file.to_string(), &registry()).unwrap();
+        let mut v = Views::new(view_registry());
+        v.open(&s.available(&s.signals()), &[]);
+        assert_eq!(v.tiles[0].state.type_name, "plot.profile");
+        let b = &v.tiles[0].state.bind;
+        assert_eq!(b["x"], ["s.spring_w"]);
+        assert!(b["y"].contains(&"s.spring_amplitude".to_string()), "{b:?}");
+    }
+
     use super::*;
 
     fn signals() -> Vec<String> {

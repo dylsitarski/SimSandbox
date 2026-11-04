@@ -391,6 +391,23 @@ fn duplicate(text: &str, blocks: Vec<String>) -> PyResult<(String, String)> {
     Ok((file.to_json(), note))
 }
 
+/// A study of a used model beside it (ADR 0070), as "Study this model"
+/// does on the canvas. Returns the changed model file and a note.
+#[pyfunction]
+fn study(text: &str, block: String) -> PyResult<(String, String)> {
+    use simsandbox_session::diagram::{apply_in, Edit, Scope};
+    let (mut file, _) = simsandbox_session::ModelFile::from_json(text)
+        .map_err(|e| ModelError::new_err(e.to_string()))?;
+    let note = apply_in(
+        &mut file,
+        &Scope::Model,
+        &registry(),
+        &Edit::Study { block },
+    )
+    .map_err(ModelError::new_err)?;
+    Ok((file.to_json(), note))
+}
+
 /// Turn an expression filter into a formula block (ADR 0032, ADR 0050),
 /// connected to a model input if `to` is given. Returns the changed model
 /// file and a note.
@@ -443,6 +460,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(start_from, m)?)?;
     m.add_function(wrap_pyfunction!(group, m)?)?;
     m.add_function(wrap_pyfunction!(duplicate, m)?)?;
+    m.add_function(wrap_pyfunction!(study, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

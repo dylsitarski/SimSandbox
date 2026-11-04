@@ -554,7 +554,13 @@ pub fn load_merged(
         .model
         .set_clocks(clocks, clock_of)
         .map_err(|e| invalid("blocks", e))?;
+    // The uses' data by path, and what studies reported (`block:key`).
+    let reported: BTreeMap<String, String> = std::mem::take(&mut loaded.data)
+        .into_iter()
+        .filter(|(k, _)| k.contains(':'))
+        .collect();
     loaded.data = c.data.clone();
+    loaded.data.extend(reported);
     loaded.aliases = aliases.keys().map(|k| (k.clone(), flat(k))).collect();
     // Saving writes the file as written, not the merged one.
     let mut written = file;

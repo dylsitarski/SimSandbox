@@ -1326,6 +1326,15 @@ impl Canvas {
                             requests.push(Request::Expand(name.clone()));
                             ui.close();
                         }
+                        // A study of the same model beside it (ADR 0070).
+                        if ui
+                            .button("Study this model")
+                            .on_hover_text("Add a study block that runs this model at 20 values of its first parameter; edit its sample in the Inspector")
+                            .clicked()
+                        {
+                            edits.push(Edit::Study { block: name.clone() });
+                            ui.close();
+                        }
                         // A definition goes to a file and back (ADR 0068).
                         if n.type_name.starts_with("model ") {
                             if ui

@@ -494,6 +494,16 @@ class Model:
         self.data = json.loads(text)
         return note
 
+    def study(self, use: str) -> str:
+        """Add a study block beside the used model ``use`` (ADR 0070), as
+        "Study this model" does on the canvas: it runs the same model at 20
+        values of its first parameter, its inputs fed as the use's are.
+        Change its ``sample`` in ``data`` to study something else. Returns a
+        note naming it."""
+        text, note = _native.study(self.to_json(), use)
+        self.data = json.loads(text)
+        return note
+
     def group(self, blocks: Iterable[str]) -> str:
         """Move ``blocks`` into a new model defined in this file (ADR 0068)
         and use it in their place, as "Make model" does on the canvas:

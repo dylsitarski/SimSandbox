@@ -172,7 +172,9 @@ A **study** is a block that runs a model at each point of its own `sample` and o
 - **Reading them:** a typed-equations block numbers the runs with an index axis and reads them as arrays: `"grid k = 5", "input amp[k], w[k]", "w_peak = at(w, argmaxof(amp))"`. `argmaxof` and `argminof` give the cell of the greatest or least value (the first of equals; NaN if all are NaN), and `at(T, i)` takes a computed cell number (rounded; NaN outside). The axis's number of cells must match the study's runs; the wire is refused otherwise.
 - **When it runs:** whenever its inputs change, each point from the model's start to the model's `t_end` (one evaluation if the model has nothing in time). The results are kept until the inputs change. Only the outermost study uses several cores; the results never depend on how many.
 - **Studies of studies:** studies nest to any depth; a model file whose studies lead back to itself is refused, naming the chain. A definition holding a study can itself be studied: the outer study's points set the inner one's inputs through input blocks, and its `reduce` reads one run of the inner arrays by element (`final(inner.half[1])`).
-- A model holding a study is not swept by default. The app runs such models in time; it has no view of a study's arrays yet.
+- **Run hash:** a study's points file and the data files its model reads are part of the run hash of the model holding it, as `s:sample.file`, `s:ramp.file`.
+- A model holding a study is not swept by default. The app runs such models in time and opens them on a profile of the study's results (against the swept parameter for a grid over one parameter, else against the run's number).
+- **Making one:** "Study this model" on a used model's node (Python `Model.study("car1")`) adds a study block beside it over the same model: a grid of 20 points over its first parameter (a declared parameter, else the first block parameter), its inputs fed as the use's input blocks are. The Inspector shows the model it studies and its `sample` as JSON, applied when the field loses focus; renaming the definition renames it in the study.
 
 ## Recorder
 
@@ -212,6 +214,7 @@ m.render("diagram.png", diagram=True)             # PNG of the block diagram
 m.declare("rate", 0.5)                            # a model parameter (ADR 0043)
 m.set("decay.k", "2*rate")                        # a block parameter as a formula of it
 m.group(["decay"])                                # make a model of blocks, defined in the file
+m.study("car1")                                   # a study block of a used model (ADR 0070)
 m.promote("energy", to="spring.u")               # an expression filter becomes a block (ADR 0050)
 settled = m.start_from(10.0)                     # starts from the state at t = 10
 m.schedule(5.0, "decay.k", 2.0)                  # a change at t = 5 in every run (run.inputs)

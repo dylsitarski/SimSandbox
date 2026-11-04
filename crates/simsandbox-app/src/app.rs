@@ -2356,8 +2356,12 @@ impl SimApp {
                                 for e in file_fields(ui, b, &mut self.param_edits, folder) {
                                     canvas_edits.push((at.clone(), e));
                                 }
+                                for e in study_fields(ui, b, &mut self.param_edits) {
+                                    canvas_edits.push((at.clone(), e));
+                                }
                                 shown |= b.type_name == simsandbox_eq::convert::CONVERT
-                                    || b.type_name == simsandbox_eq::file_input::FILE;
+                                    || b.type_name == simsandbox_eq::file_input::FILE
+                                    || b.type_name == simsandbox_file::STUDY;
                             } else if let (Some(b), Some(f)) = (drafted, &draft) {
                                 ui.weak(
                                     "Not in the running model yet: it joins when the model loads",
@@ -2375,6 +2379,9 @@ impl SimApp {
                                     canvas_edits.push((at.clone(), e));
                                 }
                                 for e in file_fields(ui, b, &mut self.param_edits, folder) {
+                                    canvas_edits.push((at.clone(), e));
+                                }
+                                for e in study_fields(ui, b, &mut self.param_edits) {
                                     canvas_edits.push((at.clone(), e));
                                 }
                                 shown = true;
@@ -3492,6 +3499,68 @@ fn setting_field(
         }
     }
     None
+}
+
+/// A study's model and sample (ADR 0070): the definition or file it runs,
+/// and its `sample` as JSON, applied when the field loses focus. Nothing
+/// for other blocks.
+fn study_fields(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    edits: &mut HashMap<String, String>,
+) -> Vec<Edit> {
+    let mut out = Vec::new();
+    if b.type_name != simsandbox_file::STUDY {
+        return out;
+    }
+    let key = if b.settings.contains_key("file") {
+        "file"
+    } else {
+        "model"
+    };
+    ui.horizontal(|ui| {
+        ui.label(if key == "file" {
+            "studies the file"
+        } else {
+            "studies the model"
+        });
+        out.extend(setting_field(
+            ui,
+            b,
+            key,
+            160.0,
+            "A model defined in this file (model), or a model file (file)",
+            edits,
+        ));
+    });
+    let now = b
+        .sample
+        .as_ref()
+        .and_then(|s| serde_json::to_string_pretty(s).ok())
+        .unwrap_or_default();
+    let id = format!("sample:{}", b.name);
+    let mut text = edits.get(&id).cloned().unwrap_or_else(|| now.clone());
+    ui.label("sample")
+        .on_hover_text("Its points (design, params, values or file), seeds, replicates and reduce, as JSON: the designs of experiments (see the headless guide)");
+    let r = ui.add(
+        egui::TextEdit::multiline(&mut text)
+            .code_editor()
+            .desired_rows(6)
+            .desired_width(f32::INFINITY),
+    );
+    if r.has_focus() {
+        edits.insert(id.clone(), text.clone());
+    }
+    if r.lost_focus() {
+        edits.remove(&id);
+        if text.trim() != now.trim() {
+            out.push(Edit::SetSample {
+                block: b.name.clone(),
+                sample: text,
+            });
+        }
+    }
+    out
 }
 
 /// A file reader's settings (ADR 0063): the file, typed or chosen in the

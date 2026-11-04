@@ -183,6 +183,9 @@ impl StudyBlock {
             .insert("sample".into(), sample);
         let text = v.to_string();
         let loaded = load(&text, folder.as_deref(), &label)?;
+        // Its points file and its model's data files are in the run hash of
+        // the model holding it.
+        simsandbox_file::report_data(name, &loaded.data);
         let plan = loaded
             .experiment
             .clone()
@@ -708,6 +711,17 @@ mod tests {
             run(&file.to_string(), &r, None, None)
         })
         .unwrap();
+        // The points file is in the run hash of the model holding the
+        // study, as `s:sample.file`.
+        let hash = |csv: &str| {
+            std::fs::write(dir.join("starts.csv"), csv).unwrap();
+            let l = simsandbox_file::load_in(&file.to_string(), &r, Some(&dir)).unwrap();
+            assert!(l.data.contains_key("s:sample.file"), "{:?}", l.data);
+            simsandbox_file::runs::loaded_hash(&l).unwrap()
+        };
+        let before = hash("x.x0,id\n1,30\n2,10\n");
+        assert_ne!(before, hash("x.x0,id\n1,30\n3,10\n"));
+        assert_eq!(before, hash("x.x0,id\n1,30\n2,10\n"));
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(value(&y, "s.id"), [30.0, 10.0]);
         assert_eq!(value(&y, "s.x_x0"), [1.0, 2.0]);

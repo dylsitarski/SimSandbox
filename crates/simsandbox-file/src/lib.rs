@@ -994,6 +994,23 @@ pub struct BlockEntry {
 }
 
 impl BlockEntry {
+    /// How its type builds it, reading files from `folder`: its method,
+    /// definition (a study's from [`BlockEntry::study_definition`]),
+    /// update order and settings.
+    pub fn config(&self, folder: Option<&std::path::Path>) -> BlockConfig {
+        BlockConfig {
+            method: (&self.method).into(),
+            definition: if self.type_name == STUDY {
+                self.study_definition()
+            } else {
+                self.equations.clone()
+            },
+            update: self.update.clone(),
+            settings: self.settings.clone(),
+            folder: folder.map(Into::into),
+        }
+    }
+
     /// What a study block is built from (ADR 0070): its `sample` as JSON
     /// (empty if none), then its model's text when `settings.model` names
     /// a definition, then its equations (which it refuses).
@@ -1728,6 +1745,55 @@ fn stateless(blocks: &[BlockEntry], model: &Model, ids: &BTreeMap<String, BlockI
     })
 }
 
+thread_local! {
+    /// For each model being loaded on this thread, innermost last: the
+    /// data its blocks reported (see [`report_data`]).
+    static REPORTED: std::cell::RefCell<Vec<BTreeMap<String, String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The data reported while one model loads; dropped when it is loaded.
+struct Reports;
+
+impl Reports {
+    fn begin() -> Self {
+        REPORTED.with(|r| r.borrow_mut().push(BTreeMap::new()));
+        Reports
+    }
+
+    /// What was reported so far for the model loading now.
+    fn taken() -> BTreeMap<String, String> {
+        REPORTED.with(|r| {
+            r.borrow_mut()
+                .last_mut()
+                .map(std::mem::take)
+                .unwrap_or_default()
+        })
+    }
+}
+
+impl Drop for Reports {
+    fn drop(&mut self) {
+        REPORTED.with(|r| {
+            r.borrow_mut().pop();
+        });
+    }
+}
+
+/// For a block that loads a model of its own as it is built, such as a
+/// study (ADR 0070): the data that model reads, its points file included,
+/// so the run hash of the model loading it covers them. Kept as
+/// `block:key`; nothing happens outside a load.
+pub fn report_data(block: &str, data: &BTreeMap<String, String>) {
+    REPORTED.with(|r| {
+        if let Some(top) = r.borrow_mut().last_mut() {
+            for (k, v) in data {
+                top.insert(format!("{block}:{k}"), v.clone());
+            }
+        }
+    });
+}
+
 /// Parse a model file and build its model. Blocks that read files accept
 /// only absolute names: see [`load_in`].
 pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
@@ -1741,6 +1807,8 @@ pub fn load_in(
     registry: &Registry,
     folder: Option<&std::path::Path>,
 ) -> Result<Loaded, FileError> {
+    // What blocks that load models of their own report as they are built.
+    let _reports = Reports::begin();
     let (mut file, mut warnings) = ModelFile::from_json(text)?;
     if let Some(k) = file.blocks.iter().position(BlockEntry::is_use) {
         return Err(invalid(
@@ -1789,6 +1857,7 @@ pub fn load_in(
         }
     }
     let mut data = data_digests(&flat, registry, folder);
+    data.extend(Reports::taken());
     // A points file is data too (ADR 0070 step 4).
     if let Some(Sampling {
         design: Design::File,
@@ -2231,17 +2300,7 @@ impl ModelFile {
                     "only a study block has a sample (ADR 0070)",
                 ));
             }
-            let config = BlockConfig {
-                method: (&entry.method).into(),
-                definition: if entry.type_name == STUDY {
-                    entry.study_definition()
-                } else {
-                    entry.equations.clone()
-                },
-                update: entry.update.clone(),
-                settings: entry.settings.clone(),
-                folder: folder.map(Into::into),
-            };
+            let config = entry.config(folder);
             let block = registry
                 .build(&entry.type_name, &entry.name, &config)
                 .map_err(|e| match e {
