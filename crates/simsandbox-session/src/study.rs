@@ -36,6 +36,25 @@ thread_local! {
     /// first: each one's folder and text, and a name for messages.
     static CHAIN: std::cell::RefCell<Vec<(Option<PathBuf>, String, String)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Set while models are built without running their studies.
+    static UNRUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Build models in `f` without running their studies (ADR 0071): each
+/// study is built and checked (its model, sample and results), but outputs
+/// NaN until it is evaluated outside `f`. The app builds models so on its
+/// window's thread, to check an edit or to open one, and its worker runs
+/// the studies ([`crate::Session::run_studies`]).
+pub fn without_running_studies<R>(f: impl FnOnce() -> R) -> R {
+    let was = UNRUN.with(|u| u.replace(true));
+    let r = f();
+    UNRUN.with(|u| u.set(was));
+    r
+}
+
+/// Whether studies built now run (not inside [`without_running_studies`]).
+pub(crate) fn studies_run() -> bool {
+    !UNRUN.with(std::cell::Cell::get)
 }
 
 /// Register the study type.
@@ -349,6 +368,10 @@ impl StudyBlock {
 
     /// Every output's values for these inputs, run or kept.
     fn evaluate(&self, inputs: &[f64]) -> Result<Vec<f64>> {
+        // Built only to be checked or opened: nothing run, nothing kept.
+        if !studies_run() {
+            return Ok(vec![f64::NAN; self.from.len() * self.runs]);
+        }
         let bits: Vec<u64> = inputs.iter().map(|v| v.to_bits()).collect();
         let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((b, values)) = kept.as_ref() {

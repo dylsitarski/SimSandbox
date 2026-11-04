@@ -299,6 +299,9 @@ pub struct Session {
     sim: Simulator,
     snapshots: Vec<Snapshot>,
     steps_since_snapshot: usize,
+    /// Built without running its studies ([`crate::study::without_running_studies`]):
+    /// they run on [`Session::run_studies`].
+    studies_unrun: bool,
     /// The recorder (ADR 0064): without one, no snapshots and no rewind.
     recorder: Option<simsandbox_file::RecorderEntry>,
     /// Filters as written, for saving and editing (ADR 0030, ADR 0032).
@@ -574,7 +577,10 @@ impl Session {
             },
             start_file,
             data,
+            studies_unrun: false,
         };
+        session.studies_unrun = !crate::study::studies_run()
+            && session.block_types.iter().any(|t| t == crate::study::STUDY);
         session.check_events(
             &session
                 .track
@@ -1954,6 +1960,24 @@ impl Session {
         Ok(())
     }
 
+    /// Whether it was built without running its studies, which
+    /// [`Session::run_studies`] has not yet run.
+    pub fn studies_unrun(&self) -> bool {
+        self.studies_unrun
+    }
+
+    /// Run the studies of a model built without running them: a restart,
+    /// so the history starts over with their results. A study given up
+    /// ([`crate::run::given_up`]) leaves them unrun, to run again.
+    pub fn run_studies(&mut self) -> Result<(), SimError> {
+        let r = self.restart();
+        // A study that failed is reported once, not run again and again.
+        if r.as_ref().is_err_and(|e| !crate::run::given_up(e)) {
+            self.studies_unrun = false;
+        }
+        r
+    }
+
     /// Start again at t = 0 from the current parameter values. History and
     /// plots start over.
     pub fn restart(&mut self) -> Result<(), SimError> {
@@ -1965,7 +1989,12 @@ impl Session {
                 self.warnings.push(e);
             }
         }
-        self.restart_keeping_recorded()
+        let r = self.restart_keeping_recorded();
+        // Any restart outside `without_running_studies` runs them.
+        if r.is_ok() && crate::study::studies_run() {
+            self.studies_unrun = false;
+        }
+        r
     }
 
     /// Restart at t = 0 with the events at t = 0 applied first, so they
@@ -2809,6 +2838,34 @@ mod tests {
             newest(&s, "curve.spring_amplitude"),
             newest(&direct, "curve.spring_amplitude")
         );
+    }
+
+    #[test]
+    fn a_model_built_without_its_studies_runs_them_later() {
+        // How the app opens a model (ADR 0071): built and checked on the
+        // window's thread, its studies run on the worker.
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Resonance curve"))
+            .unwrap();
+        let mut s = crate::study::without_running_studies(|| {
+            Session::load(e.name, e.text, &registry()).unwrap()
+        });
+        assert!(s.studies_unrun());
+        assert!(newest(&s, "curve.spring_amplitude")
+            .iter()
+            .all(|v| v.is_nan()));
+        s.run_studies().unwrap();
+        assert!(!s.studies_unrun());
+        let direct = example("Resonance curve");
+        assert_eq!(
+            newest(&s, "curve.spring_amplitude"),
+            newest(&direct, "curve.spring_amplitude")
+        );
+        assert!(!direct.studies_unrun());
+        // A model without studies has none to run.
+        let plain = crate::study::without_running_studies(|| example("Lorenz"));
+        assert!(!plain.studies_unrun());
     }
 
     #[test]

@@ -41,6 +41,8 @@ pub struct Model {
     pub labels: Option<MethodLabels>,
     /// Sliders apply while dragged (ADR 0037).
     pub real_time: bool,
+    /// Its studies have not run yet (ADR 0071): the worker runs them first.
+    pub studies_unrun: bool,
     /// Everything views can bind, recorded or not (ADR 0063).
     pub scalars: Vec<String>,
     /// The 2D grids cut filters can take.
@@ -76,6 +78,7 @@ impl Model {
             dt: s.dt,
             labels: s.labels(),
             real_time: s.real_time(),
+            studies_unrun: s.studies_unrun(),
             scalars: s.bindable_scalars().to_vec(),
             cut_inputs: s.cut_inputs(),
             derived: s.derived_names().to_vec(),
@@ -296,11 +299,14 @@ impl Live {
     }
 
     /// Run `f` on the worker and wait for its result (after the step in
-    /// progress, and after the model is republished).
+    /// progress, and after the model is republished). The window waits, so
+    /// a study running is given up first and runs again after `f`
+    /// (ADR 0071).
     pub fn call<R: Send + 'static>(
         &self,
         f: impl FnOnce(&mut Session, &mut Control) -> R + Send + 'static,
     ) -> Result<R, String> {
+        self.give_up_studies();
         let (tx, rx) = mpsc::channel();
         let job: Job = Box::new(move |s, c| {
             let r = f(s, c);
@@ -370,7 +376,7 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
     let mut last = Instant::now();
     loop {
         let mut commands = Vec::new();
-        if !c.running {
+        if !c.running && !s.studies_unrun() {
             // Idle: everything recorded is visible, then wait for a command.
             s.flush(true);
             *lock(&shared.status) = status(&s, false, pacer.achieved_speed(), false);
@@ -408,6 +414,30 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
             for r in replies {
                 r();
             }
+        }
+
+        // Built without running its studies (the window opened it): run
+        // them first, as a step is run, with progress, given up for newer
+        // commands and then run again (ADR 0071).
+        if s.studies_unrun() {
+            shared.progress.reset();
+            *lock(&shared.stepping) = Some(Instant::now());
+            let r = s.run_studies();
+            *lock(&shared.stepping) = None;
+            match r {
+                Err(e) if given_up(&e) => {}
+                Err(e) => {
+                    c.running = false;
+                    c.error(format!("its studies did not run: {e}"));
+                }
+                Ok(()) => *lock(&shared.model) = Some(Arc::new(Model::of(&s))),
+            }
+            s.flush(false);
+            *lock(&shared.status) = status(&s, c.running, pacer.achieved_speed(), false);
+            lock(&shared.events).extend(std::mem::take(&mut c.events));
+            shared.repaint();
+            last = Instant::now();
+            continue;
         }
 
         let tick = Instant::now();
@@ -614,6 +644,41 @@ mod tests {
                 "frame {k}: {x}"
             );
         }
+    }
+
+    #[test]
+    fn a_model_opened_without_its_studies_has_them_run_by_the_worker() {
+        // ADR 0071: the window builds the model; the worker runs its
+        // studies first, a change made meanwhile giving them up.
+        let text = example("Resonance map");
+        let s = simsandbox_session::study::without_running_studies(|| {
+            Session::load("m", text, &registry()).unwrap()
+        });
+        assert!(s.studies_unrun());
+        let live = Live::start(s, 1.0, false);
+        live.send(Some("param:m.y"), |s, _| {
+            s.set_param_key("m.y", 2.0).unwrap();
+        });
+        live.sync();
+        let start = Instant::now();
+        // Polled from what the worker publishes: a call would give the
+        // studies up.
+        while live.model().studies_unrun {
+            assert!(start.elapsed() < Duration::from_secs(60), "timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        live.sync();
+        let mut direct = Session::load("m", text, &registry()).unwrap();
+        direct.set_param_key("m.y", 2.0).unwrap();
+        let newest = |h: &History| {
+            let f = h
+                .fields()
+                .iter()
+                .find(|f| f.name == "map.spring_amplitude")
+                .unwrap();
+            f.frame(h.len() - 1).to_vec()
+        };
+        assert_eq!(newest(&live.history()), newest(&direct.signals()));
     }
 
     #[test]

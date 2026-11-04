@@ -536,7 +536,7 @@ impl DiagramTab {
         self.cache = None;
         self.choices.clear();
         let text = top.to_json();
-        match Session::load_in("check", &text, registry, self.folder.as_deref()) {
+        match check(&text, registry, self.folder.as_deref()) {
             Ok(_) => vec![Outcome::Apply {
                 text,
                 notes: vec![note],
@@ -605,7 +605,7 @@ impl DiagramTab {
             return out;
         }
         let text = top.to_json();
-        match Session::load_in("check", &text, registry, self.folder.as_deref()) {
+        match check(&text, registry, self.folder.as_deref()) {
             Ok(_) => out.push(Outcome::Apply { text, notes }),
             Err(problem) => {
                 self.restore();
@@ -1091,7 +1091,7 @@ impl DiagramTab {
             Change::Model => {
                 self.draft = None;
                 let text = next.to_json();
-                match Session::load_in("check", &text, registry, self.folder.as_deref()) {
+                match check(&text, registry, self.folder.as_deref()) {
                     Ok(_) => out.push(Outcome::Apply {
                         text,
                         notes: vec![word.into()],
@@ -1311,7 +1311,7 @@ impl DiagramTab {
                     Edit::SetFormula { .. } | Edit::DeclareParam { .. } | Edit::RemoveParam { .. }
                 )
             });
-        match Session::load_in("check", &text, registry, self.folder.as_deref()) {
+        match check(&text, registry, self.folder.as_deref()) {
             Ok(_) => out.push(Outcome::Apply { text, notes }),
             Err(problem) if refused => {
                 self.undo.pop();
@@ -1324,4 +1324,13 @@ impl DiagramTab {
             }
         }
     }
+}
+
+/// Whether an edited model builds, as opening it would (ADR 0071): its
+/// studies are built and checked but not run, so a slow study does not hold
+/// the window.
+fn check(text: &str, registry: &Registry, folder: Option<&std::path::Path>) -> Result<(), String> {
+    simsandbox_session::study::without_running_studies(|| {
+        Session::load_in("check", text, registry, folder).map(drop)
+    })
 }

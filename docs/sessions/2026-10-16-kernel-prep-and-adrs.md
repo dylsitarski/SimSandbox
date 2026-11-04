@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-04: studies off the window's thread: `study::without_running_studies`, `Session::studies_unrun`/`run_studies`, the diagram's `check`, `open_inner` building without studies, the worker running them first, `Live::call` giving studies up (found by tracing a 9 s wait in `has_unsaved` on closing), `Model::studies_unrun` and the toolbar's "studies about to run"; session and worker tests; Xvfb timings (open 1.7 s, close 1.9 s, was about 22 s and 11 s).
 - 2026-11-04: ADR 0071 step 2: `run::Progress`/`watch_studies`/`GIVEN_UP`, the runner's per-point check and count, `Session::step` undoing a given-up step, the worker's watch and `Stop::GivenUp`, `Live::study_runs`/`give_up_studies` and `Drop`, the toolbar's runs; session and worker tests.
 - 2026-11-04: ADR 0071 step 3: `sample`/`plan`/`experiment` out of the file crate (`Loaded::plan_of`, `points_digest`, `stateless`); `Sweep` and the sweep bar out of session and app; `Available::swept`, unordered and whole-history fields out of views; `run_experiment`/`experiment_report`/`series` out of run, CLI and Python (`run_sampled` for runner tests); `Edit::StudyModel`, Python `as_study`; resonance examples as studies; study results leave out input blocks; schema `$defs/sample`; ADR 0027 fixture removed; Q52; renders of the three resonance examples.
 - 2026-11-04: ADR 0071 step 1: study `grid2` outputs (`Grid{nx,ny}`, coordinates on axes 0 and 1), `SlotKind::Values`, `Xy::cells`, the "Cell by cell" preset; tests, renders of a 2D heat map and of the tuning study.

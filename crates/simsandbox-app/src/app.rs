@@ -447,7 +447,12 @@ impl SimApp {
     fn open_inner(&mut self, title: &str, text: &str, running: bool, announce: bool) {
         let folder = self.path.as_deref().and_then(Path::parent);
         self.diagram.folder = folder.map(Path::to_path_buf);
-        match Session::load_in(title, text, &self.registry, folder) {
+        // Its studies run on the worker, which shows their progress
+        // (ADR 0071): the window never waits for them.
+        let loaded = simsandbox_session::study::without_running_studies(|| {
+            Session::load_in(title, text, &self.registry, folder)
+        });
+        match loaded {
             Ok(mut s) => {
                 self.speed = s.file.controls.speed.unwrap_or(1.0);
                 // Tabs shown in their own windows stay there when the model
@@ -746,7 +751,11 @@ impl SimApp {
                     ),
                 );
             }
-            if let Some(d) = live.stepping_for().filter(|d| *d >= SLOW_STEP) {
+            let study = live.study_runs();
+            if let Some(d) = live
+                .stepping_for()
+                .filter(|d| *d >= SLOW_STEP && study.is_none())
+            {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
                     format!("a step has been running for {:.1} s", d.as_secs_f64()),
@@ -755,7 +764,11 @@ impl SimApp {
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
             }
             // A study in the step: its runs so far (ADR 0071 step 2).
-            if let Some((done, total)) = live.study_runs() {
+            if study.is_none() && live.model().studies_unrun {
+                ui.weak("studies about to run")
+                    .on_hover_text("Opened without running its studies: the run starts with them");
+            }
+            if let Some((done, total)) = study {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
                     format!("study: {done} of {total} runs"),
