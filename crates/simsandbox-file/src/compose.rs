@@ -158,8 +158,10 @@ pub fn is_composition(text: &str) -> bool {
         .ok()
         .and_then(|v| {
             v.get("blocks")?.as_array().map(|b| {
-                b.iter()
-                    .any(|e| e.get("file").is_some() || e.get("model").is_some())
+                // A study names a model too, but is a block of its own.
+                b.iter().any(|e| {
+                    e.get("type").is_none() && (e.get("file").is_some() || e.get("model").is_some())
+                })
             })
         })
         .unwrap_or(false)
@@ -187,6 +189,16 @@ pub(crate) fn check_uses(
             return Err(invalid(
                 format!("{path}.model"),
                 format!("'{m}': a model's name is letters, digits and '_'"),
+            ));
+        }
+        // Only a use (no type) or a study names a model (ADR 0070).
+        if b.names_model() && !b.type_name.is_empty() && b.type_name != crate::STUDY {
+            return Err(invalid(
+                format!("{path}.type"),
+                format!(
+                    "a {} block names no model: a use has no type, and a study ('study') runs one",
+                    b.type_name
+                ),
             ));
         }
         match b.is_use().then_some(()) {
@@ -740,8 +752,7 @@ pub(crate) fn resolve_models(
     outer: &BTreeMap<String, serde_json::Value>,
     stack: &mut Vec<String>,
 ) -> Result<(), FileError> {
-    let studies = |b: &BlockEntry| b.type_name == crate::STUDY && b.settings.contains_key("model");
-    if file.models.is_empty() && file.blocks.iter().all(|b| b.model.is_none() && !studies(b)) {
+    if file.models.is_empty() && file.blocks.iter().all(|b| b.model.is_none()) {
         return Ok(());
     }
     let mut scope = outer.clone();
@@ -758,40 +769,6 @@ pub(crate) fn resolve_models(
     }
     let folder = file.folder.clone();
     for (k, b) in file.blocks.iter_mut().enumerate() {
-        // A study of a definition (ADR 0070): its text, with the
-        // definitions in scope but itself, which it may use.
-        if studies(b) {
-            let name = b.settings["model"].clone();
-            let at = format!("blocks[{k}].settings.model");
-            let v = scope.get(&name).ok_or_else(|| {
-                invalid(
-                    &at,
-                    format!("no model named '{name}' is defined here (`models`)"),
-                )
-            })?;
-            if stack.contains(&name) {
-                return Err(invalid(
-                    &at,
-                    format!("a model studies itself: {} → {name}", stack.join(" → ")),
-                ));
-            }
-            definition(&name, v)?;
-            let mut text = v.clone();
-            if let Some(o) = text.as_object_mut() {
-                o.entry("format")
-                    .or_insert(serde_json::Value::from(crate::FORMAT_VERSION));
-                let models = o
-                    .entry("models")
-                    .or_insert_with(|| serde_json::Value::Object(Default::default()));
-                if let Some(m) = models.as_object_mut() {
-                    for (n, d) in scope.iter().filter(|(n, _)| **n != name) {
-                        m.entry(n.clone()).or_insert_with(|| d.clone());
-                    }
-                }
-            }
-            b.study_model = Some(text.to_string());
-            continue;
-        }
         let Some(name) = b.model.clone() else {
             continue;
         };
@@ -814,6 +791,24 @@ pub(crate) fn resolve_models(
         let inner = resolve_models(&mut m, &scope, stack);
         stack.pop();
         inner.map_err(|e| nest(&format!("models.{name}"), e))?;
+        // A study of it (ADR 0070) runs its text, with the definitions in
+        // scope but itself.
+        if b.type_name == crate::STUDY {
+            let mut text = v.clone();
+            if let Some(o) = text.as_object_mut() {
+                o.entry("format")
+                    .or_insert(serde_json::Value::from(crate::FORMAT_VERSION));
+                let models = o
+                    .entry("models")
+                    .or_insert_with(|| serde_json::Value::Object(Default::default()));
+                if let Some(ms) = models.as_object_mut() {
+                    for (n, d) in scope.iter().filter(|(n, _)| **n != name) {
+                        ms.entry(n.clone()).or_insert_with(|| d.clone());
+                    }
+                }
+            }
+            b.study_model = Some(text.to_string());
+        }
         b.resolved = Some(Box::new(m));
     }
     Ok(())

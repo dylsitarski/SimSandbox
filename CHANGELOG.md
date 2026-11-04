@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- A study names its model as a use does, `"model": "cruise"` or `"file": "car.ssbx.json"` on its entry (no longer in `settings`), and its node opens to that model to see and edit it, with the same choices as a used model's.
 - `controls.plots` is removed from the format (it did nothing since ADR 0063); a file that still has it loads, the key ignored.
 - The examples are written as SimSandbox now builds models, with the same results: values and starts once, in the typed equations; units on the resonance and predator–prey formulas; no `controls.plots`, default methods or unused `run.dt`. The Platoon is listed as a model defined once and used three times.
 - A model with no states that reads an `input.file` is no longer swept over its first parameter by default: it runs in time at its data's samples (ADR 0067 step 4).

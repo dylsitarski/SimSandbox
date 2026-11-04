@@ -3513,25 +3513,11 @@ fn study_fields(
     if b.type_name != simsandbox_file::STUDY {
         return out;
     }
-    let key = if b.settings.contains_key("file") {
-        "file"
-    } else {
-        "model"
-    };
-    ui.horizontal(|ui| {
-        ui.label(if key == "file" {
-            "studies the file"
-        } else {
-            "studies the model"
-        });
-        out.extend(setting_field(
-            ui,
-            b,
-            key,
-            160.0,
-            "A model defined in this file (model), or a model file (file)",
-            edits,
-        ));
+    // What it studies; open the node to see and edit that model.
+    ui.weak(match (&b.model, &b.file) {
+        (Some(m), _) => format!("studies the model {m} (open the node to edit it)"),
+        (None, Some(f)) => format!("studies the file {f} (open the node to edit it)"),
+        _ => "names no model to study".into(),
     });
     let now = b
         .sample

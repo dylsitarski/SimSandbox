@@ -424,7 +424,7 @@
         },
         "file": {
           "type": "string",
-          "description": "A use of a model file (ADR 0066) in place of a type: found from this file's folder, or a full path. Its params are values for this use only; everything in it is named with this entry's name as a prefix ('plant/car.v'). It runs on its own clock and is linked by probes into input.value blocks."
+          "description": "A use of a model file (ADR 0066) in place of a type: found from this file's folder, or a full path. Its params are values for this use only; everything in it is named with this entry's name as a prefix ('plant/car.v'). It runs on its own clock and is linked by probes into input.value blocks. A study block (type 'study') names the model it studies the same way (ADR 0070)."
         },
         "clock": {
           "description": "A use's clock: {\"dt\": step}, {\"times\": [t1, t2, …]} to step from one listed instant to the next (ADR 0067 step 4), or \"shared\" to run on its user's clock, flattened in, with wires into its input.value blocks ('plant/force') and from its outputs ('plant/car.v'). If absent: shared when a wire reaches it and its model writes no run.dt; else its own at run.dt if it has states, on new data if not, its recorded data's sample times included (ADR 0066, ADR 0067, ADR 0068).",
@@ -466,7 +466,7 @@
         },
         "model": {
           "type": "string",
-          "description": "A use of a model defined in this file ('models') or in a model holding this one, by name (ADR 0068), in place of 'type' or 'file'."
+          "description": "A use of a model defined in this file ('models') or in a model holding this one, by name (ADR 0068), in place of 'type' or 'file'. A study block (type 'study') names the model it studies the same way (ADR 0070)."
         },
         "files": {
           "type": "object",

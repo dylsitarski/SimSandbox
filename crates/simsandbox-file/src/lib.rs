@@ -978,7 +978,7 @@ pub struct BlockEntry {
     /// `study` block has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample: Option<Sampling>,
-    /// A study's model when `settings.model` names a definition: its text,
+    /// A study's model when `model` names a definition: its text,
     /// with the definitions in scope; found as the file was read, never
     /// written.
     #[serde(skip)]
@@ -1014,6 +1014,11 @@ impl BlockEntry {
     /// definition (a study's from [`BlockEntry::study_definition`]),
     /// update order and settings.
     pub fn config(&self, folder: Option<&std::path::Path>) -> BlockConfig {
+        let mut settings = self.settings.clone();
+        // A study's file is read (and hashed) as a setting of its type.
+        if let (true, Some(f)) = (self.type_name == STUDY, &self.file) {
+            settings.insert("file".into(), f.clone());
+        }
         BlockConfig {
             method: (&self.method).into(),
             definition: if self.type_name == STUDY {
@@ -1022,7 +1027,7 @@ impl BlockEntry {
                 self.equations.clone()
             },
             update: self.update.clone(),
-            settings: self.settings.clone(),
+            settings,
             folder: folder.map(Into::into),
         }
     }
@@ -1041,8 +1046,15 @@ impl BlockEntry {
         d
     }
 
-    /// A use of a model, by file or as a local copy (ADR 0066).
+    /// A use of a model, by file or as a local copy (ADR 0066): an entry
+    /// with no type that names a model.
     pub fn is_use(&self) -> bool {
+        self.type_name.is_empty() && self.names_model()
+    }
+
+    /// Whether it names a model (`file` or `model`): a use, or a study of
+    /// that model (ADR 0070), which the app opens and edits the same way.
+    pub fn names_model(&self) -> bool {
         self.file.is_some() || self.model.is_some()
     }
 }
@@ -2011,7 +2023,7 @@ fn data_digests(
             continue;
         };
         let config = BlockConfig {
-            settings: b.settings.clone(),
+            settings: b.config(folder).settings,
             folder: folder.map(Into::into),
             ..Default::default()
         };

@@ -64,7 +64,7 @@ fn walk(
         let entry =
             at.0.blocks
                 .iter()
-                .find(|b| &b.name == name && b.is_use())
+                .find(|b| &b.name == name && b.names_model())
                 .ok_or_else(|| format!("no model used as '{name}'"))?;
         let (model, file, inner) = used_model(entry, at.1.as_deref())?;
         match (file, &entry.model) {
@@ -230,7 +230,7 @@ pub fn prepare(
             let first = top
                 .blocks
                 .iter_mut()
-                .find(|b| b.name == path[0] && b.is_use())
+                .find(|b| b.name == path[0] && b.names_model())
                 .expect("walked");
             if path.len() == 1 {
                 // Its replacements are in the copy now.
@@ -287,7 +287,7 @@ pub fn prepare(
             let first = top
                 .blocks
                 .iter_mut()
-                .find(|b| b.name == path[0] && b.is_use())
+                .find(|b| b.name == path[0] && b.names_model())
                 .expect("walked");
             use_definition(first, &key);
             top.models.insert(key.clone(), as_definition(&m));

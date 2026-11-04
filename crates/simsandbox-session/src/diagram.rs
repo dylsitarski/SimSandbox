@@ -624,11 +624,7 @@ fn node(b: &BlockEntry, registry: &Registry, folder: Option<&std::path::Path>) -
     }
     // A study says what it studies and how many runs it makes (ADR 0070).
     if b.type_name == crate::study::STUDY {
-        let what = b
-            .settings
-            .get("model")
-            .or_else(|| b.settings.get("file"))
-            .map_or("?", String::as_str);
+        let what = b.model.as_deref().or(b.file.as_deref()).unwrap_or("?");
         method = match outputs.first() {
             Some(p) => format!("of {what} · {} runs", p.shape.len()),
             None => format!("of {what}"),
@@ -932,7 +928,7 @@ pub fn apply_in(
     edit: &Edit,
 ) -> Result<String, String> {
     let note = apply_in_level(file, scope, registry, edit)?;
-    // A study names its model by `settings.model`: found again (ADR 0070).
+    // A study names its model by `model`: found again (ADR 0070).
     if matches!(
         edit,
         Edit::Study { .. } | Edit::SetSetting { .. } | Edit::Duplicate { .. }
@@ -1262,12 +1258,7 @@ fn edit_level(
             } else {
                 base
             };
-            let mut settings = BTreeMap::new();
-            match (&u.model, &u.file) {
-                (Some(m), _) => settings.insert("model".to_string(), m.clone()),
-                (None, Some(f)) => settings.insert("file".to_string(), f.clone()),
-                (None, None) => unreachable!("a use names a model or a file"),
-            };
+
             let sample: simsandbox_file::Sampling = serde_json::from_value(serde_json::json!({
                 "design": "grid", "params": [{"param": key, "range": range, "points": 20}]}))
             .map_err(|e| e.to_string())?;
@@ -1288,7 +1279,9 @@ fn edit_level(
             l.blocks.push(BlockEntry {
                 name: name.clone(),
                 type_name: simsandbox_file::STUDY.into(),
-                settings,
+                // The same model, named as the use names it.
+                model: u.model.clone(),
+                file: u.file.clone(),
                 sample: Some(sample),
                 canvas: u.canvas.map(|[x, y]| [x + 260.0, y]),
                 ..Default::default()
@@ -1890,12 +1883,6 @@ fn rename_model(file: &mut ModelFile, from: &str, to: &str) -> Result<String, St
             if b.model.as_deref() == Some(from) {
                 b.model = Some(to.to_string());
             }
-            // A study of it (ADR 0070).
-            if b.type_name == simsandbox_file::STUDY
-                && b.settings.get("model").map(String::as_str) == Some(from)
-            {
-                b.settings.insert("model".into(), to.to_string());
-            }
         }
         for (name, v) in m.models.iter_mut() {
             if let Ok(mut d) = simsandbox_file::compose::read_definition(name, v) {
@@ -2458,7 +2445,7 @@ mod tests {
             .find(|b| b.name == "car1_study")
             .unwrap()
             .clone();
-        assert_eq!(s.settings["model"], "follower");
+        assert_eq!(s.model.as_deref(), Some("follower"));
         let sample = serde_json::to_value(s.sample.as_ref().unwrap()).unwrap();
         assert_eq!(sample["params"][0]["param"], "ki");
         assert_eq!(
@@ -2523,7 +2510,7 @@ mod tests {
         )
         .unwrap();
         let s = f.blocks.iter().find(|b| b.name == "car1_study").unwrap();
-        assert_eq!(s.settings["model"], "chaser");
+        assert_eq!(s.model.as_deref(), Some("chaser"));
         // Still running: mass and v_max, three runs each.
         let outs: Vec<usize> = run(&f)
             .outputs

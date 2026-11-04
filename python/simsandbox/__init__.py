@@ -301,7 +301,8 @@ class Model:
         runs as one model on its clocks, as the app does, and returns
         :class:`Results` at every instant of any clock (keys by full name,
         ``"slow/u.y"``)."""
-        uses = any("file" in b or "model" in b for b in self.data.get("blocks", []))
+        # A use names a model and has no type; a study names one too (ADR 0070).
+        uses = any(("file" in b or "model" in b) and "type" not in b for b in self.data.get("blocks", []))
         if uses and inputs is None and "sample" not in self.data:
             if dt is not None:
                 raise ValueError("a model using models keeps each model's own clock: dt does not apply")

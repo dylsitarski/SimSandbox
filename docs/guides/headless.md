@@ -163,12 +163,12 @@ A **study** is a block that runs a model at each point of its own `sample` and o
 
 ```json
 "models": {"cruise": {"blocks": [...], "connections": [...], "run": {"dt": 0.05, "t_end": 60}}},
-"blocks": [{"name": "kp", "type": "study", "settings": {"model": "cruise"},
+"blocks": [{"name": "kp", "type": "study", "model": "cruise",
             "sample": {"design": "list", "params": [{"param": "cruise.kp"}], "values": [[200], [800]],
                        "reduce": {"v_max": "max(car.v)", "settle": "first_time(abs(cruise.e) < 0.5)"}}}]
 ```
 
-- **Model:** `settings.model`, a definition in scope, or `settings.file`, a model file found from this file's folder (its contents are part of the run hash). The study's `sample` replaces the model's own; designs, `seeds`, `replicates` and `reduce` are an experiment's. `keep: "series"` is refused: a study keeps one value per run.
+- **Model:** named as a use names it: `"model"`, a definition in scope, or `"file"`, a model file found from this file's folder (its contents are part of the run hash). In the app, "Open" on a study's node goes inside that model to see and edit it, with the same choices as a used model's (the definition, the file, or a copy); renaming the definition renames it in the study. The study's `sample` replaces the model's own; designs, `seeds`, `replicates` and `reduce` are an experiment's. `keep: "series"` is refused: a study keeps one value per run.
 - **Inputs:** the model's input blocks (`input.value`), one scalar input each, named as the block; every point takes their values. An input block the sample sweeps is not an input.
 - **Outputs:** lines of cells with one value per run (points times replicates): each swept parameter (`cruise.kp` becomes `kp.cruise_kp`), then each `reduce` result, or without `reduce` each scalar output's final value (`car.v` becomes `car_v`). Units: a parameter's or output's own; `period` and `first_time` in seconds; a reduction of one signal in its unit; other expressions dimensionless. A grid design over one parameter, run once per point, gives that parameter's values as the coordinate of every result.
 - **Reading them:** a typed-equations block numbers the runs with an index axis and reads them as arrays: `"grid k = 5", "input amp[k], w[k]", "w_peak = at(w, argmaxof(amp))"`. `argmaxof` and `argminof` give the cell of the greatest or least value (the first of equals; NaN if all are NaN), and `at(T, i)` takes a computed cell number (rounded; NaN outside). The axis's number of cells must match the study's runs; the wire is refused otherwise.

@@ -3,9 +3,9 @@
 //! (times its replicates) from the model's start, and outputs arrays with
 //! one value per run.
 //!
-//! - **Model:** `settings.model`, a definition in scope (ADR 0068), or
-//!   `settings.file`, a model file found from this file's folder and part
-//!   of the run hash. The study's `sample` replaces the model's own.
+//! - **Model:** named as a use names it (ADR 0070): `model`, a definition
+//!   in scope (ADR 0068), or `file`, a model file found from this file's
+//!   folder and part of the run hash. The study's `sample` replaces the model's own.
 //! - **Inputs:** the model's own input blocks (`input.value`), one scalar
 //!   each, set before every point.
 //! - **Outputs:** one array per swept parameter, then one per result: the
@@ -49,7 +49,7 @@ pub fn register(registry: &mut Registry) -> Result<()> {
             "Runs a model at each point of its `sample` (the designs, keep, seeds, replicates and \
              reduce of an experiment) and outputs arrays with one value per run: each swept \
              parameter, then each `reduce` result or each scalar output's final value. The \
-             model is `settings.model` (a definition in `models`) or `settings.file`; its input \
+             model is named as a use names it, `model` (a definition in `models`) or `file`; its input \
              blocks are the study's inputs. Write the sample in the block's `sample` section.",
         )
         .method(RUNS, &[])
@@ -101,14 +101,10 @@ fn port_name(key: &str) -> String {
 
 impl StudyBlock {
     pub fn from_config(name: &str, c: &BlockConfig) -> Result<Self> {
-        if let Some(k) = c
-            .settings
-            .keys()
-            .find(|k| !matches!(k.as_str(), "model" | "file"))
-        {
+        if let Some(k) = c.settings.keys().find(|k| k.as_str() != "file") {
             return Err(SimError::InvalidSetting {
                 setting: format!("settings.{k}"),
-                reason: "a study has the settings 'model' and 'file'".into(),
+                reason: "a study has no settings: it names its model as a use does, with \"model\" (a definition here) or \"file\"".into(),
             });
         }
         // No method given is its one method.
@@ -129,11 +125,11 @@ impl StudyBlock {
             return Err(invalid("a study takes no equations"));
         }
         // Its model: a definition's text (found by the loader from
-        // `settings.model`), or a file's.
+        // `model`), or a file's.
         let (model, folder, label) = match (defined, c.file("file")) {
             (Some(_), Some(_)) => {
                 return Err(SimError::InvalidSetting {
-                    setting: "settings.file".into(),
+                    setting: "file".into(),
                     reason: "a study names a model or a file, not both".into(),
                 })
             }
@@ -144,21 +140,18 @@ impl StudyBlock {
                 c.folder
                     .clone()
                     .or_else(simsandbox_core::registry::current_folder),
-                format!(
-                    "model '{}'",
-                    c.settings.get("model").map_or("", String::as_str)
-                ),
+                "a model defined in the file".to_string(),
             ),
             (None, Some(path)) => {
                 let path = path?;
                 let bytes = simsandbox_file::compose::read_model(&path).map_err(|e| {
                     SimError::InvalidSetting {
-                        setting: "settings.file".into(),
+                        setting: "file".into(),
                         reason: format!("{}: {e}", path.display()),
                     }
                 })?;
                 let text = String::from_utf8(bytes).map_err(|_| SimError::InvalidSetting {
-                    setting: "settings.file".into(),
+                    setting: "file".into(),
                     reason: format!("{}: not a text file", path.display()),
                 })?;
                 let label = path.display().to_string();
@@ -166,11 +159,8 @@ impl StudyBlock {
             }
             (None, None) => {
                 return Err(SimError::InvalidSetting {
-                    setting: "settings.model".into(),
-                    reason: match c.settings.get("model") {
-                        Some(m) => format!("no model named '{m}' is defined here"),
-                        None => "a study names its model: `model` (a definition) or `file`".into(),
-                    },
+                    setting: "model".into(),
+                    reason: "a study names its model as a use does: \"model\" (a definition here) or \"file\"".into(),
                 })
             }
         };
@@ -541,7 +531,7 @@ mod tests {
         let x = run_experiment(&alone.to_string(), &r, None, None, Some(1)).unwrap();
         // A study of it as a definition, in a model with nothing else.
         let file = json!({"format": 1, "models": {"cruise": cruise()},
-            "blocks": [{"name": "s", "type": "study", "settings": {"model": "cruise"}, "sample": sample()}],
+            "blocks": [{"name": "s", "type": "study", "model": "cruise", "sample": sample()}],
             "run": {"dt": 0.5, "t_end": 1.0}});
         let y = run(&file.to_string(), &r, None, None).unwrap();
         // Nothing else runs in time: one evaluation, a row per run.
@@ -568,7 +558,7 @@ mod tests {
         // A study of the file gives the same.
         let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
         let by_file = json!({"format": 1,
-            "blocks": [{"name": "s", "type": "study", "settings": {"file": "cruise-control.ssbx.json"}, "sample": sample()}],
+            "blocks": [{"name": "s", "type": "study", "file": "cruise-control.ssbx.json", "sample": sample()}],
             "run": {"dt": 0.5, "t_end": 0.5}});
         let z = simsandbox_core::registry::in_folder(Some(&examples), || {
             run(&by_file.to_string(), &r, None, None)
@@ -610,7 +600,7 @@ mod tests {
             o.remove(k);
         }
         let file = json!({"format": 1, "models": {"resonance": model},
-            "blocks": [{"name": "s", "type": "study", "settings": {"model": "resonance"}, "sample": sample}]});
+            "blocks": [{"name": "s", "type": "study", "model": "resonance", "sample": sample}]});
         let rows = run(&file.to_string(), &r, None, None).unwrap();
         let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
         let mut compared = 0;
@@ -664,7 +654,7 @@ mod tests {
         let ws = [0.5, 0.8, 0.99, 1.2, 2.0];
         let file = json!({"format": 1, "models": {"resonance": model},
             "blocks": [
-                {"name": "s", "type": "study", "settings": {"model": "resonance"},
+                {"name": "s", "type": "study", "model": "resonance",
                  "sample": {"design": "list", "params": [{"param": "spring.w"}],
                             "values": ws.iter().map(|w| vec![*w]).collect::<Vec<_>>()}},
                 {"name": "peak", "type": "eq.equations", "equations": [
@@ -685,7 +675,7 @@ mod tests {
         // A grid design of one parameter: its values are the results'
         // coordinate.
         let grid = json!({"format": 1, "models": {"resonance": file["models"]["resonance"]},
-            "blocks": [{"name": "s", "type": "study", "settings": {"model": "resonance"},
+            "blocks": [{"name": "s", "type": "study", "model": "resonance",
                 "sample": {"design": "grid", "params": [{"param": "spring.w", "range": [0.5, 1.5], "points": 3}]}}]});
         let loaded = simsandbox_file::load(&grid.to_string(), &r).unwrap();
         let spec = loaded.model.block(loaded.ids["s"]).unwrap().spec().clone();
@@ -704,7 +694,7 @@ mod tests {
         std::fs::write(dir.join("starts.csv"), "x.x0,id\n1,30\n2,10\n").unwrap();
         let file = json!({"format": 1, "models": {"decay": decay()},
             "blocks": [{"name": "rate", "type": "input.value", "params": {"y": 1.0}},
-                {"name": "s", "type": "study", "settings": {"model": "decay"},
+                {"name": "s", "type": "study", "model": "decay",
                 "sample": {"design": "file", "file": "starts.csv", "reduce": {"half": "first_time(x.x < 0.5)"}}}],
             "connections": [{"from": "rate.y", "to": "s.k"}]});
         let y = simsandbox_core::registry::in_folder(Some(&dir), || {
@@ -728,12 +718,50 @@ mod tests {
     }
 
     #[test]
+    fn a_studys_model_opens_and_edits_like_a_used_one() {
+        // ADR 0070: the tuning example's study opens to the cruise model;
+        // editing it there changes the definition the study runs.
+        use crate::edit_use::{model_at, prepare, read, write, Edited, How};
+        let r = registry();
+        let text = crate::examples::EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Tuning"))
+            .unwrap()
+            .text;
+        let (mut top, _) = simsandbox_file::ModelFile::from_json(text).unwrap();
+        let path = ["tuning".to_string()];
+        let inside = model_at(&top, None, &path).unwrap();
+        let names: Vec<&str> = inside.blocks.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["car", "cruise"]);
+        // Edit the original: the definition, so the study runs the change.
+        let mut edited = Edited::new();
+        let target = prepare(&mut top, None, &mut edited, &path, How::Original).unwrap();
+        assert_eq!(target.def, ["cruise"]);
+        let mut model = read(&top, &edited, &target).unwrap();
+        model.blocks[0]
+            .params
+            .insert("m".into(), simsandbox_file::ParamValue::Number(2000.0));
+        write(&mut top, &mut edited, &target, &model).unwrap();
+        let heavier = crate::run::run(&top.to_json(), &r, None, None).unwrap();
+        let light = crate::run::run(text, &r, None, None).unwrap();
+        let peak = |x: &Results| value(x, "tuning.peak");
+        assert_ne!(peak(&heavier), peak(&light));
+        // A local copy: the study names a new definition of its own.
+        let (mut top, _) = simsandbox_file::ModelFile::from_json(text).unwrap();
+        let target = prepare(&mut top, None, &mut Edited::new(), &path, How::LocalCopy).unwrap();
+        let study = top.blocks.iter().find(|b| b.name == "tuning").unwrap();
+        assert_eq!(study.model.as_deref(), Some(target.def[0].as_str()));
+        assert_ne!(target.def[0], "cruise");
+        assert!(crate::run::run(&top.to_json(), &r, None, None).is_ok());
+    }
+
+    #[test]
     fn a_study_runs_again_when_its_inputs_change() {
         let r = registry();
         let file = json!({"format": 1, "models": {"decay": decay()},
             "blocks": [
                 {"name": "rate", "type": "input.value", "params": {"y": 1.0}},
-                {"name": "s", "type": "study", "settings": {"model": "decay"}, "sample": halves()}],
+                {"name": "s", "type": "study", "model": "decay", "sample": halves()}],
             "connections": [{"from": "rate.y", "to": "s.k"}],
             "run": {"dt": 0.25, "t_end": 1.0, "inputs": [{"t": 0.5, "set": "rate.y", "to": 2.0}]}});
         let y = run(&file.to_string(), &r, None, None).unwrap();
@@ -755,11 +783,11 @@ mod tests {
         // `scan`: the halves of decay at rate k, its input.
         let scan = json!({"blocks": [
                 {"name": "k", "type": "input.value", "params": {"y": 1.0}},
-                {"name": "inner", "type": "study", "settings": {"model": "decay"}, "sample": halves()}],
+                {"name": "inner", "type": "study", "model": "decay", "sample": halves()}],
             "connections": [{"from": "k.y", "to": "inner.k"}]});
         // The outer study sweeps scan's rate and keeps the second half.
         let file = json!({"format": 1, "models": {"decay": decay(), "scan": scan},
-            "blocks": [{"name": "outer", "type": "study", "settings": {"model": "scan"},
+            "blocks": [{"name": "outer", "type": "study", "model": "scan",
                 "sample": {"design": "list", "params": [{"param": "k.y"}], "values": [[1.0], [2.0], [4.0]],
                            "reduce": {"h2": "final(inner.half[1])"}}}],
             "run": {"dt": 1.0, "t_end": 1.0}});
@@ -780,7 +808,7 @@ mod tests {
         let studying = |file: &str| {
             json!({"format": 1, "blocks": [
                 {"name": "k", "type": "input.value"},
-                {"name": "s", "type": "study", "settings": {"file": file},
+                {"name": "s", "type": "study", "file": file,
                  "sample": {"design": "list", "params": [{"param": "k.y"}], "values": [[1.0]]}}]})
             .to_string()
         };
@@ -816,12 +844,12 @@ mod tests {
             };
             models.insert(format!("l{n}"), json!({"blocks": [
                 {"name": "k", "type": "input.value"},
-                {"name": "s", "type": "study", "settings": {"model": format!("l{}", n - 1)},
+                {"name": "s", "type": "study", "model": format!("l{}", n - 1),
                  "sample": {"design": "list", "params": [{"param": "k.y"}], "values": [[1.0], [2.0]],
                             "reduce": {"r": inner}}}]}));
         }
         let file = json!({"format": 1, "models": models,
-            "blocks": [{"name": "top", "type": "study", "settings": {"model": "l9"},
+            "blocks": [{"name": "top", "type": "study", "model": "l9",
                 "sample": {"design": "list", "params": [{"param": "k.y"}], "values": [[1.0]],
                            "reduce": {"r": "final(s.r[0])"}}}],
             "run": {"dt": 1.0, "t_end": 1.0}});
@@ -839,24 +867,20 @@ mod tests {
             assert_eq!(s["ok"], false, "{s}");
             s["errors"][0].to_string()
         };
-        let e = err(
-            json!([{"name": "s", "type": "study", "settings": {"model": "nope"}, "sample": halves()}]),
-        );
+        let e = err(json!([{"name": "s", "type": "study", "model": "nope", "sample": halves()}]));
         assert!(e.contains("no model named 'nope'"), "{e}");
-        let e = err(json!([{"name": "s", "type": "study", "settings": {"model": "decay"}}]));
+        let e = err(json!([{"name": "s", "type": "study", "model": "decay"}]));
         assert!(e.contains("needs a `sample`"), "{e}");
         let e = err(json!([{"name": "u", "type": "input.value", "sample": halves()}]));
         assert!(e.contains("only a study block has a sample"), "{e}");
         let mut series = halves();
         series["keep"] = json!("series");
-        let e = err(
-            json!([{"name": "s", "type": "study", "settings": {"model": "decay"}, "sample": series}]),
-        );
+        let e = err(json!([{"name": "s", "type": "study", "model": "decay", "sample": series}]));
         assert!(e.contains("one value per run"), "{e}");
         // A definition that studies itself.
         let file = json!({"format": 1, "models": {"me": {"blocks": [
-            {"name": "s", "type": "study", "settings": {"model": "me"}, "sample": halves()}]}},
-            "blocks": [{"name": "s", "type": "study", "settings": {"model": "me"}, "sample": halves()}]});
+            {"name": "s", "type": "study", "model": "me", "sample": halves()}]}},
+            "blocks": [{"name": "s", "type": "study", "model": "me", "sample": halves()}]});
         let s = crate::describe::check(&file.to_string(), &r);
         assert_eq!(s["ok"], false, "{s}");
     }

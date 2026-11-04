@@ -2669,7 +2669,7 @@ mod tests {
         let study = json!({"format": 1, "run": {"t_end": 1.2},
             "blocks": [use_of("a", "a.ssbx.json"),
                 {"name": "x", "type": "input.value", "settings": {"unit": "m"}},
-                {"name": "s", "type": "study", "settings": {"file": "sweep.ssbx.json"}, "sample": sample}],
+                {"name": "s", "type": "study", "file": "sweep.ssbx.json", "sample": sample}],
             "connections": [{"from": "probe:p.a/count.x", "to": "x"}, {"from": "x.y", "to": "s.u"}],
             "controls": {"probes": [{"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.6}}]}});
         let composed = run_in(&dir, &study);

@@ -437,7 +437,7 @@ def test_a_study_block_runs_a_definition_at_each_point():
     sample = {"design": "list", "params": [{"param": "cruise.kp"}], "values": [[200.0], [800.0]],
               "reduce": {"settle": "first_time(abs(cruise.e) < 0.5)"}}
     m = ss.Model({"format": 1, "models": {"cruise": cruise},
-                  "blocks": [{"name": "s", "type": "study", "settings": {"model": "cruise"}, "sample": sample}],
+                  "blocks": [{"name": "s", "type": "study", "model": "cruise", "sample": sample}],
                   "run": {"dt": 1.0, "t_end": 1.0}})
     assert m.check()["ok"]
     r = m.run()
@@ -452,7 +452,7 @@ def test_studying_a_used_model_as_on_the_canvas():
     note = m.study("car1")
     assert "car1_study" in note
     block = next(b for b in m.data["blocks"] if b["name"] == "car1_study")
-    assert block["settings"] == {"model": "follower"}
+    assert block["model"] == "follower"
     block["sample"] = {"design": "list", "params": [{"param": "mass"}], "values": [[800.0], [3200.0]],
                        "reduce": {"v_max": "max(car.v)"}}
     r = m.run(t_end=0.2)

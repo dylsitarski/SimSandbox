@@ -1486,6 +1486,16 @@ impl Canvas {
                         ui.close();
                     }
                 }
+                // A study opens to the model it studies (ADR 0070).
+                if n.type_name == simsandbox_file::STUDY
+                    && ui
+                        .button("Open")
+                        .on_hover_text("See inside the model it studies, and edit it")
+                        .clicked()
+                {
+                    requests.push(Request::Open(name.clone()));
+                    ui.close();
+                }
                 if n.is_block() {
                     let many = selection.len() > 1 && selection.contains(&name);
                     let label = if many {

@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-04: studies name models like uses (`names_model`), open to them (canvas Open, app paths, edit_use); typed entries naming models refused; tests, `--inside` render.
 - 2026-11-04: examples brought to the current form (results compared bit for bit before and after for all 18); `cruise-tuning` example; `every_example_is_current_and_runs`; Q51 (`controls.plots`) raised.
 - 2026-11-04: ADR 0067 step 4: `Block::instants`, `Clock::times`, listed instants in `Simulator::advance`, `Ticks::with_times`/`at`/`within`, `data_times`, `UseClock::Times`, domain times in both runners, `run::data_end`; tests and an Xvfb check.
 - 2026-11-04: ADR 0070 step 5: `BlockEntry::config`, `Edit::Study`/`Edit::SetSample`, Inspector `study_fields`, study subtitle, profile view first for studies, `report_data` for study data in the run hash, Python `Model.study`; tests and Xvfb screenshots.

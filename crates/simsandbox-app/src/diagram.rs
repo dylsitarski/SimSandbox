@@ -153,7 +153,7 @@ pub(crate) fn used_file(
         let entry = file
             .blocks
             .iter()
-            .find(|b| &b.name == name && b.is_use())
+            .find(|b| &b.name == name && b.names_model())
             .ok_or_else(|| format!("no model used as '{name}'"))?;
         let (used, _, inner) = simsandbox_file::compose::used_model(entry, folder.as_deref())?;
         folder = inner;
@@ -280,8 +280,13 @@ impl DiagramTab {
         let mut opened = None;
         for r in requests {
             if let Request::Open(name) = r {
+                let study = d
+                    .node(&name)
+                    .is_some_and(|k| d.nodes[k].type_name == simsandbox_file::STUDY);
                 match d.node(&name).map(|k| d.nodes[k].kind) {
                     Some(NodeKind::Use) => opened = Some(name),
+                    // A study opens to the model it studies (ADR 0070).
+                    Some(NodeKind::Block) if study => opened = Some(name),
                     // A block's equations, edited where it is (ADR 0068).
                     Some(NodeKind::Block) => {
                         out.push(Outcome::Open(format!("{}::{name}", self.inside.join("/"))))
@@ -929,8 +934,12 @@ impl DiagramTab {
             };
             let node = d.node(&name).map(|k| d.nodes[k].clone());
             match node {
-                // A used model opens to its file, as written (ADR 0066).
-                Some(n) if n.kind == NodeKind::Use && self.scope == Scope::Model => {
+                // A used model opens to its file, as written (ADR 0066); a
+                // study to the model it studies (ADR 0070).
+                Some(n)
+                    if (n.kind == NodeKind::Use || n.type_name == simsandbox_file::STUDY)
+                        && self.scope == Scope::Model =>
+                {
                     // Also a use inside an expanded one (`p/one`).
                     self.inside = name.split('/').map(str::to_string).collect();
                     self.inside_cache = None;

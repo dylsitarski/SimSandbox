@@ -53,9 +53,7 @@
     {
       "name": "tuning",
       "type": "study",
-      "settings": {
-        "model": "cruise"
-      },
+      "model": "cruise",
       "sample": {
         "design": "grid",
         "params": [

@@ -299,7 +299,7 @@ mod tests {
             model.as_object_mut().unwrap().remove(k);
         }
         let file = serde_json::json!({"format": 1, "models": {"resonance": model},
-            "blocks": [{"name": "s", "type": "study", "settings": {"model": "resonance"},
+            "blocks": [{"name": "s", "type": "study", "model": "resonance",
                 "sample": {"design": "grid", "params": [{"param": "spring.w", "range": [0.5, 1.5], "points": 11}]}}]});
         let s = Session::load("study", &file.to_string(), &registry()).unwrap();
         let mut v = Views::new(view_registry());
