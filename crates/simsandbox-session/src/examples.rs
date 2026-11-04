@@ -30,11 +30,15 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/cruise-steer.ssbx.json"),
     },
     Example {
+        name: "Tuning a controller's gain (a study of a model)",
+        text: include_str!("../../../examples/cruise-tuning.ssbx.json"),
+    },
+    Example {
         name: "Units (a shaker in mm drives springs in m)",
         text: include_str!("../../../examples/units.ssbx.json"),
     },
     Example {
-        name: "Platoon (a subsystem used three times)",
+        name: "Platoon (a model defined once, used three times)",
         text: include_str!("../../../examples/platoon.ssbx.json"),
     },
     Example {
@@ -97,4 +101,80 @@ pub fn view_registry() -> ViewRegistry {
     let mut r = ViewRegistry::builtin();
     simsandbox_eq::register_views(&mut r).expect("equation views register once");
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_example_is_current_and_runs() {
+        // Every built-in example loads with nothing to convert and no
+        // warnings, and runs (each model briefly).
+        let r = registry();
+        for e in EXAMPLES {
+            let loaded = simsandbox_file::load_any(e.text, &r, None)
+                .unwrap_or_else(|err| panic!("{}: {err}", e.name));
+            assert!(
+                loaded.conversions.is_empty(),
+                "{}: {:?}",
+                e.name,
+                loaded.conversions
+            );
+            assert!(
+                loaded.warnings.is_empty(),
+                "{}: {:?}",
+                e.name,
+                loaded.warnings
+            );
+            let ran = crate::run::run(e.text, &r, Some(0.5), None);
+            // A swept model takes no end time: run it as written.
+            let ran = ran.or_else(|_| crate::run::run(e.text, &r, None, None));
+            assert!(ran.is_ok(), "{}: {:?}", e.name, ran.err());
+        }
+    }
+
+    #[test]
+    fn the_tuning_example_picks_the_fastest_gain_under_the_limit() {
+        let r = registry();
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Tuning"))
+            .unwrap();
+        let rows = crate::run::run(e.text, &r, None, None).unwrap();
+        let ki = &rows
+            .outputs
+            .iter()
+            .find(|o| o.name == "tuning.cruise_ki")
+            .unwrap()
+            .values;
+        let reach = &rows
+            .outputs
+            .iter()
+            .find(|o| o.name == "tuning.reach")
+            .unwrap()
+            .values;
+        let peak = &rows
+            .outputs
+            .iter()
+            .find(|o| o.name == "tuning.peak")
+            .unwrap()
+            .values;
+        // The fastest run whose peak stays under 27 m/s, found by hand.
+        let best = (0..ki.len())
+            .filter(|&k| peak[k] <= 27.0 && !reach[k].is_nan())
+            .min_by(|&a, &b| reach[a].total_cmp(&reach[b]))
+            .unwrap();
+        let note = rows
+            .notes
+            .iter()
+            .find(|n| n.starts_with("best.best_ki = "))
+            .unwrap();
+        assert_eq!(
+            note,
+            &format!("best.best_ki = {} (evaluated once)", ki[best])
+        );
+        // Stronger integral action reaches sooner and peaks higher.
+        assert!(reach[2] > reach[10] && peak[2] < peak[10]);
+    }
 }

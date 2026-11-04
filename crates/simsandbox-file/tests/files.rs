@@ -341,8 +341,10 @@ fn bad_controls_are_dropped_with_warnings() {
 
     let dangling = LORENZ
         .replace("lorenz.sigma", "lorenz.sigmaa")
-        .replace(r#""speed": 1.0"#, r#""speed": -1.0"#)
-        .replace(r#""lorenz.xyz""#, r#""lorenz.nope""#)
+        .replace(
+            r#""speed": 1.0"#,
+            r#""speed": -1.0, "plots": ["lorenz.nope"]"#,
+        )
         .replace("0.0,\n          30.0", "30.0,\n          0.0");
     let loaded = load(&dangling, &registry()).unwrap();
     assert_eq!(loaded.warnings.len(), 4, "{:?}", loaded.warnings);
@@ -641,7 +643,8 @@ fn typed_equations_load_and_report_mistakes_at_their_line() {
     match load(&broken, &registry()) {
         Err(FileError::Invalid { path, message }) => {
             assert_eq!(path, "blocks[0].equations");
-            assert!(message.starts_with("line 2, column"), "{message}");
+            // After the parameters and states declared above it.
+            assert!(message.starts_with("line 9, column"), "{message}");
         }
         other => panic!("unexpected {:?}", other.err()),
     }
@@ -910,7 +913,10 @@ fn legacy_sweeps_become_samples_leniently() {
     );
 
     // Maps and formulas need the matching method.
-    let wrong = LOGISTIC.replace(r#""name": "iterate""#, r#""name": "rk4""#);
+    let wrong = LOGISTIC.replace(
+        r#""type": "eq.equations","#,
+        r#""type": "eq.equations", "method": {"name": "rk4"},"#,
+    );
     assert!(matches!(
         load(&wrong, &registry()),
         Err(FileError::Invalid { path, .. }) if path == "blocks[0].method"

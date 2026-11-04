@@ -8,9 +8,6 @@
     {
       "name": "hand",
       "type": "input.pointer",
-      "method": {
-        "name": "held"
-      },
       "settings": {
         "max": "1.5",
         "min": "-1.5",
@@ -20,10 +17,6 @@
     {
       "name": "bob",
       "type": "eq.equations",
-      "method": {
-        "name": "rk4",
-        "substeps": 1.0
-      },
       "equations": [
         "# a pendulum of length L, pulled towards the hand while it is down",
         "input hx [m]",

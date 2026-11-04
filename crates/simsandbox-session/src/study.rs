@@ -668,8 +668,8 @@ mod tests {
                  "sample": {"design": "list", "params": [{"param": "spring.w"}],
                             "values": ws.iter().map(|w| vec![*w]).collect::<Vec<_>>()}},
                 {"name": "peak", "type": "eq.equations", "equations": [
-                    "grid k = 5", "input amp[k], w[k]",
-                    "w_peak = at(w, argmaxof(amp))", "sharp = maxof(amp) > 10*minof(amp)"]}],
+                    "grid k = 5", "input amp[k] [m], w[k] [rad/s]",
+                    "w_peak = at(w, argmaxof(amp)) [rad/s]", "sharp = maxof(amp) > 10*minof(amp)"]}],
             "connections": [{"from": "s.spring_amplitude", "to": "peak.amp"},
                             {"from": "s.spring_w", "to": "peak.w"}]});
         let check = crate::describe::check(&file.to_string(), &r);

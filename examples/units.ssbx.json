@@ -9,9 +9,6 @@
     {
       "name": "shaker",
       "type": "eq.equations",
-      "method": {
-        "name": "evaluate"
-      },
       "equations": [
         "# a wall moved back and forth, A millimetres at f hertz",
         "param A [mm] = 50",
@@ -32,9 +29,6 @@
       "type": "eq.coupled_oscillator",
       "method": {
         "name": "rk4"
-      },
-      "params": {
-        "x0": 0.0
       }
     },
     {
@@ -42,9 +36,6 @@
       "type": "eq.coupled_oscillator",
       "method": {
         "name": "rk4"
-      },
-      "params": {
-        "x0": 0.0
       }
     },
     {

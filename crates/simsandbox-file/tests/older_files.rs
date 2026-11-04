@@ -62,6 +62,11 @@ fn the_examples_are_in_the_current_form() {
     for e in std::fs::read_dir(dir).unwrap() {
         let path = e.unwrap().path();
         let text = std::fs::read_to_string(&path).unwrap();
+        // Study blocks are registered by the session crate, which checks
+        // those examples (`every_example_is_current_and_runs`).
+        if text.contains(r#""type": "study""#) {
+            continue;
+        }
         let loaded = if simsandbox_file::compose::is_composition(&text) {
             simsandbox_file::compose::load_merged(&text, &registry(), None).unwrap()
         } else {

@@ -1,9 +1,6 @@
 {
   "format": 1,
   "description": "A spring pushed back and forth: how strongly it swings at each driving frequency w. No time here: the outputs are formulas, evaluated at 600 values of w (the sample section). Lower the damping c and watch the resonance peak grow.",
-  "run": {
-    "dt": 0.01
-  },
   "sample": {
     "design": "grid",
     "params": [
@@ -21,21 +18,16 @@
     {
       "name": "spring",
       "type": "eq.equations",
-      "method": {
-        "name": "evaluate"
-      },
       "equations": [
-        "# steady swing of a driven, damped spring (mass m, stiffness k, damping c, force F)",
-        "amplitude = F/sqrt((k - m*w^2)^2 + (c*w)^2)",
-        "lag = atan2(c*w, k - m*w^2)"
-      ],
-      "params": {
-        "F": 1.0,
-        "c": 0.2,
-        "k": 1.0,
-        "m": 1.0,
-        "w": 1.0
-      }
+        "# steady swing of a driven, damped spring: mass m, stiffness k, damping c, force F at frequency w",
+        "param F [N] = 1",
+        "param m [kg] = 1",
+        "param k [N/m] = 1",
+        "param c [N*s/m] = 0.2",
+        "param w [rad/s] = 1",
+        "amplitude = F/sqrt((k - m*w^2)^2 + (c*w)^2) [m]",
+        "lag = atan2(c*w, k - m*w^2) [rad]"
+      ]
     }
   ],
   "controls": {

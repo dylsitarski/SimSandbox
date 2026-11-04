@@ -9,31 +9,18 @@
     {
       "name": "car",
       "type": "eq.equations",
-      "method": {
-        "name": "rk4",
-        "substeps": 1.0
-      },
       "equations": [
         "# a car pushed by force F against drag c*v (mass m)",
         "input F [N]",
         "param m [kg] = 1000",
         "param c [N*s/m] = 50",
-        "state v [m/s]",
+        "state v [m/s] = 0",
         "dv/dt = (F - c*v)/m"
-      ],
-      "params": {
-        "c": 50.0,
-        "m": 1000.0,
-        "v0": 0.0
-      }
+      ]
     },
     {
       "name": "cruise",
       "type": "eq.equations",
-      "method": {
-        "name": "rk4",
-        "substeps": 1.0
-      },
       "equations": [
         "# PI control towards the target speed",
         "input v [m/s]",
@@ -41,16 +28,10 @@
         "param kp [N*s/m] = 400",
         "param ki [N/m] = 40",
         "e = target - v",
-        "state I [m]",
+        "state I [m] = 0",
         "dI/dt = e",
         "F = kp*e + ki*I [N]"
-      ],
-      "params": {
-        "I0": 0.0,
-        "ki": 40.0,
-        "kp": 400.0,
-        "target": 25.0
-      }
+      ]
     }
   ],
   "connections": [

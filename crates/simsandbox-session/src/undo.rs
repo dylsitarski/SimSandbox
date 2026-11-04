@@ -56,7 +56,9 @@ pub fn canvas_state(now: &ModelFile, target: &ModelFile) -> ModelFile {
 }
 
 /// `target`'s blocks with the numeric parameter values of `now`'s blocks
-/// of the same name and type.
+/// of the same name and type: those `target` writes, and, where the block's
+/// definition is the same (so its parameters are), those it leaves at
+/// their defaults.
 fn carried(now: &[BlockEntry], target: &[BlockEntry]) -> Vec<BlockEntry> {
     target
         .iter()
@@ -71,6 +73,13 @@ fn carried(now: &[BlockEntry], target: &[BlockEntry]) -> Vec<BlockEntry> {
                         (&*v, o.params.get(k))
                     {
                         *v = ParamValue::Number(*x);
+                    }
+                }
+                if o.equations == b.equations && o.settings == b.settings {
+                    for (k, v) in &o.params {
+                        if matches!(v, ParamValue::Number(_)) && !b.params.contains_key(k) {
+                            b.params.insert(k.clone(), v.clone());
+                        }
                     }
                 }
             }

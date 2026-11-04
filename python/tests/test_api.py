@@ -368,7 +368,7 @@ def test_a_composition_runs_models_on_their_own_clocks(tmp_path):
     assert np.array_equal(deep.run()["vehicle/plant/car.v"], r["plant/car.v"])
     # A copy of the car replaces the one inside, for this use only.
     heavy = ss.Model.load(tmp_path / "car.ssbx.json")
-    heavy.data["blocks"][0]["params"]["m"] = 2000.0
+    heavy.set("car.m", 2000.0)
     heavy.save(tmp_path / "car-2.ssbx.json")
     swapped = ss.Model({"format": 1, "run": {"t_end": 10}, "blocks": []})
     swapped.add_model("vehicle", "both.ssbx.json", files={"plant": "car-2.ssbx.json"})

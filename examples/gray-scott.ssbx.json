@@ -8,10 +8,6 @@
     {
       "name": "gs",
       "type": "eq.equations",
-      "method": {
-        "name": "rk4",
-        "substeps": 1.0
-      },
       "equations": [
         "# Gray–Scott on a square of side 'size', wrapping around at its edges",
         "grid x [m] = 0 .. size, 128",
@@ -58,12 +54,6 @@
       }
     },
     "speed": 200.0,
-    "plots": [
-      "gs.v",
-      "gs.v_mean",
-      "gs.x",
-      "gs.y"
-    ],
     "views": [
       {
         "type": "plot.heatmap",

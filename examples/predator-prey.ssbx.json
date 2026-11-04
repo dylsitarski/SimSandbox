@@ -8,25 +8,19 @@
     {
       "name": "ecosystem",
       "type": "eq.equations",
-      "method": {
-        "name": "rk4",
-        "substeps": 1.0
-      },
       "equations": [
-        "# prey grow at rate alpha and are eaten at rate beta",
+        "# prey grow at rate alpha and are eaten at rate beta per predator",
+        "param alpha [1/s] = 1.1",
+        "param beta [1/s] = 0.4",
+        "# predators grow by eating (delta per prey) and die off (gamma)",
+        "param delta [1/s] = 0.1",
+        "param gamma [1/s] = 0.4",
+        "state prey = 10",
+        "state predators = 10",
         "dprey/dt = alpha*prey - beta*prey*predators",
-        "# predators grow by eating (delta) and die off (gamma)",
         "dpredators/dt = delta*prey*predators - gamma*predators",
         "total = prey + predators"
-      ],
-      "params": {
-        "alpha": 1.1,
-        "beta": 0.4,
-        "delta": 0.1,
-        "gamma": 0.4,
-        "predators0": 10.0,
-        "prey0": 10.0
-      }
+      ]
     }
   ],
   "controls": {
