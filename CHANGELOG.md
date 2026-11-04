@@ -19,6 +19,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- A study running in the app shows its progress ("study: k of n runs"); changing a parameter or input it reads, Pause or Run gives it up and runs it again from the new values, so the results never depend on timing (ADR 0071).
+
 - "Study this model" on the canvas background studies the whole model: its blocks move into a new definition used in their place, with a study of it beside (Python `Model.as_study(("spring.w", 0, 3, 600))` or `as_study(sample={...})`).
 
 - A study over a grid of two parameters gives 2D results (`n1 × n2` cells) with both parameters as coordinates, so heat maps, surfaces, contours and cuts read them directly (ADR 0071).

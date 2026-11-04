@@ -1773,10 +1773,19 @@ impl Session {
         self.sim.labels()
     }
 
-    /// Advance one communication step and record it.
+    /// Advance one communication step and record it. A step whose study
+    /// was given up (ADR 0071 step 2, [`crate::run::given_up`]) leaves the
+    /// model as it was before it.
     pub fn step(&mut self) -> Result<(), SimError> {
         self.apply_due();
-        self.sim.step(self.dt)?;
+        let studied = self.block_types.iter().any(|t| t == simsandbox_file::STUDY);
+        let before = studied.then(|| self.sim.snapshot());
+        if let Err(e) = self.sim.step(self.dt) {
+            if let Some(b) = before.filter(|_| crate::run::given_up(&e)) {
+                self.sim.restore(&b);
+            }
+            return Err(e);
+        }
         self.record();
         let Some(r) = &self.recorder else {
             return Ok(());
@@ -2769,6 +2778,37 @@ mod tests {
         s.set_param_key("c.y", 0.05).unwrap();
         s.step().unwrap();
         assert!(peak(&newest(&s, "curve.spring_amplitude")) > 3.0 * peak(&amp));
+    }
+
+    #[test]
+    fn a_study_given_up_leaves_its_step_undone() {
+        // ADR 0071 step 2: the app gives up a study when what it reads
+        // changes; the step is undone, and done again later.
+        use crate::run::{given_up, watch_studies, Progress};
+        let mut s = example("Resonance curve");
+        s.step().unwrap();
+        let progress = std::sync::Arc::new(Progress::default());
+        watch_studies(Some(progress.clone()));
+        // Less damping: the next step runs the study again.
+        s.set_param_key("c.y", 0.05).unwrap();
+        let (t, len) = (s.time(), s.signals().len());
+        progress.give_up();
+        let e = s.step().unwrap_err();
+        assert!(given_up(&e), "{e}");
+        assert_eq!((s.time(), s.signals().len()), (t, len));
+        assert_eq!(progress.runs(), None);
+        // Done again: every run counted, the same numbers as a model that
+        // had the value from the start.
+        progress.reset();
+        s.step().unwrap();
+        assert_eq!(progress.runs(), Some((600, 600)));
+        watch_studies(None);
+        let mut direct = example("Resonance curve");
+        direct.set_param_key("c.y", 0.05).unwrap();
+        assert_eq!(
+            newest(&s, "curve.spring_amplitude"),
+            newest(&direct, "curve.spring_amplitude")
+        );
     }
 
     #[test]

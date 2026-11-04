@@ -8,6 +8,7 @@ use eframe::egui;
 use simsandbox_core::block::MethodLabels;
 use simsandbox_core::SimError;
 use simsandbox_file::{FilterEntry, FusedGroup, ModelFile};
+use simsandbox_session::run::{given_up, watch_studies, Progress};
 use simsandbox_session::session::{ParamRow, Session, SharedHistory};
 use simsandbox_views::{Available, History};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -166,6 +167,8 @@ struct Shared {
     events: Mutex<Vec<Event>>,
     /// When the step in progress started.
     stepping: Mutex<Option<Instant>>,
+    /// The runs of the studies the worker is running (ADR 0071 step 2).
+    progress: Arc<Progress>,
     repaint: Mutex<Option<egui::Context>>,
 }
 
@@ -239,6 +242,23 @@ impl Live {
         lock(&self.shared.stepping).map(|t| t.elapsed())
     }
 
+    /// The runs done and in all of the studies being run, while some are
+    /// left (ADR 0071 step 2).
+    pub fn study_runs(&self) -> Option<(usize, usize)> {
+        self.shared
+            .progress
+            .runs()
+            .filter(|(done, total)| done < total)
+    }
+
+    /// Give up the studies of the step in progress: the step is undone and
+    /// runs again once the commands sent have run (ADR 0071 step 2).
+    pub fn give_up_studies(&self) {
+        if self.stepping_for().is_some() {
+            self.shared.progress.give_up();
+        }
+    }
+
     /// Messages for the log since the last call.
     pub fn take_events(&self) -> Vec<Event> {
         std::mem::take(&mut *lock(&self.shared.events))
@@ -259,6 +279,12 @@ impl Live {
         key: Option<&str>,
         f: impl FnOnce(&mut Session, &mut Control) + Send + 'static,
     ) {
+        // A change to what a study reads, or Pause or Run, gives up the
+        // study running: its results would be for older values.
+        if key.is_some_and(|k| k.starts_with("param:") || k.starts_with("input:") || k == "running")
+        {
+            self.give_up_studies();
+        }
         let job: Job = Box::new(move |s, c| {
             f(s, c);
             None
@@ -306,6 +332,13 @@ impl Live {
     }
 }
 
+impl Drop for Live {
+    /// The worker stops after the step in progress, its studies given up.
+    fn drop(&mut self) {
+        self.give_up_studies();
+    }
+}
+
 const STOPPED: &str = "the simulation thread stopped";
 
 /// Why stepping stopped within a tick.
@@ -313,6 +346,9 @@ enum Stop {
     /// The file's `run.t_end` was reached (ADR 0013).
     EndReached,
     Failed(SimError),
+    /// A study was given up for a newer change (ADR 0071 step 2): the step
+    /// is undone, and runs again after the commands.
+    GivenUp,
 }
 
 fn status(s: &Session, running: bool, achieved: f64, limited: bool) -> Status {
@@ -328,6 +364,7 @@ fn status(s: &Session, running: bool, achieved: f64, limited: bool) -> Status {
 
 /// The worker's loop: commands, then a tick of stepping.
 fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Control) {
+    watch_studies(Some(Arc::clone(&shared.progress)));
     let mut pacer = Pacer::new(c.speed);
     pacer.budget = TICK_BUDGET;
     let mut last = Instant::now();
@@ -352,6 +389,8 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
             }
         }
         if !commands.is_empty() {
+            // A study given up in the last step is not given up here.
+            shared.progress.reset();
             let mut replies = Vec::new();
             for cmd in newest_of_each_key(commands) {
                 replies.extend((cmd.job)(&mut s, &mut c));
@@ -383,10 +422,14 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
                 dt,
                 || tick.elapsed(),
                 || {
+                    shared.progress.reset();
                     *lock(&shared.stepping) = Some(Instant::now());
                     let r = s.step();
                     *lock(&shared.stepping) = None;
-                    r.map_err(Stop::Failed)?;
+                    match r {
+                        Err(e) if given_up(&e) => return Err(Stop::GivenUp),
+                        r => r.map_err(Stop::Failed)?,
+                    }
                     if s.take_end_reached() {
                         return Err(Stop::EndReached);
                     }
@@ -403,6 +446,7 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
                         s.time()
                     ));
                 }
+                Err(Stop::GivenUp) => {}
                 Err(Stop::Failed(e)) => {
                     c.running = false;
                     c.error(format!("stopped at t = {:.4}: {e}", s.time()));
@@ -507,6 +551,69 @@ mod tests {
             &reference[..]
         );
         assert!(!live.status().running);
+    }
+
+    #[test]
+    fn a_change_while_a_study_runs_gives_it_up_and_runs_it_again() {
+        // ADR 0071 step 2: the study's step is undone and run again with
+        // the newer value; nothing older is recorded.
+        let file = serde_json::json!({"format": 1,
+            "models": {"decay": {"blocks": [
+                {"name": "k", "type": "input.value", "params": {"y": 1.0}},
+                {"name": "x", "type": "eq.equations", "method": {"name": "rk4"},
+                 "equations": ["input k", "state x = 1", "dx/dt = -k*x"]}],
+              "connections": [{"from": "k.y", "to": "x.k"}],
+              "run": {"dt": 0.001, "t_end": 3.0}}},
+            "blocks": [{"name": "rate", "type": "input.value", "params": {"y": 1.0}},
+                {"name": "s", "type": "study", "model": "decay",
+                 "sample": {"design": "grid", "params": [{"param": "x.x0", "range": [1.0, 2.0], "points": 48}],
+                            "reduce": {"half": "first_time(x.x < 0.5)"}}}],
+            "connections": [{"from": "rate.y", "to": "s.k"}],
+            "run": {"dt": 1.0}})
+        .to_string();
+        let half = |s: &Session| {
+            let h = s.signals();
+            let f = h.fields().iter().find(|f| f.name == "s.half").unwrap();
+            f.frame(h.len() - 1).to_vec()
+        };
+        let live = Live::start(
+            Session::load("decay", &file, &registry()).unwrap(),
+            1.0,
+            true,
+        );
+        wait_for(&live, 2);
+        // A new rate: the next step runs the study again.
+        live.send(Some("param:rate.y"), |s, _| {
+            s.set_param_key("rate.y", 2.0).unwrap();
+        });
+        let start = Instant::now();
+        while live.study_runs().is_none() {
+            assert!(start.elapsed() < Duration::from_secs(20), "timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Another while it runs: given up, run again from the newer value.
+        live.send(Some("param:rate.y"), |s, _| {
+            s.set_param_key("rate.y", 4.0).unwrap();
+        });
+        let n = live.history().len();
+        wait_for(&live, n + 1);
+        live.set_running(false);
+        live.sync();
+        let mut direct = Session::load("decay", &file, &registry()).unwrap();
+        direct.set_param_key("rate.y", 4.0).unwrap();
+        let expected = half(&direct);
+        let h = live.history();
+        let f = h.fields().iter().find(|f| f.name == "s.half").unwrap();
+        assert_eq!(f.frame(h.len() - 1), &expected[..]);
+        // Every frame is the first rate's or the last's, none the second's.
+        let first = (0.5f64.ln() / -1.0, 0.5f64.ln() / -4.0);
+        for k in 0..h.len() {
+            let x = f.frame(k)[0];
+            assert!(
+                (x - first.0).abs() < 1e-2 || (x - first.1).abs() < 1e-2,
+                "frame {k}: {x}"
+            );
+        }
     }
 
     #[test]

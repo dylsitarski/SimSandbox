@@ -754,6 +754,18 @@ impl SimApp {
                 .on_hover_text("Commands, including Pause, take effect when it ends");
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
             }
+            // A study in the step: its runs so far (ADR 0071 step 2).
+            if let Some((done, total)) = live.study_runs() {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!("study: {done} of {total} runs"),
+                )
+                .on_hover_text(
+                    "Changing what it reads, Pause or Run gives it up and starts it again from \
+                     the new values",
+                );
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            }
         });
     }
 

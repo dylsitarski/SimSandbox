@@ -434,6 +434,67 @@ pub(crate) fn in_study() -> bool {
     IN_STUDY.with(std::cell::Cell::get)
 }
 
+/// How far the outermost studies run on a thread have got, and a request
+/// to give them up (ADR 0071 step 2): the app's worker watches its steps'
+/// studies with one, and the window asks it to give up when something they
+/// read changes.
+#[derive(Debug, Default)]
+pub struct Progress {
+    done: std::sync::atomic::AtomicUsize,
+    total: std::sync::atomic::AtomicUsize,
+    give_up: std::sync::atomic::AtomicBool,
+}
+
+impl Progress {
+    /// Runs done and runs in all, since the last [`Progress::reset`];
+    /// `None` before any study started.
+    pub fn runs(&self) -> Option<(usize, usize)> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let total = self.total.load(Relaxed);
+        (total > 0).then(|| (self.done.load(Relaxed).min(total), total))
+    }
+
+    /// Ask the studies running to stop between points: each returns an
+    /// error that [`given_up`] recognises.
+    pub fn give_up(&self) {
+        self.give_up
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Start counting afresh, nothing given up.
+    pub fn reset(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.done.store(0, Relaxed);
+        self.total.store(0, Relaxed);
+        self.give_up.store(false, Relaxed);
+    }
+
+    fn given_up(&self) -> bool {
+        self.give_up.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+thread_local! {
+    /// What watches the studies this thread runs (ADR 0071 step 2).
+    static PROGRESS: std::cell::RefCell<Option<std::sync::Arc<Progress>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Watch the studies this thread runs from now on with `progress` (or stop
+/// watching with `None`).
+pub fn watch_studies(progress: Option<std::sync::Arc<Progress>>) {
+    PROGRESS.with(|p| *p.borrow_mut() = progress);
+}
+
+/// What a study given up says: its step failed only to start again from
+/// newer values.
+pub const GIVEN_UP: &str = "study given up for a newer change";
+
+/// Whether `error` is a study given up (ADR 0071 step 2).
+pub fn given_up(error: &impl std::fmt::Display) -> bool {
+    error.to_string().contains(GIVEN_UP)
+}
+
 /// Run `study` over `text` (loaded as `loaded`) on `threads` threads (all
 /// the machine's if `None`; one inside another study).
 pub(crate) fn run_study(
@@ -453,6 +514,20 @@ pub(crate) fn run_study(
     .clamp(1, rows.max(1));
     let per = rows.div_ceil(threads);
     let folder = simsandbox_core::registry::current_folder();
+    // Only the outermost study counts its runs and can be given up.
+    let progress = if in_study() {
+        None
+    } else {
+        PROGRESS.with(|p| p.borrow().clone())
+    };
+    if let Some(p) = &progress {
+        if p.given_up() {
+            return Err(GIVEN_UP.into());
+        }
+        p.total
+            .fetch_add(rows, std::sync::atomic::Ordering::Relaxed);
+    }
+    let progress = progress.as_deref();
     let chunks: Vec<Result<Vec<Row>, String>> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads)
             .map(|k| {
@@ -461,7 +536,7 @@ pub(crate) fn run_study(
                 s.spawn(move || {
                     let was = IN_STUDY.with(|c| c.replace(true));
                     let r = simsandbox_core::registry::in_folder(folder.as_deref(), || {
-                        run_rows(text, registry, study, range)
+                        run_rows(text, registry, study, range, progress)
                     });
                     IN_STUDY.with(|c| c.set(was));
                     r
@@ -613,6 +688,7 @@ fn run_rows(
     registry: &Registry,
     study: &Study,
     range: std::ops::Range<usize>,
+    progress: Option<&Progress>,
 ) -> Result<Vec<Row>, String> {
     let (plan, t_end, dt) = (&study.plan, study.t_end, study.dt);
     if range.is_empty() {
@@ -646,6 +722,9 @@ fn run_rows(
     };
     let mut out = Vec::new();
     for row in range {
+        if progress.is_some_and(Progress::given_up) {
+            return Err(GIVEN_UP.into());
+        }
         let (p, j) = (row / plan.replicates, row % plan.replicates);
         for (key, v) in &study.set {
             set_key(&mut sim, &mut params, &ids, key, *v).map_err(|e| format!("{key}: {e}"))?;
@@ -717,6 +796,9 @@ fn run_rows(
                 .collect()
         };
         out.push(Row { finals });
+        if let Some(p) = progress {
+            p.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     Ok(out)
 }
