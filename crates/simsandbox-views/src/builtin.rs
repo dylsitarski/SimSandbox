@@ -5,8 +5,8 @@
 use crate::colour::{bins, segments, trail_start, ColourKey, HEAD};
 use crate::history::{label, paired, split_source, SignalRef, TIME};
 use crate::view::{
-    always, over_time, Available, Bindings, Bound, Preset, Slot, SlotKind, StyleProperty, Swap,
-    View, ViewInput, ViewRegistry, ViewType,
+    always, over_time, Bindings, Bound, Preset, Slot, SlotKind, StyleProperty, Swap, View,
+    ViewInput, ViewRegistry, ViewType,
 };
 use crate::view3d::{self, Camera};
 use egui_plot::{Legend, Line, MarkerShape, Plot, PlotUi, Points};
@@ -90,8 +90,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
                 description: "Every signal against time",
                 bindings: |a| {
                     let s = a.scalars;
-                    // A sweep's index is only the sample number.
-                    (!s.is_empty() && a.swept.is_empty()).then(|| {
+                    (!s.is_empty()).then(|| {
                         [
                             ("x".to_string(), vec![TIME.to_string()]),
                             ("y".to_string(), s.to_vec()),
@@ -107,20 +106,8 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
                     let s = a.scalars;
                     // x–z for three or more signals (the Lorenz butterfly).
                     let y = if s.len() >= 3 { 2 } else { 1 };
-                    (s.len() >= 2 && a.swept.is_empty())
+                    (s.len() >= 2)
                         .then(|| bindings(&[("x", &s[0]), ("y", &s[y]), ("colour", TIME)]))
-                },
-            },
-            Preset {
-                label: "Samples",
-                description:
-                    "Where two swept parameters were sampled, coloured by the first result",
-                bindings: |a| {
-                    let [x, y, ..] = a.swept else {
-                        return None;
-                    };
-                    let colour = results(a).into_iter().next()?;
-                    Some(bindings(&[("x", x), ("y", y), ("colour", &colour)]))
                 },
             },
             Preset {
@@ -135,16 +122,6 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
                         b.insert("colour".into(), vec![c.clone()]);
                     }
                     Some(b)
-                },
-            },
-            Preset {
-                label: "Against the swept parameter",
-                description: "Every result against the first swept parameter",
-                bindings: |a| {
-                    let x = a.swept.first()?;
-                    let ys = results(a);
-                    (!ys.is_empty())
-                        .then(|| [("x".to_string(), vec![x.clone()]), ("y".to_string(), ys)].into())
                 },
             },
         ],
@@ -201,15 +178,6 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
     })?;
     crate::fields::register(r)?;
     crate::surface::register(r)
-}
-
-/// The scalar signals of a sweep that are not swept parameters.
-fn results(a: &Available<'_>) -> Vec<String> {
-    a.scalars
-        .iter()
-        .filter(|s| !a.swept.contains(s))
-        .cloned()
-        .collect()
 }
 
 pub(crate) fn bindings(pairs: &[(&str, &str)]) -> Bindings {
@@ -311,7 +279,6 @@ struct Curve {
     x: Vec<f64>,
     y: Vec<f64>,
     colour: ColourKey,
-    unordered: bool,
 }
 
 impl Curve {
@@ -333,7 +300,6 @@ impl Curve {
             x: xs,
             y: ys,
             colour,
-            unordered: y.history.unordered(),
         }
     }
 }
@@ -400,13 +366,13 @@ impl Xy {
                     for (c, cells) in bins(0, n, &key, COLOUR_CHUNKS) {
                         let pts: Vec<[f64; 2]> =
                             cells.into_iter().map(point).filter(finite).collect();
-                        plot.points(Points::new(name.clone(), pts).radius(2.5).color(c));
+                        plot.points(Points::new(name.clone(), pts).radius(2.0).color(c));
                     }
                 } else {
                     let pts: Vec<[f64; 2]> = (0..n).map(point).filter(finite).collect();
                     plot.points(
                         Points::new(name.clone(), pts)
-                            .radius(2.5)
+                            .radius(2.0)
                             .color(series_colour(k)),
                     );
                 }
@@ -509,28 +475,7 @@ impl View for Xy {
                 let n = c.t.len();
                 let points =
                     |from: usize, to: usize| finite_runs((from..to).map(|i| at(c.x[i], c.y[i])));
-                if c.unordered {
-                    // Samples with no order between them: markers, not lines
-                    // (ADR 0028).
-                    let markers = |ks: &mut dyn Iterator<Item = usize>| -> Vec<[f64; 2]> {
-                        ks.map(|i| at(c.x[i], c.y[i]))
-                            .filter(|p| p.iter().all(|v| v.is_finite()))
-                            .collect()
-                    };
-                    if one_coloured {
-                        for (colour, ks) in bins(first, n, &c.colour, COLOUR_CHUNKS) {
-                            let pts = markers(&mut ks.into_iter());
-                            plot.points(Points::new("samples", pts).radius(2.0).color(colour));
-                        }
-                    } else {
-                        plot.points(
-                            Points::new(c.label.clone(), markers(&mut (first..n)))
-                                .id(curve_id(&c.name))
-                                .radius(2.0)
-                                .color(series_colour(k)),
-                        );
-                    }
-                } else if one_coloured {
+                if one_coloured {
                     // One curve with a colour encoding: coloured segments.
                     for seg in segments(first, n, &c.colour, COLOUR_CHUNKS) {
                         for run in points(seg.start, seg.end + 1) {
@@ -550,7 +495,7 @@ impl View for Xy {
                 }
                 // Mark the current point unless time is an axis (it is the
                 // edge).
-                if !against_time && !c.unordered && n > 0 {
+                if !against_time && n > 0 {
                     let now = at(c.x[n - 1], c.y[n - 1]);
                     if now.iter().all(|v| v.is_finite()) {
                         plot.points(

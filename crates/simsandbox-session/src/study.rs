@@ -164,23 +164,20 @@ impl StudyBlock {
                 })
             }
         };
-        let mut v: serde_json::Value =
-            serde_json::from_str(&model).map_err(|e| invalid(format!("its model: {e}")))?;
-        let sample: serde_json::Value =
-            serde_json::from_str(sample).map_err(|e| invalid(format!("its sample: {e}")))?;
-        v.as_object_mut()
-            .ok_or_else(|| invalid("its model is not an object"))?
-            .insert("sample".into(), sample);
-        let text = v.to_string();
+        let sampling: simsandbox_file::Sampling =
+            serde_json::from_str(sample).map_err(|e| invalid(format!("sample: {e}")))?;
+        let text = model;
         let loaded = load(&text, folder.as_deref(), &label)?;
         // Its points file and its model's data files are in the run hash of
         // the model holding it.
-        simsandbox_file::report_data(name, &loaded.data);
+        let mut data = loaded.data.clone();
+        if let Some(d) = loaded.points_digest(&sampling) {
+            data.insert("sample.file".into(), d);
+        }
+        simsandbox_file::report_data(name, &data);
         let plan = loaded
-            .experiment
-            .clone()
-            .or_else(|| loaded.plan.clone())
-            .ok_or_else(|| invalid("its sample gives no points"))?;
+            .plan_of(&sampling)
+            .map_err(|e| invalid(e.to_string()))?;
         // Nothing in time: each point is one evaluation (ADR 0067).
         let timeless = loaded.flat.blocks.iter().all(|b| {
             loaded
@@ -249,9 +246,17 @@ impl StudyBlock {
             )?;
         }
         let fixed = loaded_outputs(&loaded).map_err(invalid)?;
+        // The model's input blocks give the study's inputs (or its keys),
+        // not results.
+        let given = |full: &str| {
+            loaded.flat.blocks.iter().any(|b| {
+                b.type_name == simsandbox_eq::input::VALUE
+                    && full.strip_prefix(b.name.as_str()) == Some(".y")
+            })
+        };
         if plan.reduce.is_empty() {
             for (id, port, full, shape) in &fixed {
-                if *shape != Shape::Scalar {
+                if *shape != Shape::Scalar || given(full) {
                     continue;
                 }
                 let unit = loaded
@@ -507,7 +512,7 @@ impl Block for StudyBlock {
 #[cfg(test)]
 mod tests {
     use crate::examples::registry;
-    use crate::run::{run, run_experiment, Results};
+    use crate::run::{run, Results};
     use serde_json::{json, Value};
     use simsandbox_core::block::Shape;
 
@@ -545,7 +550,7 @@ mod tests {
         // The experiment over the model on its own.
         let mut alone: Value = serde_json::from_str(CRUISE).unwrap();
         alone["sample"] = sample();
-        let x = run_experiment(&alone.to_string(), &r, None, None, Some(1)).unwrap();
+        let x = crate::run::run_sampled(&alone.to_string(), &r, None, Some(1)).unwrap();
         // A study of it as a definition, in a model with nothing else.
         let file = json!({"format": 1, "models": {"cruise": cruise()},
             "blocks": [{"name": "s", "type": "study", "model": "cruise", "sample": sample()}],
@@ -604,70 +609,11 @@ mod tests {
     }
 
     #[test]
-    fn a_files_sample_is_the_study_of_its_model() {
-        // One meaning of `sample` (ADR 0070): the swept resonance and the
-        // study of it as a definition give the same rows, bit for bit.
-        let r = registry();
-        let text = include_str!("../../../examples/resonance.ssbx.json");
-        let swept = run(text, &r, None, None).unwrap();
-        let mut model: Value = serde_json::from_str(text).unwrap();
-        let sample = model["sample"].clone();
-        let o = model.as_object_mut().unwrap();
-        for k in ["format", "description", "controls", "sample"] {
-            o.remove(k);
-        }
-        let file = json!({"format": 1, "models": {"resonance": model},
-            "blocks": [{"name": "s", "type": "study", "model": "resonance", "sample": sample}]});
-        let rows = run(&file.to_string(), &r, None, None).unwrap();
-        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-        let mut compared = 0;
-        for o in swept.outputs.iter().filter(|o| o.shape.len() == 1) {
-            let study = format!("s.{}", o.name.replace('.', "_"));
-            assert_eq!(bits(&value(&rows, &study)), bits(&o.values), "{}", o.name);
-            compared += 1;
-        }
-        assert!(compared >= 2);
-        assert_eq!(value(&rows, "s.spring_w"), swept.index[1].1);
-    }
-
-    #[test]
-    fn a_wrapper_studies_a_model_that_has_its_own_sample() {
-        // The case that showed `sample` meant two things (ADR 0070): the
-        // used resonance runs as written, the wrapper's sample over it.
-        let r = registry();
-        let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-        let wrapper = json!({"format": 1, "blocks": [{"name": "r", "file": "resonance.ssbx.json"}],
-            "sample": {"design": "list", "params": [{"param": "r/spring.w"}], "values": [[1.0], [2.0]]}});
-        let (rows, report) = simsandbox_core::registry::in_folder(Some(&examples), || {
-            (
-                run(&wrapper.to_string(), &r, None, None).unwrap(),
-                crate::describe::check(&wrapper.to_string(), &r),
-            )
-        });
-        assert_eq!(rows.index[1], ("r/spring.w".to_string(), vec![1.0, 2.0]));
-        assert!(
-            rows.warnings
-                .iter()
-                .any(|w| w.contains("r: its model's `sample` is not run")),
-            "{:?}",
-            rows.warnings
-        );
-        assert_eq!(report["ok"], true, "{report}");
-        assert_eq!(report["experiment"]["runs"], 2);
-        assert_eq!(report["experiment"]["each_run"], "one evaluation");
-    }
-
-    #[test]
     fn a_formula_reads_a_studys_arrays() {
         // The frequency where the resonance peaks, from a study of it
         // (ADR 0070 step 3): an index axis over the runs, argmaxof and at.
         let r = registry();
-        let text = include_str!("../../../examples/resonance.ssbx.json");
-        let mut model: Value = serde_json::from_str(text).unwrap();
-        let o = model.as_object_mut().unwrap();
-        for k in ["format", "description", "controls", "sample"] {
-            o.remove(k);
-        }
+        let model = crate::examples::spring();
         let ws = [0.5, 0.8, 0.99, 1.2, 2.0];
         let file = json!({"format": 1, "models": {"resonance": model},
             "blocks": [
@@ -777,11 +723,7 @@ mod tests {
         // ADR 0071: n1 × n2 cells, the first parameter fastest, both
         // parameters placing the cells along their axes.
         let r = registry();
-        let mut model: Value =
-            serde_json::from_str(include_str!("../../../examples/resonance.ssbx.json")).unwrap();
-        for k in ["format", "description", "controls", "sample"] {
-            model.as_object_mut().unwrap().remove(k);
-        }
+        let model = crate::examples::spring();
         let file = json!({"format": 1, "models": {"resonance": model},
             "blocks": [{"name": "s", "type": "study", "model": "resonance",
                 "sample": {"design": "grid", "params": [

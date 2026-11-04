@@ -46,15 +46,15 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/logistic-map.ssbx.json"),
     },
     Example {
-        name: "Resonance curve (formulas, swept)",
+        name: "Resonance curve (a study of formulas)",
         text: include_str!("../../../examples/resonance.ssbx.json"),
     },
     Example {
-        name: "Resonance map (two parameters swept)",
+        name: "Resonance map (a study over two parameters)",
         text: include_str!("../../../examples/resonance-map.ssbx.json"),
     },
     Example {
-        name: "Resonance samples (a Sobol sweep)",
+        name: "Resonance samples (a Sobol study)",
         text: include_str!("../../../examples/resonance-samples.ssbx.json"),
     },
     Example {
@@ -86,6 +86,18 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/grazing.ssbx.json"),
     },
 ];
+
+/// For tests: the driven, damped spring of the resonance examples as a
+/// definition with every quantity a parameter (`spring.F`, `m`, `k`, `c`,
+/// `w`) and the outputs `spring.amplitude` and `spring.lag`.
+#[cfg(test)]
+pub(crate) fn spring() -> serde_json::Value {
+    serde_json::json!({"blocks": [{"name": "spring", "type": "eq.equations", "equations": [
+        "param F [N] = 1", "param m [kg] = 1", "param k [N/m] = 1",
+        "param c [N*s/m] = 0.2", "param w [rad/s] = 1",
+        "amplitude = F/sqrt((k - m*w^2)^2 + (c*w)^2) [m]",
+        "lag = atan2(c*w, k - m*w^2) [rad]"]}]})
+}
 
 /// Every block type the app can load.
 pub fn registry() -> Registry {

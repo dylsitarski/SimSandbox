@@ -1,5 +1,5 @@
 """The Python API as an agent uses it (ADR 0039): discover, build, check,
-run, sweep and render, with results checked against known answers."""
+run, study and render, with results checked against known answers."""
 
 import math
 import os
@@ -48,15 +48,23 @@ def test_connected_blocks_with_feedthrough_and_parameter_edits():
     assert car.block("cruise")["params"]["ki"] == 0.0
 
 
-def test_sweeps_and_grids_come_back_as_arrays():
+def test_studies_and_grids_come_back_as_arrays():
+    # The resonance curve is a study (ADR 0071): a row per run.
     curve = ss.Model.example("Resonance curve").run()
-    w = curve["spring.w"]
-    assert w.shape == (600,)
+    w = curve["curve.spring_w"]
+    assert w.shape == (600,) and list(curve.index) == ["run"]
     expected = 1.0 / np.sqrt((1.0 - w**2) ** 2 + (0.2 * w) ** 2)
-    assert np.allclose(curve["spring.amplitude"], expected, rtol=1e-12)
+    assert np.allclose(curve["curve.spring_amplitude"], expected, rtol=1e-12)
 
-    swept = ss.Model.example("Resonance curve").sweep(("spring.w", 0.5, 1.5, 11)).run()
-    assert swept.rows == 11
+    # Any model studied whole, as "Study this model" on the canvas.
+    m = ss.Model()
+    m.add_block("spring", "eq.equations", equations="param c = 0.2\nparam w = 1\namplitude = 1/sqrt((1 - w^2)^2 + (c*w)^2)")
+    note = m.as_study(("spring.w", 0.5, 1.5, 11))
+    assert "study" in note
+    study = next(b for b in m.data["blocks"] if b.get("type") == "study")
+    assert study["sample"]["params"][0]["points"] == 11
+    top = m.run(t_end=0.1).model(".")
+    assert top[f"{study['name']}.spring_w"][-1].size == 11
 
     rod = ss.Model.example("Heat along a rod").run(t_end=0.1)
     field = next(v for k, v in rod.outputs.items() if v.ndim == 3)
@@ -105,8 +113,8 @@ def test_every_example_loads_runs_briefly_and_round_trips():
         assert m.check()["ok"], name
         again = ss.Model.from_json(m.to_json())
         assert again.data == m.data
-        swept = "sample" in m.data
-        r = m.run() if swept else m.run(t_end=10 * m.data.get("run", {}).get("dt", 0.01))
+        studied = any(b.get("type") == "study" for b in m.data.get("blocks", []))
+        r = m.run() if studied else m.run(t_end=10 * m.data.get("run", {}).get("dt", 0.01))
         if isinstance(r, ss.Composed):
             # A model using models (ADR 0068): its first model's results.
             r = r.model(next(iter(r.models)))
@@ -211,7 +219,6 @@ def test_the_unit_vocabulary_is_described():
     assert (ft["si"], ft["factor"]) == ("m", 0.3048)
     m = ss.Model()
     m.add_block("a", "eq.equations", equations="param p [psi] = 100\nparam A [in^2] = 2\nF = p*A [lbf]\nparam v [m/s] = 0\nstate x [m] = 0\ndx/dt = v")
-    # A state, so the model runs in time rather than as a sweep.
     assert abs(m.run(t_end=0.1, dt=0.1)["a.F"][0] - 200.0) < 1e-9
 
 
@@ -406,28 +413,6 @@ def test_models_defined_in_the_file_are_used_by_name():
     assert np.array_equal(r["b/g.y"], 4 * r["src.s"])
     with pytest.raises(ValueError):
         m.add_model("c", "x.ssbx.json", model="gain")
-
-
-def test_an_experiment_runs_the_model_at_each_point():
-    cruise = ss.Model.example("Cruise control")
-    cruise.data["sample"] = {"design": "list", "params": [{"param": "cruise.kp"}],
-                             "values": [[200.0], [800.0]], "keep": "series"}
-    assert cruise.check()["experiment"]["runs"] == 2
-    r = cruise.run(t_end=5.0)
-    assert r.rows == 2 and list(r["cruise.kp"]) == [200.0, 800.0]
-    assert len(r.series) == 2 and r.series[1].rows == 101
-    assert r["car.v"][1] == r.series[1]["car.v"][-1]
-
-
-def test_an_experiment_reduces_each_run():
-    cruise = ss.Model.example("Cruise control")
-    cruise.data["sample"] = {"design": "list", "params": [{"param": "cruise.kp"}],
-                             "values": [[200.0], [800.0]],
-                             "reduce": {"settle": "first_time(abs(cruise.e) < 0.5)", "v_max": "max(car.v)"}}
-    r = cruise.run(t_end=30.0)
-    assert list(r.outputs) == ["settle", "v_max"]
-    assert r["settle"][1] < r["settle"][0]
-
 
 
 def test_a_study_block_runs_a_definition_at_each_point():

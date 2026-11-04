@@ -115,9 +115,8 @@ pub fn check(text: &str, registry: &Registry) -> Value {
             .flat_map(|b| b.files.iter().map(move |(k, f)| (format!("{}/{k}", b.name), f.clone())))
             .collect::<std::collections::BTreeMap<_, _>>(),
         "definitions": definitions(&c.file),
-        "experiment": crate::run::experiment_report(text, registry),
         // Every parameter by full name, as the app lists them (ADR 0068).
-        "params": crate::Session::load_in("check", text, registry, None, true)
+        "params": crate::Session::load_in("check", text, registry, None)
             .map(|s| {
                 s.params()
                     .iter()
@@ -414,7 +413,6 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
             labels: sim.labels(),
             notes: crate::session::loop_notes(&sim),
             warnings: Vec::new(),
-            series: Vec::new(),
         };
         runs.push(Running {
             sim,
@@ -1117,7 +1115,7 @@ mod tests {
             json!(["car1", "car2", "car3"])
         );
         // The session runs it as the app would.
-        let s = crate::Session::load_in("p", written, &registry(), None, true).unwrap();
+        let s = crate::Session::load_in("p", written, &registry(), None).unwrap();
         assert!(s.signals().resolve("car3/car.v").is_some());
     }
 
@@ -1366,7 +1364,7 @@ mod tests {
 
     #[test]
     fn an_experiment_runs_each_point_as_the_model_alone_on_any_number_of_threads() {
-        use crate::run::{experiment_report, run, run_experiment};
+        use crate::run::run;
         let ex = |name: &str| -> Value {
             serde_json::from_str(
                 EXAMPLES
@@ -1382,8 +1380,8 @@ mod tests {
         cruise["sample"] = json!({"design": "list", "params": [{"param": "cruise.kp"}],
                                   "values": [[200.0], [400.0], [800.0]]});
         let text = cruise.to_string();
-        let one = run_experiment(&text, &r, Some(5.0), None, Some(1)).unwrap();
-        let three = run_experiment(&text, &r, Some(5.0), None, Some(3)).unwrap();
+        let one = crate::run::run_sampled(&text, &r, Some(5.0), Some(1)).unwrap();
+        let three = crate::run::run_sampled(&text, &r, Some(5.0), Some(3)).unwrap();
         assert_eq!(one.rows(), 3);
         let finals = |x: &crate::run::Results| bits(series(x, "car.v"));
         assert_eq!(
@@ -1402,23 +1400,6 @@ mod tests {
             );
         }
         assert_eq!(one.index[1].0, "cruise.kp");
-        // run gives the experiment; check describes it.
-        let via = crate::run::run_with(&text, &r, Some(5.0), None, Vec::new()).unwrap();
-        assert_eq!(finals(&via), finals(&one));
-        let rep = experiment_report(&text, &r);
-        assert_eq!(
-            (rep["points"].clone(), rep["keep"].clone()),
-            (json!(3), json!("final"))
-        );
-        // Whole runs kept.
-        cruise["sample"]["keep"] = json!("series");
-        let kept = run_experiment(&cruise.to_string(), &r, Some(5.0), None, Some(2)).unwrap();
-        assert_eq!(kept.series.len(), 3);
-        assert_eq!(kept.series[2].rows(), 101);
-        assert_eq!(
-            series(&kept.series[2], "car.v").last().unwrap().to_bits(),
-            series(&one, "car.v")[2].to_bits()
-        );
         // Points from a CSV, columns named by path.
         let dir = temp_dir("experiment");
         std::fs::write(
@@ -1429,7 +1410,7 @@ mod tests {
         let mut from_file = ex("Cruise control");
         from_file["sample"] = json!({"design": "file", "file": "gains.csv"});
         let f = simsandbox_core::registry::in_folder(Some(&dir), || {
-            run_experiment(&from_file.to_string(), &r, Some(2.0), None, None)
+            crate::run::run_sampled(&from_file.to_string(), &r, Some(2.0), None)
         })
         .unwrap();
         assert_eq!(f.rows(), 2);
@@ -1439,7 +1420,7 @@ mod tests {
         let mut platoon = ex("Platoon");
         platoon["sample"] =
             json!({"design": "list", "params": [{"param": "kp"}], "values": [[300.0], [900.0]]});
-        let p = run_experiment(&platoon.to_string(), &r, Some(3.0), None, None).unwrap();
+        let p = crate::run::run_sampled(&platoon.to_string(), &r, Some(3.0), None).unwrap();
         let v = series(&p, "car3/car.v");
         assert!(v[0] != v[1], "{v:?}");
         // Seeds: common by default, so equal points agree; per point and
@@ -1449,7 +1430,7 @@ mod tests {
             json!({"design": "list", "params": [{"param": "size"}], "values": [[40.0], [40.0]]});
         let count = |g: &Value| {
             series(
-                &run_experiment(&g.to_string(), &r, Some(20.0), None, None).unwrap(),
+                &crate::run::run_sampled(&g.to_string(), &r, Some(20.0), None).unwrap(),
                 "sheep.count",
             )
             .to_vec()
@@ -1461,7 +1442,7 @@ mod tests {
         assert_ne!(c[0], c[1], "{c:?}");
         grazing["sample"]["seeds"] = json!("common");
         grazing["sample"]["replicates"] = json!(2);
-        let g = run_experiment(&grazing.to_string(), &r, Some(20.0), None, None).unwrap();
+        let g = crate::run::run_sampled(&grazing.to_string(), &r, Some(20.0), None).unwrap();
         assert_eq!(g.index[1].0, "replicate");
         let c = series(&g, "sheep.count");
         assert_eq!(
@@ -1477,7 +1458,6 @@ mod tests {
         // ADR 0070 step 4: with ids from the points file, a point keeps its
         // random draws however the file is ordered; without, its place
         // decides them, as before.
-        use crate::run::run_experiment;
         let r = registry();
         let mut grazing: Value = serde_json::from_str(
             EXAMPLES
@@ -1492,7 +1472,7 @@ mod tests {
         let rows = |csv: &str| {
             std::fs::write(dir.join("points.csv"), csv).unwrap();
             simsandbox_core::registry::in_folder(Some(&dir), || {
-                run_experiment(&grazing.to_string(), &r, Some(20.0), None, None)
+                crate::run::run_sampled(&grazing.to_string(), &r, Some(20.0), None)
             })
             .unwrap()
         };
@@ -1527,24 +1507,17 @@ mod tests {
         ] {
             std::fs::write(dir.join("points.csv"), csv).unwrap();
             let e = simsandbox_core::registry::in_folder(Some(&dir), || {
-                run_experiment(&grazing.to_string(), &r, Some(1.0), None, None)
+                crate::run::run_sampled(&grazing.to_string(), &r, Some(1.0), None)
             })
             .unwrap_err();
             assert!(e.contains(says), "{csv}: {e}");
         }
-        // The points file is part of the model hash.
-        let hash = |csv: &str| {
-            std::fs::write(dir.join("points.csv"), csv).unwrap();
-            let l = simsandbox_file::load_any(&grazing.to_string(), &r, Some(&dir)).unwrap();
-            simsandbox_file::runs::loaded_hash(&l).unwrap()
-        };
-        assert_ne!(hash("size\n40\n"), hash("size\n41\n"));
+        // The points file in the run hash: `a_study_gives_the_ids_its_points_file_gives`.
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn an_experiment_reduces_each_run_to_named_values() {
-        use crate::run::{experiment_report, run_experiment};
         let ex = |name: &str| -> Value {
             serde_json::from_str(
                 EXAMPLES
@@ -1558,15 +1531,18 @@ mod tests {
         let r = registry();
         let mut cruise = ex("Cruise control");
         cruise["sample"] = json!({"design": "list", "params": [{"param": "cruise.kp"}],
-            "values": [[200.0], [800.0]], "keep": "series",
+            "values": [[200.0], [800.0]],
             "reduce": {"v_max": "max(car.v)", "v_end": "final(car.v)",
                        "settle": "first_time(abs(cruise.e) < 0.5)", "e_mean": "mean(cruise.e)"}});
-        let x = run_experiment(&cruise.to_string(), &r, Some(30.0), None, None).unwrap();
+        let x = crate::run::run_sampled(&cruise.to_string(), &r, Some(30.0), None).unwrap();
         // The rows hold the reductions, in name order.
         let names: Vec<&str> = x.outputs.iter().map(|o| o.name.as_str()).collect();
         assert_eq!(names, ["e_mean", "settle", "v_end", "v_max"]);
-        for k in 0..2 {
-            let run = &x.series[k];
+        for (k, kp) in [200.0, 800.0].into_iter().enumerate() {
+            // The run of that point alone.
+            let mut alone = ex("Cruise control");
+            alone["blocks"][1]["params"]["kp"] = json!(kp);
+            let run = &crate::run::run(&alone.to_string(), &r, Some(30.0), None).unwrap();
             let v = series(run, "car.v");
             let max = v.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             assert_eq!(series(&x, "v_max")[k], max);
@@ -1582,20 +1558,16 @@ mod tests {
         // A firmer controller settles sooner.
         let settle = series(&x, "settle");
         assert!(settle[1] < settle[0], "{settle:?}");
-        assert_eq!(
-            experiment_report(&cruise.to_string(), &r)["reduce"],
-            json!(["e_mean", "settle", "v_end", "v_max"])
-        );
         // By path, in a model using models.
         let mut platoon = ex("Platoon");
         platoon["sample"] = json!({"design": "list", "params": [{"param": "kp"}], "values": [[300.0], [900.0]],
             "reduce": {"lag": "max(abs(leader.v - car3/car.v))"}});
-        let p = run_experiment(&platoon.to_string(), &r, Some(20.0), None, None).unwrap();
+        let p = crate::run::run_sampled(&platoon.to_string(), &r, Some(20.0), None).unwrap();
         assert_eq!(p.outputs.len(), 1);
         assert!(series(&p, "lag").iter().all(|v| *v > 0.0));
         // Refused with where and why.
         cruise["sample"]["reduce"] = json!({"bad": "max(car.w)"});
-        let e = run_experiment(&cruise.to_string(), &r, Some(1.0), None, None).unwrap_err();
+        let e = crate::run::run_sampled(&cruise.to_string(), &r, Some(1.0), None).unwrap_err();
         assert!(
             e.contains("sample.reduce.bad") && e.contains("car.w"),
             "{e}"
@@ -2140,12 +2112,12 @@ mod tests {
         assert_eq!(series(&all, "f.y"), [2.0, 4.0, 8.0, 16.0]);
         // An end given stops before the last sample.
         assert_eq!(index_t(&run(Some(1.0))), [0.0, 0.3, 0.35]);
-        // Not swept: it runs in time; the app pauses at the last sample.
+        // It runs in time; the app pauses at the last sample.
         let s = simsandbox_core::registry::in_folder(Some(&dir), || {
             crate::Session::load("data", &data.to_string(), &r)
         })
         .unwrap();
-        assert!(s.sweep().is_none());
+        assert_eq!(s.signals().index(), "t");
         let loaded = simsandbox_file::load_in(&data.to_string(), &r, Some(&dir)).unwrap();
         assert_eq!(crate::run::data_end(&loaded.model), Some(1.2));
         // A step of its own written: every dt, as before.
@@ -2634,14 +2606,13 @@ mod tests {
     fn a_use_runs_its_model_as_written_and_a_study_sweeps_it() {
         let dir = temp_dir("on-data-sweep");
         on_data_files(&dir);
-        let mut double: Value =
+        let double: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("double.ssbx.json")).unwrap())
                 .unwrap();
         let sample =
             json!({"design": "grid", "params": [{"param": "f.k", "range": [1, 3], "points": 3}]});
-        double["sample"] = sample.clone();
         write(&dir, "sweep.ssbx.json", &double);
-        // A use of it runs it plain (k = 2), with a warning (ADR 0070).
+        // A use of it runs it plain (k = 2): only a study sweeps (ADR 0071).
         let top = json!({"format": 1, "run": {"t_end": 1.2},
             "blocks": [use_of("a", "a.ssbx.json"), use_of("s", "sweep.ssbx.json")],
             "connections": [{"from": "probe:p.a/count.x", "to": "s/u"}],
@@ -2650,14 +2621,6 @@ mod tests {
         let x = counted(12);
         let s = composed.model("s").unwrap();
         assert_eq!(series(s, "s/f.y").last(), Some(&(2.0 * x[12])));
-        assert!(
-            composed
-                .warnings
-                .iter()
-                .any(|w| w.contains("s: its model's `sample` is not run")),
-            "{:?}",
-            composed.warnings
-        );
         // It feeds links like any model.
         let mut feeding = top.clone();
         feeding["blocks"][0] = use_of("a", "a.ssbx.json");
@@ -3115,8 +3078,7 @@ mod tests {
         );
         let apart = run_in(&dir, &model);
         let mut s =
-            crate::Session::load_in("uses", &model.to_string(), &registry(), Some(&dir), false)
-                .unwrap();
+            crate::Session::load_in("uses", &model.to_string(), &registry(), Some(&dir)).unwrap();
         s.set_view_reads(vec!["plant/car.v".into(), "controller/cruise.F".into()]);
         s.restart().unwrap();
         s.run_until(20.0).unwrap();
@@ -3141,8 +3103,7 @@ mod tests {
         let mut two = pair(&dir, 0.1, 0.3);
         two["run"] = json!({"t_end": 6});
         let mut s =
-            crate::Session::load_in("two", &two.to_string(), &registry(), Some(&dir), false)
-                .unwrap();
+            crate::Session::load_in("two", &two.to_string(), &registry(), Some(&dir)).unwrap();
         s.set_recorder(Some(Default::default()));
         s.set_view_reads(vec!["a/count.y".into(), "b/sum.z".into()]);
         s.restart().unwrap();

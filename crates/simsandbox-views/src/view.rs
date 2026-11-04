@@ -41,7 +41,7 @@ pub fn always(_: &Context<'_>) -> bool {
     true
 }
 
-/// Applies when the index is time, not a swept parameter.
+/// Applies when the index is time.
 pub fn over_time(c: &Context<'_>) -> bool {
     c.history.over_time()
 }
@@ -205,9 +205,6 @@ pub struct Available<'a> {
     pub lines: &'a [String],
     /// Which fields place which others' cells (ADR 0024).
     pub coordinates: &'a [Coordinate],
-    /// In a sweep, the swept parameters' keys, also among `scalars`
-    /// (ADR 0028).
-    pub swept: &'a [String],
     /// The outputs of filters with clocks of their own (ADR 0063): bound
     /// by name, recorded apart from the model's history.
     pub derived: &'a [String],
@@ -845,7 +842,10 @@ mod tests {
         };
         // Over time the saved trail applies; in a sweep it means nothing.
         assert_eq!(input(&History::new(vec![])), 5.0);
-        assert_eq!(input(&History::with_index("spring.w", vec![])), -1.0);
+        assert_eq!(
+            input(&History::with_fields("spring.w", vec![], Vec::new())),
+            -1.0
+        );
     }
 
     #[test]

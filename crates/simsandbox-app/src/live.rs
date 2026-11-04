@@ -1,7 +1,6 @@
 //! The open model on its own thread (ADR 0035). A worker thread owns the
 //! [`Session`]: it steps the model, paced by wall-clock time (ADR 0010),
-//! evaluates sweeps a slice at a time and runs the window's commands
-//! between steps. The window never steps a Block: it sends commands, reads
+//! and runs the window's commands between steps. The window never steps a Block: it sends commands, reads
 //! the shared history to draw, and reads what the worker publishes.
 
 use crate::pacing::Pacer;
@@ -9,7 +8,7 @@ use eframe::egui;
 use simsandbox_core::block::MethodLabels;
 use simsandbox_core::SimError;
 use simsandbox_file::{FilterEntry, FusedGroup, ModelFile};
-use simsandbox_session::session::{ParamRow, Session, SharedHistory, Sweep};
+use simsandbox_session::session::{ParamRow, Session, SharedHistory};
 use simsandbox_views::{Available, History};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError, RwLockReadGuard};
@@ -17,7 +16,7 @@ use std::time::{Duration, Instant};
 
 /// The worker steps in ticks of this length while running.
 const TICK: Duration = Duration::from_micros(8_333);
-/// Share of a tick spent stepping or sweeping (ADR 0010's frame budget).
+/// Share of a tick spent stepping (ADR 0010's frame budget).
 const TICK_BUDGET: Duration = Duration::from_millis(7);
 
 /// The model as the worker last published it: everything the window shows
@@ -30,7 +29,6 @@ pub struct Model {
     pub file: ModelFile,
     pub groups: Vec<FusedGroup>,
     pub params: Vec<ParamRow>,
-    pub sweep: Option<Arc<Sweep>>,
     pub filters: Vec<FilterEntry>,
     /// Probes besides the implicit one, as the file writes them (ADR 0062).
     pub probes: Vec<simsandbox_file::ProbeEntry>,
@@ -66,7 +64,6 @@ impl Model {
             file: s.file.clone(),
             groups: s.groups.clone(),
             params: s.params(),
-            sweep: s.sweep_shared(),
             filters: s.filters().to_vec(),
             probes: s.probe_entries(),
             recorder: s.recorder().cloned(),
@@ -90,10 +87,6 @@ impl Model {
         }
     }
 
-    pub fn sweep(&self) -> Option<&Sweep> {
-        self.sweep.as_deref()
-    }
-
     /// What views can bind: everything a step yields, whether or not the
     /// history `h` records it now (ADR 0063).
     pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
@@ -105,7 +98,6 @@ impl Model {
             block_types: &self.block_types,
             lines: &self.lines,
             coordinates: &self.coordinates,
-            swept: self.sweep.as_ref().map_or(&[], |sw| sw.keys()),
             derived: &self.derived,
         }
     }
@@ -121,8 +113,6 @@ pub struct Status {
     pub achieved: f64,
     /// The tick budget cut stepping short: the model runs slower than asked.
     pub limited: bool,
-    /// A sweep being evaluated: samples done and in all.
-    pub sweep: Option<(usize, usize)>,
     /// Recorded input lies ahead: running on replays it (ADR 0058).
     pub replaying: bool,
 }
@@ -332,21 +322,18 @@ fn status(s: &Session, running: bool, achieved: f64, limited: bool) -> Status {
         running,
         achieved,
         limited,
-        sweep: s.resampling(),
         replaying: s.replaying(),
     }
 }
 
-/// The worker's loop: commands, then a tick of stepping or sweeping.
+/// The worker's loop: commands, then a tick of stepping.
 fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Control) {
     let mut pacer = Pacer::new(c.speed);
     pacer.budget = TICK_BUDGET;
     let mut last = Instant::now();
     loop {
-        let stepping = c.running && s.sweep().is_none();
-        let busy = stepping || s.resampling().is_some();
         let mut commands = Vec::new();
-        if !busy {
+        if !c.running {
             // Idle: everything recorded is visible, then wait for a command.
             s.flush(true);
             *lock(&shared.status) = status(&s, false, pacer.achieved_speed(), false);
@@ -388,7 +375,7 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
         let elapsed = tick.duration_since(last).as_secs_f64();
         last = tick;
         let mut recorded = false;
-        if c.running && s.sweep().is_none() {
+        if c.running {
             pacer.speed = c.speed;
             let dt = s.step_dt();
             let result = pacer.frame(
@@ -422,13 +409,6 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
                 }
             }
         }
-        if s.resampling().is_some() {
-            recorded = true;
-            if s.resume_resample(Some(TICK_BUDGET)) {
-                // Finished: whether it is real-time is now known.
-                *lock(&shared.model) = Some(Arc::new(Model::of(&s)));
-            }
-        }
         s.flush(false);
         *lock(&shared.status) = status(
             &s,
@@ -442,7 +422,7 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
         if recorded || news {
             shared.repaint();
         }
-        if c.running && s.sweep().is_none() {
+        if c.running {
             if let Some(rest) = TICK.checked_sub(tick.elapsed()) {
                 std::thread::sleep(rest);
             }
@@ -499,7 +479,7 @@ mod tests {
         let reference = values(&direct.signals(), "lorenz.xyz[0]");
 
         // Fast, so the worker gets there quickly; it records whole steps.
-        let mut s = Session::load_deferred("l", text, &registry()).unwrap();
+        let mut s = Session::load("l", text, &registry()).unwrap();
         // Rewinding needs a recorder (ADR 0064).
         s.set_recorder(Some(Default::default()));
         let live = Live::start(s, 200.0, true);
@@ -527,47 +507,6 @@ mod tests {
             &reference[..]
         );
         assert!(!live.status().running);
-    }
-
-    #[test]
-    fn sweeps_are_evaluated_in_slices_and_restarted_by_changes() {
-        let text = example("Resonance map");
-        let full = Session::load("m", text, &registry()).unwrap();
-        let reference = values(&full.signals(), "spring.amplitude");
-
-        let live = Live::start(
-            Session::load_deferred("m", text, &registry()).unwrap(),
-            1.0,
-            false,
-        );
-        // A change while it runs starts it again with the new value.
-        let id = live.call(|s, _| s.ids["spring"]).unwrap();
-        live.send(Some("param:spring.m"), move |s, _| {
-            s.set_param(id, "m", 2.0).unwrap();
-        });
-        live.send(Some("param:spring.m"), move |s, _| {
-            s.set_param(id, "m", 1.0).unwrap();
-        });
-        let start = Instant::now();
-        while live.status().sweep.is_some() || live.history().len() < reference.len() {
-            assert!(start.elapsed() < Duration::from_secs(60), "timed out");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        live.sync();
-        assert_eq!(values(&live.history(), "spring.amplitude"), reference);
-        let m = live.model();
-        assert_eq!(
-            m.params.iter().find(|r| r.key == "spring.m").unwrap().value,
-            1.0
-        );
-        // Its grids are complete too.
-        let h = live.history();
-        let grid = h
-            .fields()
-            .iter()
-            .find(|f| f.name == "grid.spring.amplitude")
-            .unwrap();
-        assert_eq!(grid.frame(0), &reference[..]);
     }
 
     #[test]

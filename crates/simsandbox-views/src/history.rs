@@ -5,8 +5,7 @@
 
 use egui_plot::PlotPoint;
 
-/// The name that binds a slot to the index: simulated time, or the swept
-/// parameter when a model is swept (ADR 0021).
+/// The name that binds a slot to the index: simulated time.
 pub const TIME: &str = "t";
 
 /// When a run grows past this many samples, every other sample is dropped:
@@ -74,31 +73,23 @@ impl FieldShape {
     }
 }
 
-/// A field or point set recorded whole at every sample, or (`whole`) one
-/// frame made from the whole history, such as a sweep reshaped into a grid
-/// (ADR 0028).
+/// A field or point set recorded whole at every sample.
 pub struct Field {
     pub name: String,
     pub shape: FieldShape,
-    /// One frame for the whole history instead of one per sample.
-    pub whole: bool,
     frames: Vec<Vec<f64>>,
 }
 
 impl Field {
-    /// The values at sample `k` (any `k` for a whole-history field; empty
-    /// before it is set).
+    /// The values at sample `k`.
     pub fn frame(&self, k: usize) -> &[f64] {
-        if self.whole {
-            return self.frames.first().map_or(&[], Vec::as_slice);
-        }
         &self.frames[k]
     }
 }
 
 /// A field that gives the positions of another field's cells along one
 /// grid axis (ADR 0024): `rod.position` for `rod.temperature` along axis 0,
-/// or a swept parameter for every result of a two-parameter sweep.
+/// or a study's swept parameter for each of its results (ADR 0071).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Coordinate {
     pub name: String,
@@ -233,11 +224,9 @@ pub fn paired(signals: &[(&History, SignalRef)]) -> Paired {
 }
 
 pub struct History {
-    /// What the index is: `t`, or a swept parameter such as `spring.w`.
+    /// What the index is: `t`.
     index: String,
     coordinates: Vec<Coordinate>,
-    /// The samples are a cloud with no order (ADR 0028).
-    unordered: bool,
     /// Display labels for signals and fields whose names are not readable
     /// on their own, e.g. a cut filter's `curves[0]` as `spring.c = 0.05`.
     labels: std::collections::BTreeMap<String, String>,
@@ -258,13 +247,7 @@ impl History {
     /// An empty history of the named signals, e.g. `lorenz.xyz[0]`, `a.x`,
     /// indexed by time.
     pub fn new(names: Vec<String>) -> Self {
-        Self::with_index(TIME, names)
-    }
-
-    /// An empty history indexed by something other than time, e.g. a swept
-    /// parameter. `t` still binds to the index.
-    pub fn with_index(index: &str, names: Vec<String>) -> Self {
-        Self::with_fields(index, names, Vec::new())
+        Self::with_fields(TIME, names, Vec::new())
     }
 
     /// An empty history of scalar signals and whole fields.
@@ -278,7 +261,6 @@ impl History {
             index: index.into(),
             coordinates: Vec::new(),
             labels: Default::default(),
-            unordered: false,
             names,
             times: Vec::new(),
             points,
@@ -287,7 +269,6 @@ impl History {
                 .map(|(name, shape)| Field {
                     name,
                     shape,
-                    whole: false,
                     frames: Vec::new(),
                 })
                 .collect(),
@@ -297,26 +278,7 @@ impl History {
         }
     }
 
-    /// Add a field made from the whole history (e.g. a sweep reshaped into
-    /// a grid); its frame is set with [`History::set_whole`].
-    pub fn add_whole(&mut self, name: &str, shape: FieldShape) {
-        self.fields.push(Field {
-            name: name.into(),
-            shape,
-            whole: true,
-            frames: Vec::new(),
-        });
-    }
-
-    /// Set a whole-history field's frame.
-    pub fn set_whole(&mut self, name: &str, frame: Vec<f64>) {
-        if let Some(f) = self.fields.iter_mut().find(|f| f.whole && f.name == name) {
-            f.frames = vec![frame];
-        }
-    }
-
-    /// Keep every sample instead of thinning long histories (sweeps, whose
-    /// samples are all needed to reshape them).
+    /// Keep every sample instead of thinning long histories.
     pub fn keep_all(&mut self) {
         self.max_samples = usize::MAX;
         self.last = None;
@@ -338,23 +300,7 @@ impl History {
 
     /// Numbers recorded per sample: the signals and the fixed-size fields.
     pub fn values_per_sample(&self) -> usize {
-        self.names.len()
-            + self
-                .fields
-                .iter()
-                .filter(|f| !f.whole)
-                .map(|f| f.shape.len())
-                .sum::<usize>()
-    }
-
-    /// Mark the samples as an unordered cloud (random designs), which views
-    /// draw as points rather than lines.
-    pub fn set_unordered(&mut self, unordered: bool) {
-        self.unordered = unordered;
-    }
-
-    pub fn unordered(&self) -> bool {
-        self.unordered
+        self.names.len() + self.fields.iter().map(|f| f.shape.len()).sum::<usize>()
     }
 
     /// Declare which fields are coordinates of which (ADR 0024).
@@ -386,7 +332,8 @@ impl History {
             .map(|c| c.axis)
     }
 
-    /// Whether the history is indexed by time (not a swept parameter).
+    /// Whether the history is indexed by time (a history given another
+    /// index is not).
     pub fn over_time(&self) -> bool {
         self.index == TIME
     }
@@ -400,7 +347,7 @@ impl History {
         &self.names
     }
 
-    /// The name of the index: `t`, or the swept parameter.
+    /// The name of the index: `t` for every model's history.
     pub fn index(&self) -> &str {
         &self.index
     }
@@ -423,7 +370,7 @@ impl History {
     /// Record one sample: scalar values and one frame per field.
     pub fn push_sample(&mut self, t: f64, values: &[f64], frames: &[&[f64]]) {
         debug_assert_eq!(values.len(), self.names.len());
-        let per_sample = self.fields.iter_mut().filter(|f| !f.whole);
+        let per_sample = self.fields.iter_mut();
         self.times.push(t);
         for (p, &v) in self.points.iter_mut().zip(values) {
             p.push(PlotPoint::new(t, v));
@@ -452,7 +399,7 @@ impl History {
                 for p in &mut self.points {
                     p.drain(..drop);
                 }
-                for f in self.fields.iter_mut().filter(|f| !f.whole) {
+                for f in self.fields.iter_mut() {
                     f.frames.drain(..drop);
                 }
                 self.count_population_values();
@@ -466,7 +413,7 @@ impl History {
             for p in &mut self.points {
                 thin(p);
             }
-            for f in self.fields.iter_mut().filter(|f| !f.whole) {
+            for f in self.fields.iter_mut() {
                 thin(&mut f.frames);
             }
             self.count_population_values();
@@ -477,7 +424,7 @@ impl History {
         self.population_values = self
             .fields
             .iter()
-            .filter(|f| !f.whole && matches!(f.shape, FieldShape::Population { .. }))
+            .filter(|f| matches!(f.shape, FieldShape::Population { .. }))
             .flat_map(|f| f.frames.iter().map(Vec::len))
             .sum();
     }
@@ -489,7 +436,7 @@ impl History {
         for p in &mut self.points {
             p.truncate(keep);
         }
-        for f in self.fields.iter_mut().filter(|f| !f.whole) {
+        for f in self.fields.iter_mut() {
             f.frames.truncate(keep);
         }
         self.count_population_values();
@@ -590,7 +537,7 @@ mod tests {
         h.clear();
         assert!(h.is_empty());
 
-        let swept = History::with_index("s.w", vec!["s.a".into()]);
+        let swept = History::with_fields("s.w", vec!["s.a".into()], Vec::new());
         assert_eq!(swept.resolve("t"), Some(SignalRef::Time));
         assert_eq!(swept.resolve("s.w"), Some(SignalRef::Time));
         assert_eq!(swept.name(SignalRef::Time), "s.w");

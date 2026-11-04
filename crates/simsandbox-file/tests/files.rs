@@ -43,6 +43,8 @@ fn invalid_path(text: &str) -> String {
     }
 }
 
+// The resonance examples hold study blocks, which the session crate
+// registers; it loads every example (`every_example_is_current_and_runs`).
 #[test]
 fn examples_load_without_warnings() {
     for text in [
@@ -50,12 +52,9 @@ fn examples_load_without_warnings() {
         OSCILLATORS,
         PREDATOR_PREY,
         LOGISTIC,
-        RESONANCE,
         HEAT_ROD,
         ORBITS,
         PENDULUM,
-        RESONANCE_MAP,
-        RESONANCE_SAMPLES,
         GRAZING,
         CRUISE,
         PLATOON,
@@ -475,8 +474,7 @@ fn schema_is_valid_json_and_lists_the_file_fields() {
             "models",
             "outputs",
             "params",
-            "run",
-            "sample"
+            "run"
         ]
     );
     assert_eq!(schema["properties"]["format"]["const"], 1);
@@ -727,18 +725,16 @@ fn older_derived_signals_and_profile_cuts_become_filters() {
     );
     assert!(f.expr().unwrap().starts_with("0.5*(a.v^2"));
 
-    // A profile with ADR 0029 cuts, in a file of that time (the sweep under
-    // `controls`), becomes a cut filter through the grid and its lines.
-    let mut v: serde_json::Value = serde_json::from_str(RESONANCE_MAP).unwrap();
-    let sample = v.as_object_mut().unwrap().remove("sample").unwrap();
+    // A profile with ADR 0029 cuts becomes a cut filter through the grid
+    // and its lines.
+    let mut v: serde_json::Value = serde_json::from_str(GRAY_SCOTT).unwrap();
     let c = &mut v["controls"];
-    c["sweep"] = sample["params"].clone();
     c.as_object_mut().unwrap().remove("filters");
     c["views"] = serde_json::json!([
-        {"type": "plot.heatmap", "bind": {"field": "spring.amplitude", "x": "spring.w", "y": "spring.c"}},
+        {"type": "plot.heatmap", "bind": {"field": "gs.v", "x": "gs.x", "y": "gs.y"}},
         {
             "type": "plot.profile",
-            "bind": {"y": "spring.amplitude"},
+            "bind": {"y": "gs.v"},
             "selection": {
                 "against": "x",
                 "cuts": [{"from": [0.0, 0.05], "to": [3.0, 0.05]}, {"from": [0.0, 0.2], "to": [3.0, 0.2]}],
@@ -751,7 +747,7 @@ fn older_derived_signals_and_profile_cuts_become_filters() {
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     let f = &loaded.file.controls.filters[0];
     assert_eq!(f.type_name, "cut");
-    assert_eq!(f.inputs, ["grid.spring.amplitude"]);
+    assert_eq!(f.inputs, ["gs.v"]);
     assert_eq!(f.settings["mode"], "along_x");
     assert_eq!(f.settings["at"], serde_json::json!([0.05, 0.2]));
     assert_eq!(f.settings["interpolation"], "nearest");
@@ -761,39 +757,37 @@ fn older_derived_signals_and_profile_cuts_become_filters() {
     assert!(v.selection.is_none());
 }
 
-/// The resonance example as written before `sample` (ADR 0027): the
-/// sweep under `controls`, its views plotting against `t`.
-fn legacy_resonance(sweep: serde_json::Value) -> String {
-    let mut v: serde_json::Value = serde_json::from_str(RESONANCE).unwrap();
-    v.as_object_mut().unwrap().remove("sample");
-    for view in v["controls"]["views"].as_array_mut().unwrap() {
-        view["bind"]["x"] = "t".into();
-    }
-    v["controls"]["sweep"] = sweep;
-    v.to_string()
-}
+/// A plain driven, damped spring: every quantity a parameter, `spring.c`
+/// with a slider from 0.02 to 2.
+const SPRING: &str = r#"{"format": 1, "blocks": [{"name": "spring", "type": "eq.equations", "equations": [
+    "param F [N] = 1", "param m [kg] = 1", "param k [N/m] = 1", "param c [N*s/m] = 0.2",
+    "param w [rad/s] = 1", "amplitude = F/sqrt((k - m*w^2)^2 + (c*w)^2) [m]"]}],
+  "controls": {"params": {"spring.c": {"slider": true, "range": [0.02, 2.0], "pin": true}}}}"#;
 
 #[test]
-fn sample_sections_are_checked_strictly() {
-    let loaded = load(RESONANCE, &registry()).unwrap();
-    let plan = loaded.plan.unwrap();
-    assert_eq!(plan.keys, ["spring.w"]);
-    assert_eq!(plan.ranges, [[0.0, 3.0]]);
-    assert_eq!(plan.grid, Some(vec![600]));
-    assert_eq!(plan.points.len(), 600);
-    assert_eq!(plan.points[599], [3.0]);
-
-    let with = |sample: serde_json::Value| -> Result<simsandbox_file::Loaded, FileError> {
-        let mut v: serde_json::Value = serde_json::from_str(RESONANCE).unwrap();
-        v["sample"] = sample;
-        load(&v.to_string(), &registry())
+fn a_studys_sample_is_checked_strictly() {
+    use serde_json::json;
+    let spring = load(SPRING, &registry()).unwrap();
+    let plan = |sample: serde_json::Value| -> Result<simsandbox_file::Plan, FileError> {
+        let s: simsandbox_file::Sampling =
+            serde_json::from_value(sample).map_err(|e| FileError::Invalid {
+                path: "sample".into(),
+                message: e.to_string(),
+            })?;
+        spring.plan_of(&s)
     };
-    let path = |sample: serde_json::Value| match with(sample) {
+    let one = plan(json!({"params": [{"param": "spring.w", "range": [0.0, 3.0], "points": 600}]}))
+        .unwrap();
+    assert_eq!(one.keys, ["spring.w"]);
+    assert_eq!(one.ranges, [[0.0, 3.0]]);
+    assert_eq!(one.grid, Some(vec![600]));
+    assert_eq!(one.points.len(), 600);
+    assert_eq!(one.points[599], [3.0]);
+    let path = |sample: serde_json::Value| match plan(sample) {
         Err(FileError::Invalid { path, .. }) => path,
         Err(e) => panic!("{e}"),
         Ok(_) => panic!("expected an error"),
     };
-    use serde_json::json;
     let w = json!({"param": "spring.w"});
     let c = json!({"param": "spring.c"});
     assert_eq!(
@@ -820,94 +814,53 @@ fn sample_sections_are_checked_strictly() {
         path(json!({"design": "list", "params": [w, c], "values": [[1.0]]})),
         "sample.values[0]"
     );
-    assert!(with(json!({"params": [w], "shuffle": true})).is_err());
+    assert_eq!(
+        path(json!({"params": [w], "replicates": 0})),
+        "sample.replicates"
+    );
+    assert!(plan(json!({"params": [w], "shuffle": true})).is_err());
 
     // Defaults: the slider's range, 100 points each on a two-parameter grid.
-    let two = with(json!({"params": [w, c]})).unwrap().plan.unwrap();
+    let two = plan(json!({"params": [w, c]})).unwrap();
     assert_eq!(two.ranges[1], [0.02, 2.0]);
     assert_eq!(two.grid, Some(vec![100, 100]));
     let random =
-        with(json!({"design": "latin_hypercube", "params": [w, c], "count": 50, "seed": 3}))
-            .unwrap()
-            .plan
+        plan(json!({"design": "latin_hypercube", "params": [w, c], "count": 50, "seed": 3}))
             .unwrap();
     assert_eq!((random.points.len(), random.grid), (50, None));
     let list =
-        with(json!({"design": "list", "params": [w, c], "values": [[1.0, 0.5], [2.0, 0.1]]}))
-            .unwrap()
-            .plan
+        plan(json!({"design": "list", "params": [w, c], "values": [[1.0, 0.5], [2.0, 0.1]]}))
             .unwrap();
     assert_eq!(list.points, [[1.0, 0.5], [2.0, 0.1]]);
-
-    // A model with states runs in time; its `sample` is an experiment,
-    // each point a whole run (ADR 0067), not a sweep.
-    let mut v: serde_json::Value = serde_json::from_str(LORENZ).unwrap();
-    v["sample"] = json!({"params": [{"param": "lorenz.rho", "points": 3}]});
-    let l = load(&v.to_string(), &registry()).unwrap();
-    assert!(l.plan.is_none());
-    assert_eq!(l.experiment.unwrap().points.len(), 3);
-    v["sample"]["replicates"] = json!(0);
-    assert!(matches!(
-        load(&v.to_string(), &registry()),
-        Err(FileError::Invalid { path, .. }) if path == "sample.replicates"
-    ));
-    assert!(load(LORENZ, &registry()).unwrap().plan.is_none());
 }
 
 #[test]
-fn legacy_sweeps_become_samples_leniently() {
+fn sweeps_written_in_the_file_are_refused_or_dropped() {
     use serde_json::json;
-    let one = |sweep| load(&legacy_resonance(sweep), &registry()).unwrap();
-    let loaded = one(json!({"param": "spring.w", "range": [0.0, 3.0], "points": 600}));
-    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
-    let original = load(RESONANCE, &registry()).unwrap();
-    // The same file as the example, `t` bound to the swept parameter.
-    assert_eq!(loaded.file, original.file);
-    assert!(loaded.file.controls.sweep.is_empty());
+    // ADR 0071: the `sample` section is refused, saying what to write.
+    let mut v: serde_json::Value = serde_json::from_str(SPRING).unwrap();
+    v["sample"] = json!({"params": [{"param": "spring.w"}]});
+    match load(&v.to_string(), &registry()) {
+        Err(FileError::Invalid {
+            path,
+            message: reason,
+        }) => {
+            assert_eq!(path, "sample");
+            assert!(reason.contains("study"), "{reason}");
+        }
+        other => panic!("{:?}", other.map(|l| l.warnings)),
+    }
+    // The older sweep controls are dropped with a warning.
+    let mut v: serde_json::Value = serde_json::from_str(SPRING).unwrap();
+    v["controls"]["sweep"] = json!({"param": "spring.w"});
+    let l = load(&v.to_string(), &registry()).unwrap();
+    assert_eq!(l.warnings.len(), 1, "{:?}", l.warnings);
+    assert!(l.warnings[0].contains("controls.sweep"), "{:?}", l.warnings);
+    assert!(l.stateless());
+}
 
-    let unknown = one(json!({"param": "spring.q"}));
-    assert_eq!(unknown.warnings.len(), 1, "{:?}", unknown.warnings);
-    // Nothing left to sweep: the first parameter, as for any formula model.
-    assert_eq!(unknown.plan.unwrap().keys, ["spring.F"]);
-    let bad_range = one(json!({"param": "spring.w", "range": [3.0, 0.0]}));
-    assert_eq!(bad_range.warnings.len(), 1, "{:?}", bad_range.warnings);
-    assert_eq!(bad_range.file.sample.unwrap().params[0].range, None);
-
-    // Two parameters make a grid; a third, a repeat or too many points are
-    // dropped with warnings.
-    let two = one(
-        json!([{"param": "spring.w", "range": [0.0, 3.0]}, {"param": "spring.c", "points": 50}]),
-    );
-    assert!(two.warnings.is_empty(), "{:?}", two.warnings);
-    assert_eq!(two.plan.unwrap().grid, Some(vec![100, 50]));
-    assert!(two.file.to_json().contains("\"sample\": {\n"));
-    let extra = one(
-        json!([{"param": "spring.w"}, {"param": "spring.w"}, {"param": "spring.c"}, {"param": "spring.k"}]),
-    );
-    assert_eq!(extra.warnings.len(), 2, "{:?}", extra.warnings);
-    assert_eq!(extra.file.sample.unwrap().params.len(), 2);
-    let huge =
-        one(json!([{"param": "spring.w", "points": 1000}, {"param": "spring.c", "points": 1000}]));
-    assert_eq!(huge.warnings.len(), 1, "{:?}", huge.warnings);
-    assert_eq!(huge.file.sample.unwrap().params[0].points, None);
-
-    // A two-parameter heat map reads the results' grids.
-    let mut v: serde_json::Value = serde_json::from_str(&legacy_resonance(
-        json!([{"param": "spring.w"}, {"param": "spring.c"}]),
-    ))
-    .unwrap();
-    v["controls"]["views"] = json!([{"type": "plot.heatmap", "bind": {"field": "spring.amplitude", "x": "spring.w", "y": "spring.c"}}]);
-    let map = load(&v.to_string(), &registry()).unwrap();
-    assert!(map.warnings.is_empty(), "{:?}", map.warnings);
-    assert_eq!(
-        map.file.controls.views[0].bind["field"].signals(),
-        ["grid.spring.amplitude"]
-    );
-    assert_eq!(
-        map.file.controls.views[0].bind["y"].signals(),
-        ["grid.spring.c"]
-    );
-
+#[test]
+fn formulas_and_maps_need_their_methods() {
     // Maps and formulas need the matching method.
     let wrong = LOGISTIC.replace(
         r#""type": "eq.equations","#,

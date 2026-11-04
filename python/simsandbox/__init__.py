@@ -257,19 +257,6 @@ class Model:
             raise ModelError(_errors(report))
         return report["params"]
 
-    def sweep(self, *params: tuple[str, float, float, int], design: str = "grid") -> "Model":
-        """Evaluate the model at many parameter values instead of in time
-        (a model with no states; ADR 0027): each of ``params`` is
-        ``(key, start, stop, points)``."""
-        self.data["sample"] = {
-            "design": design,
-            "params": [
-                {"param": k, "range": [float(a), float(b)], "points": int(n)}
-                for k, a, b, n in params
-            ],
-        }
-        return self
-
     def set_run(self, dt: float | None = None, t_end: float | None = None, seed: int | None = None) -> "Model":
         run = self.data.setdefault("run", {})
         for key, value in (("dt", dt), ("t_end", t_end), ("seed", seed)):
@@ -290,7 +277,8 @@ class Model:
         inputs: "Iterable[tuple[float, str, float]] | Run | None" = None,
     ) -> "Results | Composed":
         """Run to ``t_end`` in steps of ``dt`` (each defaulting to the file's
-        ``run`` section), or through the model's sweep. ``inputs`` are
+        ``run`` section). A model whose only runs are its studies'
+        (ADR 0071) gives a row per run. ``inputs`` are
         changes made during the run (ADR 0058): ``(t, key, value)``
         tuples, each applied at the first step boundary at or after ``t``
         along with the file's schedule (``run.inputs``); or a :class:`Run`,
@@ -303,7 +291,7 @@ class Model:
         ``"slow/u.y"``)."""
         # A use names a model and has no type; a study names one too (ADR 0070).
         uses = any(("file" in b or "model" in b) and "type" not in b for b in self.data.get("blocks", []))
-        if uses and inputs is None and "sample" not in self.data:
+        if uses and inputs is None:
             if dt is not None:
                 raise ValueError("a model using models keeps each model's own clock: dt does not apply")
             try:
@@ -440,8 +428,7 @@ class Model:
         """Run as the app does and return what the probes recorded
         (ADR 0062): all of them, or those named in ``probes``. ``t_end``,
         ``dt`` and ``inputs`` are as for :meth:`run`. With ``save``, the
-        probes that have a file (``to``) write it into that directory.
-        A swept model records no probes."""
+        probes that have a file (``to``) write it into that directory."""
         model, track = self._with_inputs(inputs)
         text = model.to_json()
         names = None if probes is None else list(probes)
@@ -503,6 +490,29 @@ class Model:
         note naming it."""
         text, note = _native.study(self.to_json(), use)
         self.data = json.loads(text)
+        return note
+
+    def as_study(self, *params: tuple[str, float, float, int], design: str = "grid", sample: dict | None = None) -> str:
+        """Study the whole model (ADR 0071), as "Study this model" does on
+        the canvas background: its blocks move into a model defined in the
+        file, used in their place, with a study of it beside. Each of
+        ``params`` is ``(key, start, stop, points)``, keys as inside the
+        model (``"spring.w"``); or give the whole ``sample``. Without
+        either, the study is a grid of 20 points over the model's first
+        parameter. Returns a note naming the study block."""
+        text, note = _native.study_model(self.to_json())
+        self.data = json.loads(text)
+        if params:
+            sample = {
+                "design": design,
+                "params": [
+                    {"param": k, "range": [float(a), float(b)], "points": int(n)}
+                    for k, a, b, n in params
+                ],
+            }
+        if sample is not None:
+            study = next(b for b in reversed(self.data["blocks"]) if b.get("type") == "study")
+            study["sample"] = sample
         return note
 
     def group(self, blocks: Iterable[str]) -> str:
@@ -783,7 +793,8 @@ class Composed:
 class Results:
     """What a run produced, as numpy arrays.
 
-    - ``index``: ``t``, or for a sweep ``sample`` and each swept parameter.
+    - ``index``: ``t``, or ``run`` for a model whose only runs are its
+      studies' (ADR 0071).
     - ``outputs``: every fixed-size output by ``"block.port"``: shape
       ``(rows,)`` for a scalar, ``(rows, n)`` for a vector,
       ``(rows, ny, nx)`` for a grid, ``(rows, count, dim)`` for points.
@@ -791,9 +802,6 @@ class Results:
       ``(n, dim)`` arrays (n varies).
     - ``labels`` (speed and accuracy), ``notes`` (algebraic loops) and
       ``warnings``.
-    - ``series``: for an experiment (a model that runs in time with a
-      ``sample``, ADR 0067) keeping ``"series"``, each point's whole run;
-      the rows are then one per point, with each output's final value.
 
     ``results[name]`` looks in the index, then the outputs, then the
     populations.
@@ -817,8 +825,6 @@ class Results:
         self.labels: dict | None = json.loads(raw["labels"])
         self.notes: list[str] = raw["notes"]
         self.warnings: list[str] = raw["warnings"]
-        # An experiment with ``keep: "series"`` (ADR 0067): each point's run.
-        self.series: list[Results] = [Results(s) for s in raw.get("series", [])]
 
     @property
     def t(self) -> np.ndarray:

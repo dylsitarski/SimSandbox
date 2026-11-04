@@ -1,38 +1,103 @@
 {
   "format": 1,
-  "description": "A spring pushed back and forth: how strongly it swings at each driving frequency w. No time here: the outputs are formulas, evaluated at 600 values of w (the sample section). Lower the damping c and watch the resonance peak grow.",
-  "sample": {
-    "design": "grid",
-    "params": [
-      {
-        "param": "spring.w",
-        "range": [
-          0.0,
-          3.0
-        ],
-        "points": 600
-      }
-    ]
+  "description": "A spring pushed back and forth: how strongly it swings at each driving frequency w. The spring is a model of formulas, nothing in time; the study `curve` evaluates it at 600 values of w. Its damping c and mass m are inputs, set by the sliders: lower c and watch the resonance peak grow. Open the study's node to see and edit the spring.",
+  "models": {
+    "spring": {
+      "blocks": [
+        {
+          "name": "c",
+          "settings": {
+            "unit": "N*s/m"
+          },
+          "type": "input.value"
+        },
+        {
+          "name": "m",
+          "settings": {
+            "unit": "kg"
+          },
+          "type": "input.value"
+        },
+        {
+          "equations": [
+            "# steady swing of a driven, damped spring: mass m, stiffness k, damping c, force F at frequency w",
+            "input c [N*s/m], m [kg]",
+            "param F [N] = 1",
+            "param k [N/m] = 1",
+            "param w [rad/s] = 1",
+            "amplitude = F/sqrt((k - m*w^2)^2 + (c*w)^2) [m]",
+            "lag = atan2(c*w, k - m*w^2) [rad]"
+          ],
+          "name": "spring",
+          "type": "eq.equations"
+        }
+      ],
+      "connections": [
+        {
+          "from": "c.y",
+          "to": "spring.c"
+        },
+        {
+          "from": "m.y",
+          "to": "spring.m"
+        }
+      ],
+      "description": "A driven, damped spring's steady swing: formulas, nothing in time. Its inputs: the damping c and the mass m."
+    }
   },
   "blocks": [
     {
-      "name": "spring",
-      "type": "eq.equations",
-      "equations": [
-        "# steady swing of a driven, damped spring: mass m, stiffness k, damping c, force F at frequency w",
-        "param F [N] = 1",
-        "param m [kg] = 1",
-        "param k [N/m] = 1",
-        "param c [N*s/m] = 0.2",
-        "param w [rad/s] = 1",
-        "amplitude = F/sqrt((k - m*w^2)^2 + (c*w)^2) [m]",
-        "lag = atan2(c*w, k - m*w^2) [rad]"
-      ]
+      "name": "c",
+      "type": "input.value",
+      "settings": {
+        "unit": "N*s/m"
+      },
+      "params": {
+        "y": 0.2
+      }
+    },
+    {
+      "name": "m",
+      "type": "input.value",
+      "settings": {
+        "unit": "kg"
+      },
+      "params": {
+        "y": 1.0
+      }
+    },
+    {
+      "name": "curve",
+      "type": "study",
+      "model": "spring",
+      "sample": {
+        "design": "grid",
+        "params": [
+          {
+            "param": "spring.w",
+            "range": [
+              0.0,
+              3.0
+            ],
+            "points": 600
+          }
+        ]
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "c.y",
+      "to": "curve.c"
+    },
+    {
+      "from": "m.y",
+      "to": "curve.m"
     }
   ],
   "controls": {
     "params": {
-      "spring.c": {
+      "c.y": {
         "slider": true,
         "range": [
           0.02,
@@ -40,7 +105,7 @@
         ],
         "pin": true
       },
-      "spring.m": {
+      "m.y": {
         "slider": true,
         "range": [
           0.2,
@@ -51,17 +116,17 @@
     },
     "views": [
       {
-        "type": "plot.xy",
+        "type": "plot.profile",
         "bind": {
-          "x": "spring.w",
-          "y": "spring.amplitude"
+          "x": "curve.spring_w",
+          "y": "curve.spring_amplitude"
         }
       },
       {
-        "type": "plot.xy",
+        "type": "plot.profile",
         "bind": {
-          "x": "spring.w",
-          "y": "spring.lag"
+          "x": "curve.spring_w",
+          "y": "curve.spring_lag"
         }
       }
     ]

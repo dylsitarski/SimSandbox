@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-04: ADR 0071 step 3: `sample`/`plan`/`experiment` out of the file crate (`Loaded::plan_of`, `points_digest`, `stateless`); `Sweep` and the sweep bar out of session and app; `Available::swept`, unordered and whole-history fields out of views; `run_experiment`/`experiment_report`/`series` out of run, CLI and Python (`run_sampled` for runner tests); `Edit::StudyModel`, Python `as_study`; resonance examples as studies; study results leave out input blocks; schema `$defs/sample`; ADR 0027 fixture removed; Q52; renders of the three resonance examples.
 - 2026-11-04: ADR 0071 step 1: study `grid2` outputs (`Grid{nx,ny}`, coordinates on axes 0 and 1), `SlotKind::Values`, `Xy::cells`, the "Cell by cell" preset; tests, renders of a 2D heat map and of the tuning study.
 - 2026-11-04: studies name models like uses (`names_model`), open to them (canvas Open, app paths, edit_use); typed entries naming models refused; tests, `--inside` render.
 - 2026-11-04: examples brought to the current form (results compared bit for bit before and after for all 18); `cruise-tuning` example; `every_example_is_current_and_runs`; Q51 (`controls.plots`) raised.

@@ -792,6 +792,10 @@ pub enum Edit {
     /// a grid of 20 points over its first parameter, its inputs fed as
     /// the use's are.
     Study { block: String },
+    /// Study the whole model open (ADR 0071): its blocks move into a new
+    /// definition used in their place ("Make model"), with a study of it
+    /// beside the use ("Study this model").
+    StudyModel,
     /// A study's `sample` (ADR 0070), as JSON.
     SetSample { block: String, sample: String },
     /// A block, or a port node (renaming the port).
@@ -931,7 +935,7 @@ pub fn apply_in(
     // A study names its model by `model`: found again (ADR 0070).
     if matches!(
         edit,
-        Edit::Study { .. } | Edit::SetSetting { .. } | Edit::Duplicate { .. }
+        Edit::Study { .. } | Edit::StudyModel | Edit::SetSetting { .. } | Edit::Duplicate { .. }
     ) {
         file.resolve_models().map_err(|e| e.to_string())?;
     }
@@ -981,6 +985,9 @@ fn apply_in_level(
     }
     if let Edit::GroupModel { blocks } = edit {
         return group_model(file, scope, blocks);
+    }
+    if let Edit::StudyModel = edit {
+        return study_model(file, scope, registry);
     }
     match edit {
         Edit::DeclareParam { name, value, unit } => {
@@ -1526,6 +1533,7 @@ fn edit_level(
             Ok(format!("Disconnected {to}"))
         }
         Edit::GroupModel { .. }
+        | Edit::StudyModel
         | Edit::DeclareOutput { .. }
         | Edit::RemoveOutput { .. }
         | Edit::RenameModel { .. }
@@ -1757,12 +1765,6 @@ fn forget_block(file: &mut ModelFile, block: &str) {
     }
     file.groups.retain(|g| g.blocks.len() > 1);
     file.controls.params.retain(|k, _| !mine(k));
-    if let Some(s) = &mut file.sample {
-        s.params.retain(|p| !mine(&p.param));
-    }
-    if file.sample.as_ref().is_some_and(|s| s.params.is_empty()) {
-        file.sample = None;
-    }
     // Views and filters that used it are dropped with a warning when the
     // model opens.
 }
@@ -1901,6 +1903,32 @@ fn rename_model(file: &mut ModelFile, from: &str, to: &str) -> Result<String, St
 /// "Make model" (ADR 0068): the selection grouped as a subsystem would
 /// be, then written as a model defined in the file, used in its place on
 /// the same clock.
+/// "Study this model" on the whole model (ADR 0071): "Make model" of
+/// every block, then "Study this model" on the use made.
+fn study_model(file: &mut ModelFile, scope: &Scope, registry: &Registry) -> Result<String, String> {
+    let names: Vec<String> = file.blocks.iter().map(|b| b.name.clone()).collect();
+    if names.is_empty() {
+        return Err("the model has no blocks to study".into());
+    }
+    let before = file.clone();
+    let made = group_model(file, scope, &names)?;
+    let used = file
+        .blocks
+        .iter()
+        .find(|b| !names.contains(&b.name))
+        .map(|b| b.name.clone());
+    let studied = used
+        .ok_or_else(|| "the model was not made".to_string())
+        .and_then(|block| apply_in_level(file, scope, registry, &Edit::Study { block }));
+    match studied {
+        Ok(note) => Ok(format!("{made}; {note}")),
+        Err(e) => {
+            *file = before;
+            Err(e)
+        }
+    }
+}
+
 fn group_model(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String, String> {
     if *scope != Scope::Model {
         return Err("a model is made at a model's level, not inside a subsystem".into());
@@ -2118,11 +2146,6 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
             let mut c = serde_json::to_value(&file.controls).map_err(|e| e.to_string())?;
             rename_in(&mut c, n, &format!("{instance}/{n}"));
             file.controls = serde_json::from_value(c).map_err(|e| e.to_string())?;
-            if let Some(s) = &mut file.sample {
-                for p in &mut s.params {
-                    p.param = rename_refs(&p.param, n, &format!("{instance}/{n}"));
-                }
-            }
             for g in &mut file.groups {
                 g.blocks.retain(|b| b != n);
             }
@@ -2423,6 +2446,31 @@ mod tests {
             .find(|o| o.name == signal)
             .unwrap_or_else(|| panic!("no {signal} ({port})"));
         *o.values.last().unwrap()
+    }
+
+    #[test]
+    fn the_whole_model_is_studied_through_a_definition() {
+        // ADR 0071: "Study this model" on the canvas background.
+        let r = registry();
+        let mut f = file("Cruise control");
+        let note = apply(&mut f, &r, &Edit::StudyModel).unwrap();
+        assert!(note.contains("Made the model"), "{note}");
+        let names: Vec<&str> = f.blocks.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        let study = f.blocks.iter().find(|b| b.type_name == "study").unwrap();
+        let def = &f.models[study.model.as_deref().unwrap()];
+        assert_eq!(def["blocks"].as_array().unwrap().len(), 2);
+        // It runs: the model as before, beside its study's 20 runs.
+        let rows = crate::run::run(&f.to_json(), &r, Some(0.2), None).unwrap();
+        let studied = rows
+            .outputs
+            .iter()
+            .find(|o| o.name.starts_with(&format!("{}.", study.name)))
+            .unwrap();
+        assert_eq!(studied.shape.len(), 20);
+        // Nothing to study in an empty model.
+        let mut empty = ModelFile::new();
+        assert!(apply(&mut empty, &r, &Edit::StudyModel).is_err());
     }
 
     #[test]

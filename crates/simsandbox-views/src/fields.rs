@@ -87,7 +87,7 @@ pub(crate) const X_AXIS: Slot = Slot {
     many: false,
     required: false,
     description: "Across: t, or a coordinate of the field such as rod.position or a \
-                  swept parameter; without it, the field's next direction by cell number",
+                  study's parameter; without it, the field's next direction by cell number",
 };
 
 /// The field's other direction.

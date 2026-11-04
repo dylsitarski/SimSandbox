@@ -1,53 +1,86 @@
 {
   "format": 1,
-  "description": "The driven, damped spring again, sampled at 2000 points spread over the driving frequency w and the damping c by a Sobol sequence instead of a grid. Left: where the samples fell, coloured by the lag, which turns from 0 to π across the resonance at w ≈ 1, sharply where damping is low. Right: every sample's amplitude against w, as points: low damping reaches highest. Try design random or Latin hypercube, or sweep a third parameter, in the sweep bar.",
-  "sample": {
-    "design": "sobol",
-    "params": [
-      {
-        "param": "spring.w",
-        "range": [
-          0.0,
-          3.0
-        ]
-      },
-      {
-        "param": "spring.c",
-        "range": [
-          0.02,
-          1.0
-        ]
-      }
-    ],
-    "count": 2000
+  "description": "The driven, damped spring again, studied at 2000 points spread over the driving frequency w and the damping c by a Sobol sequence instead of a grid. Left: where the points fell, coloured by the lag, which turns from 0 to π across the resonance at w ≈ 1, sharply where damping is low. Right: every point's amplitude against w: low damping reaches highest. Try design random or Latin hypercube, or a third parameter, in the study's sample (the Inspector).",
+  "models": {
+    "spring": {
+      "blocks": [
+        {
+          "name": "m",
+          "settings": {
+            "unit": "kg"
+          },
+          "type": "input.value"
+        },
+        {
+          "equations": [
+            "# steady swing of a driven, damped spring: mass m, stiffness k, damping c, force F at frequency w",
+            "input m [kg]",
+            "param F [N] = 1",
+            "param k [N/m] = 1",
+            "param c [N*s/m] = 0.2",
+            "param w [rad/s] = 1",
+            "amplitude = F/sqrt((k - m*w^2)^2 + (c*w)^2) [m]",
+            "lag = atan2(c*w, k - m*w^2) [rad]"
+          ],
+          "name": "spring",
+          "type": "eq.equations"
+        }
+      ],
+      "connections": [
+        {
+          "from": "m.y",
+          "to": "spring.m"
+        }
+      ],
+      "description": "A driven, damped spring's steady swing: formulas, nothing in time. Its inputs: the mass m."
+    }
   },
   "blocks": [
     {
-      "name": "spring",
-      "type": "eq.equations",
-      "equations": [
-        "# steady swing of a driven, damped spring: mass m, stiffness k, damping c, force F at frequency w",
-        "param F [N] = 1",
-        "param m [kg] = 1",
-        "param k [N/m] = 1",
-        "param c [N*s/m] = 0.2",
-        "param w [rad/s] = 1",
-        "amplitude = F/sqrt((k - m*w^2)^2 + (c*w)^2) [m]",
-        "lag = atan2(c*w, k - m*w^2) [rad]"
-      ]
+      "name": "m",
+      "type": "input.value",
+      "settings": {
+        "unit": "kg"
+      },
+      "params": {
+        "y": 1.0
+      }
+    },
+    {
+      "name": "samples",
+      "type": "study",
+      "model": "spring",
+      "sample": {
+        "design": "sobol",
+        "params": [
+          {
+            "param": "spring.w",
+            "range": [
+              0.0,
+              3.0
+            ]
+          },
+          {
+            "param": "spring.c",
+            "range": [
+              0.02,
+              1.0
+            ]
+          }
+        ],
+        "count": 2000
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "m.y",
+      "to": "samples.m"
     }
   ],
   "controls": {
     "params": {
-      "spring.c": {
-        "slider": true,
-        "range": [
-          0.02,
-          2.0
-        ],
-        "pin": true
-      },
-      "spring.m": {
+      "m.y": {
         "slider": true,
         "range": [
           0.2,
@@ -60,16 +93,16 @@
       {
         "type": "plot.xy",
         "bind": {
-          "colour": "spring.lag",
-          "x": "spring.w",
-          "y": "spring.c"
+          "colour": "samples.spring_lag",
+          "x": "samples.spring_w",
+          "y": "samples.spring_c"
         }
       },
       {
         "type": "plot.xy",
         "bind": {
-          "x": "spring.w",
-          "y": "spring.amplitude"
+          "x": "samples.spring_w",
+          "y": "samples.spring_amplitude"
         }
       }
     ]

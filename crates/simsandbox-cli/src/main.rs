@@ -8,7 +8,7 @@
 //!                 [--probe NAME] [--save-probes DIR]
 //!                                   (default: the file's `run` section)
 //!                                   (FILE a run file: replays it, ADR 0059)
-//!                                   (a model with no states: one row per sample of its sweep)
+//!                                   (a model whose only runs are its studies: one row per run, ADR 0071)
 //!                                   (--probe: what that probe records, not every output, ADR 0062)
 //!                                   (--save-probes: the probes' files (`to`) written into DIR)
 //! simsandbox check FILE             (JSON; exit status 1 if the model cannot run)
@@ -242,11 +242,7 @@ fn run_file(args: &[String]) -> Result<(), String> {
     if composed && flags.has("--dt") {
         return Err("--dt does not apply to a model using models: each keeps its own clock".into());
     }
-    // An experiment over it (ADR 0067) runs it as one model too.
-    let experiment = !is_run_file(path)
-        && serde_json::from_str::<Value>(&read(path)?).is_ok_and(|v| v.get("sample").is_some());
-    let merged =
-        flags.has("--inputs") || flags.has("--probe") || flags.has("--save-probes") || experiment;
+    let merged = flags.has("--inputs") || flags.has("--probe") || flags.has("--save-probes");
     if composed && !merged && !is_run_file(path) {
         return run_composition_file(path, &read(path)?, t_end, &flags, json);
     }

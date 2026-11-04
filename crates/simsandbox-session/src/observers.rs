@@ -1411,12 +1411,12 @@ mod tests {
 
     #[test]
     fn grids_elements_and_subsystem_outputs_find_their_ports() {
-        // A cut through a sweep's grid reads the swept block's output.
+        // A cut through a study's 2D results reads the study's output.
         let d = observed(&file("Resonance map"));
         let cut = d.node("filter:cuts1").unwrap();
         let w = d.wires.iter().find(|w| w.to.0 == cut).unwrap();
-        assert_eq!(d.nodes[w.from.0].name, "spring");
-        assert_eq!(w.signal, "grid.spring.amplitude");
+        assert_eq!(d.nodes[w.from.0].name, "map");
+        assert_eq!(w.signal, "map.spring_amplitude");
         // Vector elements come from the vector; a use's inner signal from
         // the use's port.
         let d = observed(&file("Lorenz"));

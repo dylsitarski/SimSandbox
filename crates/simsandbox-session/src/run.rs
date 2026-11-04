@@ -1,6 +1,7 @@
 //! Running a model file headless and collecting every output (ADR 0039),
 //! as `simsandbox run` and the Python API do: every communication step of a
-//! timed model, or every sample of a swept one (ADR 0028).
+//! model, or a row per run of a model whose only runs are its studies
+//! (ADR 0070, ADR 0071).
 
 use crate::probe::ProbeSpec;
 use crate::session::{set_key, InputEvent, SharedHistory, Track};
@@ -35,7 +36,8 @@ pub struct Population {
 /// Everything a run produced.
 #[derive(Clone, Debug)]
 pub struct Results {
-    /// What indexes the rows: `t`, or `sample` and the swept parameters.
+    /// What indexes the rows: `t`, or `run`; a study's own runs by
+    /// `sample` and the swept parameters.
     pub index: Vec<(String, Vec<f64>)>,
     /// In file block order, then port order.
     pub outputs: Vec<Output>,
@@ -44,9 +46,6 @@ pub struct Results {
     /// Algebraic loops and how they are solved (ADR 0040).
     pub notes: Vec<String>,
     pub warnings: Vec<String>,
-    /// An experiment's whole run at each row, with `keep: "series"`
-    /// (ADR 0067); empty otherwise.
-    pub series: Vec<Results>,
 }
 
 impl Results {
@@ -114,7 +113,7 @@ impl Results {
                 (p.name.clone(), json!({"dim": p.dim, "frames": frames}))
             })
             .collect();
-        let mut out = json!({
+        json!({
             "rows": self.rows(),
             "index": index,
             "outputs": outputs,
@@ -122,11 +121,7 @@ impl Results {
             "labels": self.labels.map(crate::describe::labels),
             "notes": self.notes,
             "warnings": self.warnings,
-        });
-        if !self.series.is_empty() {
-            out["series"] = Value::Array(self.series.iter().map(Results::to_json).collect());
-        }
-        out
+        })
     }
 }
 
@@ -172,33 +167,6 @@ pub fn run_with(
         }
     }
     let loaded = simsandbox_file::load_any(text, registry, None).map_err(|e| e.to_string())?;
-    // A model that runs in time with a `sample`: an experiment (ADR 0067).
-    if loaded.experiment.is_some() {
-        if !track.is_empty() {
-            return Err(
-                "an experiment runs each point from its file: give inputs in run.inputs".into(),
-            );
-        }
-        return run_experiment(text, registry, t_end, dt, None);
-    }
-    // A model with no states, swept (ADR 0027, ADR 0028): the study of a
-    // model with nothing in time, each point one evaluation (ADR 0070).
-    if let Some(plan) = loaded.plan.clone() {
-        if dt.is_some() || t_end.is_some() {
-            return Err("the end time and step do not apply to a swept model".into());
-        }
-        if !(loaded.file.run.inputs.is_empty() && track.is_empty()) {
-            return Err("a swept model is not run in time, so it takes no inputs".into());
-        }
-        let study = Study {
-            plan,
-            timeless: true,
-            set: Vec::new(),
-            t_end: None,
-            dt: None,
-        };
-        return run_study(text, registry, &loaded, &study, None);
-    }
     // Nothing in time but studies: one evaluation, a row per run.
     let untimed = dt.is_none()
         && t_end.is_none()
@@ -263,7 +231,6 @@ pub fn run_with(
         labels: sim.labels(),
         notes: crate::session::loop_notes(&sim),
         warnings: loaded.warnings.clone(),
-        series: Vec::new(),
     };
     let record = |r: &mut Results, sim: &Simulator| {
         for (o, (id, port, _, _)) in r.outputs.iter_mut().zip(&fixed) {
@@ -384,7 +351,6 @@ fn study_rows(loaded: simsandbox_file::Loaded) -> Result<Results, String> {
         labels: sim.labels(),
         notes,
         warnings,
-        series: Vec::new(),
     })
 }
 
@@ -416,38 +382,34 @@ fn advance(
     Ok(())
 }
 
-/// Run the experiment a model's `sample` makes of it (ADR 0067): every
-/// point (times its replicates) a whole run to `t_end` from the file's
-/// start, its seed the run's (common) or mixed from its row, on `threads`
-/// threads (all the machine's if `None`). Each row's run depends only on
-/// its row, so the results are the same on any number of threads. Rows
-/// keep each output's final value; with `keep: "series"`, `series` holds
-/// each run.
-pub fn run_experiment(
+/// For tests of the study runner: run `text`'s top-level `sample` (which
+/// files no longer have, ADR 0071) as a study of the rest, each point a
+/// whole run to `t_end`.
+#[cfg(test)]
+pub(crate) fn run_sampled(
     text: &str,
     registry: &Registry,
     t_end: Option<f64>,
-    dt: Option<f64>,
     threads: Option<usize>,
 ) -> Result<Results, String> {
-    for v in [t_end, dt].into_iter().flatten() {
-        if !(v.is_finite() && v > 0.0) {
-            return Err("the end time and step must be positive".into());
-        }
-    }
-    let loaded = simsandbox_file::load_any(text, registry, None).map_err(|e| e.to_string())?;
-    let plan = loaded
-        .experiment
-        .clone()
-        .ok_or("this model has no experiment (`sample`)")?;
+    let mut v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let sample = v
+        .as_object_mut()
+        .and_then(|o| o.remove("sample"))
+        .ok_or("no sample")?;
+    let sampling: simsandbox_file::Sampling =
+        serde_json::from_value(sample).map_err(|e| e.to_string())?;
+    let text = v.to_string();
+    let loaded = simsandbox_file::load_any(&text, registry, None).map_err(|e| e.to_string())?;
+    let plan = loaded.plan_of(&sampling).map_err(|e| e.to_string())?;
     let study = Study {
         plan,
         timeless: false,
         set: Vec::new(),
         t_end,
-        dt,
+        dt: None,
     };
-    run_study(text, registry, &loaded, &study, threads)
+    run_study(&text, registry, &loaded, &study, threads)
 }
 
 /// How a study runs its model (ADR 0070): the plan, whether the model has
@@ -547,7 +509,6 @@ pub(crate) fn run_study(
             })
             .collect()
     };
-    let mut series = Vec::new();
     for (row, r) in all.into_iter().enumerate() {
         let (p, j) = (row / plan.replicates, row % plan.replicates);
         index[0].1.push(p as f64);
@@ -567,9 +528,6 @@ pub(crate) fn run_study(
         for (o, v) in outputs.iter_mut().zip(&r.finals) {
             o.values.extend_from_slice(v);
         }
-        if let Some(s) = r.series {
-            series.push(s);
-        }
     }
     // As fast and accurate as the model's methods.
     let labels = MethodLabels::combine(loaded.flat.blocks.iter().filter_map(|b| {
@@ -583,47 +541,12 @@ pub(crate) fn run_study(
         labels,
         notes: Vec::new(),
         warnings: loaded.warnings.clone(),
-        series,
     })
 }
 
-/// What `check` says of a model's `sample` (ADR 0067, ADR 0070), `null`
-/// if it has none: its parameters, points, runs, what each keeps and its
-/// seeds, and whether each run is in time or one evaluation.
-pub fn experiment_report(text: &str, registry: &Registry) -> Value {
-    let plan = simsandbox_file::load_any(text, registry, None).map(|l| {
-        let timeless = l.experiment.is_none();
-        let sampled = l.file.sample.is_some();
-        l.experiment
-            .or(l.plan.filter(|_| sampled))
-            .map(|p| (p, timeless))
-    });
-    match plan {
-        Ok(Some((p, timeless))) => json!({
-            "each_run": if timeless { "one evaluation" } else { "in time" },
-            "params": p.keys,
-            "points": p.points.len(),
-            "replicates": p.replicates,
-            "runs": p.points.len() * p.replicates,
-            "keep": match p.keep {
-                simsandbox_file::Keep::Final => "final",
-                simsandbox_file::Keep::Series => "series",
-            },
-            "seeds": match p.seeds {
-                simsandbox_file::Seeds::Common => "common",
-                simsandbox_file::Seeds::PerPoint => "per point",
-            },
-            "reduce": p.reduce.keys().collect::<Vec<_>>(),
-        }),
-        _ => Value::Null,
-    }
-}
-
-/// One experiment run: each output's final value (or each reduction's),
-/// and the whole run if kept.
+/// One run of a study: each output's final value (or each reduction's).
 struct Row {
     finals: Vec<Vec<f64>>,
-    series: Option<Results>,
 }
 
 /// The `reduce` formulas of `plan` parsed, with where each name they read
@@ -759,9 +682,8 @@ fn run_rows(
         if apply(&mut sim)? {
             sim.restart(0.0).map_err(|e| e.to_string())?;
         }
-        let keep = plan.keep == simsandbox_file::Keep::Series;
-        // Reductions need the run too, kept or not.
-        let record = keep || !reduced.is_empty();
+        // Reductions need the whole run.
+        let record = !reduced.is_empty();
         let mut t = vec![sim.time()];
         let mut kept: Vec<Vec<f64>> = if record { values(&sim) } else { Vec::new() };
         // A model with nothing in time is one evaluation (ADR 0067).
@@ -794,24 +716,7 @@ fn run_rows(
                 })
                 .collect()
         };
-        let series = keep.then(|| Results {
-            index: vec![("t".to_string(), t)],
-            outputs: fixed
-                .iter()
-                .zip(kept)
-                .map(|((_, _, name, shape), values)| Output {
-                    name: name.clone(),
-                    shape: *shape,
-                    values,
-                })
-                .collect(),
-            populations: Vec::new(),
-            labels: None,
-            notes: Vec::new(),
-            warnings: Vec::new(),
-            series: Vec::new(),
-        });
-        out.push(Row { finals, series });
+        out.push(Row { finals });
     }
     Ok(out)
 }
@@ -848,7 +753,6 @@ impl ProbeRun {
 /// `track` replayed as recorded input. `names` picks probes (all if
 /// empty). Probes that write as they record (ADR 0063) write into `dir`
 /// during the run, if given; [`ProbeRun::write_files`] writes the others.
-/// A swept model is not run in time and records no probes.
 pub fn run_probes(
     text: &str,
     registry: &Registry,
@@ -864,9 +768,6 @@ pub fn run_probes(
         }
     }
     let mut s = Session::load("probes", text, registry)?;
-    if s.sweep().is_some() {
-        return Err("a swept model is not run in time, so it records no probes".into());
-    }
     if let Some(unknown) = names
         .iter()
         .find(|n| !s.probe_names().contains(&n.as_str()))
@@ -987,15 +888,18 @@ mod tests {
     }
 
     #[test]
-    fn swept_runs_are_indexed_by_sample_and_parameters() {
-        let r = run(example("\"points\": 600"), &registry(), None, None).unwrap();
-        assert_eq!(r.index[0].0, "sample");
-        assert_eq!(r.index[1].0, "spring.w");
+    fn a_model_whose_only_runs_are_its_studies_writes_a_row_per_run() {
+        // The resonance curve (ADR 0071): its study's 600 runs as rows.
+        let r = run(example("`curve`"), &registry(), None, None).unwrap();
+        assert_eq!(r.index[0].0, "run");
         assert_eq!(r.rows(), 600);
         let j = r.to_json();
         assert_eq!(j["rows"], 600);
-        assert!(j["outputs"]["spring.amplitude"]["values"][0].is_number());
-        assert!(run(example("\"points\": 600"), &registry(), Some(1.0), None).is_err());
+        assert!(j["outputs"]["curve.spring_amplitude"]["values"][0].is_number());
+        assert!(j["outputs"].get("curve.m_y").is_none());
+        // In time, every step holds every run.
+        let timed = run(example("`curve`"), &registry(), Some(1.0), Some(0.5)).unwrap();
+        assert_eq!(timed.rows(), 3);
         assert!(run(example("lorenz"), &registry(), Some(-1.0), None).is_err());
     }
 }

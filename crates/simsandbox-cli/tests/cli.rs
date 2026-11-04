@@ -116,17 +116,17 @@ fn run_writes_csv_or_json_with_populations() {
         assert_eq!(n as f64, count[k].as_f64().unwrap());
     }
 
-    // A sweep: one row per sample, indexed by the swept parameter.
-    let swept = json(&simsandbox(&[
+    // A model whose only runs are its study's: one row per run (ADR 0071).
+    let studied = json(&simsandbox(&[
         "run",
         &example("resonance.ssbx.json"),
         "--format",
         "json",
     ]));
-    assert!(swept["index"]["spring.w"].is_array());
+    assert!(studied["outputs"]["curve.spring_w"]["values"].is_array());
     assert_eq!(
-        swept["index"]["sample"].as_array().unwrap().len(),
-        swept["rows"].as_u64().unwrap() as usize
+        studied["index"]["run"].as_array().unwrap().len(),
+        studied["rows"].as_u64().unwrap() as usize
     );
 }
 

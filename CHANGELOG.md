@@ -6,6 +6,10 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Sweeps and experiments are studies (ADR 0071): a file's top-level `sample` is refused, saying to put the model under `models` with a study block over it; the older `controls.sweep` is dropped with a warning. A model with no states is no longer swept over its first parameter: it runs in time, its formulas constant unless their inputs change. The app's sweep bar, its `grid.` signals and its unordered samples are gone: a study's results are fields like any other. `check` no longer reports `experiment` or `swept`; `run` writes a row per run for a model whose only runs are its studies. A study's results leave out its model's input blocks.
+- The resonance examples are a spring model and a study of it: the curve (600 values of w, damping and mass as sliders feeding the study's inputs), the map (a grid over w and c, its 2D results drawn as a heat map, surface and cuts) and the samples (a Sobol study drawn cell by cell).
+- Python: `Model.sweep` and `Results.series` are removed; `keep: "series"` is refused (Q52).
+
 - A study names its model as a use does, `"model": "cruise"` or `"file": "car.ssbx.json"` on its entry (no longer in `settings`), and its node opens to that model to see and edit it, with the same choices as a used model's.
 - `controls.plots` is removed from the format (it did nothing since ADR 0063); a file that still has it loads, the key ignored.
 - The examples are written as SimSandbox now builds models, with the same results: values and starts once, in the typed equations; units on the resonance and predator–prey formulas; no `controls.plots`, default methods or unused `run.dt`. The Platoon is listed as a model defined once and used three times.
@@ -14,6 +18,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Subsystems are replaced by models defined in the file (ADR 0068): `subsystems` is refused with how to write it under `models`; "Make subsystem" is "Make model"; a model's inputs are input blocks and its outputs are offered from a block's menu ("Offer X as an output"); `render --diagram --inside PATH` (and Python `render(inside=)`) draws a used model's inside; Python `Model.group` makes a model. The Platoon example defines its follower once. Problems inside a used model are reported where they are written (`models.follower.blocks[0].equations`). "Edit…" on a block inside a used model opens its equations.
 
 ### Added
+
+- "Study this model" on the canvas background studies the whole model: its blocks move into a new definition used in their place, with a study of it beside (Python `Model.as_study(("spring.w", 0, 3, 600))` or `as_study(sample={...})`).
 
 - A study over a grid of two parameters gives 2D results (`n1 × n2` cells) with both parameters as coordinates, so heat maps, surfaces, contours and cuts read them directly (ADR 0071).
 - `plot.xy` takes lines of cells, such as a study's results, for `x`, `y` and `colour` and draws them against each other cell by cell (preset "Cell by cell"); the tuning example shows reach against peak, coloured by gain.

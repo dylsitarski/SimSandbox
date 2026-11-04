@@ -253,9 +253,6 @@ pub fn check(text: &str, r: &Registry) -> Value {
                 "warnings": s.warnings,
                 "conversions": s.conversions,
                 "labels": labels.map(self::labels),
-                "swept": s.sweep().map(|sw| sw.keys().to_vec()),
-                // Its `sample` over runs in time (ADR 0067).
-                "experiment": crate::run::experiment_report(text, r),
                 // What it offers to models that use it (ADR 0066 step 4b).
                 "declared_outputs": s.file.outputs.iter().map(|o| json!({"name": o.name, "from": o.from})).collect::<Vec<_>>(),
                 "fused_groups": s.groups.iter().map(|g| json!({"blocks": g.blocks, "method": g.method.to_string()})).collect::<Vec<_>>(),

@@ -86,10 +86,6 @@ pub struct ModelFile {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "RunSettings::writes_nothing")]
     pub run: RunSettings,
-    /// The parameter values a model without states is evaluated at
-    /// (ADR 0027, ADR 0028); `None` for one that runs in time.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sample: Option<Sampling>,
     /// Parameters of the model itself, which block parameters can use in
     /// formulas, e.g. a field size shared by two blocks (ADR 0043).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -1717,18 +1713,48 @@ pub struct Loaded {
     pub conversions: Vec<String>,
     /// Blocks solved together (ADR 0023).
     pub groups: Vec<FusedGroup>,
-    /// Where a model without states is evaluated (ADR 0027); `None` for one
-    /// that runs in time.
-    pub plan: Option<Plan>,
-    /// For a model that runs in time, its `sample` (ADR 0067): an
-    /// experiment, each point a whole run, made by the headless runner.
-    pub experiment: Option<Plan>,
     /// The files blocks read (ADR 0063), as `block.setting` and the
     /// SHA-256 of the file's contents: part of a run's model hash.
     pub data: BTreeMap<String, String>,
     /// Declared outputs of the models it uses (ADR 0066 step 4b), by full
     /// name (`fast/x`), and the flat output each is (`fast/count.x`).
     pub aliases: BTreeMap<String, String>,
+}
+
+impl Loaded {
+    /// A study's `sample` (ADR 0070) made concrete for this model: its
+    /// points, by block parameter or declared parameter (ADR 0067); errors
+    /// carry a path such as `sample.params[1].range`.
+    pub fn plan_of(&self, sampling: &Sampling) -> Result<Plan, FileError> {
+        // The flat file has turned declared parameters into formulas.
+        let mut f = self.flat.clone();
+        f.params.clone_from(&self.file.params);
+        f.folder.clone_from(&self.file.folder);
+        sampling.plan(&f, &self.model, &self.ids)
+    }
+
+    /// The SHA-256 of a study's points file (ADR 0070 step 4), found from
+    /// this model's folder: part of the run hash; `None` for other designs.
+    pub fn points_digest(&self, sampling: &Sampling) -> Option<String> {
+        let (Design::File, Some(name)) = (sampling.design, &sampling.file) else {
+            return None;
+        };
+        Some(std::fs::read(points_path(&self.file, name)).map_or_else(
+            |_| "missing".to_string(),
+            |bytes| {
+                use sha2::{Digest, Sha256};
+                let d = Sha256::digest(&bytes);
+                let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
+                format!("sha256:{hex}")
+            },
+        ))
+    }
+
+    /// Whether no block has states, nor reads recorded data, nor is a
+    /// study: such a model is evaluated, not stepped (ADR 0067).
+    pub fn stateless(&self) -> bool {
+        stateless(&self.flat.blocks, &self.model, &self.ids)
+    }
 }
 
 /// Parse a model file and build its model, one that uses models too
@@ -1919,26 +1945,6 @@ pub fn load_in(
     }
     let mut data = data_digests(&flat, registry, folder);
     data.extend(Reports::taken());
-    // A points file is data too (ADR 0070 step 4).
-    if let Some(Sampling {
-        design: Design::File,
-        file: Some(name),
-        ..
-    }) = &file.sample
-    {
-        let mut f = file.clone();
-        f.folder = f.folder.or_else(|| folder.map(Into::into));
-        let digest = std::fs::read(points_path(&f, name)).map_or_else(
-            |_| "missing".to_string(),
-            |bytes| {
-                use sha2::{Digest, Sha256};
-                let d = Sha256::digest(&bytes);
-                let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
-                format!("sha256:{hex}")
-            },
-        );
-        data.insert("sample.file".into(), digest);
-    }
     // Formulas give each block parameter in its unit (ADR 0045).
     params.fit_blocks(&mut model, &ids)?;
     for (block, param, value) in params.evaluate() {
@@ -1970,16 +1976,6 @@ pub fn load_in(
     let mut conversions = file.converted.clone();
     warnings.extend(flat.check_controls(&model, &ids, &params, &mut conversions));
     file.controls = flat.controls.clone();
-    let plan = flat.plan(&model, &ids)?;
-    // Declared parameters are points' keys too (ADR 0067): the flat file
-    // has turned them into formulas.
-    let experiment = {
-        let mut f = flat.clone();
-        f.params.clone_from(&file.params);
-        f.experiment(&model, &ids)?
-    };
-    // Older sweep controls become a `sample` section as the file is read.
-    file.sample = flat.sample.clone();
     file.controls = flat.controls.clone();
     // A model with no states reading recorded data steps at the data's
     // sample times (ADR 0067 step 4), unless it writes a step of its own.
@@ -2003,8 +1999,6 @@ pub fn load_in(
         ids,
         warnings,
         groups,
-        plan,
-        experiment,
         data,
         aliases: BTreeMap::new(),
     })
@@ -2078,8 +2072,9 @@ struct RawFile {
     description: Option<String>,
     #[serde(default)]
     run: RunSettings,
+    /// Removed (ADR 0071): read only to refuse it with what to write.
     #[serde(default)]
-    sample: Option<Sampling>,
+    sample: Option<Value>,
     #[serde(default)]
     params: BTreeMap<String, ParamDecl>,
     #[serde(default)]
@@ -2107,7 +2102,6 @@ impl ModelFile {
             format: FORMAT_VERSION,
             description: None,
             run: RunSettings::default(),
-            sample: None,
             params: BTreeMap::new(),
             subsystems: BTreeMap::new(),
             models: BTreeMap::new(),
@@ -2227,6 +2221,14 @@ impl ModelFile {
         }
         compose::check_uses(&raw.blocks, &raw.subsystems)?;
         compose::check_outputs(&raw.outputs, &raw.blocks)?;
+        if raw.sample.is_some() {
+            return Err(invalid(
+                "sample",
+                "the `sample` section is removed (ADR 0071): put the model under `models` \
+                 and a study block over it (`{\"name\": \"study\", \"type\": \"study\", \
+                 \"model\": NAME, \"sample\": {…}}`); Python's `Model.as_study` does both",
+            ));
+        }
         let mut warnings = Vec::new();
         let mut controls: Controls = match raw.controls {
             None => Controls::default(),
@@ -2266,7 +2268,6 @@ impl ModelFile {
                 format: raw.format,
                 description: raw.description,
                 run: raw.run,
-                sample: raw.sample,
                 params: raw.params,
                 subsystems: raw.subsystems,
                 models: raw.models,
@@ -2650,69 +2651,6 @@ impl ModelFile {
         Ok(fused)
     }
 
-    /// The sweep made concrete for `model`: the file's `sample`, or for a
-    /// model without states a grid over its first parameter; `None` for a
-    /// model that runs in time.
-    pub fn plan(
-        &self,
-        model: &Model,
-        ids: &BTreeMap<String, BlockId>,
-    ) -> Result<Option<Plan>, FileError> {
-        match self.sampling(model, ids)? {
-            Some(s) => s.plan(self, model, ids).map(Some),
-            None => Ok(None),
-        }
-    }
-
-    /// The experiment over a model that runs in time (ADR 0067): its
-    /// `sample`, each point a whole run; `None` without one, or for a
-    /// model without states (whose `sample` is a sweep).
-    pub fn experiment(
-        &self,
-        model: &Model,
-        ids: &BTreeMap<String, BlockId>,
-    ) -> Result<Option<Plan>, FileError> {
-        let stateless = stateless(&self.blocks, model, ids);
-        match &self.sample {
-            Some(s) if !stateless => s.plan(self, model, ids).map(Some),
-            _ => Ok(None),
-        }
-    }
-
-    /// How `model` is sampled: the file's `sample`, or for a model without
-    /// states a grid over its first parameter; `None` for a model that runs
-    /// in time.
-    pub fn sampling(
-        &self,
-        model: &Model,
-        ids: &BTreeMap<String, BlockId>,
-    ) -> Result<Option<Sampling>, FileError> {
-        let stateless = stateless(&self.blocks, model, ids);
-        match (&self.sample, stateless) {
-            // Runs in time; its `sample` is an experiment (ADR 0067).
-            (Some(_), false) => Ok(None),
-            (Some(s), true) => Ok(Some(s.clone())),
-            (None, false) => Ok(None),
-            (None, true) => {
-                let first = self.blocks.iter().find_map(|b| {
-                    let spec = model.block(ids[&b.name]).ok()?.spec().clone();
-                    spec.params
-                        .first()
-                        .map(|p| format!("{}.{}", b.name, p.name))
-                });
-                Ok(first.map(|param| Sampling {
-                    design: Design::Grid,
-                    params: vec![SweepControl {
-                        param,
-                        range: None,
-                        points: None,
-                    }],
-                    ..Default::default()
-                }))
-            }
-        }
-    }
-
     /// Drop controls that refer to nothing or carry bad values; return a
     /// warning for each.
     fn check_controls(
@@ -2825,116 +2763,18 @@ impl ModelFile {
             }
             v.selection = None;
         }
-        // The sweep as written before `sample` (ADR 0027): a grid over the
-        // parameters it names, read leniently as controls were, with views
-        // that bound `t` (the swept parameter) bound to the first
-        // parameter, and two-parameter results read from their grids
-        // (ADR 0028).
-        let old_sweep = std::mem::take(&mut c.sweep);
-        if !old_sweep.is_empty() {
-            conversions
-                .push("controls.sweep became the sample section (ADR 0027, ADR 0028)".into());
-        }
-        let stateless = stateless(&self.blocks, model, ids);
-        if !old_sweep.is_empty() && !stateless {
-            warnings
-                .push("controls.sweep: the model has states, so it runs in time; ignored".into());
-        }
-        let mut params: Vec<SweepControl> = Vec::new();
-        for (i, mut sw) in old_sweep.into_iter().enumerate() {
-            if self.sample.is_some() || !stateless {
-                break;
-            }
-            let path = format!("controls.sweep[{i}]");
-            let known = port_ref(&sw.param, ids).ok().is_some_and(|(id, name)| {
-                model
-                    .block(id)
-                    .is_ok_and(|b| b.spec().params.iter().any(|p| p.name == name))
-            });
-            let problem = if !known {
-                Some(format!("no parameter '{}'", sw.param))
-            } else if params.iter().any(|p| p.param == sw.param) {
-                Some(format!("'{}' is swept twice", sw.param))
-            } else if params.len() == 2 {
-                Some("at most two parameters".into())
-            } else {
-                None
-            };
-            if let Some(p) = problem {
-                warnings.push(format!("{path}: {p}; ignored"));
-                continue;
-            }
-            if let Some([lo, hi]) = sw.range {
-                if !(lo.is_finite() && hi.is_finite() && lo < hi) {
-                    warnings.push(format!(
-                        "{path}.range: [{lo}, {hi}] is not an increasing range; using the default"
-                    ));
-                    sw.range = None;
-                }
-            }
-            if let Some(n) = sw.points.filter(|n| !(2..=100_000).contains(n)) {
-                warnings.push(format!(
-                    "{path}.points: {n} is outside 2 to 100000; using the default"
-                ));
-                sw.points = None;
-            }
-            params.push(sw);
-        }
-        if let [a, b] = params.as_mut_slice() {
-            let n = |p: &SweepControl| p.points.unwrap_or(DEFAULT_GRID_POINTS);
-            if n(a).saturating_mul(n(b)) > MAX_SAMPLES {
-                warnings.push(format!(
-                    "controls.sweep: more than {MAX_SAMPLES} points; using the default"
-                ));
-                a.points = None;
-                b.points = None;
-            }
-        }
-        if !params.is_empty() {
-            let keys: Vec<String> = params.iter().map(|s| s.param.clone()).collect();
-            for v in &mut c.views {
-                for b in v.bind.values_mut() {
-                    let names: Vec<String> = b
-                        .signals()
-                        .into_iter()
-                        .map(|n| match (n.as_str(), keys.len(), v.type_name.as_str()) {
-                            ("t", _, _) => keys[0].clone(),
-                            (_, 2, "plot.heatmap") => format!("grid.{n}"),
-                            _ => n,
-                        })
-                        .collect();
-                    *b = Binding::from(names);
-                }
-            }
-            if keys.len() == 2 {
-                for f in c.filters.iter_mut().filter(|f| f.type_name == "cut") {
-                    for i in &mut f.inputs {
-                        *i = format!("grid.{i}");
-                    }
-                }
-            }
-            self.sample = Some(Sampling {
-                design: Design::Grid,
-                params,
-                ..Default::default()
-            });
+        // The sweep as written before `sample` (ADR 0027): sweeps are
+        // studies now (ADR 0071), so it is dropped with what to write.
+        if !std::mem::take(&mut c.sweep).is_empty() {
+            warnings.push(
+                "controls.sweep: sweeps are studies (ADR 0071): put the model under `models` \
+                 and a study block over it; ignored"
+                    .into(),
+            );
         }
         let c = &mut self.controls;
-        // Views may bind filter outputs as well as outputs; in a sweep the
-        // swept parameters, and in a two-parameter grid every scalar's grid
-        // (`grid.<name>`, ADR 0028).
-        let mut derived: Vec<String> = c.filters.iter().flat_map(FilterEntry::outputs).collect();
-        let (keys, grid2) = match &self.sample {
-            Some(sm) => (
-                sm.params
-                    .iter()
-                    .map(|p| p.param.clone())
-                    .collect::<Vec<_>>(),
-                sm.design == Design::Grid && sm.params.len() == 2,
-            ),
-            None => (Vec::new(), false),
-        };
-        derived.extend(keys.iter().cloned());
+        // Views may bind filter outputs as well as outputs.
+        let derived: Vec<String> = c.filters.iter().flat_map(FilterEntry::outputs).collect();
         let mut kept = Vec::new();
         // Each view's new place, for the layout.
         let mut moved: Vec<Option<usize>> = vec![None; c.views.len()];
@@ -2980,8 +2820,7 @@ impl ModelFile {
                     .strip_prefix("probe:")
                     .and_then(|r| r.split_once('/'))
                     .map_or(s.as_str(), |(_, s)| s);
-                let grid = grid2 && s.strip_prefix("grid.").is_some_and(scalar);
-                s != "t" && !scalar(s) && !grid
+                s != "t" && !scalar(s)
             });
             if let Some(s) = unknown {
                 warnings.push(format!("controls.views[{i}]: no signal '{s}'; ignored"));

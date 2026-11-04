@@ -1547,6 +1547,16 @@ impl Canvas {
                     requests.push(Request::AddModel(at));
                     ui.close();
                 }
+                // Run the whole model at many points (ADR 0071).
+                if !d.nodes.iter().all(|n| n.is_observer())
+                    && ui
+                        .button("Study this model")
+                        .on_hover_text("Move every block into a model defined in this file, used in their place, with a study of it beside: it runs the model at many values of a parameter")
+                        .clicked()
+                {
+                    edits.push(Edit::StudyModel);
+                    ui.close();
+                }
                 if !d.view_types.is_empty() {
                     ui.separator();
                     if ui

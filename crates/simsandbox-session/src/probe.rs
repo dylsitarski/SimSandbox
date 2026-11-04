@@ -206,7 +206,7 @@ pub fn write_files(h: &History, dir: &Path, to: &str) -> io::Result<(Vec<PathBuf
     out.flush()?;
     written.push(csv);
     let stem = to.strip_suffix(".csv").unwrap_or(to);
-    for (i, f) in h.fields().iter().enumerate().filter(|(_, f)| !f.whole) {
+    for (i, f) in h.fields().iter().enumerate() {
         let shape = match f.shape {
             FieldShape::Grid { nx, ny } => [h.len(), ny, nx],
             FieldShape::Points { count, dim } => [h.len(), count, dim],
@@ -260,7 +260,6 @@ pub fn to_json(h: &History) -> serde_json::Value {
     let fields: serde_json::Map<String, Value> = h
         .fields()
         .iter()
-        .filter(|f| !f.whole)
         .map(|f| {
             let shape = match f.shape {
                 FieldShape::Grid { nx, ny } => json!({"grid": [ny, nx]}),

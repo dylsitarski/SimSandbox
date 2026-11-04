@@ -62,14 +62,15 @@ impl Views {
             }
         }
         if self.tiles.is_empty() {
-            // A grid over two swept parameters is best seen as a heat map.
-            let heat = (available.swept.len() == 2).then_some(("plot.heatmap", 0));
-            // A study's results against what it varies (ADR 0070).
-            let study = available
+            // A study's results against what it varies (ADR 0070): over two
+            // parameters (2D results, ADR 0071) best seen as a heat map.
+            let studied = available
                 .block_types
                 .iter()
-                .any(|t| t == crate::study::STUDY)
-                .then_some(("plot.profile", 0));
+                .any(|t| t == crate::study::STUDY);
+            let two_d = available.grids.iter().any(|g| !available.lines.contains(g));
+            let heat = (studied && two_d).then_some(("plot.heatmap", 0));
+            let study = studied.then_some(("plot.profile", 0));
             let first_fit = heat
                 .into_iter()
                 .chain(study)
@@ -293,11 +294,7 @@ mod tests {
         // parameter as the coordinate.
         use crate::examples::{registry, view_registry};
         use crate::session::Session;
-        let mut model: serde_json::Value =
-            serde_json::from_str(include_str!("../../../examples/resonance.ssbx.json")).unwrap();
-        for k in ["format", "description", "controls", "sample"] {
-            model.as_object_mut().unwrap().remove(k);
-        }
+        let model = crate::examples::spring();
         let file = serde_json::json!({"format": 1, "models": {"resonance": model},
             "blocks": [{"name": "s", "type": "study", "model": "resonance",
                 "sample": {"design": "grid", "params": [{"param": "spring.w", "range": [0.5, 1.5], "points": 11}]}}]});
@@ -414,51 +411,23 @@ mod tests {
     }
 
     #[test]
-    fn sweeps_open_views_of_their_samples() {
+    fn a_study_over_two_parameters_opens_on_a_heat_map_of_its_results() {
         use crate::examples::{registry, view_registry, EXAMPLES};
         use crate::session::Session;
-        use simsandbox_file::{Design, Sampling, SweepControl};
         let e = EXAMPLES
             .iter()
-            .find(|e| e.name.contains("Resonance curve"))
+            .find(|e| e.name.contains("Resonance map"))
             .unwrap();
-        let mut s = Session::load(e.name, e.text, &registry()).unwrap();
+        let s = Session::load(e.name, e.text, &registry()).unwrap();
         let mut v = Views::new(view_registry());
-        // One parameter: the results against it.
-        v.open(&s.available(&s.signals()), &[]);
-        let b = &v.tiles[0].state.bind;
-        assert_eq!(b["x"], ["spring.w"]);
-        assert_eq!(b["y"], ["spring.amplitude", "spring.lag"]);
-
-        let param = |p: &str| SweepControl {
-            param: p.into(),
-            range: None,
-            points: Some(30),
-        };
-        let mut sampling = Sampling {
-            design: Design::Grid,
-            params: vec![param("spring.w"), param("spring.c")],
-            ..Default::default()
-        };
-        s.set_sampling(sampling.clone()).unwrap();
-        // Two on a grid: a heat map over both.
         v.open(&s.available(&s.signals()), &[]);
         let b = &v.tiles[0].state.bind;
         assert_eq!(v.tiles[0].state.type_name, "plot.heatmap");
-        assert_eq!(b["field"], ["grid.spring.amplitude"]);
+        assert_eq!(b["field"], ["map.spring_amplitude"]);
         assert_eq!(
             (b["x"][0].as_str(), b["y"][0].as_str()),
-            ("grid.spring.w", "grid.spring.c")
+            ("map.spring_w", "map.spring_c")
         );
-        // Not on a grid: where the samples fell, coloured by a result.
-        sampling.design = Design::Random;
-        s.set_sampling(sampling).unwrap();
-        v.open(&s.available(&s.signals()), &[]);
-        let b = &v.tiles[0].state.bind;
-        assert_eq!(v.tiles[0].state.type_name, "plot.xy");
-        assert_eq!(b["x"], ["spring.w"]);
-        assert_eq!(b["y"], ["spring.c"]);
-        assert_eq!(b["colour"], ["spring.amplitude"]);
     }
 
     #[test]

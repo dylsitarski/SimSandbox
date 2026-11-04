@@ -1447,17 +1447,8 @@ impl Loader<'_> {
         for o in &file.outputs {
             level.aliases.insert(o.name.clone(), o.from.clone());
         }
-        // A use runs its model as written (ADR 0070): a `sample` of its own
-        // is not run. The top level's is its experiment, run apart.
-        if file.sample.is_some() && !path.is_empty() {
-            self.warnings.push(format!(
-                "{path}: its model's `sample` is not run: a use runs its model as written; \
-                 put a study block around it to study it (ADR 0070)"
-            ));
-        }
         if !own.is_empty() {
             let mut f = file.clone();
-            f.sample = None;
             f.blocks = own.iter().map(|&k| file.blocks[k].clone()).collect();
             f.connections = inside
                 .iter()
@@ -1501,7 +1492,7 @@ impl Loader<'_> {
             // Its clock is the composition's to give.
             let mut loaded = loaded;
             loaded.model.clear_clocks();
-            let on_data = (loaded.plan.is_some() || data.is_some()) && !clocked;
+            let on_data = (loaded.stateless() || data.is_some()) && !clocked;
             let times: Vec<f64> = match listed {
                 Some(listed) => listed,
                 None if on_data => data.unwrap_or_default().iter().map(|t| t.1).collect(),

@@ -18,88 +18,6 @@
     "run": {
       "$ref": "#/$defs/run"
     },
-    "sample": {
-      "type": "object",
-      "description": "For a model without states: where it is evaluated (ADR 0027, ADR 0028), each sample recorded with the swept parameters as signals (a grid over two parameters also offers every signal as 'grid.<signal>'); without it such a model is swept over its first parameter. For a model that runs in time, or uses models: an experiment (ADR 0067), each point a whole run, keeping each output's final value (or each run, keep 'series'). Points set any parameter by path ('block.param', 'use/inner.param') or a declared parameter. At most 250000 samples or runs. Invalid values are load errors.",
-      "additionalProperties": false,
-      "properties": {
-        "design": {
-          "enum": [
-            "grid",
-            "list",
-            "random",
-            "latin_hypercube",
-            "sobol",
-            "file"
-          ],
-          "default": "grid",
-          "description": "grid: every combination of evenly spaced values; list: the points in 'values'; random: independent uniform values; latin_hypercube: one value in each of 'count' slices of every parameter; sobol: the first 'count' points of the Sobol sequence (at most 10 parameters)."
-        },
-        "params": {
-          "type": "array",
-          "minItems": 1,
-          "description": "The swept parameters. Range defaults to the slider's range, then the suggested range; points (grid only) to 400 for one parameter and 100 each for several.",
-          "items": {
-            "$ref": "#/$defs/sweepAxis"
-          }
-        },
-        "count": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 250000,
-          "default": 1000,
-          "description": "random, latin_hypercube and sobol: how many samples."
-        },
-        "seed": {
-          "type": "integer",
-          "minimum": 0,
-          "default": 1,
-          "description": "random and latin_hypercube: the generator's seed."
-        },
-        "values": {
-          "type": "array",
-          "description": "list: the samples, one value per parameter each.",
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "number"
-            }
-          }
-        },
-        "file": {
-          "type": "string",
-          "description": "Design 'file': a CSV from the model's folder, one point per row, its header naming each column by path."
-        },
-        "keep": {
-          "enum": [
-            "final",
-            "series"
-          ],
-          "default": "final",
-          "description": "An experiment's runs: each output's value at the end (one row per point), or each whole run as well."
-        },
-        "seeds": {
-          "enum": [
-            "common",
-            "per point"
-          ],
-          "default": "common",
-          "description": "An experiment's seeds: the run's at every point (common random numbers), or mixed from each point's index (Monte Carlo)."
-        },
-        "replicates": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "An experiment's runs of each point, each replicate with a seed mixed from its number."
-        },
-        "reduce": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "An experiment's named results, one value per run (ADR 0067), each one reduction of an expression over the run's signals by full name and t: final, mean (over time), min, max, amplitude (half of max − min), period (mean time between upward crossings of the mean), first_time(a < b) (also >, <=, >=; NaN if never). Given, the rows hold these instead of final values. E.g. {\"v_max\": \"max(plant/car.v)\", \"settle\": \"first_time(abs(cruise.e) < 0.1)\"}."
-        }
-      }
-    },
     "params": {
       "type": "object",
       "additionalProperties": {
@@ -476,7 +394,7 @@
           "description": "A use's replacements of the files of uses inside it, by path ('plant', 'plant/engine'), found from this file's folder; only this use sees them (ADR 0066 step 4c)."
         },
         "sample": {
-          "$ref": "#/properties/sample",
+          "$ref": "#/$defs/sample",
           "description": "A study block's points and what it keeps of each run (ADR 0070): as the top-level `sample`. Only a `study` block has one."
         }
       },
@@ -640,7 +558,7 @@
           }
         },
         "sweep": {
-          "description": "The sweep as written before 'sample': one parameter or a list of two. Still read, leniently, and converted into a grid 'sample' (ADR 0027); views bound to 't' are bound to the first parameter, and two-parameter heat maps and cuts to the 'grid.' signals.",
+          "description": "The sweep as written before 'sample' (ADR 0027). Dropped with a warning: sweeps are studies (ADR 0071).",
           "oneOf": [
             {
               "$ref": "#/$defs/sweepAxis"
@@ -1041,6 +959,88 @@
           }
         }
       ]
+    },
+    "sample": {
+      "type": "object",
+      "description": "A study block's points (ADR 0070, ADR 0071): each a whole run of its model from the start to its t_end, or one evaluation if the model has nothing in time. Points set any parameter of the studied model by path ('block.param', 'use/inner.param') or a declared parameter. At most 250000 runs. Invalid values are load errors. A model file has no top-level 'sample': a file with one is refused (ADR 0071).",
+      "additionalProperties": false,
+      "properties": {
+        "design": {
+          "enum": [
+            "grid",
+            "list",
+            "random",
+            "latin_hypercube",
+            "sobol",
+            "file"
+          ],
+          "default": "grid",
+          "description": "grid: every combination of evenly spaced values; list: the points in 'values'; random: independent uniform values; latin_hypercube: one value in each of 'count' slices of every parameter; sobol: the first 'count' points of the Sobol sequence (at most 10 parameters)."
+        },
+        "params": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The swept parameters. Range defaults to the slider's range, then the suggested range; points (grid only) to 400 for one parameter and 100 each for several.",
+          "items": {
+            "$ref": "#/$defs/sweepAxis"
+          }
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 250000,
+          "default": 1000,
+          "description": "random, latin_hypercube and sobol: how many samples."
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1,
+          "description": "random and latin_hypercube: the generator's seed."
+        },
+        "values": {
+          "type": "array",
+          "description": "list: the samples, one value per parameter each.",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "file": {
+          "type": "string",
+          "description": "Design 'file': a CSV from the model's folder, one point per row, its header naming each column by path."
+        },
+        "keep": {
+          "enum": [
+            "final",
+            "series"
+          ],
+          "default": "final",
+          "description": "What a study keeps of each run: 'final' (each output's value at the end). 'series' is refused: a study keeps one value per run."
+        },
+        "seeds": {
+          "enum": [
+            "common",
+            "per point"
+          ],
+          "default": "common",
+          "description": "The runs' seeds: the run's at every point (common random numbers), or mixed from each point's id and replicate (Monte Carlo)."
+        },
+        "replicates": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Runs of each point, each replicate with a seed mixed from its number."
+        },
+        "reduce": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "A study's named results, one value per run (ADR 0067), each one reduction of an expression over the run's signals by full name and t: final, mean (over time), min, max, amplitude (half of max − min), period (mean time between upward crossings of the mean), first_time(a < b) (also >, <=, >=; NaN if never). Given, the rows hold these instead of final values. E.g. {\"v_max\": \"max(plant/car.v)\", \"settle\": \"first_time(abs(cruise.e) < 0.1)\"}."
+        }
+      }
     }
   }
 }
