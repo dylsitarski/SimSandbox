@@ -52,6 +52,33 @@ pub enum Op {
     Mul,
     Div,
     Pow,
+    /// Comparisons (ADR 0070): 1 if they hold, else 0 (NaN never holds).
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl Op {
+    /// `a op b`.
+    pub fn apply(self, a: f64, b: f64) -> f64 {
+        match self {
+            Op::Add => a + b,
+            Op::Sub => a - b,
+            Op::Mul => a * b,
+            Op::Div => a / b,
+            Op::Pow => a.powf(b),
+            Op::Lt => f64::from(u8::from(a < b)),
+            Op::Le => f64::from(u8::from(a <= b)),
+            Op::Gt => f64::from(u8::from(a > b)),
+            Op::Ge => f64::from(u8::from(a >= b)),
+        }
+    }
+
+    /// Whether it compares, giving 1 or 0.
+    pub fn compares(self) -> bool {
+        matches!(self, Op::Lt | Op::Le | Op::Gt | Op::Ge)
+    }
 }
 
 /// Built-in functions.
@@ -163,7 +190,7 @@ pub fn is_reserved(name: &str) -> bool {
 /// axis is `dd` and the axis name (`ddx`). Only typed equations with a
 /// grid give them a meaning ([`Ast::resolve_with`]).
 pub const ARRAY_OPS: &[&str] = &[
-    "lap", "sum", "mean", "minof", "maxof", "at", "spacing", "prev", "next",
+    "lap", "sum", "mean", "minof", "maxof", "argminof", "argmaxof", "at", "spacing", "prev", "next",
 ];
 
 /// Whether `name(...)` is an array operation: one of [`ARRAY_OPS`] or
@@ -239,8 +266,15 @@ pub enum ArrayOp {
     Mean,
     MinOf,
     MaxOf,
+    /// The cell (0-based, in storage order) holding the least or greatest
+    /// value, the first if several do; NaN if every cell is NaN (ADR 0070).
+    ArgMinOf,
+    ArgMaxOf,
     /// One element, 0-based.
     At(usize),
+    /// One element by a computed cell number (the second argument, in
+    /// storage order, rounded); NaN outside the array (ADR 0070).
+    Cell,
 }
 
 /// A parsed expression that still refers to variables by name.
@@ -356,16 +390,7 @@ impl Expr {
             Expr::Num(v) => *v,
             Expr::Var(i) => vars[*i],
             Expr::Neg(a) => -a.eval(vars),
-            Expr::Bin(op, a, b) => {
-                let (a, b) = (a.eval(vars), b.eval(vars));
-                match op {
-                    Op::Add => a + b,
-                    Op::Sub => a - b,
-                    Op::Mul => a * b,
-                    Op::Div => a / b,
-                    Op::Pow => a.powf(b),
-                }
-            }
+            Expr::Bin(op, a, b) => op.apply(a.eval(vars), b.eval(vars)),
             Expr::Call(f, args) => {
                 let a = args[0].eval(vars);
                 let b = args.get(1).map_or(0.0, |x| x.eval(vars));
@@ -382,6 +407,8 @@ enum Tok {
     Num(f64),
     Name(String),
     Sym(char),
+    /// `<`, `<=`, `>`, `>=`.
+    Cmp(Op),
     End,
 }
 
@@ -469,6 +496,16 @@ fn lex(src: &str, dotted: bool) -> Result<Vec<(Tok, usize)>, Error> {
         } else if "+-*/^(),".contains(c) {
             out.push((Tok::Sym(c), col));
             i += 1;
+        } else if c == '<' || c == '>' {
+            let eq = chars.get(i + 1) == Some(&'=');
+            let op = match (c, eq) {
+                ('<', false) => Op::Lt,
+                ('<', true) => Op::Le,
+                (_, false) => Op::Gt,
+                (_, true) => Op::Ge,
+            };
+            out.push((Tok::Cmp(op), col));
+            i += 1 + usize::from(eq);
         } else {
             return err(col, format!("unexpected '{c}'"));
         }
@@ -480,7 +517,22 @@ fn lex(src: &str, dotted: bool) -> Result<Vec<(Tok, usize)>, Error> {
 struct Parser {
     toks: Vec<(Tok, usize)>,
     pos: usize,
+    /// Read [`REDUCTIONS`] as calls ([`parse_reductions`]).
+    reductions: bool,
 }
+
+/// Reductions of a run over time (ADR 0067, ADR 0070), calls in
+/// [`parse_reductions`]: `min` and `max` with one argument, the others
+/// by name.
+pub const REDUCTIONS: &[&str] = &[
+    "final",
+    "mean",
+    "min",
+    "max",
+    "amplitude",
+    "period",
+    "first_time",
+];
 
 impl Parser {
     fn peek(&self) -> &Tok {
@@ -504,6 +556,23 @@ impl Parser {
             (Tok::Sym(s), _) if s == c => Ok(()),
             (t, col) => err(col, format!("expected '{c}', found {}", describe(&t))),
         }
+    }
+
+    /// A comparison: sum (('<' | '<=' | '>' | '>=') sum)?, one at most.
+    fn compare(&mut self) -> Result<Ast, Error> {
+        let lhs = self.expr()?;
+        let Tok::Cmp(op) = *self.peek() else {
+            return Ok(lhs);
+        };
+        self.next();
+        let rhs = self.expr()?;
+        if let Tok::Cmp(_) = self.peek() {
+            return err(
+                self.col(),
+                "one comparison at a time: write (a < b)*(b < c) for both",
+            );
+        }
+        Ok(Ast::Bin(op, Box::new(lhs), Box::new(rhs)))
     }
 
     /// Sums: term (('+' | '-') term)*
@@ -568,17 +637,34 @@ impl Parser {
         match self.next() {
             (Tok::Num(v), _) => Ok(Ast::Num(v)),
             (Tok::Sym('('), _) => {
-                let inner = self.expr()?;
+                let inner = self.compare()?;
                 self.expect(')')?;
                 Ok(inner)
             }
             (Tok::Name(n), col) => {
-                if *self.peek() == Tok::Sym('(') && Func::by_name(&n).is_none() && is_array_op(&n) {
+                if self.reductions
+                    && *self.peek() == Tok::Sym('(')
+                    && REDUCTIONS.contains(&n.as_str())
+                {
                     self.next();
-                    let mut args = vec![self.expr()?];
+                    let mut args = vec![self.compare()?];
                     while *self.peek() == Tok::Sym(',') {
                         self.next();
-                        args.push(self.expr()?);
+                        args.push(self.compare()?);
+                    }
+                    self.expect(')')?;
+                    // min(a, b) and max(a, b) stay functions.
+                    return Ok(match Func::by_name(&n) {
+                        Some(f) if args.len() == f.arity() => Ast::Call(f, args),
+                        _ => Ast::Apply(n, args, col),
+                    });
+                }
+                if *self.peek() == Tok::Sym('(') && Func::by_name(&n).is_none() && is_array_op(&n) {
+                    self.next();
+                    let mut args = vec![self.compare()?];
+                    while *self.peek() == Tok::Sym(',') {
+                        self.next();
+                        args.push(self.compare()?);
                     }
                     self.expect(')')?;
                     return Ok(Ast::Apply(n, args, col));
@@ -588,10 +674,10 @@ impl Parser {
                         return err(col, format!("unknown function '{n}'"));
                     };
                     self.next();
-                    let mut args = vec![self.expr()?];
+                    let mut args = vec![self.compare()?];
                     while *self.peek() == Tok::Sym(',') {
                         self.next();
-                        args.push(self.expr()?);
+                        args.push(self.compare()?);
                     }
                     self.expect(')')?;
                     if args.len() != f.arity() {
@@ -622,31 +708,41 @@ fn describe(t: &Tok) -> String {
         Tok::Num(v) => format!("number {v}"),
         Tok::Name(n) => format!("'{n}'"),
         Tok::Sym(c) => format!("'{c}'"),
+        Tok::Cmp(_) => "a comparison".into(),
         Tok::End => "the end".into(),
     }
 }
 
 /// Parse one expression.
 pub fn parse(src: &str) -> Result<Ast, Error> {
-    parse_with(src, false)
+    parse_with(src, false, false)
 }
 
 /// Parse an expression over signal names, which may be dotted and indexed:
 /// `0.5*(a.v^2 + b.v^2)`, `lorenz.xyz[0] - lorenz.xyz[1]`. Used for derived
 /// signals (ADR 0015).
 pub fn parse_signals(src: &str) -> Result<Ast, Error> {
-    parse_with(src, true)
+    parse_with(src, true, false)
 }
 
-fn parse_with(src: &str, dotted: bool) -> Result<Ast, Error> {
+/// Parse an expression over signal names, as [`parse_signals`], in which
+/// the [`REDUCTIONS`] of a run are calls ([`Ast::Apply`]):
+/// `max(car.v) - min(car.v)`, `first_time(abs(e) < 0.1)`. Used for the
+/// `reduce` formulas of studies (ADR 0070).
+pub fn parse_reductions(src: &str) -> Result<Ast, Error> {
+    parse_with(src, true, true)
+}
+
+fn parse_with(src: &str, dotted: bool, reductions: bool) -> Result<Ast, Error> {
     let mut p = Parser {
         toks: lex(src, dotted)?,
         pos: 0,
+        reductions,
     };
     if p.peek() == &Tok::End {
         return err(1, "empty expression");
     }
-    let ast = p.expr()?;
+    let ast = p.compare()?;
     match p.next() {
         (Tok::End, _) => Ok(ast),
         (Tok::Sym(')'), col) => err(col, "unmatched ')'"),
@@ -670,6 +766,50 @@ mod tests {
 
     fn error(src: &str) -> Error {
         parse(src).unwrap_err()
+    }
+
+    #[test]
+    fn comparisons_give_one_or_zero() {
+        // With x = 2, y = 3 (ADR 0070).
+        assert_eq!(eval("x < y"), 1.0);
+        assert_eq!(eval("x > y"), 0.0);
+        assert_eq!(eval("x <= 2"), 1.0);
+        assert_eq!(eval("y >= 4"), 0.0);
+        // Below sums: both sides are whole sums.
+        assert_eq!(eval("x + 2 > y + 1"), 0.0);
+        assert_eq!(eval("(x < y)*10 + 1"), 11.0);
+        assert_eq!(eval("max(x > 1, 0)"), 1.0);
+        // NaN never holds.
+        assert_eq!(eval("0/0 < 1") + eval("0/0 >= 1"), 0.0);
+        assert!(error("x < y < 4")
+            .message
+            .contains("one comparison at a time"));
+        assert!(error("x <").message.contains("expected"));
+        // In a program, scalars and arrays alike.
+        let ast = parse("(a > 1)*a").unwrap();
+        let e = ast.resolve(&|n| (n == "a").then_some(0)).unwrap();
+        let p = crate::program::Program::new(2, &[(1, &e)]);
+        let mut r = p.registers();
+        r[0] = 3.0;
+        p.run(&mut r);
+        assert_eq!(r[1], 3.0);
+        r[0] = 0.5;
+        p.run(&mut r);
+        assert_eq!(r[1], 0.0);
+        // Units: the same on both sides, none on the result.
+        let of = |n: &str| {
+            if n == "x" {
+                [1, 0, 0, 0, 0, 0, 0]
+            } else {
+                units::NO_DIM
+            }
+        };
+        assert_eq!(
+            units::dimension(&parse("x > x").unwrap(), &of),
+            Ok(units::NO_DIM)
+        );
+        let e = units::dimension(&parse("x > 1").unwrap(), &of).unwrap_err();
+        assert!(e.1.contains("cannot compare"), "{e:?}");
     }
 
     #[test]

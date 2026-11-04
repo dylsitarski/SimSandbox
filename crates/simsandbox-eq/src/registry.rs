@@ -140,10 +140,13 @@ fn describe(r: &mut Registry) -> Result<()> {
              2', 'state x [m]') or at the end of a line for its left side ('E = m*v^2/2 [J]', \
              'dv/dt = F/m [m/s^2]') make every line checked (ADR 0045); names without one are \
              dimensionless. Arrays (ADR 0060): 'grid x [m] = 0 .. length, 50' declares a line of \
-             cells; 'state T[x] [K] = expression' and 'input q[x]' have a value per cell; \
+             cells, 'grid k = 5' five cells numbered 0 to 4 (as a study's runs); \
+             'state T[x] [K] = expression' and 'input q[x]' have a value per cell; \
              'edge T: x- = value, x+ gradient = 0' (or 'x periodic') sets the ends, insulated \
              if not given; 'lap(T)' and 'ddx(T)' are stencils, 'sum', 'mean', 'minof', \
-             'maxof' and 'at(T, i)' give one value, 'spacing(x)' the cell width; \
+             'maxof' and 'at(T, i)' give one value, 'argmaxof' and 'argminof' the cell \
+             of the greatest or least, 'at(T, argmaxof(A))' a cell found so (ADR 0070), \
+             'spacing(x)' the cell width; comparisons ('v > 20') give 1 or 0; \
              'prev(v)' and 'next(v)' are the neighbours along an axis, beyond the ends \
              the edge's value (ADR 0069); 'param m[k] [kg] = 1000' is a value per cell, \
              each its own parameter 'm[0]', 'm[1]', …. Stiff \

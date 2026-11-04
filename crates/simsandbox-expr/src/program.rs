@@ -34,6 +34,8 @@ enum Ins {
     Mul(u32, u32, u32),
     Div(u32, u32, u32),
     Pow(u32, u32, u32),
+    /// A comparison (ADR 0070): 1 or 0.
+    Cmp(Op, u32, u32, u32),
     Sqr(u32, u32),
     Call1(Func, u32, u32),
     Call2(Func, u32, u32, u32),
@@ -64,6 +66,27 @@ enum Reduce {
     Mean,
     Min,
     Max,
+    ArgMin,
+    ArgMax,
+}
+
+/// The first cell holding the least (`greatest` false) or greatest value,
+/// NaN cells skipped; NaN if all are.
+fn arg_extreme(cells: &[f64], greatest: bool) -> f64 {
+    let mut best: Option<(usize, f64)> = None;
+    for (k, &v) in cells.iter().enumerate() {
+        if v.is_nan() {
+            continue;
+        }
+        let better = match best {
+            None => true,
+            Some((_, b)) => (greatest && v > b) || (!greatest && v < b),
+        };
+        if better {
+            best = Some((k, v));
+        }
+    }
+    best.map_or(f64::NAN, |(k, _)| k as f64)
 }
 
 /// An edge with its registers resolved.
@@ -142,6 +165,13 @@ enum ArrIns {
         a: usize,
         n: usize,
     },
+    /// `r[d]` = cell `r[i]` (rounded) of the `n` cells at `a`, NaN outside.
+    Pick {
+        d: usize,
+        a: usize,
+        n: usize,
+        i: usize,
+    },
 }
 
 /// `r[d..d+n] = f(a, b)` cell by cell, a scalar operand read for every
@@ -206,6 +236,7 @@ impl ArrIns {
                 Op::Mul => zip(r, d, a, b, n, |x, y| x * y),
                 Op::Div => zip(r, d, a, b, n, |x, y| x / y),
                 Op::Pow => zip(r, d, a, b, n, f64::powf),
+                op => zip(r, d, a, b, n, |x, y| op.apply(x, y)),
             },
             ArrIns::Call1 { f, d, a, n } => {
                 (0..n).for_each(|k| r[d + k] = f.apply(a.get(r, k), 0.0))
@@ -305,6 +336,16 @@ impl ArrIns {
                     Reduce::Mean => cells.iter().sum::<f64>() / n as f64,
                     Reduce::Min => cells.iter().copied().fold(f64::INFINITY, f64::min),
                     Reduce::Max => cells.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                    Reduce::ArgMin => arg_extreme(cells, false),
+                    Reduce::ArgMax => arg_extreme(cells, true),
+                };
+            }
+            ArrIns::Pick { d, a, n, i } => {
+                let k = r[i].round();
+                r[d] = if k >= 0.0 && k < n as f64 {
+                    r[a + k as usize]
+                } else {
+                    f64::NAN
                 };
             }
         }
@@ -417,6 +458,11 @@ impl ArrIns {
             }
             ArrIns::Reduce { d, a, n, .. } => {
                 let all: Vec<&Vec<usize>> = deps[a..a + n].iter().collect();
+                deps[d] = union(&all);
+            }
+            ArrIns::Pick { d, a, n, i } => {
+                let mut all: Vec<&Vec<usize>> = deps[a..a + n].iter().collect();
+                all.push(&deps[i]);
                 deps[d] = union(&all);
             }
         }
@@ -561,6 +607,7 @@ impl Builder<'_> {
                         Op::Mul => Ins::Mul(dr, a, b),
                         Op::Div => Ins::Div(dr, a, b),
                         Op::Pow => Ins::Pow(dr, a, b),
+                        op => Ins::Cmp(op, dr, a, b),
                     });
                 } else {
                     self.array(ArrIns::Bin { op, d, a, b, n });
@@ -628,12 +675,36 @@ impl Builder<'_> {
                             self.array(ArrIns::Copy { d, a, n });
                         }
                     }
-                    ArrayOp::Sum | ArrayOp::Mean | ArrayOp::MinOf | ArrayOp::MaxOf => {
+                    ArrayOp::Cell => {
+                        // Into a register of its own, then copied where it
+                        // goes.
+                        self.array(ArrIns::Pick {
+                            d,
+                            a: one(0),
+                            n: len,
+                            i: one(1),
+                        });
+                        if !scalar {
+                            let a = Src {
+                                at: d,
+                                array: false,
+                            };
+                            self.array(ArrIns::Copy { d, a, n });
+                        }
+                    }
+                    ArrayOp::Sum
+                    | ArrayOp::Mean
+                    | ArrayOp::MinOf
+                    | ArrayOp::MaxOf
+                    | ArrayOp::ArgMinOf
+                    | ArrayOp::ArgMaxOf => {
                         let op = match op {
                             ArrayOp::Sum => Reduce::Sum,
                             ArrayOp::Mean => Reduce::Mean,
                             ArrayOp::MinOf => Reduce::Min,
-                            _ => Reduce::Max,
+                            ArrayOp::MaxOf => Reduce::Max,
+                            ArrayOp::ArgMinOf => Reduce::ArgMin,
+                            _ => Reduce::ArgMax,
                         };
                         self.array(ArrIns::Reduce {
                             op,
@@ -751,6 +822,7 @@ impl Program {
                 | Ins::Mul(d, a, b)
                 | Ins::Div(d, a, b)
                 | Ins::Pow(d, a, b)
+                | Ins::Cmp(_, d, a, b)
                 | Ins::Call2(_, d, a, b) => {
                     deps[d as usize] = union(&[&deps[a as usize], &deps[b as usize]]);
                 }
@@ -772,6 +844,7 @@ impl Program {
                 Ins::Mul(d, a, b) => r[d as usize] = r[a as usize] * r[b as usize],
                 Ins::Div(d, a, b) => r[d as usize] = r[a as usize] / r[b as usize],
                 Ins::Pow(d, a, b) => r[d as usize] = r[a as usize].powf(r[b as usize]),
+                Ins::Cmp(op, d, a, b) => r[d as usize] = op.apply(r[a as usize], r[b as usize]),
                 Ins::Sqr(d, a) => {
                     let x = r[a as usize];
                     r[d as usize] = x * x;

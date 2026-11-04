@@ -286,11 +286,41 @@ fn split_dims(head: &str, axes: &[&str], line: usize) -> Result<(String, bool)> 
 
 /// A `grid x [m] = a .. b, n` line (ADR 0060), `rest` after `grid`.
 fn read_grid(text: &str, rest: &str, line: usize) -> Result<(Axis, Option<String>)> {
-    let usage = "write a grid axis as 'grid x [m] = 0 .. length, 50': its name, unit, ends and number of cells";
+    let usage = "write a grid axis as 'grid x [m] = 0 .. length, 50' (its name, unit, ends and number of cells), or 'grid k = 3' for cells numbered 0, 1, 2";
     let Some((head, body)) = rest.split_once('=') else {
         return Err(definition_error(line, 1, usage));
     };
     let (name, unit) = name_and_unit(head);
+    // An index axis (ADR 0070): cells numbered 0 .. n-1, with no unit.
+    if !body.contains("..") && !body.contains(',') {
+        let n = body.trim();
+        return match n.parse::<usize>() {
+            Ok(cells)
+                if cells >= 1
+                    && unit.is_none()
+                    && is_name(&name)
+                    && name != "t"
+                    && !is_reserved(&name) =>
+            {
+                Ok((
+                    Axis {
+                        name,
+                        line,
+                        lo: Ast::Num(-0.5),
+                        hi: Ast::Num(cells as f64 - 0.5),
+                        cells,
+                    },
+                    None,
+                ))
+            }
+            Ok(_) if unit.is_some() => Err(definition_error(
+                line,
+                1,
+                "an index axis ('grid k = 3') numbers its cells and has no unit",
+            )),
+            _ => Err(definition_error(line, column_of(text, n), usage)),
+        };
+    }
     if !is_name(&name) || name == "t" || is_reserved(&name) {
         return Err(definition_error(
             line,
@@ -526,7 +556,9 @@ fn check_array_ops(
             let want = if name == "at" { 1 + grid.len() } else { 1 };
             // `prev(v)` along the first axis, or `prev(v, y)` (ADR 0069).
             let shift = name == "prev" || name == "next";
-            if !(args.len() == want || shift && args.len() == 2) {
+            // `at(T, k)` with a computed cell number (ADR 0070).
+            let computed = name == "at" && args.len() == 2 && number(&args[1]).is_none();
+            if !(args.len() == want || shift && args.len() == 2 || computed) {
                 return Err((
                     col,
                     format!("'{name}' takes {want} argument(s), got {}", args.len()),
@@ -576,6 +608,17 @@ fn check_array_ops(
                             col,
                             format!("'at' takes an array and a cell number along each axis, e.g. at(T, {cells})"),
                         ));
+                    }
+                    if computed {
+                        if is_array(&args[1], arrays) {
+                            return Err((
+                                col,
+                                "a computed cell number is one value, e.g. at(T, argmaxof(T))"
+                                    .into(),
+                            ));
+                        }
+                        return check_array_ops(&args[0], grid, arrays)
+                            .and_then(|()| check_array_ops(&args[1], grid, arrays));
                     }
                     for (a, i) in grid.iter().zip(&args[1..]) {
                         match i {
@@ -1226,6 +1269,8 @@ impl EquationSet {
                     }
                     d
                 }
+                // A cell number (ADR 0070).
+                "argminof" | "argmaxof" => NO_DIM,
                 _ => d,
             })
         };
@@ -1508,15 +1553,24 @@ impl EquationSet {
             if let Some(ax) = name.strip_prefix("dd") {
                 return Ok(along(axis_named(ax), false));
             }
-            let first = resolved
-                .into_iter()
-                .next()
-                .expect("checked: one argument at least");
+            let mut resolved = resolved.into_iter();
+            let first = resolved.next().expect("checked: one argument at least");
+            let resolved_rest: Vec<Expr> = resolved.collect();
             Ok(match name {
                 "sum" => Expr::Array(ArrayOp::Sum, vec![first]),
                 "mean" => Expr::Array(ArrayOp::Mean, vec![first]),
                 "minof" => Expr::Array(ArrayOp::MinOf, vec![first]),
                 "maxof" => Expr::Array(ArrayOp::MaxOf, vec![first]),
+                "argminof" => Expr::Array(ArrayOp::ArgMinOf, vec![first]),
+                "argmaxof" => Expr::Array(ArrayOp::ArgMaxOf, vec![first]),
+                _ if number(&args[1]).is_none() => {
+                    // at(T, k), k computed: cell k in storage order.
+                    let k = resolved_rest
+                        .first()
+                        .cloned()
+                        .expect("checked: a cell number");
+                    Expr::Array(ArrayOp::Cell, vec![first, k])
+                }
                 _ => {
                     // at(T, i) or at(T, i, j): cell i + j·nx.
                     let place = args[1..]
@@ -2320,6 +2374,55 @@ mod tests {
         assert_eq!(y[5..7], [1.0, 3.0]);
         let dr = spec.ports.iter().find(|p| p.name == "dr").unwrap();
         assert_eq!(dr.unit.to_string(), "cm");
+    }
+
+    #[test]
+    fn index_axes_argmax_and_computed_cells() {
+        // ADR 0070: cells numbered 0..n-1, the cell of a peak, and the
+        // value of another array there; comparisons give 1 or 0.
+        let s = set(&[
+            "grid k = 4",
+            "input a[k] [m], w[k] [1/s]",
+            "best = argmaxof(a)",
+            "low = argminof(a)",
+            "w_peak = at(w, argmaxof(a)) [1/s]",
+            "outside = at(a, best + 10) [m]",
+            "high = maxof(a) > at(a, 0)",
+        ])
+        .unwrap();
+        let spec = s.spec();
+        let ins: Vec<Shape> = spec.inputs().map(|p| p.shape).collect();
+        assert_eq!(ins, [Shape::Grid { nx: 4, ny: 1 }; 2]);
+        let (_, _, y) = eval(&s, &[], &[1.0, 5.0, 5.0, -2.0, 10.0, 20.0, 30.0, 40.0]);
+        let mut at = 0;
+        let mut out = std::collections::HashMap::new();
+        for p in spec.outputs() {
+            out.insert(p.name.clone(), y[at..at + p.shape.len()].to_vec());
+            at += p.shape.len();
+        }
+        // The first of two equal peaks.
+        assert_eq!(out["best"], [1.0]);
+        assert_eq!(out["low"], [3.0]);
+        assert_eq!(out["w_peak"], [20.0]);
+        assert!(out["outside"][0].is_nan());
+        assert_eq!(out["high"], [1.0]);
+        // The axis numbers its cells; cell numbers have no unit.
+        assert_eq!(out["k"], [0.0, 1.0, 2.0, 3.0]);
+        let unit = |n: &str| {
+            spec.ports
+                .iter()
+                .find(|p| p.name == n)
+                .unwrap()
+                .unit
+                .to_string()
+        };
+        assert_eq!(unit("best"), "1");
+        assert_eq!(unit("w_peak"), "1/s");
+        // Refusals.
+        let err = |lines: &[&str]| set(lines).err().unwrap().to_string();
+        assert!(err(&["grid k [m] = 3", "input a[k]", "b = sum(a)"]).contains("no unit"));
+        assert!(err(&["grid k = 3", "input a[k], i[k]", "b = at(a, i)"]).contains("one value"));
+        assert!(err(&["grid k = 3", "input a[k] [m]", "b = at(a, a)"]).contains("one value"));
     }
 
     #[test]

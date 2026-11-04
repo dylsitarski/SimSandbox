@@ -111,3 +111,11 @@ Later, when a model needs them: ids and structure versions on variable ports; ed
 - **`check`** reports a sweep under `experiment` too, with `each_run`: "in time" or "one evaluation".
 - **Found on the way:** the stateless test behind the default sweep looked blocks up by name and panicked on a use; it now looks at the blocks a use was merged into.
 
+**Step 3 (2026-11-04): study arrays in formulas; reductions in the expression language.**
+- **Comparisons** `<`, `<=`, `>`, `>=` are operators of the expression language everywhere (typed equations, formulas, filters, reductions): 1 or 0, NaN never holding; below sums in precedence, one per pair of parentheses; both sides in one unit, the result dimensionless. Compiled programs run them for scalars and arrays (`Ins::Cmp`).
+- **Index axes:** `grid k = 5` in typed equations declares cells numbered 0 to 4, no unit (spacing 1).
+- **Array functions:** `argmaxof(T)`, `argminof(T)`: the cell (storage order) of the greatest or least value, the first of equals, NaN if all are NaN; dimensionless. `at(T, i)` with a computed `i` reads that cell (rounded; NaN outside), one value and one cell number in storage order on any grid.
+- **Study outputs are lines of cells** (`Grid { nx: runs, ny: 1 }`), so array inputs of the same number of cells read them; a different number is refused at the wire. A grid design over one parameter with one replicate declares that parameter's output the coordinate of every result (ADR 0024), for profile views later.
+- **Reductions are calls in expressions** (`simsandbox_expr::parse_reductions`): a `reduce` result is any expression of reductions, `max(car.v) - final(car.v)`; signals only inside them; reductions do not nest; `min`/`max` with two arguments stay functions. `first_time(e)` is the first time `e` is not 0, so the comparison is the language's own. The reducer's own small parser is gone.
+- **Tests:** comparisons (values, precedence, NaN, chains refused, programs, units); index axes, argmax/argmin, computed cells and refusals; the resonance's peak frequency from a study by `at(w, argmaxof(amp))`, a wrong cell count refused, the coordinate declared; composite reductions against their parts; reductions of a sine.
+

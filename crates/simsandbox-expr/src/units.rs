@@ -93,6 +93,17 @@ pub fn dimension_with(
         Ast::Bin(op, a, b) => {
             use crate::Op;
             match op {
+                Op::Lt | Op::Le | Op::Gt | Op::Ge => {
+                    let (da, db) = (dimension_with(a, of, apply)?, dimension_with(b, of, apply)?);
+                    if da != db {
+                        return Err((
+                            first_column(b),
+                            format!("cannot compare {} and {}", dim_text(da), dim_text(db)),
+                        ));
+                    }
+                    // 1 or 0.
+                    NO_DIM
+                }
                 Op::Add | Op::Sub => {
                     let (da, db) = (dimension_with(a, of, apply)?, dimension_with(b, of, apply)?);
                     if da != db {

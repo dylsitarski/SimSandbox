@@ -224,7 +224,10 @@ impl StudyBlock {
                     "two of its ports would be named '{name}': rename a result or an input block"
                 )));
             }
-            ports.push(PortSpec::output(&name, unit, Shape::Vector(runs)).depends_on(&inputs));
+            // A line of cells, one per run, as array formulas read them
+            // (`grid k = runs`, `input a[k]`).
+            let shape = Shape::Grid { nx: runs, ny: 1 };
+            ports.push(PortSpec::output(&name, unit, shape).depends_on(&inputs));
             from.push(f);
             Ok(())
         };
@@ -265,6 +268,22 @@ impl StudyBlock {
                     UnitOf::Unknown => Unit::DIMENSIONLESS,
                 };
                 out(name.clone(), unit, From::Output(name.clone()))?;
+            }
+        }
+        // One parameter on a grid, run once each: its values are the
+        // coordinate of every result, as an axis is of a field.
+        if plan.keys.len() == 1
+            && plan.replicates == 1
+            && plan.design == simsandbox_file::Design::Grid
+        {
+            let first_result = ports.len() - from.len() + 1;
+            let results: Vec<String> = ports[first_result..]
+                .iter()
+                .map(|p| p.name.clone())
+                .collect();
+            let key = &mut ports[first_result - 1];
+            for r in results {
+                *key = key.clone().coordinate_of(&r, 0);
             }
         }
         // As slow as running many runs, and as accurate as its model.
@@ -489,7 +508,8 @@ mod tests {
 
     fn sample() -> Value {
         json!({"design": "list", "params": [{"param": "cruise.kp"}], "values": [[200.0], [800.0]],
-               "reduce": {"v_max": "max(car.v)", "settle": "first_time(abs(cruise.e) < 0.5)"}})
+               "reduce": {"v_max": "max(car.v)", "settle": "first_time(abs(cruise.e) < 0.5)",
+                          "v_end": "final(car.v)", "over": "max(car.v) - final(car.v)"}})
     }
 
     fn value(r: &Results, name: &str) -> Vec<f64> {
@@ -518,6 +538,13 @@ mod tests {
         assert_eq!(value(&y, "s.cruise_kp"), [200.0, 800.0]);
         assert_eq!(value(&y, "s.v_max"), value(&x, "v_max"));
         assert_eq!(value(&y, "s.settle"), value(&x, "settle"));
+        // A result made of reductions (ADR 0070 step 3).
+        let over: Vec<f64> = value(&y, "s.v_max")
+            .iter()
+            .zip(value(&y, "s.v_end"))
+            .map(|(a, b)| a - b)
+            .collect();
+        assert_eq!(value(&y, "s.over"), over);
         // In time, the same at every step: run once, kept while the inputs
         // stay.
         let timed = run(&file.to_string(), &r, Some(1.0), Some(0.5)).unwrap();
@@ -610,6 +637,52 @@ mod tests {
         assert_eq!(report["ok"], true, "{report}");
         assert_eq!(report["experiment"]["runs"], 2);
         assert_eq!(report["experiment"]["each_run"], "one evaluation");
+    }
+
+    #[test]
+    fn a_formula_reads_a_studys_arrays() {
+        // The frequency where the resonance peaks, from a study of it
+        // (ADR 0070 step 3): an index axis over the runs, argmaxof and at.
+        let r = registry();
+        let text = include_str!("../../../examples/resonance.ssbx.json");
+        let mut model: Value = serde_json::from_str(text).unwrap();
+        let o = model.as_object_mut().unwrap();
+        for k in ["format", "description", "controls", "sample"] {
+            o.remove(k);
+        }
+        let ws = [0.5, 0.8, 0.99, 1.2, 2.0];
+        let file = json!({"format": 1, "models": {"resonance": model},
+            "blocks": [
+                {"name": "s", "type": "study", "settings": {"model": "resonance"},
+                 "sample": {"design": "list", "params": [{"param": "spring.w"}],
+                            "values": ws.iter().map(|w| vec![*w]).collect::<Vec<_>>()}},
+                {"name": "peak", "type": "eq.equations", "equations": [
+                    "grid k = 5", "input amp[k], w[k]",
+                    "w_peak = at(w, argmaxof(amp))", "sharp = maxof(amp) > 10*minof(amp)"]}],
+            "connections": [{"from": "s.spring_amplitude", "to": "peak.amp"},
+                            {"from": "s.spring_w", "to": "peak.w"}]});
+        let check = crate::describe::check(&file.to_string(), &r);
+        assert_eq!(check["ok"], true, "{check}");
+        let y = run(&file.to_string(), &r, Some(1.0), Some(1.0)).unwrap();
+        assert_eq!(value(&y, "peak.w_peak"), [0.99, 0.99]);
+        assert_eq!(value(&y, "peak.sharp"), [1.0, 1.0]);
+        // A wrong number of cells is refused at the wire.
+        let mut wrong = file.clone();
+        wrong["blocks"][1]["equations"][0] = json!("grid k = 4");
+        let e = crate::describe::check(&wrong.to_string(), &r);
+        assert_eq!(e["ok"], false, "{e}");
+        // A grid design of one parameter: its values are the results'
+        // coordinate.
+        let grid = json!({"format": 1, "models": {"resonance": file["models"]["resonance"]},
+            "blocks": [{"name": "s", "type": "study", "settings": {"model": "resonance"},
+                "sample": {"design": "grid", "params": [{"param": "spring.w", "range": [0.5, 1.5], "points": 3}]}}]});
+        let loaded = simsandbox_file::load(&grid.to_string(), &r).unwrap();
+        let spec = loaded.model.block(loaded.ids["s"]).unwrap().spec().clone();
+        let w = spec.ports.iter().find(|p| p.name == "spring_w").unwrap();
+        assert!(
+            w.coordinate.iter().any(|c| c.port == "spring_amplitude"),
+            "{w:?}"
+        );
     }
 
     #[test]
