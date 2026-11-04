@@ -453,6 +453,12 @@ impl Block for FileInput {
         }
         Ok(())
     }
+
+    /// Its samples' times: a model with no states is evaluated there
+    /// (ADR 0067 step 4).
+    fn instants(&self) -> Option<&[f64]> {
+        Some(&self.times)
+    }
 }
 
 #[cfg(test)]

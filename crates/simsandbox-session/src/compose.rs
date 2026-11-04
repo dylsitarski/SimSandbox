@@ -187,6 +187,10 @@ struct Running {
     /// evaluated, and when last.
     on_data: bool,
     evaluations: u64,
+    /// Its listed instants (ADR 0067 step 4) in ticks and seconds: its
+    /// data's samples on new data, else the times it steps to; `taken`
+    /// counts those passed.
+    listed: Vec<(u128, f64)>,
 }
 
 impl Running {
@@ -246,7 +250,19 @@ pub fn run_composition(
         return Err(format!("the end time must be positive, got {t}"));
     }
     let mut c = load_composition(text, registry, None).map_err(|e| e.to_string())?;
-    let t_end = t_end.or(c.file.run.t_end).unwrap_or(DEFAULT_T_END);
+    // With no clock every `dt`, a run only data drives ends at its last
+    // sample (ADR 0067 step 4).
+    let data_end = c
+        .clocks
+        .iter()
+        .all(Option::is_none)
+        .then(|| c.times.iter().flatten().map(|t| t.1).reduce(f64::max))
+        .flatten();
+    let t_end = t_end
+        .or(c.file.run.t_end)
+        .or(data_end)
+        .unwrap_or(DEFAULT_T_END);
+    let end_tick = c.ticks.within(t_end).map_err(|e| e.to_string())?;
     let mut warnings = c.warnings.clone();
     warnings.extend(c.loops.iter().map(|l| format!("loop between models: {l}")));
     let mut runs = start(&mut c, t_end)?;
@@ -266,32 +282,47 @@ pub fn run_composition(
         }
     }
     let clocked: Vec<usize> = (0..runs.len()).filter(|&u| !runs[u].on_data).collect();
-    point(&c, &mut runs, &clocked, true, &mut links)?;
-    loop {
-        let next = runs
-            .iter()
-            .filter(|r| !r.on_data && r.taken < r.total)
-            .map(|r| (r.taken + 1) * r.every)
-            .min();
-        let Some(tick) = next else { break };
+    point(&c, &mut runs, &clocked, true, &mut links, &[])?;
+    // Each model's next instant: its next step, or its next listed time
+    // up to the end.
+    let next_of = |r: &Running| -> Option<(u128, f64)> {
+        if !r.listed.is_empty() {
+            return r
+                .listed
+                .get(r.taken as usize)
+                .copied()
+                .filter(|&(k, _)| k <= end_tick);
+        }
+        (!r.on_data && r.taken < r.total).then(|| ((r.taken + 1) * r.every, f64::NAN))
+    };
+    while let Some(tick) = runs.iter().filter_map(next_of).map(|n| n.0).min() {
         let reaching: Vec<usize> = (0..runs.len())
-            .filter(|&u| {
-                let r = &runs[u];
-                !r.on_data && r.taken < r.total && (r.taken + 1) * r.every == tick
-            })
+            .filter(|&u| !runs[u].on_data && next_of(&runs[u]).map(|n| n.0) == Some(tick))
             .collect();
-        // Between points the models step apart, their link inputs held.
+        // Models on new data whose recorded data has a sample now.
+        let due: Vec<(usize, f64)> = (0..runs.len())
+            .filter(|&u| runs[u].on_data)
+            .filter_map(|u| next_of(&runs[u]).filter(|n| n.0 == tick).map(|n| (u, n.1)))
+            .collect();
+        for &(u, _) in &due {
+            runs[u].taken += 1;
+        }
+        // Between points the models step apart, their link inputs held:
+        // by `dt`, or to their next listed time.
         for &u in &reaching {
             let r = &mut runs[u];
             let now = r.sim.time();
             r.apply(now)?;
-            let dt = r.dt;
+            let dt = match r.listed.get(r.taken as usize) {
+                Some(&(_, t)) => t - now,
+                None => r.dt,
+            };
             r.sim
                 .step(dt)
                 .map_err(|e| format!("{}: {e}", c.domains[u].name()))?;
             r.taken += 1;
         }
-        point(&c, &mut runs, &reaching, false, &mut links)?;
+        point(&c, &mut runs, &reaching, false, &mut links, &due)?;
     }
     if links.delayed {
         warnings.push(
@@ -400,6 +431,7 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
             taken: 0,
             on_data,
             evaluations: 0,
+            listed: c.times[k].clone(),
         });
     }
     Ok(runs)
@@ -418,6 +450,7 @@ fn point(
     reaching: &[usize],
     start: bool,
     links: &mut Links,
+    due: &[(usize, f64)],
 ) -> Result<(), String> {
     let order: Vec<usize> = c
         .order
@@ -438,10 +471,13 @@ fn point(
     };
     for &u in &order {
         if runs[u].on_data {
+            // At the start, at a sample of its own data, or when a link
+            // delivers.
+            let own = due.iter().find(|d| d.0 == u).map(|d| d.1);
             let at = if start {
                 Some(0.0)
             } else {
-                delivery(runs, &fresh, u)
+                own.or_else(|| delivery(runs, &fresh, u))
             };
             let Some(t) = at else { continue };
             take_links(c, runs, u, &links.latest)?;
@@ -2063,6 +2099,134 @@ mod tests {
                 "{name}"
             );
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A model with no states reading speeds recorded at irregular times
+    /// and doubling them.
+    fn data_files(dir: &Path) -> Value {
+        std::fs::write(
+            dir.join("speed.csv"),
+            "t,v [m/s]\n0,1\n0.3,2\n0.35,4\n1.2,8\n",
+        )
+        .unwrap();
+        let data = json!({"format": 1,
+            "blocks": [
+                {"name": "data", "type": "input.file", "settings": {"file": "speed.csv"}},
+                {"name": "f", "type": "eq.equations", "equations": ["input v [m/s]", "y = 2*v [m/s]"]}],
+            "connections": [{"from": "data.v", "to": "f.v"}]});
+        write(dir, "data.ssbx.json", &data);
+        data
+    }
+
+    fn index_t(r: &Results) -> Vec<f64> {
+        r.index.iter().find(|(n, _)| n == "t").unwrap().1.clone()
+    }
+
+    #[test]
+    fn a_model_driven_by_data_steps_at_its_samples_and_ends_with_them() {
+        // ADR 0067 step 4: no dt, no t_end: the data's times.
+        let dir = temp_dir("data-times");
+        let data = data_files(&dir);
+        let r = registry();
+        let run = |t_end: Option<f64>| {
+            simsandbox_core::registry::in_folder(Some(&dir), || {
+                crate::run::run(&data.to_string(), &r, t_end, None)
+            })
+            .unwrap()
+        };
+        let all = run(None);
+        assert_eq!(index_t(&all), [0.0, 0.3, 0.35, 1.2]);
+        assert_eq!(series(&all, "f.y"), [2.0, 4.0, 8.0, 16.0]);
+        // An end given stops before the last sample.
+        assert_eq!(index_t(&run(Some(1.0))), [0.0, 0.3, 0.35]);
+        // Not swept: it runs in time; the app pauses at the last sample.
+        let s = simsandbox_core::registry::in_folder(Some(&dir), || {
+            crate::Session::load("data", &data.to_string(), &r)
+        })
+        .unwrap();
+        assert!(s.sweep().is_none());
+        let loaded = simsandbox_file::load_in(&data.to_string(), &r, Some(&dir)).unwrap();
+        assert_eq!(crate::run::data_end(&loaded.model), Some(1.2));
+        // A step of its own written: every dt, as before.
+        let mut stepped = data.clone();
+        stepped["run"] = json!({"dt": 0.5, "t_end": 1.0});
+        let r2 = simsandbox_core::registry::in_folder(Some(&dir), || {
+            crate::run::run(&stepped.to_string(), &r, None, None)
+        })
+        .unwrap();
+        assert_eq!(index_t(&r2), [0.0, 0.5, 1.0]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_used_model_on_data_is_evaluated_at_its_own_samples() {
+        let dir = temp_dir("data-use");
+        data_files(&dir);
+        let r = registry();
+        // Beside a model stepping every 0.5 s, to 1.5 s.
+        let top = json!({"format": 1, "run": {"dt": 0.5, "t_end": 1.5},
+            "blocks": [use_of("d", "data.ssbx.json"),
+                {"name": "clock", "type": "eq.equations", "method": {"name": "euler"},
+                 "equations": ["state s [s]", "ds/dt = 1"]}]});
+        let apart = run_in(&dir, &top);
+        let d = apart.model("d").unwrap();
+        assert_eq!(index_t(d), [0.0, 0.3, 0.35, 1.2]);
+        assert_eq!(series(d, "d/f.y"), [2.0, 4.0, 8.0, 16.0]);
+        // As one model: every instant of either, the same values.
+        let one = simsandbox_core::registry::in_folder(Some(&dir), || {
+            crate::run::run(&top.to_string(), &r, None, None)
+        })
+        .unwrap();
+        assert_eq!(index_t(&one), [0.0, 0.3, 0.35, 0.5, 1.0, 1.2, 1.5]);
+        assert_eq!(series(&one, "d/f.y"), [2.0, 4.0, 8.0, 8.0, 8.0, 16.0, 16.0]);
+        // Only data drives it: it ends at the last sample.
+        let alone = json!({"format": 1, "blocks": [use_of("d", "data.ssbx.json")]});
+        let apart = run_in(&dir, &alone);
+        assert_eq!(index_t(apart.model("d").unwrap()), [0.0, 0.3, 0.35, 1.2]);
+        let one = simsandbox_core::registry::in_folder(Some(&dir), || {
+            crate::run::run(&alone.to_string(), &r, None, None)
+        })
+        .unwrap();
+        assert_eq!(index_t(&one), [0.0, 0.3, 0.35, 1.2]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_use_steps_at_listed_times() {
+        // clock: {"times"} (ADR 0067 step 4): Euler from one to the next.
+        let dir = temp_dir("listed-times");
+        write(
+            &dir,
+            "decay.ssbx.json",
+            &json!({"format": 1, "run": {"dt": 0.1},
+                "blocks": [{"name": "p", "type": "eq.equations", "method": {"name": "euler"},
+                            "equations": ["state x", "dx/dt = -x"], "params": {"x0": 1}}]}),
+        );
+        let r = registry();
+        let top = json!({"format": 1, "run": {"t_end": 2},
+            "blocks": [{"name": "u", "file": "decay.ssbx.json", "clock": {"times": [0.2, 0.5, 1.0]}}]});
+        let mut x = 1.0f64;
+        let mut expect = vec![x];
+        for dt in [0.2, 0.5 - 0.2, 1.0 - 0.5] {
+            x += dt * -x;
+            expect.push(x);
+        }
+        let apart = run_in(&dir, &top);
+        let u = apart.model("u").unwrap();
+        assert_eq!(index_t(u), [0.0, 0.2, 0.5, 1.0]);
+        assert_eq!(bits(series(u, "u/p.x")), bits(&expect));
+        let one = simsandbox_core::registry::in_folder(Some(&dir), || {
+            crate::run::run(&top.to_string(), &r, None, None)
+        })
+        .unwrap();
+        assert_eq!(index_t(&one), [0.0, 0.2, 0.5, 1.0]);
+        assert_eq!(bits(series(&one, "u/p.x")), bits(&expect));
+        // The node says so; times must ascend.
+        let mut bad = top.clone();
+        bad["blocks"][0]["clock"] = json!({"times": [0.5, 0.2]});
+        let e = check_in(&dir, &bad)["errors"][0].to_string();
+        assert!(e.contains("ascending"), "{e}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -8,9 +8,13 @@ use crate::{Result, SimError};
 
 /// A positive decimal as a fraction `num / den`, in lowest terms.
 fn fraction(dt: f64) -> Result<(u128, u128)> {
-    let bad = || SimError::InvalidSetting {
+    let bad = || {
+        SimError::InvalidSetting {
         setting: "run.dt".into(),
-        reason: format!("{dt} cannot be a clock's step: a positive decimal is needed"),
+        reason: format!(
+            "{dt} cannot be a clock's step or time: a positive decimal of at most 18 digits after the point is needed"
+        ),
+    }
     };
     if !(dt.is_finite() && dt > 0.0) {
         return Err(bad());
@@ -48,15 +52,26 @@ pub struct Ticks {
 impl Ticks {
     /// The common tick of these steps and each step's length in it.
     pub fn new(dts: &[f64]) -> Result<Self> {
-        let fractions = dts
+        Self::with_times(dts, &[])
+    }
+
+    /// The common tick of these steps and of listed instants (ADR 0067
+    /// step 4: data's sample times, a use's `times`), so each instant is
+    /// a whole number of ticks ([`Ticks::at`]).
+    pub fn with_times(dts: &[f64], times: &[f64]) -> Result<Self> {
+        let mut fractions = dts
             .iter()
             .map(|&d| fraction(d))
             .collect::<Result<Vec<_>>>()?;
+        let steps_of = fractions.len();
+        for &t in times {
+            fractions.push(fraction(t)?);
+        }
         // gcd(a/b, c/d) = gcd(a·(L/b), c·(L/d)) / L with L = lcm(b, d).
         let lcm = fractions.iter().fold(1u128, |l, &(_, d)| l / gcd(l, d) * d);
         let scaled: Vec<u128> = fractions.iter().map(|&(n, d)| n * (lcm / d)).collect();
         let g = scaled.iter().fold(0u128, |g, &s| gcd(g, s)).max(1);
-        let steps = scaled.iter().map(|&s| s / g).collect();
+        let steps = scaled[..steps_of].iter().map(|&s| s / g).collect();
         let h = gcd(g, lcm);
         Ok(Self {
             tick: (g / h, lcm / h),
@@ -77,6 +92,35 @@ impl Ticks {
         let ticks =
             n.checked_mul(b).ok_or_else(too_long)? / d.checked_mul(a).ok_or_else(too_long)?;
         Ok(ticks / self.steps[k])
+    }
+
+    /// The instant `t` seconds (read as its decimal) in ticks; an error if
+    /// it is not a whole number of them.
+    pub fn at(&self, t: f64) -> Result<u128> {
+        let (n, d) = fraction(t)?;
+        let (a, b) = self.tick;
+        let off = || SimError::InvalidSetting {
+            setting: "times".into(),
+            reason: format!("{t} s is not a whole number of these clocks' ticks"),
+        };
+        let num = n.checked_mul(b).ok_or_else(off)?;
+        let den = d.checked_mul(a).ok_or_else(off)?;
+        if num % den != 0 {
+            return Err(off());
+        }
+        Ok(num / den)
+    }
+
+    /// The whole ticks in `t` seconds, read as its decimal: the last tick
+    /// at or before `t`.
+    pub fn within(&self, t: f64) -> Result<u128> {
+        let (n, d) = fraction(t)?;
+        let (a, b) = self.tick;
+        let too_long = || SimError::InvalidSetting {
+            setting: "run.t_end".into(),
+            reason: format!("{t} s is too long for these clocks' tick"),
+        };
+        Ok(n.checked_mul(b).ok_or_else(too_long)? / d.checked_mul(a).ok_or_else(too_long)?)
     }
 
     /// The tick in seconds, rounded to the nearest `f64`.
@@ -111,5 +155,18 @@ mod tests {
         assert_eq!(t.steps_within(0, 1.0).unwrap(), 2);
         assert_eq!(t.steps_within(1, 0.6).unwrap(), 3);
         assert!(Ticks::new(&[f64::NAN]).is_err());
+    }
+
+    #[test]
+    fn listed_times_join_the_tick() {
+        // Data at 0.25 and 0.7 s beside a clock of 0.1 s: a tick of 0.05.
+        let t = Ticks::with_times(&[0.1], &[0.25, 0.7]).unwrap();
+        assert_eq!(t.tick, (1, 20));
+        assert_eq!(t.steps, [2]);
+        assert_eq!((t.at(0.25).unwrap(), t.at(0.7).unwrap()), (5, 14));
+        // Only times: their own tick.
+        let t = Ticks::with_times(&[], &[0.3, 1.2]).unwrap();
+        assert_eq!(t.tick, (3, 10));
+        assert!(t.at(0.5).is_err());
     }
 }

@@ -571,9 +571,10 @@ fn use_node(
         .chain(all_outputs.into_iter().map(|p| (false, p)))
         .collect();
     n.outputs = declared;
-    n.method = match b.clock {
+    n.method = match &b.clock {
         Some(UseClock::Step(dt)) => format!("every {dt} s"),
         Some(UseClock::Shared) => "shared clock".into(),
+        Some(UseClock::Times(t)) => format!("at {} listed times", t.len()),
         // ADR 0068: wired and with no step of its own, it shares.
         None if wired && !model.run.dt_written => "shared clock".into(),
         None if has_states => format!("every {} s", model.run.dt),

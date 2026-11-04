@@ -596,6 +596,8 @@ impl Session {
             }
             None => None,
         };
+        // Where a run only data drives ends (ADR 0067 step 4).
+        let data_end = crate::run::data_end(&loaded.model);
         let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
         let mut schedule: Vec<InputEvent> = loaded
             .file
@@ -618,7 +620,7 @@ impl Session {
             title: title.into(),
             description: loaded.file.description.clone(),
             dt: loaded.file.run.dt,
-            stop_at: loaded.file.run.t_end,
+            stop_at: loaded.file.run.t_end.or(data_end),
             conversions: loaded.conversions,
             file: loaded.file,
             flat: loaded.flat,
@@ -2215,7 +2217,11 @@ impl Session {
             None => Vec::new(),
         };
         self.steps_since_snapshot = 0;
-        self.stop_at = self.file.run.t_end;
+        self.stop_at = self
+            .file
+            .run
+            .t_end
+            .or_else(|| crate::run::data_end(self.sim.model()));
         self.history_mut().clear();
         for p in &mut self.probes {
             p.pending.clear();
@@ -2639,7 +2645,12 @@ impl Session {
         // Input from then on is ahead again: running on replays it.
         let eps = self.eps();
         self.track.seek(t0, eps);
-        self.stop_at = self.file.run.t_end.filter(|&end| end > t0);
+        self.stop_at = self
+            .file
+            .run
+            .t_end
+            .or_else(|| crate::run::data_end(self.sim.model()))
+            .filter(|&end| end > t0);
         self.history_mut().truncate_after(t0);
         for p in &mut self.probes {
             p.flush(true);

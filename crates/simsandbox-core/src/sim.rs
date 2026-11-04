@@ -453,6 +453,10 @@ impl Simulator {
         self.changed.clear();
         self.clock_t.fill(t0);
         self.clock_taken.fill(0);
+        // Listed instants already past are not reached again.
+        for (c, clock) in self.model.clocks.iter().enumerate() {
+            self.clock_taken[c] = clock.times.partition_point(|&(_, t)| t <= t0) as u128;
+        }
         self.active.fill(true);
         self.resolve(t0)?;
         self.exchange();
@@ -712,13 +716,29 @@ impl Simulator {
     }
 
     /// The next instant of any clock, as a time: when the next step ends.
-    /// Without clocks, `None` (each step is the `dt` given).
+    /// Without clocks, `None` (each step is the `dt` given); `None` too
+    /// when every clock has passed its last listed instant.
     pub fn next_instant(&self) -> Option<f64> {
-        let clocks = &self.model.clocks;
-        let next = (0..clocks.len())
-            .filter(|&c| !clocks[c].on_data && clocks[c].every > 0)
-            .min_by_key(|&c| (self.clock_taken[c] + 1) * clocks[c].every)?;
-        Some(self.clock_t[next] + clocks[next].dt)
+        self.next_tick().map(|(_, t)| t)
+    }
+
+    /// Clock `c`'s next instant, in ticks and seconds: its next step, or
+    /// its next listed time (ADR 0067 step 4).
+    fn instant_of(&self, c: usize) -> Option<(u128, f64)> {
+        let clock = &self.model.clocks[c];
+        let n = self.clock_taken[c];
+        if !clock.times.is_empty() {
+            return clock.times.get(n as usize).copied();
+        }
+        (!clock.on_data && clock.every > 0)
+            .then(|| ((n + 1) * clock.every, self.clock_t[c] + clock.dt))
+    }
+
+    /// The next instant of any clock, in ticks and seconds.
+    fn next_tick(&self) -> Option<(u128, f64)> {
+        (0..self.model.clocks.len())
+            .filter_map(|c| self.instant_of(c))
+            .min_by_key(|&(tick, _)| tick)
     }
 
     /// One instant with several clocks (ADR 0066 step 4b): the clocks
@@ -731,23 +751,32 @@ impl Simulator {
             self.refresh_changed()?;
         }
         let clocks = self.model.clocks.clone();
-        let Some(tick) = (0..clocks.len())
-            .filter(|&c| !clocks[c].on_data && clocks[c].every > 0)
-            .map(|c| (self.clock_taken[c] + 1) * clocks[c].every)
-            .min()
-        else {
+        let Some((tick, now)) = self.next_tick() else {
             return Ok(());
         };
+        // The clocks with an instant now (`listed` those at a listed time),
+        // and each stepping one's step: its `dt`, or to its listed time.
+        let listed: Vec<bool> = (0..clocks.len())
+            .map(|c| !clocks[c].times.is_empty() && self.instant_of(c).map(|i| i.0) == Some(tick))
+            .collect();
         let reaching: Vec<bool> = (0..clocks.len())
+            .map(|c| clocks[c].on_data || self.instant_of(c).map(|i| i.0) == Some(tick))
+            .collect();
+        let dts: Vec<f64> = (0..clocks.len())
             .map(|c| {
-                clocks[c].on_data
-                    || (clocks[c].every > 0 && (self.clock_taken[c] + 1) * clocks[c].every == tick)
+                if listed[c] {
+                    now - self.clock_t[c]
+                } else {
+                    clocks[c].dt
+                }
             })
             .collect();
         for (b, a) in self.active.iter_mut().enumerate() {
             *a = reaching[self.model.clock_of[b]];
         }
-        let stepping = |c: usize| reaching[c] && !clocks[c].on_data;
+        // On new data, blocks step only to their own listed instants: their
+        // data's samples, which only a step brings (ADR 0067 step 4).
+        let stepping = |c: usize| reaching[c] && (!clocks[c].on_data || listed[c]);
         for (bi, block) in self.model.blocks.iter_mut().enumerate() {
             let c = self.model.clock_of[bi];
             if !stepping(c)
@@ -762,7 +791,7 @@ impl Simulator {
             block.do_step(
                 StepContext {
                     t: self.clock_t[c],
-                    dt: clocks[c].dt,
+                    dt: dts[c],
                     step: self.clock_taken[c] as u64,
                     seed: self.seeds[bi],
                 },
@@ -785,7 +814,7 @@ impl Simulator {
             if !stepping(c) {
                 continue;
             }
-            let (t0, dt) = (self.clock_t[c], clocks[c].dt);
+            let (t0, dt) = (self.clock_t[c], dts[c]);
             let mut x = Vec::with_capacity(plan.len);
             for &(b, _) in &plan.members {
                 x.extend_from_slice(&self.states[b]);
@@ -819,15 +848,18 @@ impl Simulator {
                 )?;
             }
         }
-        let mut now = None;
         for (c, clock) in clocks.iter().enumerate() {
-            if stepping(c) {
+            if listed[c] {
+                // At its listed time exactly; one on data counts its
+                // instants too.
+                self.clock_t[c] = now;
+                self.clock_taken[c] += 1;
+            } else if stepping(c) {
                 self.clock_t[c] += clock.dt;
                 self.clock_taken[c] += 1;
-                now.get_or_insert(self.clock_t[c]);
             }
         }
-        self.t = now.unwrap_or(self.t);
+        self.t = now;
         self.step += 1;
         self.resolve(self.t)?;
         self.exchange();

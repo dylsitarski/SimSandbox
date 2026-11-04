@@ -354,6 +354,13 @@ pub trait Block: Send {
     fn as_realtime(&self) -> Option<&dyn Realtime> {
         None
     }
+
+    /// The times its outputs change at, known before the run, such as the
+    /// sample times of recorded data (ADR 0067 step 4): a model with no
+    /// states is evaluated there. `None` for most blocks.
+    fn instants(&self) -> Option<&[f64]> {
+        None
+    }
 }
 
 /// Capability: the Block can expose its equations, so the equation domain can

@@ -6,11 +6,13 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- A model with no states that reads an `input.file` is no longer swept over its first parameter by default: it runs in time at its data's samples (ADR 0067 step 4).
 - A model used by another runs as written (ADR 0070): its own `sample` is no longer run at each delivery but ignored with a warning; study it with a study block. A file's `sample` is the study of its model: sweeps and experiments run through one runner, `check` reports both under `experiment` with `each_run`, and a model whose only runs are its studies writes a row per run.
 - Subsystems are replaced by models defined in the file (ADR 0068): `subsystems` is refused with how to write it under `models`; "Make subsystem" is "Make model"; a model's inputs are input blocks and its outputs are offered from a block's menu ("Offer X as an output"); `render --diagram --inside PATH` (and Python `render(inside=)`) draws a used model's inside; Python `Model.group` makes a model. The Platoon example defines its follower once. Problems inside a used model are reported where they are written (`models.follower.blocks[0].equations`). "Edit…" on a block inside a used model opens its equations.
 
 ### Added
 
+- Time from data (ADR 0067 step 4): a model with no states that reads recorded data steps at the data's own sample times, even irregular ones, and without `t_end` ends at the last sample; a used model on new data is evaluated at its data's samples too; a use may step at listed times with `"clock": {"times": [0.5, 1.2, 4]}`.
 - Studies in the app (ADR 0070 step 5): "Study this model" on a used model's node adds a study block over it (Python `Model.study`); the Inspector edits a study's model and sample; a model holding a study opens on a profile of its results; study nodes say what they study and how many runs. A study's points file and its model's data files are part of the run hash.
 - Point ids (ADR 0070 step 4): a points file may give each point an `id`; per-point seeds mix in the id rather than the row, so a point's random draws do not depend on where it is in the file (unchanged for designs without ids). The points file is now part of the run hash.
 - Study arrays in formulas (ADR 0070 step 3): study outputs are lines of cells; typed equations number them with `grid k = n` and read them as arrays; `argmaxof`, `argminof` and `at(T, i)` with a computed cell (`at(w, argmaxof(amp))`). Comparisons `<`, `<=`, `>`, `>=` (1 or 0) in every expression. `reduce` results are any expression of reductions (`max(car.v) - final(car.v)`); `first_time(e)` takes any condition.

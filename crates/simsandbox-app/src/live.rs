@@ -412,7 +412,7 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
                     c.running = false;
                     recorded = true;
                     c.info(format!(
-                        "Paused at the file's end time t = {:.3} s; Run continues",
+                        "Paused at the end time t = {:.3} s (the file's, or its data's last sample); Run continues",
                         s.time()
                     ));
                 }

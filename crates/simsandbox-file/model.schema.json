@@ -427,7 +427,7 @@
           "description": "A use of a model file (ADR 0066) in place of a type: found from this file's folder, or a full path. Its params are values for this use only; everything in it is named with this entry's name as a prefix ('plant/car.v'). It runs on its own clock and is linked by probes into input.value blocks."
         },
         "clock": {
-          "description": "A use's clock: {\"dt\": step}, or \"shared\" to run on its user's clock, flattened in, with wires into its input.value blocks ('plant/force') and from its outputs ('plant/car.v'). If absent: shared when a wire reaches it and its model writes no run.dt; else its own at run.dt if it has states, on new data if not (ADR 0066, ADR 0068).",
+          "description": "A use's clock: {\"dt\": step}, {\"times\": [t1, t2, …]} to step from one listed instant to the next (ADR 0067 step 4), or \"shared\" to run on its user's clock, flattened in, with wires into its input.value blocks ('plant/force') and from its outputs ('plant/car.v'). If absent: shared when a wire reaches it and its model writes no run.dt; else its own at run.dt if it has states, on new data if not, its recorded data's sample times included (ADR 0066, ADR 0067, ADR 0068).",
           "oneOf": [
             {
               "const": "shared"
@@ -442,6 +442,23 @@
                 "dt": {
                   "type": "number",
                   "exclusiveMinimum": 0
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "times"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "times": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
                 }
               }
             }

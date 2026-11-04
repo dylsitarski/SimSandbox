@@ -13,7 +13,7 @@ Every simulation, from a pendulum to a CFD solver to a neural network, is wrappe
 | Parameters | Named, unit-aware, with default, suggested range, description and an `initial_condition` flag (applies on restart); become entry fields and optional sliders ([ADR 0011](../decisions/0011-parameter-entry.md)) | Yes (`ParamSpec`) |
 | State | Named variables owned by the kernel as a flat `f64` slice, so snapshots and rewind work uniformly; external Blocks must save and restore their own | Kernel-owned state, yes |
 | Tables | Named populations of rows (columns of `f64`, a stable id per row) that grow and shrink, owned by the kernel beside the fixed state and included in snapshots ([ADR 0034](../decisions/0034-agent-domain.md)). Declared as `BlockSpec::tables` (`TableSpec`), held as `Table` (`crates/simsandbox-core/src/table.rs`), filled by `Block::init_tables` and changed through `StepIo::tables`; ids restart at 0 on restart | Yes |
-| Time semantics | Continuous with events (as in FMI 3.0); fixed-step, discrete-event and stateless as special cases | Declared (`TimeSemantics`); the master only uses fixed communication steps today |
+| Time semantics | Continuous with events (as in FMI 3.0); fixed-step, discrete-event and stateless as special cases | Declared (`TimeSemantics`); the master steps every `dt`, or to instants listed in advance: a block's `instants()` (recorded data's sample times) and a use's `clock: {"times"}` ([ADR 0067](../decisions/0067-experiments-and-time-from-data.md) step 4); events found during a run are not built |
 | Method | The method being run, with speed and accuracy labels | Yes (`MethodSpec`, `MethodLabels`) |
 
 ## Model definition and methods

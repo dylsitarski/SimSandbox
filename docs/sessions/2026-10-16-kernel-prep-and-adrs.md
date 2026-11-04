@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-04: ADR 0067 step 4: `Block::instants`, `Clock::times`, listed instants in `Simulator::advance`, `Ticks::with_times`/`at`/`within`, `data_times`, `UseClock::Times`, domain times in both runners, `run::data_end`; tests and an Xvfb check.
 - 2026-11-04: ADR 0070 step 5: `BlockEntry::config`, `Edit::Study`/`Edit::SetSample`, Inspector `study_fields`, study subtitle, profile view first for studies, `report_data` for study data in the run hash, Python `Model.study`; tests and Xvfb screenshots.
 - 2026-11-04: ADR 0070 step 4: `Plan::ids`/`Plan::id`, `id` column in points files, seeds from ids, `sample.file` digest, study `id` output, study folder fix; tests.
 - 2026-11-04: ADR 0070 step 3: comparisons in `simsandbox-expr` (`Op::Lt`…, `Ins::Cmp`); `grid k = n`, `argmaxof`/`argminof`, `ArrayOp::Cell`; study outputs as grid lines with coordinates; `parse_reductions` and `reduce.rs` rewritten over it; tests.

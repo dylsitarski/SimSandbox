@@ -34,6 +34,10 @@ pub struct Domain {
     pub on_data: bool,
     /// The outputs its file declares (ADR 0066 step 4b).
     pub declared: Vec<crate::OutputPort>,
+    /// Instants of its own (ADR 0067 step 4), ascending: on new data, its
+    /// recorded data's sample times; with a use's `clock: {"times"}`,
+    /// those, which it steps between.
+    pub times: Vec<f64>,
 }
 
 impl Domain {
@@ -101,6 +105,9 @@ pub struct Composition {
     pub clocks: Vec<Option<usize>>,
     /// The order domains evaluate in at a shared instant: a domain that
     /// feeds another first; a loop is broken in written order.
+    /// Each domain's listed instants (ADR 0067 step 4) in ticks and
+    /// seconds.
+    pub times: Vec<Vec<(u128, f64)>>,
     pub order: Vec<usize>,
     /// Each loop between domains, as it is broken.
     pub loops: Vec<String>,
@@ -236,7 +243,7 @@ pub(crate) fn check_uses(
                         format!("'{key}': a path of used models' names, e.g. plant/engine"),
                     ));
                 }
-                if let Some(UseClock::Step(dt)) = b.clock {
+                if let Some(UseClock::Step(dt)) = b.clock.clone() {
                     if !(dt.is_finite() && dt > 0.0) {
                         return Err(invalid(
                             format!("{path}.clock.dt"),
@@ -352,6 +359,9 @@ struct Loader<'a> {
     /// The files being loaded, outermost first, to find a file that uses
     /// itself.
     stack: Vec<PathBuf>,
+    /// The listed times the next level's use gives (`clock: {"times"}`),
+    /// taken by that level.
+    listed: Option<Vec<f64>>,
     /// Put every use in place, its own clock kept apart by the kernel
     /// ([`load_merged`]), instead of loading uses on their own clocks as
     /// models apart.
@@ -400,6 +410,7 @@ pub fn load_composition(
         data: BTreeMap::new(),
         warnings,
         stack: Vec::new(),
+        listed: None,
         merge: false,
         inlined: BTreeMap::new(),
     };
@@ -407,14 +418,32 @@ pub fn load_composition(
     let mut clocks = Vec::new();
     let mut dts = Vec::new();
     for d in &l.domains {
-        clocks.push((!d.on_data).then_some(dts.len()));
-        if !d.on_data {
+        // Every `dt`: not on new data, no listed times.
+        let every = !d.on_data && d.times.is_empty();
+        clocks.push(every.then_some(dts.len()));
+        if every {
             dts.push(d.dt);
         }
     }
     // With nothing in time, the run is one evaluation of every model at
-    // t = 0, in link order (ADR 0067).
-    let ticks = Ticks::new(&dts).map_err(|e| invalid("blocks", e))?;
+    // t = 0, in link order (ADR 0067). Listed times join the tick.
+    let all: Vec<f64> = l
+        .domains
+        .iter()
+        .flat_map(|d| d.times.iter().copied())
+        .collect();
+    let ticks = Ticks::with_times(&dts, &all).map_err(|e| invalid("blocks", e))?;
+    let times = l
+        .domains
+        .iter()
+        .map(|d| {
+            d.times
+                .iter()
+                .map(|&t| ticks.at(t).map(|k| (k, t)))
+                .collect::<simsandbox_core::Result<Vec<_>>>()
+        })
+        .collect::<simsandbox_core::Result<Vec<_>>>()
+        .map_err(|e| invalid("blocks", e))?;
     let (order, loops) = order(&l.domains, &l.links);
     Ok(Composition {
         file,
@@ -423,6 +452,7 @@ pub fn load_composition(
         links: l.links,
         ticks,
         clocks,
+        times,
         order,
         loops,
         data: l.data,
@@ -460,6 +490,7 @@ pub fn load_merged(
         data: BTreeMap::new(),
         warnings: Vec::new(),
         stack: Vec::new(),
+        listed: None,
         merge: true,
         inlined: BTreeMap::new(),
     };
@@ -512,15 +543,16 @@ pub fn load_merged(
             dt: d.dt,
             every: c.clocks[k].map_or(0, |i| c.ticks.steps[i]),
             on_data: d.on_data,
+            times: c.times[k].clone(),
         })
         .collect();
     // With nothing in time (ADR 0067), the app evaluates every model at
     // each step of the file's own: its values do not change.
-    if clocks.iter().all(|k| k.on_data) {
+    if !clocks.iter().any(simsandbox_core::graph::Clock::in_time) {
         clocks.fill(simsandbox_core::graph::Clock {
             dt: merged.run.dt,
             every: 1,
-            on_data: false,
+            ..Default::default()
         });
     }
     let mut clock_of = Vec::new();
@@ -680,7 +712,7 @@ pub fn used_model(
 pub fn runs_shared(u: &BlockEntry, folder: Option<&Path>, wired: bool) -> bool {
     match u.clock {
         Some(UseClock::Shared) => true,
-        Some(UseClock::Step(_)) => false,
+        Some(UseClock::Step(_) | UseClock::Times(_)) => false,
         None if !wired => false,
         None => match (&u.resolved, &u.file) {
             (Some(def), _) => !def.run.dt_written,
@@ -1373,6 +1405,7 @@ impl Loader<'_> {
         dt: f64,
         clocked: bool,
     ) -> Result<Level, FileError> {
+        let listed = self.listed.take();
         let mut file = file.clone();
         let (lifted, _, aliases) = self.inline_shared(&mut file, path, folder)?;
         let file = &file;
@@ -1467,8 +1500,18 @@ impl Loader<'_> {
                 Err(e) => return Err(self.inside_error(written_at(e, &own, &inside), &f)),
             };
             // A model without states runs on new data, unless its use
-            // gives it a clock: then it is evaluated at each step.
-            let on_data = loaded.plan.is_some() && !clocked;
+            // gives it a clock: then it is evaluated at each step. Its
+            // recorded data's samples are new data too (ADR 0067 step 4).
+            let data = crate::data_times(&loaded.model);
+            // Its clock is the composition's to give.
+            let mut loaded = loaded;
+            loaded.model.clear_clocks();
+            let on_data = (loaded.plan.is_some() || data.is_some()) && !clocked;
+            let times: Vec<f64> = match listed {
+                Some(listed) => listed,
+                None if on_data => data.unwrap_or_default().iter().map(|t| t.1).collect(),
+                None => Vec::new(),
+            };
             for w in &loaded.warnings {
                 self.warnings.push(if path.is_empty() {
                     w.clone()
@@ -1487,6 +1530,7 @@ impl Loader<'_> {
                 dt,
                 on_data,
                 declared: file.outputs.clone(),
+                times,
             });
         }
         for u in &uses {
@@ -1583,8 +1627,13 @@ impl Loader<'_> {
     ) -> Result<Level, FileError> {
         let (mut model, found, canonical) = self.read_use(u, path, folder)?;
         set_params(&mut model, &u.params, scope)?;
-        let (dt, clocked) = match u.clock {
-            Some(UseClock::Step(dt)) => (dt, true),
+        let (dt, clocked) = match &u.clock {
+            Some(UseClock::Step(dt)) => (*dt, true),
+            // At listed times (ADR 0067 step 4), taken by its level.
+            Some(UseClock::Times(times)) => {
+                self.listed = Some(times.clone());
+                (model.run.dt, true)
+            }
             _ => (model.run.dt, false),
         };
         self.stack.push(canonical);

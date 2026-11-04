@@ -131,13 +131,16 @@ pub struct ModelFile {
 
 /// The clock of a model file's use (ADR 0066): its own, at the used
 /// file's `run.dt` or a step given here, or its parent's (`"shared"`).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawClock", into = "RawClock")]
 pub enum UseClock {
     /// Its own clock, at this step.
     Step(f64),
     /// Its parent's clock: flattened into the parent's model.
     Shared,
+    /// Its own clock, at these instants after the start, ascending
+    /// (ADR 0067 step 4): it steps from one to the next.
+    Times(Vec<f64>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -145,6 +148,7 @@ pub enum UseClock {
 enum RawClock {
     Word(String),
     Step { dt: f64 },
+    Times { times: Vec<f64> },
 }
 
 impl TryFrom<RawClock> for UseClock {
@@ -152,8 +156,19 @@ impl TryFrom<RawClock> for UseClock {
     fn try_from(r: RawClock) -> Result<Self, String> {
         match r {
             RawClock::Word(w) if w == "shared" => Ok(Self::Shared),
-            RawClock::Word(w) => Err(format!("'{w}': a clock is \"shared\" or {{\"dt\": step}}")),
+            RawClock::Word(w) => Err(format!(
+                "'{w}': a clock is \"shared\", {{\"dt\": step}} or {{\"times\": [t1, t2, …]}}"
+            )),
             RawClock::Step { dt } => Ok(Self::Step(dt)),
+            RawClock::Times { times } => {
+                if times.is_empty()
+                    || times.iter().any(|t| !(t.is_finite() && *t > 0.0))
+                    || times.windows(2).any(|w| w[1] <= w[0])
+                {
+                    return Err("clock times are positive and ascending, e.g. [0.5, 1.2, 4]".into());
+                }
+                Ok(Self::Times(times))
+            }
         }
     }
 }
@@ -163,6 +178,7 @@ impl From<UseClock> for RawClock {
         match c {
             UseClock::Step(dt) => RawClock::Step { dt },
             UseClock::Shared => RawClock::Word("shared".into()),
+            UseClock::Times(times) => RawClock::Times { times },
         }
     }
 }
@@ -1730,7 +1746,12 @@ pub fn load_any(
 /// A use (ADR 0066) is stateless when every block it was merged into
 /// (`use/…`) is.
 fn stateless(blocks: &[BlockEntry], model: &Model, ids: &BTreeMap<String, BlockId>) -> bool {
-    let no_states = |id: &BlockId| model.block(*id).is_ok_and(|x| x.spec().states.is_empty());
+    // Recorded data runs in time at its own samples (ADR 0067 step 4).
+    let no_states = |id: &BlockId| {
+        model
+            .block(*id)
+            .is_ok_and(|x| x.spec().states.is_empty() && x.instants().is_none())
+    };
     blocks.iter().all(|b| {
         if b.type_name == STUDY {
             false
@@ -1792,6 +1813,38 @@ pub fn report_data(block: &str, data: &BTreeMap<String, String>) {
             }
         }
     });
+}
+
+/// The sample times (after the start, in exact ticks and seconds) of the
+/// recorded data in `model`, if it reads some and nothing in it has
+/// states (ADR 0067 step 4).
+pub fn data_times(model: &Model) -> Option<Vec<(u128, f64)>> {
+    let mut times: Vec<f64> = Vec::new();
+    for id in model.block_ids() {
+        let b = model.block(id).ok()?;
+        if !(b.spec().states.is_empty() && b.spec().tables.is_empty()) {
+            return None;
+        }
+        times.extend(b.instants().unwrap_or(&[]).iter().filter(|t| **t > 0.0));
+    }
+    listed(times).ok().flatten()
+}
+
+/// Instants in exact ticks of their own and seconds, ascending, once
+/// each; `None` if there are none.
+pub fn listed(mut times: Vec<f64>) -> Result<Option<Vec<(u128, f64)>>, String> {
+    times.sort_by(f64::total_cmp);
+    times.dedup();
+    if times.is_empty() {
+        return Ok(None);
+    }
+    let ticks =
+        simsandbox_core::clock::Ticks::with_times(&[], &times).map_err(|e| e.to_string())?;
+    times
+        .iter()
+        .map(|&t| ticks.at(t).map(|k| (k, t)).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 /// Parse a model file and build its model. Blocks that read files accept
@@ -1920,6 +1973,19 @@ pub fn load_in(
     // Older sweep controls become a `sample` section as the file is read.
     file.sample = flat.sample.clone();
     file.controls = flat.controls.clone();
+    // A model with no states reading recorded data steps at the data's
+    // sample times (ADR 0067 step 4), unless it writes a step of its own.
+    if let Some(times) = data_times(&model).filter(|_| !file.run.writes_dt()) {
+        let n = model.block_ids().count();
+        let clock = simsandbox_core::graph::Clock {
+            dt: file.run.dt,
+            times,
+            ..Default::default()
+        };
+        model
+            .set_clocks(vec![clock], vec![0; n])
+            .map_err(|e| invalid("run", e))?;
+    }
     Ok(Loaded {
         conversions,
         file,

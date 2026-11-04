@@ -50,12 +50,24 @@ pub struct Model {
 
 /// A clock some blocks of a model step on (ADR 0066 step 4b): every `dt`,
 /// counted as `every` ticks of the model's common tick, or, on new data,
-/// evaluated at every instant of the others and never stepped.
-#[derive(Clone, Debug, PartialEq)]
+/// evaluated at every instant of the others and never stepped. Listed
+/// `times` (ADR 0067 step 4) are instants of its own: a clock with
+/// `every` 0 steps from one to the next; one on new data is evaluated at
+/// them too (its data's sample times).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Clock {
     pub dt: f64,
     pub every: u128,
     pub on_data: bool,
+    /// Ascending instants after the start, in ticks and in seconds.
+    pub times: Vec<(u128, f64)>,
+}
+
+impl Clock {
+    /// Whether it gives instants of its own: every `dt`, or listed.
+    pub fn in_time(&self) -> bool {
+        (!self.on_data && self.every > 0) || !self.times.is_empty()
+    }
 }
 
 /// A Block's state and table rows to start from, replacing what `init`
@@ -113,15 +125,36 @@ impl Model {
                 reason: "every block needs one of the clocks".into(),
             });
         }
-        if !clocks.iter().any(|c| !c.on_data && c.every > 0) {
+        if !clocks.iter().any(Clock::in_time) {
             return Err(SimError::InvalidSetting {
                 setting: "clocks".into(),
                 reason: "at least one clock runs in time".into(),
             });
         }
+        if clocks.iter().any(|c| c.every > 0 && !c.times.is_empty()) {
+            return Err(SimError::InvalidSetting {
+                setting: "clocks".into(),
+                reason: "a clock steps every dt or at listed times, not both".into(),
+            });
+        }
         self.clocks = clocks;
         self.clock_of = clock_of;
         Ok(())
+    }
+
+    /// Back to one clock, the step given to `Simulator::step`.
+    pub fn clear_clocks(&mut self) {
+        self.clocks.clear();
+        self.clock_of.fill(0);
+    }
+
+    /// The last listed instant of any clock, in seconds: where a run that
+    /// only data drives ends (ADR 0067 step 4).
+    pub fn last_listed(&self) -> Option<f64> {
+        self.clocks
+            .iter()
+            .filter_map(|c| c.times.last().map(|t| t.1))
+            .reduce(f64::max)
     }
 
     /// The clocks set by [`Model::set_clocks`], and each Block's.

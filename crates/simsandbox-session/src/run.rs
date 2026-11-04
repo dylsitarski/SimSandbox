@@ -209,7 +209,7 @@ pub fn run_with(
         return study_rows(loaded);
     }
     let dt = dt.unwrap_or(loaded.file.run.dt);
-    let t_end = t_end.or(loaded.file.run.t_end).unwrap_or(DEFAULT_T_END);
+    let t_end = end_time(&loaded.model, t_end.or(loaded.file.run.t_end));
     let schedule: Vec<InputEvent> = loaded
         .file
         .run
@@ -297,6 +297,19 @@ pub fn run_with(
     })?;
     r.index = vec![("t".to_string(), t)];
     Ok(r)
+}
+
+/// Where a run that only recorded data drives ends (ADR 0067 step 4): at
+/// its last listed instant, when no clock steps every `dt`.
+pub fn data_end(model: &simsandbox_core::graph::Model) -> Option<f64> {
+    let clocks = model.clocks().0;
+    let data_only = !clocks.is_empty() && clocks.iter().all(|c| c.on_data || c.every == 0);
+    data_only.then(|| model.last_listed()).flatten()
+}
+
+/// A run's end: as given, else where its data ends, else the default.
+pub(crate) fn end_time(model: &simsandbox_core::graph::Model, given: Option<f64>) -> f64 {
+    given.or_else(|| data_end(model)).unwrap_or(DEFAULT_T_END)
 }
 
 /// Whether a model has studies and nothing else that runs in time (no
@@ -685,7 +698,7 @@ fn run_rows(
     let loaded = simsandbox_file::load_any(text, registry, None).map_err(|e| e.to_string())?;
     let fixed = loaded_outputs(&loaded)?;
     let dt = dt.unwrap_or(loaded.file.run.dt);
-    let t_end = t_end.or(loaded.file.run.t_end).unwrap_or(DEFAULT_T_END);
+    let t_end = end_time(&loaded.model, t_end.or(loaded.file.run.t_end));
     let clocked = !loaded.model.clocks().0.is_empty();
     let schedule: Vec<InputEvent> = loaded
         .file
