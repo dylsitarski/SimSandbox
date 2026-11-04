@@ -119,3 +119,10 @@ Later, when a model needs them: ids and structure versions on variable ports; ed
 - **Reductions are calls in expressions** (`simsandbox_expr::parse_reductions`): a `reduce` result is any expression of reductions, `max(car.v) - final(car.v)`; signals only inside them; reductions do not nest; `min`/`max` with two arguments stay functions. `first_time(e)` is the first time `e` is not 0, so the comparison is the language's own. The reducer's own small parser is gone.
 - **Tests:** comparisons (values, precedence, NaN, chains refused, programs, units); index axes, argmax/argmin, computed cells and refusals; the resonance's peak frequency from a study by `at(w, argmaxof(amp))`, a wrong cell count refused, the coordinate declared; composite reductions against their parts; reductions of a sine.
 
+**Step 4 (2026-11-04): point ids and seeds by id.**
+- **Ids:** `Plan::ids` holds the ids a points file gives in a column named `id` (whole numbers from 0 below 2^53, each once); otherwise a point's id is its place (`Plan::id`). Rows show given ids in an `id` index column, and a study gives them as its `id` output. Fixed designs (grid, list, random, Latin hypercube, Sobol) number their points by place, so nothing about them changes.
+- **Seeds:** `"per point"` mixes in id × replicates + replicate instead of the row. With ids from places this is the row, so every result from before is unchanged; with ids from a file, a point draws the same however the file is ordered or cut. Common seeds and replicates are as before. Adaptive designs will give each new point the next id.
+- **The points file is part of the run hash** (`Loaded::data["sample.file"]`), closing a gap noted in ADR 0067 step 2.
+- **Found on the way:** a study of a definition loaded without a folder ran its model with no folder at all, so relative files (a points file) were not found; it now keeps the thread's folder.
+- **Tests:** three equal grazing points with ids give the same counts in either order of the file and differ from each other; ids refused when repeated, fractional or negative; the hash changes with the points file; a study's `id` output; the earlier seed tests unchanged.
+

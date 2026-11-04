@@ -309,22 +309,29 @@ fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
 }
 
-/// The columns and rows of a CSV of points (ADR 0067), from the model's
-/// folder (or the thread's).
-fn read_points(file: &ModelFile, name: &str) -> Result<(Vec<String>, Vec<Vec<f64>>), FileError> {
+/// Where a CSV of points named `name` is: from the model's folder (or the
+/// thread's).
+fn points_path(file: &ModelFile, name: &str) -> std::path::PathBuf {
     let at = std::path::PathBuf::from(name);
-    let at = match file
+    match file
         .folder
         .clone()
         .or_else(simsandbox_core::registry::current_folder)
     {
         Some(f) if at.is_relative() => f.join(at),
         _ => at,
-    };
+    }
+}
+
+/// The parameter columns and rows of a CSV of points (ADR 0067), and the
+/// points' ids if a column is named `id` (ADR 0070 step 4): whole numbers
+/// from 0, each once.
+fn read_points(file: &ModelFile, name: &str) -> Result<Points, FileError> {
+    let at = points_path(file, name);
     let text = std::fs::read_to_string(&at)
         .map_err(|e| invalid("sample.file", format!("{}: {e}", at.display())))?;
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
-    let columns: Vec<String> = lines
+    let mut columns: Vec<String> = lines
         .next()
         .ok_or_else(|| invalid("sample.file", format!("{} is empty", at.display())))?
         .split(',')
@@ -348,8 +355,39 @@ fn read_points(file: &ModelFile, name: &str) -> Result<(Vec<String>, Vec<Vec<f64
             }
         }
     }
-    Ok((columns, rows))
+    let ids = match columns.iter().position(|c| c == "id") {
+        None => None,
+        Some(c) => {
+            columns.remove(c);
+            let mut ids = Vec::with_capacity(rows.len());
+            for (k, row) in rows.iter_mut().enumerate() {
+                let v = row.remove(c);
+                if !(v >= 0.0 && v.fract() == 0.0 && v < 2f64.powi(53)) {
+                    return Err(invalid(
+                        "sample.file",
+                        format!(
+                            "{} row {}: an id is a whole number from 0, not {v}",
+                            at.display(),
+                            k + 1
+                        ),
+                    ));
+                }
+                if ids.contains(&(v as u64)) {
+                    return Err(invalid(
+                        "sample.file",
+                        format!("{} row {}: the id {v} is given twice", at.display(), k + 1),
+                    ));
+                }
+                ids.push(v as u64);
+            }
+            Some(ids)
+        }
+    };
+    Ok((columns, rows, ids))
 }
+
+/// A CSV's parameter columns, rows of points and ids if given.
+type Points = (Vec<String>, Vec<Vec<f64>>, Option<Vec<u64>>);
 
 /// Points in a design that takes a count, unless the file says otherwise.
 pub const DEFAULT_SAMPLE_COUNT: usize = 1000;
@@ -374,6 +412,16 @@ pub struct Plan {
     pub seeds: Seeds,
     /// Named reductions of each run (ADR 0067 step 3).
     pub reduce: BTreeMap<String, String>,
+    /// Each point's id when a points file gives them (ADR 0070 step 4);
+    /// otherwise a point's id is its place.
+    pub ids: Option<Vec<u64>>,
+}
+
+impl Plan {
+    /// Point `p`'s id: given, or its place.
+    pub fn id(&self, p: usize) -> u64 {
+        self.ids.as_ref().map_or(p as u64, |ids| ids[p])
+    }
 }
 
 impl Sampling {
@@ -398,7 +446,7 @@ impl Sampling {
             _ => None,
         };
         let params: Vec<SweepControl> = match &from_file {
-            Some((columns, _)) => columns
+            Some((columns, _, _)) => columns
                 .iter()
                 .map(|c| SweepControl {
                     param: c.clone(),
@@ -518,7 +566,7 @@ impl Sampling {
                 None,
             ),
             Design::File => {
-                let (_, rows) = from_file.expect("read above");
+                let (_, rows, _) = from_file.clone().expect("read above");
                 if rows.is_empty() || rows.len() > MAX_SAMPLES {
                     return Err(invalid(
                         "sample.file",
@@ -562,6 +610,7 @@ impl Sampling {
             keep: self.keep,
             seeds: self.seeds,
             reduce: self.reduce.clone(),
+            ids: from_file.and_then(|(_, _, ids)| ids),
         })
     }
 }
@@ -1739,7 +1788,27 @@ pub fn load_in(
             ));
         }
     }
-    let data = data_digests(&flat, registry, folder);
+    let mut data = data_digests(&flat, registry, folder);
+    // A points file is data too (ADR 0070 step 4).
+    if let Some(Sampling {
+        design: Design::File,
+        file: Some(name),
+        ..
+    }) = &file.sample
+    {
+        let mut f = file.clone();
+        f.folder = f.folder.or_else(|| folder.map(Into::into));
+        let digest = std::fs::read(points_path(&f, name)).map_or_else(
+            |_| "missing".to_string(),
+            |bytes| {
+                use sha2::{Digest, Sha256};
+                let d = Sha256::digest(&bytes);
+                let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
+                format!("sha256:{hex}")
+            },
+        );
+        data.insert("sample.file".into(), digest);
+    }
     // Formulas give each block parameter in its unit (ADR 0045).
     params.fit_blocks(&mut model, &ids)?;
     for (block, param, value) in params.evaluate() {

@@ -137,9 +137,13 @@ impl StudyBlock {
                     reason: "a study names a model or a file, not both".into(),
                 })
             }
+            // A definition reads files from its file's folder, or the
+            // thread's when it was given none.
             (Some(text), None) => (
                 text.clone(),
-                c.folder.clone(),
+                c.folder
+                    .clone()
+                    .or_else(simsandbox_core::registry::current_folder),
                 format!(
                     "model '{}'",
                     c.settings.get("model").map_or("", String::as_str)
@@ -231,6 +235,10 @@ impl StudyBlock {
             from.push(f);
             Ok(())
         };
+        // Ids given by a points file, as the rows give them.
+        if plan.ids.is_some() {
+            out("id".into(), Unit::DIMENSIONLESS, From::Index("id".into()))?;
+        }
         for key in &plan.keys {
             out(
                 port_name(key),
@@ -683,6 +691,26 @@ mod tests {
             w.coordinate.iter().any(|c| c.port == "spring_amplitude"),
             "{w:?}"
         );
+    }
+
+    #[test]
+    fn a_study_gives_the_ids_its_points_file_gives() {
+        let r = registry();
+        let dir = std::env::temp_dir().join(format!("simsandbox-study-ids-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("starts.csv"), "x.x0,id\n1,30\n2,10\n").unwrap();
+        let file = json!({"format": 1, "models": {"decay": decay()},
+            "blocks": [{"name": "rate", "type": "input.value", "params": {"y": 1.0}},
+                {"name": "s", "type": "study", "settings": {"model": "decay"},
+                "sample": {"design": "file", "file": "starts.csv", "reduce": {"half": "first_time(x.x < 0.5)"}}}],
+            "connections": [{"from": "rate.y", "to": "s.k"}]});
+        let y = simsandbox_core::registry::in_folder(Some(&dir), || {
+            run(&file.to_string(), &r, None, None)
+        })
+        .unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(value(&y, "s.id"), [30.0, 10.0]);
+        assert_eq!(value(&y, "s.x_x0"), [1.0, 2.0]);
     }
 
     #[test]

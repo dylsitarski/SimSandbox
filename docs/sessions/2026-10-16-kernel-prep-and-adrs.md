@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-04: ADR 0070 step 4: `Plan::ids`/`Plan::id`, `id` column in points files, seeds from ids, `sample.file` digest, study `id` output, study folder fix; tests.
 - 2026-11-04: ADR 0070 step 3: comparisons in `simsandbox-expr` (`Op::Lt`…, `Ins::Cmp`); `grid k = n`, `argmaxof`/`argminof`, `ArrayOp::Cell`; study outputs as grid lines with coordinates; `parse_reductions` and `reduce.rs` rewritten over it; tests.
 - 2026-11-03: ADR 0070 step 2: used models' samples dropped with a warning (swept-use runner removed); sweeps through `run_study`; `study_rows`; `experiment_report` with `each_run`; the stateless test fixed for uses; tests.
 - 2026-11-03: ADR 0070 written (studies as blocks, member families, concept list, README/vision/STATUS phase lines); step 1: `study.rs`, `BlockEntry::sample`/`study_definition`, `run_study` shared with experiments, schema; tests.

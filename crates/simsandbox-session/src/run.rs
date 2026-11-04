@@ -508,6 +508,11 @@ pub(crate) fn run_study(
     if plan.replicates > 1 {
         index.push(("replicate".to_string(), Vec::new()));
     }
+    // Ids given by a points file (ADR 0070 step 4).
+    let ids = plan.ids.is_some();
+    if ids {
+        index.push(("id".to_string(), Vec::new()));
+    }
     index.extend(plan.keys.iter().map(|k| (k.clone(), Vec::new())));
     // The rows hold the reductions if there are any, else final values.
     let mut outputs: Vec<Output> = if reduced.is_empty() {
@@ -533,12 +538,16 @@ pub(crate) fn run_study(
     for (row, r) in all.into_iter().enumerate() {
         let (p, j) = (row / plan.replicates, row % plan.replicates);
         index[0].1.push(p as f64);
-        let at = if plan.replicates > 1 {
+        let mut at = if plan.replicates > 1 {
             index[1].1.push(j as f64);
             2
         } else {
             1
         };
+        if ids {
+            index[at].1.push(plan.id(p) as f64);
+            at += 1;
+        }
         for (column, &v) in index[at..].iter_mut().zip(&plan.points[p]) {
             column.1.push(v);
         }
@@ -708,9 +717,16 @@ fn run_rows(
         for (key, &v) in plan.keys.iter().zip(&plan.points[p]) {
             set_key(&mut sim, &mut params, &ids, key, v).map_err(|e| format!("{key}: {e}"))?;
         }
-        // Common random numbers, or a seed mixed from the row (ADR 0067).
+        // Common random numbers, or a seed mixed from the point's id and
+        // the replicate (ADR 0067, ADR 0070 step 4): the run's place in
+        // the plan never enters, so a point keeps its results wherever
+        // it is. With ids from places this is the row, as before.
         let salt = match plan.seeds {
-            simsandbox_file::Seeds::PerPoint => Some(row as u64),
+            simsandbox_file::Seeds::PerPoint => Some(
+                plan.id(p)
+                    .wrapping_mul(plan.replicates as u64)
+                    .wrapping_add(j as u64),
+            ),
             simsandbox_file::Seeds::Common if plan.replicates > 1 => Some(j as u64),
             simsandbox_file::Seeds::Common => None,
         };

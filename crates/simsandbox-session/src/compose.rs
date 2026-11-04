@@ -1437,6 +1437,76 @@ mod tests {
     }
 
     #[test]
+    fn a_points_ids_decide_its_seed_not_its_place() {
+        // ADR 0070 step 4: with ids from the points file, a point keeps its
+        // random draws however the file is ordered; without, its place
+        // decides them, as before.
+        use crate::run::run_experiment;
+        let r = registry();
+        let mut grazing: Value = serde_json::from_str(
+            EXAMPLES
+                .iter()
+                .find(|e| e.name.contains("grazing"))
+                .unwrap()
+                .text,
+        )
+        .unwrap();
+        grazing["sample"] = json!({"design": "file", "file": "points.csv", "seeds": "per point"});
+        let dir = temp_dir("point-ids");
+        let rows = |csv: &str| {
+            std::fs::write(dir.join("points.csv"), csv).unwrap();
+            simsandbox_core::registry::in_folder(Some(&dir), || {
+                run_experiment(&grazing.to_string(), &r, Some(20.0), None, None)
+            })
+            .unwrap()
+        };
+        let by = |x: &crate::run::Results, column: &str| -> Vec<(u64, u64)> {
+            let ids = &x.index.iter().find(|(n, _)| n == column).unwrap().1;
+            let mut pairs: Vec<(u64, u64)> = ids
+                .iter()
+                .zip(series(x, "sheep.count"))
+                .map(|(i, c)| (*i as u64, c.to_bits()))
+                .collect();
+            pairs.sort_unstable();
+            pairs
+        };
+        let ahead = rows("id,size\n7,40\n3,40\n12,40\n");
+        let behind = rows("size,id\n40,12\n40,7\n40,3\n");
+        assert_eq!(ahead.index[1].0, "id");
+        assert_eq!(by(&ahead, "id"), by(&behind, "id"));
+        // Three equal points drawing apart: the seeds are per point.
+        let counts = by(&ahead, "id");
+        assert!(
+            counts[0].1 != counts[1].1 || counts[1].1 != counts[2].1,
+            "{counts:?}"
+        );
+        // Without ids, a point's place is its id: equal to before.
+        let places = rows("size\n40\n40\n40\n");
+        assert!(places.index.iter().all(|(n, _)| n != "id"));
+        // Ids are whole, from 0, each once.
+        for (csv, says) in [
+            ("id,size\n1,40\n1,40\n", "given twice"),
+            ("id,size\n1.5,40\n", "whole number"),
+            ("id,size\n-1,40\n", "whole number"),
+        ] {
+            std::fs::write(dir.join("points.csv"), csv).unwrap();
+            let e = simsandbox_core::registry::in_folder(Some(&dir), || {
+                run_experiment(&grazing.to_string(), &r, Some(1.0), None, None)
+            })
+            .unwrap_err();
+            assert!(e.contains(says), "{csv}: {e}");
+        }
+        // The points file is part of the model hash.
+        let hash = |csv: &str| {
+            std::fs::write(dir.join("points.csv"), csv).unwrap();
+            let l = simsandbox_file::load_any(&grazing.to_string(), &r, Some(&dir)).unwrap();
+            simsandbox_file::runs::loaded_hash(&l).unwrap()
+        };
+        assert_ne!(hash("size\n40\n"), hash("size\n41\n"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn an_experiment_reduces_each_run_to_named_values() {
         use crate::run::{experiment_report, run_experiment};
         let ex = |name: &str| -> Value {
