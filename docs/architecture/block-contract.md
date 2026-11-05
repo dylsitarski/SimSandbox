@@ -25,7 +25,7 @@ A Block separates **what** is simulated from **how** it is computed. The model d
 | Trait | Required | What the Block provides | What the kernel does with it | Implemented |
 | --- | --- | --- | --- | --- |
 | `Block` | Yes | Spec, method, `init`, `do_step`, `compute_outputs`; `init_tables` for Blocks with tables (default: nothing); `initial_params` for Blocks whose initial-condition parameters can reproduce a given state (default: none; equation Blocks map a state `s` to a parameter `s0`, [ADR 0042](../decisions/0042-node-canvas.md)) | Steps it as a co-simulated black box; each step's `StepContext` carries the step number and the Block's random stream (`random::stream(model seed, Block name)`, draws with `random::Draws`, ADR 0034) | Yes |
-| `Equations` | No | `rhs` (dx/dt) and `outputs`, both given the inputs; outputs may depend on inputs only as their ports declare (`PortSpec::feedthrough`, ADR 0040) | Fuses it with other equation Blocks into one system, ordering feedthrough and solving loops at every evaluation | Yes |
+| `Equations` | No | `rhs` (dx/dt, writing every element of `dx`: integrators reuse their arrays) and `outputs`, both given the inputs; outputs may depend on inputs only as their ports declare (`PortSpec::feedthrough`, ADR 0040) | Fuses it with other equation Blocks into one system, ordering feedthrough and solving loops at every evaluation | Yes |
 | `Rollback` | No | Cheap undo of a rejected step | Iterative coupling and step rejection | Trait only |
 | `Derivatives` | No | Jacobian of the right-hand side | Implicit coupling, sensitivities, parameter fitting | Trait only |
 | `Realtime` | No | Guaranteed worst-case step time | Admits it into real-time models | Trait only |

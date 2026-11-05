@@ -155,44 +155,71 @@ impl GroupPlan {
     /// order, so a group can be advanced with its own members only.
     fn rhs(
         &self,
-        blocks: &[&dyn Block],
-        params: &[&[f64]],
-        held: &[&[f64]],
+        members: &Members<'_>,
         t: f64,
         x: &[f64],
         dx: &mut [f64],
+        scratch: &mut GroupScratch,
     ) -> Result<()> {
+        let Members {
+            blocks,
+            params,
+            held,
+        } = members;
+        let m = self.members.len();
+        let GroupScratch { us, ys, ps } = scratch;
+        for v in [&mut *us, &mut *ys, &mut *ps] {
+            if v.len() < m {
+                v.resize_with(m, Vec::new);
+            }
+        }
+        for k in 0..m {
+            us[k].clear();
+            us[k].extend_from_slice(held[k]);
+            ys[k].clear();
+            ys[k].resize(blocks[k].spec().output_len(), 0.0);
+        }
         let state = |k: usize| {
             let off = self.members[k].1;
             &x[off..off + blocks[k].spec().states.len()]
         };
-        let mut us: Vec<Vec<f64>> = held.iter().map(|h| h.to_vec()).collect();
-        // A member's inputs, and its parameters with the driven ones as its
-        // inputs give them (ADR 0075).
-        let split = |k: usize, u: &[f64]| -> (std::ops::Range<usize>, Vec<f64>) {
-            let (n, driven) = &self.driven[k];
-            let mut p = params[k].to_vec();
-            for (j, &i) in driven.iter().enumerate() {
-                p[i] = u[n + j];
+        // A member's parameters with the driven ones as its inputs give
+        // them (ADR 0075), in `buf`; its own when none is driven.
+        let driven = &self.driven;
+        let with = |k: usize, u: &[f64], buf: &mut Vec<f64>| -> bool {
+            let (n, d) = &driven[k];
+            if d.is_empty() {
+                return false;
             }
-            (0..*n, p)
+            buf.clear();
+            buf.extend_from_slice(params[k]);
+            for (j, &i) in d.iter().enumerate() {
+                buf[i] = u[n + j];
+            }
+            true
         };
-        let mut ys: Vec<Vec<f64>> = (0..self.members.len())
-            .map(|k| {
-                let mut y = vec![0.0; blocks[k].spec().output_len()];
-                if let Some(eq) = blocks[k].as_equations() {
-                    let (r, p) = split(k, &us[k]);
-                    eq.outputs(t, state(k), &us[k][r], &p, &mut y);
-                }
-                y
-            })
-            .collect();
+        for k in 0..m {
+            if let Some(eq) = blocks[k].as_equations() {
+                let n = driven[k].0;
+                let p: &[f64] = if with(k, &us[k], &mut ps[k]) {
+                    &ps[k]
+                } else {
+                    params[k]
+                };
+                eq.outputs(t, state(k), &us[k][..n], p, &mut ys[k]);
+            }
+        }
         if !self.outputs.is_empty() {
             self.outputs
-                .solve(self.method, &mut ys, &mut us, &mut |k, u, y| {
+                .solve(self.method, &mut ys[..m], &mut us[..m], &mut |k, u, y| {
                     if let Some(eq) = blocks[k].as_equations() {
-                        let (r, p) = split(k, u);
-                        eq.outputs(t, state(k), &u[r], &p, y);
+                        let n = driven[k].0;
+                        let p: &[f64] = if with(k, u, &mut ps[k]) {
+                            &ps[k]
+                        } else {
+                            params[k]
+                        };
+                        eq.outputs(t, state(k), &u[..n], p, y);
                     }
                     Ok(())
                 })?;
@@ -205,12 +232,44 @@ impl GroupPlan {
         for (k, &(_, off)) in self.members.iter().enumerate() {
             let n = blocks[k].spec().states.len();
             if let Some(eq) = blocks[k].as_equations() {
-                let (r, p) = split(k, &us[k]);
-                eq.rhs(t, state(k), &us[k][r], &p, &mut dx[off..off + n]);
+                let ni = driven[k].0;
+                let p: &[f64] = if with(k, &us[k], &mut ps[k]) {
+                    &ps[k]
+                } else {
+                    params[k]
+                };
+                eq.rhs(t, state(k), &us[k][..ni], p, &mut dx[off..off + n]);
             }
         }
         Ok(())
     }
+}
+
+/// A fused group's members, in member order: their blocks, parameters
+/// and held inputs.
+struct Members<'a> {
+    blocks: Vec<&'a dyn Block>,
+    params: Vec<&'a [f64]>,
+    held: Vec<&'a [f64]>,
+}
+
+/// What a unit advances of one fused group: its plan and solver, its
+/// members' slots and its working arrays.
+type GroupWork<'a> = (
+    &'a GroupPlan,
+    &'a mut Box<dyn crate::fusion::GroupSolver>,
+    Vec<Slot<'a>>,
+    &'a mut GroupScratch,
+);
+
+/// A fused group's working arrays for its right-hand side, kept between
+/// evaluations: each member's inputs, outputs and (when some are driven)
+/// parameters.
+#[derive(Default)]
+struct GroupScratch {
+    us: Vec<Vec<f64>>,
+    ys: Vec<Vec<f64>>,
+    ps: Vec<Vec<f64>>,
 }
 
 /// One Block's part of the run, lent to a unit of work (ADR 0066 step 6).
@@ -235,11 +294,7 @@ struct Unit<'a> {
     dt: f64,
     step: u64,
     blocks: Vec<(Slot<'a>, u64)>,
-    groups: Vec<(
-        &'a GroupPlan,
-        &'a mut Box<dyn crate::fusion::GroupSolver>,
-        Vec<Slot<'a>>,
-    )>,
+    groups: Vec<GroupWork<'a>>,
 }
 
 impl Unit<'_> {
@@ -266,18 +321,22 @@ impl Unit<'_> {
                 },
             )?;
         }
-        for (plan, solver, mut members) in self.groups {
+        for (plan, solver, mut members, scratch) in self.groups {
             let mut x = Vec::with_capacity(plan.len);
             for m in &members {
                 x.extend_from_slice(m.state);
             }
             {
-                let blocks: Vec<&dyn Block> = members.iter().map(|m| m.block.as_ref()).collect();
-                let params: Vec<&[f64]> = members.iter().map(|m| m.params).collect();
-                let held: Vec<&[f64]> = members.iter().map(|m| m.inputs).collect();
+                let group = Members {
+                    blocks: members.iter().map(|m| m.block.as_ref()).collect(),
+                    params: members.iter().map(|m| m.params).collect(),
+                    held: members.iter().map(|m| m.inputs).collect(),
+                };
                 let failed = RefCell::new(None);
+                let scratch = RefCell::new(scratch);
                 let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
-                    if let Err(e) = plan.rhs(&blocks, &params, &held, t, x, dx) {
+                    let s = &mut **scratch.borrow_mut();
+                    if let Err(e) = plan.rhs(&group, t, x, dx, s) {
                         dx.fill(f64::NAN);
                         failed.borrow_mut().get_or_insert(e);
                     }
@@ -356,6 +415,8 @@ pub struct Simulator {
     /// what each took (ADR 0066 step 6).
     parallel: crate::parallel::Parallel,
     costs: crate::parallel::Costs,
+    /// Each fused group's working arrays, kept between evaluations.
+    scratch: Vec<GroupScratch>,
 }
 
 impl Snapshot {
@@ -534,6 +595,7 @@ impl Simulator {
             .collect();
         let clocks = model.clocks.len();
         let blocks = model.blocks.len();
+        let groups = model.groups.len();
         let mut sim = Self {
             clock_t: vec![t0; clocks],
             clock_taken: vec![0; clocks],
@@ -561,6 +623,7 @@ impl Simulator {
             starting,
             parallel: crate::parallel::Parallel::default(),
             costs: crate::parallel::Costs::new(clocks),
+            scratch: (0..groups).map(|_| GroupScratch::default()).collect(),
         };
         sim.restart(t0)?;
         Ok(sim)
@@ -764,9 +827,13 @@ impl Simulator {
             if several && !self.active[r.to_block] {
                 continue;
             }
-            for k in 0..r.len {
-                self.inputs[r.to_block][r.to_offset + k] =
-                    r.factor * self.outputs[r.from_block][r.from_offset + k];
+            let from = &self.outputs[r.from_block][r.from_offset..r.from_offset + r.len];
+            let to = &mut self.inputs[r.to_block][r.to_offset..r.to_offset + r.len];
+            // Times one is the same number, bit for bit: copied as a block.
+            if r.factor == 1.0 {
+                to.copy_from_slice(from);
+            } else {
+                to.iter_mut().zip(from).for_each(|(t, f)| *t = r.factor * f);
             }
         }
         for r in &self.population_routes {
@@ -827,20 +894,29 @@ impl Simulator {
                 },
             )?;
         }
-        for (plan, group) in self.plans.iter().zip(&mut self.model.groups) {
+        for ((plan, group), scratch) in self
+            .plans
+            .iter()
+            .zip(&mut self.model.groups)
+            .zip(&mut self.scratch)
+        {
             let mut x = Vec::with_capacity(plan.len);
             for &(b, _) in &plan.members {
                 x.extend_from_slice(&self.states[b]);
             }
             let ids = || plan.members.iter().map(|&(b, _)| b);
-            let blocks: Vec<&dyn Block> = ids().map(|b| self.model.blocks[b].as_ref()).collect();
-            let params: Vec<&[f64]> = ids().map(|b| self.model.params[b].as_slice()).collect();
-            let held: Vec<&[f64]> = ids().map(|b| self.inputs[b].as_slice()).collect();
+            let inside = Members {
+                blocks: ids().map(|b| self.model.blocks[b].as_ref()).collect(),
+                params: ids().map(|b| self.model.params[b].as_slice()).collect(),
+                held: ids().map(|b| self.inputs[b].as_slice()).collect(),
+            };
             // The solver's right-hand side cannot fail; a loop that does
             // not converge is reported after the step.
             let failed = RefCell::new(None);
+            let scratch = RefCell::new(scratch);
             let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
-                if let Err(e) = plan.rhs(&blocks, &params, &held, t, x, dx) {
+                let s = &mut **scratch.borrow_mut();
+                if let Err(e) = plan.rhs(&inside, t, x, dx, s) {
                     dx.fill(f64::NAN);
                     failed.borrow_mut().get_or_insert(e);
                 }
@@ -1052,7 +1128,12 @@ impl Simulator {
             let slot = slots[b].take().expect("each block once");
             units[u].blocks.push((slot, self.seeds[b]));
         }
-        for (plan, group) in self.plans.iter().zip(self.model.groups.iter_mut()) {
+        for ((plan, group), scratch) in self
+            .plans
+            .iter()
+            .zip(self.model.groups.iter_mut())
+            .zip(self.scratch.iter_mut())
+        {
             let Some(&(first, _)) = plan.members.first() else {
                 continue;
             };
@@ -1064,7 +1145,9 @@ impl Simulator {
                 .iter()
                 .map(|&(b, _)| slots[b].take().expect("each member once"))
                 .collect();
-            units[u].groups.push((plan, &mut group.solver, members));
+            units[u]
+                .groups
+                .push((plan, &mut group.solver, members, scratch));
         }
         let clocks_now: Vec<usize> = units.iter().map(|u| u.clock).collect();
         let parallel = self.costs.worth(self.parallel, &clocks_now);

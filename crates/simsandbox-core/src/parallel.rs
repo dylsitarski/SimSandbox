@@ -68,9 +68,11 @@ impl Costs {
     }
 }
 
-/// The cores available.
+/// The cores available, asked once: asking reads the system's settings
+/// (on Linux, control-group files), too slow for every instant.
 pub fn threads() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| n.get())
+    static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *THREADS.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
 }
 
 /// Run `f` on each item, on several threads when `parallel`, one after

@@ -6,6 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Faster runs, with the same results bit for bit: fused groups about 2.7× (no allocation at each evaluation), small models about 1.8× and large grids about 1.25× (integrators keep their working arrays), models on their own clocks with links about 9× (the core count was asked of the system at every instant). A block's `Equations::rhs` must write every element of `dx`.
+
 - Models on their own clocks step on several cores between instants, in the app and headless, with the same results bit for bit; small models stay on one core. Two Gray–Scott models side by side run in about two thirds of the time they took. Headless, models that no link joins run apart from start to end, each group on a thread of its own: two unlinked models take about the time of one.
 
 - A block picked inside a model expanded in place shows its values in the Inspector, as when the model is opened; before, nothing showed.

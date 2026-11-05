@@ -562,7 +562,9 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
                     outputs.push(Output {
                         name,
                         shape: port.shape,
-                        values: Vec::new(),
+                        // Its rows, when it steps every `dt`: room from the
+                        // start, not grown as they come.
+                        values: Vec::with_capacity((total as usize + 1) * port.shape.len()),
                     });
                 }
             }

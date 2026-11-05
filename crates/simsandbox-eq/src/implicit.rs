@@ -42,6 +42,27 @@ const TOLERANCE: f64 = 1e-10;
 #[derive(Default)]
 pub struct Workspace {
     structure: Option<Structure>,
+    /// Explicit methods' working arrays, kept between steps instead of
+    /// allocated at each.
+    buffers: Vec<Vec<f64>>,
+}
+
+impl Workspace {
+    /// `count` working arrays of `n` values each. They hold what the last
+    /// step left: every value is written before it is read, since a
+    /// right-hand side writes all of `dx` (`Equations::rhs`).
+    pub(crate) fn buffers(&mut self, count: usize, n: usize) -> &mut [Vec<f64>] {
+        if self.buffers.len() < count {
+            self.buffers.resize_with(count, Vec::new);
+        }
+        for b in &mut self.buffers[..count] {
+            if b.len() != n {
+                b.clear();
+                b.resize(n, 0.0);
+            }
+        }
+        &mut self.buffers[..count]
+    }
 }
 
 struct Structure {

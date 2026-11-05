@@ -33,6 +33,7 @@ _Last updated: 2026-11-05_
 
 ## Done recently
 
+- 2026-11-05: profiling pass ([performance](design/performance.md)): fused groups and integrators no longer allocate at every evaluation or step, the core count is asked once, values pass between blocks as blocks, headless results reserve their rows. Linked models 9× faster, fused groups 2.7×, many blocks 1.5×, small ODEs 1.8×, a large grid 1.25×; results bit for bit. `profile_run` and `scripts/profile_cases.py` to repeat it.
 - 2026-11-05: headless, models no link joins run apart for the whole run, each group on a thread of its own: two unlinked Gray–Scott models take about the time of one (0.37–0.47 s against 0.36–0.38 s). The app's engine still meets at every instant (ADR 0066 As built).
 - 2026-11-05: ADR 0066 step 6: models on their own clocks step on several cores between instants, in the app's engine and headless, with the same bits; two Gray–Scott models take 0.57–0.63 s headless instead of 0.88–0.92 s, one alone about 0.4 s (why the gap remains, and what would close it: ADR 0066 As built).
 - 2026-11-05 (owner's review): a block picked inside a model expanded in place shows its values in the Inspector's Selection, as when the model is opened.

@@ -210,6 +210,13 @@ pub fn run_with(
     // (ADR 0066 step 5), not by `dt`.
     let clocked = !loaded.model.clocks().0.is_empty();
     let mut sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
+    // The rows recorded, when known: room for them from the start, not
+    // grown (and copied) as they come.
+    let rows = if clocked {
+        0
+    } else {
+        (t_end / dt).round() as usize + 1
+    };
     let mut r = Results {
         index: Vec::new(),
         outputs: fixed
@@ -217,7 +224,7 @@ pub fn run_with(
             .map(|(_, _, name, shape)| Output {
                 name: name.clone(),
                 shape: *shape,
-                values: Vec::new(),
+                values: Vec::with_capacity(rows * shape.len()),
             })
             .collect(),
         populations: variable

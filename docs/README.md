@@ -64,6 +64,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [architecture/solver-backends.md](architecture/solver-backends.md) | Architecture | Planned domains and the engines each wraps |
 | [architecture/visualization.md](architecture/visualization.md) | Architecture | Signals, pluggable views, slots, style layers, file representation, migration steps |
 | [design/interaction.md](design/interaction.md) | Design | Interaction, parameters, visualization, ways to build |
+| [design/performance.md](design/performance.md) | Design | Where run time goes, how to measure it, what was done and what is left |
 
 ### Decisions
 

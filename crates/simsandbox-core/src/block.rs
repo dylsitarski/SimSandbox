@@ -393,7 +393,8 @@ pub trait Block: Send {
 /// (`PortSpec::feedthrough`, ADR 0040); the kernel orders such outputs and
 /// solves loops between them.
 pub trait Equations {
-    /// dx/dt = f(t, x, u, p)
+    /// dx/dt = f(t, x, u, p), every element of `dx` written: integrators
+    /// reuse their arrays between steps.
     fn rhs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], dx: &mut [f64]);
     /// y = g(t, x, u, p)
     fn outputs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], y: &mut [f64]);

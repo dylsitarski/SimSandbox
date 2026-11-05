@@ -185,36 +185,44 @@ impl Integrator {
             }
             Integrator::Euler { substeps } => {
                 let h = dt / substeps.max(1) as f64;
-                let mut dx = vec![0.0; x.len()];
+                let dx = &mut ws.buffers(1, x.len())[0];
                 for i in 0..substeps.max(1) {
-                    f(t + i as f64 * h, x, &mut dx);
-                    x.iter_mut().zip(&dx).for_each(|(xi, di)| *xi += h * di);
+                    f(t + i as f64 * h, x, dx);
+                    x.iter_mut()
+                        .zip(dx.iter())
+                        .for_each(|(xi, di)| *xi += h * di);
                 }
                 Ok(())
             }
             Integrator::Rk4 { substeps } => {
                 let h = dt / substeps.max(1) as f64;
+                let n = x.len();
                 for i in 0..substeps.max(1) {
-                    rk4_step(f, t + i as f64 * h, h, x);
+                    rk4_step(f, t + i as f64 * h, h, x, ws.buffers(5, n));
                 }
                 Ok(())
             }
-            Integrator::Dopri5 { rtol, atol } => dopri5(f, t, dt, x, rtol, atol),
+            Integrator::Dopri5 { rtol, atol } => {
+                let n = x.len();
+                dopri5(f, t, dt, x, rtol, atol, ws.buffers(9, n))
+            }
         }
     }
 }
 
-fn rk4_step(f: &Rhs<'_>, t: f64, h: f64, x: &mut [f64]) {
+/// One RK4 step; `w` holds five working arrays of `x`'s length.
+fn rk4_step(f: &Rhs<'_>, t: f64, h: f64, x: &mut [f64], w: &mut [Vec<f64>]) {
     let n = x.len();
-    let (mut k1, mut k2, mut k3, mut k4) = (vec![0.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n]);
-    let mut tmp = vec![0.0; n];
-    f(t, x, &mut k1);
-    axpy(&mut tmp, x, &[(0.5 * h, &k1)]);
-    f(t + 0.5 * h, &tmp, &mut k2);
-    axpy(&mut tmp, x, &[(0.5 * h, &k2)]);
-    f(t + 0.5 * h, &tmp, &mut k3);
-    axpy(&mut tmp, x, &[(h, &k3)]);
-    f(t + h, &tmp, &mut k4);
+    let [k1, k2, k3, k4, tmp] = w else {
+        unreachable!("five working arrays")
+    };
+    f(t, x, k1);
+    axpy(tmp, x, &[(0.5 * h, k1)]);
+    f(t + 0.5 * h, tmp, k2);
+    axpy(tmp, x, &[(0.5 * h, k2)]);
+    f(t + 0.5 * h, tmp, k3);
+    axpy(tmp, x, &[(h, k3)]);
+    f(t + h, tmp, k4);
     for i in 0..n {
         x[i] += h / 6.0 * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]);
     }
@@ -267,14 +275,25 @@ const E: [f64; 7] = [
     -1.0 / 40.0,
 ];
 
-fn dopri5(f: &Rhs<'_>, t0: f64, dt: f64, x: &mut [f64], rtol: f64, atol: f64) -> Result<()> {
+/// Dormand–Prince 5(4) with step control; `w` holds nine working arrays
+/// of `x`'s length.
+fn dopri5(
+    f: &Rhs<'_>,
+    t0: f64,
+    dt: f64,
+    x: &mut [f64],
+    rtol: f64,
+    atol: f64,
+    w: &mut [Vec<f64>],
+) -> Result<()> {
     let n = x.len();
     let t_end = t0 + dt;
     let mut t = t0;
     let mut h = dt;
-    let mut k: Vec<Vec<f64>> = vec![vec![0.0; n]; 7];
-    let mut stage = vec![0.0; n];
-    let mut x_new = vec![0.0; n];
+    let (k, rest) = w.split_at_mut(7);
+    let [stage, x_new] = rest else {
+        unreachable!("nine working arrays")
+    };
     let mut rejected = 0usize;
 
     while t < t_end - 1e-14 * dt.abs().max(1.0) {
@@ -290,10 +309,10 @@ fn dopri5(f: &Rhs<'_>, t0: f64, dt: f64, x: &mut [f64], rtol: f64, atol: f64) ->
                         .sum::<f64>();
             }
             let (_, rest) = k.split_at_mut(s);
-            f(t + C[s] * h, &stage, &mut rest[0]);
+            f(t + C[s] * h, stage, &mut rest[0]);
         }
         // The 7th stage is evaluated at the 5th-order solution (FSAL).
-        x_new.copy_from_slice(&stage);
+        x_new.copy_from_slice(stage);
 
         let mut err = 0.0f64;
         for i in 0..n {
@@ -305,7 +324,7 @@ fn dopri5(f: &Rhs<'_>, t0: f64, dt: f64, x: &mut [f64], rtol: f64, atol: f64) ->
 
         if err <= 1.0 {
             t += h;
-            x.copy_from_slice(&x_new);
+            x.copy_from_slice(x_new);
         } else {
             rejected += 1;
             if rejected > 10_000 || h < 1e-14 * dt.abs().max(1.0) {
