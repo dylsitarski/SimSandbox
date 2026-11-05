@@ -6,7 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
-- Models on their own clocks step on several cores between instants, in the app and headless, with the same results bit for bit; small models stay on one core. Two Gray–Scott models side by side run in about 60% of the time they took.
+- Models on their own clocks step on several cores between instants, in the app and headless, with the same results bit for bit; small models stay on one core. Two Gray–Scott models side by side run in about two thirds of the time they took.
 
 - A block picked inside a model expanded in place shows its values in the Inspector, as when the model is opened; before, nothing showed.
 

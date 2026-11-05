@@ -33,7 +33,7 @@ _Last updated: 2026-11-05_
 
 ## Done recently
 
-- 2026-11-05: ADR 0066 step 6: models on their own clocks step on several cores between instants, in the app's engine and headless, with the same bits; two Gray–Scott models took 0.92 s headless and now 0.57 s (one alone: 0.44 s).
+- 2026-11-05: ADR 0066 step 6: models on their own clocks step on several cores between instants, in the app's engine and headless, with the same bits; two Gray–Scott models take 0.57–0.63 s headless instead of 0.88–0.92 s, one alone about 0.4 s (why the gap remains, and what would close it: ADR 0066 As built).
 - 2026-11-05 (owner's review): a block picked inside a model expanded in place shows its values in the Inspector's Selection, as when the model is opened.
 - 2026-11-05: ADR 0075 step 3, the app: a wire dropped on a node's value drives it (its own value kept, also from outside a model expanded in place); driven values come first, stay shown on closed nodes and say `from push.F`; the Inspector and Controls show the source instead of a field or slider; the forced spring example (one model, `F` set in one use and driven in the other), checked against its steady swing.
 - 2026-11-05: ADR 0075 step 2: model files drive parameters by wires (`"to": "decay.k"`, a used model's `car1/mass`, a study's `curve.m`); shared names refused; `check` lists what is driven; Python and schema.
