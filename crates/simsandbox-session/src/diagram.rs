@@ -1077,14 +1077,15 @@ fn apply_level(
     }
 }
 
-/// What a new study of `model` varies (ADR 0070): its first declared
-/// parameter, else the first parameter of its first block that has one
-/// (input blocks aside), with a range around its value.
-fn study_parameter(
+/// What a study of `model` can vary (ADR 0070): its declared parameters,
+/// then each block parameter (`car.m`), with a range around its value (the
+/// declared or suggested range where there is one) and whether it is an
+/// initial condition. Input blocks are the study's inputs, not listed.
+pub fn study_parameters(
     model: &ModelFile,
     registry: &Registry,
     folder: Option<&std::path::Path>,
-) -> Option<(String, [f64; 2])> {
+) -> Vec<(String, [f64; 2], bool)> {
     let around = |v: f64| {
         if v == 0.0 {
             [0.0, 1.0]
@@ -1093,9 +1094,11 @@ fn study_parameter(
             [a.min(b), a.max(b)]
         }
     };
-    if let Some((k, d)) = model.params.iter().next() {
-        return Some((k.clone(), d.range.unwrap_or_else(|| around(d.value))));
-    }
+    let mut out: Vec<(String, [f64; 2], bool)> = model
+        .params
+        .iter()
+        .map(|(k, d)| (k.clone(), d.range.unwrap_or_else(|| around(d.value)), false))
+        .collect();
     for b in &model.blocks {
         if b.is_use() || b.type_name == simsandbox_eq::input::VALUE {
             continue;
@@ -1103,21 +1106,36 @@ fn study_parameter(
         let Ok(block) = registry.build(&b.type_name, &b.name, &b.config(folder)) else {
             continue;
         };
-        let Some(p) = block.spec().params.iter().find(|p| !p.initial_condition) else {
-            continue;
-        };
-        let value = match b.params.get(&p.name) {
-            Some(ParamValue::Number(v)) => *v,
-            _ => p.default,
-        };
-        let range = if p.suggested_min < p.suggested_max && !b.params.contains_key(&p.name) {
-            [p.suggested_min, p.suggested_max]
-        } else {
-            around(value)
-        };
-        return Some((format!("{}.{}", b.name, p.name), range));
+        for p in &block.spec().params {
+            let value = match b.params.get(&p.name) {
+                Some(ParamValue::Number(v)) => *v,
+                _ => p.default,
+            };
+            let range = if p.suggested_min < p.suggested_max && !b.params.contains_key(&p.name) {
+                [p.suggested_min, p.suggested_max]
+            } else {
+                around(value)
+            };
+            out.push((format!("{}.{}", b.name, p.name), range, p.initial_condition));
+        }
     }
-    None
+    out
+}
+
+/// The parameter "Study this model" varies first: the first declared
+/// parameter, else the first block parameter that is not an initial
+/// condition.
+fn study_parameter(
+    model: &ModelFile,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+) -> Option<(String, [f64; 2])> {
+    let all = study_parameters(model, registry, folder);
+    let declared = model.params.len();
+    all.iter()
+        .enumerate()
+        .find(|(k, (_, _, ic))| *k < declared || !ic)
+        .map(|(_, (key, range, _))| (key.clone(), *range))
 }
 
 /// Edit one level's blocks and wires.

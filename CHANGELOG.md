@@ -21,6 +21,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- A study selected on the diagram has a form in the Inspector: its design, a row per parameter it varies (chosen from its model's parameters, with range and points), count and seed, replicates and seeds, its named results, and the number of runs; the sample as JSON stays one click away.
+
 - View "Values" (`show.values`): the newest value of each chosen signal as a number with its unit, and lines of cells (a study's results) as a table. The tuning example shows its best gain, reach and peak with it.
 
 - A model whose studies take a while no longer freezes the window: opening it, and checking a diagram edit, build it without running its studies; the worker runs them first, showing their progress ("studies about to run", then "study: k of n runs"), and anything the window waits for (Save, closing) gives them up and runs them again after (ADR 0071).

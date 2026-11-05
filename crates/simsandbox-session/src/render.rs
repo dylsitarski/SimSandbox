@@ -164,7 +164,7 @@ fn check(o: &RenderOptions) -> Result<(), String> {
 
 /// Run egui headless for a few frames with `draw` filling a central
 /// panel, and rasterise the last frame.
-fn paint(o: &RenderOptions, mut draw: impl FnMut(&mut egui::Ui)) -> Image {
+pub fn paint(o: &RenderOptions, mut draw: impl FnMut(&mut egui::Ui)) -> Image {
     let ctx = egui::Context::default();
     let theme = if o.light {
         egui::Theme::Light

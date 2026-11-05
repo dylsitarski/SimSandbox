@@ -107,6 +107,9 @@ pub struct SimApp {
     last_canvas: Option<simsandbox_session::canvas::Selection>,
     /// List values formulas set too.
     show_computed: bool,
+    /// What the study picked last can vary: its name, its model's text and
+    /// the parameters (ADR 0070), kept while they stay the same.
+    study_keys: Option<(String, String, Vec<StudyKey>)>,
     diagram: DiagramTab,
     started: Instant,
     /// The open model as saved or opened, to tell unsaved changes.
@@ -171,6 +174,7 @@ impl SimApp {
             picked: Vec::new(),
             last_canvas: None,
             show_computed: false,
+            study_keys: None,
             diagram: DiagramTab::default(),
             started: Instant::now(),
             baseline: None,
@@ -2248,6 +2252,33 @@ impl SimApp {
         }
     }
 
+    /// What the study `name` of `file` can vary (its model's parameters),
+    /// worked out again only when the study or its model changed.
+    fn study_keys(&mut self, file: &simsandbox_file::ModelFile, name: &str) -> Vec<StudyKey> {
+        if !file
+            .blocks
+            .iter()
+            .any(|b| b.name == name && b.type_name == simsandbox_file::STUDY)
+        {
+            return Vec::new();
+        }
+        let folder = self.path.as_deref().and_then(Path::parent);
+        let Ok(model) = simsandbox_session::edit_use::model_at(file, folder, &[name.to_string()])
+        else {
+            return Vec::new();
+        };
+        let text = model.to_json();
+        if let Some((n, t, keys)) = &self.study_keys {
+            if n == name && *t == text {
+                return keys.clone();
+            }
+        }
+        let at = model.folder.as_deref().or(folder);
+        let keys = simsandbox_session::diagram::study_parameters(&model, &self.registry, at);
+        self.study_keys = Some((name.to_string(), text, keys.clone()));
+        keys
+    }
+
     /// The inspector (ADR 0053): search, what is selected, and every
     /// parameter where it is set.
     fn param_panel(&mut self, ui: &mut egui::Ui) {
@@ -2328,6 +2359,11 @@ impl SimApp {
                     .collect();
             }
             let picked = self.picked.clone();
+            // A study picked: what its model can vary, for its form.
+            let keys = match picked.as_slice() {
+                [(None, name)] => self.study_keys(&m.file, name),
+                _ => Vec::new(),
+            };
             if !picked.is_empty() {
                 let title = match picked.as_slice() {
                     [(Some(s), name)] => format!("Selected: {name} in {s}"),
@@ -2366,7 +2402,7 @@ impl SimApp {
                                 for e in file_fields(ui, b, &mut self.param_edits, folder) {
                                     canvas_edits.push((at.clone(), e));
                                 }
-                                for e in study_fields(ui, b, &mut self.param_edits) {
+                                for e in study_fields(ui, b, &mut self.param_edits, &keys) {
                                     canvas_edits.push((at.clone(), e));
                                 }
                                 shown |= b.type_name == simsandbox_eq::convert::CONVERT
@@ -2391,7 +2427,7 @@ impl SimApp {
                                 for e in file_fields(ui, b, &mut self.param_edits, folder) {
                                     canvas_edits.push((at.clone(), e));
                                 }
-                                for e in study_fields(ui, b, &mut self.param_edits) {
+                                for e in study_fields(ui, b, &mut self.param_edits, &keys) {
                                     canvas_edits.push((at.clone(), e));
                                 }
                                 shown = true;
@@ -3500,52 +3536,350 @@ fn setting_field(
     None
 }
 
-/// A study's model and sample (ADR 0070): the definition or file it runs,
-/// and its `sample` as JSON, applied when the field loses focus. Nothing
-/// for other blocks.
+/// A parameter a study can vary: its key, a range for it and whether it
+/// is an initial condition.
+type StudyKey = (String, [f64; 2], bool);
+
+/// A study's form (ADR 0070): what it studies and how many runs, its
+/// design, a row per parameter it varies (picked from `keys`, the studied
+/// model's parameters with ranges), count and seed, replicates and seeds,
+/// its named results, and the whole sample as JSON. Changes are kept as a
+/// draft while typed or dragged and applied when a field is left, a
+/// choice made or a button pressed. Nothing for other blocks.
 fn study_fields(
     ui: &mut egui::Ui,
     b: &simsandbox_file::BlockEntry,
     edits: &mut HashMap<String, String>,
+    keys: &[StudyKey],
 ) -> Vec<Edit> {
+    use simsandbox_file::{Design, Sampling, Seeds, SweepControl};
     let mut out = Vec::new();
     if b.type_name != simsandbox_file::STUDY {
         return out;
     }
-    // What it studies; open the node to see and edit that model.
+    let saved = b.sample.clone().unwrap_or_default();
+    let id = format!("study:{}", b.name);
+    let mut s: Sampling = edits
+        .get(&id)
+        .and_then(|t| serde_json::from_str(t).ok())
+        .unwrap_or_else(|| saved.clone());
+    let mut changed = false;
+    let mut commit = false;
+    let runs = study_runs(&s);
     ui.weak(match (&b.model, &b.file) {
-        (Some(m), _) => format!("studies the model {m} (open the node to edit it)"),
-        (None, Some(f)) => format!("studies the file {f} (open the node to edit it)"),
-        _ => "names no model to study".into(),
+        (Some(m), _) => {
+            format!("Studies the model {m}: {runs} runs (open the node to edit the model)")
+        }
+        (None, Some(f)) => {
+            format!("Studies the file {f}: {runs} runs (open the node to edit the model)")
+        }
+        _ => "Names no model to study".into(),
     });
-    let now = b
-        .sample
-        .as_ref()
-        .and_then(|s| serde_json::to_string_pretty(s).ok())
-        .unwrap_or_default();
-    let id = format!("sample:{}", b.name);
-    let mut text = edits.get(&id).cloned().unwrap_or_else(|| now.clone());
-    ui.label("sample")
-        .on_hover_text("Its points (design, params, values or file), seeds, replicates and reduce, as JSON: the designs of experiments (see the headless guide)");
-    let r = ui.add(
-        egui::TextEdit::multiline(&mut text)
-            .code_editor()
-            .desired_rows(6)
-            .desired_width(f32::INFINITY),
-    );
-    if r.has_focus() {
-        edits.insert(id.clone(), text.clone());
+    let range_of = |key: &str| {
+        keys.iter()
+            .find(|(k, _, _)| k == key)
+            .map_or([0.0, 1.0], |(_, r, _)| *r)
+    };
+    egui::Grid::new(("study-form", &b.name))
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("design");
+            let designs = [
+                (Design::Grid, "grid: every combination"),
+                (Design::List, "list of points"),
+                (Design::Random, "random"),
+                (Design::LatinHypercube, "Latin hypercube"),
+                (Design::Sobol, "Sobol sequence"),
+                (Design::File, "points from a file"),
+            ];
+            let label = designs.iter().find(|(d, _)| *d == s.design).map_or("", |(_, l)| l);
+            egui::ComboBox::from_id_salt(("study-design", &b.name))
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    for (d, l) in designs {
+                        if ui.selectable_value(&mut s.design, d, l).clicked() {
+                            changed = true;
+                            commit = true;
+                        }
+                    }
+                });
+            ui.end_row();
+            if matches!(s.design, Design::Random | Design::LatinHypercube | Design::Sobol) {
+                ui.label("points");
+                let mut n = s.count.unwrap_or(simsandbox_file::DEFAULT_SAMPLE_COUNT);
+                let r = ui.add(egui::DragValue::new(&mut n).range(1..=simsandbox_file::MAX_SAMPLES));
+                if r.changed() {
+                    s.count = Some(n);
+                    changed = true;
+                }
+                commit |= r.drag_stopped() || r.lost_focus();
+                ui.end_row();
+            }
+            if matches!(s.design, Design::Random | Design::LatinHypercube) {
+                ui.label("seed");
+                let mut seed = s.seed.unwrap_or(simsandbox_file::DEFAULT_SEED);
+                let r = ui.add(egui::DragValue::new(&mut seed));
+                if r.changed() {
+                    s.seed = Some(seed);
+                    changed = true;
+                }
+                commit |= r.drag_stopped() || r.lost_focus();
+                ui.end_row();
+            }
+            if s.design == Design::File {
+                ui.label("file");
+                let mut f = s.file.clone().unwrap_or_default();
+                let r = ui
+                    .add(egui::TextEdit::singleline(&mut f).hint_text("points.csv"))
+                    .on_hover_text("A CSV from the model's folder: a column per parameter, by path; an id column optional");
+                if r.changed() {
+                    s.file = (!f.trim().is_empty()).then_some(f);
+                    changed = true;
+                }
+                commit |= r.lost_focus();
+                ui.end_row();
+            }
+            ui.label("replicates");
+            let mut reps = s.replicates.unwrap_or(1);
+            let r = ui
+                .add(egui::DragValue::new(&mut reps).range(1..=10_000))
+                .on_hover_text("Runs of each point, each replicate with a seed of its own");
+            if r.changed() {
+                s.replicates = (reps > 1).then_some(reps);
+                changed = true;
+            }
+            commit |= r.drag_stopped() || r.lost_focus();
+            ui.end_row();
+            ui.label("seeds");
+            egui::ComboBox::from_id_salt(("study-seeds", &b.name))
+                .selected_text(match s.seeds {
+                    Seeds::Common => "common to every point",
+                    Seeds::PerPoint => "one per point",
+                })
+                .show_ui(ui, |ui| {
+                    for (v, l) in [
+                        (Seeds::Common, "common to every point"),
+                        (Seeds::PerPoint, "one per point"),
+                    ] {
+                        if ui.selectable_value(&mut s.seeds, v, l).clicked() {
+                            changed = true;
+                            commit = true;
+                        }
+                    }
+                });
+            ui.end_row();
+        });
+    // What it varies.
+    if s.design == Design::File {
+        ui.weak("The file's columns are the parameters it varies.");
+    } else if s.design == Design::List {
+        ui.weak(format!(
+            "{} parameters, {} points: edit the list as JSON below",
+            s.params.len(),
+            s.values.len()
+        ));
+    } else {
+        ui.strong("varies");
+        let mut remove = None;
+        egui::Grid::new(("study-params", &b.name))
+            .num_columns(5)
+            .spacing([6.0, 4.0])
+            .show(ui, |ui| {
+                if !s.params.is_empty() {
+                    for h in ["parameter", "from", "to"] {
+                        ui.weak(h);
+                    }
+                    ui.weak(if s.design == Design::Grid { "points" } else { "" });
+                    ui.end_row();
+                }
+                for (k, p) in s.params.iter_mut().enumerate() {
+                    egui::ComboBox::from_id_salt(("study-param", &b.name, k))
+                        .selected_text(&p.param)
+                        .show_ui(ui, |ui| {
+                            for (key, range, ic) in keys {
+                                let l = if *ic { format!("{key} (start)") } else { key.clone() };
+                                if ui.selectable_label(*key == p.param, l).clicked() && *key != p.param {
+                                    p.param = key.clone();
+                                    p.range = Some(*range);
+                                    changed = true;
+                                    commit = true;
+                                }
+                            }
+                        });
+                    let [mut lo, mut hi] = p.range.unwrap_or_else(|| range_of(&p.param));
+                    let speed = ((hi - lo).abs() / 200.0).max(1e-6);
+                    let a = ui.add(egui::DragValue::new(&mut lo).speed(speed)).on_hover_text("From");
+                    let z = ui.add(egui::DragValue::new(&mut hi).speed(speed)).on_hover_text("To");
+                    if a.changed() || z.changed() {
+                        p.range = Some([lo, hi]);
+                        changed = true;
+                    }
+                    commit |= a.drag_stopped() || a.lost_focus() || z.drag_stopped() || z.lost_focus();
+                    if s.design == Design::Grid {
+                        let mut n = p.points.unwrap_or(0);
+                        let r = ui
+                            .add(egui::DragValue::new(&mut n).range(0..=100_000).custom_formatter(|v, _| {
+                                if v == 0.0 { "auto".into() } else { format!("{v:.0}") }
+                            }))
+                            .on_hover_text("Values along this parameter (auto: 400 for one parameter, 100 each for several)");
+                        if r.changed() {
+                            p.points = (n >= 2).then_some(n);
+                            changed = true;
+                        }
+                        commit |= r.drag_stopped() || r.lost_focus();
+                    } else {
+                        ui.label("");
+                    }
+                    if ui.small_button("×").on_hover_text("Stop varying it").clicked() {
+                        remove = Some(k);
+                    }
+                    ui.end_row();
+                }
+            });
+        if let Some(k) = remove {
+            s.params.remove(k);
+            changed = true;
+            commit = true;
+        }
+        let unused = keys
+            .iter()
+            .find(|(k, _, _)| !s.params.iter().any(|p| &p.param == k));
+        if let Some((key, range, _)) = unused {
+            if ui
+                .small_button("+ parameter")
+                .on_hover_text("Vary another parameter of the studied model")
+                .clicked()
+            {
+                s.params.push(SweepControl {
+                    param: key.clone(),
+                    range: Some(*range),
+                    points: None,
+                });
+                changed = true;
+                commit = true;
+            }
+        }
     }
-    if r.lost_focus() {
+    // Its named results.
+    ui.strong("results").on_hover_text(
+        "Each run reduced to named values, e.g. max(car.v) or first_time(abs(cruise.e) < 0.5); \
+         without any, each output's final value",
+    );
+    let mut renamed: Option<(String, String)> = None;
+    let mut dropped = None;
+    for (name, formula) in s.reduce.iter_mut() {
+        ui.horizontal(|ui| {
+            let mut n = name.clone();
+            let r = ui.add_sized([70.0, 20.0], egui::TextEdit::singleline(&mut n));
+            if r.changed() {
+                renamed = Some((name.clone(), n));
+            }
+            commit |= r.lost_focus();
+            ui.label("=");
+            let width = (ui.available_width() - 30.0).max(120.0);
+            let r = ui.add_sized([width, 20.0], egui::TextEdit::singleline(formula));
+            if r.changed() {
+                changed = true;
+            }
+            commit |= r.lost_focus();
+            if ui
+                .small_button("×")
+                .on_hover_text("Drop this result")
+                .clicked()
+            {
+                dropped = Some(name.clone());
+            }
+        });
+    }
+    if let Some((from, to)) = renamed {
+        if let Some(f) = s.reduce.remove(&from) {
+            s.reduce.insert(to, f);
+            changed = true;
+        }
+    }
+    if let Some(n) = dropped {
+        s.reduce.remove(&n);
+        changed = true;
+        commit = true;
+    }
+    if ui
+        .small_button("+ result")
+        .on_hover_text("Reduce each run to one more named value")
+        .clicked()
+    {
+        let mut k = s.reduce.len() + 1;
+        while s.reduce.contains_key(&format!("r{k}")) {
+            k += 1;
+        }
+        s.reduce.insert(format!("r{k}"), "final(t)".into());
+        changed = true;
+        commit = true;
+    }
+    if changed {
+        edits.insert(id.clone(), serde_json::to_string(&s).unwrap_or_default());
+    }
+    if commit {
         edits.remove(&id);
-        if text.trim() != now.trim() {
+        if s != saved {
             out.push(Edit::SetSample {
                 block: b.name.clone(),
-                sample: text,
+                sample: serde_json::to_string(&s).unwrap_or_default(),
             });
         }
     }
+    // Everything, as written in the file.
+    egui::CollapsingHeader::new("sample as JSON")
+        .id_salt(("study-json", &b.name))
+        .show(ui, |ui| {
+            let now = serde_json::to_string_pretty(&saved).unwrap_or_default();
+            let jid = format!("sample:{}", b.name);
+            let mut text = edits.get(&jid).cloned().unwrap_or_else(|| now.clone());
+            let r = ui.add(
+                egui::TextEdit::multiline(&mut text)
+                    .code_editor()
+                    .desired_rows(6)
+                    .desired_width(f32::INFINITY),
+            );
+            if r.has_focus() {
+                edits.insert(jid.clone(), text.clone());
+            }
+            if r.lost_focus() {
+                edits.remove(&jid);
+                if text.trim() != now.trim() {
+                    out.push(Edit::SetSample {
+                        block: b.name.clone(),
+                        sample: text,
+                    });
+                }
+            }
+        });
     out
+}
+
+/// How many runs a study's sample makes: points times replicates.
+fn study_runs(s: &simsandbox_file::Sampling) -> usize {
+    use simsandbox_file::Design;
+    let points = match s.design {
+        Design::Grid => {
+            let auto = if s.params.len() == 1 {
+                simsandbox_file::DEFAULT_SWEEP_POINTS
+            } else {
+                simsandbox_file::DEFAULT_GRID_POINTS
+            };
+            s.params
+                .iter()
+                .map(|p| p.points.unwrap_or(auto))
+                .product::<usize>()
+                * usize::from(!s.params.is_empty())
+        }
+        Design::List => s.values.len(),
+        Design::Random | Design::LatinHypercube | Design::Sobol => {
+            s.count.unwrap_or(simsandbox_file::DEFAULT_SAMPLE_COUNT)
+        }
+        Design::File => 0,
+    };
+    points * s.replicates.unwrap_or(1)
 }
 
 /// A file reader's settings (ADR 0063): the file, typed or chosen in the
@@ -4881,6 +5215,66 @@ mod tests {
         };
         let mut out = ctx.run_ui(input, |ui| app.param_panel(ui));
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn a_studys_runs_are_counted_as_its_design_makes_them() {
+        let s = |v: serde_json::Value| -> simsandbox_file::Sampling {
+            serde_json::from_value(v).unwrap()
+        };
+        let one = serde_json::json!({"param": "a.x"});
+        let two = serde_json::json!({"param": "a.y", "points": 3});
+        assert_eq!(study_runs(&s(serde_json::json!({"params": [one]}))), 400);
+        assert_eq!(
+            study_runs(&s(serde_json::json!({"params": [one, two]}))),
+            300
+        );
+        assert_eq!(
+            study_runs(&s(
+                serde_json::json!({"design": "sobol", "params": [one], "count": 64, "replicates": 2})
+            )),
+            128
+        );
+        assert_eq!(
+            study_runs(&s(
+                serde_json::json!({"design": "list", "params": [one], "values": [[1.0], [2.0]]})
+            )),
+            2
+        );
+    }
+
+    #[test]
+    fn a_study_selected_shows_its_form() {
+        // ADR 0070: what it varies comes from its model's parameters.
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Tuning"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        let file = app.session.as_ref().unwrap().model().file.clone();
+        let keys = app.study_keys(&file, "tuning");
+        let names: Vec<&str> = keys.iter().map(|(k, _, _)| k.as_str()).collect();
+        assert!(
+            names.contains(&"cruise.ki") && names.contains(&"car.m"),
+            "{names:?}"
+        );
+        assert!(app.study_keys(&file, "best").is_empty());
+        app.diagram.canvas.selected = Some(simsandbox_session::canvas::Selection::Block(
+            "tuning".into(),
+        ));
+        // SIMSANDBOX_SHOT=FILE.png writes the Inspector as drawn, to look at.
+        if let Ok(path) = std::env::var("SIMSANDBOX_SHOT") {
+            let o = simsandbox_session::render::RenderOptions {
+                width: 520.0,
+                height: 900.0,
+                ..Default::default()
+            };
+            let image = simsandbox_session::render::paint(&o, |ui| app.param_panel(ui));
+            std::fs::write(path, simsandbox_session::render::png(&image).unwrap()).unwrap();
+        }
+        inspect(&mut app);
+        assert_eq!(app.picked, [(None, "tuning".to_string())]);
     }
 
     #[test]

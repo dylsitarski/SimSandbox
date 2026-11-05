@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: study form (`study_fields` rewritten, `study_runs`, `SimApp::study_keys` cached, `diagram::study_parameters`), `render::paint` public; tests; the form rendered headless (`SIMSANDBOX_SHOT`).
 - 2026-11-05: `show.values` (`values.rs`, `number`), `History::set_unit`/`unit` filled from output ports in `build_history`; the tuning example's best values; tests; renders.
 - 2026-11-05: ADR 0072 written and built: `Session::timeless`, `evaluate_later` (set by `Live::start`), `unevaluated`/`evaluate` (renamed from the studies-only names), the worker never stepping such a model, the toolbar's "Evaluated, not run in time"; the give-up test's model given a state; tests; screenshot of the resonance curve. Inspector selection inside used models fixed (owner's report).
 - 2026-11-05: STATUS What works checked against the code (`describe`, the examples list, CLI commands, the Python API, app labels): subsystem bullet replaced; bullets added for models that use models, time from data, probes and the recorder; methods, block types, examples, shapes, panes, canvas, CLI and Python brought up to date.
