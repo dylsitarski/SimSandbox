@@ -633,7 +633,16 @@ impl SimApp {
                 ui.add(egui::Label::new(d.as_str()).truncate());
             }
         });
-        {
+        if m.timeless {
+            // Nothing to run, pause, step or rewind (ADR 0072).
+            ui.horizontal(|ui| {
+                ui.label("Evaluated, not run in time").on_hover_text(
+                    "Nothing in this model changes with time (no states, data, clocks or \
+                     schedule): it is evaluated when opened and again whenever a value it \
+                     reads changes",
+                );
+            });
+        } else {
             ui.horizontal(|ui| {
                 let label = if st.running { "⏸ Pause" } else { "▶ Run" };
                 if ui.button(label).clicked() {
@@ -764,9 +773,13 @@ impl SimApp {
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
             }
             // A study in the step: its runs so far (ADR 0071 step 2).
-            if study.is_none() && live.model().studies_unrun {
-                ui.weak("studies about to run")
-                    .on_hover_text("Opened without running its studies: the run starts with them");
+            if study.is_none() && m.unevaluated {
+                ui.weak(if m.timeless {
+                    "about to evaluate"
+                } else {
+                    "studies about to run"
+                })
+                .on_hover_text("Its studies run first, on the simulation's thread");
             }
             if let Some((done, total)) = study {
                 ui.colored_label(
@@ -788,7 +801,7 @@ impl SimApp {
         };
         // Without a recorder there is nothing to rewind to (ADR 0064).
         let m = live.model();
-        if m.recorder.is_none() {
+        if m.recorder.is_none() || m.timeless {
             return;
         }
         let (first, last) = live.status().history_range;

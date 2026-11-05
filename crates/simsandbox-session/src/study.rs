@@ -44,7 +44,7 @@ thread_local! {
 /// study is built and checked (its model, sample and results), but outputs
 /// NaN until it is evaluated outside `f`. The app builds models so on its
 /// window's thread, to check an edit or to open one, and its worker runs
-/// the studies ([`crate::Session::run_studies`]).
+/// the studies ([`crate::Session::evaluate`]).
 pub fn without_running_studies<R>(f: impl FnOnce() -> R) -> R {
     let was = UNRUN.with(|u| u.replace(true));
     let r = f();

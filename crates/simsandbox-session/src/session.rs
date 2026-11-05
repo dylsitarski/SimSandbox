@@ -299,9 +299,16 @@ pub struct Session {
     sim: Simulator,
     snapshots: Vec<Snapshot>,
     steps_since_snapshot: usize,
-    /// Built without running its studies ([`crate::study::without_running_studies`]):
-    /// they run on [`Session::run_studies`].
-    studies_unrun: bool,
+    /// Built without running its studies ([`crate::study::without_running_studies`]),
+    /// or (evaluated later) changed since last evaluated: [`Session::evaluate`]
+    /// brings it up to date.
+    unevaluated: bool,
+    /// Nothing in it runs in time (ADR 0072): evaluated, not stepped.
+    timeless: bool,
+    /// Changes to a model with nothing in time leave it unevaluated, for
+    /// the caller to [`Session::evaluate`] (the app's worker, ADR 0072),
+    /// instead of evaluating it at once.
+    evaluate_later: bool,
     /// The recorder (ADR 0064): without one, no snapshots and no rewind.
     recorder: Option<simsandbox_file::RecorderEntry>,
     /// Filters as written, for saving and editing (ADR 0030, ADR 0032).
@@ -577,9 +584,12 @@ impl Session {
             },
             start_file,
             data,
-            studies_unrun: false,
+            unevaluated: false,
+            timeless: false,
+            evaluate_later: false,
         };
-        session.studies_unrun = !crate::study::studies_run()
+        session.timeless = session.nothing_in_time();
+        session.unevaluated = !crate::study::studies_run()
             && session.block_types.iter().any(|t| t == crate::study::STUDY);
         session.check_events(
             &session
@@ -1954,26 +1964,60 @@ impl Session {
     }
 
     fn after_param_change(&mut self) -> Result<(), String> {
+        if self.timeless && self.evaluate_later {
+            self.unevaluated = true;
+            return Ok(());
+        }
         if self.time() == 0.0 && self.sim.step_count() == 0 {
             self.restart().map_err(|e| e.to_string())?;
         }
         Ok(())
     }
 
-    /// Whether it was built without running its studies, which
-    /// [`Session::run_studies`] has not yet run.
-    pub fn studies_unrun(&self) -> bool {
-        self.studies_unrun
+    /// Whether it was built without running its studies, or changed since
+    /// last evaluated with evaluation left for later: [`Session::evaluate`]
+    /// brings it up to date.
+    pub fn unevaluated(&self) -> bool {
+        self.unevaluated
     }
 
-    /// Run the studies of a model built without running them: a restart,
-    /// so the history starts over with their results. A study given up
-    /// ([`crate::run::given_up`]) leaves them unrun, to run again.
-    pub fn run_studies(&mut self) -> Result<(), SimError> {
+    /// Nothing in it runs in time (ADR 0072): no block has states or
+    /// tables or reads recorded data, there are no clocks and no scheduled
+    /// inputs. The app evaluates such a model and never steps it.
+    pub fn timeless(&self) -> bool {
+        self.timeless
+    }
+
+    fn nothing_in_time(&self) -> bool {
+        let model = self.sim.model();
+        model.clocks().0.is_empty()
+            && self.track.schedule.is_empty()
+            && self.ids.values().all(|&id| {
+                model.block(id).is_ok_and(|b| {
+                    b.spec().states.is_empty()
+                        && b.spec().tables.is_empty()
+                        && b.instants().is_none()
+                })
+            })
+    }
+
+    /// Leave changes to a model with nothing in time unevaluated, for the
+    /// caller to [`Session::evaluate`] where it can show progress and give
+    /// a study up (the app's worker, ADR 0072).
+    pub fn evaluate_later(&mut self) {
+        self.evaluate_later = true;
+    }
+
+    /// Bring the model up to date (a restart: the history starts over with
+    /// its values): run the studies of a model built without running them,
+    /// or evaluate a model with nothing in time after a change. A study
+    /// given up ([`crate::run::given_up`]) leaves it unevaluated, to run
+    /// again.
+    pub fn evaluate(&mut self) -> Result<(), SimError> {
         let r = self.restart();
         // A study that failed is reported once, not run again and again.
         if r.as_ref().is_err_and(|e| !crate::run::given_up(e)) {
-            self.studies_unrun = false;
+            self.unevaluated = false;
         }
         r
     }
@@ -1992,7 +2036,7 @@ impl Session {
         let r = self.restart_keeping_recorded();
         // Any restart outside `without_running_studies` runs them.
         if r.is_ok() && crate::study::studies_run() {
-            self.studies_unrun = false;
+            self.unevaluated = false;
         }
         r
     }
@@ -2851,21 +2895,63 @@ mod tests {
         let mut s = crate::study::without_running_studies(|| {
             Session::load(e.name, e.text, &registry()).unwrap()
         });
-        assert!(s.studies_unrun());
+        assert!(s.unevaluated());
         assert!(newest(&s, "curve.spring_amplitude")
             .iter()
             .all(|v| v.is_nan()));
-        s.run_studies().unwrap();
-        assert!(!s.studies_unrun());
+        s.evaluate().unwrap();
+        assert!(!s.unevaluated());
         let direct = example("Resonance curve");
         assert_eq!(
             newest(&s, "curve.spring_amplitude"),
             newest(&direct, "curve.spring_amplitude")
         );
-        assert!(!direct.studies_unrun());
+        assert!(!direct.unevaluated());
         // A model without studies has none to run.
         let plain = crate::study::without_running_studies(|| example("Lorenz"));
-        assert!(!plain.studies_unrun());
+        assert!(!plain.unevaluated());
+    }
+
+    #[test]
+    fn models_with_nothing_in_time_are_told_apart() {
+        // ADR 0072: no states, tables, data, clocks or schedule.
+        for (part, timeless) in [
+            ("Resonance curve", true),
+            ("Resonance map", true),
+            ("Tuning", true),
+            ("Units", false),
+            ("Lorenz", false),
+            ("Logistic", false),
+            ("grazing", false),
+            ("Steer the car", false),
+        ] {
+            assert_eq!(example(part).timeless(), timeless, "{part}");
+        }
+    }
+
+    #[test]
+    fn a_model_with_nothing_in_time_can_leave_a_change_for_later() {
+        let mut s = example("Resonance curve");
+        let before = newest(&s, "curve.spring_amplitude");
+        // At once, by default (headless).
+        s.set_param_key("c.y", 0.1).unwrap();
+        let at_once = newest(&s, "curve.spring_amplitude");
+        assert_ne!(at_once, before);
+        assert!(!s.unevaluated());
+        // Left for later (the app's worker): the values stay until then.
+        s.evaluate_later();
+        s.set_param_key("c.y", 0.05).unwrap();
+        assert!(s.unevaluated());
+        assert_eq!(newest(&s, "curve.spring_amplitude"), at_once);
+        s.evaluate().unwrap();
+        assert!(!s.unevaluated());
+        let mut direct = example("Resonance curve");
+        direct.set_param_key("c.y", 0.05).unwrap();
+        assert_eq!(
+            newest(&s, "curve.spring_amplitude"),
+            newest(&direct, "curve.spring_amplitude")
+        );
+        assert_eq!((s.time(), s.signals().len()), (0.0, 1));
     }
 
     #[test]

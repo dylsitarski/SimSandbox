@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: ADR 0072 written and built: `Session::timeless`, `evaluate_later` (set by `Live::start`), `unevaluated`/`evaluate` (renamed from the studies-only names), the worker never stepping such a model, the toolbar's "Evaluated, not run in time"; the give-up test's model given a state; tests; screenshot of the resonance curve. Inspector selection inside used models fixed (owner's report).
 - 2026-11-05: STATUS What works checked against the code (`describe`, the examples list, CLI commands, the Python API, app labels): subsystem bullet replaced; bullets added for models that use models, time from data, probes and the recorder; methods, block types, examples, shapes, panes, canvas, CLI and Python brought up to date.
 - 2026-11-05: STATUS Known limitations checked against the code: the two study items merged; subsystem, sweep and experiment items rewritten for ADRs 0068 and 0071; heat maps over uneven and 2D coordinates, study give-up, probes and recorders across used models, the recorder's memory budget and the step number `n` in maps stated as built.
 - 2026-11-04: studies off the window's thread: `study::without_running_studies`, `Session::studies_unrun`/`run_studies`, the diagram's `check`, `open_inner` building without studies, the worker running them first, `Live::call` giving studies up (found by tracing a 9 s wait in `has_unsaved` on closing), `Model::studies_unrun` and the toolbar's "studies about to run"; session and worker tests; Xvfb timings (open 1.7 s, close 1.9 s, was about 22 s and 11 s).
@@ -134,6 +135,7 @@
 
 ## Decided
 
+- 2026-11-05 (owner): models with nothing in time are evaluated in the app, not run (ADR 0072); then a view of plain numbers, a study form in the Inspector, studies drawn apart from uses, and one way to show ports and offer outputs (a short ADR), in that order.
 - 2026-11-04 (owner): sweeps and experiments are studies; the `sample` section, the default sweep and the app's sweep are removed with no conversion; studies run within their step in the app (ADR 0071).
 - 2026-11-04 (owner): `controls.plots` leaves the format with no conversion: no file relies on it (Q51).
 - 2026-11-03 (owner): a study is a block, a use always runs its model plain, and arrays, agents and studies are models over sets of members whose structure changes only between steps through labelled transfers; a concept list keeps concepts few (ADR 0070).

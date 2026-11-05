@@ -1,6 +1,6 @@
 # 0071 — Sweeps and experiments are studies: one way to run a model at many points
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 2 amended by [0072](0072-models-with-nothing-in-time.md) (such models are evaluated in the app, not run)
 - **Date:** 2026-11-04
 - **Supersedes:** [ADR 0021](0021-maps-formulas-and-sweeps.md) on sweeps (a model with no states swept by default, the index axis of a sweep), [ADR 0027](0027-explicit-experiments.md) (the experiment as a section of the model file), [ADR 0028](0028-sweeps-as-samples.md) on where a sample lives and how the app records it (its designs stand), [ADR 0067](0067-experiments-and-time-from-data.md) decisions 1 to 6 on where an experiment lives (what a study does is unchanged), and the as-built reading of [ADR 0070](0070-studies-are-blocks.md) step 2 that kept the top-level `sample`
 

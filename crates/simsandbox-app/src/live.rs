@@ -42,7 +42,9 @@ pub struct Model {
     /// Sliders apply while dragged (ADR 0037).
     pub real_time: bool,
     /// Its studies have not run yet (ADR 0071): the worker runs them first.
-    pub studies_unrun: bool,
+    pub unevaluated: bool,
+    /// Nothing in it runs in time: evaluated, not run (ADR 0072).
+    pub timeless: bool,
     /// Everything views can bind, recorded or not (ADR 0063).
     pub scalars: Vec<String>,
     /// The 2D grids cut filters can take.
@@ -78,7 +80,8 @@ impl Model {
             dt: s.dt,
             labels: s.labels(),
             real_time: s.real_time(),
-            studies_unrun: s.studies_unrun(),
+            unevaluated: s.unevaluated(),
+            timeless: s.timeless(),
             scalars: s.bindable_scalars().to_vec(),
             cut_inputs: s.cut_inputs(),
             derived: s.derived_names().to_vec(),
@@ -200,7 +203,10 @@ pub struct Live {
 
 impl Live {
     /// Start a worker for `session`, running at `speed` if `running`.
-    pub fn start(session: Session, speed: f64, running: bool) -> Self {
+    pub fn start(mut session: Session, speed: f64, running: bool) -> Self {
+        // A model with nothing in time is evaluated here after a change,
+        // where a newer change can give a study up (ADR 0072).
+        session.evaluate_later();
         let shared = Arc::new(Shared::default());
         let history = session.shared_history();
         *lock(&shared.model) = Some(Arc::new(Model::of(&session)));
@@ -376,7 +382,9 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
     let mut last = Instant::now();
     loop {
         let mut commands = Vec::new();
-        if !c.running && !s.studies_unrun() {
+        // A model with nothing in time is never stepped (ADR 0072).
+        let stepping = c.running && !s.timeless();
+        if !stepping && !s.unevaluated() {
             // Idle: everything recorded is visible, then wait for a command.
             s.flush(true);
             *lock(&shared.status) = status(&s, false, pacer.achieved_speed(), false);
@@ -416,13 +424,13 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
             }
         }
 
-        // Built without running its studies (the window opened it): run
-        // them first, as a step is run, with progress, given up for newer
+        // Built without running its studies (the window opened it), or a
+        // model with nothing in time changed: evaluate it first, as a step is run, with progress, given up for newer
         // commands and then run again (ADR 0071).
-        if s.studies_unrun() {
+        if s.unevaluated() {
             shared.progress.reset();
             *lock(&shared.stepping) = Some(Instant::now());
-            let r = s.run_studies();
+            let r = s.evaluate();
             *lock(&shared.stepping) = None;
             match r {
                 Err(e) if given_up(&e) => {}
@@ -440,11 +448,13 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
             continue;
         }
 
+        // The commands may have paused or run it.
+        let stepping = c.running && !s.timeless();
         let tick = Instant::now();
         let elapsed = tick.duration_since(last).as_secs_f64();
         last = tick;
         let mut recorded = false;
-        if c.running {
+        if stepping {
             pacer.speed = c.speed;
             let dt = s.step_dt();
             let result = pacer.frame(
@@ -496,7 +506,7 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
         if recorded || news {
             shared.repaint();
         }
-        if c.running {
+        if stepping {
             if let Some(rest) = TICK.checked_sub(tick.elapsed()) {
                 std::thread::sleep(rest);
             }
@@ -594,7 +604,11 @@ mod tests {
                  "equations": ["input k", "state x = 1", "dx/dt = -k*x"]}],
               "connections": [{"from": "k.y", "to": "x.k"}],
               "run": {"dt": 0.001, "t_end": 3.0}}},
-            "blocks": [{"name": "rate", "type": "input.value", "params": {"y": 1.0}},
+            // A state of its own, so it runs in time (ADR 0072) and the
+            // study runs within a step.
+            "blocks": [{"name": "clock", "type": "eq.equations", "method": {"name": "euler"},
+                 "equations": ["state s [s] = 0", "ds/dt = 1"]},
+                {"name": "rate", "type": "input.value", "params": {"y": 1.0}},
                 {"name": "s", "type": "study", "model": "decay",
                  "sample": {"design": "grid", "params": [{"param": "x.x0", "range": [1.0, 2.0], "points": 48}],
                             "reduce": {"half": "first_time(x.x < 0.5)"}}}],
@@ -654,7 +668,7 @@ mod tests {
         let s = simsandbox_session::study::without_running_studies(|| {
             Session::load("m", text, &registry()).unwrap()
         });
-        assert!(s.studies_unrun());
+        assert!(s.unevaluated());
         let live = Live::start(s, 1.0, false);
         live.send(Some("param:m.y"), |s, _| {
             s.set_param_key("m.y", 2.0).unwrap();
@@ -663,7 +677,7 @@ mod tests {
         let start = Instant::now();
         // Polled from what the worker publishes: a call would give the
         // studies up.
-        while live.model().studies_unrun {
+        while live.model().unevaluated {
             assert!(start.elapsed() < Duration::from_secs(60), "timed out");
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -675,6 +689,42 @@ mod tests {
                 .fields()
                 .iter()
                 .find(|f| f.name == "map.spring_amplitude")
+                .unwrap();
+            f.frame(h.len() - 1).to_vec()
+        };
+        assert_eq!(newest(&live.history()), newest(&direct.signals()));
+    }
+
+    #[test]
+    fn a_model_with_nothing_in_time_is_evaluated_not_run() {
+        // ADR 0072: running, it stays at t = 0 with one sample; a change
+        // evaluates it again.
+        let text = example("Resonance curve");
+        let live = Live::start(Session::load("c", text, &registry()).unwrap(), 1.0, true);
+        std::thread::sleep(Duration::from_millis(200));
+        live.send(Some("param:c.y"), |s, _| {
+            s.set_param_key("c.y", 0.05).unwrap();
+        });
+        let start = Instant::now();
+        loop {
+            let m = live.model();
+            if !m.unevaluated && m.params.iter().any(|r| r.key == "c.y" && r.value == 0.05) {
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(20), "timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        live.sync();
+        assert!(live.model().timeless);
+        assert_eq!(live.status().time, 0.0);
+        assert_eq!(live.history().len(), 1);
+        let mut direct = Session::load("c", text, &registry()).unwrap();
+        direct.set_param_key("c.y", 0.05).unwrap();
+        let newest = |h: &History| {
+            let f = h
+                .fields()
+                .iter()
+                .find(|f| f.name == "curve.spring_amplitude")
                 .unwrap();
             f.frame(h.len() - 1).to_vec()
         };
