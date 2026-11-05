@@ -92,6 +92,11 @@ pub fn check(text: &str, registry: &Registry) -> Value {
                 "declared_outputs": d.declared.iter().map(|o| json!({"name": o.name, "from": o.from})).collect::<Vec<_>>(),
                 "outputs": outputs,
                 "inputs": inputs,
+                // Parameters driven by wires (ADR 0075), by full name.
+                "driven": crate::session::drives(&d.loaded.model)
+                    .into_iter()
+                    .map(|(to, from)| json!({"param": d.full(&to), "from": d.full(&from)}))
+                    .collect::<Vec<_>>(),
             })
         })
         .collect();
@@ -120,7 +125,7 @@ pub fn check(text: &str, registry: &Registry) -> Value {
             .map(|s| {
                 s.params()
                     .iter()
-                    .map(|p| json!({"key": p.key, "value": p.value, "formula": p.formula, "unit": p.unit}))
+                    .map(|p| json!({"key": p.key, "value": p.value, "formula": p.formula, "unit": p.unit, "driven_by": p.driven}))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default(),

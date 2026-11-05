@@ -223,6 +223,30 @@ pub struct ParamRow {
     pub suggested: [f64; 2],
     pub initial_condition: bool,
     pub value: f64,
+    /// The signal driving it (ADR 0075), `block.port`: then its value is
+    /// that signal's, not set by hand.
+    pub driven: Option<String>,
+}
+
+/// The parameters of `model` driven by wires, as `block.param` to the
+/// `block.port` driving each (ADR 0075).
+pub fn drives(model: &simsandbox_core::graph::Model) -> Vec<(String, String)> {
+    let name = |id: BlockId| {
+        model
+            .block(id)
+            .map(|b| b.spec().name.clone())
+            .unwrap_or_default()
+    };
+    model
+        .drives()
+        .iter()
+        .map(|c| {
+            (
+                format!("{}.{}", name(c.to.block), c.to.port),
+                format!("{}.{}", name(c.from.block), c.from.port),
+            )
+        })
+        .collect()
 }
 
 pub struct Session {
@@ -337,6 +361,10 @@ pub(crate) fn set_key(
 ) -> Result<(), String> {
     if plan.declared(key).is_some() {
         for (block, param, v) in plan.set(key, value)? {
+            // A driven parameter takes its signal instead (ADR 0075).
+            if sim.model().is_driven(ids[&block], &param) {
+                continue;
+            }
             sim.set_param(ids[&block], &param, v)
                 .map_err(|e| e.to_string())?;
         }
@@ -1889,6 +1917,11 @@ impl Session {
 
     /// Every parameter: the declared ones (the model's, then each
     /// instance's), then every block's in flat block order.
+    /// The kernel model being run.
+    pub fn sim_model(&self) -> &simsandbox_core::graph::Model {
+        self.sim.model()
+    }
+
     pub fn params(&self) -> Vec<ParamRow> {
         let model = self.sim.model();
         let mut rows = Vec::new();
@@ -1911,6 +1944,7 @@ impl Session {
                 suggested: d.range.unwrap_or_else(|| suggested_range(d.value)),
                 initial_condition: false,
                 value: d.value,
+                driven: None,
             });
         }
         for entry in &self.flat.blocks {
@@ -1937,8 +1971,35 @@ impl Session {
                     suggested: [p.suggested_min, p.suggested_max],
                     initial_condition: p.initial_condition,
                     value,
+                    driven: None,
                 });
             }
+        }
+        // What wires drive (ADR 0075); a declared parameter of a use is
+        // driven when the parameters set to it are.
+        let driven = drives(model);
+        for r in &mut rows {
+            r.driven = driven
+                .iter()
+                .find(|(to, _)| *to == r.key)
+                .map(|(_, from)| from.clone());
+        }
+        let blocks: Vec<(String, Option<String>, Option<String>)> = rows
+            .iter()
+            .filter(|r| r.block.is_some())
+            .map(|r| (r.owner.clone(), r.formula.clone(), r.driven.clone()))
+            .collect();
+        for r in rows
+            .iter_mut()
+            .filter(|r| r.block.is_none() && !r.owner.is_empty())
+        {
+            let inside = format!("{}/", r.owner);
+            r.driven = blocks
+                .iter()
+                .find(|(owner, formula, d)| {
+                    owner.starts_with(&inside) && formula.as_deref() == Some(&r.name) && d.is_some()
+                })
+                .and_then(|(_, _, d)| d.clone());
         }
         rows
     }

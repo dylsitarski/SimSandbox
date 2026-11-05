@@ -232,17 +232,31 @@ impl Registry {
             .ok_or_else(|| SimError::UnknownBlockType(type_name.into()))?;
         // No method given: the type's default, its first (ADR 0045). Types
         // defined by lines choose from what the lines describe.
-        if config.method.name.is_empty() {
-            let fixed = self.info(type_name).filter(|i| i.definition.is_none());
-            if let Some((m, _)) = fixed.and_then(|i| i.methods.first()) {
+        let fixed = self.info(type_name).filter(|i| i.definition.is_none());
+        let block = match fixed.and_then(|i| i.methods.first()) {
+            Some((m, _)) if config.method.name.is_empty() => {
                 let config = BlockConfig {
                     method: MethodSettings::new(m),
                     ..config.clone()
                 };
-                return factory(name, &config);
+                factory(name, &config)?
             }
+            _ => factory(name, config)?,
+        };
+        // A wire names a parameter as it names an input (ADR 0075): one set
+        // of names.
+        let spec = block.spec();
+        if let Some(p) = spec
+            .params
+            .iter()
+            .find(|p| spec.inputs().any(|i| i.name == p.name))
+        {
+            return Err(SimError::InvalidDefinition(format!(
+                "'{type_name}' has an input and a parameter both named '{}'",
+                p.name
+            )));
         }
-        factory(name, config)
+        Ok(block)
     }
 
     /// Register how a domain solves fused groups. Once per domain.

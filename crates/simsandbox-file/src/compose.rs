@@ -368,6 +368,61 @@ pub(crate) fn check_inputs(
     Ok(())
 }
 
+/// Parameters driven by wires (ADR 0075): a parameter is set or wired,
+/// not both; a model's inputs, outputs and parameters share one set of
+/// names.
+pub(crate) fn check_driven(
+    params: &BTreeMap<String, crate::ParamDecl>,
+    blocks: &[BlockEntry],
+    inputs: &[crate::InputPort],
+    outputs: &[crate::OutputPort],
+    connections: &[crate::ConnectionEntry],
+) -> Result<(), FileError> {
+    for (k, i) in inputs.iter().enumerate() {
+        if params.contains_key(&i.name) {
+            return Err(invalid(
+                format!("inputs[{k}].name"),
+                format!("'{}' is a parameter of the model already", i.name),
+            ));
+        }
+    }
+    for (k, o) in outputs.iter().enumerate() {
+        if params.contains_key(&o.name) {
+            return Err(invalid(
+                format!("outputs[{k}].name"),
+                format!("'{}' is a parameter of the model already", o.name),
+            ));
+        }
+    }
+    for (k, c) in connections.iter().enumerate() {
+        // `block.param`, a study's `s.param`, or a use's `use/param`.
+        let (block, param) = match (c.to.split_once('/'), c.to.split_once('.')) {
+            (Some((u, p)), _) if !p.contains(['.', '/']) => (u, p),
+            (None, Some((b, p))) => (b, p),
+            _ => continue,
+        };
+        let set = blocks
+            .iter()
+            .find(|b| b.name == block)
+            .and_then(|b| b.params.get(param));
+        if let Some(v) = set {
+            let shown = match v {
+                crate::ParamValue::Number(n) => n.to_string(),
+                crate::ParamValue::Formula(f) => f.clone(),
+            };
+            return Err(invalid(
+                format!("connections[{k}].to"),
+                format!(
+                    "{} is set to {shown} in blocks and wired here: a parameter is set or \
+                     wired, not both (ADR 0075); remove the value from {block}'s params",
+                    c.to
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A model run on its own exposes no inputs: they are signals with no
 /// default, wired where it is used (ADR 0074).
 pub(crate) fn runs_alone(file: &ModelFile) -> Result<(), FileError> {
@@ -1277,13 +1332,19 @@ fn expose_input(
     if def.inputs.iter().any(|p| p.name == inner) {
         return Err("wired twice".into());
     }
+    // A declared parameter: the wire drives it (ADR 0075), resolved where
+    // the subsystem is flattened.
+    if def.params.contains_key(inner) {
+        return Ok(inner.into());
+    }
     if !def
         .blocks
         .iter()
         .any(|b| b.name == inner && b.type_name == INPUT_VALUE)
     {
         return Err(format!(
-            "a wire into a model on a shared clock goes to one of its input blocks ({INPUT_VALUE})"
+            "a wire into a model on a shared clock goes to one of its input blocks ({INPUT_VALUE}) \
+             or parameters"
         ));
     }
     let fed = format!("{inner}.y");

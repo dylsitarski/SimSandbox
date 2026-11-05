@@ -52,7 +52,7 @@
         "properties": {
           "name": {
             "type": "string",
-            "description": "The input's name: letters, digits and '_', apart from its blocks and outputs."
+            "description": "The input's name: letters, digits and '_', apart from its blocks, outputs and declared parameters."
           },
           "to": {
             "type": "array",
@@ -450,7 +450,8 @@
           "$ref": "#/$defs/ref"
         },
         "to": {
-          "$ref": "#/$defs/ref"
+          "$ref": "#/$defs/ref",
+          "description": "An input, `block.port`, or a parameter, `block.param`, which the wire then drives in place of its value (ADR 0075); a used model's input or declared parameter is `use/name`, a study's parameter `study.name`. A parameter is set or wired, not both."
         }
       }
     },

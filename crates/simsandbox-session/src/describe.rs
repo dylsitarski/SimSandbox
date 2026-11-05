@@ -270,7 +270,10 @@ pub fn check(text: &str, r: &Registry) -> Value {
                     "suggested": p.suggested,
                     "initial_condition": p.initial_condition,
                     "description": p.description,
+                    "driven_by": p.driven,
                 })).collect::<Vec<_>>(),
+                // Parameters driven by wires (ADR 0075).
+                "driven": crate::session::drives(s.sim_model()).into_iter().map(|(to, from)| json!({"param": to, "from": from})).collect::<Vec<_>>(),
                 "definitions": crate::compose::definitions(&s.file),
                 "blocks": s.flat.blocks.iter().map(|b| &b.name).collect::<Vec<_>>(),
                 "filters": s.filters().iter().map(|f| f.name.clone()).collect::<Vec<_>>(),

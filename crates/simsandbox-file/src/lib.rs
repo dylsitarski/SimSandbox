@@ -2230,6 +2230,13 @@ impl ModelFile {
         compose::check_uses(&raw.blocks, &raw.subsystems)?;
         compose::check_outputs(&raw.outputs, &raw.blocks)?;
         compose::check_inputs(&raw.inputs, &raw.outputs, &raw.blocks)?;
+        compose::check_driven(
+            &raw.params,
+            &raw.blocks,
+            &raw.inputs,
+            &raw.outputs,
+            &raw.connections,
+        )?;
         if raw.sample.is_some() {
             return Err(invalid(
                 "sample",
@@ -2437,7 +2444,15 @@ impl ModelFile {
                 }
                 None => port_ref(&c.from, &ids).map_err(|m| invalid(format!("{path}.from"), m))?,
             };
-            model.connect(from, to).map_err(|e| invalid(&path, e))?;
+            // Into a parameter: it is driven (ADR 0075).
+            let spec = model.block(to.0).map_err(|e| invalid(&path, e))?.spec();
+            let param = !spec.inputs().any(|p| p.name == to.1)
+                && spec.params.iter().any(|p| p.name == to.1);
+            if param {
+                model.drive(from, to).map_err(|e| invalid(&path, e))?;
+            } else {
+                model.connect(from, to).map_err(|e| invalid(&path, e))?;
+            }
         }
         Ok((model, ids))
     }

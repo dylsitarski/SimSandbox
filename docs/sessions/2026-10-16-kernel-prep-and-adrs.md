@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: ADR 0075 step 2: loader drives on wires to parameters; `Item::Instance::params` in flattening; `expose_input` passes declared parameters; `check_driven`; `Registry::build` name clash; `ParamRow::driven`, `session::drives`, `check`'s `driven`/`driven_by`; schema, Python docstring and test; `tests/driven_files.rs`.
 - 2026-11-05: ADR 0075 step 1: `Model::drive`, driven parameters as input slots in the `Simulator` (routes, exchange, `OutputPlan`, `GroupPlan::rhs`), `PortSpec::param_feedthrough`, typed equations' exact walk, `starting_order` and restart passes; built-in declarations; tests `driven_params.rs`, `params.rs`, `param_declarations.rs`; all examples bit for bit as before.
 - 2026-11-05: ADR 0075 written (not built); Q53 (activation) raised.
 - 2026-11-05: ADR 0074 step 3: `Diagram::exposed`, `NodeValue::exposed`, `exposable`/`exposed_as`/`toggle_exposed`, `Edit::HideOutput`, `DeclareOutput` naming by port; canvas rings and click toggles, hover help; menus, `Canvas::revealed`/`reveal` removed; `route` for wires across an outline to exposed ports; expand routes exposed inputs; Duplicate feeds copies' outside inputs; Platoon follower rewritten (0 of 16 814 CSV cells differ); renders checked.

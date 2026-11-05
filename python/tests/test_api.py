@@ -38,6 +38,23 @@ def test_a_model_built_from_scratch_matches_its_exact_solution():
     assert r.labels["speed"] == "RealTime"
 
 
+def test_a_parameter_driven_by_a_wire_follows_its_signal():
+    # dx/dt = -k x with k = a t driven by a clock: x = exp(-a t^2 / 2).
+    m = ss.Model()
+    m.add_block("clock", "eq.equations", "rk4", equations="param a [1/s^2] = 0.5\nstate tau [s] = 0\ndtau/dt = 1\nk = a*tau [1/s]")
+    m.add_block("decay", "eq.equations", "rk4", equations="param k [1/s] = 100\nstate x = 1\ndx/dt = -k*x")
+    m.connect("clock.k", "decay.k")
+    m.set_run(dt=0.01, t_end=2.0)
+    report = m.check()
+    assert report["ok"], report
+    assert report["driven"] == [{"param": "decay.k", "from": "clock.k"}]
+    r = m.run()
+    assert np.max(np.abs(r["decay.x"] - np.exp(-0.25 * r.t**2))) < 1e-8
+    # Set and wired at once is refused.
+    m.set("decay.k", 2.0)
+    assert not m.check()["ok"]
+
+
 def test_connected_blocks_with_feedthrough_and_parameter_edits():
     car = ss.Model.example("Cruise control")
     car.set("cruise.ki", 0.0)  # P control only: settles below the target.

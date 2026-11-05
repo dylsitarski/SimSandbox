@@ -217,7 +217,10 @@ class Model:
         return self
 
     def connect(self, source: str, target: str) -> "Model":
-        """Connect an output to an input: ``connect("car.v", "cruise.v")``."""
+        """Connect an output to an input, ``connect("car.v", "cruise.v")``,
+        or to a parameter, which the output then drives in place of its
+        value (ADR 0075): ``connect("clock.k", "decay.k")``, a used
+        model's ``"car1/mass"`` or a study's ``"curve.m"``."""
         self.data.setdefault("connections", []).append({"from": source, "to": target})
         return self
 

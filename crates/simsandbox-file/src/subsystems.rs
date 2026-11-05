@@ -348,7 +348,13 @@ pub(crate) struct Check {
 /// What a name at one level of the model stands for.
 enum Item {
     Block(String),
-    Instance { inputs: Inputs, outputs: Outputs },
+    Instance {
+        inputs: Inputs,
+        outputs: Outputs,
+        /// Its declared parameters a wire may drive (ADR 0075): the flat
+        /// `block.param`s set to each alone, or why it cannot be driven.
+        params: Params,
+    },
 }
 
 struct Ctx<'a> {
@@ -594,6 +600,13 @@ fn compile(
 type Inputs = BTreeMap<String, Vec<String>>;
 /// A subsystem's outputs as the flat output each shows.
 type Outputs = BTreeMap<String, String>;
+type Params = BTreeMap<String, std::result::Result<Vec<String>, String>>;
+
+/// Whether formula `text` names `name`.
+fn names(text: &str, name: &str) -> bool {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|w| w == name)
+}
 
 /// Resolve a subsystem's ports among its inner items.
 fn interface(
@@ -648,7 +661,15 @@ fn resolve(items: &BTreeMap<String, Item>, key: &str, input: bool) -> Result<Vec
     match items.get(name) {
         None => Err(format!("no block named '{name}'")),
         Some(Item::Block(flat)) => Ok(vec![format!("{flat}.{port}")]),
-        Some(Item::Instance { inputs, outputs }) => {
+        Some(Item::Instance {
+            inputs,
+            outputs,
+            params,
+        }) => {
+            // A wire into a declared parameter drives it (ADR 0075).
+            if let (true, None, Some(p)) = (input, inputs.get(port), params.get(port)) {
+                return p.clone();
+            }
             let found = if input {
                 inputs.get(port).cloned()
             } else {
@@ -656,7 +677,7 @@ fn resolve(items: &BTreeMap<String, Item>, key: &str, input: bool) -> Result<Vec
             };
             found.ok_or_else(|| {
                 let (kind, names): (&str, Vec<&String>) = if input {
-                    ("input", inputs.keys().collect())
+                    ("input", inputs.keys().chain(params.keys()).collect())
                 } else {
                     ("output", outputs.keys().collect())
                 };
@@ -963,7 +984,59 @@ impl Ctx<'_> {
             b.start = Some(start.clone());
         }
         let (inputs, outputs) = interface(def, &items, &path)?;
-        Ok(Item::Instance { inputs, outputs })
+        // What a wire into each declared parameter drives: the inner
+        // parameters set to it alone, unless a formula reads it otherwise.
+        let mut params = Params::new();
+        for d in def.params.keys() {
+            let mut targets = Vec::new();
+            let mut blocked = None;
+            for b in &def.blocks {
+                for (k, v) in &b.params {
+                    let ParamValue::Formula(text) = v else {
+                        continue;
+                    };
+                    let text = text.trim();
+                    if text != d {
+                        if names(text, d) {
+                            blocked = Some(format!("{}.{k} = {text} reads it", b.name));
+                        }
+                        continue;
+                    }
+                    match items.get(&b.name) {
+                        Some(Item::Block(flat)) => targets.push(format!("{flat}.{k}")),
+                        Some(Item::Instance { params: inner, .. }) => match inner.get(k) {
+                            Some(Ok(t)) => targets.extend(t.iter().cloned()),
+                            Some(Err(e)) => blocked = Some(e.clone()),
+                            None => blocked = Some(format!("{}.{k} = {text}", b.name)),
+                        },
+                        None => {}
+                    }
+                }
+            }
+            // An inner value this use sets itself is not driven.
+            targets.retain(|t| {
+                !entry
+                    .params
+                    .keys()
+                    .any(|k| format!("{inner_prefix}{k}") == *t)
+            });
+            params.insert(
+                d.clone(),
+                match blocked {
+                    Some(why) => Err(format!(
+                        "'{}' cannot drive its parameter {d}: {why}; only parameters set to \
+                         it alone can be driven (ADR 0075)",
+                        entry.name
+                    )),
+                    None => Ok(targets),
+                },
+            );
+        }
+        Ok(Item::Instance {
+            inputs,
+            outputs,
+            params,
+        })
     }
 }
 
