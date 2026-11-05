@@ -26,6 +26,7 @@ pub mod fusion;
 pub mod graph;
 pub mod hold;
 pub mod loops;
+pub mod parallel;
 pub mod random;
 pub mod registry;
 pub mod sampling;

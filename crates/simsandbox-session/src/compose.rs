@@ -9,6 +9,7 @@ use crate::run::{Output, Population, Results, DEFAULT_T_END};
 use crate::session::{set_key, InputEvent, Track};
 use serde_json::{json, Value};
 use simsandbox_core::block::Shape;
+use simsandbox_core::parallel::Parallel;
 use simsandbox_core::registry::Registry;
 use simsandbox_core::schedule::Trigger;
 use simsandbox_core::sim::Simulator;
@@ -256,6 +257,17 @@ pub fn run_composition(
     registry: &Registry,
     t_end: Option<f64>,
 ) -> Result<Composed, String> {
+    run_composition_with(text, registry, t_end, Parallel::Auto)
+}
+
+/// [`run_composition`], the models stepping between instants on several
+/// cores as `parallel` says (ADR 0066 step 6); the same bits either way.
+pub fn run_composition_with(
+    text: &str,
+    registry: &Registry,
+    t_end: Option<f64>,
+    parallel: Parallel,
+) -> Result<Composed, String> {
     if let Some(t) = t_end.filter(|t| !(t.is_finite() && *t > 0.0)) {
         return Err(format!("the end time must be positive, got {t}"));
     }
@@ -292,7 +304,9 @@ pub fn run_composition(
         }
     }
     let clocked: Vec<usize> = (0..runs.len()).filter(|&u| !runs[u].on_data).collect();
-    point(&c, &mut runs, &clocked, true, &mut links, &[])?;
+    let names: Vec<String> = c.domains.iter().map(|d| d.name().to_string()).collect();
+    let mut costs = simsandbox_core::parallel::Costs::new(runs.len());
+    point(&c, &mut runs, &clocked, true, &mut links, &[], false)?;
     // Each model's next instant: its next step, or its next listed time
     // up to the end.
     let next_of = |r: &Running| -> Option<(u128, f64)> {
@@ -318,21 +332,34 @@ pub fn run_composition(
             runs[u].taken += 1;
         }
         // Between points the models step apart, their link inputs held:
-        // by `dt`, or to their next listed time.
-        for &u in &reaching {
-            let r = &mut runs[u];
-            let now = r.sim.time();
-            r.apply(now)?;
-            let dt = match r.listed.get(r.taken as usize) {
-                Some(&(_, t)) => t - now,
-                None => r.dt,
-            };
-            r.sim
-                .step(dt)
-                .map_err(|e| format!("{}: {e}", c.domains[u].name()))?;
-            r.taken += 1;
+        // by `dt`, or to their next listed time; on several cores when
+        // worth it (ADR 0066 step 6).
+        let work: Vec<(usize, &mut Running)> = runs
+            .iter_mut()
+            .enumerate()
+            .filter(|(u, _)| reaching.contains(u))
+            .collect();
+        let cores = costs.worth(parallel, &reaching);
+        let done = simsandbox_core::parallel::each(work, cores, |(u, r)| {
+            let start = std::time::Instant::now();
+            let stepped = (|| {
+                let now = r.sim.time();
+                r.apply(now)?;
+                let dt = match r.listed.get(r.taken as usize) {
+                    Some(&(_, t)) => t - now,
+                    None => r.dt,
+                };
+                r.sim.step(dt).map_err(|e| format!("{}: {e}", names[u]))?;
+                r.taken += 1;
+                Ok::<(), String>(())
+            })();
+            (u, stepped, start.elapsed())
+        });
+        for (u, stepped, took) in done {
+            costs.record(u, took);
+            stepped?;
         }
-        point(&c, &mut runs, &reaching, false, &mut links, &due)?;
+        point(&c, &mut runs, &reaching, false, &mut links, &due, cores)?;
     }
     if links.delayed {
         warnings.push(
@@ -460,6 +487,7 @@ fn point(
     start: bool,
     links: &mut Links,
     due: &[(usize, f64)],
+    parallel: bool,
 ) -> Result<(), String> {
     let order: Vec<usize> = c
         .order
@@ -544,9 +572,15 @@ fn point(
             links.delayed = true;
         }
     }
-    for &u in reaching {
-        runs[u].record();
-    }
+    // Each model records its own outputs: on several cores when its
+    // stepping was (ADR 0066 step 6).
+    let recording: Vec<&mut Running> = runs
+        .iter_mut()
+        .enumerate()
+        .filter(|(u, _)| reaching.contains(u))
+        .map(|(_, r)| r)
+        .collect();
+    simsandbox_core::parallel::each(recording, parallel, Running::record);
     Ok(())
 }
 
@@ -1887,6 +1921,29 @@ mod tests {
         let y: Vec<f64> = (0..=30).map(|n| z[n / 3]).collect();
         assert_eq!(bits(series(a, "a/count.y")), bits(&y));
         assert_eq!(series(b, "b/u.y")[1], x[3]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn models_stepping_on_several_cores_give_the_same_bits() {
+        let dir = temp_dir("cores");
+        let mut c = pair(&dir, 0.1, 0.1);
+        c["run"] = json!({"t_end": 3});
+        let with = |p: Parallel| {
+            simsandbox_core::registry::in_folder(Some(&dir), || {
+                run_composition_with(&c.to_string(), &registry(), None, p)
+            })
+            .unwrap()
+        };
+        let all = |r: &Composed| -> Vec<u64> {
+            r.models
+                .iter()
+                .flat_map(|(_, m)| m.outputs.iter().flat_map(|o| bits(&o.values)))
+                .collect()
+        };
+        let apart = with(Parallel::Never);
+        assert_eq!(all(&with(Parallel::Always)), all(&apart));
+        assert_eq!(all(&with(Parallel::Auto)), all(&apart));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

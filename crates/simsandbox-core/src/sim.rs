@@ -12,6 +12,7 @@ use crate::loops::{Link, LoopMethod, OutputPlan};
 use crate::table::Table;
 use crate::{Result, SimError};
 use std::cell::RefCell;
+use std::time::Instant;
 
 /// A saved point in a run, used for rewind and branching: time, every
 /// Block's state, tables, outputs and parameter values. Outputs that can
@@ -150,26 +151,27 @@ impl GroupPlan {
     /// outputs made consistent with the inputs from inside the group, loops
     /// solved (ADR 0040); then every member's inputs from inside the group
     /// (or held, from outside), and the right-hand sides.
+    /// The members' blocks, parameters and held inputs are given in member
+    /// order, so a group can be advanced with its own members only.
     fn rhs(
         &self,
-        blocks: &[Box<dyn Block>],
-        params: &[Vec<f64>],
-        held: &[Vec<f64>],
+        blocks: &[&dyn Block],
+        params: &[&[f64]],
+        held: &[&[f64]],
         t: f64,
         x: &[f64],
         dx: &mut [f64],
     ) -> Result<()> {
         let state = |k: usize| {
-            let (b, off) = self.members[k];
-            &x[off..off + blocks[b].spec().states.len()]
+            let off = self.members[k].1;
+            &x[off..off + blocks[k].spec().states.len()]
         };
-        let mut us: Vec<Vec<f64>> = self.members.iter().map(|&(b, _)| held[b].clone()).collect();
+        let mut us: Vec<Vec<f64>> = held.iter().map(|h| h.to_vec()).collect();
         // A member's inputs, and its parameters with the driven ones as its
         // inputs give them (ADR 0075).
         let split = |k: usize, u: &[f64]| -> (std::ops::Range<usize>, Vec<f64>) {
-            let b = self.members[k].0;
             let (n, driven) = &self.driven[k];
-            let mut p = params[b].clone();
+            let mut p = params[k].to_vec();
             for (j, &i) in driven.iter().enumerate() {
                 p[i] = u[n + j];
             }
@@ -177,9 +179,8 @@ impl GroupPlan {
         };
         let mut ys: Vec<Vec<f64>> = (0..self.members.len())
             .map(|k| {
-                let b = self.members[k].0;
-                let mut y = vec![0.0; blocks[b].spec().output_len()];
-                if let Some(eq) = blocks[b].as_equations() {
+                let mut y = vec![0.0; blocks[k].spec().output_len()];
+                if let Some(eq) = blocks[k].as_equations() {
                     let (r, p) = split(k, &us[k]);
                     eq.outputs(t, state(k), &us[k][r], &p, &mut y);
                 }
@@ -189,8 +190,7 @@ impl GroupPlan {
         if !self.outputs.is_empty() {
             self.outputs
                 .solve(self.method, &mut ys, &mut us, &mut |k, u, y| {
-                    let b = self.members[k].0;
-                    if let Some(eq) = blocks[b].as_equations() {
+                    if let Some(eq) = blocks[k].as_equations() {
                         let (r, p) = split(k, u);
                         eq.outputs(t, state(k), &u[r], &p, y);
                     }
@@ -202,11 +202,106 @@ impl GroupPlan {
                 us[r.to_block][r.to_offset + i] = r.factor * ys[r.from_block][r.from_offset + i];
             }
         }
-        for (k, &(b, off)) in self.members.iter().enumerate() {
-            let n = blocks[b].spec().states.len();
-            if let Some(eq) = blocks[b].as_equations() {
+        for (k, &(_, off)) in self.members.iter().enumerate() {
+            let n = blocks[k].spec().states.len();
+            if let Some(eq) = blocks[k].as_equations() {
                 let (r, p) = split(k, &us[k]);
                 eq.rhs(t, state(k), &us[k][r], &p, &mut dx[off..off + n]);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One Block's part of the run, lent to a unit of work (ADR 0066 step 6).
+struct Slot<'a> {
+    block: &'a mut Box<dyn Block>,
+    params: &'a [f64],
+    /// Its inputs, its driven parameters after them (ADR 0075).
+    inputs: &'a [f64],
+    n_in: usize,
+    state: &'a mut Vec<f64>,
+    outputs: &'a mut Vec<f64>,
+    tables: &'a mut Vec<Table>,
+    pin: &'a [Vec<f64>],
+    pout: &'a mut Vec<Vec<f64>>,
+}
+
+/// What one clock steps between instants: its blocks and its fused
+/// groups, which touch nothing another clock's do.
+struct Unit<'a> {
+    clock: usize,
+    t0: f64,
+    dt: f64,
+    step: u64,
+    blocks: Vec<(Slot<'a>, u64)>,
+    groups: Vec<(
+        &'a GroupPlan,
+        &'a mut Box<dyn crate::fusion::GroupSolver>,
+        Vec<Slot<'a>>,
+    )>,
+}
+
+impl Unit<'_> {
+    /// Step every block from `t0` over `dt`, then advance each group and
+    /// compute its members' outputs.
+    fn step(self) -> Result<()> {
+        let (t0, dt) = (self.t0, self.dt);
+        for (slot, seed) in self.blocks {
+            slot.block.do_step(
+                StepContext {
+                    t: t0,
+                    dt,
+                    step: self.step,
+                    seed,
+                },
+                StepIo {
+                    params: slot.params,
+                    inputs: &slot.inputs[..slot.n_in],
+                    state: slot.state,
+                    outputs: slot.outputs,
+                    tables: slot.tables,
+                    population_inputs: slot.pin,
+                    population_outputs: slot.pout,
+                },
+            )?;
+        }
+        for (plan, solver, mut members) in self.groups {
+            let mut x = Vec::with_capacity(plan.len);
+            for m in &members {
+                x.extend_from_slice(m.state);
+            }
+            {
+                let blocks: Vec<&dyn Block> = members.iter().map(|m| m.block.as_ref()).collect();
+                let params: Vec<&[f64]> = members.iter().map(|m| m.params).collect();
+                let held: Vec<&[f64]> = members.iter().map(|m| m.inputs).collect();
+                let failed = RefCell::new(None);
+                let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
+                    if let Err(e) = plan.rhs(&blocks, &params, &held, t, x, dx) {
+                        dx.fill(f64::NAN);
+                        failed.borrow_mut().get_or_insert(e);
+                    }
+                };
+                solver.advance(&rhs, t0, dt, &mut x)?;
+                if let Some(e) = failed.into_inner() {
+                    return Err(e);
+                }
+            }
+            for (m, &(_, off)) in members.iter_mut().zip(&plan.members) {
+                let n = m.state.len();
+                m.state.copy_from_slice(&x[off..off + n]);
+                m.block.compute_outputs(
+                    t0 + dt,
+                    StepIo {
+                        params: m.params,
+                        inputs: &m.inputs[..m.n_in],
+                        state: m.state,
+                        outputs: m.outputs,
+                        tables: m.tables,
+                        population_inputs: m.pin,
+                        population_outputs: m.pout,
+                    },
+                )?;
             }
         }
         Ok(())
@@ -257,6 +352,10 @@ pub struct Simulator {
     /// Blocks with driven starting values, in the order they are started
     /// again once their drivers' outputs are known.
     starting: Vec<usize>,
+    /// Whether clocks stepping at one instant run on several cores, and
+    /// what each took (ADR 0066 step 6).
+    parallel: crate::parallel::Parallel,
+    costs: crate::parallel::Costs,
 }
 
 impl Snapshot {
@@ -460,6 +559,8 @@ impl Simulator {
             n_in,
             driven,
             starting,
+            parallel: crate::parallel::Parallel::default(),
+            costs: crate::parallel::Costs::new(clocks),
         };
         sim.restart(t0)?;
         Ok(sim)
@@ -731,12 +832,15 @@ impl Simulator {
             for &(b, _) in &plan.members {
                 x.extend_from_slice(&self.states[b]);
             }
-            let (blocks, params, held) = (&self.model.blocks, &self.model.params, &self.inputs);
+            let ids = || plan.members.iter().map(|&(b, _)| b);
+            let blocks: Vec<&dyn Block> = ids().map(|b| self.model.blocks[b].as_ref()).collect();
+            let params: Vec<&[f64]> = ids().map(|b| self.model.params[b].as_slice()).collect();
+            let held: Vec<&[f64]> = ids().map(|b| self.inputs[b].as_slice()).collect();
             // The solver's right-hand side cannot fail; a loop that does
             // not converge is reported after the step.
             let failed = RefCell::new(None);
             let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
-                if let Err(e) = plan.rhs(blocks, params, held, t, x, dx) {
+                if let Err(e) = plan.rhs(&blocks, &params, &held, t, x, dx) {
                     dx.fill(f64::NAN);
                     failed.borrow_mut().get_or_insert(e);
                 }
@@ -891,76 +995,94 @@ impl Simulator {
         // On new data, blocks step only to their own listed instants: their
         // data's samples, which only a step brings (ADR 0067 step 4).
         let stepping = |c: usize| reaching[c] && (!clocks[c].on_data || listed[c]);
-        for (bi, block) in self.model.blocks.iter_mut().enumerate() {
-            let c = self.model.clock_of[bi];
-            if !stepping(c)
-                || self
-                    .model
-                    .groups
-                    .iter()
-                    .any(|g| g.members.contains(&BlockId(bi)))
-            {
-                continue;
+        // Each clock stepping now is a unit: its blocks and fused groups,
+        // which touch nothing of another clock's, their inputs held. Units
+        // run on several cores when worth it, with the same bits (ADR 0066
+        // step 6).
+        let in_group: Vec<bool> = (0..self.model.blocks.len())
+            .map(|b| self.model.group_of(BlockId(b)).is_some())
+            .collect();
+        let clock_of = &self.model.clock_of;
+        let (params, inputs, n_in) = (&self.model.params, &self.inputs, &self.n_in);
+        let pin = &self.population_inputs;
+        let mut slots: Vec<Option<Slot>> = self
+            .model
+            .blocks
+            .iter_mut()
+            .zip(self.states.iter_mut())
+            .zip(self.outputs.iter_mut())
+            .zip(self.tables.iter_mut())
+            .zip(self.population_outputs.iter_mut())
+            .enumerate()
+            .map(|(b, ((((block, state), outputs), tables), pout))| {
+                Some(Slot {
+                    block,
+                    params: &params[b],
+                    inputs: &inputs[b],
+                    n_in: n_in[b],
+                    state,
+                    outputs,
+                    tables,
+                    pin: &pin[b],
+                    pout,
+                })
+            })
+            .collect();
+        let mut units: Vec<Unit> = (0..clocks.len())
+            .filter(|&c| stepping(c))
+            .map(|c| Unit {
+                clock: c,
+                t0: self.clock_t[c],
+                dt: dts[c],
+                step: self.clock_taken[c] as u64,
+                blocks: Vec::new(),
+                groups: Vec::new(),
+            })
+            .collect();
+        let unit_of = |c: usize| units.iter().position(|u| u.clock == c);
+        let mut placed: Vec<(usize, usize)> = Vec::new();
+        for b in 0..slots.len() {
+            if !in_group[b] {
+                if let Some(u) = unit_of(clock_of[b]) {
+                    placed.push((u, b));
+                }
             }
-            block.do_step(
-                StepContext {
-                    t: self.clock_t[c],
-                    dt: dts[c],
-                    step: self.clock_taken[c] as u64,
-                    seed: self.seeds[bi],
-                },
-                StepIo {
-                    params: &self.model.params[bi],
-                    inputs: &self.inputs[bi][..self.n_in[bi]],
-                    state: &mut self.states[bi],
-                    outputs: &mut self.outputs[bi],
-                    tables: &mut self.tables[bi],
-                    population_inputs: &self.population_inputs[bi],
-                    population_outputs: &mut self.population_outputs[bi],
-                },
-            )?;
         }
-        for (plan, group) in self.plans.iter().zip(&mut self.model.groups) {
+        for (u, b) in placed {
+            let slot = slots[b].take().expect("each block once");
+            units[u].blocks.push((slot, self.seeds[b]));
+        }
+        for (plan, group) in self.plans.iter().zip(self.model.groups.iter_mut()) {
             let Some(&(first, _)) = plan.members.first() else {
                 continue;
             };
-            let c = self.model.clock_of[first];
-            if !stepping(c) {
+            let Some(u) = units.iter().position(|u| u.clock == clock_of[first]) else {
                 continue;
-            }
-            let (t0, dt) = (self.clock_t[c], dts[c]);
-            let mut x = Vec::with_capacity(plan.len);
-            for &(b, _) in &plan.members {
-                x.extend_from_slice(&self.states[b]);
-            }
-            let (blocks, params, held) = (&self.model.blocks, &self.model.params, &self.inputs);
-            let failed = RefCell::new(None);
-            let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
-                if let Err(e) = plan.rhs(blocks, params, held, t, x, dx) {
-                    dx.fill(f64::NAN);
-                    failed.borrow_mut().get_or_insert(e);
-                }
             };
-            group.solver.advance(&rhs, t0, dt, &mut x)?;
-            if let Some(e) = failed.into_inner() {
-                return Err(e);
+            let members = plan
+                .members
+                .iter()
+                .map(|&(b, _)| slots[b].take().expect("each member once"))
+                .collect();
+            units[u].groups.push((plan, &mut group.solver, members));
+        }
+        let clocks_now: Vec<usize> = units.iter().map(|u| u.clock).collect();
+        let parallel = self.costs.worth(self.parallel, &clocks_now);
+        let done = crate::parallel::each(units, parallel, |unit| {
+            let start = Instant::now();
+            let clock = unit.clock;
+            (clock, unit.step(), start.elapsed())
+        });
+        drop(slots);
+        let mut failed = None;
+        for (clock, result, took) in done {
+            self.costs.record(clock, took);
+            if let (Err(e), None) = (result, &failed) {
+                failed = Some(e);
             }
-            for &(b, off) in &plan.members {
-                let n = self.states[b].len();
-                self.states[b].copy_from_slice(&x[off..off + n]);
-                self.model.blocks[b].compute_outputs(
-                    t0 + dt,
-                    StepIo {
-                        params: &self.model.params[b],
-                        inputs: &self.inputs[b][..self.n_in[b]],
-                        state: &mut self.states[b],
-                        outputs: &mut self.outputs[b],
-                        tables: &mut self.tables[b],
-                        population_inputs: &self.population_inputs[b],
-                        population_outputs: &mut self.population_outputs[b],
-                    },
-                )?;
-            }
+        }
+        if let Some(e) = failed {
+            return Err(e);
         }
         for (c, clock) in clocks.iter().enumerate() {
             if listed[c] {
@@ -982,6 +1104,13 @@ impl Simulator {
 
     pub fn model(&self) -> &Model {
         &self.model
+    }
+
+    /// Whether clocks stepping at one instant run on several cores (ADR
+    /// 0066 step 6): by their cost (the default), never, or always. The
+    /// results are the same bits in every case.
+    pub fn set_parallel(&mut self, parallel: crate::parallel::Parallel) {
+        self.parallel = parallel;
     }
 
     /// Change a parameter while running (live sliders). Checked like

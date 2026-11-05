@@ -6,6 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Models on their own clocks step on several cores between instants, in the app and headless, with the same results bit for bit; small models stay on one core. Two Gray–Scott models side by side run in about 60% of the time they took.
+
 - A block picked inside a model expanded in place shows its values in the Inspector, as when the model is opened; before, nothing showed.
 
 - Parameters can be driven by wires (ADR 0075): a connection may end at any block's parameter (`"to": "decay.k"`), a used model's declared parameter (`car1/mass`) or a study's (`curve.m`), and the signal replaces the value: followed at every evaluation, read at the start for starting values, a study running again when it changes. The parameter keeps its own value, used again once the wire goes. `check` lists what is driven. Outputs declare which parameters they read at once, so loops through driven parameters are found and solved like any other. In the app, drop a wire on a node's value to drive it and drag it off the value's dot to give it back its own value, also from outside a model expanded in place onto a value it exposes; a driven value says where it comes from (`from push.F`), stays shown on a closed node, and has no field or slider in the Inspector and Controls. New example: the forced spring.

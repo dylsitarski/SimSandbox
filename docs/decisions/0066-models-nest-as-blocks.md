@@ -305,3 +305,12 @@ Of a used file, only `run.dt` is read; the top level's `run` (`t_end`, `seed`, `
   - the hash changes with a used file;
   - Python inputs.
 
+**Step 6 (2026-11-05): models on several cores between instants.**
+
+- Between instants each model on its own clock steps with its link inputs held, touching nothing another model touches, so the models due at an instant step at once on several cores; the results are the same bits as one after another, in any split.
+- `simsandbox_core::parallel`: `each` runs independent units on the available cores (results in order; the calling thread takes a share), and `Costs` keeps each unit's recent step time. Threads start only when what the units besides the largest cost exceeds 0.2 ms (starting threads costs some tens of microseconds), so small models stay on one thread. `Parallel::{Auto, Never, Always}` chooses; `Auto` is the default.
+- **The app's engine (one simulator on several clocks):** `Simulator::advance` lends each clock stepping now its blocks and fused groups as a unit (`Unit`, `Slot`) and runs the units with `each`; `GroupPlan::rhs` takes its members' blocks, parameters and held inputs in member order, so a group runs with its own members only. Outputs in feedthrough order, links and exchange stay one after another. `Simulator::set_parallel`.
+- **The headless runner:** the models due at an instant step with `each`, and record their outputs with it too. `compose::run_composition_with` takes the `Parallel` choice.
+- **Tests:** a kernel model on two clocks with fused groups and wires across clocks, and two linked models in the headless runner, give the same bits on one core and on several; the examples are unchanged, bit for bit.
+- **Measured** (4 cores, release build): two Gray–Scott models on their own clocks, 200 steps, took 0.92 s headless and 0.72 s in the app's engine; now 0.57 s and 0.55 s (one model: 0.44 s and 0.35 s). What remains in turn is the evaluation at each instant (outputs, links) and, in the app, the recording of history.
+- Not split: one model's own work (its blocks on one clock, a large grid). Splitting cell loops and reductions into fixed chunks is ADR 0062 step 3.
