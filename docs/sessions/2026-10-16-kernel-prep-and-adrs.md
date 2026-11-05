@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: STATUS What works checked against the code (`describe`, the examples list, CLI commands, the Python API, app labels): subsystem bullet replaced; bullets added for models that use models, time from data, probes and the recorder; methods, block types, examples, shapes, panes, canvas, CLI and Python brought up to date.
 - 2026-11-05: STATUS Known limitations checked against the code: the two study items merged; subsystem, sweep and experiment items rewritten for ADRs 0068 and 0071; heat maps over uneven and 2D coordinates, study give-up, probes and recorders across used models, the recorder's memory budget and the step number `n` in maps stated as built.
 - 2026-11-04: studies off the window's thread: `study::without_running_studies`, `Session::studies_unrun`/`run_studies`, the diagram's `check`, `open_inner` building without studies, the worker running them first, `Live::call` giving studies up (found by tracing a 9 s wait in `has_unsaved` on closing), `Model::studies_unrun` and the toolbar's "studies about to run"; session and worker tests; Xvfb timings (open 1.7 s, close 1.9 s, was about 22 s and 11 s).
 - 2026-11-04: ADR 0071 step 2: `run::Progress`/`watch_studies`/`GIVEN_UP`, the runner's per-point check and count, `Session::step` undoing a given-up step, the worker's watch and `Stop::GivenUp`, `Live::study_runs`/`give_up_studies` and `Drop`, the toolbar's runs; session and worker tests.
