@@ -2302,7 +2302,10 @@ impl SimApp {
             let canvas = self.diagram.canvas.selected.clone();
             if canvas != self.last_canvas {
                 self.last_canvas = canvas.clone();
-                let scope: Option<String> = None;
+                // Inside a used model, picks are named inside it: its path
+                // (`car1`, `vehicle/plant`) says where.
+                let scope: Option<String> =
+                    (!self.diagram.inside.is_empty()).then(|| self.diagram.inside.join("/"));
                 self.picked = canvas
                     .map(|s| s.blocks())
                     .unwrap_or_default()
@@ -2379,6 +2382,18 @@ impl SimApp {
                                     canvas_edits.push((at.clone(), e));
                                 }
                                 shown = true;
+                            }
+                            // A block inside a used model: its values by path.
+                            if running.is_none() && drafted.is_none() {
+                                if let Some(t) = crate::inspector::selected(
+                                    &m.params,
+                                    &m.file,
+                                    scope.as_deref(),
+                                    name,
+                                ) {
+                                    uses_table(ui, &t, &m.file.controls.params, edits!());
+                                    shown = true;
+                                }
                             }
                             if !shown {
                                 ui.weak("Nothing to set");

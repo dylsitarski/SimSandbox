@@ -215,8 +215,9 @@ pub fn search(rows: &[ParamRow], query: &str) -> Vec<ParamRow> {
 }
 
 /// The rows of what is selected on the diagram: a model-level block or
-/// use (`scope` empty), or a block inside a subsystem (`scope` is the
-/// subsystem; one column per use of it). Returns the uses and rows by
+/// use (`scope` empty), a block inside the used model at a path (`scope`
+/// is the path, `car1` or `vehicle/plant`), or a block inside a model
+/// defined in the file (`scope` is the definition; one column per use). Returns the uses and rows by
 /// name, as a table.
 pub fn selected(
     rows: &[ParamRow],
@@ -226,6 +227,10 @@ pub fn selected(
 ) -> Option<UsesTable> {
     let (uses, inner): (Vec<String>, Option<&str>) = match scope {
         None => (vec![name.to_string()], None),
+        // A path into used models (`car1`, `vehicle/plant`): that use.
+        Some(s) if s.contains('/') || file.blocks.iter().any(|b| b.name == s && b.is_use()) => {
+            (vec![s.to_string()], Some(name))
+        }
         Some(s) => (
             file.blocks
                 .iter()
@@ -348,6 +353,23 @@ mod tests {
         assert_eq!(shown, 17);
         // Everything, computed values too.
         assert_eq!(organise(&rows, &s.file, true).computed, 0);
+    }
+
+    #[test]
+    fn a_block_picked_inside_a_used_model_shows_its_values() {
+        // Picked on the diagram inside `car1`: its car's values by path.
+        let s = platoon();
+        let rows = s.params();
+        let t = selected(&rows, &s.file, Some("car1"), "car").unwrap();
+        assert_eq!(t.uses, ["car1"]);
+        assert!(
+            t.rows
+                .iter()
+                .any(|(name, cells)| name == "m" && cells[0].is_some()),
+            "{:?}",
+            t.rows.iter().map(|(n, _)| n).collect::<Vec<_>>()
+        );
+        assert!(selected(&rows, &s.file, Some("car1"), "nothing").is_none());
     }
 
     #[test]

@@ -127,6 +127,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- A block picked on the diagram inside a used model now shows its values in the Inspector's selection (it showed nothing).
 - Undo on the canvas kept parameter values moved since the edit only for parameters the file wrote; it now keeps them for parameters left at their defaults too, where the block's definition is unchanged.
 - A model file whose controls held only a layout, open nodes, input bindings, probes or a recorder lost them when saved.
 - A model no longer shows "unsaved" right after opening: the window fitting its panes to their contents is not counted as a change, and is not saved.
