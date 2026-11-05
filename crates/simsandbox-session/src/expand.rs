@@ -398,25 +398,29 @@ pub fn route(d: &Diagram, edit: &Edit) -> Result<(Option<Vec<String>>, Edit), St
             None => top(edit),
         },
         Edit::Connect { from, to } => match one(&[from, to]) {
-            // From outside to an inner port the model exposes, or from one
-            // it exposes to outside (ADR 0074): a wire to or from the use's
-            // port, at the top level.
+            // From outside to an inner port or parameter the model exposes,
+            // or from an output it exposes to outside (ADR 0074, ADR 0075):
+            // a wire to or from the use's port, at the top level, named as
+            // the canvas names ports (`use.port`).
             Err(e) => {
                 let top_port = |kind: &str, end: &str| -> Option<String> {
                     let o = by_name(end).filter(|o| !o.path.contains('/'))?;
                     let name = d.exposed.get(&format!("{kind}:{end}"))?;
-                    Some(format!("{}/{name}", o.path))
+                    Some(format!("{}.{name}", o.path))
                 };
                 let (f, t) = (by_name(from).is_some(), by_name(to).is_some());
                 let wire = match (f, t) {
-                    (false, true) => top_port("in", to).map(|to| (from.clone(), to)),
+                    (false, true) => top_port("in", to)
+                        .or_else(|| top_port("par", to))
+                        .map(|to| (from.clone(), to)),
                     (true, false) => top_port("out", from).map(|from| (from, to.clone())),
                     _ => None,
                 };
                 match wire {
                     Some((from, to)) => Ok((None, Edit::Connect { from, to })),
                     None => Err(format!(
-                        "{e}; or click the inner port to expose it, then wire to it"
+                        "{e}; or expose the inner port or value (click it, or its ring), \
+                         then wire to it"
                     )),
                 }
             }
@@ -432,13 +436,22 @@ pub fn route(d: &Diagram, edit: &Edit) -> Result<(Option<Vec<String>>, Edit), St
             },
         },
         Edit::Disconnect { to } => match by_name(to) {
-            // An exposed input of a model expanded at the top level is fed
-            // there, through the use's port (ADR 0074).
-            Some(o) if !o.path.contains('/') && d.exposed.contains_key(&format!("in:{to}")) => {
+            // An exposed input or parameter of a model expanded at the top
+            // level is fed there, through the use's port (ADR 0074, 0075).
+            Some(o)
+                if !o.path.contains('/')
+                    && ["in", "par"]
+                        .iter()
+                        .any(|k| d.exposed.contains_key(&format!("{k}:{to}"))) =>
+            {
+                let name = ["in", "par"]
+                    .iter()
+                    .find_map(|k| d.exposed.get(&format!("{k}:{to}")))
+                    .expect("checked");
                 Ok((
                     None,
                     Edit::Disconnect {
-                        to: format!("{}/{}", o.path, d.exposed[&format!("in:{to}")]),
+                        to: format!("{}.{name}", o.path),
                     },
                 ))
             }
@@ -661,43 +674,107 @@ mod tests {
                 },
             )
         };
-        // To an exposed input, and from an exposed output: the use's ports.
+        // Routed edits apply to the file as written.
+        let applies = |e: &Edit| {
+            let mut g = f.clone();
+            crate::diagram::apply(&mut g, &r, e).unwrap();
+            g
+        };
+        // To an exposed input, and from an exposed output: the use's ports,
+        // named as the canvas names them.
+        let (path, e) = connect("leader.v", "car1/control.lead").unwrap();
+        assert_eq!(path, None);
         assert_eq!(
-            connect("leader.v", "car1/control.lead").unwrap(),
-            (
-                None,
-                Edit::Connect {
-                    from: "leader.v".into(),
-                    to: "car1/lead".into()
-                }
-            )
-        );
-        assert_eq!(
-            connect("car1/car.v", "car3/lead").unwrap().1,
+            e,
             Edit::Connect {
-                from: "car1/v".into(),
-                to: "car3/lead".into()
+                from: "leader.v".into(),
+                to: "car1.lead".into()
             }
         );
+        assert!(applies(&e)
+            .connections
+            .iter()
+            .any(|c| c.from == "leader.v" && c.to == "car1/lead"));
+        let e = connect("car1/car.v", "car3.lead").unwrap().1;
+        assert_eq!(
+            e,
+            Edit::Connect {
+                from: "car1.v".into(),
+                to: "car3.lead".into()
+            }
+        );
+        assert!(applies(&e)
+            .connections
+            .iter()
+            .any(|c| c.from == "car1/v" && c.to == "car3/lead"));
         // An input not exposed is refused, saying how to expose it.
         let e = connect("leader.v", "car1/car.F").unwrap_err();
         assert!(e.contains("expose"), "{e}");
         // Lifting the wire into an exposed input disconnects the use's port.
+        let e = route(
+            &d,
+            &Edit::Disconnect {
+                to: "car1/control.lead".into(),
+            },
+        )
+        .unwrap();
         assert_eq!(
-            route(
-                &d,
-                &Edit::Disconnect {
-                    to: "car1/control.lead".into()
-                }
-            )
-            .unwrap(),
+            e,
             (
                 None,
                 Edit::Disconnect {
-                    to: "car1/lead".into()
+                    to: "car1.lead".into()
                 }
             )
         );
+        assert!(!applies(&e.1)
+            .connections
+            .iter()
+            .any(|c| c.to == "car1/lead"));
+    }
+
+    #[test]
+    fn a_wire_from_outside_drives_a_parameter_an_expanded_model_exposes() {
+        let r = registry();
+        let text = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Forced spring"))
+            .unwrap()
+            .text;
+        let mut f = ModelFile::from_json(text).unwrap().0;
+        let mut d = Diagram::new(&f, &r);
+        d.expand(&f, &r, &["held".into()]);
+        // held's mass.F is set to its parameter F: driving it drives F
+        // (ADR 0075), and held keeps its own value of F.
+        let (path, e) = route(
+            &d,
+            &Edit::Connect {
+                from: "push.F".into(),
+                to: "held/mass.F".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(path, None);
+        crate::diagram::apply(&mut f, &r, &e).unwrap();
+        assert!(f
+            .connections
+            .iter()
+            .any(|c| c.from == "push.F" && c.to == "held/F"));
+        let mut d = Diagram::new(&f, &r);
+        d.expand(&f, &r, &["held".into()]);
+        let mass = d.node("held/mass").unwrap();
+        let w = d.wires.iter().find(|w| w.param && w.to.0 == mass).unwrap();
+        assert_eq!(d.nodes[mass].values[w.to.1].name, "F");
+        // Lifted from inside the outline: the use's wire goes.
+        let (_, e) = route(
+            &d,
+            &Edit::Disconnect {
+                to: "held/mass.F".into(),
+            },
+        )
+        .unwrap();
+        crate::diagram::apply(&mut f, &r, &e).unwrap();
+        assert!(!f.connections.iter().any(|c| c.to == "held/F"));
     }
 
     #[test]

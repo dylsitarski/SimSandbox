@@ -64,10 +64,11 @@ fn a_wire_into_a_block_parameter_drives_it() {
         .map(|(x, t)| (x - (-0.25 * t * t).exp()).abs())
         .fold(0.0, f64::max);
     assert!(err < 1e-8, "{err}");
-    // Set and wired at once is refused.
+    // A value of its own stays, unused while the wire drives it.
     let mut set = file.clone();
     set["blocks"][1]["params"] = json!({"k": 2.0});
-    refused(&set, "set or wired, not both");
+    let again = run(&set.to_string(), &registry(), None, None).unwrap();
+    assert_eq!(values(&again, "decay.x"), x);
 }
 
 #[test]
@@ -82,13 +83,7 @@ fn a_wire_into_a_used_models_parameter_drives_what_is_set_to_it() {
         .as_array_mut()
         .unwrap()
         .push(json!({"from": "load.mass", "to": "car2/mass"}));
-    // car2 sets its own mass: refused until it does not.
-    refused(&platoon, "set or wired, not both");
-    for b in platoon["blocks"].as_array_mut().unwrap() {
-        if b["name"] == "car2" {
-            b["params"].as_object_mut().unwrap().remove("mass");
-        }
-    }
+    // car2 keeps its own mass (1500 kg), unused while the wire drives it.
     let report = check(&platoon.to_string(), &registry());
     assert_eq!(report["ok"], true, "{report}");
     let driven: Vec<(String, String)> = report["params"]
@@ -180,4 +175,33 @@ fn the_forced_spring_swings_as_its_steady_state_predicts() {
     assert!((swing - 5.0).abs() < 0.01, "{swing}");
     let held = c.values("held/mass.x").unwrap();
     assert!((held.last().unwrap() - 1.0).abs() < 1e-3);
+}
+
+#[test]
+fn saving_a_run_keeps_a_driven_parameters_own_value() {
+    let file = json!({"format": 1,
+        "blocks": [
+            {"name": "clock", "type": "eq.equations", "equations": [
+                "param a [1/s^2] = 0.5", "state tau [s] = 0", "dtau/dt = 1", "k = a*tau [1/s]"]},
+            {"name": "decay", "type": "eq.equations", "equations": [
+                "param k [1/s] = 100", "state x = 1", "dx/dt = -k*x"],
+             "params": {"k": 2.0}}],
+        "connections": [{"from": "clock.k", "to": "decay.k"}],
+        "run": {"dt": 0.01, "t_end": 2.0}});
+    let mut s =
+        simsandbox_session::Session::load("driven", &file.to_string(), &registry()).unwrap();
+    for _ in 0..50 {
+        s.step().unwrap();
+    }
+    // Running, k is the signal's (0.5 at t = 1); saved, it is its own.
+    let saved: Value = serde_json::from_str(&s.save_json(1.0, None).unwrap()).unwrap();
+    assert_eq!(saved["blocks"][1]["params"]["k"], 2.0, "{saved}");
+    // With no value of its own, none is written.
+    let mut bare = file.clone();
+    bare["blocks"][1].as_object_mut().unwrap().remove("params");
+    let mut s =
+        simsandbox_session::Session::load("driven", &bare.to_string(), &registry()).unwrap();
+    s.step().unwrap();
+    let saved: Value = serde_json::from_str(&s.save_json(1.0, None).unwrap()).unwrap();
+    assert!(saved["blocks"][1]["params"].get("k").is_none(), "{saved}");
 }

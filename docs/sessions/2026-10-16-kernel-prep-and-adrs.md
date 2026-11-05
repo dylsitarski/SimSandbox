@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: ADR 0075 fixes (owner's review): values kept through wiring, unwiring and saving (`check_driven`, Connect, `capture_params`); wires from outside an expanded model to the values and inputs it exposes, in the canvas's `use.name` form (the `use/name` form `route` gave before did not apply); tests.
 - 2026-11-05: ADR 0075 step 3: `Wire::param`, `NodeValue::driven`, `drive_values`, `Node::value_port`, value rows of driven parameters on closed nodes; canvas `value_port_under`, `wire_end`, drop and lift on values; `drop_value` on connect; expand routes driven use parameters; app rows and Controls; forced spring example and tests; renders and an app screenshot.
 - 2026-11-05: ADR 0075 step 2: loader drives on wires to parameters; `Item::Instance::params` in flattening; `expose_input` passes declared parameters; `check_driven`; `Registry::build` name clash; `ParamRow::driven`, `session::drives`, `check`'s `driven`/`driven_by`; schema, Python docstring and test; `tests/driven_files.rs`.
 - 2026-11-05: ADR 0075 step 1: `Model::drive`, driven parameters as input slots in the `Simulator` (routes, exchange, `OutputPlan`, `GroupPlan::rhs`), `PortSpec::param_feedthrough`, typed equations' exact walk, `starting_order` and restart passes; built-in declarations; tests `driven_params.rs`, `params.rs`, `param_declarations.rs`; all examples bit for bit as before.
@@ -147,6 +148,7 @@
 
 ## Decided
 
+- 2026-11-05 (owner): wiring and unwiring a parameter do not change its own value; the wire overrides it while there (ADR 0075 decision 1 amended).
 - 2026-11-05 (owner): parameters are inputs with defaults: any block's declared parameter may be wired, read whenever its owner reads it (each evaluation, at start, when a study runs); which outputs it reaches is worked out for typed equations, declared by code blocks (undeclared: every output but state copies) and checked by a perturbation test; activation by events gets its own ADR (ADR 0075, Q53).
 - 2026-11-05: a wire to an inner port that is not exposed is refused with a hint rather than exposing it in the same gesture (two edits at two levels, one possibly asking where it goes); recorded in ADR 0074 As built.
 - 2026-11-05 (owner): a model's interface is parameters (defaults in the model, values per use or study), inputs (signals, no defaults) and outputs, each exposed by a toggle where it is; exposed things look different from others (ADR 0074).

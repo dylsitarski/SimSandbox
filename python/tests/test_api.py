@@ -50,9 +50,10 @@ def test_a_parameter_driven_by_a_wire_follows_its_signal():
     assert report["driven"] == [{"param": "decay.k", "from": "clock.k"}]
     r = m.run()
     assert np.max(np.abs(r["decay.x"] - np.exp(-0.25 * r.t**2))) < 1e-8
-    # Set and wired at once is refused.
+    # A value of its own stays, unused while the wire drives it.
     m.set("decay.k", 2.0)
-    assert not m.check()["ok"]
+    assert m.check()["ok"]
+    assert np.array_equal(m.run()["decay.x"], r["decay.x"])
 
 
 def test_connected_blocks_with_feedthrough_and_parameter_edits():

@@ -368,15 +368,13 @@ pub(crate) fn check_inputs(
     Ok(())
 }
 
-/// Parameters driven by wires (ADR 0075): a parameter is set or wired,
-/// not both; a model's inputs, outputs and parameters share one set of
-/// names.
+/// A model's inputs, outputs and parameters share one set of names, as
+/// wires name them (ADR 0075). A parameter may have a value and a wire:
+/// the wire drives it while it is there; the value is its own.
 pub(crate) fn check_driven(
     params: &BTreeMap<String, crate::ParamDecl>,
-    blocks: &[BlockEntry],
     inputs: &[crate::InputPort],
     outputs: &[crate::OutputPort],
-    connections: &[crate::ConnectionEntry],
 ) -> Result<(), FileError> {
     for (k, i) in inputs.iter().enumerate() {
         if params.contains_key(&i.name) {
@@ -391,32 +389,6 @@ pub(crate) fn check_driven(
             return Err(invalid(
                 format!("outputs[{k}].name"),
                 format!("'{}' is a parameter of the model already", o.name),
-            ));
-        }
-    }
-    for (k, c) in connections.iter().enumerate() {
-        // `block.param`, a study's `s.param`, or a use's `use/param`.
-        let (block, param) = match (c.to.split_once('/'), c.to.split_once('.')) {
-            (Some((u, p)), _) if !p.contains(['.', '/']) => (u, p),
-            (None, Some((b, p))) => (b, p),
-            _ => continue,
-        };
-        let set = blocks
-            .iter()
-            .find(|b| b.name == block)
-            .and_then(|b| b.params.get(param));
-        if let Some(v) = set {
-            let shown = match v {
-                crate::ParamValue::Number(n) => n.to_string(),
-                crate::ParamValue::Formula(f) => f.clone(),
-            };
-            return Err(invalid(
-                format!("connections[{k}].to"),
-                format!(
-                    "{} is set to {shown} in blocks and wired here: a parameter is set or \
-                     wired, not both (ADR 0075); remove the value from {block}'s params",
-                    c.to
-                ),
             ));
         }
     }

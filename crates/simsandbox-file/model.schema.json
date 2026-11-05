@@ -451,7 +451,7 @@
         },
         "to": {
           "$ref": "#/$defs/ref",
-          "description": "An input, `block.port`, or a parameter, `block.param`, which the wire then drives in place of its value (ADR 0075); a used model's input or declared parameter is `use/name`, a study's parameter `study.name`. A parameter is set or wired, not both."
+          "description": "An input, `block.port`, or a parameter, `block.param`, which the wire then drives in place of its value (ADR 0075); a used model's input or declared parameter is `use/name`, a study's parameter `study.name`. A wired parameter keeps its own value, unused while the wire is there."
         }
       }
     },

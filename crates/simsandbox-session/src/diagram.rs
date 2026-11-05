@@ -1761,8 +1761,7 @@ fn edit_level(
                         from: from.clone(),
                         to: to.clone(),
                     });
-                    let note = drop_value(&mut l.blocks, to);
-                    Ok(format!("Connected {from} -> {to}{note}"))
+                    Ok(format!("Connected {from} -> {to}"))
                 }
                 _ => Err("wires run from an output to an input".into()),
             }
@@ -1882,24 +1881,6 @@ fn clock_of<'a>(file: &'a ModelFile, end: &str) -> Option<&'a str> {
         .map(|b| b.name.as_str())
 }
 
-/// A parameter a wire now drives (`block.param`, `use/param`) has no
-/// value of its own: it is set or wired (ADR 0075). A note when one went.
-fn drop_value(blocks: &mut [BlockEntry], to: &str) -> String {
-    let (block, param) = match (to.split_once('/'), to.split_once('.')) {
-        (Some((u, p)), _) if !p.contains(['.', '/']) => (u, p),
-        (None, Some((b, p))) => (b, p),
-        _ => return String::new(),
-    };
-    match blocks
-        .iter_mut()
-        .find(|b| b.name == block)
-        .and_then(|b| b.params.remove(param))
-    {
-        Some(_) => format!(" (it drives {to}, which no longer has its own value)"),
-        None => String::new(),
-    }
-}
-
 /// Connect two ends of which one or both are in used models: a wire on
 /// one clock, or across clocks a probe recording the output, linked into
 /// the input block (ADR 0066 step 4c).
@@ -1920,8 +1901,7 @@ fn connect_uses(
             to: dst.clone(),
         });
         let _ = (scope, registry);
-        let note = drop_value(&mut file.blocks, &dst);
-        return Ok(format!("Connected {src} -> {dst}{note}"));
+        return Ok(format!("Connected {src} -> {dst}"));
     }
     // Across clocks: into an input block only.
     let input = dst
@@ -2891,7 +2871,8 @@ mod tests {
         assert_eq!(w.to.1, 0);
         assert_eq!(d.nodes[shaken].value_rows(), 1);
         assert!(d.dangling.is_empty(), "{:?}", d.dangling);
-        // Wiring a value that has its own drops it: set or wired.
+        // Wiring a value keeps its own, which applies again once the wire
+        // is lifted (ADR 0075).
         f.blocks
             .iter_mut()
             .find(|b| b.name == "held")
@@ -2907,14 +2888,14 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(note.contains("no longer has its own value"), "{note}");
+        assert!(note.contains("Connected"), "{note}");
         let held = f.blocks.iter().find(|b| b.name == "held").unwrap();
-        assert!(!held.params.contains_key("F"));
+        assert_eq!(held.params["F"], ParamValue::Number(0.5));
         let d = Diagram::new(&f, &r);
         let h = d.node("held").unwrap();
         assert_eq!(d.nodes[h].values[0].driven.as_deref(), Some("push.F"));
         assert!(crate::describe::check(&f.to_json(), &r)["ok"] == true);
-        // Lifted, it is the model's own again.
+        // Lifted, it has its own value again, kept all along.
         apply(
             &mut f,
             &r,

@@ -2230,13 +2230,7 @@ impl ModelFile {
         compose::check_uses(&raw.blocks, &raw.subsystems)?;
         compose::check_outputs(&raw.outputs, &raw.blocks)?;
         compose::check_inputs(&raw.inputs, &raw.outputs, &raw.blocks)?;
-        compose::check_driven(
-            &raw.params,
-            &raw.blocks,
-            &raw.inputs,
-            &raw.outputs,
-            &raw.connections,
-        )?;
+        compose::check_driven(&raw.params, &raw.inputs, &raw.outputs)?;
         if raw.sample.is_some() {
             return Err(invalid(
                 "sample",
@@ -2322,12 +2316,18 @@ impl ModelFile {
                 .ok_or_else(|| invalid(&path, format!("no block '{}' in model", entry.name)))?;
             let block = model.block(id).map_err(|e| invalid(&path, e))?;
             let values = model.params(id).map_err(|e| invalid(&path, e))?;
+            // A driven parameter runs on its signal's value; its own, as
+            // written, stays (ADR 0075).
+            let own = std::mem::take(&mut entry.params);
             entry.params = block
                 .spec()
                 .params
                 .iter()
                 .zip(values)
-                .map(|(p, v)| (p.name.clone(), ParamValue::Number(*v)))
+                .filter_map(|(p, v)| match model.is_driven(id, &p.name) {
+                    true => own.get(&p.name).map(|w| (p.name.clone(), w.clone())),
+                    false => Some((p.name.clone(), ParamValue::Number(*v))),
+                })
                 .collect();
         }
         Ok(())
