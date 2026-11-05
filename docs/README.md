@@ -142,6 +142,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0071-sweeps-are-studies.md](decisions/0071-sweeps-are-studies.md) | Decision record | Sweeps and experiments are studies; the sample section and the app's sweep removed |
 | [decisions/0072-models-with-nothing-in-time.md](decisions/0072-models-with-nothing-in-time.md) | Decision record | Models with nothing in time are evaluated in the app, not run |
 | [decisions/0073-ports-and-offered-outputs.md](decisions/0073-ports-and-offered-outputs.md) | Decision record | One place to offer outputs; one list of a used model's ports |
+| [decisions/0074-model-interfaces.md](decisions/0074-model-interfaces.md) | Decision record | A model's interface: parameters, inputs and outputs, exposed where they are |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 

@@ -1,6 +1,6 @@
 # 0068 — One kind of nested model: subsystems become models defined in the file
 
-- **Status:** Accepted; built 2026-11-02 (steps 1 to 3)
+- **Status:** Accepted; built 2026-11-02 (steps 1 to 3); decision 2 amended by [0074](0074-model-interfaces.md) (exposed inputs beside input blocks)
 - **Date:** 2026-11-02
 - **Supersedes:** the form of [ADR 0043](0043-subsystems.md) (subsystems, their ports and instances), once its order of work is done; declared parameters with formulas stay as ADR 0043 and [ADR 0056](0056-formulas-and-parameters-in-the-app.md) decided.
 - **Extends:** [ADR 0066](0066-models-nest-as-blocks.md) (models nest as blocks)

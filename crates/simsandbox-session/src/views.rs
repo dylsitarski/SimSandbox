@@ -424,10 +424,7 @@ mod tests {
         let b = &v.tiles[0].state.bind;
         assert_eq!(v.tiles[0].state.type_name, "plot.heatmap");
         assert_eq!(b["field"], ["map.spring_amplitude"]);
-        assert_eq!(
-            (b["x"][0].as_str(), b["y"][0].as_str()),
-            ("map.spring_w", "map.spring_c")
-        );
+        assert_eq!((b["x"][0].as_str(), b["y"][0].as_str()), ("map.w", "map.c"));
     }
 
     #[test]

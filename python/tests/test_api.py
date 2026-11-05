@@ -51,7 +51,7 @@ def test_connected_blocks_with_feedthrough_and_parameter_edits():
 def test_studies_and_grids_come_back_as_arrays():
     # The resonance curve is a study (ADR 0071): a row per run.
     curve = ss.Model.example("Resonance curve").run()
-    w = curve["curve.spring_w"]
+    w = curve["curve.w"]
     assert w.shape == (600,) and list(curve.index) == ["run"]
     expected = 1.0 / np.sqrt((1.0 - w**2) ** 2 + (0.2 * w) ** 2)
     assert np.allclose(curve["curve.spring_amplitude"], expected, rtol=1e-12)

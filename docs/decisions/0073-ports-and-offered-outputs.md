@@ -1,6 +1,6 @@
 # 0073 — One place to offer outputs, one list of a used model's ports
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by [0074](0074-model-interfaces.md) (toggles replace the block-menu offer and the port list)
 - **Date:** 2026-11-05
 - **Amends:** [ADR 0066](0066-models-nest-as-blocks.md) step 4b (declared outputs and "Show a port") as the app presents them
 

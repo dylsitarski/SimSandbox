@@ -676,7 +676,7 @@ mod tests {
         assert!(s.unevaluated());
         let live = Live::start(s, 1.0, false);
         live.send(Some("param:m.y"), |s, _| {
-            s.set_param_key("m.y", 2.0).unwrap();
+            s.set_param_key("map.m", 2.0).unwrap();
         });
         live.sync();
         let start = Instant::now();
@@ -688,7 +688,7 @@ mod tests {
         }
         live.sync();
         let mut direct = Session::load("m", text, &registry()).unwrap();
-        direct.set_param_key("m.y", 2.0).unwrap();
+        direct.set_param_key("map.m", 2.0).unwrap();
         let newest = |h: &History| {
             let f = h
                 .fields()
@@ -708,12 +708,16 @@ mod tests {
         let live = Live::start(Session::load("c", text, &registry()).unwrap(), 1.0, true);
         std::thread::sleep(Duration::from_millis(200));
         live.send(Some("param:c.y"), |s, _| {
-            s.set_param_key("c.y", 0.05).unwrap();
+            s.set_param_key("curve.c", 0.05).unwrap();
         });
         let start = Instant::now();
         loop {
             let m = live.model();
-            if !m.unevaluated && m.params.iter().any(|r| r.key == "c.y" && r.value == 0.05) {
+            if !m.unevaluated
+                && m.params
+                    .iter()
+                    .any(|r| r.key == "curve.c" && r.value == 0.05)
+            {
                 break;
             }
             assert!(start.elapsed() < Duration::from_secs(20), "timed out");
@@ -724,7 +728,7 @@ mod tests {
         assert_eq!(live.status().time, 0.0);
         assert_eq!(live.history().len(), 1);
         let mut direct = Session::load("c", text, &registry()).unwrap();
-        direct.set_param_key("c.y", 0.05).unwrap();
+        direct.set_param_key("curve.c", 0.05).unwrap();
         let newest = |h: &History| {
             let f = h
                 .fields()

@@ -6,6 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- A study's parameters are its model's declared parameters (ADR 0074): the model's values are their defaults, each study sets its own (`"params"` on its entry), shown on its node and in the Inspector and pinned as sliders. "Study this model" carries a use's values over. The resonance examples declare the spring's `c`, `m` and `w` as parameters and have no input blocks: their studies set `c` and `m` and vary `w` (outputs `curve.w`, `map.w`, `map.c`).
+
 - Plot axes, heat-map and surface scales and cut lines show units (`car.v [m/s]`, `t [s]`); units are printed in SI form (`kg/s`, `1/s`).
 - The "Values" view is named `plot.values`, like the other built-in views.
 - The selection on the diagram stays when an edit keeps its blocks (a study's form, an offered output), so the Inspector's buttons and choices can be used one after another.

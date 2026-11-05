@@ -2872,7 +2872,7 @@ mod tests {
         assert_eq!(s.signals().index(), "t");
         let amp = newest(&s, "curve.spring_amplitude");
         assert_eq!(amp.len(), 600);
-        assert_eq!(newest(&s, "curve.spring_w")[599], 3.0);
+        assert_eq!(newest(&s, "curve.w")[599], 3.0);
         // The same numbers as the headless run of the file.
         let rows =
             crate::run::run(&s.save_json(1.0, None).unwrap(), &registry(), None, None).unwrap();
@@ -2891,7 +2891,7 @@ mod tests {
         );
         // Less damping, a taller peak.
         let peak = |v: &[f64]| v.iter().copied().fold(0.0, f64::max);
-        s.set_param_key("c.y", 0.05).unwrap();
+        s.set_param_key("curve.c", 0.05).unwrap();
         s.step().unwrap();
         assert!(peak(&newest(&s, "curve.spring_amplitude")) > 3.0 * peak(&amp));
     }
@@ -2906,7 +2906,7 @@ mod tests {
         let progress = std::sync::Arc::new(Progress::default());
         watch_studies(Some(progress.clone()));
         // Less damping: the next step runs the study again.
-        s.set_param_key("c.y", 0.05).unwrap();
+        s.set_param_key("curve.c", 0.05).unwrap();
         let (t, len) = (s.time(), s.signals().len());
         progress.give_up();
         let e = s.step().unwrap_err();
@@ -2920,7 +2920,7 @@ mod tests {
         assert_eq!(progress.runs(), Some((600, 600)));
         watch_studies(None);
         let mut direct = example("Resonance curve");
-        direct.set_param_key("c.y", 0.05).unwrap();
+        direct.set_param_key("curve.c", 0.05).unwrap();
         assert_eq!(
             newest(&s, "curve.spring_amplitude"),
             newest(&direct, "curve.spring_amplitude")
@@ -2990,19 +2990,19 @@ mod tests {
         let mut s = example("Resonance curve");
         let before = newest(&s, "curve.spring_amplitude");
         // At once, by default (headless).
-        s.set_param_key("c.y", 0.1).unwrap();
+        s.set_param_key("curve.c", 0.1).unwrap();
         let at_once = newest(&s, "curve.spring_amplitude");
         assert_ne!(at_once, before);
         assert!(!s.unevaluated());
         // Left for later (the app's worker): the values stay until then.
         s.evaluate_later();
-        s.set_param_key("c.y", 0.05).unwrap();
+        s.set_param_key("curve.c", 0.05).unwrap();
         assert!(s.unevaluated());
         assert_eq!(newest(&s, "curve.spring_amplitude"), at_once);
         s.evaluate().unwrap();
         assert!(!s.unevaluated());
         let mut direct = example("Resonance curve");
-        direct.set_param_key("c.y", 0.05).unwrap();
+        direct.set_param_key("curve.c", 0.05).unwrap();
         assert_eq!(
             newest(&s, "curve.spring_amplitude"),
             newest(&direct, "curve.spring_amplitude")
@@ -3118,20 +3118,14 @@ mod tests {
         drop(h);
         // What a view of the cut reads is recorded.
         s.set_view_reads(
-            [
-                "map.spring_amplitude",
-                "map.spring_c",
-                "map.spring_w",
-                "res[1]",
-                "res.x",
-            ]
-            .map(String::from)
-            .to_vec(),
+            ["map.spring_amplitude", "map.c", "map.w", "res[1]", "res.x"]
+                .map(String::from)
+                .to_vec(),
         );
         s.step().unwrap();
         let (amp, c, w) = (
             newest(&s, "map.spring_amplitude"),
-            newest(&s, "map.spring_c"),
+            newest(&s, "map.c"),
             newest(&s, "res.x"),
         );
         let at = cut.settings["at"].as_array().unwrap()[1].as_f64().unwrap();
@@ -3141,11 +3135,11 @@ mod tests {
             newest(&s, "res[1]"),
             amp[row * 200..row * 200 + 200].to_vec()
         );
-        assert_eq!(w, newest(&s, "map.spring_w")[..200].to_vec());
+        assert_eq!(w, newest(&s, "map.w")[..200].to_vec());
         let h = s.signals();
         let label = h.label(h.resolve("res[1]").unwrap());
-        assert!(label.starts_with("map.spring_c = "), "{label}");
-        assert_eq!(h.label(h.resolve("res.x").unwrap()), "map.spring_w");
+        assert!(label.starts_with("map.c = "), "{label}");
+        assert_eq!(h.label(h.resolve("res.x").unwrap()), "map.w");
         drop(h);
         // Saved with its input.
         let saved = s.save_json(1.0, None).unwrap();

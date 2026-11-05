@@ -17,8 +17,8 @@
 use crate::reduce::{Reducer, UnitOf};
 use crate::run::{loaded_outputs, run_study, Study};
 use simsandbox_core::block::{
-    AccuracyClass, Block, BlockSpec, Domain, MethodLabels, MethodSpec, PortSpec, Shape, SpeedClass,
-    StepContext, StepIo, TimeSemantics,
+    AccuracyClass, Block, BlockSpec, Domain, MethodLabels, MethodSpec, ParamSpec, PortSpec, Shape,
+    SpeedClass, StepContext, StepIo, TimeSemantics,
 };
 use simsandbox_core::registry::{BlockConfig, Registry, TypeInfo};
 use simsandbox_core::units::Unit;
@@ -103,6 +103,9 @@ pub struct StudyBlock {
     timeless: bool,
     /// The input block keys set from the inputs (`u.y`).
     keys: Vec<String>,
+    /// Its parameters: its model's declared parameters (ADR 0074), in
+    /// `spec.params` order, set before every point.
+    declared: Vec<String>,
     from: Vec<From>,
     runs: usize,
     /// The inputs last run with, by their bits, and the outputs.
@@ -198,6 +201,34 @@ impl StudyBlock {
             .plan_of(&sampling)
             .map_err(|e| invalid(e.to_string()))?;
         // Nothing in time: each point is one evaluation (ADR 0067).
+        // Its parameters are its model's (ADR 0074): the model's values
+        // are their defaults, each study sets its own.
+        let declared: Vec<String> = loaded.file.params.keys().cloned().collect();
+        let params: Vec<ParamSpec> = loaded
+            .file
+            .params
+            .iter()
+            .map(|(n, d)| {
+                let [lo, hi] = d.range.unwrap_or(if d.value == 0.0 {
+                    [-1.0, 1.0]
+                } else {
+                    [d.value.min(0.0), 2.0 * d.value.max(0.0)]
+                });
+                ParamSpec {
+                    name: n.clone(),
+                    unit: Unit::parse(&d.unit).unwrap_or(Unit::DIMENSIONLESS),
+                    default: d.value,
+                    suggested_min: lo,
+                    suggested_max: hi,
+                    description: if d.description.is_empty() {
+                        format!("{n} of the model it studies")
+                    } else {
+                        d.description.clone()
+                    },
+                    initial_condition: false,
+                }
+            })
+            .collect();
         let timeless = loaded.flat.blocks.iter().all(|b| {
             loaded
                 .ids
@@ -342,7 +373,7 @@ impl StudyBlock {
                 // Neither fused nor solved with others: a machine of its own.
                 domain: Domain::External,
                 ports,
-                params: Vec::new(),
+                params,
                 states: Vec::new(),
                 tables: Vec::new(),
                 time: TimeSemantics::Stateless,
@@ -360,19 +391,20 @@ impl StudyBlock {
             plan,
             timeless,
             keys,
+            declared,
             from,
             runs,
             kept: Mutex::new(None),
         })
     }
 
-    /// Every output's values for these inputs, run or kept.
-    fn evaluate(&self, inputs: &[f64]) -> Result<Vec<f64>> {
+    /// Every output's values for these inputs and parameters, run or kept.
+    fn evaluate(&self, inputs: &[f64], params: &[f64]) -> Result<Vec<f64>> {
         // Built only to be checked or opened: nothing run, nothing kept.
         if !studies_run() {
             return Ok(vec![f64::NAN; self.from.len() * self.runs]);
         }
-        let bits: Vec<u64> = inputs.iter().map(|v| v.to_bits()).collect();
+        let bits: Vec<u64> = inputs.iter().chain(params).map(|v| v.to_bits()).collect();
         let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((b, values)) = kept.as_ref() {
             if *b == bits {
@@ -383,10 +415,11 @@ impl StudyBlock {
             plan: self.plan.clone(),
             timeless: self.timeless,
             set: self
-                .keys
+                .declared
                 .iter()
                 .cloned()
-                .zip(inputs.iter().copied())
+                .zip(params.iter().copied())
+                .chain(self.keys.iter().cloned().zip(inputs.iter().copied()))
                 .collect(),
             t_end: None,
             dt: None,
@@ -526,7 +559,7 @@ impl Block for StudyBlock {
     }
 
     fn compute_outputs(&self, _t: f64, io: StepIo<'_>) -> Result<()> {
-        let values = self.evaluate(io.inputs)?;
+        let values = self.evaluate(io.inputs, io.params)?;
         io.outputs.copy_from_slice(&values);
         Ok(())
     }

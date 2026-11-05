@@ -123,7 +123,7 @@ fn run_writes_csv_or_json_with_populations() {
         "--format",
         "json",
     ]));
-    assert!(studied["outputs"]["curve.spring_w"]["values"].is_array());
+    assert!(studied["outputs"]["curve.w"]["values"].is_array());
     assert_eq!(
         studied["index"]["run"].as_array().unwrap().len(),
         studied["rows"].as_u64().unwrap() as usize

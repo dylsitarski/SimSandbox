@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: ADR 0074 written; step 1: study parameters (`declared`, `evaluate(inputs, params)`), `Edit::Study` copying params, resonance examples rewritten, tests renamed.
 - 2026-11-05: `History::labelled` and `with_unit` for axes, units of cut lines; `plot.values` renamed; `DiagramTab` keeps a selection whose blocks remain; `inside_values`, `SetValue` inside studies as `SetParam` edits, `SimApp::studied` (cached `Studied`), `studied_rows`, `studied_tree`, `edit_inside`; study cards below the node; tests and renders.
 - 2026-11-05: ADR 0073 written and built: `Diagram::inside`, block menus offering outputs only inside, `offered_outputs` in the Inspector, `use_node` leaving out signals declared outputs show, words for the port list's arrows, `diagram::free_name` public; tests (the interface test now reveals a port on a car that offers nothing).
 - 2026-11-05: study nodes on the canvas (`STUDY_HEADER`, stacked cards, inner outline, subtitle); diagram renders.
@@ -140,6 +141,7 @@
 
 ## Decided
 
+- 2026-11-05 (owner): a model's interface is parameters (defaults in the model, values per use or study), inputs (signals, no defaults) and outputs, each exposed by a toggle where it is; exposed things look different from others (ADR 0074).
 - 2026-11-05 (owner): models with nothing in time are evaluated in the app, not run (ADR 0072); then a view of plain numbers, a study form in the Inspector, studies drawn apart from uses, and one way to show ports and offer outputs (a short ADR), in that order.
 - 2026-11-04 (owner): sweeps and experiments are studies; the `sample` section, the default sweep and the app's sweep are removed with no conversion; studies run within their step in the app (ADR 0071).
 - 2026-11-04 (owner): `controls.plots` leaves the format with no conversion: no file relies on it (Q51).

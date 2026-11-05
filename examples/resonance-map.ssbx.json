@@ -1,51 +1,47 @@
 {
   "format": 1,
-  "description": "The driven, damped spring of the resonance example, studied over two parameters at once: the driving frequency w and the damping c, a grid of 200 × 120 points whose results are 2D fields over both. Left: the amplitude of the steady swing, coloured on a log scale; the bright ridge at w ≈ 1 is the resonance, sharpest and tallest where damping is low. Middle: the same as a surface, heights on a log scale; drag to turn it. Right: a cut filter cuts the map at four dampings, the classic family of resonance curves. Change the mass m and the ridge moves; edit the cuts under Data….",
+  "description": "The driven, damped spring of the resonance example, studied over two parameters at once: the driving frequency w and the damping c, a grid of 200 × 120 points whose results are 2D fields over both. Left: the amplitude of the steady swing, coloured on a log scale; the bright ridge at w ≈ 1 is the resonance, sharpest and tallest where damping is low. Middle: the same as a surface, heights on a log scale; drag to turn it. Right: a cut filter cuts the map at four dampings, the classic family of resonance curves. Change the mass m (the study's parameter) and the ridge moves; edit the cuts under Data….",
   "models": {
     "spring": {
       "blocks": [
         {
-          "name": "m",
-          "settings": {
-            "unit": "kg"
-          },
-          "type": "input.value"
-        },
-        {
           "equations": [
             "# steady swing of a driven, damped spring: mass m, stiffness k, damping c, force F at frequency w",
-            "input m [kg]",
             "param F [N] = 1",
             "param k [N/m] = 1",
-            "param c [N*s/m] = 0.2",
-            "param w [rad/s] = 1",
+            "param c [N*s/m]",
+            "param m [kg]",
+            "param w [rad/s]",
             "amplitude = F/sqrt((k - m*w^2)^2 + (c*w)^2) [m]",
             "lag = atan2(c*w, k - m*w^2) [rad]"
           ],
           "name": "spring",
+          "params": {
+            "c": "c",
+            "m": "m",
+            "w": "w"
+          },
           "type": "eq.equations"
         }
       ],
-      "connections": [
-        {
-          "from": "m.y",
-          "to": "spring.m"
+      "description": "A driven, damped spring's steady swing: formulas, nothing in time. Its parameters c (damping), m (mass) and w (driving frequency) are set by whatever uses or studies it.",
+      "params": {
+        "c": {
+          "unit": "N*s/m",
+          "value": 0.2
+        },
+        "m": {
+          "unit": "kg",
+          "value": 1.0
+        },
+        "w": {
+          "unit": "rad/s",
+          "value": 1.0
         }
-      ],
-      "description": "A driven, damped spring's steady swing: formulas, nothing in time. Its inputs: the mass m."
+      }
     }
   },
   "blocks": [
-    {
-      "name": "m",
-      "type": "input.value",
-      "settings": {
-        "unit": "kg"
-      },
-      "params": {
-        "y": 1.0
-      }
-    },
     {
       "name": "map",
       "type": "study",
@@ -54,7 +50,7 @@
         "design": "grid",
         "params": [
           {
-            "param": "spring.w",
+            "param": "w",
             "range": [
               0.0,
               3.0
@@ -62,7 +58,7 @@
             "points": 200
           },
           {
-            "param": "spring.c",
+            "param": "c",
             "range": [
               0.02,
               1.0
@@ -70,18 +66,15 @@
             "points": 120
           }
         ]
+      },
+      "params": {
+        "m": 1.0
       }
-    }
-  ],
-  "connections": [
-    {
-      "from": "m.y",
-      "to": "map.m"
     }
   ],
   "controls": {
     "params": {
-      "m.y": {
+      "map.m": {
         "slider": true,
         "range": [
           0.2,
@@ -95,8 +88,8 @@
         "type": "plot.heatmap",
         "bind": {
           "field": "map.spring_amplitude",
-          "x": "map.spring_w",
-          "y": "map.spring_c"
+          "x": "map.w",
+          "y": "map.c"
         },
         "style": {
           "log_colour": 1.0
@@ -106,8 +99,8 @@
         "type": "plot.surface",
         "bind": {
           "field": "map.spring_amplitude",
-          "x": "map.spring_w",
-          "y": "map.spring_c"
+          "x": "map.w",
+          "y": "map.c"
         },
         "style": {
           "log_scale": 1.0

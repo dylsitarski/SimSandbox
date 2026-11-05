@@ -33,6 +33,7 @@ _Last updated: 2026-11-05_
 
 ## Done recently
 
+- 2026-11-05: [ADR 0074](decisions/0074-model-interfaces.md) (owner): a model's interface is parameters, inputs (no defaults) and outputs, each exposed where it is. Step 1: studies take their model's parameters; the resonance examples without input blocks.
 - 2026-11-05 (owner's review): units on plot axes and scales; `plot.values` (was `show.values`); the selection kept across edits that keep its blocks; blocks inside a study shown and edited in the Inspector, studies' models nested in the model tree; value edits on nodes inside a study applied; the study's cards drawn below the node.
 - 2026-11-05: [ADR 0073](decisions/0073-ports-and-offered-outputs.md) (owner): offered outputs edited in the Inspector's Model section, block menus offer them only inside a used model; a used model's port list holds only signals no declared output shows.
 - 2026-11-05: study nodes drawn apart: a stack of cards, their own header colour, the inner outline of a node with a model inside, "study of … · n runs".
@@ -169,11 +170,12 @@ _Last updated: 2026-11-05_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 5 done 2026-11-02): (6) several cores between instants.
-2. **Adaptive experiments** (ADR 0067 step 5): optimisation, fitting and continuation as strategies that choose points in rounds (ADR 0070 point 4); needs its own ADR.
-3. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
-4. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)), Duplicate, array parameters and neighbours done 2026-11-02: network grids (nodes and edges from a file) and array parameters read from a data file when a model needs them; `count` on uses waits.
-5. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
+1. **A model's interface** ([ADR 0074](decisions/0074-model-interfaces.md)), step 1 done 2026-11-05: (2) exposed inputs in the format, loader, check and diagram; (3) toggles to expose parameters and ports, wiring that exposes, exposed things drawn apart, the menus and list removed, the Platoon rewritten.
+2. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 5 done 2026-11-02): (6) several cores between instants.
+3. **Adaptive experiments** (ADR 0067 step 5): optimisation, fitting and continuation as strategies that choose points in rounds (ADR 0070 point 4); needs its own ADR.
+4. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
+5. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)), Duplicate, array parameters and neighbours done 2026-11-02: network grids (nodes and edges from a file) and array parameters read from a data file when a model needs them; `count` on uses waits.
+6. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
 

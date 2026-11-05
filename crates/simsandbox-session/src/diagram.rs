@@ -1319,6 +1319,8 @@ fn edit_level(
                 model: u.model.clone(),
                 file: u.file.clone(),
                 sample: Some(sample),
+                // The use's values of its model's parameters (ADR 0074).
+                params: u.params.clone(),
                 canvas: u.canvas.map(|[x, y]| [x + 260.0, y]),
                 ..Default::default()
             });

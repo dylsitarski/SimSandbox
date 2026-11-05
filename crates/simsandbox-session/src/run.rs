@@ -978,7 +978,7 @@ mod tests {
         let j = r.to_json();
         assert_eq!(j["rows"], 600);
         assert!(j["outputs"]["curve.spring_amplitude"]["values"][0].is_number());
-        assert!(j["outputs"].get("curve.m_y").is_none());
+        assert!(j["outputs"].get("curve.m").is_none());
         // In time, every step holds every run.
         let timed = run(example("`curve`"), &registry(), Some(1.0), Some(0.5)).unwrap();
         assert_eq!(timed.rows(), 3);
