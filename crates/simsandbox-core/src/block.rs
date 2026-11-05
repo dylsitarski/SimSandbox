@@ -154,6 +154,11 @@ pub struct PortSpec {
     /// instant (direct feedthrough, ADR 0040). Empty if it depends on state
     /// and parameters only.
     pub feedthrough: Vec<String>,
+    /// For an output: the parameters it depends on at the same instant, so
+    /// a parameter driven by a wire feeds through to it (ADR 0075).
+    /// `None` when the Block does not say: then every parameter, unless the
+    /// output copies the state (`state`).
+    pub param_feedthrough: Option<Vec<String>>,
     /// For an output: its values are the Block's state from this offset,
     /// exactly, so rewind snapshots need not keep them (ADR 0063). The
     /// kernel checks it at every snapshot and keeps them if not.
@@ -177,6 +182,7 @@ impl PortSpec {
             shape,
             coordinate: Vec::new(),
             feedthrough: Vec::new(),
+            param_feedthrough: None,
             state: None,
         }
     }
@@ -186,6 +192,22 @@ impl PortSpec {
     pub fn depends_on(mut self, inputs: &[&str]) -> Self {
         self.feedthrough = inputs.iter().map(|i| i.to_string()).collect();
         self
+    }
+
+    /// Declare the parameters this output depends on at the same instant
+    /// (ADR 0075); without it, every parameter but for state copies.
+    pub fn depends_on_params(mut self, params: &[&str]) -> Self {
+        self.param_feedthrough = Some(params.iter().map(|p| p.to_string()).collect());
+        self
+    }
+
+    /// Whether this output depends on parameter `name` at the same instant:
+    /// as declared, or, undeclared, unless it copies the state (ADR 0075).
+    pub fn reads_param(&self, name: &str) -> bool {
+        match &self.param_feedthrough {
+            Some(list) => list.iter().any(|p| p == name),
+            None => self.state.is_none(),
+        }
     }
 
     /// Declare this output a coordinate of output `port` along grid axis
@@ -212,6 +234,7 @@ impl PortSpec {
             shape,
             coordinate: Vec::new(),
             feedthrough: Vec::new(),
+            param_feedthrough: None,
             state: None,
         }
     }

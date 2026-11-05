@@ -32,6 +32,8 @@ pub struct Model {
     pub(crate) blocks: Vec<Box<dyn Block>>,
     pub(crate) params: Vec<Vec<f64>>,
     pub(crate) connections: Vec<Connection>,
+    /// Parameters driven by wires (ADR 0075): `to.port` names a parameter.
+    pub(crate) drives: Vec<Connection>,
     pub(crate) groups: Vec<Group>,
     pub(crate) seed: u64,
     pub(crate) loops: crate::loops::LoopMethod,
@@ -88,6 +90,7 @@ impl Default for Model {
             blocks: Vec::new(),
             params: Vec::new(),
             connections: Vec::new(),
+            drives: Vec::new(),
             groups: Vec::new(),
             seed: DEFAULT_SEED,
             loops: crate::loops::LoopMethod::default(),
@@ -316,6 +319,74 @@ impl Model {
             factor,
         });
         Ok(())
+    }
+
+    /// Drive a parameter by an output (ADR 0075): the parameter takes the
+    /// output's value whenever its Block reads it, in place of its own.
+    /// Checked as a connection is: a scalar output in the parameter's unit.
+    pub fn drive(&mut self, from: (BlockId, &str), to: (BlockId, &str)) -> Result<()> {
+        let out = self.port(from.0, from.1)?.clone();
+        let spec = self.block(to.0)?.spec();
+        let idx = param_index(spec, to.1)?;
+        let param = &spec.params[idx];
+        if out.causality != Causality::Output {
+            return Err(SimError::BadConnection(format!(
+                "'{}' -> '{}' must come from an output",
+                from.1, to.1
+            )));
+        }
+        if out.shape != crate::block::Shape::Scalar {
+            return Err(SimError::ShapeMismatch {
+                from: format!("{:?}", out.shape),
+                to: "Scalar".into(),
+            });
+        }
+        if !out.unit.same_as(&param.unit) {
+            return Err(SimError::UnitMismatch {
+                from: out.unit.to_string(),
+                to: param.unit.to_string(),
+            });
+        }
+        let to_ref = PortRef {
+            block: to.0,
+            port: to.1.into(),
+        };
+        if self.drives.iter().any(|c| c.to == to_ref) {
+            return Err(SimError::BadConnection(format!(
+                "parameter '{}' is already driven",
+                to.1
+            )));
+        }
+        self.drives.push(Connection {
+            from: PortRef {
+                block: from.0,
+                port: from.1.into(),
+            },
+            to: to_ref,
+            factor: 1.0,
+        });
+        Ok(())
+    }
+
+    /// The parameters driven by wires (ADR 0075), `to.port` naming each.
+    pub fn drives(&self) -> &[Connection] {
+        &self.drives
+    }
+
+    /// Whether a parameter is driven by a wire.
+    pub fn is_driven(&self, block: BlockId, name: &str) -> bool {
+        self.drives
+            .iter()
+            .any(|c| c.to.block == block && c.to.port == name)
+    }
+
+    /// The indices of a Block's driven parameters, in `BlockSpec::params`
+    /// order.
+    pub(crate) fn driven_params(&self, block: usize) -> Vec<usize> {
+        let spec = self.blocks[block].spec();
+        (0..spec.params.len())
+            .filter(|&i| self.is_driven(BlockId(block), &spec.params[i].name))
+            .collect()
     }
 
     /// Solve these Blocks together as one system with `solver` (ADR 0023).

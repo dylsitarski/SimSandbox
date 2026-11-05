@@ -35,7 +35,8 @@ impl HeatRod {
                 ports: vec![
                     PortSpec::output("temperature", k, Shape::Grid { nx: n, ny: 1 }).from_state(0),
                     PortSpec::output("position", Unit::METER, Shape::Grid { nx: n, ny: 1 })
-                        .coordinate_of("temperature", 0),
+                        .coordinate_of("temperature", 0)
+                        .depends_on_params(&["length"]),
                 ],
                 params: vec![
                     param(
@@ -163,9 +164,14 @@ impl Grass {
                 ports: vec![
                     PortSpec::input("grazing", per_second, grid),
                     PortSpec::output("grass", density, grid).from_state(0),
-                    PortSpec::output("x", Unit::METER, grid).coordinate_of("grass", 0),
-                    PortSpec::output("y", Unit::METER, grid).coordinate_of("grass", 1),
-                    PortSpec::output("total", Unit::KILOGRAM, Shape::Scalar),
+                    PortSpec::output("x", Unit::METER, grid)
+                        .coordinate_of("grass", 0)
+                        .depends_on_params(&["size"]),
+                    PortSpec::output("y", Unit::METER, grid)
+                        .coordinate_of("grass", 1)
+                        .depends_on_params(&["size"]),
+                    PortSpec::output("total", Unit::KILOGRAM, Shape::Scalar)
+                        .depends_on_params(&["size"]),
                 ],
                 params: vec![
                     param(
@@ -271,7 +277,9 @@ impl Orbits {
                         count: Self::PARTICLES,
                         dim: 2,
                     },
-                )],
+                )
+                // From the state only.
+                .depends_on_params(&[])],
                 params: vec![
                     param("GM", one, 1.0, 0.0, 5.0, "Central mass times G"),
                     param(

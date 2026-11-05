@@ -138,6 +138,11 @@ impl EquationGroup {
                 for c in &mut q.coordinate {
                     c.port = format!("{}.{}", s.name, c.port);
                 }
+                // The member's parameters it reads, by their names here
+                // (ADR 0075).
+                let reads = s.params.iter().filter(|q| p.reads_param(&q.name));
+                q.param_feedthrough =
+                    Some(reads.map(|q| format!("{}.{}", s.name, q.name)).collect());
                 spec.ports.push(q);
             }
             for p in &s.params {

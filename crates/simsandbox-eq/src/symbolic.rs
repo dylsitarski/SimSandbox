@@ -1703,26 +1703,45 @@ impl EquationSet {
                 }
             }
         }
-        // Which inputs each defined quantity uses, directly or through
-        // quantities above it.
+        // Which inputs and parameters each defined quantity uses, directly
+        // or through quantities above it (ADR 0040, ADR 0075). An array
+        // parameter is all its elements.
+        let param_names = |n: &str| -> Vec<String> {
+            match array_params.iter().find(|(a, _)| a == n) {
+                Some((_, cells)) => (0..*cells).map(|k| format!("{n}[{k}]")).collect(),
+                None if param_specs.iter().any(|p| p.name == n) => vec![n.to_string()],
+                None => Vec::new(),
+            }
+        };
         let mut uses: Vec<Vec<String>> = Vec::new();
+        let mut reads: Vec<Vec<String>> = Vec::new();
         for line in parsed.iter().filter(|l| matches!(l.lhs, Lhs::Defined(_))) {
             let mut u: Vec<String> = Vec::new();
+            let mut r: Vec<String> = Vec::new();
             for (n, _) in line.ast.names() {
-                let via: Vec<String> = match defined[..uses.len()].iter().position(|d| *d == n) {
-                    Some(i) => uses[i].clone(),
-                    None if inputs.contains(&n) => vec![n],
-                    None => Vec::new(),
-                };
+                let (via, params): (Vec<String>, Vec<String>) =
+                    match defined[..uses.len()].iter().position(|d| *d == n) {
+                        Some(i) => (uses[i].clone(), reads[i].clone()),
+                        None if inputs.contains(&n) => (vec![n], Vec::new()),
+                        None => (Vec::new(), param_names(&n)),
+                    };
                 for i in via {
                     if !u.contains(&i) {
                         u.push(i);
                     }
                 }
+                for p in params {
+                    if !r.contains(&p) {
+                        r.push(p);
+                    }
+                }
             }
-            // In input order, so the declaration reads naturally.
+            // In input and parameter order, so the declaration reads
+            // naturally.
             u.sort_by_key(|i| inputs.iter().position(|x| x == i));
+            r.sort_by_key(|p| param_specs.iter().position(|q| &q.name == p));
             uses.push(u);
+            reads.push(r);
         }
         let shape = |n: &str| {
             if !grid.is_empty() && arrays.iter().any(|a| a == n) {
@@ -1741,14 +1760,29 @@ impl EquationSet {
                 state_at += shape(n).len();
                 p
             }))
-            .chain(defined.iter().zip(&uses).map(|(n, u)| {
-                let u: Vec<&str> = u.iter().map(String::as_str).collect();
-                PortSpec::output(n, unit_of(n), shape(n)).depends_on(&u)
-            }))
+            .chain(
+                defined
+                    .iter()
+                    .zip(uses.iter().zip(&reads))
+                    .map(|(n, (u, r))| {
+                        let u: Vec<&str> = u.iter().map(String::as_str).collect();
+                        let r: Vec<&str> = r.iter().map(String::as_str).collect();
+                        PortSpec::output(n, unit_of(n), shape(n))
+                            .depends_on(&u)
+                            .depends_on_params(&r)
+                    }),
+            )
             .collect();
         for (i, a) in grid.iter().enumerate() {
             // Each axis is the coordinate of every array output on the grid.
-            let mut x = PortSpec::output(&a.name, unit_of(&a.name), shape(&a.name));
+            let bounds: Vec<String> = [&a.lo, &a.hi]
+                .iter()
+                .flat_map(|e| e.names())
+                .flat_map(|(n, _)| param_names(&n))
+                .collect();
+            let bounds: Vec<&str> = bounds.iter().map(String::as_str).collect();
+            let mut x = PortSpec::output(&a.name, unit_of(&a.name), shape(&a.name))
+                .depends_on_params(&bounds);
             for n in states.iter().chain(&defined).filter(|n| arrays.contains(n)) {
                 x = x.coordinate_of(n, i);
             }

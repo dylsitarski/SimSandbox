@@ -123,9 +123,10 @@ impl Grazers {
                     PortSpec::input("grass", density, grid),
                     PortSpec::output("position", Unit::METER, Shape::Population { dim: 2 }),
                     PortSpec::output("energy", kg, Shape::Population { dim: 1 }),
-                    PortSpec::output("count", one, Shape::Scalar),
-                    PortSpec::output("mean_energy", kg, Shape::Scalar),
-                    PortSpec::output("grazing", per_second, grid),
+                    // From the herd's table, or the last step (ADR 0075).
+                    PortSpec::output("count", one, Shape::Scalar).depends_on_params(&[]),
+                    PortSpec::output("mean_energy", kg, Shape::Scalar).depends_on_params(&[]),
+                    PortSpec::output("grazing", per_second, grid).depends_on_params(&[]),
                 ],
                 params: vec![
                     param(

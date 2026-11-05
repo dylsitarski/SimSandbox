@@ -34,7 +34,7 @@ The user-visible concepts, kept few on purpose ([ADR 0070](../decisions/0070-stu
 | Block | A machine: typed input and output ports with units and shapes, parameters, kernel-owned state and tables, one labelled method. Every kind of physics, math and ML is a block type registered by a domain; so are input blocks, conversions and studies |
 | Model | A graph of blocks in a file or a definition (`models`); used in another model it is a block of that model (a use), on its own clock or its user's |
 | Connection | A wire from an output to an input, checked for direction, shape and unit |
-| Parameter | A named, unit-aware value of a block, or declared by a model with formulas |
+| Parameter | A named, unit-aware value of a block, or declared by a model with formulas; a default that a wire may drive ([ADR 0075](../decisions/0075-parameters-are-inputs-with-defaults.md), in the kernel so far) |
 | Study | A block whose definition is a model and a `sample`: it runs the model at each point and outputs arrays by run |
 | Members | A model over a set of members (array cells, agents, study points): rows with ids, collapsed by array functions; how they interact and how time passes are choices of the family |
 | Observer | Reads results without changing them, outside the model hash: probes (record), filters (derive) and views (show) |

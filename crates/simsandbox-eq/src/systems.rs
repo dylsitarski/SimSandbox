@@ -196,8 +196,8 @@ impl Pendulum {
                 ports: vec![
                     PortSpec::output("angle", rad, Shape::Scalar).from_state(0),
                     PortSpec::output("omega", per_s, Shape::Scalar).from_state(1),
-                    PortSpec::output("x", Unit::METER, Shape::Scalar),
-                    PortSpec::output("y", Unit::METER, Shape::Scalar),
+                    PortSpec::output("x", Unit::METER, Shape::Scalar).depends_on_params(&["L"]),
+                    PortSpec::output("y", Unit::METER, Shape::Scalar).depends_on_params(&["L"]),
                 ],
                 params: vec![
                     param(

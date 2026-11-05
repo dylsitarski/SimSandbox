@@ -91,18 +91,43 @@ pub(crate) struct OutputPlan {
 }
 
 impl OutputPlan {
-    /// Plan for `units` (their specs, named for messages) linked by `links`.
-    /// Fails if a feedthrough declaration names something that is not an
-    /// input of its Block.
-    pub fn new(units: &[(&BlockSpec, &str)], links: &[Link]) -> Result<Self> {
+    /// Plan for `units` (their specs, named for messages, and the indices
+    /// of their parameters driven by wires) linked by `links`. A unit's
+    /// driven parameters are inputs of its own after its ports, one value
+    /// each, in the order given (ADR 0075). Fails if a feedthrough
+    /// declaration names something that is not an input or parameter of
+    /// its Block.
+    pub fn new(units: &[(&BlockSpec, &str, &[usize])], links: &[Link]) -> Result<Self> {
         // Nodes: outputs with feedthrough.
         let mut nodes: Vec<Port> = Vec::new();
         let mut depends: Vec<Vec<(usize, usize)>> = Vec::new(); // (unit, input offset..len) pairs
-        for (u, (spec, name)) in units.iter().enumerate() {
+        for (u, (spec, name, driven)) in units.iter().enumerate() {
             let mut offset = 0;
             for p in spec.outputs() {
+                if let Some(list) = &p.param_feedthrough {
+                    if let Some(q) = list
+                        .iter()
+                        .find(|q| !spec.params.iter().any(|s| &s.name == *q))
+                    {
+                        return Err(SimError::InvalidDefinition(format!(
+                            "{name}.{} depends on '{q}', which is not a parameter of '{name}'",
+                            p.name
+                        )));
+                    }
+                }
                 let len = p.shape.len();
-                if !p.feedthrough.is_empty() {
+                // Driven parameters it reads at the same instant; starting
+                // values are read only when the block starts.
+                let params: Vec<(usize, usize)> = driven
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &i)| {
+                        let q = &spec.params[i];
+                        !q.initial_condition && p.reads_param(&q.name)
+                    })
+                    .map(|(j, _)| (spec.input_len() + j, 1))
+                    .collect();
+                if !p.feedthrough.is_empty() || !params.is_empty() {
                     if p.shape.is_variable() {
                         return Err(SimError::InvalidDefinition(format!(
                             "{name}.{}: populations cannot have direct feedthrough yet",
@@ -119,6 +144,7 @@ impl OutputPlan {
                         })?;
                         deps.push((off, n));
                     }
+                    deps.extend(params);
                     nodes.push(Port {
                         unit: u,
                         offset,
@@ -410,7 +436,7 @@ fn gauss(a: &mut [f64], mut b: Vec<f64>, n: usize) -> Option<Vec<f64>> {
 
 /// Strongly connected components (Tarjan), sources first: every edge goes
 /// from a component to itself or to a later one.
-fn components(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+pub(crate) fn components(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
     struct State<'a> {
         edges: &'a [Vec<usize>],
         index: Vec<Option<usize>>,
@@ -502,7 +528,7 @@ mod tests {
             tables: vec![],
             time: TimeSemantics::Stateless,
         };
-        let err = OutputPlan::new(&[(&spec, "b")], &[]).unwrap_err();
+        let err = OutputPlan::new(&[(&spec, "b", &[])], &[]).unwrap_err();
         assert!(err.to_string().contains("b.y depends on 'v'"), "{err}");
     }
 

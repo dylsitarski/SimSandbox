@@ -75,6 +75,9 @@ struct Route {
 struct GroupPlan {
     /// Block index and state offset of each member.
     members: Vec<(usize, usize)>,
+    /// Per member: its inputs' length and its driven parameters (ADR 0075),
+    /// held in its inputs after them.
+    driven: Vec<(usize, Vec<usize>)>,
     len: usize,
     /// Routes between members, with `from_block`/`to_block` as member
     /// positions in `members`.
@@ -117,18 +120,26 @@ impl GroupPlan {
                 })
             })
             .collect::<Vec<Route>>();
-        let units: Vec<(&crate::block::BlockSpec, &str)> = ids
+        let driven: Vec<(usize, Vec<usize>)> = ids
             .iter()
-            .map(|&b| {
+            .map(|&b| (model.blocks[b].spec().input_len(), model.driven_params(b)))
+            .collect();
+        let units: Vec<(&crate::block::BlockSpec, &str, &[usize])> = ids
+            .iter()
+            .zip(&driven)
+            .map(|(&b, (_, d))| {
                 let spec = model.blocks[b].spec();
-                (spec, spec.name.as_str())
+                (spec, spec.name.as_str(), d.as_slice())
             })
             .collect();
         let links: Vec<Link> = internal.iter().map(Route::link).collect();
+        let outputs = OutputPlan::new(&units, &links)?;
+        drop(units);
         Ok(Self {
             members,
+            driven,
             len,
-            outputs: OutputPlan::new(&units, &links)?,
+            outputs,
             internal,
             method: model.loops,
         })
@@ -153,12 +164,24 @@ impl GroupPlan {
             &x[off..off + blocks[b].spec().states.len()]
         };
         let mut us: Vec<Vec<f64>> = self.members.iter().map(|&(b, _)| held[b].clone()).collect();
+        // A member's inputs, and its parameters with the driven ones as its
+        // inputs give them (ADR 0075).
+        let split = |k: usize, u: &[f64]| -> (std::ops::Range<usize>, Vec<f64>) {
+            let b = self.members[k].0;
+            let (n, driven) = &self.driven[k];
+            let mut p = params[b].clone();
+            for (j, &i) in driven.iter().enumerate() {
+                p[i] = u[n + j];
+            }
+            (0..*n, p)
+        };
         let mut ys: Vec<Vec<f64>> = (0..self.members.len())
             .map(|k| {
                 let b = self.members[k].0;
                 let mut y = vec![0.0; blocks[b].spec().output_len()];
                 if let Some(eq) = blocks[b].as_equations() {
-                    eq.outputs(t, state(k), &us[k], &params[b], &mut y);
+                    let (r, p) = split(k, &us[k]);
+                    eq.outputs(t, state(k), &us[k][r], &p, &mut y);
                 }
                 y
             })
@@ -168,7 +191,8 @@ impl GroupPlan {
                 .solve(self.method, &mut ys, &mut us, &mut |k, u, y| {
                     let b = self.members[k].0;
                     if let Some(eq) = blocks[b].as_equations() {
-                        eq.outputs(t, state(k), u, &params[b], y);
+                        let (r, p) = split(k, u);
+                        eq.outputs(t, state(k), &u[r], &p, y);
                     }
                     Ok(())
                 })?;
@@ -181,7 +205,8 @@ impl GroupPlan {
         for (k, &(b, off)) in self.members.iter().enumerate() {
             let n = blocks[b].spec().states.len();
             if let Some(eq) = blocks[b].as_equations() {
-                eq.rhs(t, state(k), &us[k], &params[b], &mut dx[off..off + n]);
+                let (r, p) = split(k, &us[k]);
+                eq.rhs(t, state(k), &us[k][r], &p, &mut dx[off..off + n]);
             }
         }
         Ok(())
@@ -225,6 +250,13 @@ pub struct Simulator {
     clock_t: Vec<f64>,
     clock_taken: Vec<u128>,
     active: Vec<bool>,
+    /// Per Block: the length of its inputs; its driven parameters (ADR
+    /// 0075) follow them in `inputs`, one value each, in `driven` order.
+    n_in: Vec<usize>,
+    driven: Vec<Vec<usize>>,
+    /// Blocks with driven starting values, in the order they are started
+    /// again once their drivers' outputs are known.
+    starting: Vec<usize>,
 }
 
 impl Snapshot {
@@ -288,6 +320,31 @@ impl Simulator {
                 });
             }
         }
+        // Driven parameters (ADR 0075): inputs of their own after the
+        // block's ports.
+        let n_in: Vec<usize> = model.blocks.iter().map(|b| b.spec().input_len()).collect();
+        let driven: Vec<Vec<usize>> = (0..model.blocks.len())
+            .map(|b| model.driven_params(b))
+            .collect();
+        for c in &model.drives {
+            let (bi, from_spec) = (c.to.block.0, model.blocks[c.from.block.0].spec());
+            let spec = model.blocks[bi].spec();
+            let (from_offset, len) = port_offset(&from_spec.ports, Causality::Output, &c.from.port)
+                .ok_or_else(|| SimError::BadConnection(c.from.port.clone()))?;
+            let j = driven[bi]
+                .iter()
+                .position(|&i| spec.params[i].name == c.to.port)
+                .expect("a driven parameter");
+            routes.push(Route {
+                from_block: c.from.block.0,
+                from_offset,
+                to_block: bi,
+                to_offset: n_in[bi] + j,
+                len,
+                factor: c.factor,
+            });
+        }
+        let starting = starting_order(&model, &routes, &n_in, &driven)?;
 
         let mut states = Vec::new();
         let mut tables = Vec::new();
@@ -305,7 +362,11 @@ impl Simulator {
                     .map(|t| Table::new(t.columns.len()))
                     .collect(),
             );
-            inputs.push(vec![0.0; spec.input_len()]);
+            inputs.push(vec![
+                0.0;
+                spec.input_len()
+                    + model.driven_params(inputs.len()).len()
+            ]);
             outputs.push(vec![0.0; spec.output_len()]);
             let variable = |ports: Vec<_>| -> Vec<Vec<f64>> { vec![Vec::new(); ports.len()] };
             population_inputs.push(variable(
@@ -325,10 +386,11 @@ impl Simulator {
         let plans = (0..model.groups.len())
             .map(|g| GroupPlan::new(&model, g, &routes))
             .collect::<Result<Vec<_>>>()?;
-        let units: Vec<(&crate::block::BlockSpec, &str)> = model
+        let units: Vec<(&crate::block::BlockSpec, &str, &[usize])> = model
             .blocks
             .iter()
-            .map(|b| (b.spec(), b.spec().name.as_str()))
+            .zip(&driven)
+            .map(|(b, d)| (b.spec(), b.spec().name.as_str(), d.as_slice()))
             .collect();
         let links: Vec<Link> = routes.iter().map(Route::link).collect();
         let outputs_plan = OutputPlan::new(&units, &links)?;
@@ -358,13 +420,17 @@ impl Simulator {
                     .collect()
             })
             .collect();
+        // A block with driven parameters may have computed its outputs with
+        // values since replaced: kept.
         let recomputable = model
             .blocks
             .iter()
-            .map(|b| {
-                b.spec()
-                    .outputs()
-                    .all(|p| p.feedthrough.is_empty() && !p.shape.is_variable())
+            .zip(&driven)
+            .map(|(b, d)| {
+                d.is_empty()
+                    && b.spec()
+                        .outputs()
+                        .all(|p| p.feedthrough.is_empty() && !p.shape.is_variable())
             })
             .collect();
         let clocks = model.clocks.len();
@@ -391,6 +457,9 @@ impl Simulator {
             t: t0,
             step: 0,
             changed: Vec::new(),
+            n_in,
+            driven,
+            starting,
         };
         sim.restart(t0)?;
         Ok(sim)
@@ -414,39 +483,8 @@ impl Simulator {
     /// Block re-initialises its state, so changed initial conditions take
     /// effect. Snapshots taken earlier stay valid.
     pub fn restart(&mut self, t0: f64) -> Result<()> {
-        for (bi, block) in self.model.blocks.iter_mut().enumerate() {
-            let params = &self.model.params[bi];
-            block.init(params, &mut self.states[bi])?;
-            for t in &mut self.tables[bi] {
-                t.reset();
-            }
-            block.init_tables(params, self.seeds[bi], &mut self.tables[bi])?;
-            // A saved start replaces what the parameters give (ADR 0042).
-            if let Some(start) = &self.model.starts[bi] {
-                self.states[bi].copy_from_slice(&start.state);
-                for (table, rows) in self.tables[bi].iter_mut().zip(&start.tables) {
-                    table.reset();
-                    for row in rows {
-                        table.push(row);
-                    }
-                }
-            }
-            self.inputs[bi].fill(0.0);
-            for v in &mut self.population_inputs[bi] {
-                v.clear();
-            }
-            block.compute_outputs(
-                t0,
-                StepIo {
-                    params,
-                    inputs: &self.inputs[bi],
-                    state: &mut self.states[bi],
-                    outputs: &mut self.outputs[bi],
-                    tables: &mut self.tables[bi],
-                    population_inputs: &self.population_inputs[bi],
-                    population_outputs: &mut self.population_outputs[bi],
-                },
-            )?;
+        for bi in 0..self.model.blocks.len() {
+            self.start_block(bi, t0, true)?;
         }
         self.t = t0;
         self.step = 0;
@@ -460,7 +498,72 @@ impl Simulator {
         self.active.fill(true);
         self.resolve(t0)?;
         self.exchange();
+        // Driven starting values (ADR 0075): blocks start again from their
+        // drivers' outputs, in order, until nothing they start from moves
+        // (one pass per link of the longest chain).
+        let starting = self.starting.clone();
+        let read = |sim: &Self| -> Vec<u64> {
+            starting
+                .iter()
+                .flat_map(|&b| {
+                    sim.driven[b]
+                        .iter()
+                        .map(move |&i| sim.model.params[b][i].to_bits())
+                })
+                .collect()
+        };
+        for _ in 0..=starting.len() {
+            let before = read(self);
+            for &bi in &starting {
+                self.start_block(bi, t0, false)?;
+            }
+            self.resolve(t0)?;
+            self.exchange();
+            if read(self) == before {
+                break;
+            }
+        }
         Ok(())
+    }
+
+    /// Start Block `bi` from its parameters (or saved start) and compute
+    /// its outputs at `t0`; `fresh` clears its inputs first.
+    fn start_block(&mut self, bi: usize, t0: f64, fresh: bool) -> Result<()> {
+        let block = &mut self.model.blocks[bi];
+        let params = &self.model.params[bi];
+        block.init(params, &mut self.states[bi])?;
+        for t in &mut self.tables[bi] {
+            t.reset();
+        }
+        block.init_tables(params, self.seeds[bi], &mut self.tables[bi])?;
+        // A saved start replaces what the parameters give (ADR 0042).
+        if let Some(start) = &self.model.starts[bi] {
+            self.states[bi].copy_from_slice(&start.state);
+            for (table, rows) in self.tables[bi].iter_mut().zip(&start.tables) {
+                table.reset();
+                for row in rows {
+                    table.push(row);
+                }
+            }
+        }
+        if fresh {
+            self.inputs[bi][..self.n_in[bi]].fill(0.0);
+            for v in &mut self.population_inputs[bi] {
+                v.clear();
+            }
+        }
+        block.compute_outputs(
+            t0,
+            StepIo {
+                params,
+                inputs: &self.inputs[bi][..self.n_in[bi]],
+                state: &mut self.states[bi],
+                outputs: &mut self.outputs[bi],
+                tables: &mut self.tables[bi],
+                population_inputs: &self.population_inputs[bi],
+                population_outputs: &mut self.population_outputs[bi],
+            },
+        )
     }
 
     /// Apply changed parameters now, at the current time, as the next step
@@ -487,7 +590,7 @@ impl Simulator {
                 t,
                 StepIo {
                     params,
-                    inputs: &self.inputs[bi],
+                    inputs: &self.inputs[bi][..self.n_in[bi]],
                     state: &mut self.states[bi],
                     outputs: &mut self.outputs[bi],
                     tables: &mut self.tables[bi],
@@ -508,7 +611,8 @@ impl Simulator {
             return Ok(());
         }
         let blocks = &self.model.blocks;
-        let params = &self.model.params;
+        let params = &mut self.model.params;
+        let (n_in, driven) = (&self.n_in, &self.driven);
         let (states, tables) = (&mut self.states, &mut self.tables);
         let (pin, pout) = (&self.population_inputs, &mut self.population_outputs);
         let active = (!self.model.clocks.is_empty()).then_some(self.active.as_slice());
@@ -523,11 +627,15 @@ impl Simulator {
             &mut self.outputs,
             &mut self.inputs,
             &mut |b, u, y| {
+                // Driven parameters as the routes left them (ADR 0075).
+                for (j, &i) in driven[b].iter().enumerate() {
+                    params[b][i] = u[n_in[b] + j];
+                }
                 blocks[b].compute_outputs(
                     time(b),
                     StepIo {
                         params: &params[b],
-                        inputs: u,
+                        inputs: &u[..n_in[b]],
                         state: &mut states[b],
                         outputs: y,
                         tables: &mut tables[b],
@@ -569,6 +677,12 @@ impl Simulator {
             to.clear();
             to.extend(from.iter().map(|v| r.factor * v));
         }
+        // Driven parameters take the values routed to them (ADR 0075).
+        for (b, driven) in self.driven.iter().enumerate() {
+            for (j, &i) in driven.iter().enumerate() {
+                self.model.params[b][i] = self.inputs[b][self.n_in[b] + j];
+            }
+        }
     }
 
     /// Advance every Block by one communication step `dt`. With several
@@ -603,7 +717,7 @@ impl Simulator {
                 },
                 StepIo {
                     params: &self.model.params[bi],
-                    inputs: &self.inputs[bi],
+                    inputs: &self.inputs[bi][..self.n_in[bi]],
                     state: &mut self.states[bi],
                     outputs: &mut self.outputs[bi],
                     tables: &mut self.tables[bi],
@@ -638,7 +752,7 @@ impl Simulator {
                     base.t + dt,
                     StepIo {
                         params: &self.model.params[b],
-                        inputs: &self.inputs[b],
+                        inputs: &self.inputs[b][..self.n_in[b]],
                         state: &mut self.states[b],
                         outputs: &mut self.outputs[b],
                         tables: &mut self.tables[b],
@@ -797,7 +911,7 @@ impl Simulator {
                 },
                 StepIo {
                     params: &self.model.params[bi],
-                    inputs: &self.inputs[bi],
+                    inputs: &self.inputs[bi][..self.n_in[bi]],
                     state: &mut self.states[bi],
                     outputs: &mut self.outputs[bi],
                     tables: &mut self.tables[bi],
@@ -838,7 +952,7 @@ impl Simulator {
                     t0 + dt,
                     StepIo {
                         params: &self.model.params[b],
-                        inputs: &self.inputs[b],
+                        inputs: &self.inputs[b][..self.n_in[b]],
                         state: &mut self.states[b],
                         outputs: &mut self.outputs[b],
                         tables: &mut self.tables[b],
@@ -873,6 +987,12 @@ impl Simulator {
     /// Change a parameter while running (live sliders). Checked like
     /// [`Model::set_param`].
     pub fn set_param(&mut self, id: BlockId, name: &str, value: f64) -> Result<()> {
+        if self.model.is_driven(id, name) {
+            return Err(SimError::InvalidSetting {
+                setting: name.into(),
+                reason: "it is driven by a wire (ADR 0075)".into(),
+            });
+        }
         self.model.set_param(id, name, value)?;
         if !self.changed.contains(&id.0) {
             self.changed.push(id.0);
@@ -970,7 +1090,7 @@ impl Simulator {
                 self.t,
                 StepIo {
                     params: &self.model.params[bi],
-                    inputs: &self.inputs[bi],
+                    inputs: &self.inputs[bi][..self.n_in[bi]],
                     state: &mut x,
                     outputs: &mut y,
                     tables: &mut tables,
@@ -1029,4 +1149,71 @@ impl Simulator {
             self.inputs.clone_from(&snap.inputs);
         }
     }
+}
+
+/// The blocks whose starting values are driven (ADR 0075), drivers first;
+/// refused when a driven starting value depends on itself at the start,
+/// through its block's outputs, feedthrough or other driven values.
+fn starting_order(
+    model: &Model,
+    routes: &[Route],
+    n_in: &[usize],
+    driven: &[Vec<usize>],
+) -> Result<Vec<usize>> {
+    let spec = |b: usize| model.blocks[b].spec();
+    let starts = |b: usize| {
+        driven[b]
+            .iter()
+            .any(|&i| spec(b).params[i].initial_condition)
+    };
+    if !(0..model.blocks.len()).any(starts) {
+        return Ok(Vec::new());
+    }
+    // Edges between blocks along which a value reaches outputs at the
+    // start: a driven starting value; a driven parameter or an input an
+    // output reads at the same instant.
+    let mut edges: Vec<Vec<usize>> = vec![Vec::new(); model.blocks.len()];
+    let mut start_edges = Vec::new();
+    for r in routes {
+        let (src, dst) = (r.from_block, r.to_block);
+        let s = spec(dst);
+        let reaches = if r.to_offset >= n_in[dst] {
+            let q = &s.params[driven[dst][r.to_offset - n_in[dst]]];
+            if q.initial_condition {
+                start_edges.push((src, dst, q.name.clone()));
+                true
+            } else {
+                s.outputs().any(|p| p.reads_param(&q.name))
+            }
+        } else {
+            let mut at = 0;
+            let name = s
+                .inputs()
+                .find(|p| {
+                    let hit = r.to_offset >= at && r.to_offset < at + p.shape.len();
+                    at += p.shape.len();
+                    hit
+                })
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+            s.outputs().any(|p| p.feedthrough.contains(&name))
+        };
+        if reaches && !edges[src].contains(&dst) {
+            edges[src].push(dst);
+        }
+    }
+    let order = crate::loops::components(&edges);
+    let component = |b: usize| order.iter().position(|c| c.contains(&b));
+    if let Some((src, dst, name)) = start_edges
+        .iter()
+        .find(|(src, dst, _)| component(*src) == component(*dst))
+    {
+        return Err(SimError::InvalidDefinition(format!(
+            "the starting value {}.{name} is driven by {}, whose outputs at the start depend \
+             on it: driven starting values cannot form a cycle",
+            spec(*dst).name,
+            spec(*src).name
+        )));
+    }
+    Ok(order.into_iter().flatten().filter(|&b| starts(b)).collect())
 }

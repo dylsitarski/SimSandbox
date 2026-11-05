@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: ADR 0075 step 1: `Model::drive`, driven parameters as input slots in the `Simulator` (routes, exchange, `OutputPlan`, `GroupPlan::rhs`), `PortSpec::param_feedthrough`, typed equations' exact walk, `starting_order` and restart passes; built-in declarations; tests `driven_params.rs`, `params.rs`, `param_declarations.rs`; all examples bit for bit as before.
 - 2026-11-05: ADR 0075 written (not built); Q53 (activation) raised.
 - 2026-11-05: ADR 0074 step 3: `Diagram::exposed`, `NodeValue::exposed`, `exposable`/`exposed_as`/`toggle_exposed`, `Edit::HideOutput`, `DeclareOutput` naming by port; canvas rings and click toggles, hover help; menus, `Canvas::revealed`/`reveal` removed; `route` for wires across an outline to exposed ports; expand routes exposed inputs; Duplicate feeds copies' outside inputs; Platoon follower rewritten (0 of 16 814 CSV cells differ); renders checked.
 - 2026-11-05: ADR 0074 step 2: `ModelFile::inputs`, `check_inputs`, `expose_inputs`, `unwired`, `runs_alone`, `read_use`/`use_file` taking the parent's connections, study and use-node exposure, schema; test against the input-block form bit for bit.

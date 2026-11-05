@@ -43,7 +43,8 @@ impl Input {
     fn with(name: &str, params: Vec<ParamSpec>) -> Self {
         let ports = params
             .iter()
-            .map(|p| PortSpec::output(&p.name, p.unit, Shape::Scalar))
+            // Each output is its own parameter (ADR 0075).
+            .map(|p| PortSpec::output(&p.name, p.unit, Shape::Scalar).depends_on_params(&[&p.name]))
             .collect();
         Self {
             spec: BlockSpec {
