@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: ADR 0075 step 3: `Wire::param`, `NodeValue::driven`, `drive_values`, `Node::value_port`, value rows of driven parameters on closed nodes; canvas `value_port_under`, `wire_end`, drop and lift on values; `drop_value` on connect; expand routes driven use parameters; app rows and Controls; forced spring example and tests; renders and an app screenshot.
 - 2026-11-05: ADR 0075 step 2: loader drives on wires to parameters; `Item::Instance::params` in flattening; `expose_input` passes declared parameters; `check_driven`; `Registry::build` name clash; `ParamRow::driven`, `session::drives`, `check`'s `driven`/`driven_by`; schema, Python docstring and test; `tests/driven_files.rs`.
 - 2026-11-05: ADR 0075 step 1: `Model::drive`, driven parameters as input slots in the `Simulator` (routes, exchange, `OutputPlan`, `GroupPlan::rhs`), `PortSpec::param_feedthrough`, typed equations' exact walk, `starting_order` and restart passes; built-in declarations; tests `driven_params.rs`, `params.rs`, `param_declarations.rs`; all examples bit for bit as before.
 - 2026-11-05: ADR 0075 written (not built); Q53 (activation) raised.

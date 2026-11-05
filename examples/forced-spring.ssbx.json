@@ -1,0 +1,61 @@
+{
+  "format": 1,
+  "description": "One spring model used twice. `held` sets its force F as a parameter: it settles where the spring balances it. `shaken` has the same parameter driven by a wire from `push`, a force swinging at frequency w: it swings, most strongly near w = 1 rad/s, as the resonance curve predicts. A parameter is set or wired; the model is the same.",
+  "models": {
+    "spring": {
+      "description": "A mass on a damped spring, pushed by a force F: a parameter, which each use sets or drives.",
+      "params": {
+        "F": {"value": 1.0, "unit": "N", "description": "The force pushing the mass"},
+        "m": {"value": 1.0, "unit": "kg", "description": "Mass"},
+        "k": {"value": 1.0, "unit": "N/m", "description": "Stiffness"},
+        "c": {"value": 0.2, "unit": "N*s/m", "description": "Damping"}
+      },
+      "blocks": [
+        {
+          "name": "mass",
+          "type": "eq.equations",
+          "equations": [
+            "# a mass m on a spring k with damping c, pushed by force F",
+            "param F [N] = 1",
+            "param m [kg] = 1",
+            "param k [N/m] = 1",
+            "param c [N*s/m] = 0.2",
+            "state x [m] = 0",
+            "state v [m/s] = 0",
+            "dx/dt = v",
+            "dv/dt = (F - k*x - c*v)/m"
+          ],
+          "params": {"F": "F", "m": "m", "k": "k", "c": "c"}
+        }
+      ],
+      "outputs": [{"name": "x", "from": "mass.x"}]
+    }
+  },
+  "blocks": [
+    {
+      "name": "push",
+      "type": "eq.equations",
+      "equations": [
+        "# a force swinging at frequency w",
+        "param F0 [N] = 1",
+        "param w [rad/s] = 1",
+        "state phase [rad] = 0",
+        "dphase/dt = w",
+        "F = F0*sin(phase)"
+      ]
+    },
+    {"name": "held", "model": "spring", "clock": "shared"},
+    {"name": "shaken", "model": "spring"}
+  ],
+  "connections": [{"from": "push.F", "to": "shaken/F"}],
+  "run": {"dt": 0.02, "t_end": 60.0},
+  "controls": {
+    "params": {
+      "push.w": {"slider": true, "pin": true, "range": [0.0, 3.0]},
+      "held.F": {"slider": true, "pin": true, "range": [-2.0, 2.0]}
+    },
+    "views": [
+      {"type": "plot.xy", "bind": {"x": "t", "y": ["held/mass.x", "shaken/mass.x", "push.F"]}}
+    ]
+  }
+}

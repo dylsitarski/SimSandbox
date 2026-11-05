@@ -333,7 +333,13 @@ impl Canvas {
                         })
                     } else if let Some((_, k)) = value {
                         let v = &n.values[k];
-                        let mut tip = if let Some(e) = &v.exposed {
+                        let mut tip = if let Some(from) = &v.driven {
+                            format!(
+                                "{}: driven by {from}, whose value it takes (ADR 0075); drag \
+                                 the wire off its dot to set it again",
+                                v.key
+                            )
+                        } else if let Some(e) = &v.exposed {
                             format!(
                                 "{}: the model's parameter {e}, set by each model or study \
                                  using this one; its own value is changed in the Inspector",
@@ -789,7 +795,7 @@ impl Canvas {
     ) {
         let n = &d.nodes[i];
         let exposable = d.exposable(i);
-        if !n.open || self.zoom < SHOW_VALUES {
+        if n.value_rows() == 0 || self.zoom < SHOW_VALUES {
             return;
         }
         let z = self.zoom;
@@ -803,7 +809,23 @@ impl Canvas {
             Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
         );
         let font = FontId::proportional(11.0 * z);
-        for (k, v) in n.values.iter().enumerate() {
+        // While a wire is drawn from an output, every value is a place to
+        // drop it (ADR 0075).
+        let wiring = self
+            .wiring
+            .as_ref()
+            .is_some_and(|g| g.causality == Causality::Output && g.lifted.is_none());
+        for (k, v) in n.values.iter().enumerate().take(n.value_rows()) {
+            let port = self.to_screen(origin, n.value_port(k));
+            if v.driven.is_some() {
+                painter.circle_filled(port, DOT * z * 0.8, visuals.widgets.active.fg_stroke.color);
+            } else if wiring && n.is_block() {
+                painter.circle_stroke(
+                    port,
+                    DOT * z * 0.8,
+                    Stroke::new(1.0 * z, visuals.weak_text_color()),
+                );
+            }
             if self.editing.as_ref().is_some_and(|(key, _)| *key == v.key) {
                 continue;
             }
@@ -842,7 +864,11 @@ impl Canvas {
             );
             // `*`: some uses of the subsystem set their own.
             let mark = if v.overridden.is_empty() { "" } else { " *" };
-            let shown = format!("{} {}{mark}", format_number(v.value), v.unit);
+            // Driven: its source, not a number to change (ADR 0075).
+            let shown = match &v.driven {
+                Some(from) => format!("from {from}"),
+                None => format!("{} {}{mark}", format_number(v.value), v.unit),
+            };
             painter.text(
                 Pos2::new(top.x + NODE_WIDTH as f32 * z - pad, y),
                 egui::Align2::RIGHT_CENTER,
@@ -1033,13 +1059,52 @@ impl Canvas {
             origin,
             d.nodes[w.from.0].port_at(Causality::Output, w.from.1),
         );
-        let b = self.to_screen(origin, d.nodes[w.to.0].port_at(Causality::Input, w.to.1));
+        let b = self.to_screen(origin, self.wire_end(d, w));
         let below = self
             .node_rect(origin, &d.nodes[w.from.0])
             .max
             .y
             .max(self.node_rect(origin, &d.nodes[w.to.0]).max.y);
         route(a, b, below, self.zoom)
+    }
+
+    /// Where a wire ends, in canvas units: its input, or the value it
+    /// drives (ADR 0075), at the node's side when values are not drawn.
+    fn wire_end(&self, d: &Diagram, w: &crate::diagram::Wire) -> [f64; 2] {
+        let n = &d.nodes[w.to.0];
+        if !w.param {
+            return n.port_at(Causality::Input, w.to.1);
+        }
+        if self.zoom >= SHOW_VALUES && w.to.1 < n.value_rows() {
+            n.value_port(w.to.1)
+        } else {
+            [n.at[0], n.at[1] + crate::diagram::HEADER / 2.0]
+        }
+    }
+
+    /// The name a wire into value `k` of node `i` ends at (ADR 0075),
+    /// `node.param` as the canvas names ports (a used model's becomes
+    /// `use/param` in the file).
+    fn value_key(d: &Diagram, i: usize, k: usize) -> String {
+        let n = &d.nodes[i];
+        format!("{}.{}", n.name, n.values[k].name)
+    }
+
+    /// The value row whose port is under `p` (ADR 0075): node and value.
+    fn value_port_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, usize)> {
+        if self.zoom < SHOW_VALUES {
+            return None;
+        }
+        let reach = REACH * self.zoom.max(0.7);
+        d.nodes.iter().enumerate().rev().find_map(|(i, n)| {
+            (n.is_block() && !n.is_observer())
+                .then(|| {
+                    (0..n.value_rows())
+                        .find(|&k| self.to_screen(origin, n.value_port(k)).distance(p) <= reach)
+                })
+                .flatten()
+                .map(|k| (i, k))
+        })
     }
 
     fn wire_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<String> {
@@ -1081,14 +1146,29 @@ impl Canvas {
             // pointer has moved.
             let start = ui.input(|i| i.pointer.press_origin());
             if let Some(p) = start.or(response.interact_pointer_pos()) {
-                if let Some((node, port, c)) = self.port_under(d, origin, p) {
+                // A driven value's wire is lifted from its source end
+                // (ADR 0075).
+                let driven = self.value_port_under(d, origin, p).and_then(|(i, k)| {
+                    d.wires
+                        .iter()
+                        .find(|w| w.param && w.to == (i, k))
+                        .map(|w| (w, Self::value_key(d, i, k)))
+                });
+                if let Some((w, key)) = driven {
+                    self.wiring = Some(Dragging {
+                        node: w.from.0,
+                        port: w.from.1,
+                        causality: Causality::Output,
+                        lifted: Some(key),
+                    });
+                } else if let Some((node, port, c)) = self.port_under(d, origin, p) {
                     let key = |n: usize, q: &str| format!("{}.{}", d.nodes[n].name, q);
                     // Dragging a connected input lifts its wire from the
                     // source end.
                     // A data-layer input may read several signals: dragging
                     // from it starts a new wire instead.
                     let fed = (c == Causality::Input && !d.nodes[node].is_observer())
-                        .then(|| d.wires.iter().find(|w| w.to == (node, port)))
+                        .then(|| d.wires.iter().find(|w| !w.param && w.to == (node, port)))
                         .flatten();
                     self.wiring = Some(match fed {
                         Some(w) => Dragging {
@@ -1168,14 +1248,19 @@ impl Canvas {
                     format!("{}.{}", d.nodes[n].name, ports[k].name)
                 };
                 let here = key(g.node, g.causality, g.port);
-                let new = match target {
-                    Some((n, k, c)) if c != g.causality => {
+                // From an output onto a value: the wire drives it (ADR 0075).
+                let onto_value = (g.causality == Causality::Output)
+                    .then(|| pointer.and_then(|p| self.value_port_under(d, origin, p)))
+                    .flatten();
+                let new = match (target, onto_value) {
+                    (Some((n, k, c)), _) if c != g.causality => {
                         let there = key(n, c, k);
                         Some(match c {
                             Causality::Input => (here.clone(), there),
                             Causality::Output => (there, here.clone()),
                         })
                     }
+                    (_, Some((i, k))) => Some((here.clone(), Self::value_key(d, i, k))),
                     _ => None,
                 };
                 match (g.lifted, new) {
@@ -1282,7 +1367,7 @@ impl Canvas {
                 let v = &d.nodes[i].values[k];
                 // An exposed value is the model's parameter: changed in the
                 // Inspector, not over the block's own (ADR 0074).
-                if self.zoom >= EDIT_VALUES && v.exposed.is_none() {
+                if self.zoom >= EDIT_VALUES && v.exposed.is_none() && v.driven.is_none() {
                     self.editing = Some((v.key.clone(), format_number(v.value)));
                 }
             } else if let Some((i, c)) = p.and_then(|p| self.unit_under(d, origin, p)) {
@@ -2017,6 +2102,48 @@ mod tests {
         }
         .unwrap();
         c.to_screen(Pos2::ZERO, n.port_at(causality, k))
+    }
+
+    #[test]
+    fn a_wire_dropped_on_a_value_drives_it_and_is_lifted_off_it() {
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Forced spring"))
+            .unwrap();
+        let (f, _) = ModelFile::from_json(e.text).unwrap();
+        let mut d = Diagram::new(&f, &registry());
+        let ctx = egui::Context::default();
+        let mut c = Canvas::all_open();
+        frame(&ctx, &mut c, &mut d.clone(), vec![]);
+        // Zoomed in enough to show values (ADR 0053).
+        c.zoom = c.zoom.max(SHOW_VALUES);
+        frame(&ctx, &mut c, &mut d.clone(), vec![]);
+        let value = |c: &Canvas, d: &Diagram, node: &str, name: &str| {
+            let n = &d.nodes[d.node(node).unwrap()];
+            let k = n.values.iter().position(|v| v.name == name).unwrap();
+            c.to_screen(Pos2::ZERO, n.value_port(k))
+        };
+        // push.F onto held's value F: a wire that drives it (ADR 0075).
+        let a = screen(&c, &d, "push", Causality::Output, "F");
+        let b = value(&c, &d, "held", "F");
+        let edits = drag(&ctx, &mut c, &mut d, a, b);
+        assert_eq!(
+            edits,
+            [Edit::Connect {
+                from: "push.F".into(),
+                to: "held.F".into()
+            }]
+        );
+        // Off shaken's driven F onto empty canvas: the wire goes.
+        let mut d = Diagram::new(&f, &registry());
+        let from = value(&c, &d, "shaken", "F");
+        let edits = drag(&ctx, &mut c, &mut d, from, Pos2::new(5.0, 590.0));
+        assert_eq!(
+            edits,
+            [Edit::Disconnect {
+                to: "shaken.F".into()
+            }]
+        );
     }
 
     #[test]

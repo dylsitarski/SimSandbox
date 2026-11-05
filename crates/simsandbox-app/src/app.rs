@@ -3318,7 +3318,7 @@ fn uses_table(
                 let first_value = cells
                     .iter()
                     .flatten()
-                    .find(|r| r.formula.is_none())
+                    .find(|r| r.formula.is_none() && r.driven.is_none())
                     .map(|r| r.value);
                 let response = ui
                     .label(label)
@@ -3329,7 +3329,11 @@ fn uses_table(
                             .button(format!("Set every use to {}", format_value(v)))
                             .clicked()
                         {
-                            for r in cells.iter().flatten().filter(|r| r.formula.is_none()) {
+                            for r in cells
+                                .iter()
+                                .flatten()
+                                .filter(|r| r.formula.is_none() && r.driven.is_none())
+                            {
                                 changes.push((r.clone(), v));
                             }
                             ui.close();
@@ -3352,6 +3356,11 @@ fn uses_table(
                 ui.weak(first.map_or("", |r| r.unit.as_str()));
                 for cell in cells {
                     match cell {
+                        Some(r) if r.driven.is_some() => {
+                            let from = r.driven.as_deref().unwrap_or_default();
+                            ui.weak(format!("from {from}"))
+                                .on_hover_text(format!("Driven by {from} (ADR 0075)"));
+                        }
                         Some(r) => {
                             let key = format!("cell:{}", r.key);
                             let f = r.formula.as_deref();
@@ -3488,21 +3497,30 @@ fn param_row(
     // that is not real-time, its field shows the value that applies on
     // release (ADR 0037).
     let formula = row.formula.as_deref();
-    let typed = match edits.pending.get(&row.key) {
-        Some(p) => {
+    // Driven by a wire (ADR 0075): its source, not a value to type.
+    let driven = row.driven.as_deref();
+    let typed = match (driven, edits.pending.get(&row.key)) {
+        (Some(from), _) => {
+            ui.weak(format!("from {from}")).on_hover_text(format!(
+                "Driven by {from}: it takes that signal's value (ADR 0075). Drag the wire \
+                 off its dot on the diagram to set it again"
+            ));
+            None
+        }
+        (None, Some(p)) => {
             pending_field(ui, *p);
             None
         }
-        None => value_entry(ui, &row.key, row.value, formula, edits.text, edits.error),
+        (None, None) => value_entry(ui, &row.key, row.value, formula, edits.text, edits.error),
     };
     if let Some(t) = typed {
         apply_typed(row, t, edits.changes, edits.file, edits.error);
     }
 
     ui.horizontal(|ui| {
-        if formula.is_some() {
+        if formula.is_some() || driven.is_some() {
             ui.weak(format_value(row.value))
-                .on_hover_text("Its value now, from the formula");
+                .on_hover_text("Its value now");
         }
         ui.label(&row.unit);
         if row.initial_condition {
@@ -3511,7 +3529,7 @@ fn param_row(
         }
     });
     ui.horizontal(|ui| {
-        if place == Place::Controls && formula.is_none() {
+        if place == Place::Controls && formula.is_none() && driven.is_none() {
             ui.checkbox(&mut control.slider, "")
                 .on_hover_text("A slider under the value, between the two ends of its range");
         }
@@ -3520,7 +3538,7 @@ fn param_row(
     ui.end_row();
 
     // The slider between its range's ends, which are typed in place.
-    if place == Place::Controls && control.slider && formula.is_none() {
+    if place == Place::Controls && control.slider && formula.is_none() && driven.is_none() {
         let [mut lo, mut hi] = control.range.unwrap_or(row.suggested);
         let a = ui
             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3702,11 +3720,14 @@ fn studied_rows(
         .show(ui, |ui| {
             for v in values {
                 ui.label(&v.name);
-                match &v.formula {
-                    Some(f) => {
+                match (&v.driven, &v.formula) {
+                    (Some(from), _) => {
+                        ui.weak(format!("from {from}"));
+                    }
+                    (None, Some(f)) => {
                         ui.weak(format!("= {f}"));
                     }
-                    None => {
+                    (None, None) => {
                         let id = format!("studied:{block}.{}", v.name);
                         let now = simsandbox_views::values::number(v.value);
                         let mut text = edits.get(&id).cloned().unwrap_or_else(|| now.clone());
@@ -3756,9 +3777,10 @@ fn studied_tree(ui: &mut egui::Ui, study: &str, s: &Studied) {
                     .show(ui, |ui| {
                         for v in values {
                             ui.label(&v.name);
-                            let text = match &v.formula {
-                                Some(f) => format!("= {f}"),
-                                None => format!(
+                            let text = match (&v.driven, &v.formula) {
+                                (Some(from), _) => format!("from {from}"),
+                                (None, Some(f)) => format!("= {f}"),
+                                (None, None) => format!(
                                     "{} {}",
                                     simsandbox_views::values::number(v.value),
                                     v.unit

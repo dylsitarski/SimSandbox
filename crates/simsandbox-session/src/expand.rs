@@ -145,6 +145,7 @@ fn splice(d: &mut Diagram, i: usize, mut sub: Diagram, full: &str) {
             from_name: prefix(&w0.from_name),
             to_name: prefix(&w0.to_name),
             signal: w0.signal,
+            param: w0.param,
         });
     }
     // Outlines inside it carry their full paths already.
@@ -205,7 +206,26 @@ fn splice(d: &mut Diagram, i: usize, mut sub: Diagram, full: &str) {
         } else {
             vec![w0.from]
         };
-        let tos = if w0.to.0 == i {
+        let tos = if w0.to.0 == i && w0.param {
+            // A driven parameter of the use: the inner values exposed as
+            // it (ADR 0075).
+            let port = used
+                .values
+                .get(w0.to.1)
+                .map(|v| v.name.clone())
+                .unwrap_or_default();
+            (base..d.nodes.len())
+                .flat_map(|k| {
+                    d.nodes[k]
+                        .values
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, v)| v.exposed.as_deref() == Some(port.as_str()))
+                        .map(move |(j, _)| (k, j))
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        } else if w0.to.0 == i {
             let port = used
                 .inputs
                 .get(w0.to.1)
@@ -226,6 +246,7 @@ fn splice(d: &mut Diagram, i: usize, mut sub: Diagram, full: &str) {
         }
     }
     d.wires = keep;
+    crate::diagram::drive_values(&mut d.nodes, &mut d.wires);
     // The use's node goes; indices above it move down one.
     d.nodes.remove(i);
     let down = |k: usize| if k > i { k - 1 } else { k };

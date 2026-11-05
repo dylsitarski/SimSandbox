@@ -107,6 +107,9 @@ pub struct NodeValue {
     /// Exposed as the model's parameter of this name (ADR 0074): shown
     /// with the model's value, set by each use or study.
     pub exposed: Option<String>,
+    /// The signal driving it (ADR 0075), `node.port`: shown instead of a
+    /// number; the value is the signal's.
+    pub driven: Option<String>,
 }
 
 impl Node {
@@ -118,13 +121,23 @@ impl Node {
         }
     }
 
-    /// Rows of values drawn: all of them while the node is open.
+    /// Rows of values drawn: all of them while the node is open, else
+    /// the driven ones, which come first (their wires end there, ADR 0075).
     pub fn value_rows(&self) -> usize {
         if self.open {
             self.values.len()
         } else {
-            0
+            self.values
+                .iter()
+                .take_while(|v| v.driven.is_some())
+                .count()
         }
+    }
+
+    /// Where a wire driving value `k` attaches: the left of its row.
+    pub fn value_port(&self, k: usize) -> [f64; 2] {
+        let [x, y] = self.value_at(k);
+        [x, y + VALUE_ROW / 2.0]
     }
 
     /// Where value row `k` starts (its top), in canvas units.
@@ -168,6 +181,9 @@ pub struct Wire {
     /// On the data layer: the recorded signal it carries (empty for a
     /// model wire, which carries current values each step).
     pub signal: String,
+    /// It drives a parameter (ADR 0075): `to.1` is the value's index in
+    /// its node's `values`, not an input.
+    pub param: bool,
 }
 
 impl Wire {
@@ -307,10 +323,24 @@ impl Diagram {
                     from_name: from,
                     to_name: to,
                     signal: String::new(),
+                    param: false,
                 }),
+                // Into a parameter: it is driven (ADR 0075).
+                (Some(f), None) => match value_of(&nodes, &index, &to) {
+                    Some(t) => wires.push(Wire {
+                        from: f,
+                        to: t,
+                        from_name: from,
+                        to_name: to,
+                        signal: String::new(),
+                        param: true,
+                    }),
+                    None => dangling.push(format!("{from} -> {to}")),
+                },
                 _ => dangling.push(format!("{from} -> {to}")),
             }
         }
+        drive_values(&mut nodes, &mut wires);
         layout(&mut nodes, &wires);
         Self {
             scope: scope.clone(),
@@ -611,6 +641,7 @@ fn use_node(
             initial: false,
             overridden: Vec::new(),
             exposed: None,
+            driven: None,
         });
     }
     // What each declared output shows, so a signal named by it is drawn
@@ -644,6 +675,41 @@ fn use_node(
         None => "on new data".into(),
     };
     n
+}
+
+/// The value a wire into `to` drives (ADR 0075): `block.param`, or a
+/// used model's `use/param`; node and value index.
+fn value_of(nodes: &[Node], index: &BTreeMap<String, usize>, to: &str) -> Option<(usize, usize)> {
+    let (n, param) = match to.split_once('/') {
+        Some((u, p)) if !p.contains(['.', '/']) => (*index.get(u)?, p),
+        _ => {
+            let (b, p) = to.split_once('.')?;
+            (*index.get(b)?, p)
+        }
+    };
+    let k = nodes[n].values.iter().position(|v| v.name == param)?;
+    Some((n, k))
+}
+
+/// Mark the values wires drive and list them first on their nodes, so a
+/// closed node still shows where its wires end; wires follow the values.
+pub(crate) fn drive_values(nodes: &mut [Node], wires: &mut [Wire]) {
+    for w in wires.iter().filter(|w| w.param) {
+        if let Some(v) = nodes[w.to.0].values.get_mut(w.to.1) {
+            v.driven = Some(w.from_name.clone());
+        }
+    }
+    for (i, n) in nodes.iter_mut().enumerate() {
+        if n.values.iter().all(|v| v.driven.is_none()) {
+            continue;
+        }
+        let before: Vec<String> = n.values.iter().map(|v| v.name.clone()).collect();
+        n.values.sort_by_key(|v| v.driven.is_none());
+        for w in wires.iter_mut().filter(|w| w.param && w.to.0 == i) {
+            let name = &before[w.to.1];
+            w.to.1 = n.values.iter().position(|v| &v.name == name).unwrap_or(0);
+        }
+    }
 }
 
 /// What `file` exposes to its users (ADR 0074), as [`Diagram::exposed`]
@@ -704,6 +770,7 @@ fn node(
                     initial: p.initial_condition,
                     overridden: Vec::new(),
                     exposed,
+                    driven: None,
                 });
             }
             values.sort_by_key(|v| v.initial);
@@ -761,10 +828,21 @@ impl Diagram {
         if self.scope != Scope::Model {
             return;
         }
+        // Wires into values follow them by name (ADR 0075).
+        let names: Vec<(usize, String)> = self
+            .wires
+            .iter()
+            .map(|w| match self.nodes[w.to.0].values.get(w.to.1) {
+                Some(v) if w.param => (w.to.0, v.name.clone()),
+                _ => (usize::MAX, String::new()),
+            })
+            .collect();
         for n in self.nodes.iter_mut().filter(|n| n.is_block()) {
-            // Values formulas set are not listed, but for exposed ones.
+            // Values formulas set are not listed, but for exposed and
+            // driven ones.
             n.values.retain(|v| {
                 v.exposed.is_some()
+                    || v.driven.is_some()
                     || rows
                         .iter()
                         .find(|r| r.key == v.key)
@@ -775,6 +853,15 @@ impl Diagram {
                 if let Some(r) = rows.iter().find(|r| &r.key == key) {
                     v.value = r.value;
                 }
+            }
+        }
+        for (w, (node, name)) in self.wires.iter_mut().zip(names) {
+            if node != usize::MAX {
+                w.to.1 = self.nodes[node]
+                    .values
+                    .iter()
+                    .position(|v| v.name == name)
+                    .unwrap_or(0);
             }
         }
     }
@@ -1674,7 +1761,8 @@ fn edit_level(
                         from: from.clone(),
                         to: to.clone(),
                     });
-                    Ok(format!("Connected {from} -> {to}"))
+                    let note = drop_value(&mut l.blocks, to);
+                    Ok(format!("Connected {from} -> {to}{note}"))
                 }
                 _ => Err("wires run from an output to an input".into()),
             }
@@ -1794,6 +1882,24 @@ fn clock_of<'a>(file: &'a ModelFile, end: &str) -> Option<&'a str> {
         .map(|b| b.name.as_str())
 }
 
+/// A parameter a wire now drives (`block.param`, `use/param`) has no
+/// value of its own: it is set or wired (ADR 0075). A note when one went.
+fn drop_value(blocks: &mut [BlockEntry], to: &str) -> String {
+    let (block, param) = match (to.split_once('/'), to.split_once('.')) {
+        (Some((u, p)), _) if !p.contains(['.', '/']) => (u, p),
+        (None, Some((b, p))) => (b, p),
+        _ => return String::new(),
+    };
+    match blocks
+        .iter_mut()
+        .find(|b| b.name == block)
+        .and_then(|b| b.params.remove(param))
+    {
+        Some(_) => format!(" (it drives {to}, which no longer has its own value)"),
+        None => String::new(),
+    }
+}
+
 /// Connect two ends of which one or both are in used models: a wire on
 /// one clock, or across clocks a probe recording the output, linked into
 /// the input block (ADR 0066 step 4c).
@@ -1814,7 +1920,8 @@ fn connect_uses(
             to: dst.clone(),
         });
         let _ = (scope, registry);
-        return Ok(format!("Connected {src} -> {dst}"));
+        let note = drop_value(&mut file.blocks, &dst);
+        return Ok(format!("Connected {src} -> {dst}{note}"));
     }
     // Across clocks: into an input block only.
     let input = dst
@@ -2766,6 +2873,73 @@ mod tests {
     }
 
     /// The final value of a recorded signal after `t` seconds.
+    #[test]
+    fn wires_into_values_drive_them_and_show_where_they_end() {
+        let r = registry();
+        let mut f = file("Forced spring");
+        let d = Diagram::new(&f, &r);
+        let shaken = d.node("shaken").unwrap();
+        // The wire ends at the driven value, listed first and shown on the
+        // closed node (ADR 0075).
+        let w = d.wires.iter().find(|w| w.param).unwrap();
+        assert_eq!(w.to.0, shaken);
+        let v = &d.nodes[shaken].values[w.to.1];
+        assert_eq!(
+            (v.name.as_str(), v.driven.as_deref()),
+            ("F", Some("push.F"))
+        );
+        assert_eq!(w.to.1, 0);
+        assert_eq!(d.nodes[shaken].value_rows(), 1);
+        assert!(d.dangling.is_empty(), "{:?}", d.dangling);
+        // Wiring a value that has its own drops it: set or wired.
+        f.blocks
+            .iter_mut()
+            .find(|b| b.name == "held")
+            .unwrap()
+            .params
+            .insert("F".into(), ParamValue::Number(0.5));
+        let note = apply(
+            &mut f,
+            &r,
+            &Edit::Connect {
+                from: "push.F".into(),
+                to: "held.F".into(),
+            },
+        )
+        .unwrap();
+        assert!(note.contains("no longer has its own value"), "{note}");
+        let held = f.blocks.iter().find(|b| b.name == "held").unwrap();
+        assert!(!held.params.contains_key("F"));
+        let d = Diagram::new(&f, &r);
+        let h = d.node("held").unwrap();
+        assert_eq!(d.nodes[h].values[0].driven.as_deref(), Some("push.F"));
+        assert!(crate::describe::check(&f.to_json(), &r)["ok"] == true);
+        // Lifted, it is the model's own again.
+        apply(
+            &mut f,
+            &r,
+            &Edit::Disconnect {
+                to: "held.F".into(),
+            },
+        )
+        .unwrap();
+        let d = Diagram::new(&f, &r);
+        let h = d.node("held").unwrap();
+        assert!(d.nodes[h].values.iter().all(|v| v.driven.is_none()));
+        // Expanded, the wire ends at the inner value set to F.
+        let f = file("Forced spring");
+        let mut d = Diagram::new(&f, &r);
+        d.expand(&f, &r, &["shaken".into()]);
+        let mass = d.node("shaken/mass").unwrap();
+        let w = d.wires.iter().find(|w| w.param).unwrap();
+        assert_eq!(w.to.0, mass);
+        assert_eq!(d.nodes[mass].values[w.to.1].name, "F");
+        assert_eq!(
+            d.nodes[mass].values[w.to.1].driven.as_deref(),
+            Some("push.F")
+        );
+    }
+
     #[test]
     fn ports_and_parameters_are_exposed_and_hidden_inside_a_model() {
         let r = registry();

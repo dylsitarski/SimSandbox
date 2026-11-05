@@ -42,6 +42,10 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/platoon.ssbx.json"),
     },
     Example {
+        name: "Forced spring (a parameter driven by a wire)",
+        text: include_str!("../../../examples/forced-spring.ssbx.json"),
+    },
+    Example {
         name: "Logistic map (a discrete map)",
         text: include_str!("../../../examples/logistic-map.ssbx.json"),
     },

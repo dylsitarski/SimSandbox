@@ -510,6 +510,7 @@ impl Diagram {
                     from_name: c.from.clone(),
                     to_name: c.to.clone(),
                     signal: String::new(),
+                    param: false,
                 });
             }
         }
@@ -555,6 +556,7 @@ impl Diagram {
                             self.nodes[i].name, self.nodes[i].inputs[port].name
                         ),
                         signal,
+                        param: false,
                     }),
                     None => {
                         let slot = self.nodes[i].inputs[port].name.clone();

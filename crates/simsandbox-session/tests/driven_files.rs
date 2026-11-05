@@ -155,3 +155,29 @@ fn a_models_inputs_outputs_and_parameters_share_their_names() {
         "inputs": [{"name": "g", "to": ["b.u"]}]});
     refused(&file, "is a parameter of the model already");
 }
+
+#[test]
+fn the_forced_spring_swings_as_its_steady_state_predicts() {
+    // One spring model: `held` sets F, `shaken` has F driven by a sine.
+    let text = EXAMPLES
+        .iter()
+        .find(|e| e.name.contains("Forced spring"))
+        .unwrap()
+        .text;
+    let report = check(text, &registry());
+    assert_eq!(report["ok"], true, "{report}");
+    let c = run_composition(text, &registry(), Some(80.0)).unwrap();
+    // One shared clock: one model's results, indexed by time.
+    let t = c.models[0].1.index[0].1.clone();
+    let x = c.values("shaken/mass.x").unwrap();
+    // F0 = 1, w = 1, k = 1, m = 1, c = 0.2: 1/sqrt((k - m w^2)^2 + (c w)^2).
+    let swing = x
+        .iter()
+        .zip(&t)
+        .filter(|(_, t)| **t > 70.0)
+        .map(|(x, _)| x.abs())
+        .fold(0.0, f64::max);
+    assert!((swing - 5.0).abs() < 0.01, "{swing}");
+    let held = c.values("held/mass.x").unwrap();
+    assert!((held.last().unwrap() - 1.0).abs() < 1e-3);
+}
