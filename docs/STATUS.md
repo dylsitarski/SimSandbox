@@ -33,6 +33,7 @@ _Last updated: 2026-11-05_
 
 ## Done recently
 
+- 2026-11-05: [ADR 0075](decisions/0075-parameters-are-inputs-with-defaults.md) (owner): parameters are inputs with defaults, drivable on every block; parameter feedthrough worked out, declared and tested; activation raised as Q53.
 - 2026-11-05: ADR 0074 step 3: inside a model, a click on a port or a parameter's ring exposes it or hides it; exposed things are ringed; wires across an outline reach the ports it exposes; "Show a port" and the "Offer …" menus removed; the Platoon's follower exposes `lead` instead of an input block (same results).
 - 2026-11-05: ADR 0074 step 2: exposed inputs (`inputs` beside `outputs`), signals with no default, wired by every use and study; a model with them does not run alone.
 - 2026-11-05: [ADR 0074](decisions/0074-model-interfaces.md) (owner): a model's interface is parameters, inputs (no defaults) and outputs, each exposed where it is. Step 1: studies take their model's parameters; the resonance examples without input blocks.
@@ -172,11 +173,12 @@ _Last updated: 2026-11-05_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 5 done 2026-11-02): (6) several cores between instants.
-2. **Adaptive experiments** (ADR 0067 step 5): optimisation, fitting and continuation as strategies that choose points in rounds (ADR 0070 point 4); needs its own ADR.
-3. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
-4. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)), Duplicate, array parameters and neighbours done 2026-11-02: network grids (nodes and edges from a file) and array parameters read from a data file when a model needs them; `count` on uses waits.
-5. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
+1. **Parameters are inputs with defaults** ([ADR 0075](decisions/0075-parameters-are-inputs-with-defaults.md)), in order: (1) kernel: parameters fed by wires, `param_feedthrough` with its default, starting values read from drivers, typed equations' exact dependencies, the declaration test over every block type, the driven-decay test against its exact solution; (2) files and headless: connections to parameters, refusals, `check`, schema, Python; (3) app: value-row ports, "driven by", an example. Activation follows in its own ADR ([Q53](open-questions.md)).
+2. **Models that use model files** ([ADR 0066](decisions/0066-models-nest-as-blocks.md); ADR 0063 step 5), in order (steps 1 to 5 done 2026-11-02): (6) several cores between instants.
+3. **Adaptive experiments** (ADR 0067 step 5): optimisation, fitting and continuation as strategies that choose points in rounds (ADR 0070 point 4); needs its own ADR.
+4. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29): (3) exact runs on several cores: cell-by-cell loops and reductions split into fixed chunks, the same bits on any machine; (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
+5. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)), Duplicate, array parameters and neighbours done 2026-11-02: network grids (nodes and edges from a file) and array parameters read from a data file when a model needs them; `count` on uses waits.
+6. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
 

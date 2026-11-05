@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-05
+- **Amended by:** [ADR 0075](0075-parameters-are-inputs-with-defaults.md) (parameters may be wired; decision 1's "a parameter is never wired" replaced)
 - **Amends:** [ADR 0068](0068-one-kind-of-nested-model.md) decision 2 (a model's ports are its input blocks and declared outputs) and [ADR 0073](0073-ports-and-offered-outputs.md) (how outputs are offered and ports shown)
 
 ## Context

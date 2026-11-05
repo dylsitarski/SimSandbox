@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: ADR 0075 written (not built); Q53 (activation) raised.
 - 2026-11-05: ADR 0074 step 3: `Diagram::exposed`, `NodeValue::exposed`, `exposable`/`exposed_as`/`toggle_exposed`, `Edit::HideOutput`, `DeclareOutput` naming by port; canvas rings and click toggles, hover help; menus, `Canvas::revealed`/`reveal` removed; `route` for wires across an outline to exposed ports; expand routes exposed inputs; Duplicate feeds copies' outside inputs; Platoon follower rewritten (0 of 16 814 CSV cells differ); renders checked.
 - 2026-11-05: ADR 0074 step 2: `ModelFile::inputs`, `check_inputs`, `expose_inputs`, `unwired`, `runs_alone`, `read_use`/`use_file` taking the parent's connections, study and use-node exposure, schema; test against the input-block form bit for bit.
 - 2026-11-05: ADR 0074 written; step 1: study parameters (`declared`, `evaluate(inputs, params)`), `Edit::Study` copying params, resonance examples rewritten, tests renamed.
@@ -143,6 +144,7 @@
 
 ## Decided
 
+- 2026-11-05 (owner): parameters are inputs with defaults: any block's declared parameter may be wired, read whenever its owner reads it (each evaluation, at start, when a study runs); which outputs it reaches is worked out for typed equations, declared by code blocks (undeclared: every output but state copies) and checked by a perturbation test; activation by events gets its own ADR (ADR 0075, Q53).
 - 2026-11-05: a wire to an inner port that is not exposed is refused with a hint rather than exposing it in the same gesture (two edits at two levels, one possibly asking where it goes); recorded in ADR 0074 As built.
 - 2026-11-05 (owner): a model's interface is parameters (defaults in the model, values per use or study), inputs (signals, no defaults) and outputs, each exposed by a toggle where it is; exposed things look different from others (ADR 0074).
 - 2026-11-05 (owner): models with nothing in time are evaluated in the app, not run (ADR 0072); then a view of plain numbers, a study form in the Inspector, studies drawn apart from uses, and one way to show ports and offer outputs (a short ADR), in that order.
