@@ -177,7 +177,8 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
         create: || Box::new(Trajectory::default()),
     })?;
     crate::fields::register(r)?;
-    crate::surface::register(r)
+    crate::surface::register(r)?;
+    crate::values::register(r)
 }
 
 pub(crate) fn bindings(pairs: &[(&str, &str)]) -> Bindings {

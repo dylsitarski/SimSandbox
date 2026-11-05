@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: `show.values` (`values.rs`, `number`), `History::set_unit`/`unit` filled from output ports in `build_history`; the tuning example's best values; tests; renders.
 - 2026-11-05: ADR 0072 written and built: `Session::timeless`, `evaluate_later` (set by `Live::start`), `unevaluated`/`evaluate` (renamed from the studies-only names), the worker never stepping such a model, the toolbar's "Evaluated, not run in time"; the give-up test's model given a state; tests; screenshot of the resonance curve. Inspector selection inside used models fixed (owner's report).
 - 2026-11-05: STATUS What works checked against the code (`describe`, the examples list, CLI commands, the Python API, app labels): subsystem bullet replaced; bullets added for models that use models, time from data, probes and the recorder; methods, block types, examples, shapes, panes, canvas, CLI and Python brought up to date.
 - 2026-11-05: STATUS Known limitations checked against the code: the two study items merged; subsystem, sweep and experiment items rewritten for ADRs 0068 and 0071; heat maps over uneven and 2D coordinates, study give-up, probes and recorders across used models, the recorder's memory budget and the step number `n` in maps stated as built.

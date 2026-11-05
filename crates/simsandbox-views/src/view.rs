@@ -681,7 +681,8 @@ mod tests {
                 "plot.profile",
                 "plot.scatter",
                 "plot.surface",
-                "plot.contour"
+                "plot.contour",
+                "show.values"
             ]
         );
         assert!(crate::builtin::register(&mut r).is_err());
@@ -793,6 +794,28 @@ mod tests {
         // A 2D grid cannot be drawn over t.
         let flat = Available { lines: &[], ..a };
         assert!(heat.check(&bind("t", "rod.x"), &none, &flat).is_err());
+    }
+
+    #[test]
+    fn values_show_scalars_and_lines() {
+        let r = ViewRegistry::builtin();
+        let v = r.get("show.values").unwrap();
+        let scalars: Vec<String> = ["b.k", "b.reach"].map(String::from).to_vec();
+        let lines: Vec<String> = vec!["s.peak".into()];
+        let a = Available {
+            scalars: &scalars,
+            grids: &lines,
+            lines: &lines,
+            ..Default::default()
+        };
+        let bind: Bindings = [(
+            "values".to_string(),
+            vec!["b.k".to_string(), "s.peak".to_string()],
+        )]
+        .into();
+        assert!(v.check(&bind, &BTreeMap::new(), &a).is_ok());
+        let preset = ViewState::from_preset(v, 0, &a).unwrap();
+        assert_eq!(preset.bind["values"], scalars);
     }
 
     #[test]

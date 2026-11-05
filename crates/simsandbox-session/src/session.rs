@@ -1113,6 +1113,26 @@ impl Session {
         for (name, label) in labels {
             h.set_label(&name, &label);
         }
+        // Outputs' units, for views that print them.
+        let model = self.sim.model();
+        let unit = |block: BlockId, port: &str| {
+            model
+                .block(block)
+                .ok()
+                .and_then(|b| b.spec().outputs().find(|p| p.name == port).map(|p| p.unit))
+                .filter(|u| *u != Unit::DIMENSIONLESS)
+                .map(|u| u.to_string())
+        };
+        for (name, s) in self.output_names.iter().zip(&self.sources) {
+            if let Some(u) = unit(s.block, &s.port) {
+                h.set_unit(name, &u);
+            }
+        }
+        for ((name, _), f) in self.base_fields.iter().zip(&self.field_sources) {
+            if let Some(u) = unit(f.block, &f.port) {
+                h.set_unit(name, &u);
+            }
+        }
         self.replace_history(h);
     }
 
@@ -2910,6 +2930,19 @@ mod tests {
         // A model without studies has none to run.
         let plain = crate::study::without_running_studies(|| example("Lorenz"));
         assert!(!plain.unevaluated());
+    }
+
+    #[test]
+    fn the_history_knows_each_outputs_unit() {
+        let s = example("Tuning");
+        let h = s.signals();
+        assert_eq!(h.unit("best.best_peak"), Some("m/s"));
+        assert_eq!(h.unit("best.best_reach"), Some("s"));
+        assert_eq!(h.unit("tuning.reach"), Some("s"));
+        drop(h);
+        // A plain number has none.
+        let l = example("Logistic");
+        assert_eq!(l.signals().unit("population.x"), None);
     }
 
     #[test]

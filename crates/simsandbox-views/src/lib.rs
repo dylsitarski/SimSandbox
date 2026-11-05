@@ -22,6 +22,7 @@ pub mod cut;
 pub mod fields;
 pub mod history;
 pub mod surface;
+pub mod values;
 pub mod view;
 pub mod view3d;
 

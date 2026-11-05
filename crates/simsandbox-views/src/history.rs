@@ -230,6 +230,8 @@ pub struct History {
     /// Display labels for signals and fields whose names are not readable
     /// on their own, e.g. a cut filter's `curves[0]` as `spring.c = 0.05`.
     labels: std::collections::BTreeMap<String, String>,
+    /// Units of signals and fields, as written (`m/s`), where they have one.
+    units: std::collections::BTreeMap<String, String>,
     names: Vec<String>,
     times: Vec<f64>,
     /// Per signal, `(t, value)` points, ready to plot against time.
@@ -261,6 +263,7 @@ impl History {
             index: index.into(),
             coordinates: Vec::new(),
             labels: Default::default(),
+            units: Default::default(),
             names,
             times: Vec::new(),
             points,
@@ -306,6 +309,16 @@ impl History {
     /// Declare which fields are coordinates of which (ADR 0024).
     pub fn set_coordinates(&mut self, coordinates: Vec<Coordinate>) {
         self.coordinates = coordinates;
+    }
+
+    /// Give signal or field `name` its unit, as written (`m/s`).
+    pub fn set_unit(&mut self, name: &str, unit: &str) {
+        self.units.insert(name.into(), unit.into());
+    }
+
+    /// The unit of a signal or field, if it has one.
+    pub fn unit(&self, name: &str) -> Option<&str> {
+        self.units.get(name).map(String::as_str)
     }
 
     /// Show `name` as `label` in legends and on axes.
