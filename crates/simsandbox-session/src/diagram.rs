@@ -104,6 +104,9 @@ pub struct NodeValue {
     /// Inside a subsystem, where the value is every use's default: the
     /// uses that set their own.
     pub overridden: Vec<String>,
+    /// Exposed as the model's parameter of this name (ADR 0074): shown
+    /// with the model's value, set by each use or study.
+    pub exposed: Option<String>,
 }
 
 impl Node {
@@ -210,6 +213,10 @@ pub struct Diagram {
     /// The inside of a used model, open on the canvas: its blocks can offer
     /// outputs to the models using it (ADR 0073).
     pub inside: bool,
+    /// What the model exposes (ADR 0074), by node name: `in:block.port`,
+    /// `out:block.port` and `par:block.param`, each to the name its users
+    /// see.
+    pub exposed: BTreeMap<String, String>,
 }
 
 /// The blocks and wires of one level.
@@ -250,7 +257,7 @@ impl Diagram {
                     let wired = simsandbox_file::compose::wired(l.connections, &b.name);
                     use_node(b, registry, file.folder.as_deref(), 0, wired)
                 } else {
-                    node(b, registry, file.folder.as_deref())
+                    node(b, registry, file.folder.as_deref(), &file.params)
                 }
             })
             .collect();
@@ -316,6 +323,7 @@ impl Diagram {
                 .iter()
                 .map(|o| (o.name.clone(), o.from.clone()))
                 .collect(),
+            exposed: exposed(file),
             ..Self::default()
         }
     }
@@ -341,6 +349,47 @@ impl Diagram {
 
     pub fn node(&self, name: &str) -> Option<usize> {
         self.nodes.iter().position(|n| n.name == name)
+    }
+
+    /// Whether node `i`'s ports and parameters can be exposed (ADR 0074):
+    /// a block inside a model, open or expanded in place.
+    pub fn exposable(&self, i: usize) -> bool {
+        let n = &self.nodes[i];
+        n.kind == NodeKind::Block
+            && n.type_name != simsandbox_file::STUDY
+            && (self.inside || n.name.contains('/'))
+    }
+
+    /// The name node `i`'s port or parameter is exposed as, if it is:
+    /// `kind` is `in`, `out` or `par`.
+    pub fn exposed_as(&self, i: usize, kind: &str, item: &str) -> Option<&str> {
+        self.exposed
+            .get(&format!("{kind}:{}.{item}", self.nodes[i].name))
+            .map(String::as_str)
+    }
+
+    /// The edit that exposes node `i`'s port or parameter, or hides it if
+    /// it is exposed (ADR 0074).
+    pub fn toggle_exposed(&self, i: usize, kind: &str, item: &str) -> Edit {
+        let at = format!("{}.{item}", self.nodes[i].name);
+        let shown = self.exposed_as(i, kind, item).is_some();
+        match (kind, shown) {
+            ("in", false) => Edit::ExposeInput { input: at },
+            ("in", true) => Edit::HideInput { input: at },
+            ("out", false) => Edit::DeclareOutput {
+                name: String::new(),
+                from: at,
+            },
+            ("out", true) => Edit::HideOutput { from: at },
+            (_, false) => Edit::ExposeParam {
+                block: self.nodes[i].name.clone(),
+                param: item.to_string(),
+            },
+            (_, true) => Edit::HideParam {
+                block: self.nodes[i].name.clone(),
+                param: item.to_string(),
+            },
+        }
     }
 }
 
@@ -561,6 +610,7 @@ fn use_node(
             unit: decl.unit.clone(),
             initial: false,
             overridden: Vec::new(),
+            exposed: None,
         });
     }
     // What each declared output shows, so a signal named by it is drawn
@@ -596,7 +646,36 @@ fn use_node(
     n
 }
 
-fn node(b: &BlockEntry, registry: &Registry, folder: Option<&std::path::Path>) -> Node {
+/// What `file` exposes to its users (ADR 0074), as [`Diagram::exposed`]
+/// lists it.
+fn exposed(file: &ModelFile) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for i in &file.inputs {
+        for t in &i.to {
+            out.insert(format!("in:{t}"), i.name.clone());
+        }
+    }
+    for o in &file.outputs {
+        out.insert(format!("out:{}", o.from), o.name.clone());
+    }
+    for b in &file.blocks {
+        for (p, v) in &b.params {
+            if let ParamValue::Formula(f) = v {
+                if file.params.contains_key(f.trim()) {
+                    out.insert(format!("par:{}.{p}", b.name), f.trim().to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn node(
+    b: &BlockEntry,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+    declared: &BTreeMap<String, simsandbox_file::ParamDecl>,
+) -> Node {
     let mut method = b.method.name.clone();
     let mut values = Vec::new();
     let (inputs, outputs, error) = match build(b, registry, folder) {
@@ -606,20 +685,25 @@ fn node(b: &BlockEntry, registry: &Registry, folder: Option<&std::path::Path>) -
             }
             // Its parameters as the file gives them, else their defaults.
             for p in &block.spec().params {
-                let (value, formula) = match b.params.get(&p.name) {
+                let (value, exposed) = match b.params.get(&p.name) {
                     Some(ParamValue::Number(v)) => (*v, None),
-                    // Set by a formula: not listed.
-                    Some(ParamValue::Formula(_)) => continue,
+                    // Exposed as the model's parameter: its value.
+                    Some(ParamValue::Formula(f)) => match declared.get(f.trim()) {
+                        Some(d) => (d.value, Some(f.trim().to_string())),
+                        // Set by a formula: not listed.
+                        None => continue,
+                    },
                     None => (p.default, None),
                 };
                 values.push(NodeValue {
                     key: format!("{}.{}", b.name, p.name),
                     name: p.name.clone(),
                     value,
-                    formula,
+                    formula: None,
                     unit: unit_text(&p.unit),
                     initial: p.initial_condition,
                     overridden: Vec::new(),
+                    exposed,
                 });
             }
             values.sort_by_key(|v| v.initial);
@@ -678,14 +762,17 @@ impl Diagram {
             return;
         }
         for n in self.nodes.iter_mut().filter(|n| n.is_block()) {
-            // Values formulas set are not listed.
+            // Values formulas set are not listed, but for exposed ones.
             n.values.retain(|v| {
-                rows.iter()
-                    .find(|r| r.key == v.key)
-                    .is_none_or(|r| r.formula.is_none())
+                v.exposed.is_some()
+                    || rows
+                        .iter()
+                        .find(|r| r.key == v.key)
+                        .is_none_or(|r| r.formula.is_none())
             });
             for v in &mut n.values {
-                if let Some(r) = rows.iter().find(|r| r.key == v.key) {
+                let key = v.exposed.as_ref().unwrap_or(&v.key);
+                if let Some(r) = rows.iter().find(|r| &r.key == key) {
                     v.value = r.value;
                 }
             }
@@ -824,6 +911,21 @@ pub enum Edit {
     /// Offer an output to models using this one (ADR 0066 step 4b): a
     /// declared output `name` showing `from` (`block.port`).
     DeclareOutput { name: String, from: String },
+    /// Stop offering `from` (`block.port`) to models using this one
+    /// (ADR 0074): the declared outputs showing it go.
+    HideOutput { from: String },
+    /// Expose a block's parameter as the model's (ADR 0074): a declared
+    /// parameter of its name with its value and unit, which the block's
+    /// parameter is then set to.
+    ExposeParam { block: String, param: String },
+    /// Stop exposing it: the block keeps the value, the declaration goes
+    /// when nothing else reads it.
+    HideParam { block: String, param: String },
+    /// Expose a block's input (`block.port`) as the model's input (ADR
+    /// 0074): a signal its users wire.
+    ExposeInput { input: String },
+    /// Stop exposing the block input `block.port`.
+    HideInput { input: String },
     /// Stop offering the declared output `name`.
     RemoveOutput { name: String },
     /// Rename a model defined in the file (ADR 0068): its uses follow.
@@ -984,6 +1086,31 @@ fn apply_in_level(
     }
     match edit {
         Edit::DeclareOutput { name, from } => return declare_output(file, name, from),
+        Edit::ExposeParam { block, param } => return expose_param(file, registry, block, param),
+        Edit::HideParam { block, param } => return hide_param(file, block, param),
+        Edit::ExposeInput { input } => return expose_input(file, registry, input),
+        Edit::HideInput { input } => {
+            let before: usize = file.inputs.iter().map(|i| i.to.len()).sum();
+            for i in &mut file.inputs {
+                i.to.retain(|t| t != input);
+            }
+            file.inputs.retain(|i| !i.to.is_empty());
+            let after: usize = file.inputs.iter().map(|i| i.to.len()).sum();
+            return if after < before {
+                Ok(format!("{input} is no longer an input of the model"))
+            } else {
+                Err(format!("{input} is not an input of the model"))
+            };
+        }
+        Edit::HideOutput { from } => {
+            let before = file.outputs.len();
+            file.outputs.retain(|o| &o.from != from);
+            return if file.outputs.len() < before {
+                Ok(format!("{from} is no longer an output of the model"))
+            } else {
+                Err(format!("{from} is not an output of the model"))
+            };
+        }
         Edit::RemoveOutput { name } => {
             let before = file.outputs.len();
             file.outputs.retain(|o| &o.name != name);
@@ -1350,7 +1477,9 @@ fn edit_level(
                 l.blocks.push(copy);
                 renamed.insert(name.clone(), new);
             }
-            // Wires among the copied, copied too.
+            // Wires among the copied, copied too; a copy's input fed from
+            // outside them is fed as its original's (an input has no
+            // default, ADR 0074).
             let end = |e: &str| -> Option<String> {
                 let i = e.find(['.', '/'])?;
                 renamed.get(&e[..i]).map(|n| format!("{n}{}", &e[i..]))
@@ -1360,8 +1489,8 @@ fn edit_level(
                 .iter()
                 .filter_map(|c| {
                     Some(ConnectionEntry {
-                        from: end(&c.from)?,
                         to: end(&c.to)?,
+                        from: end(&c.from).unwrap_or_else(|| c.from.clone()),
                     })
                 })
                 .collect();
@@ -1569,6 +1698,11 @@ fn edit_level(
         | Edit::StudyModel
         | Edit::DeclareOutput { .. }
         | Edit::RemoveOutput { .. }
+        | Edit::HideOutput { .. }
+        | Edit::ExposeParam { .. }
+        | Edit::HideParam { .. }
+        | Edit::ExposeInput { .. }
+        | Edit::HideInput { .. }
         | Edit::RenameModel { .. }
         | Edit::DeclareParam { .. }
         | Edit::RemoveParam { .. } => unreachable!("handled before"),
@@ -1874,8 +2008,22 @@ pub fn rename_refs(s: &str, from: &str, to: &str) -> String {
 /// their place. Wires crossing the boundary become its ports; declared
 /// parameters the moved formulas use are passed in as its parameters.
 /// Offer `from` (`block.port`) as the declared output `name`.
+/// With no name, the port's own, made unique (ADR 0074).
 fn declare_output(file: &mut ModelFile, name: &str, from: &str) -> Result<String, String> {
-    let name = name.trim();
+    let chosen;
+    let name = match name.trim() {
+        "" => {
+            let port = from.rsplit(['.', '/']).next().unwrap_or(from);
+            let taken = |n: &str| {
+                file.outputs.iter().any(|o| o.name == n)
+                    || file.inputs.iter().any(|i| i.name == n)
+                    || file.blocks.iter().any(|b| b.name == n)
+            };
+            chosen = unique_name(port, taken);
+            chosen.as_str()
+        }
+        n => n,
+    };
     if !simsandbox_file::subsystems::valid_name(name) {
         return Err(format!(
             "'{name}': an output's name is letters, digits and '_'"
@@ -1897,6 +2045,156 @@ fn declare_output(file: &mut ModelFile, name: &str, from: &str) -> Result<String
         canvas: None,
     });
     Ok(format!("Offers {from} as the output {name}"))
+}
+
+/// A name based on `base` that `taken` does not hold: `base`, or
+/// `base` followed by a number.
+fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    if taken(base) {
+        free_name(base, taken)
+    } else {
+        base.to_string()
+    }
+}
+
+/// Expose `block.param` as a parameter of the model (ADR 0074).
+fn expose_param(
+    file: &mut ModelFile,
+    registry: &Registry,
+    block: &str,
+    param: &str,
+) -> Result<String, String> {
+    let folder = file.folder.clone();
+    let b = file
+        .blocks
+        .iter()
+        .find(|b| b.name == block)
+        .ok_or_else(|| format!("no block named '{block}'"))?;
+    if let Some(ParamValue::Formula(f)) = b.params.get(param) {
+        return Err(format!("{block}.{param} is set by '{f}' already"));
+    }
+    let built = build(b, registry, folder.as_deref())?;
+    let spec = built
+        .spec()
+        .params
+        .iter()
+        .find(|p| p.name == param)
+        .ok_or_else(|| format!("{block} has no parameter '{param}'"))?
+        .clone();
+    let value = match b.params.get(param) {
+        Some(ParamValue::Number(v)) => *v,
+        _ => spec.default,
+    };
+    let taken = |n: &str| {
+        file.params.contains_key(n)
+            || file.blocks.iter().any(|b| b.name == n)
+            || simsandbox_expr::is_reserved(n)
+    };
+    let name = unique_name(param, taken);
+    let unit = if spec.unit == simsandbox_core::units::Unit::DIMENSIONLESS {
+        String::new()
+    } else {
+        spec.unit.to_string()
+    };
+    file.params.insert(
+        name.clone(),
+        simsandbox_file::ParamDecl {
+            value,
+            unit,
+            description: spec.description.clone(),
+            range: (spec.suggested_min < spec.suggested_max)
+                .then_some([spec.suggested_min, spec.suggested_max]),
+        },
+    );
+    let b = file
+        .blocks
+        .iter_mut()
+        .find(|b| b.name == block)
+        .expect("found above");
+    b.params
+        .insert(param.to_string(), ParamValue::Formula(name.clone()));
+    Ok(format!(
+        "{block}.{param} is the model's parameter {name}: each use or study sets its own"
+    ))
+}
+
+/// Stop exposing `block.param`: it keeps the model's value.
+fn hide_param(file: &mut ModelFile, block: &str, param: &str) -> Result<String, String> {
+    let b = file
+        .blocks
+        .iter()
+        .find(|b| b.name == block)
+        .ok_or_else(|| format!("no block named '{block}'"))?;
+    let Some(ParamValue::Formula(name)) = b.params.get(param).cloned() else {
+        return Err(format!("{block}.{param} is not the model's parameter"));
+    };
+    let decl = file.params.get(&name).cloned().ok_or_else(|| {
+        format!("{block}.{param} is set by '{name}', not a parameter of the model")
+    })?;
+    let b = file
+        .blocks
+        .iter_mut()
+        .find(|b| b.name == block)
+        .expect("found above");
+    b.params
+        .insert(param.to_string(), ParamValue::Number(decl.value));
+    // The declaration goes when nothing else reads it.
+    let read = file.blocks.iter().any(|b| {
+        b.params
+            .values()
+            .any(|v| matches!(v, ParamValue::Formula(f) if f.contains(name.as_str())))
+    });
+    if !read {
+        file.params.remove(&name);
+    }
+    Ok(format!("{block}.{param} is the block's own again"))
+}
+
+/// Expose the block input `input` (`block.port`) as the model's (ADR 0074).
+fn expose_input(file: &mut ModelFile, registry: &Registry, input: &str) -> Result<String, String> {
+    let (block, port) = input
+        .split_once('.')
+        .ok_or_else(|| format!("'{input}': a block's input, block.port"))?;
+    if file.connections.iter().any(|c| c.to == input) {
+        return Err(format!(
+            "{input} is wired inside the model: an exposed input is fed by its users"
+        ));
+    }
+    if file.inputs.iter().any(|i| i.to.iter().any(|t| t == input)) {
+        return Err(format!("{input} is an input of the model already"));
+    }
+    let folder = file.folder.clone();
+    let b = file
+        .blocks
+        .iter()
+        .find(|b| b.name == block)
+        .ok_or_else(|| format!("no block named '{block}'"))?;
+    let built = build(b, registry, folder.as_deref())?;
+    let p = built
+        .spec()
+        .inputs()
+        .find(|p| p.name == port)
+        .ok_or_else(|| format!("{block} has no input '{port}'"))?;
+    let unit = if p.unit == simsandbox_core::units::Unit::DIMENSIONLESS {
+        String::new()
+    } else {
+        p.unit.to_string()
+    };
+    let taken = |n: &str| {
+        file.inputs.iter().any(|i| i.name == n)
+            || file.outputs.iter().any(|o| o.name == n)
+            || file.blocks.iter().any(|b| b.name == n)
+    };
+    let name = unique_name(port, taken);
+    file.inputs.push(simsandbox_file::InputPort {
+        name: name.clone(),
+        to: vec![input.to_string()],
+        unit,
+        canvas: None,
+    });
+    Ok(format!(
+        "{input} is the model's input {name}: its users wire it"
+    ))
 }
 
 /// Rename the model `from` defined in `file` to `to`; its uses in the
@@ -2468,6 +2766,77 @@ mod tests {
     }
 
     /// The final value of a recorded signal after `t` seconds.
+    #[test]
+    fn ports_and_parameters_are_exposed_and_hidden_inside_a_model() {
+        let r = registry();
+        let platoon = file("Platoon");
+        let mut f =
+            simsandbox_file::compose::read_definition("follower", &platoon.models["follower"])
+                .unwrap();
+        let mut d = Diagram::new(&f, &r);
+        d.inside = true;
+        // What the follower exposes, by node (ADR 0074).
+        assert_eq!(d.exposed["in:control.lead"], "lead");
+        assert_eq!(d.exposed["out:car.v"], "v");
+        assert_eq!(d.exposed["par:car.m"], "mass");
+        let car = d.node("car").unwrap();
+        let control = d.node("control").unwrap();
+        assert!(d.exposable(car));
+        // An exposed parameter is listed with the model's value.
+        let m = d.nodes[car].values.iter().find(|v| v.name == "m").unwrap();
+        assert_eq!((m.exposed.as_deref(), m.value), (Some("mass"), 1000.0));
+        let toggle = |f: &mut ModelFile, node: usize, kind: &str, item: &str| {
+            let mut d = Diagram::new(f, &r);
+            d.inside = true;
+            let edit = d.toggle_exposed(node, kind, item);
+            apply(f, &r, &edit)
+        };
+        // A parameter: declared with its value and unit, then the block's
+        // own again.
+        toggle(&mut f, car, "par", "c").unwrap();
+        assert_eq!(f.params["c"].value, 50.0);
+        assert_eq!(f.params["c"].unit, "kg/s");
+        let d = Diagram::new(&f, &r);
+        let c = d.nodes[car].values.iter().find(|v| v.name == "c").unwrap();
+        assert_eq!(c.exposed.as_deref(), Some("c"));
+        toggle(&mut f, car, "par", "c").unwrap();
+        assert!(!f.params.contains_key("c"));
+        let b = f.blocks.iter().find(|b| b.name == "car").unwrap();
+        assert_eq!(b.params["c"], ParamValue::Number(50.0));
+        // An output: offered under its port's name, then not.
+        toggle(&mut f, control, "out", "F").unwrap();
+        assert!(f
+            .outputs
+            .iter()
+            .any(|o| o.name == "F" && o.from == "control.F"));
+        toggle(&mut f, control, "out", "F").unwrap();
+        assert!(!f.outputs.iter().any(|o| o.from == "control.F"));
+        // An input: hidden, then exposed again; one wired inside is not.
+        toggle(&mut f, control, "in", "lead").unwrap();
+        assert!(f.inputs.is_empty());
+        toggle(&mut f, control, "in", "lead").unwrap();
+        assert_eq!(f.inputs[0].name, "lead");
+        assert_eq!(f.inputs[0].unit, "m/s");
+        let refused = toggle(&mut f, car, "in", "F").unwrap_err();
+        assert!(refused.contains("wired inside"), "{refused}");
+        // Outside, at the top level, nothing is exposable; expanded in
+        // place, the follower's nodes are, with their exposure.
+        let mut top = Diagram::new(&platoon, &r);
+        assert!(!top.exposable(top.node("leader").unwrap()));
+        top.expand(&platoon, &r, &["car1".into()]);
+        let inner = top.node("car1/control").unwrap();
+        assert!(top.exposable(inner));
+        assert_eq!(top.exposed_as(inner, "in", "lead"), Some("lead"));
+        assert_eq!(
+            crate::expand::route(&top, &top.toggle_exposed(inner, "in", "lead"))
+                .unwrap()
+                .1,
+            Edit::HideInput {
+                input: "control.lead".into()
+            }
+        );
+    }
+
     fn final_value(f: &ModelFile, signal: &str, t: f64) -> f64 {
         let text = f.to_json();
         if simsandbox_file::compose::is_composition(&text) {
@@ -2645,11 +3014,16 @@ mod tests {
         let car4 = f.blocks.iter().find(|b| b.name == "car4").unwrap();
         assert_eq!(car4.model.as_deref(), Some("follower"));
         assert_eq!(car4.params["mass"], ParamValue::Number(2500.0));
-        // Not wired, it keeps car3's clock: the model's.
-        assert_eq!(car4.clock, Some(simsandbox_file::UseClock::Shared));
+        // Its input is fed as car3's (ADR 0074); it runs on car3's clock.
+        assert!(f
+            .connections
+            .iter()
+            .any(|c| c.from == "car2/v" && c.to == "car4/lead"));
+        let car3 = f.blocks.iter().find(|b| b.name == "car3").unwrap();
+        assert_eq!(car4.clock, car3.clock);
         assert!(final_value(&f, "car4/car.v", 1.0).is_finite());
-        // Two at once: the wire between them is copied, the ones to the
-        // rest are not.
+        // Two at once: the wire between them is copied, the ones from them
+        // to the rest are not; car4's input is fed as car1's.
         let mut f = file("Platoon");
         apply(
             &mut f,
@@ -2665,7 +3039,11 @@ mod tests {
             .connections
             .iter()
             .any(|c| c.from == "car4/v" && c.to == "car5/lead"));
-        assert!(!f.connections.iter().any(|c| c.to == "car4/lead"));
+        assert!(f
+            .connections
+            .iter()
+            .any(|c| c.from == "leader.v" && c.to == "car4/lead"));
+        assert!(!f.connections.iter().any(|c| c.from == "car5/v"));
         // A block with equations.
         let mut f = file("Cruise");
         apply(

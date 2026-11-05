@@ -133,6 +133,11 @@ fn splice(d: &mut Diagram, i: usize, mut sub: Diagram, full: &str) {
         }
         d.nodes.push(n);
     }
+    for (k, v) in std::mem::take(&mut sub.exposed) {
+        if let Some((kind, rest)) = k.split_once(':') {
+            d.exposed.insert(format!("{kind}:{}", prefix(rest)), v);
+        }
+    }
     for w0 in std::mem::take(&mut sub.wires) {
         d.wires.push(Wire {
             from: (w0.from.0 + base, w0.from.1),
@@ -160,8 +165,24 @@ fn splice(d: &mut Diagram, i: usize, mut sub: Diagram, full: &str) {
         rect: [used.at[0], used.at[1], used.at[0] + w, used.at[1] + h],
         shift,
     });
-    // Wires to its ports: to the inner node each reaches.
-    let inner = |d: &mut Diagram, input: bool, port: &str| -> Option<(usize, usize)> {
+    // Wires to its ports: to the inner node each reaches; an exposed
+    // input (ADR 0074) to every port it feeds.
+    let inner = |d: &mut Diagram, input: bool, port: &str| -> Vec<(usize, usize)> {
+        if input {
+            let head = format!("in:{name}/");
+            let fed: Vec<String> = d
+                .exposed
+                .iter()
+                .filter(|(k, v)| k.starts_with(&head) && *v == port)
+                .map(|(k, _)| k[head.len()..].to_string())
+                .collect();
+            if !fed.is_empty() {
+                return fed
+                    .iter()
+                    .filter_map(|t| find(d, base, &name, t, true))
+                    .collect();
+            }
+        }
         let rel = if input {
             port.to_string()
         } else {
@@ -170,33 +191,39 @@ fn splice(d: &mut Diagram, i: usize, mut sub: Diagram, full: &str) {
                 .cloned()
                 .unwrap_or_else(|| port.to_string())
         };
-        find(d, base, &name, &rel, input)
+        find(d, base, &name, &rel, input).into_iter().collect()
     };
     let mut keep = Vec::new();
-    for mut w0 in std::mem::take(&mut d.wires) {
-        if w0.from.0 == i {
+    for w0 in std::mem::take(&mut d.wires) {
+        let froms = if w0.from.0 == i {
             let port = used
                 .outputs
                 .get(w0.from.1)
                 .map(|p| p.name.clone())
                 .unwrap_or_default();
-            match inner(d, false, &port) {
-                Some(f) => w0.from = f,
-                None => continue,
-            }
-        }
-        if w0.to.0 == i {
+            inner(d, false, &port)
+        } else {
+            vec![w0.from]
+        };
+        let tos = if w0.to.0 == i {
             let port = used
                 .inputs
                 .get(w0.to.1)
                 .map(|p| p.name.clone())
                 .unwrap_or_default();
-            match inner(d, true, &port) {
-                Some(t) => w0.to = t,
-                None => continue,
+            inner(d, true, &port)
+        } else {
+            vec![w0.to]
+        };
+        for &from in froms.iter().take(1) {
+            for &to in &tos {
+                keep.push(Wire {
+                    from,
+                    to,
+                    ..w0.clone()
+                });
             }
         }
-        keep.push(w0);
     }
     d.wires = keep;
     // The use's node goes; indices above it move down one.
@@ -349,17 +376,51 @@ pub fn route(d: &Diagram, edit: &Edit) -> Result<(Option<Vec<String>>, Edit), St
             )),
             None => top(edit),
         },
-        Edit::Connect { from, to } => match one(&[from, to])? {
-            Some(o) => Ok((
-                Some(inside(o)),
-                Edit::Connect {
-                    from: strip(o, from),
-                    to: strip(o, to),
-                },
-            )),
-            None => top(edit),
+        Edit::Connect { from, to } => match one(&[from, to]) {
+            // From outside to an inner port the model exposes, or from one
+            // it exposes to outside (ADR 0074): a wire to or from the use's
+            // port, at the top level.
+            Err(e) => {
+                let top_port = |kind: &str, end: &str| -> Option<String> {
+                    let o = by_name(end).filter(|o| !o.path.contains('/'))?;
+                    let name = d.exposed.get(&format!("{kind}:{end}"))?;
+                    Some(format!("{}/{name}", o.path))
+                };
+                let (f, t) = (by_name(from).is_some(), by_name(to).is_some());
+                let wire = match (f, t) {
+                    (false, true) => top_port("in", to).map(|to| (from.clone(), to)),
+                    (true, false) => top_port("out", from).map(|from| (from, to.clone())),
+                    _ => None,
+                };
+                match wire {
+                    Some((from, to)) => Ok((None, Edit::Connect { from, to })),
+                    None => Err(format!(
+                        "{e}; or click the inner port to expose it, then wire to it"
+                    )),
+                }
+            }
+            Ok(found) => match found {
+                Some(o) => Ok((
+                    Some(inside(o)),
+                    Edit::Connect {
+                        from: strip(o, from),
+                        to: strip(o, to),
+                    },
+                )),
+                None => top(edit),
+            },
         },
         Edit::Disconnect { to } => match by_name(to) {
+            // An exposed input of a model expanded at the top level is fed
+            // there, through the use's port (ADR 0074).
+            Some(o) if !o.path.contains('/') && d.exposed.contains_key(&format!("in:{to}")) => {
+                Ok((
+                    None,
+                    Edit::Disconnect {
+                        to: format!("{}/{}", o.path, d.exposed[&format!("in:{to}")]),
+                    },
+                ))
+            }
             Some(o) => Ok((Some(inside(o)), Edit::Disconnect { to: strip(o, to) })),
             None => top(edit),
         },
@@ -428,11 +489,58 @@ pub fn route(d: &Diagram, edit: &Edit) -> Result<(Option<Vec<String>>, Edit), St
                 None => top(edit),
             }
         }
+        Edit::ExposeParam { block, param } => match by_name(block) {
+            Some(o) => Ok((
+                Some(inside(o)),
+                Edit::ExposeParam {
+                    block: strip(o, block),
+                    param: param.clone(),
+                },
+            )),
+            None => top(edit),
+        },
+        Edit::HideParam { block, param } => match by_name(block) {
+            Some(o) => Ok((
+                Some(inside(o)),
+                Edit::HideParam {
+                    block: strip(o, block),
+                    param: param.clone(),
+                },
+            )),
+            None => top(edit),
+        },
+        Edit::ExposeInput { input } => match by_name(input) {
+            Some(o) => Ok((
+                Some(inside(o)),
+                Edit::ExposeInput {
+                    input: strip(o, input),
+                },
+            )),
+            None => top(edit),
+        },
+        Edit::HideInput { input } => match by_name(input) {
+            Some(o) => Ok((
+                Some(inside(o)),
+                Edit::HideInput {
+                    input: strip(o, input),
+                },
+            )),
+            None => top(edit),
+        },
         Edit::DeclareOutput { name, from } => match by_name(from) {
             Some(o) => Ok((
                 Some(inside(o)),
                 Edit::DeclareOutput {
                     name: name.clone(),
+                    from: strip(o, from),
+                },
+            )),
+            None => top(edit),
+        },
+        Edit::HideOutput { from } => match by_name(from) {
+            Some(o) => Ok((
+                Some(inside(o)),
+                Edit::HideOutput {
                     from: strip(o, from),
                 },
             )),
@@ -474,9 +582,9 @@ mod tests {
         let car2_at = before.nodes[before.node("car2").unwrap()].at;
         let mut d = Diagram::new(&f, &r);
         d.expand(&f, &r, &["car1".into()]);
-        // car1 is gone as a node; its blocks and input block are inside.
+        // car1 is gone as a node; its blocks are inside.
         assert!(d.node("car1").is_none());
-        for n in ["car1/car", "car1/control", "car1/lead"] {
+        for n in ["car1/car", "car1/control"] {
             assert!(d.node(n).is_some(), "{n}");
         }
         let o = &d.outlines[0];
@@ -493,11 +601,12 @@ mod tests {
                 "{k}"
             );
         }
-        // The leader's wire goes to the input block; car2 reads the car's v.
+        // The leader's wire goes to the exposed input it feeds (ADR 0074);
+        // car2 reads the car's v.
         let named = |w: &Wire| (d.nodes[w.from.0].name.clone(), d.nodes[w.to.0].name.clone());
         let wires: Vec<(String, String)> = d.wires.iter().map(named).collect();
         assert!(
-            wires.contains(&("leader".into(), "car1/lead".into())),
+            wires.contains(&("leader".into(), "car1/control".into())),
             "{wires:?}"
         );
         assert!(
@@ -514,6 +623,60 @@ mod tests {
         assert_eq!(car2.at[0] - d.shifted["car2"][0], car2_at[0]);
         // Collapsed again, nothing has moved.
         assert_eq!(Diagram::new(&f, &r), before);
+    }
+
+    #[test]
+    fn wires_across_an_outline_reach_the_ports_it_exposes() {
+        let r = registry();
+        let f = platoon();
+        let mut d = Diagram::new(&f, &r);
+        d.expand(&f, &r, &["car1".into()]);
+        let connect = |from: &str, to: &str| {
+            route(
+                &d,
+                &Edit::Connect {
+                    from: from.into(),
+                    to: to.into(),
+                },
+            )
+        };
+        // To an exposed input, and from an exposed output: the use's ports.
+        assert_eq!(
+            connect("leader.v", "car1/control.lead").unwrap(),
+            (
+                None,
+                Edit::Connect {
+                    from: "leader.v".into(),
+                    to: "car1/lead".into()
+                }
+            )
+        );
+        assert_eq!(
+            connect("car1/car.v", "car3/lead").unwrap().1,
+            Edit::Connect {
+                from: "car1/v".into(),
+                to: "car3/lead".into()
+            }
+        );
+        // An input not exposed is refused, saying how to expose it.
+        let e = connect("leader.v", "car1/car.F").unwrap_err();
+        assert!(e.contains("expose"), "{e}");
+        // Lifting the wire into an exposed input disconnects the use's port.
+        assert_eq!(
+            route(
+                &d,
+                &Edit::Disconnect {
+                    to: "car1/control.lead".into()
+                }
+            )
+            .unwrap(),
+            (
+                None,
+                Edit::Disconnect {
+                    to: "car1/lead".into()
+                }
+            )
+        );
     }
 
     #[test]

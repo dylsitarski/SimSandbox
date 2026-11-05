@@ -125,6 +125,9 @@ pub fn render_diagram(
         }
     };
     let mut d = crate::diagram::Diagram::new(file, registry);
+    // Inside a used model its ports and parameters can be exposed
+    // (ADR 0074).
+    d.inside = o.inside.is_some();
     let expanded: Vec<String> = file
         .controls
         .expand

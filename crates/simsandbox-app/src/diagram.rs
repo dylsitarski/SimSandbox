@@ -677,7 +677,6 @@ impl DiagramTab {
         self.redo.clear();
         self.inside.clear();
         self.inside_cache = None;
-        self.canvas.revealed.clear();
         self.asking = None;
     }
 

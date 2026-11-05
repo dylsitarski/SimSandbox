@@ -78,13 +78,6 @@
             "kp": "kp",
             "ki": "ki"
           }
-        },
-        {
-          "name": "lead",
-          "type": "input.value",
-          "settings": {
-            "unit": "m/s"
-          }
         }
       ],
       "connections": [
@@ -95,10 +88,15 @@
         {
           "from": "control.F",
           "to": "car.F"
-        },
+        }
+      ],
+      "inputs": [
         {
-          "from": "lead.y",
-          "to": "control.lead"
+          "name": "lead",
+          "to": [
+            "control.lead"
+          ],
+          "unit": "m/s"
         }
       ],
       "outputs": [

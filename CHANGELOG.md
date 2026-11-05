@@ -6,6 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Exposing a model's ports and parameters (ADR 0074): inside a model, opened or expanded in place, a click on a block's port exposes it to the models using this one (an input they wire, an output they read), and a click on the ring beside a value makes it a parameter of the model that each use or study sets; a second click hides it again. Exposed ports are ringed and exposed values say what they are exposed as (`m as mass`). A wire from outside an expanded model to a port it exposes goes to the use's port. The used model's "Show a port" list and the blocks' "Offer … to models using this one" items are removed. The Platoon's follower exposes its `lead` input instead of holding an input block, with the same results; Duplicate feeds a copy's inputs from outside as its original's are.
+
 - A study's parameters are its model's declared parameters (ADR 0074): the model's values are their defaults, each study sets its own (`"params"` on its entry), shown on its node and in the Inspector and pinned as sliders. "Study this model" carries a use's values over. The resonance examples declare the spring's `c`, `m` and `w` as parameters and have no input blocks: their studies set `c` and `m` and vary `w` (outputs `curve.w`, `map.w`, `map.c`).
 
 - Plot axes, heat-map and surface scales and cut lines show units (`car.v [m/s]`, `t [s]`); units are printed in SI form (`kg/s`, `1/s`).

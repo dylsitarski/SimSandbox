@@ -141,11 +141,17 @@ pub fn definitions(file: &simsandbox_file::ModelFile) -> Value {
         let Ok(d) = simsandbox_file::compose::read_definition(name, v) else {
             continue;
         };
+        // Its exposed inputs (ADR 0074), then its input blocks.
         let inputs: Vec<&str> = d
-            .blocks
+            .inputs
             .iter()
-            .filter(|b| b.type_name == simsandbox_eq::input::VALUE)
-            .map(|b| b.name.as_str())
+            .map(|i| i.name.as_str())
+            .chain(
+                d.blocks
+                    .iter()
+                    .filter(|b| b.type_name == simsandbox_eq::input::VALUE)
+                    .map(|b| b.name.as_str()),
+            )
             .collect();
         let uses: Vec<&str> = file
             .blocks
@@ -1101,7 +1107,7 @@ mod tests {
             .unwrap()
             .text;
         assert!(written.contains("\"models\"") && !written.contains("\"subsystems\""));
-        // One clock, wired through the input blocks. (Its bits equal the
+        // One clock, wired through its exposed input. (Its bits equal the
         // subsystem it was, tested before subsystems were removed.)
         let two = run_composition(written, &registry(), Some(20.0)).unwrap();
         assert_eq!(two.models.len(), 1, "one clock");
@@ -2938,25 +2944,15 @@ mod tests {
         // Wired by an inner name its declared output shows: drawn from
         // that port, nothing more revealed.
         assert_eq!(names(&wired.nodes[0].outputs), ["speed"]);
-        // A port chosen from the list joins the node; the rest stay listed.
-        // (On a car that offers nothing, so `car.v` is in the list.)
+        // A car that offers nothing shows nothing: its ports are exposed
+        // inside it (ADR 0074), not chosen on the node.
         let mut bare: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("car.ssbx.json")).unwrap())
                 .unwrap();
         bare.as_object_mut().unwrap().remove("outputs");
         write(&dir, "bare.ssbx.json", &bare);
         let bare = diagram(&json!({"format": 1, "blocks": [use_of("plant", "bare.ssbx.json")]}));
-        let mut canvas = crate::canvas::Canvas::default();
-        canvas
-            .revealed
-            .insert("plant".into(), vec![(false, "car.v".into())]);
-        let mut shown = bare.clone();
-        canvas.reveal(&mut shown);
-        assert_eq!(names(&shown.nodes[0].outputs), ["car.v"]);
-        assert!(!shown.nodes[0]
-            .reachable
-            .iter()
-            .any(|(_, p)| p.name == "car.v"));
+        assert!(bare.nodes[0].outputs.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

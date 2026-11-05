@@ -20,7 +20,7 @@ use crate::diagram::{Diagram, Edit, Node, NodeKind, Scope, HEADER, NODE_WIDTH, R
 use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use simsandbox_core::block::{Causality, Shape};
 use simsandbox_core::registry::Registry;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 /// What is selected.
 #[derive(Clone, Debug, PartialEq)]
@@ -129,10 +129,6 @@ pub struct Canvas {
     /// The value being typed on a node: its key (`unit:block:from` for a
     /// conversion's unit) and the text so far.
     editing: Option<(String, String)>,
-    /// Ports of used models shown on their nodes by choice (ADR 0066 step
-    /// 4b), by node: `(input, port)`; and the text searched for one.
-    pub revealed: BTreeMap<String, Vec<(bool, String)>>,
-    port_search: String,
 }
 
 impl Default for Canvas {
@@ -152,8 +148,6 @@ impl Default for Canvas {
             open: BTreeSet::new(),
             open_all: false,
             editing: None,
-            revealed: BTreeMap::new(),
-            port_search: String::new(),
         }
     }
 }
@@ -213,27 +207,6 @@ impl Canvas {
     /// Draw the diagram filling `ui`'s space. With `interactive`, handle
     /// input and return the edits and requests the user made; `diagram`
     /// node positions follow drags as they happen.
-    /// Put the ports chosen from a used model's list on its node; they
-    /// stay there while the canvas lives (ADR 0066 step 4b).
-    pub fn reveal(&self, d: &mut Diagram) {
-        for n in d.nodes.iter_mut().filter(|n| n.kind == NodeKind::Use) {
-            for (input, port) in self.revealed.get(&n.name).into_iter().flatten() {
-                if let Some(k) = n
-                    .reachable
-                    .iter()
-                    .position(|(i, p)| i == input && &p.name == port)
-                {
-                    let (_, q) = n.reachable.remove(k);
-                    if *input {
-                        n.inputs.push(q);
-                    } else {
-                        n.outputs.push(q);
-                    }
-                }
-            }
-        }
-    }
-
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -248,7 +221,6 @@ impl Canvas {
         } else {
             Sense::hover()
         };
-        self.reveal(d);
         for n in &mut d.nodes {
             let key = open_key(&d.scope, &n.name);
             n.open = !n.values.is_empty() && (self.open_all || self.open.contains(&key));
@@ -344,7 +316,7 @@ impl Canvas {
         }
         for (i, n) in d.nodes.iter().enumerate() {
             let selected = self.is_selected(&n.name);
-            self.node(&painter, &visuals, origin, n, selected);
+            self.node(&painter, &visuals, origin, d, i, selected);
             if interactive {
                 // Hover help: the error, or a port's unit and shape.
                 let r = self.node_rect(origin, n);
@@ -361,7 +333,13 @@ impl Canvas {
                         })
                     } else if let Some((_, k)) = value {
                         let v = &n.values[k];
-                        let mut tip = if self.zoom >= EDIT_VALUES {
+                        let mut tip = if let Some(e) = &v.exposed {
+                            format!(
+                                "{}: the model's parameter {e}, set by each model or study \
+                                 using this one; its own value is changed in the Inspector",
+                                v.key
+                            )
+                        } else if self.zoom >= EDIT_VALUES {
                             format!(
                                 "{}: double-click to change it (a number, or '= expression' \
                                  of the parameters)",
@@ -370,6 +348,13 @@ impl Canvas {
                         } else {
                             format!("{}: zoom in to change it here", v.key)
                         };
+                        if d.exposable(i) {
+                            tip.push_str(if v.exposed.is_some() {
+                                "\nClick the ring to make it the block's own again"
+                            } else {
+                                "\nClick the ring to expose it: models using this one set it"
+                            });
+                        }
                         if d.scope != Scope::Model {
                             tip.push_str(
                                 "\nThe default of every use of this subsystem; changing it \
@@ -400,7 +385,23 @@ impl Canvas {
                                     Causality::Input => &d.nodes[k].inputs[port],
                                     Causality::Output => &d.nodes[k].outputs[port],
                                 };
-                                port_help(&n.name, q, c)
+                                let mut tip = port_help(&n.name, q, c);
+                                if d.exposable(k) {
+                                    let kind = match c {
+                                        Causality::Input => "in",
+                                        Causality::Output => "out",
+                                    };
+                                    tip.push_str(&match d.exposed_as(k, kind, &q.name) {
+                                        Some(e) => format!(
+                                            "\nExposed as {e} to models using this one: \
+                                             click to hide it"
+                                        ),
+                                        None => "\nClick to expose it to models using this \
+                                                 one; drag to wire it"
+                                            .to_string(),
+                                    });
+                                }
+                                tip
                             })
                     };
                     if let Some(tip) = tip {
@@ -479,9 +480,11 @@ impl Canvas {
         painter: &egui::Painter,
         visuals: &egui::Visuals,
         origin: Pos2,
-        n: &Node,
+        d: &Diagram,
+        i: usize,
         selected: bool,
     ) {
+        let n = &d.nodes[i];
         let z = self.zoom;
         let r = self.node_rect(origin, n);
         let radius = CornerRadius::same((6.0 * z).round().clamp(0.0, 255.0) as u8);
@@ -615,6 +618,22 @@ impl Canvas {
                 } else {
                     painter.circle_filled(at, DOT * z, colour);
                 }
+                // Exposed to the models using this one: ringed (ADR 0074),
+                // wherever the model is drawn.
+                let kind = match c {
+                    Causality::Input => "in",
+                    Causality::Output => "out",
+                };
+                let ringed = d.exposed_as(i, kind, &p.name).is_some();
+                if ringed {
+                    painter.circle_stroke(
+                        at,
+                        (DOT + 3.5) * z,
+                        Stroke::new(1.5 * z, visuals.selection.stroke.color),
+                    );
+                }
+                // Clear of the ring.
+                let pad = if ringed { pad + 4.0 * z } else { pad };
                 let (offset, align) = match c {
                     Causality::Input => (Vec2::new(pad, 0.0), egui::Align2::LEFT_CENTER),
                     Causality::Output => (Vec2::new(-pad, 0.0), egui::Align2::RIGHT_CENTER),
@@ -703,7 +722,7 @@ impl Canvas {
                 );
             }
         }
-        self.values(painter, visuals, origin, n);
+        self.values(painter, visuals, origin, d, i);
     }
 
     /// Where a node's values are opened and closed: the top-right corner
@@ -760,7 +779,16 @@ impl Canvas {
     }
 
     /// A node's parameter values, below its ports (ADR 0053).
-    fn values(&self, painter: &egui::Painter, visuals: &egui::Visuals, origin: Pos2, n: &Node) {
+    fn values(
+        &self,
+        painter: &egui::Painter,
+        visuals: &egui::Visuals,
+        origin: Pos2,
+        d: &Diagram,
+        i: usize,
+    ) {
+        let n = &d.nodes[i];
+        let exposable = d.exposable(i);
         if !n.open || self.zoom < SHOW_VALUES {
             return;
         }
@@ -780,12 +808,31 @@ impl Canvas {
                 continue;
             }
             let y = self.to_screen(origin, n.value_at(k)).y + VALUE_ROW as f32 * z / 2.0;
-            let left = Pos2::new(top.x + pad, y);
-            let name = if v.initial {
+            let mut left = Pos2::new(top.x + pad, y);
+            // Its toggle (ADR 0074): a ring, filled while it is exposed.
+            if exposable {
+                let at = self.toggle_at(origin, n, k);
+                let colour = visuals.selection.stroke.color;
+                if v.exposed.is_some() {
+                    painter.circle_filled(at, 2.5 * z, colour);
+                    painter.circle_stroke(at, 4.5 * z, Stroke::new(1.5 * z, colour));
+                } else {
+                    painter.circle_stroke(
+                        at,
+                        4.5 * z,
+                        Stroke::new(1.0 * z, visuals.weak_text_color()),
+                    );
+                }
+                left.x = at.x + 8.0 * z;
+            }
+            let mut name = if v.initial {
                 format!("{} ↻", v.name)
             } else {
                 v.name.clone()
             };
+            if let Some(e) = v.exposed.as_ref().filter(|e| **e != v.name) {
+                name = format!("{name} as {e}");
+            }
             painter.text(
                 left,
                 egui::Align2::LEFT_CENTER,
@@ -804,6 +851,32 @@ impl Canvas {
                 visuals.text_color(),
             );
         }
+    }
+
+    /// The centre of the toggle exposing value `k` of `n` (ADR 0074): at
+    /// the left of its row.
+    fn toggle_at(&self, origin: Pos2, n: &Node, k: usize) -> Pos2 {
+        let z = self.zoom;
+        let row = self.to_screen(origin, n.value_at(k));
+        row + Vec2::new(14.0 * z, VALUE_ROW as f32 * z / 2.0)
+    }
+
+    /// The exposure toggle under `p` (ADR 0074): the port itself, or a
+    /// value's ring, on a node inside a model. Node, kind and item.
+    fn toggle_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, &str, String)> {
+        if let Some((i, k, c)) = self.port_under(d, origin, p) {
+            if !d.exposable(i) {
+                return None;
+            }
+            return Some(match c {
+                Causality::Input => (i, "in", d.nodes[i].inputs[k].name.clone()),
+                Causality::Output => (i, "out", d.nodes[i].outputs[k].name.clone()),
+            });
+        }
+        let (i, k) = self.value_under(d, origin, p)?;
+        let n = &d.nodes[i];
+        (d.exposable(i) && self.toggle_at(origin, n, k).distance(p) <= 7.0 * self.zoom)
+            .then(|| (i, "par", n.values[k].name.clone()))
     }
 
     /// The value row under `p`: node and value.
@@ -1166,6 +1239,14 @@ impl Canvas {
             }
         }
         if response.clicked() {
+            // Exposing a port or parameter inside a model (ADR 0074).
+            let toggle = response
+                .interact_pointer_pos()
+                .and_then(|p| self.toggle_under(d, origin, p));
+            if let Some((i, kind, item)) = toggle {
+                edits.push(d.toggle_exposed(i, kind, &item));
+                return;
+            }
             if let Some(p) = response.interact_pointer_pos() {
                 let shift = ui.input(|i| i.modifiers.shift);
                 self.selected = match self.node_under(d, origin, p) {
@@ -1199,7 +1280,9 @@ impl Canvas {
             if let Some((i, k)) = p.and_then(|p| self.value_under(d, origin, p)) {
                 // A value: typed in place when zoomed in (ADR 0053).
                 let v = &d.nodes[i].values[k];
-                if self.zoom >= EDIT_VALUES {
+                // An exposed value is the model's parameter: changed in the
+                // Inspector, not over the block's own (ADR 0074).
+                if self.zoom >= EDIT_VALUES && v.exposed.is_none() {
                     self.editing = Some((v.key.clone(), format_number(v.value)));
                 }
             } else if let Some((i, c)) = p.and_then(|p| self.unit_under(d, origin, p)) {
@@ -1295,40 +1378,6 @@ impl Canvas {
                             requests.push(Request::Open(name.clone()));
                             ui.close();
                         }
-                        // Outputs offered to models using this one, inside
-                        // a used model (ADR 0073); at a model's own level
-                        // the Inspector's Model section offers them.
-                        for p in n.outputs.iter().filter(|_| d.inside) {
-                            let from = format!("{name}.{}", p.name);
-                            match d.offered.iter().find(|(_, f)| *f == from) {
-                                Some((o, _)) => {
-                                    if ui
-                                        .button(format!("Stop offering {o}"))
-                                        .on_hover_text("Models using this one no longer see it")
-                                        .clicked()
-                                    {
-                                        edits.push(Edit::RemoveOutput { name: o.clone() });
-                                        ui.close();
-                                    }
-                                }
-                                None => {
-                                    if ui
-                                        .button(format!("Offer {} to models using this one", p.name))
-                                        .on_hover_text("A port of this model on the nodes that use it, kept by name when its insides change")
-                                        .clicked()
-                                    {
-                                        let taken = |x: &str| d.offered.iter().any(|(o, _)| o == x);
-                                        let out = if taken(&p.name) {
-                                            crate::diagram::free_name(&format!("{name}_{}", p.name), taken)
-                                        } else {
-                                            p.name.clone()
-                                        };
-                                        edits.push(Edit::DeclareOutput { name: out, from });
-                                        ui.close();
-                                    }
-                                }
-                            }
-                        }
                     }
                     NodeKind::Use => {
                         ui.weak(format!("Uses {}, {}", n.type_name, n.method));
@@ -1370,38 +1419,6 @@ impl Canvas {
                         {
                             requests.push(Request::PutInFile(name.clone()));
                             ui.close();
-                        }
-                        // Every other port, by path (ADR 0066 step 4b).
-                        if !n.reachable.is_empty() {
-                            ui.separator();
-                            ui.label("Show a port");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.port_search)
-                                    .hint_text("Search by path")
-                                    .desired_width(180.0),
-                            );
-                            let q = self.port_search.to_lowercase();
-                            let found: Vec<&(bool, crate::diagram::Port)> = n
-                                .reachable
-                                .iter()
-                                .filter(|(_, p)| p.name.to_lowercase().contains(&q))
-                                .collect();
-                            egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                                for (input, p) in found.iter().take(200) {
-                                    let arrow = if *input { "in" } else { "out" };
-                                    let unit = if p.unit.is_empty() { String::new() } else { format!(" [{}]", p.unit) };
-                                    if ui.button(format!("{arrow} {}{unit}", p.name)).clicked() {
-                                        self.revealed
-                                            .entry(name.clone())
-                                            .or_default()
-                                            .push((*input, p.name.clone()));
-                                        ui.close();
-                                    }
-                                }
-                            });
-                            if found.len() > 200 {
-                                ui.weak(format!("{} more: narrow the search", found.len() - 200));
-                            }
                         }
                     }
                     NodeKind::Filter => {
