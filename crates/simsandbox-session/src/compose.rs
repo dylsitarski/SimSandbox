@@ -287,7 +287,153 @@ pub fn run_composition_with(
     let end_tick = c.ticks.within(t_end).map_err(|e| e.to_string())?;
     let mut warnings = c.warnings.clone();
     warnings.extend(c.loops.iter().map(|l| format!("loop between models: {l}")));
-    let mut runs = start(&mut c, t_end)?;
+    let runs = start(&mut c, t_end)?;
+    // Models no link joins never meet: each group runs its whole time on
+    // a thread of its own, meeting none of the others (ADR 0066 step 6).
+    // Linked models meet at every instant they share.
+    let plan = Plan::of(&c);
+    let groups = plan.groups(runs.len());
+    let mut slots: Vec<Option<Running>> = runs.into_iter().map(Some).collect();
+    let work: Vec<(Plan, Vec<Running>)> = groups
+        .iter()
+        .map(|g| {
+            let mine = g
+                .iter()
+                .map(|&u| slots[u].take().expect("each model in one group"))
+                .collect();
+            (plan.restrict(g), mine)
+        })
+        .collect();
+    let apart = groups.len() > 1 && parallel != Parallel::Never;
+    let done = simsandbox_core::parallel::each(work, apart, |(sub, mine)| {
+        timeline(&sub, mine, end_tick, parallel)
+    });
+    let mut delayed = false;
+    for (g, result) in groups.iter().zip(done) {
+        let (mine, late) = result?;
+        delayed |= late;
+        for (&u, r) in g.iter().zip(mine) {
+            slots[u] = Some(r);
+        }
+    }
+    let runs: Vec<Running> = slots
+        .into_iter()
+        .map(|r| r.expect("every model ran"))
+        .collect();
+    if delayed {
+        warnings.push(
+            "an output depending at the same instant on a model evaluated after it saw that \
+             model's samples one step late (see the loop above)"
+                .into(),
+        );
+    }
+    Ok(Composed {
+        models: c
+            .domains
+            .iter()
+            .zip(runs)
+            .map(|(d, mut r)| {
+                r.results.index = vec![("t".into(), std::mem::take(&mut r.times))];
+                (d.name().to_string(), r.results)
+            })
+            .collect(),
+        tick: c.ticks.seconds(),
+        warnings,
+    })
+}
+
+/// What the instant loop needs of a composition, for all its models or
+/// one group of them renumbered from 0 (ADR 0066 step 6).
+#[derive(Clone)]
+struct Plan {
+    links: Vec<simsandbox_file::compose::Link>,
+    probes: Vec<simsandbox_file::compose::LinkProbe>,
+    order: Vec<usize>,
+    names: Vec<String>,
+}
+
+impl Plan {
+    fn of(c: &Composition) -> Self {
+        Self {
+            links: c.links.clone(),
+            probes: c.probes.clone(),
+            order: c.order.clone(),
+            names: c.domains.iter().map(|d| d.name().to_string()).collect(),
+        }
+    }
+
+    /// The models links join, each group in model order, the groups by
+    /// their first model.
+    fn groups(&self, n: usize) -> Vec<Vec<usize>> {
+        let mut root: Vec<usize> = (0..n).collect();
+        fn find(root: &mut [usize], u: usize) -> usize {
+            let mut u = u;
+            while root[u] != u {
+                root[u] = root[root[u]];
+                u = root[u];
+            }
+            u
+        }
+        for l in &self.links {
+            let (a, b) = (find(&mut root, l.from), find(&mut root, l.to));
+            root[a.max(b)] = a.min(b);
+        }
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut first: Vec<Option<usize>> = vec![None; n];
+        for u in 0..n {
+            let r = find(&mut root, u);
+            match first[r] {
+                Some(g) => groups[g].push(u),
+                None => {
+                    first[r] = Some(groups.len());
+                    groups.push(vec![u]);
+                }
+            }
+        }
+        groups
+    }
+
+    /// The plan of the models `members`, numbered by their place there.
+    fn restrict(&self, members: &[usize]) -> Self {
+        let local = |u: usize| members.iter().position(|&m| m == u);
+        let probes: Vec<usize> = (0..self.probes.len())
+            .filter(|&p| local(self.probes[p].domain).is_some())
+            .collect();
+        Self {
+            links: self
+                .links
+                .iter()
+                .filter_map(|l| {
+                    Some(simsandbox_file::compose::Link {
+                        probe: probes.iter().position(|&p| p == l.probe)?,
+                        from: local(l.from)?,
+                        to: local(l.to)?,
+                        ..l.clone()
+                    })
+                })
+                .collect(),
+            probes: probes
+                .iter()
+                .map(|&p| simsandbox_file::compose::LinkProbe {
+                    domain: local(self.probes[p].domain).expect("kept"),
+                    ..self.probes[p].clone()
+                })
+                .collect(),
+            order: self.order.iter().filter_map(|&u| local(u)).collect(),
+            names: members.iter().map(|&u| self.names[u].clone()).collect(),
+        }
+    }
+}
+
+/// Run the models of `c` from the start to `end_tick`, instant by
+/// instant, stepping those due at an instant on several cores when worth
+/// it; the models as run, and whether a loop delivered a sample late.
+fn timeline(
+    c: &Plan,
+    mut runs: Vec<Running>,
+    end_tick: u128,
+    parallel: Parallel,
+) -> Result<(Vec<Running>, bool), String> {
     let mut links = Links {
         triggers: c
             .probes
@@ -304,9 +450,9 @@ pub fn run_composition_with(
         }
     }
     let clocked: Vec<usize> = (0..runs.len()).filter(|&u| !runs[u].on_data).collect();
-    let names: Vec<String> = c.domains.iter().map(|d| d.name().to_string()).collect();
+    let names = &c.names;
     let mut costs = simsandbox_core::parallel::Costs::new(runs.len());
-    point(&c, &mut runs, &clocked, true, &mut links, &[], false)?;
+    point(c, &mut runs, &clocked, true, &mut links, &[], false)?;
     // Each model's next instant: its next step, or its next listed time
     // up to the end.
     let next_of = |r: &Running| -> Option<(u128, f64)> {
@@ -359,28 +505,9 @@ pub fn run_composition_with(
             costs.record(u, took);
             stepped?;
         }
-        point(&c, &mut runs, &reaching, false, &mut links, &due, cores)?;
+        point(c, &mut runs, &reaching, false, &mut links, &due, cores)?;
     }
-    if links.delayed {
-        warnings.push(
-            "an output depending at the same instant on a model evaluated after it saw that \
-             model's samples one step late (see the loop above)"
-                .into(),
-        );
-    }
-    Ok(Composed {
-        models: c
-            .domains
-            .iter()
-            .zip(runs)
-            .map(|(d, mut r)| {
-                r.results.index = vec![("t".into(), std::mem::take(&mut r.times))];
-                (d.name().to_string(), r.results)
-            })
-            .collect(),
-        tick: c.ticks.seconds(),
-        warnings,
-    })
+    Ok((runs, links.delayed))
 }
 
 /// Each domain's simulator and recording, before the first step.
@@ -481,7 +608,7 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
 /// that read one evaluated after it (a loop) then takes those samples
 /// too: for its next step, or, on new data, evaluated again.
 fn point(
-    c: &Composition,
+    c: &Plan,
     runs: &mut [Running],
     reaching: &[usize],
     start: bool,
@@ -520,7 +647,7 @@ fn point(
             take_links(c, runs, u, &links.latest)?;
             runs[u]
                 .evaluate(t)
-                .map_err(|e| format!("{}: {e}", c.domains[u].name()))?;
+                .map_err(|e| format!("{}: {e}", c.names[u]))?;
             evaluated[u] = Some(t);
         } else {
             take_links(c, runs, u, &links.latest)?;
@@ -555,7 +682,7 @@ fn point(
             }
             runs[u]
                 .evaluate(t)
-                .map_err(|e| format!("{}: {e}", c.domains[u].name()))?;
+                .map_err(|e| format!("{}: {e}", c.names[u]))?;
             evaluated[u] = Some(t);
         }
         let again: Vec<f64> = c
@@ -586,7 +713,7 @@ fn point(
 
 /// The probes on model `u` sample if due: each link they feed takes the
 /// value, marked as fresh in this pass.
-fn sample(c: &Composition, runs: &[Running], u: usize, links: &mut Links, fresh: &mut [bool]) {
+fn sample(c: &Plan, runs: &[Running], u: usize, links: &mut Links, fresh: &mut [bool]) {
     let r = &runs[u];
     let t = r.sim.time();
     // A model on new data counts its evaluations as its steps.
@@ -609,12 +736,7 @@ fn sample(c: &Composition, runs: &[Running], u: usize, links: &mut Links, fresh:
 
 /// Set a model's linked input blocks to the latest samples and apply them;
 /// whether any changed.
-fn take_links(
-    c: &Composition,
-    runs: &mut [Running],
-    u: usize,
-    latest: &[f64],
-) -> Result<bool, String> {
+fn take_links(c: &Plan, runs: &mut [Running], u: usize, latest: &[f64]) -> Result<bool, String> {
     let r = &mut runs[u];
     let mut changed = false;
     for (k, l) in c.links.iter().enumerate().filter(|(_, l)| l.to == u) {
@@ -632,7 +754,7 @@ fn take_links(
     }
     r.sim
         .refresh()
-        .map_err(|e| format!("{}: {e}", c.domains[u].name()))?;
+        .map_err(|e| format!("{}: {e}", c.names[u]))?;
     Ok(changed)
 }
 
@@ -1944,6 +2066,49 @@ mod tests {
         let apart = with(Parallel::Never);
         assert_eq!(all(&with(Parallel::Always)), all(&apart));
         assert_eq!(all(&with(Parallel::Auto)), all(&apart));
+        // Unlinked: two groups, each run on a thread of its own from start
+        // to end.
+        let mut unlinked = c.clone();
+        unlinked["connections"] = json!([]);
+        unlinked["controls"] = json!({});
+        let text = unlinked.to_string();
+        let loaded = simsandbox_core::registry::in_folder(Some(&dir), || {
+            load_composition(&text, &registry(), None)
+        })
+        .unwrap();
+        assert_eq!(Plan::of(&loaded).groups(2), [vec![0], vec![1]]);
+        let with = |p: Parallel| {
+            simsandbox_core::registry::in_folder(Some(&dir), || {
+                run_composition_with(&text, &registry(), None, p)
+            })
+            .unwrap()
+        };
+        let apart = with(Parallel::Never);
+        assert_eq!(all(&with(Parallel::Always)), all(&apart));
+        assert_eq!(all(&with(Parallel::Auto)), all(&apart));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn groups_follow_links_and_keep_their_numbering() {
+        let dir = temp_dir("groups");
+        let c = pair(&dir, 0.1, 0.3);
+        let text = c.to_string();
+        let loaded = simsandbox_core::registry::in_folder(Some(&dir), || {
+            load_composition(&text, &registry(), None)
+        })
+        .unwrap();
+        let plan = Plan::of(&loaded);
+        // Linked both ways: one group, all of it.
+        assert_eq!(plan.groups(2), [vec![0, 1]]);
+        let all = plan.restrict(&[0, 1]);
+        assert_eq!(all.links.len(), plan.links.len());
+        assert_eq!(all.order, plan.order);
+        // One model alone keeps no link that reaches another.
+        let one = plan.restrict(&[1]);
+        assert!(one.links.is_empty());
+        assert_eq!(one.names, [plan.names[1].clone()]);
+        assert!(one.probes.iter().all(|p| p.domain == 0));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

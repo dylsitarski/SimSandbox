@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: headless runner by groups of linked models (`Plan`, `groups`, `restrict`, `timeline`), each group on a thread for the whole run; a pool (rayon) measured and not adopted; tests; examples unchanged.
 - 2026-11-05: ADR 0066 step 6: `simsandbox_core::parallel` (`each`, `Costs`, `Parallel`); `Simulator::advance` by units per clock (`Unit`, `Slot`), `GroupPlan::rhs` by member, `set_parallel`; `run_composition_with`, parallel recording in `point`; bit-identity tests; examples unchanged; timings with a scratch benchmark (two Gray–Scott models), repeated after single runs proved noisy; the remaining gap measured (meeting at every instant, about 14% more CPU side by side; not the allocator) and recorded in ADR 0066.
 - 2026-11-05: Inspector Selection for blocks in an expanded model: picks named by path split into the use's path and the block (`SimApp::picked`); `block_entry` ignores the file's own blocks inside a use; app test.
 - 2026-11-05: ADR 0075 fixes (owner's review): values kept through wiring, unwiring and saving (`check_driven`, Connect, `capture_params`); wires from outside an expanded model to the values and inputs it exposes, in the canvas's `use.name` form (the `use/name` form `route` gave before did not apply); tests.
