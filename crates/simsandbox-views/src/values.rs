@@ -1,4 +1,4 @@
-//! `show.values`: the newest value of each bound signal as a number, and
+//! `plot.values`: the newest value of each bound signal as a number, and
 //! lines of cells (a study's results) as a table, cell by cell. For models
 //! whose results are a few numbers, such as a model evaluated, not run
 //! (ADR 0072).
@@ -12,7 +12,7 @@ const MAX_ROWS: usize = 2_000;
 
 pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
     r.register(ViewType {
-        name: "show.values",
+        name: "plot.values",
         label: "Values",
         description: "The newest value of each signal as a number; lines of cells (a study's results) as a table",
         slots: &[Slot {

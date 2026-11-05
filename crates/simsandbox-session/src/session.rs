@@ -1133,6 +1133,29 @@ impl Session {
                 h.set_unit(name, &u);
             }
         }
+        // A cut's lines have its grid's unit; its coordinate, the unit of
+        // the grid's coordinate along the cut.
+        for c in &self.filters.cuts {
+            if let Some(u) = h.unit(&c.input).map(str::to_string) {
+                for l in c.lines() {
+                    h.set_unit(&l, &u);
+                }
+            }
+            let axis = match c.settings.mode {
+                simsandbox_views::cut::Mode::AlongX => Some(0),
+                simsandbox_views::cut::Mode::AlongY => Some(1),
+                simsandbox_views::cut::Mode::Free => None,
+            };
+            let along = axis.and_then(|a| {
+                self.all_coordinates
+                    .iter()
+                    .find(|k| k.of == c.input && k.axis == a)
+                    .and_then(|k| h.unit(&k.name).map(str::to_string))
+            });
+            if let Some(u) = along {
+                h.set_unit(&c.coordinate(), &u);
+            }
+        }
         self.replace_history(h);
     }
 

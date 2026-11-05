@@ -109,7 +109,7 @@ pub struct SimApp {
     show_computed: bool,
     /// What the study picked last can vary: its name, its model's text and
     /// the parameters (ADR 0070), kept while they stay the same.
-    study_keys: Option<(String, String, Vec<StudyKey>)>,
+    study_keys: HashMap<String, (String, std::sync::Arc<Studied>)>,
     diagram: DiagramTab,
     started: Instant,
     /// The open model as saved or opened, to tell unsaved changes.
@@ -174,7 +174,7 @@ impl SimApp {
             picked: Vec::new(),
             last_canvas: None,
             show_computed: false,
-            study_keys: None,
+            study_keys: HashMap::new(),
             diagram: DiagramTab::default(),
             started: Instant::now(),
             baseline: None,
@@ -2252,31 +2252,70 @@ impl SimApp {
         }
     }
 
-    /// What the study `name` of `file` can vary (its model's parameters),
-    /// worked out again only when the study or its model changed.
+    /// What the study `name` of `file` can vary (its model's parameters).
     fn study_keys(&mut self, file: &simsandbox_file::ModelFile, name: &str) -> Vec<StudyKey> {
-        if !file
+        self.studied(file, name)
+            .map(|s| s.keys.clone())
+            .unwrap_or_default()
+    }
+
+    /// The model the study `name` of `file` studies: what it can vary and
+    /// its blocks' values, worked out again only when it changed.
+    fn studied(
+        &mut self,
+        file: &simsandbox_file::ModelFile,
+        name: &str,
+    ) -> Option<std::sync::Arc<Studied>> {
+        let b = file
             .blocks
             .iter()
-            .any(|b| b.name == name && b.type_name == simsandbox_file::STUDY)
-        {
-            return Vec::new();
-        }
-        let folder = self.path.as_deref().and_then(Path::parent);
-        let Ok(model) = simsandbox_session::edit_use::model_at(file, folder, &[name.to_string()])
-        else {
-            return Vec::new();
+            .find(|b| b.name == name && b.type_name == simsandbox_file::STUDY)?;
+        let label = match (&b.model, &b.file) {
+            (Some(m), _) => m.clone(),
+            (None, Some(f)) => f.clone(),
+            _ => return None,
         };
+        let folder = self.path.as_deref().and_then(Path::parent);
+        let model =
+            simsandbox_session::edit_use::model_at(file, folder, &[name.to_string()]).ok()?;
         let text = model.to_json();
-        if let Some((n, t, keys)) = &self.study_keys {
-            if n == name && *t == text {
-                return keys.clone();
+        if let Some((t, s)) = self.study_keys.get(name) {
+            if *t == text {
+                return Some(s.clone());
             }
         }
         let at = model.folder.as_deref().or(folder);
         let keys = simsandbox_session::diagram::study_parameters(&model, &self.registry, at);
-        self.study_keys = Some((name.to_string(), text, keys.clone()));
-        keys
+        let d = Diagram::new(&model, &self.registry);
+        let blocks = d
+            .nodes
+            .into_iter()
+            .filter(|n| !n.is_observer() && !n.values.is_empty())
+            .map(|n| (n.name, n.values))
+            .collect();
+        let s = std::sync::Arc::new(Studied {
+            model: label,
+            keys,
+            blocks,
+        });
+        self.study_keys.insert(name.to_string(), (text, s.clone()));
+        Some(s)
+    }
+
+    /// Apply edits to the model open on the canvas (inside a study): the
+    /// edit question first where the model is used elsewhere too.
+    fn edit_inside(&mut self, edits: Vec<Edit>) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let m = live.model();
+        let (speed, views, layout) = (self.speed, self.views.entries(), self.layout());
+        let current = || {
+            let (views, layout) = (views.clone(), layout.clone());
+            live.call(move |s, _| s.save_json_with(speed, Some(views), Some(layout)))?
+        };
+        let outcomes = self.diagram.begin_edit(edits, &self.registry, &current);
+        self.diagram_outcomes(&m, outcomes);
     }
 
     /// The inspector (ADR 0053): search, what is selected, and every
@@ -2300,6 +2339,8 @@ impl SimApp {
         // Edits that go through the diagram (a conversion's units, a new
         // block's values), at the level they apply to.
         let mut canvas_edits: Vec<(Scope, Edit)> = Vec::new();
+        // Edits of the model open on the canvas inside a study.
+        let mut inside_edits: Vec<Edit> = Vec::new();
         macro_rules! edits {
             () => {
                 Edits {
@@ -2364,6 +2405,17 @@ impl SimApp {
                 [(None, name)] => self.study_keys(&m.file, name),
                 _ => Vec::new(),
             };
+            // Every study's model, for the tree (ADR 0070).
+            let studies: HashMap<String, std::sync::Arc<Studied>> = m
+                .file
+                .blocks
+                .iter()
+                .filter(|b| b.type_name == simsandbox_file::STUDY)
+                .map(|b| b.name.clone())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|n| self.studied(&m.file, &n).map(|s| (n, s)))
+                .collect();
             if !picked.is_empty() {
                 let title = match picked.as_slice() {
                     [(Some(s), name)] => format!("Selected: {name} in {s}"),
@@ -2442,6 +2494,21 @@ impl SimApp {
                                 ) {
                                     uses_table(ui, &t, &m.file.controls.params, edits!());
                                     shown = true;
+                                } else if let Some(values) = scope.as_deref().and_then(|s| {
+                                    let path: Vec<String> =
+                                        s.split('/').map(str::to_string).collect();
+                                    self.diagram.inside_values(&path, name)
+                                }) {
+                                    // Inside a study: the model's values, as
+                                    // written; a change edits the model.
+                                    ui.weak(
+                                        "Values of the studied model: a change edits the model",
+                                    );
+                                    for e in studied_rows(ui, name, &values, &mut self.param_edits)
+                                    {
+                                        inside_edits.push(e);
+                                    }
+                                    shown = !values.is_empty();
                                 }
                             }
                             if !shown {
@@ -2500,7 +2567,11 @@ impl SimApp {
                     .map(|b| b.equations.join("\n"));
                 let agents = entry.filter(|b| b.type_name.starts_with("agents."));
                 let convert = entry.filter(|b| b.type_name == simsandbox_eq::convert::CONVERT);
+                let studied = studies.get(&g.name);
                 let kind = match entry.filter(|b| b.is_use()).map(|b| b.file.as_deref()) {
+                    _ if studied.is_some() => {
+                        format!("study of {}", studied.map_or("", |s| s.model.as_str()))
+                    }
                     Some(Some(file)) => format!("uses {file}"),
                     Some(None) => format!(
                         "uses the model {}",
@@ -2561,6 +2632,11 @@ impl SimApp {
                         }
                         // Starting values come last, each marked ↻; a used
                         // model's parameters nest by path (ADR 0066).
+                        // A study's model, nested: its blocks' values as
+                        // written (ADR 0070).
+                        if let Some(st) = studied {
+                            studied_tree(ui, &g.name, st);
+                        }
                         let nested = crate::inspector::nest(&g.rows);
                         nested_rows(ui, &nested, &g.name, &mut |ui, name, row| {
                             let mut r = row.clone();
@@ -2623,6 +2699,9 @@ impl SimApp {
         self.apply_edits(changes, controls);
         for (scope, e) in canvas_edits {
             self.edit_at(scope, e);
+        }
+        if !inside_edits.is_empty() {
+            self.edit_inside(inside_edits);
         }
         if let Some((block, u)) = update {
             self.rebuild(
@@ -3605,6 +3684,102 @@ fn offered_outputs(ui: &mut egui::Ui, m: &crate::live::Model) -> Vec<Edit> {
             }
         });
     out
+}
+
+/// The values of block `block` of a studied model, as written: a field
+/// each, a changed value an edit of the model; values formulas set are
+/// shown, not edited.
+fn studied_rows(
+    ui: &mut egui::Ui,
+    block: &str,
+    values: &[simsandbox_session::diagram::NodeValue],
+    edits: &mut HashMap<String, String>,
+) -> Vec<Edit> {
+    let mut out = Vec::new();
+    egui::Grid::new(("studied-rows", block))
+        .num_columns(3)
+        .spacing([6.0, 4.0])
+        .show(ui, |ui| {
+            for v in values {
+                ui.label(&v.name);
+                match &v.formula {
+                    Some(f) => {
+                        ui.weak(format!("= {f}"));
+                    }
+                    None => {
+                        let id = format!("studied:{block}.{}", v.name);
+                        let now = simsandbox_views::values::number(v.value);
+                        let mut text = edits.get(&id).cloned().unwrap_or_else(|| now.clone());
+                        let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(70.0));
+                        if r.has_focus() {
+                            edits.insert(id.clone(), text.clone());
+                        }
+                        if r.lost_focus() {
+                            edits.remove(&id);
+                            match text.trim().parse::<f64>() {
+                                Ok(x) if x.is_finite() && text.trim() != now => {
+                                    out.push(Edit::SetParam {
+                                        block: block.to_string(),
+                                        param: v.name.clone(),
+                                        value: x,
+                                    })
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                ui.label(if v.initial {
+                    format!("{} ↻", v.unit)
+                } else {
+                    v.unit.clone()
+                });
+                ui.end_row();
+            }
+        });
+    out
+}
+
+/// A study's model in the model tree: each block's values as written, to
+/// read; changed by opening the study's node.
+fn studied_tree(ui: &mut egui::Ui, study: &str, s: &Studied) {
+    egui::CollapsingHeader::new(format!("model {}", s.model))
+        .id_salt(("studied", study))
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.weak("Its values as written; open the study's node and pick a block to change them");
+            for (block, values) in &s.blocks {
+                ui.strong(block);
+                egui::Grid::new(("studied-tree", study, block))
+                    .num_columns(2)
+                    .spacing([8.0, 2.0])
+                    .show(ui, |ui| {
+                        for v in values {
+                            ui.label(&v.name);
+                            let text = match &v.formula {
+                                Some(f) => format!("= {f}"),
+                                None => format!(
+                                    "{} {}",
+                                    simsandbox_views::values::number(v.value),
+                                    v.unit
+                                ),
+                            };
+                            ui.monospace(text);
+                            ui.end_row();
+                        }
+                    });
+            }
+        })
+        .header_response
+        .on_hover_text("The model this study runs at each of its points");
+}
+
+/// The model a study studies, as the Inspector shows it: its name, what
+/// it can vary, and each block's values as its file writes them.
+struct Studied {
+    model: String,
+    keys: Vec<StudyKey>,
+    blocks: Vec<(String, Vec<simsandbox_session::diagram::NodeValue>)>,
 }
 
 /// A parameter a study can vary: its key, a range for it and whether it
@@ -5311,6 +5486,52 @@ mod tests {
                 serde_json::json!({"design": "list", "params": [one], "values": [[1.0], [2.0]]})
             )),
             2
+        );
+    }
+
+    #[test]
+    fn a_block_inside_a_study_shows_its_models_values() {
+        // ADR 0070: open the tuning study, pick its car: the cruise
+        // model's values, as written, in the Inspector and the tree.
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Tuning"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        let file = app.session.as_ref().unwrap().model().file.clone();
+        let st = app.studied(&file, "tuning").unwrap();
+        assert_eq!(st.model, "cruise");
+        let car = st.blocks.iter().find(|(b, _)| b == "car").unwrap();
+        assert!(car.1.iter().any(|v| v.name == "m"), "{:?}", car.1);
+        app.diagram.inside = vec!["tuning".into()];
+        let o = simsandbox_session::render::RenderOptions {
+            width: 900.0,
+            height: 600.0,
+            ..Default::default()
+        };
+        simsandbox_session::render::paint(&o, |ui| app.diagram_tab(ui));
+        let values = app
+            .diagram
+            .inside_values(&["tuning".to_string()], "car")
+            .unwrap();
+        assert!(values.iter().any(|v| v.name == "m"), "{values:?}");
+        app.diagram.canvas.selected =
+            Some(simsandbox_session::canvas::Selection::Block("car".into()));
+        // SIMSANDBOX_SHOT=FILE.png writes the Inspector as drawn, to look at.
+        if let Ok(path) = std::env::var("SIMSANDBOX_SHOT_INSIDE") {
+            let o = simsandbox_session::render::RenderOptions {
+                width: 520.0,
+                height: 900.0,
+                ..Default::default()
+            };
+            let image = simsandbox_session::render::paint(&o, |ui| app.param_panel(ui));
+            std::fs::write(path, simsandbox_session::render::png(&image).unwrap()).unwrap();
+        }
+        inspect(&mut app);
+        assert_eq!(
+            app.picked,
+            [(Some("tuning".to_string()), "car".to_string())]
         );
     }
 

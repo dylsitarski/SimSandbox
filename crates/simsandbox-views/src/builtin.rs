@@ -181,6 +181,14 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
     crate::values::register(r)
 }
 
+/// A bound signal's label with its unit, as an axis shows it.
+fn with_unit(b: Bound<'_>) -> String {
+    match b.history.unit(b.history.name(b.signal)) {
+        Some(u) if b.signal != SignalRef::Time => format!("{} [{u}]", label(b.name)),
+        _ => label(b.name),
+    }
+}
+
 pub(crate) fn bindings(pairs: &[(&str, &str)]) -> Bindings {
     pairs
         .iter()
@@ -276,6 +284,8 @@ struct Curve {
     /// The binding as written, and as shown.
     name: String,
     label: String,
+    /// The label with its unit, for an axis.
+    axis: String,
     t: Vec<f64>,
     x: Vec<f64>,
     y: Vec<f64>,
@@ -297,6 +307,7 @@ impl Curve {
         Self {
             name: y.name.to_string(),
             label: label(y.name),
+            axis: with_unit(y),
             t: p.t,
             x: xs,
             y: ys,
@@ -337,12 +348,12 @@ impl Xy {
             .many_any("y")
             .iter()
             .filter_map(|&y| match y.signal {
-                SignalRef::Field(fy) => Some((label(y.name), latest(y, fy))),
+                SignalRef::Field(fy) => Some((with_unit(y), latest(y, fy))),
                 _ => None,
             })
             .collect();
         let mut plot = Plot::new("plot.xy.cells").allow_scroll(false);
-        let (across, up) = (label(x.name), (ys.len() == 1).then(|| ys[0].0.clone()));
+        let (across, up) = (with_unit(x), (ys.len() == 1).then(|| ys[0].0.clone()));
         let (across, up) = if tr {
             (up, Some(across))
         } else {
@@ -408,9 +419,9 @@ impl View for Xy {
         } else if against_time {
             input.history.index().to_string()
         } else {
-            label(x.name)
+            with_unit(x)
         };
-        let y_label = (curves.len() == 1).then(|| curves[0].label.clone());
+        let y_label = (curves.len() == 1).then(|| curves[0].axis.clone());
         // A point of the curve of y against x, as drawn.
         let tr = self.transposed;
         let at = move |a: f64, b: f64| if tr { [b, a] } else { [a, b] };

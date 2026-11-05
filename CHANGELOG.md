@@ -6,6 +6,12 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Plot axes, heat-map and surface scales and cut lines show units (`car.v [m/s]`, `t [s]`); units are printed in SI form (`kg/s`, `1/s`).
+- The "Values" view is named `plot.values`, like the other built-in views.
+- The selection on the diagram stays when an edit keeps its blocks (a study's form, an offered output), so the Inspector's buttons and choices can be used one after another.
+- A block picked inside a study shows the studied model's values in the Inspector, editable (a change edits the model, with the usual question where it is used elsewhere); values typed on nodes inside a study now apply. The model tree lists a study as "study of cruise" with its model's values nested.
+- A study's stacked cards sit below its node, narrower, clear of the ports.
+
 - Offering outputs to models using this one (ADR 0073): the Inspector's Model section lists them and offers more; a block's menu offers its outputs only inside a used model ("Offer v to models using this one"). A used model's "Show a port" list no longer repeats a signal a declared output already shows (the Platoon's followers show `v`, not also `car.v`), and marks inputs and outputs in words instead of arrows that did not draw.
 
 - A study's node is drawn as a stack of cards with its own header colour and the inner outline used models have (a model inside, to open), titled "study of cruise · 20 runs".
@@ -27,7 +33,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 - A study selected on the diagram has a form in the Inspector: its design, a row per parameter it varies (chosen from its model's parameters, with range and points), count and seed, replicates and seeds, its named results, and the number of runs; the sample as JSON stays one click away.
 
-- View "Values" (`show.values`): the newest value of each chosen signal as a number with its unit, and lines of cells (a study's results) as a table. The tuning example shows its best gain, reach and peak with it.
+- View "Values" (`plot.values`): the newest value of each chosen signal as a number with its unit, and lines of cells (a study's results) as a table. The tuning example shows its best gain, reach and peak with it.
 
 - A model whose studies take a while no longer freezes the window: opening it, and checking a diagram edit, build it without running its studies; the worker runs them first, showing their progress ("studies about to run", then "study: k of n runs"), and anything the window waits for (Save, closing) gives them up and runs them again after (ADR 0071).
 

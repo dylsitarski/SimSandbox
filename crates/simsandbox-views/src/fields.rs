@@ -384,7 +384,7 @@ pub(crate) fn sheet(input: &ViewInput<'_>, max_samples: usize) -> Option<Sheet> 
     let labels = [
         axis_label(h, field, &x),
         axis_label(h, field, &y),
-        h.label(SignalRef::Field(field)).to_string(),
+        h.labelled(SignalRef::Field(field)),
     ];
     Some(Sheet {
         x: x.centres,
@@ -400,7 +400,7 @@ fn axis_label(h: &History, field: usize, a: &Axis) -> String {
     match (a.dim, a.coord) {
         (Dim::Time, _) if h.over_time() => "t [s]".to_string(),
         (Dim::Time, _) => h.index().to_string(),
-        (_, Some(c)) => h.label(SignalRef::Field(c)).to_string(),
+        (_, Some(c)) => h.labelled(SignalRef::Field(c)),
         (Dim::Grid(_), None) if line => "cell".to_string(),
         (Dim::Grid(0), None) => "column".to_string(),
         (Dim::Grid(_), None) => "row".to_string(),
@@ -564,7 +564,7 @@ impl View for Heatmap {
         };
         ui.weak(format!(
             "{}: {} (dark) to {} (bright){}",
-            h.label(SignalRef::Field(field)),
+            h.labelled(SignalRef::Field(field)),
             fmt(lo),
             fmt(hi),
             if log { ", log scale" } else { "" }
@@ -666,7 +666,7 @@ impl View for Profile {
             _ => None,
         };
         let x_label = match input.one("x") {
-            Some(x) => h.label(x).to_string(),
+            Some(x) => h.labelled(x),
             None => "cell".to_string(),
         };
         let mut plot = Plot::new("plot.profile")
@@ -676,7 +676,7 @@ impl View for Profile {
             plot = plot.include_y(lo).include_y(hi);
         }
         if ys.len() == 1 {
-            plot = plot.y_axis_label(h.label(ys[0]));
+            plot = plot.y_axis_label(h.labelled(ys[0]));
         } else {
             plot = plot.legend(Legend::default());
         }

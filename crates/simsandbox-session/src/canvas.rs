@@ -489,8 +489,11 @@ impl Canvas {
         // (ADR 0070).
         let study = n.kind == NodeKind::Block && n.type_name == simsandbox_file::STUDY;
         if study {
+            // Below the node and narrower, clear of the ports at its sides.
             for k in [2.0, 1.0] {
-                let card = r.translate(Vec2::splat(4.0 * k * z));
+                let card = r
+                    .translate(Vec2::new(0.0, 4.0 * k * z))
+                    .shrink2(Vec2::new(8.0 * k * z, 0.0));
                 painter.rect_filled(card, radius, visuals.window_fill);
                 painter.rect_stroke(card, radius, visuals.window_stroke, StrokeKind::Inside);
             }

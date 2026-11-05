@@ -332,6 +332,19 @@ impl History {
         self.labels.get(name).map_or(name, String::as_str)
     }
 
+    /// The label of a signal or field with its unit, as axes show it:
+    /// `car.v [m/s]`, `t [s]`; without a unit, the label alone.
+    pub fn labelled(&self, s: SignalRef) -> String {
+        let label = self.label(s);
+        match s {
+            SignalRef::Time if self.over_time() => "t [s]".to_string(),
+            _ => match self.unit(self.name(s)) {
+                Some(u) => format!("{label} [{u}]"),
+                None => label.to_string(),
+            },
+        }
+    }
+
     pub fn coordinates(&self) -> &[Coordinate] {
         &self.coordinates
     }

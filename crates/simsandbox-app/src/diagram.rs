@@ -277,9 +277,26 @@ impl DiagramTab {
             .collect();
         let (_, d) = self.inside_cache.as_mut().expect("built above");
         d.live_values(&rows);
-        let (edits, requests) = self.canvas.show(ui, d, registry, true);
+        let (mut edits, requests) = self.canvas.show(ui, d, registry, true);
         let mut opened = None;
+        // Nothing of it runs (the inside of a study, ADR 0070): its values
+        // are the model's, changed in the file.
+        let running = !rows.is_empty();
         for r in requests {
+            if let Request::SetValue { key, value } = &r {
+                match key.split_once('.') {
+                    Some((block, param)) if !running => edits.push(Edit::SetParam {
+                        block: block.into(),
+                        param: param.into(),
+                        value: *value,
+                    }),
+                    _ => out.push(Outcome::SetValue {
+                        key: format!("{prefix}{key}"),
+                        value: *value,
+                    }),
+                }
+                continue;
+            }
             if let Request::Open(name) = r {
                 let study = d
                     .node(&name)
@@ -307,6 +324,21 @@ impl DiagramTab {
             self.canvas.refit();
         }
         out
+    }
+
+    /// The values of node `name` inside the model open at `path`, as its
+    /// file writes them (what the Inspector shows for a block inside a
+    /// study, whose model does not run).
+    pub(crate) fn inside_values(
+        &self,
+        path: &[String],
+        name: &str,
+    ) -> Option<Vec<simsandbox_session::diagram::NodeValue>> {
+        let (p, d) = self.inside_cache.as_ref()?;
+        if p != path {
+            return None;
+        }
+        d.node(name).map(|k| d.nodes[k].values.clone())
     }
 
     /// Edits made inside the used model open: where its answer says, or
@@ -1289,10 +1321,13 @@ impl DiagramTab {
             self.undo.pop();
             return;
         }
-        // A value or setting changed: the blocks are still there.
-        let kept = changes
-            .iter()
-            .all(|e| matches!(e, Edit::SetParam { .. } | Edit::SetSetting { .. }));
+        // The selection stays while every block in it is still there (a
+        // value, a setting, a study's sample or an offered output changed).
+        let kept = self.canvas.selected.as_ref().is_none_or(|sel| {
+            sel.blocks()
+                .iter()
+                .all(|n| file.blocks.iter().any(|b| &b.name == n))
+        });
         if !kept
             && matches!(
                 self.canvas.selected,

@@ -682,7 +682,7 @@ mod tests {
                 "plot.scatter",
                 "plot.surface",
                 "plot.contour",
-                "show.values"
+                "plot.values"
             ]
         );
         assert!(crate::builtin::register(&mut r).is_err());
@@ -799,7 +799,7 @@ mod tests {
     #[test]
     fn values_show_scalars_and_lines() {
         let r = ViewRegistry::builtin();
-        let v = r.get("show.values").unwrap();
+        let v = r.get("plot.values").unwrap();
         let scalars: Vec<String> = ["b.k", "b.reach"].map(String::from).to_vec();
         let lines: Vec<String> = vec!["s.peak".into()];
         let a = Available {
