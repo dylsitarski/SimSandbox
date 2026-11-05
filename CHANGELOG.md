@@ -33,6 +33,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- A model can expose its blocks' inputs (`"inputs": [{"name": ..., "to": [...], "unit": ...}]`, ADR 0074): signals with no default, wired by every use and study, without input blocks; a use that leaves one unwired is refused, naming it.
+
 - A study selected on the diagram has a form in the Inspector: its design, a row per parameter it varies (chosen from its model's parameters, with range and points), count and seed, replicates and seeds, its named results, and the number of runs; the sample as JSON stays one click away.
 
 - View "Values" (`plot.values`): the newest value of each chosen signal as a number with its unit, and lines of cells (a study's results) as a table. The tuning example shows its best gain, reach and peak with it.

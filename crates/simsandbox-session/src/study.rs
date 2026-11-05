@@ -189,6 +189,8 @@ impl StudyBlock {
         let sampling: simsandbox_file::Sampling =
             serde_json::from_str(sample).map_err(|e| invalid(format!("sample: {e}")))?;
         let text = model;
+        // Its exposed inputs are the study's inputs (ADR 0074).
+        let text = with_exposed_inputs(&text)?;
         let loaded = load(&text, folder.as_deref(), &label)?;
         // Its points file and its model's data files are in the run hash of
         // the model holding it.
@@ -452,6 +454,23 @@ impl StudyBlock {
         *kept = Some((bits, values.clone()));
         Ok(values)
     }
+}
+
+/// A studied model's text with its exposed inputs (ADR 0074) as input
+/// blocks, which the study takes as inputs; as written if it has none.
+fn with_exposed_inputs(text: &str) -> Result<String> {
+    let v: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| invalid(format!("its model: {e}")))?;
+    if v.get("inputs")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(Vec::is_empty)
+    {
+        return Ok(text.to_string());
+    }
+    let mut model = simsandbox_file::compose::read_definition("studied", &v)
+        .map_err(|e| invalid(format!("its model: {e}")))?;
+    simsandbox_file::compose::expose_inputs(&mut model);
+    Ok(model.to_json())
 }
 
 /// Load a study's model (`label` in messages), refusing a loop. Loading

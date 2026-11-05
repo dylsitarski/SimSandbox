@@ -73,6 +73,10 @@ pub struct InputPort {
     /// Inner inputs, `"block.port"`.
     #[serde(default)]
     pub to: Vec<String>,
+    /// For a model's exposed input (ADR 0074): the unit it takes, as
+    /// written (`m/s`); empty for a plain number.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unit: String,
     /// Where its node sits on the subsystem's canvas (`at` before
     /// ADR 0052).
     #[serde(default, alias = "at", skip_serializing_if = "Option::is_none")]

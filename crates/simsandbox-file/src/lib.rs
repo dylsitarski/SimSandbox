@@ -102,6 +102,10 @@ pub struct ModelFile {
     /// The outputs it offers to models that use it (ADR 0066 step 4b), by
     /// name: `from` is one of its blocks' outputs (`car.v`), or a path
     /// into a model it uses (`plant/car.v`).
+    /// Block inputs it exposes to models using it (ADR 0074): signals
+    /// with no default, each wired by every use.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<InputPort>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<OutputPort>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1897,6 +1901,7 @@ pub fn load_in(
     // What blocks that load models of their own report as they are built.
     let _reports = Reports::begin();
     let (mut file, mut warnings) = ModelFile::from_json(text)?;
+    compose::runs_alone(&file)?;
     if let Some(k) = file.blocks.iter().position(BlockEntry::is_use) {
         return Err(invalid(
             format!("blocks[{k}]"),
@@ -2084,6 +2089,8 @@ struct RawFile {
     #[serde(default)]
     blocks: Vec<BlockEntry>,
     #[serde(default)]
+    inputs: Vec<InputPort>,
+    #[serde(default)]
     outputs: Vec<OutputPort>,
     #[serde(default)]
     connections: Vec<ConnectionEntry>,
@@ -2106,6 +2113,7 @@ impl ModelFile {
             subsystems: BTreeMap::new(),
             models: BTreeMap::new(),
             blocks: Vec::new(),
+            inputs: Vec::new(),
             outputs: Vec::new(),
             connections: Vec::new(),
             fusion: Fusion::Auto,
@@ -2221,6 +2229,7 @@ impl ModelFile {
         }
         compose::check_uses(&raw.blocks, &raw.subsystems)?;
         compose::check_outputs(&raw.outputs, &raw.blocks)?;
+        compose::check_inputs(&raw.inputs, &raw.outputs, &raw.blocks)?;
         if raw.sample.is_some() {
             return Err(invalid(
                 "sample",
@@ -2272,6 +2281,7 @@ impl ModelFile {
                 subsystems: raw.subsystems,
                 models: raw.models,
                 blocks: raw.blocks,
+                inputs: raw.inputs,
                 outputs: raw.outputs,
                 connections: raw.connections,
                 fusion: raw.fusion,

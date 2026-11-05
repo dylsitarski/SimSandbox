@@ -1575,6 +1575,85 @@ mod tests {
     }
 
     #[test]
+    fn exposed_inputs_are_wired_where_a_model_is_used() {
+        // ADR 0074: an input exposed from a block's port, with no input
+        // block, runs as the input block did, and has no default.
+        let r = registry();
+        let gain = |exposed: bool| {
+            let mut d = json!({"blocks": [
+                {"name": "g", "type": "eq.equations", "equations": ["input x [m]", "param a = 2", "y = a*x [m]"]}],
+              "outputs": [{"name": "y", "from": "g.y"}]});
+            if exposed {
+                d["inputs"] = json!([{"name": "u", "to": ["g.x"], "unit": "m"}]);
+            } else {
+                d["blocks"].as_array_mut().unwrap().insert(
+                    0,
+                    json!({"name": "u", "type": "input.value", "settings": {"unit": "m"}}),
+                );
+                d["connections"] = json!([{"from": "u.y", "to": "g.x"}]);
+            }
+            d
+        };
+        let top = |exposed: bool, wired: bool| {
+            let mut t = json!({"format": 1, "run": {"dt": 0.1, "t_end": 1.0},
+                "models": {"gain": gain(exposed)},
+                "blocks": [{"name": "src", "type": "eq.equations", "method": {"name": "rk4"},
+                            "equations": ["param r [1/s] = 1", "state s [m] = 1", "ds/dt = r*s [m/s]"]},
+                           {"name": "a", "model": "gain"}]});
+            if wired {
+                t["connections"] = json!([{"from": "src.s", "to": "a/u"}]);
+            }
+            t.to_string()
+        };
+        let value = |text: &str| {
+            let res = crate::run::run(text, &r, None, None).unwrap();
+            res.outputs
+                .iter()
+                .find(|o| o.name == "a/g.y")
+                .unwrap()
+                .values
+                .clone()
+        };
+        assert_eq!(
+            bits(&value(&top(true, true))),
+            bits(&value(&top(false, true)))
+        );
+        // Unwired: refused, naming it.
+        let e = crate::run::run(&top(true, false), &r, None, None).unwrap_err();
+        assert!(e.contains("'u' is not wired"), "{e}");
+        // Alone: refused, saying why.
+        let mut alone = gain(true);
+        alone["format"] = json!(1);
+        let e = crate::run::run(&alone.to_string(), &r, None, None).unwrap_err();
+        assert!(e.contains("no default"), "{e}");
+        // A study takes it as an input, as an input block.
+        let study = json!({"format": 1, "models": {"gain": gain(true)},
+            "blocks": [{"name": "k", "type": "input.value", "params": {"y": 3.0}, "settings": {"unit": "m"}},
+                {"name": "s", "type": "study", "model": "gain",
+                 "sample": {"design": "list", "params": [{"param": "g.a"}], "values": [[1.0]]}}],
+            "connections": [{"from": "k.y", "to": "s.u"}]});
+        let check = crate::describe::check(&study.to_string(), &r);
+        assert_eq!(check["ok"], true, "{check}");
+        // Its names: apart, and feeding block inputs.
+        for (inputs, says) in [
+            (json!([{"name": "g", "to": ["g.x"]}]), "apart"),
+            (json!([{"name": "u", "to": []}]), "at least one"),
+            (
+                json!([{"name": "u", "to": ["nope.x"]}]),
+                "one of its blocks",
+            ),
+        ] {
+            let mut d = gain(true);
+            d["format"] = json!(1);
+            d["inputs"] = inputs;
+            let e = simsandbox_file::ModelFile::from_json(&d.to_string())
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(says), "{e}");
+        }
+    }
+
+    #[test]
     fn models_defined_in_a_file_are_found_used_and_refused() {
         let gain = |k: f64| {
             json!({"blocks": [

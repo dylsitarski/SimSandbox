@@ -468,7 +468,7 @@ fn use_node(
         .or_else(simsandbox_core::registry::current_folder);
     // As the run reads it: edited files and replacements (ADR 0066 4c).
     let read = simsandbox_file::compose::used_model(b, folder.as_deref());
-    let (model, inner_folder) = match read {
+    let (mut model, inner_folder) = match read {
         Ok((m, _, inner)) if depth < 8 => (m, inner),
         Ok(_) => {
             n.error = Some("model files used too deeply (or using themselves)".into());
@@ -479,6 +479,8 @@ fn use_node(
             return n;
         }
     };
+    // Its exposed inputs are ports, as input blocks are (ADR 0074).
+    simsandbox_file::compose::expose_inputs(&mut model);
     let mut has_states = false;
     // Every input and output it has, by path; the node shows its
     // interface and keeps the rest reachable (ADR 0066 step 4b).
@@ -2072,6 +2074,7 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                             let name =
                                 unique(&|n: &str| def.inputs.iter().any(|q| q.name == n), &base);
                             def.inputs.push(InputPort {
+                                unit: String::new(),
                                 name: name.clone(),
                                 to: vec![c.to.clone()],
                                 canvas: None,
@@ -2115,6 +2118,7 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                 let base = into[0].split_once('.').map_or("in", |(_, p)| p).to_string();
                 let name = unique(&|n: &str| def.inputs.iter().any(|p| p.name == n), &base);
                 def.inputs.push(InputPort {
+                    unit: String::new(),
                     name: name.clone(),
                     to: into,
                     canvas: None,

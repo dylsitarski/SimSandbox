@@ -39,6 +39,44 @@
         "$ref": "#/$defs/block"
       }
     },
+    "inputs": {
+      "type": "array",
+      "description": "Block inputs the model exposes to models using it (ADR 0074): signals with no default, each wired by every use or study (a use writes the wire to `use/name`). A model with exposed inputs does not run on its own.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "to"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The input's name: letters, digits and '_', apart from its blocks and outputs."
+          },
+          "to": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            },
+            "description": "The block inputs it feeds, `block.port`."
+          },
+          "unit": {
+            "type": "string",
+            "description": "The unit it takes, as written (`m/s`); empty for a plain number."
+          },
+          "canvas": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      }
+    },
     "outputs": {
       "type": "array",
       "description": "The outputs the model offers to models that use it (ADR 0066 step 4b), by name: 'from' is one of its blocks' outputs ('car.v') or a path into a model it uses ('plant/car.v'). Users wire and link to 'use/name'.",

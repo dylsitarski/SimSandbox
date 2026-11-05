@@ -324,6 +324,112 @@ pub(crate) fn check_outputs(
     Ok(())
 }
 
+/// The exposed inputs of a model (ADR 0074): unique names apart from its
+/// blocks and outputs, each feeding inputs of its blocks (`block.port`).
+pub(crate) fn check_inputs(
+    inputs: &[crate::InputPort],
+    outputs: &[crate::OutputPort],
+    blocks: &[BlockEntry],
+) -> Result<(), FileError> {
+    for (k, i) in inputs.iter().enumerate() {
+        let path = format!("inputs[{k}]");
+        if !crate::subsystems::valid_name(&i.name)
+            || inputs[..k].iter().any(|p| p.name == i.name)
+            || outputs.iter().any(|o| o.name == i.name)
+            || blocks.iter().any(|b| b.name == i.name)
+        {
+            return Err(invalid(
+                format!("{path}.name"),
+                format!(
+                    "'{}': an input's name is letters, digits and '_', apart from the \
+                     model's other inputs, its outputs and its blocks",
+                    i.name
+                ),
+            ));
+        }
+        if i.to.is_empty() {
+            return Err(invalid(
+                format!("{path}.to"),
+                "an input feeds at least one block input (block.port)",
+            ));
+        }
+        for (j, t) in i.to.iter().enumerate() {
+            let ok = t
+                .split_once('.')
+                .is_some_and(|(b, _)| blocks.iter().any(|e| e.name == b));
+            if !ok {
+                return Err(invalid(
+                    format!("{path}.to[{j}]"),
+                    format!("'{t}': an input of one of its blocks (block.port)"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A model run on its own exposes no inputs: they are signals with no
+/// default, wired where it is used (ADR 0074).
+pub(crate) fn runs_alone(file: &ModelFile) -> Result<(), FileError> {
+    match file.inputs.first() {
+        None => Ok(()),
+        Some(i) => Err(invalid(
+            "inputs",
+            format!(
+                "its input '{}' is a signal with no default (ADR 0074): the model runs where \
+                 a model using it wires its inputs; to run it alone, wire a source to {} instead",
+                i.name,
+                i.to.join(", ")
+            ),
+        )),
+    }
+}
+
+/// A model's exposed inputs (ADR 0074) as the input blocks its users wire:
+/// one `input.value` block each, named as the input, in its unit, feeding
+/// what it names. Done where a model is used or studied; never written.
+/// Returns the inputs' names.
+pub fn expose_inputs(model: &mut ModelFile) -> Vec<String> {
+    let inputs = std::mem::take(&mut model.inputs);
+    let names = inputs.iter().map(|i| i.name.clone()).collect();
+    for i in inputs {
+        let mut settings = BTreeMap::new();
+        if !i.unit.is_empty() {
+            settings.insert("unit".to_string(), i.unit.clone());
+        }
+        model.blocks.push(BlockEntry {
+            name: i.name.clone(),
+            type_name: INPUT_VALUE.into(),
+            settings,
+            ..Default::default()
+        });
+        for t in i.to {
+            model.connections.push(crate::ConnectionEntry {
+                from: format!("{}.y", i.name),
+                to: t,
+            });
+        }
+    }
+    names
+}
+
+/// The first of `inputs` (exposed by the model a use `name` uses) that
+/// nothing in `connections` feeds: wired (`name.input`) or linked
+/// (`name/input`). Inputs have no default (ADR 0074).
+fn unwired<'a>(
+    inputs: &'a [String],
+    name: &str,
+    connections: &[crate::ConnectionEntry],
+) -> Option<&'a String> {
+    inputs.iter().find(|i| {
+        !connections.iter().any(|c| {
+            c.to == format!("{name}.{i}")
+                || c.to == format!("{name}/{i}")
+                || c.to.starts_with(&format!("{name}/{i}."))
+        })
+    })
+}
+
 /// What one model's names resolve to: its own domain (if it has blocks of
 /// its own) and each use's level.
 struct Level {
@@ -404,6 +510,7 @@ pub fn load_composition(
     folder: Option<&Path>,
 ) -> Result<Composition, FileError> {
     let (file, warnings) = ModelFile::from_json(text)?;
+    runs_alone(&file)?;
     if !file.blocks.iter().any(BlockEntry::is_use) {
         return Err(invalid("blocks", "this model uses no model files"));
     }
@@ -486,6 +593,7 @@ pub fn load_merged(
 ) -> Result<Loaded, FileError> {
     let c = load_composition(text, registry, folder)?;
     let (file, _) = ModelFile::from_json(text)?;
+    runs_alone(&file)?;
     let folder = folder
         .map(Path::to_path_buf)
         .or_else(simsandbox_core::registry::current_folder);
@@ -1158,6 +1266,7 @@ fn expose_input(
         }
         let name = port_name(def, inner);
         def.inputs.push(crate::InputPort {
+            unit: String::new(),
             name: name.clone(),
             to: vec![target],
             canvas: None,
@@ -1187,6 +1296,7 @@ fn expose_input(
     def.connections.retain(|w| w.from != fed);
     def.blocks.retain(|b| b.name != inner);
     def.inputs.push(crate::InputPort {
+        unit: String::new(),
         name: inner.into(),
         to,
         canvas: None,
@@ -1291,6 +1401,7 @@ fn expose_link(
     }
     let name = port_name(def, inner);
     def.inputs.push(crate::InputPort {
+        unit: String::new(),
         name: name.clone(),
         to: vec![target],
         canvas: None,
@@ -1521,7 +1632,13 @@ impl Loader<'_> {
         }
         for u in &uses {
             let child = self
-                .use_file(&u.entry, &full(&u.name), u.folder.as_deref(), &u.scope)
+                .use_file(
+                    &u.entry,
+                    &full(&u.name),
+                    u.folder.as_deref(),
+                    &u.scope,
+                    &file.connections,
+                )
                 .map_err(|e| match e {
                     FileError::Invalid { path, message } if path.is_empty() => {
                         invalid(u.at.clone(), message)
@@ -1545,6 +1662,29 @@ impl Loader<'_> {
     /// was found, and the canonical path to push while it loads (a file
     /// that uses itself is refused).
     fn read_use(
+        &mut self,
+        u: &BlockEntry,
+        path: &str,
+        folder: Option<&Path>,
+        parent: &[crate::ConnectionEntry],
+    ) -> Result<(ModelFile, PathBuf, PathBuf), FileError> {
+        let (mut model, found, canonical) = self.read_use_file(u, path, folder)?;
+        // Its exposed inputs are wired here, or it cannot run (ADR 0074).
+        let inputs = expose_inputs(&mut model);
+        if let Some(i) = unwired(&inputs, &u.name, parent) {
+            return Err(invalid(
+                "",
+                format!(
+                    "its input '{i}' is not wired: an input is a signal, with no default \
+                     (ADR 0074); wire one to {}.{i}",
+                    u.name
+                ),
+            ));
+        }
+        Ok((model, found, canonical))
+    }
+
+    fn read_use_file(
         &mut self,
         u: &BlockEntry,
         path: &str,
@@ -1610,8 +1750,9 @@ impl Loader<'_> {
         path: &str,
         folder: Option<&Path>,
         scope: &BTreeMap<String, crate::ParamDecl>,
+        parent: &[crate::ConnectionEntry],
     ) -> Result<Level, FileError> {
-        let (mut model, found, canonical) = self.read_use(u, path, folder)?;
+        let (mut model, found, canonical) = self.read_use(u, path, folder, parent)?;
         set_params(&mut model, &u.params, scope)?;
         let (dt, clocked) = match &u.clock {
             Some(UseClock::Step(dt)) => (*dt, true),
@@ -1676,8 +1817,9 @@ impl Loader<'_> {
             } else {
                 format!("{path}/{}", u.name)
             };
+            let parent = file.connections.clone();
             let (mut child, found, canonical) = self
-                .read_use(&u, &full, folder)
+                .read_use(&u, &full, folder, &parent)
                 .map_err(|e| invalid(&at, e))?;
             let child_folder = found.parent().map(Path::to_path_buf);
             let shown = found.display().to_string();
@@ -1801,6 +1943,7 @@ impl Loader<'_> {
                     // A probe feeding its own blocks: through a port.
                     let port = format!("hold_{}", hold_ports.len());
                     hold_ports.push(crate::InputPort {
+                        unit: String::new(),
                         name: port.clone(),
                         to: vec![c.to.clone()],
                         canvas: None,

@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: ADR 0074 step 2: `ModelFile::inputs`, `check_inputs`, `expose_inputs`, `unwired`, `runs_alone`, `read_use`/`use_file` taking the parent's connections, study and use-node exposure, schema; test against the input-block form bit for bit.
 - 2026-11-05: ADR 0074 written; step 1: study parameters (`declared`, `evaluate(inputs, params)`), `Edit::Study` copying params, resonance examples rewritten, tests renamed.
 - 2026-11-05: `History::labelled` and `with_unit` for axes, units of cut lines; `plot.values` renamed; `DiagramTab` keeps a selection whose blocks remain; `inside_values`, `SetValue` inside studies as `SetParam` edits, `SimApp::studied` (cached `Studied`), `studied_rows`, `studied_tree`, `edit_inside`; study cards below the node; tests and renders.
 - 2026-11-05: ADR 0073 written and built: `Diagram::inside`, block menus offering outputs only inside, `offered_outputs` in the Inspector, `use_node` leaving out signals declared outputs show, words for the port list's arrows, `diagram::free_name` public; tests (the interface test now reveals a port on a car that offers nothing).
