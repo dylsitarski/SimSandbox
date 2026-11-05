@@ -6,6 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- A study's node is drawn as a stack of cards with its own header colour and the inner outline used models have (a model inside, to open), titled "study of cruise · 20 runs".
+
 - A model with nothing in time (formulas and studies only: no states, tables, data, clocks or scheduled inputs) is evaluated in the app, not run: once when opened and again whenever a value it reads changes, the toolbar saying "Evaluated, not run in time" instead of showing Run, the time, the step and the rewind bar (ADR 0072).
 
 - Sweeps and experiments are studies (ADR 0071): a file's top-level `sample` is refused, saying to put the model under `models` with a study block over it; the older `controls.sweep` is dropped with a warning. A model with no states is no longer swept over its first parameter: it runs in time, its formulas constant unless their inputs change. The app's sweep bar, its `grid.` signals and its unordered samples are gone: a study's results are fields like any other. `check` no longer reports `experiment` or `swept`; `run` writes a row per run for a model whose only runs are its studies. A study's results leave out its model's input blocks.

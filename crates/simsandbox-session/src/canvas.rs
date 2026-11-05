@@ -485,9 +485,22 @@ impl Canvas {
         let z = self.zoom;
         let r = self.node_rect(origin, n);
         let radius = CornerRadius::same((6.0 * z).round().clamp(0.0, 255.0) as u8);
+        // A study runs its model many times: drawn as a stack of cards
+        // (ADR 0070).
+        let study = n.kind == NodeKind::Block && n.type_name == simsandbox_file::STUDY;
+        if study {
+            for k in [2.0, 1.0] {
+                let card = r.translate(Vec2::splat(4.0 * k * z));
+                painter.rect_filled(card, radius, visuals.window_fill);
+                painter.rect_stroke(card, radius, visuals.window_stroke, StrokeKind::Inside);
+            }
+        }
         painter.rect_filled(r, radius, visuals.window_fill);
         let header = Rect::from_min_size(r.min, Vec2::new(r.width(), HEADER as f32 * z));
         let header_fill = match n.kind {
+            NodeKind::Block if study => {
+                STUDY_HEADER.gamma_multiply(if visuals.dark_mode { 0.55 } else { 0.3 })
+            }
             NodeKind::Block => visuals.widgets.inactive.bg_fill,
             NodeKind::Use => visuals.selection.bg_fill.gamma_multiply(0.7),
             NodeKind::Filter => visuals.hyperlink_color.gamma_multiply(0.3),
@@ -536,8 +549,8 @@ impl Canvas {
         } else {
             painter.rect_stroke(r, radius, border, StrokeKind::Inside);
         }
-        if n.kind == NodeKind::Use {
-            // A second outline: there is more inside.
+        if n.kind == NodeKind::Use || study {
+            // A second outline: there is a model inside, to open.
             painter.rect_stroke(
                 r.shrink(3.0 * z),
                 radius,
@@ -560,6 +573,7 @@ impl Canvas {
             "cannot be built (hover)".to_string()
         } else {
             match n.kind {
+                NodeKind::Block if study => format!("study {}", n.method),
                 NodeKind::Block => format!("{} · {}", n.type_name, n.method),
                 // A model file used here: its file and its clock.
                 NodeKind::Use => format!("{} · {}", n.method, n.type_name),
@@ -1687,6 +1701,10 @@ impl Canvas {
             .map(|(f, t, _)| (f.as_str(), t.as_str()))
     }
 }
+
+/// The header colour of a study's node (ADR 0070): apart from blocks,
+/// used models and the data layer.
+const STUDY_HEADER: Color32 = Color32::from_rgb(150, 90, 200);
 
 /// A colour for a clock: the same clock, the same colour; a shared clock
 /// in the selection colour.

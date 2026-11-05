@@ -33,6 +33,7 @@ _Last updated: 2026-11-05_
 
 ## Done recently
 
+- 2026-11-05: study nodes drawn apart: a stack of cards, their own header colour, the inner outline of a node with a model inside, "study of … · n runs".
 - 2026-11-05: a study's form in the Inspector (design, parameters from its model, count, seed, replicates, seeds, results, runs); `render::paint` public for drawing any part of the app headless in tests.
 - 2026-11-05: view "Values" (`show.values`): numbers with units, lines of cells as a table; the history records each output's unit; the tuning example shows its best values with it.
 - 2026-11-05: [ADR 0072](decisions/0072-models-with-nothing-in-time.md) (owner): a model with nothing in time is evaluated in the app, not run: once and on every change, by the worker (with progress, given up for newer changes), with no clock, step or rewind.

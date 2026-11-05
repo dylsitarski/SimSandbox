@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: study nodes on the canvas (`STUDY_HEADER`, stacked cards, inner outline, subtitle); diagram renders.
 - 2026-11-05: study form (`study_fields` rewritten, `study_runs`, `SimApp::study_keys` cached, `diagram::study_parameters`), `render::paint` public; tests; the form rendered headless (`SIMSANDBOX_SHOT`).
 - 2026-11-05: `show.values` (`values.rs`, `number`), `History::set_unit`/`unit` filled from output ports in `build_history`; the tuning example's best values; tests; renders.
 - 2026-11-05: ADR 0072 written and built: `Session::timeless`, `evaluate_later` (set by `Live::start`), `unevaluated`/`evaluate` (renamed from the studies-only names), the worker never stepping such a model, the toolbar's "Evaluated, not run in time"; the give-up test's model given a state; tests; screenshot of the resonance curve. Inspector selection inside used models fixed (owner's report).
