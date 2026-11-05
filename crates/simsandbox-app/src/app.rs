@@ -2391,12 +2391,23 @@ impl SimApp {
                 // (`car1`, `vehicle/plant`) says where.
                 let scope: Option<String> =
                     (!self.diagram.inside.is_empty()).then(|| self.diagram.inside.join("/"));
+                // A block in a model expanded in place is named by its path
+                // (`shaken/mass`): inside that use, as when it is opened.
                 self.picked = canvas
                     .map(|s| s.blocks())
                     .unwrap_or_default()
                     .into_iter()
                     .filter(|n| !n.contains(':'))
-                    .map(|n| (scope.clone(), n))
+                    .map(|n| match n.rsplit_once('/') {
+                        Some((path, name)) => {
+                            let full = match &scope {
+                                Some(s) => format!("{s}/{path}"),
+                                None => path.to_string(),
+                            };
+                            (Some(full), name.to_string())
+                        }
+                        None => (scope.clone(), n),
+                    })
                     .collect();
             }
             let picked = self.picked.clone();
@@ -3601,8 +3612,11 @@ fn block_entry<'a>(
     scope: Option<&str>,
     name: &str,
 ) -> Option<&'a simsandbox_file::BlockEntry> {
-    let _ = scope;
-    file.blocks.iter().find(|b| b.name == name)
+    // Inside a used model it is not one of the file's own blocks.
+    scope
+        .is_none()
+        .then(|| file.blocks.iter().find(|b| b.name == name))
+        .flatten()
 }
 
 /// A text field for one setting of block `b`; a changed value is an edit
@@ -5804,6 +5818,27 @@ mod tests {
         // A filter's signal has none.
         app.inspect_signal("energy");
         assert_eq!(app.picked, [(None, "leader".to_string())]);
+    }
+
+    #[test]
+    fn a_block_picked_in_a_model_expanded_in_place_shows_its_values() {
+        use simsandbox_session::canvas::Selection;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        inspect(&mut app);
+        // car1 expanded: its car is named by path on the canvas.
+        app.diagram.canvas.selected = Some(Selection::Block("car1/car".into()));
+        inspect(&mut app);
+        assert_eq!(app.picked, [(Some("car1".to_string()), "car".to_string())]);
+        let m = app.session.as_ref().unwrap().model();
+        let t = crate::inspector::selected(&m.params, &m.file, Some("car1"), "car")
+            .expect("the car's values");
+        assert!(t.rows.iter().any(|(k, _)| k == "c"), "{:?}", t.rows);
+        assert!(app.error.is_none(), "{:?}", app.error);
     }
 
     #[test]

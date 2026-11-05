@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: Inspector Selection for blocks in an expanded model: picks named by path split into the use's path and the block (`SimApp::picked`); `block_entry` ignores the file's own blocks inside a use; app test.
 - 2026-11-05: ADR 0075 fixes (owner's review): values kept through wiring, unwiring and saving (`check_driven`, Connect, `capture_params`); wires from outside an expanded model to the values and inputs it exposes, in the canvas's `use.name` form (the `use/name` form `route` gave before did not apply); tests.
 - 2026-11-05: ADR 0075 step 3: `Wire::param`, `NodeValue::driven`, `drive_values`, `Node::value_port`, value rows of driven parameters on closed nodes; canvas `value_port_under`, `wire_end`, drop and lift on values; `drop_value` on connect; expand routes driven use parameters; app rows and Controls; forced spring example and tests; renders and an app screenshot.
 - 2026-11-05: ADR 0075 step 2: loader drives on wires to parameters; `Item::Instance::params` in flattening; `expose_input` passes declared parameters; `check_driven`; `Registry::build` name clash; `ParamRow::driven`, `session::drives`, `check`'s `driven`/`driven_by`; schema, Python docstring and test; `tests/driven_files.rs`.
