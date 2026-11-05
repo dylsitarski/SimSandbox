@@ -2846,7 +2846,8 @@ mod tests {
         assert_eq!(names(&plant.inputs), ["force"]);
         assert_eq!(names(&plant.outputs), ["speed"]);
         assert_eq!(plant.outputs[0].unit, "m/s");
-        assert!(plant
+        // `speed` shows car.v: it is not listed again (ADR 0073).
+        assert!(!plant
             .reachable
             .iter()
             .any(|(i, p)| !*i && p.name == "car.v"));
@@ -2859,13 +2860,20 @@ mod tests {
         // that port, nothing more revealed.
         assert_eq!(names(&wired.nodes[0].outputs), ["speed"]);
         // A port chosen from the list joins the node; the rest stay listed.
+        // (On a car that offers nothing, so `car.v` is in the list.)
+        let mut bare: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("car.ssbx.json")).unwrap())
+                .unwrap();
+        bare.as_object_mut().unwrap().remove("outputs");
+        write(&dir, "bare.ssbx.json", &bare);
+        let bare = diagram(&json!({"format": 1, "blocks": [use_of("plant", "bare.ssbx.json")]}));
         let mut canvas = crate::canvas::Canvas::default();
         canvas
             .revealed
             .insert("plant".into(), vec![(false, "car.v".into())]);
-        let mut shown = alone.clone();
+        let mut shown = bare.clone();
         canvas.reveal(&mut shown);
-        assert_eq!(names(&shown.nodes[0].outputs), ["speed", "car.v"]);
+        assert_eq!(names(&shown.nodes[0].outputs), ["car.v"]);
         assert!(!shown.nodes[0]
             .reachable
             .iter()

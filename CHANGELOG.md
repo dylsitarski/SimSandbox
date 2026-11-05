@@ -6,6 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Offering outputs to models using this one (ADR 0073): the Inspector's Model section lists them and offers more; a block's menu offers its outputs only inside a used model ("Offer v to models using this one"). A used model's "Show a port" list no longer repeats a signal a declared output already shows (the Platoon's followers show `v`, not also `car.v`), and marks inputs and outputs in words instead of arrows that did not draw.
+
 - A study's node is drawn as a stack of cards with its own header colour and the inner outline used models have (a model inside, to open), titled "study of cruise · 20 runs".
 
 - A model with nothing in time (formulas and studies only: no states, tables, data, clocks or scheduled inputs) is evaluated in the app, not run: once when opened and again whenever a value it reads changes, the toolbar saying "Evaluated, not run in time" instead of showing Run, the time, the step and the rewind bar (ADR 0072).

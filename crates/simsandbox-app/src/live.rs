@@ -96,6 +96,11 @@ impl Model {
 
     /// What views can bind: everything a step yields, whether or not the
     /// history `h` records it now (ADR 0063).
+    /// The grids views can bind, recorded or not.
+    pub fn grids(&self) -> &[String] {
+        &self.grids
+    }
+
     pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
         let _ = h;
         Available {

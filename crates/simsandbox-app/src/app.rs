@@ -2468,6 +2468,10 @@ impl SimApp {
                     if let Some(e) = declare_form(ui, &mut self.new_param, &mut self.error) {
                         canvas_edits.push((Scope::Model, e));
                     }
+                    // What models using this one see of it (ADR 0073).
+                    for e in offered_outputs(ui, &m) {
+                        canvas_edits.push((Scope::Model, e));
+                    }
                 })
                 .header_response
                 .on_hover_text(
@@ -3534,6 +3538,73 @@ fn setting_field(
         }
     }
     None
+}
+
+/// The outputs the model offers to models using it (ADR 0073): each by
+/// name with the signal it shows, removable, and a picker to offer another
+/// block output.
+fn offered_outputs(ui: &mut egui::Ui, m: &crate::live::Model) -> Vec<Edit> {
+    let mut out = Vec::new();
+    let offered = &m.file.outputs;
+    ui.add_space(4.0);
+    ui.label("Offered to models using this one").on_hover_text(
+        "Ports of this model where another model uses it, by name: they stay valid when \
+             its insides change. A model nothing uses needs none.",
+    );
+    for o in offered {
+        ui.horizontal(|ui| {
+            ui.monospace(&o.name);
+            ui.weak(format!("shows {}", o.from));
+            if ui
+                .small_button("×")
+                .on_hover_text("Stop offering it")
+                .clicked()
+            {
+                out.push(Edit::RemoveOutput {
+                    name: o.name.clone(),
+                });
+            }
+        });
+    }
+    // Whole outputs of the model's own blocks, not yet offered.
+    let blocks: Vec<&str> = m
+        .file
+        .blocks
+        .iter()
+        .filter(|b| !b.is_use())
+        .map(|b| b.name.as_str())
+        .collect();
+    let candidates: Vec<&String> = m
+        .scalars
+        .iter()
+        .chain(m.grids())
+        .filter(|s| !s.contains('[') && !s.contains('/'))
+        .filter(|s| s.split_once('.').is_some_and(|(b, _)| blocks.contains(&b)))
+        .filter(|s| !offered.iter().any(|o| &o.from == *s))
+        .collect();
+    if candidates.is_empty() {
+        return out;
+    }
+    egui::ComboBox::from_id_salt("offer-output")
+        .selected_text("+ offer an output")
+        .show_ui(ui, |ui| {
+            for c in candidates {
+                if ui.selectable_label(false, c.as_str()).clicked() {
+                    let port = c.split_once('.').map_or(c.as_str(), |(_, p)| p);
+                    let taken = |x: &str| offered.iter().any(|o| o.name == x);
+                    let name = if taken(port) {
+                        simsandbox_session::diagram::free_name(&c.replace('.', "_"), taken)
+                    } else {
+                        port.to_string()
+                    };
+                    out.push(Edit::DeclareOutput {
+                        name,
+                        from: c.clone(),
+                    });
+                }
+            }
+        });
+    out
 }
 
 /// A parameter a study can vary: its key, a range for it and whether it

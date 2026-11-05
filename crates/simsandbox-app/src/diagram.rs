@@ -253,6 +253,7 @@ impl DiagramTab {
                 Ok(file) => {
                     let mut d = Diagram::new(&file, registry);
                     d.observe(&file, views);
+                    d.inside = true;
                     self.inside_cache = Some((self.inside.clone(), d));
                 }
                 Err(e) => {

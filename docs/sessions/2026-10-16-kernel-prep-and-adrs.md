@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-05: ADR 0073 written and built: `Diagram::inside`, block menus offering outputs only inside, `offered_outputs` in the Inspector, `use_node` leaving out signals declared outputs show, words for the port list's arrows, `diagram::free_name` public; tests (the interface test now reveals a port on a car that offers nothing).
 - 2026-11-05: study nodes on the canvas (`STUDY_HEADER`, stacked cards, inner outline, subtitle); diagram renders.
 - 2026-11-05: study form (`study_fields` rewritten, `study_runs`, `SimApp::study_keys` cached, `diagram::study_parameters`), `render::paint` public; tests; the form rendered headless (`SIMSANDBOX_SHOT`).
 - 2026-11-05: `show.values` (`values.rs`, `number`), `History::set_unit`/`unit` filled from output ports in `build_history`; the tuning example's best values; tests; renders.

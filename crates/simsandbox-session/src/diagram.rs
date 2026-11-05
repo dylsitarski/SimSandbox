@@ -207,6 +207,9 @@ pub struct Diagram {
     /// Nodes pushed aside on screen by an expanded use, by name: what to
     /// take off their place before it is saved.
     pub shifted: BTreeMap<String, [f64; 2]>,
+    /// The inside of a used model, open on the canvas: its blocks can offer
+    /// outputs to the models using it (ADR 0073).
+    pub inside: bool,
 }
 
 /// The blocks and wires of one level.
@@ -565,10 +568,18 @@ fn use_node(
             .insert(format!("output.{}", o.name), o.from.clone());
     }
     n.inputs = own_inputs;
+    // A signal a declared output shows is reached by that name only
+    // (ADR 0073).
+    let shown: Vec<&str> = model.outputs.iter().map(|o| o.from.as_str()).collect();
     n.reachable = all_inputs
         .into_iter()
         .map(|p| (true, p))
-        .chain(all_outputs.into_iter().map(|p| (false, p)))
+        .chain(
+            all_outputs
+                .into_iter()
+                .filter(|p| !shown.contains(&p.name.as_str()))
+                .map(|p| (false, p)),
+        )
         .collect();
     n.outputs = declared;
     n.method = match &b.clock {
@@ -1765,14 +1776,16 @@ fn unfeed(l: &mut Subsystem, to: &str) -> bool {
     after < before
 }
 
-pub(crate) fn free_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+/// `base` followed by the first number that makes a name not `taken`
+/// (`car1`, `car2`, …).
+pub fn free_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
     (1..)
         .map(|k| format!("{base}{k}"))
         .find(|n| !taken(n))
         .expect("some name is free")
 }
 
-/// Drop a deleted model-level block from sweeps, controls and groups.
+/// Drop a deleted model-level block from controls and groups.
 fn forget_block(file: &mut ModelFile, block: &str) {
     let mine = |key: &str| {
         key.split_once('.').is_some_and(|(b, _)| b == block)
@@ -2464,6 +2477,20 @@ mod tests {
             .find(|o| o.name == signal)
             .unwrap_or_else(|| panic!("no {signal} ({port})"));
         *o.values.last().unwrap()
+    }
+
+    #[test]
+    fn a_used_models_port_list_holds_only_what_no_declared_output_shows() {
+        // ADR 0073: the follower offers `v` (its car's `v`): the node shows
+        // `v`, and `car.v` is not listed again.
+        let d = Diagram::of(&file("Platoon"), &Scope::Model, &registry());
+        let n = &d.nodes[d.node("car1").unwrap()];
+        assert!(n.outputs.iter().any(|p| p.name == "v"), "{:?}", n.outputs);
+        let listed: Vec<&str> = n.reachable.iter().map(|(_, p)| p.name.as_str()).collect();
+        assert!(!listed.contains(&"car.v"), "{listed:?}");
+        assert!(listed.contains(&"control.F"), "{listed:?}");
+        // Only the inside of a used model offers outputs from its blocks.
+        assert!(!d.inside);
     }
 
     #[test]

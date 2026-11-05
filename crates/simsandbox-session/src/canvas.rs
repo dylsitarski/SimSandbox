@@ -1292,9 +1292,10 @@ impl Canvas {
                             requests.push(Request::Open(name.clone()));
                             ui.close();
                         }
-                        // Outputs offered to models using this one
-                        // (ADR 0068): they are its ports there.
-                        for p in &n.outputs {
+                        // Outputs offered to models using this one, inside
+                        // a used model (ADR 0073); at a model's own level
+                        // the Inspector's Model section offers them.
+                        for p in n.outputs.iter().filter(|_| d.inside) {
                             let from = format!("{name}.{}", p.name);
                             match d.offered.iter().find(|(_, f)| *f == from) {
                                 Some((o, _)) => {
@@ -1309,8 +1310,8 @@ impl Canvas {
                                 }
                                 None => {
                                     if ui
-                                        .button(format!("Offer {} as an output", p.name))
-                                        .on_hover_text("A port of this model where other models use it")
+                                        .button(format!("Offer {} to models using this one", p.name))
+                                        .on_hover_text("A port of this model on the nodes that use it, kept by name when its insides change")
                                         .clicked()
                                     {
                                         let taken = |x: &str| d.offered.iter().any(|(o, _)| o == x);
@@ -1384,7 +1385,7 @@ impl Canvas {
                                 .collect();
                             egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                                 for (input, p) in found.iter().take(200) {
-                                    let arrow = if *input { "→" } else { "←" };
+                                    let arrow = if *input { "in" } else { "out" };
                                     let unit = if p.unit.is_empty() { String::new() } else { format!(" [{}]", p.unit) };
                                     if ui.button(format!("{arrow} {}{unit}", p.name)).clicked() {
                                         self.revealed
