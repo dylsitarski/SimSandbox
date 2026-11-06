@@ -12,12 +12,14 @@ Requires stable Rust 1.95+ for the desktop app and the CLI, 1.86+ for the librar
 
 ```sh
 cargo test --workspace
-cargo run -p simsandbox-app                      # desktop app: opens maximized on its landing page
-cargo run -p simsandbox-cli -- lorenz --t-end 20 --dt 0.01 --method rk4 > lorenz.csv
-cargo run -p simsandbox-cli -- run examples/coupled-oscillators.ssbx.json > oscillators.csv
-cargo run -p simsandbox-cli -- render examples/grazing.ssbx.json --t-end 30 --out grazing.png
+cargo run --release -p simsandbox-app            # desktop app: opens maximized on its landing page
+cargo run --release -p simsandbox-cli -- lorenz --t-end 20 --dt 0.01 --method rk4 > lorenz.csv
+cargo run --release -p simsandbox-cli -- run examples/coupled-oscillators.ssbx.json > oscillators.csv
+cargo run --release -p simsandbox-cli -- render examples/grazing.ssbx.json --t-end 30 --out grazing.png
 pip install ./python                             # Python: import simsandbox
 ```
+
+Use `--release` to run models: a debug build (`cargo run` without it) compiles faster but simulates 15–20 times slower, so the app cannot keep up with a large model's speed (Gray–Scott plays at about 57× instead of 200×). Debug builds are for developing and debugging the code ([setup guide](docs/guides/development-setup.md#debug-and-release-builds)).
 
 People and AI agents can describe, check, run and render models without the window: see the [headless guide](docs/guides/headless.md).
 
