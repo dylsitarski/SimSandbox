@@ -208,6 +208,21 @@ impl OutputPlan {
         self.items.is_empty()
     }
 
+    /// Whether every one of `unit`'s `len` output values is computed by
+    /// [`OutputPlan::solve`] on its own, outside any loop: what it held
+    /// before is then never read.
+    pub fn computes_all_of(&self, unit: usize, len: usize) -> bool {
+        let mut covered = 0;
+        for item in &self.items {
+            match item {
+                Item::One(p) if p.unit == unit => covered += p.len,
+                Item::Loop(ports) if ports.iter().any(|p| p.unit == unit) => return false,
+                _ => {}
+            }
+        }
+        len > 0 && covered == len
+    }
+
     /// Make the feedthrough outputs consistent with their inputs. Other
     /// outputs must already be final. `eval(unit, inputs, outputs)`
     /// computes all of a unit's outputs from its inputs (its state held).

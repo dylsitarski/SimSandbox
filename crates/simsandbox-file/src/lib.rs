@@ -245,6 +245,10 @@ pub enum Design {
     /// The rows of a CSV file (`file`), its columns named by path
     /// (ADR 0067): measured conditions, a test set.
     File,
+    /// `count` points that arrive through the study's inputs, one array
+    /// input per parameter (ADR 0078): chosen by another model, such as
+    /// a search strategy.
+    Inputs,
 }
 
 /// What an experiment keeps of each run (ADR 0067).
@@ -590,6 +594,18 @@ impl Sampling {
                     ));
                 }
                 (rows, None)
+            }
+            // Placeholders until the inputs give them: the ranges' middles.
+            Design::Inputs => {
+                let Some(n) = self.count else {
+                    return Err(invalid(
+                        "sample.count",
+                        "points from inputs need a count: how many arrive",
+                    ));
+                };
+                let n = count(n)?;
+                let middle: Vec<f64> = ranges.iter().map(|[lo, hi]| 0.5 * (lo + hi)).collect();
+                (vec![middle; n], None)
             }
             Design::List => {
                 if self.values.is_empty() || self.values.len() > MAX_SAMPLES {

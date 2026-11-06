@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- A study block no longer runs its points once on inputs of zero when a run starts; the results are unchanged.
 - Headless runs of models that feed each other on their own clocks are faster (1.3–1.6× for two mid-size grids): they keep their threads for the whole run. Results are unchanged bit for bit.
 - Very large models (a million state values or more, such as a 1024 × 1024 grid) run several percent faster with Euler and RK4: their state updates use several cores. Results are unchanged bit for bit.
 - `sum` and `mean` over more than 4096 cells add in fixed chunks (ADR 0077): about 4× faster, on several cores for very large arrays, and the same bits on any machine. Their last bits differ once from earlier versions (Gray–Scott's `v_mean` by 7 parts in 10^15); run files of such models recorded earlier no longer replay bit for bit. A mean or sum in a grid model's rates no longer slows the rest of the evaluation.
@@ -50,6 +51,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Search strategies as models (ADR 0078): a study's points can come from its inputs (`"design": "inputs"`), and it reruns only points that changed; maps can use grids and array states; a pattern-search example tunes two cruise-control gains (`cruise-search.ssbx.json`).
 - `simsandbox run --signals NAMES --every N` and Python `run(signals=..., every=...)`: keep only the outputs named and every N-th step (and the last), for less memory and time; the values are the same. `--model` on a model using models records only that model.
 - A model can expose its blocks' inputs (`"inputs": [{"name": ..., "to": [...], "unit": ...}]`, ADR 0074): signals with no default, wired by every use and study, without input blocks; a use that leaves one unwired is refused, naming it.
 

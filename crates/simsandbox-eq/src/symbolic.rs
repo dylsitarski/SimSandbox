@@ -975,13 +975,6 @@ impl EquationSet {
             (None, Some(_)) => Kind::Map,
             (None, None) => Kind::Formulas,
         };
-        if let (Kind::Map, Some(a)) = (kind, grid.first()) {
-            return Err(definition_error(
-                a.line,
-                1,
-                "maps cannot use a grid yet: arrays are for continuous equations and formulas",
-            ));
-        }
         let mut parsed = Vec::new();
         for (number, offset, lhs, rhs) in sides {
             // In maps, x[n] is the current value: blank out "[n]" so columns stay put.
@@ -1070,18 +1063,37 @@ impl EquationSet {
                 }
             }
         }
-        // Which quantities are arrays (ADR 0060), in order: a defined
-        // quantity is one when its right side is. A scalar state cannot
-        // change by an array.
+        // Which quantities are arrays (ADR 0060): a defined quantity is one
+        // when its right side is, in any order of the lines. A scalar state
+        // cannot change by an array.
+        loop {
+            let before = arrays.len();
+            for line in &parsed {
+                if let Lhs::Defined(n) = &line.lhs {
+                    if !arrays.contains(n) && is_array(&line.ast, &arrays) {
+                        arrays.push(n.clone());
+                    }
+                }
+            }
+            if arrays.len() == before {
+                break;
+            }
+        }
         for line in &parsed {
             let array = is_array(&line.ast, &arrays);
             match &line.lhs {
-                Lhs::Defined(n) if array => arrays.push(n.clone()),
                 Lhs::State(n) if array && !arrays.contains(n) => {
                     return Err(definition_error(
                         line.number,
                         line.offset + 1,
                         format!("d{n}/dt has a value per cell, so {n} must be an array: declare 'state {n}[{}]'", axes.join(", ")),
+                    ))
+                }
+                Lhs::Map(n) if array && !arrays.contains(n) => {
+                    return Err(definition_error(
+                        line.number,
+                        line.offset + 1,
+                        format!("{n}[n+1] has a value per cell, so {n} must be an array: declare 'state {n}[{}]'", axes.join(", ")),
                     ))
                 }
                 _ => {}
@@ -2673,7 +2685,11 @@ mod tests {
         assert!(m.contains("edge gradient is in K/m"), "{m}");
         assert!(error(&["grid x [m] = 0 .. 1, 0", "y = 1"]).contains("at least 1"));
         assert!(error(&["grid x [m] = 0 .. L(1), 4", "y = 1"]).contains("unknown function"));
-        assert!(error(&["grid z = 0 .. 1, 4", "w[n+1] = w"]).contains("maps cannot"));
+        // Maps use grids too (ADR 0078): a scalar state stepped by an array
+        // must be declared an array.
+        assert!(error(&["grid z = 0 .. 1, 4", "w[n+1] = w + z"]).contains("declare 'state w[z]'"));
+        assert!(set(&["grid z = 0 .. 1, 4", "state w[z] = z", "w[n+1] = w + z"]).is_ok());
+        assert!(set(&["grid k = 3", "input c[k]", "x[n+1] = at(c, argminof(c))"]).is_ok());
         assert!(error(&["y = lap(T)"]).contains("declare a grid"));
         // Without a grid, brackets after a name are a unit as before.
         assert!(set(&["input F[N]", "y = F"]).is_ok());

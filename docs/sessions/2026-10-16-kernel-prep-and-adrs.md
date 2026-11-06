@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-06: ADR 0078 step 1: `Design::Inputs`, study array inputs and `evaluate_points` (results kept by point, `RUNS_MADE` in tests), `Simulator::late` with `OutputPlan::computes_all_of` (no study runs on zero inputs at the start), maps with grids and array states (arrays inferred in any order), `examples/cruise-search.ssbx.json`, tests (only changed points run, bit for bit with a fresh study; pattern search finds a bowl's minimum and then runs nothing); 28 runs byte-identical
 - 2026-11-06: ADR 0079 (tables of members: one structure for adaptive studies, AMR, meshes and agents) written as Proposed; ADR 0078 revised to rest on it (lists dropped)
 - 2026-11-06: ADR 0078 (adaptive studies) written as Proposed, not built; rewritten at the owner's request: strategies as models choosing a study's points through its inputs, lists for refinement with any number of new points per round
 - 2026-11-06: models feeding each other headless on a pool: `compose::lend`, `step_model`/`step_lent`/`record_lent`, `point` taking the pool, `Costs::pooled`; error messages unchanged (`named`); looped two-grid cases; all runs byte-identical
@@ -163,6 +164,7 @@
 
 ## Decided
 
+- 2026-11-06 (owner): ADR 0078 (strategies are models choosing a study's points) and ADR 0079 (tables of members: one structure for adaptive studies, AMR, meshes and agents) accepted.
 - 2026-11-06 (owner): integrator updates on states of 2^17 to 2^20 values stay on one core: only a rayon pool would gain (2–4% at 256 × 256, 8% at 512 × 512), not worth a new dependency; the performance list is closed.
 - 2026-11-06 (owner): one-way links are not run ahead in the app's engine: little gain while the app plays at a set speed, and it conflicts with live edits, rewind and recording (`docs/design/performance.md`, ADR 0066 As built).
 - 2026-11-06 (owner's go-ahead): sums in fixed chunks of 4096 cells with four lanes, changing large sums' last bits once (ADR 0077).

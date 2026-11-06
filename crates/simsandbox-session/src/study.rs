@@ -13,6 +13,10 @@
 //!   keys with `.` and `/` written `_` (`car.m` → `car_m`).
 //! - It has no state: results depend only on the inputs and are kept until
 //!   they change. Only the outermost study runs on several cores.
+//! - **Points from inputs** (`"design": "inputs"`, ADR 0078): `count`
+//!   points arrive through one array input per swept parameter, chosen by
+//!   another model (a search strategy). Each point's results are kept by
+//!   its values: when the inputs change, only new or changed points run.
 
 use crate::reduce::{Reducer, UnitOf};
 use crate::run::{loaded_outputs, run_study, Study};
@@ -110,6 +114,26 @@ pub struct StudyBlock {
     runs: usize,
     /// The inputs last run with, by their bits, and the outputs.
     kept: Mutex<Option<(Vec<u64>, Vec<f64>)>>,
+    /// Points from inputs (ADR 0078): how many, and each point's results
+    /// kept by its values.
+    from_inputs: Option<usize>,
+    by_point: Mutex<ByPoint>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: the points from inputs run on this thread so far.
+    static RUNS_MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A study's results kept point by point (ADR 0078): the shared inputs and
+/// parameters they were run with, by their bits, and for each point its
+/// values' bits and its results (each output's replicates, in output
+/// order). A point keeps its results while both are unchanged.
+#[derive(Default)]
+struct ByPoint {
+    shared: Option<Vec<u64>>,
+    points: Vec<Option<(Vec<u64>, Vec<f64>)>>,
 }
 
 fn invalid(reason: impl Into<String>) -> SimError {
@@ -251,9 +275,21 @@ impl StudyBlock {
             Some(&[nx, ny]) if plan.replicates == 1 && plan.keys.len() == 2 => Some((nx, ny)),
             _ => None,
         };
-        // Inputs: the model's own input blocks.
+        // Inputs: the points, one array per swept parameter, when they
+        // come from inputs (ADR 0078); then the model's own input blocks.
         let mut ports = Vec::new();
         let mut keys = Vec::new();
+        let from_inputs =
+            (plan.design == simsandbox_file::Design::Inputs).then_some(plan.points.len());
+        if let Some(n) = from_inputs {
+            for key in &plan.keys {
+                ports.push(PortSpec::input(
+                    &port_name(key),
+                    key_unit(&loaded, key),
+                    Shape::Grid { nx: n, ny: 1 },
+                ));
+            }
+        }
         for b in &loaded.flat.blocks {
             // Those it sweeps are set by its points instead.
             let key = format!("{}.y", b.name);
@@ -290,7 +326,8 @@ impl StudyBlock {
         if plan.ids.is_some() {
             out("id".into(), Unit::DIMENSIONLESS, From::Index("id".into()))?;
         }
-        for key in &plan.keys {
+        // The points are outputs too, unless they came in as inputs.
+        for key in plan.keys.iter().filter(|_| from_inputs.is_none()) {
             out(
                 port_name(key),
                 key_unit(&loaded, key),
@@ -397,6 +434,8 @@ impl StudyBlock {
             from,
             runs,
             kept: Mutex::new(None),
+            from_inputs,
+            by_point: Mutex::new(ByPoint::default()),
         })
     }
 
@@ -406,6 +445,9 @@ impl StudyBlock {
         if !studies_run() {
             return Ok(vec![f64::NAN; self.from.len() * self.runs]);
         }
+        if let Some(n) = self.from_inputs {
+            return self.evaluate_points(n, inputs, params);
+        }
         let bits: Vec<u64> = inputs.iter().chain(params).map(|v| v.to_bits()).collect();
         let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((b, values)) = kept.as_ref() {
@@ -413,8 +455,17 @@ impl StudyBlock {
                 return Ok(values.clone());
             }
         }
+        let values = self.run(self.plan.clone(), inputs, params)?;
+        *kept = Some((bits, values.clone()));
+        Ok(values)
+    }
+
+    /// Run `plan`'s points with the shared `inputs` (the model's input
+    /// blocks) and `params`: each output's values, run by run.
+    fn run(&self, plan: simsandbox_file::Plan, inputs: &[f64], params: &[f64]) -> Result<Vec<f64>> {
+        let runs = plan.points.len() * plan.replicates;
         let study = Study {
-            plan: self.plan.clone(),
+            plan,
             timeless: self.timeless,
             set: self
                 .declared
@@ -438,7 +489,7 @@ impl StudyBlock {
             )
         })
         .map_err(|e| SimError::Block(format!("{}: {e}", self.spec.name)))?;
-        let mut values = Vec::with_capacity(self.from.len() * self.runs);
+        let mut values = Vec::with_capacity(self.from.len() * runs);
         for f in &self.from {
             let column = match f {
                 From::Index(k) => results.index.iter().find(|(n, _)| n == k).map(|(_, v)| v),
@@ -451,8 +502,57 @@ impl StudyBlock {
             .ok_or_else(|| SimError::Block(format!("{}: no results for {f:?}", self.spec.name)))?;
             values.extend_from_slice(column);
         }
-        *kept = Some((bits, values.clone()));
         Ok(values)
+    }
+
+    /// Points from inputs (ADR 0078): the first `n` values of each swept
+    /// parameter's input are the points, the rest the shared inputs. Only
+    /// points whose values (or the shared inputs) changed since they last
+    /// ran run now, under their own ids, so their seeds and results are
+    /// those of running every point again.
+    fn evaluate_points(&self, n: usize, inputs: &[f64], params: &[f64]) -> Result<Vec<f64>> {
+        let d = self.plan.keys.len();
+        let reps = self.plan.replicates;
+        let (points, shared) = inputs.split_at(d * n);
+        let point = |p: usize| -> Vec<f64> { (0..d).map(|k| points[k * n + p]).collect() };
+        let bits = |v: &[f64]| -> Vec<u64> { v.iter().map(|x| x.to_bits()).collect() };
+        let shared_bits: Vec<u64> = shared.iter().chain(params).map(|v| v.to_bits()).collect();
+        let mut memory = self.by_point.lock().unwrap_or_else(|e| e.into_inner());
+        if memory.shared.as_ref() != Some(&shared_bits) || memory.points.len() != n {
+            memory.shared = Some(shared_bits);
+            memory.points = vec![None; n];
+        }
+        let todo: Vec<usize> = (0..n)
+            .filter(|&p| {
+                memory.points[p]
+                    .as_ref()
+                    .is_none_or(|(b, _)| *b != bits(&point(p)))
+            })
+            .collect();
+        #[cfg(test)]
+        RUNS_MADE.with(|r| r.set(r.get() + todo.len()));
+        if !todo.is_empty() {
+            let mut plan = self.plan.clone();
+            plan.points = todo.iter().map(|&p| point(p)).collect();
+            plan.ids = Some(todo.iter().map(|&p| p as u64).collect());
+            let values = self.run(plan, shared, params)?;
+            // `values` holds each output's runs for the points run, in turn.
+            let runs = todo.len() * reps;
+            for (i, &p) in todo.iter().enumerate() {
+                let mine: Vec<f64> = (0..self.from.len())
+                    .flat_map(|f| values[f * runs + i * reps..f * runs + (i + 1) * reps].to_vec())
+                    .collect();
+                memory.points[p] = Some((bits(&point(p)), mine));
+            }
+        }
+        let mut out = Vec::with_capacity(self.from.len() * n * reps);
+        for f in 0..self.from.len() {
+            for p in 0..n {
+                let (_, mine) = memory.points[p].as_ref().expect("every point ran");
+                out.extend_from_slice(&mine[f * reps..(f + 1) * reps]);
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -617,6 +717,104 @@ mod tests {
             .unwrap()
             .values
             .clone()
+    }
+
+    /// Points from inputs (ADR 0078): a study runs only the points whose
+    /// values changed, and its results are those of a study of the same
+    /// points from scratch.
+    #[test]
+    fn points_from_inputs_run_only_what_changed() {
+        let r = registry();
+        let model = |t_end: f64| {
+            json!({"format": 1, "run": {"dt": 1, "t_end": t_end},
+                "models": {"cruise": cruise()},
+                "blocks": [
+                    {"name": "pick", "type": "eq.equations", "equations": [
+                        "grid k = 3",
+                        "# point 2 moves at t = 1; points 0 and 1 stay",
+                        "param moves [s] = 0.5",
+                        "param base [N*s/m] = 200", "param spacing [N*s/m] = 300",
+                        "param moved [N*s/m] = 100",
+                        "kp = base + spacing*k + moved*(k > 1.5)*(t > moves)"]},
+                    {"name": "trials", "type": "study", "model": "cruise",
+                     "sample": {"design": "inputs", "count": 3, "params": [{"param": "cruise.kp"}],
+                                "seeds": "per point",
+                                "reduce": {"v_max": "max(car.v)", "v_end": "final(car.v)"}}}],
+                "connections": [{"from": "pick.kp", "to": "trials.cruise_kp"}]})
+            .to_string()
+        };
+        super::RUNS_MADE.with(|c| c.set(0));
+        let x = run(&model(2.0), &r, Some(2.0), Some(1.0)).unwrap();
+        // Three points at the start, then only the one that moved.
+        assert_eq!(super::RUNS_MADE.with(std::cell::Cell::get), 4);
+        // The same as a study of those points from scratch.
+        let mut alone = cruise();
+        alone["format"] = json!(1);
+        alone["sample"] = json!({"design": "list", "params": [{"param": "cruise.kp"}],
+            "values": [[200.0], [500.0], [900.0]], "seeds": "per point",
+            "reduce": {"v_max": "max(car.v)", "v_end": "final(car.v)"}});
+        let fresh = crate::run::run_sampled(&alone.to_string(), &r, None, Some(1)).unwrap();
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        for name in ["v_max", "v_end"] {
+            let all = value(&x, &format!("trials.{name}"));
+            // The last row: the study's three cells at t = 2.
+            let last = &all[all.len() - 3..];
+            assert_eq!(bits(last), bits(&value(&fresh, name)), "{name}");
+        }
+    }
+
+    /// The pattern-search strategy (ADR 0078) as a model: a map wired to a
+    /// study whose points come from its inputs finds a bowl's minimum, and
+    /// once its step is below the tolerance nothing runs again.
+    #[test]
+    fn a_pattern_search_model_finds_a_minimum_and_then_holds() {
+        let r = registry();
+        let model = |t_end: f64| {
+            json!({"format": 1, "run": {"dt": 1, "t_end": t_end},
+                "models": {"bowl": {"blocks": [{"name": "f", "type": "eq.equations", "equations": [
+                    "param a = 0", "param b = 0", "y = (a - 1.3)^2 + 2*(b + 0.4)^2"]}]}},
+                "blocks": [
+                    {"name": "trials", "type": "study", "model": "bowl",
+                     "sample": {"design": "inputs", "count": 5,
+                                "params": [{"param": "f.a"}, {"param": "f.b"}]}},
+                    {"name": "search", "type": "eq.equations", "equations": [
+                        "grid k = 5", "param tol = 1e-4", "input cost[k]",
+                        "da = (k > 0.5)*(k < 1.5) - (k > 1.5)*(k < 2.5)",
+                        "db = (k > 2.5)*(k < 3.5) - (k > 3.5)",
+                        "ta = a + h*da", "tb = b + h*db",
+                        "best = argminof(cost)*(h > tol)",
+                        "a[n+1] = at(ta, best)", "b[n+1] = at(tb, best)",
+                        "h[n+1] = h*(1 - 0.5*(best < 0.5)*(h > tol))"],
+                     "params": {"a0": 0, "b0": 0, "h0": 0.5}}],
+                "connections": [
+                    {"from": "search.ta", "to": "trials.f_a"},
+                    {"from": "search.tb", "to": "trials.f_b"},
+                    {"from": "trials.f_y", "to": "search.cost"}]})
+            .to_string()
+        };
+        let last = |r: &Results, name: &str| *value(r, name).last().unwrap();
+        super::RUNS_MADE.with(|c| c.set(0));
+        let x = run(&model(60.0), &r, None, None).unwrap();
+        let ran = super::RUNS_MADE.with(std::cell::Cell::get);
+        assert!(
+            (last(&x, "search.a") - 1.3).abs() < 1e-4,
+            "{}",
+            last(&x, "search.a")
+        );
+        assert!(
+            (last(&x, "search.b") + 0.4).abs() < 1e-4,
+            "{}",
+            last(&x, "search.b")
+        );
+        assert!(last(&x, "search.h") <= 1e-4);
+        // Twenty more rounds after it holds still run nothing more.
+        super::RUNS_MADE.with(|c| c.set(0));
+        let y = run(&model(80.0), &r, None, None).unwrap();
+        assert_eq!(super::RUNS_MADE.with(std::cell::Cell::get), ran);
+        assert_eq!(
+            last(&y, "search.a").to_bits(),
+            last(&x, "search.a").to_bits()
+        );
     }
 
     #[test]

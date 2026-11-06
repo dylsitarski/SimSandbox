@@ -34,6 +34,10 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/cruise-tuning.ssbx.json"),
     },
     Example {
+        name: "Searching for a controller's best gains (a strategy model)",
+        text: include_str!("../../../examples/cruise-search.ssbx.json"),
+    },
+    Example {
         name: "Units (a shaker in mm drives springs in m)",
         text: include_str!("../../../examples/units.ssbx.json"),
     },

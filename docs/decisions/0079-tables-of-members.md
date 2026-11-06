@@ -1,6 +1,6 @@
 # 0079 — Tables: members with stable ids whose structure changes between steps
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-06
 - **Builds on:** [ADR 0070](0070-studies-are-blocks.md) (point 4: models over sets of members), [ADR 0034](0034-agent-domain.md) (kernel-owned tables with stable ids), [ADR 0060](0060-arrays-in-typed-equations.md) and [ADR 0069](0069-repetition-in-blocks.md) (fixed grids, neighbours by index), [ADR 0077](0077-sums-in-fixed-chunks.md) (sums in a fixed order)
 - **Used by:** [ADR 0078](0078-adaptive-studies.md) (refinement in adaptive studies); adaptive mesh refinement; agents written as models (Q26)

@@ -421,6 +421,11 @@ pub struct Simulator {
     /// Threads kept for the run, started the first time clocks are worth
     /// stepping on several cores.
     pool: Option<crate::parallel::Pool>,
+    /// Per Block: whether its outputs need not be computed when it starts,
+    /// before its inputs arrive: it has no state or tables and the output
+    /// plan computes every output of it from its inputs, outside loops.
+    /// A study, for one, would run every point on inputs of zero.
+    late: Vec<bool>,
 }
 
 /// Stands in for a Block lent to a thread of the pool for one instant;
@@ -752,7 +757,17 @@ impl Simulator {
             costs: crate::parallel::Costs::pooled(clocks),
             scratch: (0..groups).map(|_| GroupScratch::default()).collect(),
             pool: None,
+            late: Vec::new(),
         };
+        sim.late = (0..sim.model.blocks.len())
+            .map(|b| {
+                let spec = sim.model.blocks[b].spec();
+                spec.states.is_empty()
+                    && spec.tables.is_empty()
+                    && sim.population_outputs[b].is_empty()
+                    && sim.outputs_plan.computes_all_of(b, sim.outputs[b].len())
+            })
+            .collect();
         sim.restart(t0)?;
         Ok(sim)
     }
@@ -842,6 +857,10 @@ impl Simulator {
             self.inputs[bi][..self.n_in[bi]].fill(0.0);
             for v in &mut self.population_inputs[bi] {
                 v.clear();
+            }
+            // Its outputs come once its inputs do, in `resolve`.
+            if self.late.get(bi).copied().unwrap_or(false) {
+                return Ok(());
             }
         }
         block.compute_outputs(

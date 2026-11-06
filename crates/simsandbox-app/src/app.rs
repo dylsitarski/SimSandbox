@@ -3874,6 +3874,7 @@ fn study_fields(
                 (Design::LatinHypercube, "Latin hypercube"),
                 (Design::Sobol, "Sobol sequence"),
                 (Design::File, "points from a file"),
+                (Design::Inputs, "points from its inputs"),
             ];
             let label = designs.iter().find(|(d, _)| *d == s.design).map_or("", |(_, l)| l);
             egui::ComboBox::from_id_salt(("study-design", &b.name))
@@ -3881,13 +3882,20 @@ fn study_fields(
                 .show_ui(ui, |ui| {
                     for (d, l) in designs {
                         if ui.selectable_value(&mut s.design, d, l).clicked() {
+                            // Points from inputs need their number.
+                            if d == Design::Inputs && s.count.is_none() {
+                                s.count = Some(simsandbox_file::DEFAULT_SAMPLE_COUNT);
+                            }
                             changed = true;
                             commit = true;
                         }
                     }
                 });
             ui.end_row();
-            if matches!(s.design, Design::Random | Design::LatinHypercube | Design::Sobol) {
+            if matches!(
+                s.design,
+                Design::Random | Design::LatinHypercube | Design::Sobol | Design::Inputs
+            ) {
                 ui.label("points");
                 let mut n = s.count.unwrap_or(simsandbox_file::DEFAULT_SAMPLE_COUNT);
                 let r = ui.add(egui::DragValue::new(&mut n).range(1..=simsandbox_file::MAX_SAMPLES));
@@ -4156,7 +4164,7 @@ fn study_runs(s: &simsandbox_file::Sampling) -> usize {
                 * usize::from(!s.params.is_empty())
         }
         Design::List => s.values.len(),
-        Design::Random | Design::LatinHypercube | Design::Sobol => {
+        Design::Random | Design::LatinHypercube | Design::Sobol | Design::Inputs => {
             s.count.unwrap_or(simsandbox_file::DEFAULT_SAMPLE_COUNT)
         }
         Design::File => 0,

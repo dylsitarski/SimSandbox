@@ -147,8 +147,8 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0075-parameters-are-inputs-with-defaults.md](decisions/0075-parameters-are-inputs-with-defaults.md) | Decision record | Parameters are inputs with defaults |
 | [decisions/0076-headless-runs-keep-what-is-asked.md](decisions/0076-headless-runs-keep-what-is-asked.md) | Decision record | Headless runs keep what is asked for |
 | [decisions/0077-sums-in-fixed-chunks.md](decisions/0077-sums-in-fixed-chunks.md) | Decision record | Sums in fixed chunks |
-| [decisions/0078-adaptive-studies.md](decisions/0078-adaptive-studies.md) | Decision record | Adaptive studies (proposed) |
-| [decisions/0079-tables-of-members.md](decisions/0079-tables-of-members.md) | Decision record | Tables of members (proposed) |
+| [decisions/0078-adaptive-studies.md](decisions/0078-adaptive-studies.md) | Decision record | Adaptive studies |
+| [decisions/0079-tables-of-members.md](decisions/0079-tables-of-members.md) | Decision record | Tables of members |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 
