@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-06: the simulator on long-lived threads: `parallel::Pool` (`each` with `fn` items, `wait` spinning 50 µs), `Costs::pooled` (20 µs); `Simulator::step_lent` with `OwnedUnit`/`OwnedSlot`/`OwnedGroup`, `Lent`/`LentSolver`, `take_slot`/`put_slot`, plans in `Arc`; `step_here` the old path; `profile_run --merged`; tests pass, 30 runs byte-identical
 - 2026-11-06: ADR 0076 written and built: `run::Keep` (`wants`, `check`, `thin`), `Thin` (with `undo` for a model on new data evaluated again), `run_keeping`, `run_composition_keeping`; CLI `--signals`, `--every`, `--model` keeping one model; Python `signals=`, `every=`; `profile_run` options; tests against whole runs (single model, models on new data in a loop); 56 default runs byte-identical
 - 2026-11-06: states and rates in place: `Program::place_outside`/`run_outside`, `Outside`, `Phase::place`, `ArrIns::touches`, `PLAN` (phases planned from 2^14 cell operations, split from 2^20); `EquationSet` `Copies`, `fill_parts`; the old path kept when nothing is placed (the platoon was 15% slower through the new one); test against the copying path; 30 examples and cases byte-identical
 - 2026-11-06: ADR 0062 step 3: `simsandbox-expr/src/cells.rs` (`Phase`, `CellOp`, `Step`, `Choice`), `plan` and `Gathering` in `program.rs`; scalar temporaries apart from array ones (not reused with arrays); a phase floor of 2^20 cell operations and a measured choice; test over 1, 2, 3 and 7 chunks; examples and cases byte-identical; timings in `docs/design/performance.md`
@@ -155,6 +156,7 @@
 
 ## Decided
 
+- 2026-11-06: no `unsafe` and no dependency for long-lived threads: a clock's blocks are moved to a pool thread and back at each shared instant; threads spin 50 µs before sleeping (CPU kept busy at most that long between instants).
 - 2026-11-06 (owner's go-ahead): headless runs keep what is asked for, default unchanged (ADR 0076); streaming CSV rows not done.
 - 2026-11-06: performance work is chosen by timings, not instruction counts: callgrind counted the copies at 25% of a grid, timings at 7–14% (recorded in `docs/design/performance.md`).
 - 2026-11-06: one model on several cores splits only cell-by-cell work; sums stay in order on one core, so earlier runs' results are kept bit for bit (ADR 0062 As built step 3). Small phases stay on one core; no thread pool dependency (rayon measured, no faster).

@@ -12,7 +12,8 @@ use crate::loops::{Link, LoopMethod, OutputPlan};
 use crate::table::Table;
 use crate::{Result, SimError};
 use std::cell::RefCell;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// A saved point in a run, used for rewind and branching: time, every
 /// Block's state, tables, outputs and parameter values. Outputs that can
@@ -375,7 +376,7 @@ pub struct Simulator {
     /// (ADR 0040).
     outputs_plan: OutputPlan,
     population_routes: Vec<PopulationRoute>,
-    plans: Vec<GroupPlan>,
+    plans: Vec<Arc<GroupPlan>>,
     states: Vec<Vec<f64>>,
     tables: Vec<Vec<Table>>,
     inputs: Vec<Vec<f64>>,
@@ -417,6 +418,132 @@ pub struct Simulator {
     costs: crate::parallel::Costs,
     /// Each fused group's working arrays, kept between evaluations.
     scratch: Vec<GroupScratch>,
+    /// Threads kept for the run, started the first time clocks are worth
+    /// stepping on several cores.
+    pool: Option<crate::parallel::Pool>,
+}
+
+/// Stands in for a Block lent to a thread of the pool for one instant;
+/// it is back before anything asks.
+struct Lent;
+
+impl Block for Lent {
+    fn spec(&self) -> &crate::block::BlockSpec {
+        unreachable!("a lent block is back before use")
+    }
+    fn method(&self) -> &crate::block::MethodSpec {
+        unreachable!("a lent block is back before use")
+    }
+    fn init(&mut self, _: &[f64], _: &mut [f64]) -> Result<()> {
+        unreachable!("a lent block is back before use")
+    }
+    fn do_step(&mut self, _: StepContext, _: StepIo<'_>) -> Result<()> {
+        unreachable!("a lent block is back before use")
+    }
+    fn compute_outputs(&self, _: f64, _: StepIo<'_>) -> Result<()> {
+        unreachable!("a lent block is back before use")
+    }
+}
+
+/// Stands in for a fused group's solver lent to the pool.
+struct LentSolver;
+
+impl crate::fusion::GroupSolver for LentSolver {
+    fn method(&self) -> &crate::block::MethodSpec {
+        unreachable!("a lent solver is back before use")
+    }
+    fn advance(
+        &mut self,
+        _: &crate::fusion::GroupRhs<'_>,
+        _: f64,
+        _: f64,
+        _: &mut [f64],
+    ) -> Result<()> {
+        unreachable!("a lent solver is back before use")
+    }
+}
+
+/// One Block's part of the run, owned while lent to the pool: what a
+/// [`Slot`] borrows.
+struct OwnedSlot {
+    b: usize,
+    block: Box<dyn Block>,
+    params: Vec<f64>,
+    inputs: Vec<f64>,
+    n_in: usize,
+    state: Vec<f64>,
+    outputs: Vec<f64>,
+    tables: Vec<Table>,
+    pin: Vec<Vec<f64>>,
+    pout: Vec<Vec<f64>>,
+    seed: u64,
+}
+
+impl OwnedSlot {
+    fn lend(&mut self) -> Slot<'_> {
+        Slot {
+            block: &mut self.block,
+            params: &self.params,
+            inputs: &self.inputs,
+            n_in: self.n_in,
+            state: &mut self.state,
+            outputs: &mut self.outputs,
+            tables: &mut self.tables,
+            pin: &self.pin,
+            pout: &mut self.pout,
+        }
+    }
+}
+
+/// A fused group, owned while lent to the pool.
+struct OwnedGroup {
+    g: usize,
+    plan: Arc<GroupPlan>,
+    solver: Box<dyn crate::fusion::GroupSolver>,
+    members: Vec<OwnedSlot>,
+    scratch: GroupScratch,
+}
+
+/// One clock's work for an instant, owned, to step on a thread of the
+/// pool and come back.
+struct OwnedUnit {
+    clock: usize,
+    t0: f64,
+    dt: f64,
+    step: u64,
+    blocks: Vec<OwnedSlot>,
+    groups: Vec<OwnedGroup>,
+}
+
+impl OwnedUnit {
+    fn step(mut self) -> (Self, Result<()>, Duration) {
+        let start = Instant::now();
+        let unit = Unit {
+            clock: self.clock,
+            t0: self.t0,
+            dt: self.dt,
+            step: self.step,
+            blocks: self
+                .blocks
+                .iter_mut()
+                .map(|s| {
+                    let seed = s.seed;
+                    (s.lend(), seed)
+                })
+                .collect(),
+            groups: self
+                .groups
+                .iter_mut()
+                .map(|g| {
+                    let members = g.members.iter_mut().map(OwnedSlot::lend).collect();
+                    (&*g.plan, &mut g.solver, members, &mut g.scratch)
+                })
+                .collect(),
+        };
+        let result = unit.step();
+        let took = start.elapsed();
+        (self, result, took)
+    }
 }
 
 impl Snapshot {
@@ -544,7 +671,7 @@ impl Simulator {
         }
 
         let plans = (0..model.groups.len())
-            .map(|g| GroupPlan::new(&model, g, &routes))
+            .map(|g| GroupPlan::new(&model, g, &routes).map(Arc::new))
             .collect::<Result<Vec<_>>>()?;
         let units: Vec<(&crate::block::BlockSpec, &str, &[usize])> = model
             .blocks
@@ -622,8 +749,9 @@ impl Simulator {
             driven,
             starting,
             parallel: crate::parallel::Parallel::default(),
-            costs: crate::parallel::Costs::new(clocks),
+            costs: crate::parallel::Costs::pooled(clocks),
             scratch: (0..groups).map(|_| GroupScratch::default()).collect(),
+            pool: None,
         };
         sim.restart(t0)?;
         Ok(sim)
@@ -1078,6 +1206,35 @@ impl Simulator {
         let in_group: Vec<bool> = (0..self.model.blocks.len())
             .map(|b| self.model.group_of(BlockId(b)).is_some())
             .collect();
+        let clocks_now: Vec<usize> = (0..clocks.len()).filter(|&c| stepping(c)).collect();
+        let parallel = self.costs.worth(self.parallel, &clocks_now);
+        let result = if parallel {
+            self.step_lent(&clocks_now, &dts, &in_group)
+        } else {
+            self.step_here(&clocks_now, &dts, &in_group)
+        };
+        result?;
+        for (c, clock) in clocks.iter().enumerate() {
+            if listed[c] {
+                // At its listed time exactly; one on data counts its
+                // instants too.
+                self.clock_t[c] = now;
+                self.clock_taken[c] += 1;
+            } else if stepping(c) {
+                self.clock_t[c] += clock.dt;
+                self.clock_taken[c] += 1;
+            }
+        }
+        self.t = now;
+        self.step += 1;
+        self.resolve(self.t)?;
+        self.exchange();
+        Ok(())
+    }
+
+    /// Step the clocks `now` (each by its `dts`) one after another on this
+    /// thread, their blocks borrowed where they are.
+    fn step_here(&mut self, now: &[usize], dts: &[f64], in_group: &[bool]) -> Result<()> {
         let clock_of = &self.model.clock_of;
         let (params, inputs, n_in) = (&self.model.params, &self.inputs, &self.n_in);
         let pin = &self.population_inputs;
@@ -1104,9 +1261,9 @@ impl Simulator {
                 })
             })
             .collect();
-        let mut units: Vec<Unit> = (0..clocks.len())
-            .filter(|&c| stepping(c))
-            .map(|c| Unit {
+        let mut units: Vec<Unit> = now
+            .iter()
+            .map(|&c| Unit {
                 clock: c,
                 t0: self.clock_t[c],
                 dt: dts[c],
@@ -1149,13 +1306,14 @@ impl Simulator {
                 .groups
                 .push((plan, &mut group.solver, members, scratch));
         }
-        let clocks_now: Vec<usize> = units.iter().map(|u| u.clock).collect();
-        let parallel = self.costs.worth(self.parallel, &clocks_now);
-        let done = crate::parallel::each(units, parallel, |unit| {
-            let start = Instant::now();
-            let clock = unit.clock;
-            (clock, unit.step(), start.elapsed())
-        });
+        let done: Vec<_> = units
+            .into_iter()
+            .map(|unit| {
+                let start = Instant::now();
+                let clock = unit.clock;
+                (clock, unit.step(), start.elapsed())
+            })
+            .collect();
         drop(slots);
         let mut failed = None;
         for (clock, result, took) in done {
@@ -1164,25 +1322,110 @@ impl Simulator {
                 failed = Some(e);
             }
         }
-        if let Some(e) = failed {
-            return Err(e);
-        }
-        for (c, clock) in clocks.iter().enumerate() {
-            if listed[c] {
-                // At its listed time exactly; one on data counts its
-                // instants too.
-                self.clock_t[c] = now;
-                self.clock_taken[c] += 1;
-            } else if stepping(c) {
-                self.clock_t[c] += clock.dt;
-                self.clock_taken[c] += 1;
+        failed.map_or(Ok(()), Err)
+    }
+
+    /// Step the clocks `now` on the pool's threads: each clock's blocks
+    /// and groups are lent to it owned (moved, not copied) and come back
+    /// stepped; the same bits as on one thread (ADR 0066 step 6).
+    fn step_lent(&mut self, now: &[usize], dts: &[f64], in_group: &[bool]) -> Result<()> {
+        let mut units: Vec<OwnedUnit> = now
+            .iter()
+            .map(|&c| OwnedUnit {
+                clock: c,
+                t0: self.clock_t[c],
+                dt: dts[c],
+                step: self.clock_taken[c] as u64,
+                blocks: Vec::new(),
+                groups: Vec::new(),
+            })
+            .collect();
+        let unit_of = |units: &[OwnedUnit], c: usize| units.iter().position(|u| u.clock == c);
+        for (b, &grouped) in in_group.iter().enumerate() {
+            if grouped {
+                continue;
+            }
+            if let Some(u) = unit_of(&units, self.model.clock_of[b]) {
+                let slot = self.take_slot(b);
+                units[u].blocks.push(slot);
             }
         }
-        self.t = now;
-        self.step += 1;
-        self.resolve(self.t)?;
-        self.exchange();
-        Ok(())
+        for g in 0..self.plans.len() {
+            let plan = Arc::clone(&self.plans[g]);
+            let Some(&(first, _)) = plan.members.first() else {
+                continue;
+            };
+            let Some(u) = unit_of(&units, self.model.clock_of[first]) else {
+                continue;
+            };
+            let members = plan
+                .members
+                .iter()
+                .map(|&(b, _)| self.take_slot(b))
+                .collect();
+            let solver = std::mem::replace(&mut self.model.groups[g].solver, Box::new(LentSolver));
+            let scratch = std::mem::take(&mut self.scratch[g]);
+            units[u].groups.push(OwnedGroup {
+                g,
+                plan,
+                solver,
+                members,
+                scratch,
+            });
+        }
+        let threads = crate::parallel::threads();
+        let pool = self
+            .pool
+            .get_or_insert_with(|| crate::parallel::Pool::new(threads.saturating_sub(1)));
+        let done = pool.each(units, OwnedUnit::step);
+        let mut failed = None;
+        for (unit, result, took) in done {
+            self.costs.record(unit.clock, took);
+            for slot in unit.blocks {
+                self.put_slot(slot);
+            }
+            for group in unit.groups {
+                self.model.groups[group.g].solver = group.solver;
+                self.scratch[group.g] = group.scratch;
+                for slot in group.members {
+                    self.put_slot(slot);
+                }
+            }
+            if let (Err(e), None) = (result, &failed) {
+                failed = Some(e);
+            }
+        }
+        failed.map_or(Ok(()), Err)
+    }
+
+    /// Block `b`'s part of the run, taken out to lend.
+    fn take_slot(&mut self, b: usize) -> OwnedSlot {
+        OwnedSlot {
+            b,
+            block: std::mem::replace(&mut self.model.blocks[b], Box::new(Lent)),
+            params: std::mem::take(&mut self.model.params[b]),
+            inputs: std::mem::take(&mut self.inputs[b]),
+            n_in: self.n_in[b],
+            state: std::mem::take(&mut self.states[b]),
+            outputs: std::mem::take(&mut self.outputs[b]),
+            tables: std::mem::take(&mut self.tables[b]),
+            pin: std::mem::take(&mut self.population_inputs[b]),
+            pout: std::mem::take(&mut self.population_outputs[b]),
+            seed: self.seeds[b],
+        }
+    }
+
+    /// A lent part put back.
+    fn put_slot(&mut self, s: OwnedSlot) {
+        let b = s.b;
+        self.model.blocks[b] = s.block;
+        self.model.params[b] = s.params;
+        self.inputs[b] = s.inputs;
+        self.states[b] = s.state;
+        self.outputs[b] = s.outputs;
+        self.tables[b] = s.tables;
+        self.population_inputs[b] = s.pin;
+        self.population_outputs[b] = s.pout;
     }
 
     pub fn model(&self) -> &Model {

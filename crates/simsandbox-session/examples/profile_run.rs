@@ -4,6 +4,7 @@
 //!
 //! ```sh
 //! cargo run --release -p simsandbox-session --example profile_run -- FILE [T_END] [--signals A,B] [--every N]
+//! (`--merged`: a model using models run as one simulator, as the app runs it)
 //! valgrind --tool=callgrind target/release/examples/profile_run FILE [T_END]
 //! ```
 
@@ -13,11 +14,12 @@ use std::time::Instant;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(path) = args.first() else {
-        eprintln!("usage: profile_run FILE [T_END] [--signals A,B] [--every N]");
+        eprintln!("usage: profile_run FILE [T_END] [--signals A,B] [--every N] [--merged]");
         std::process::exit(2);
     };
     let mut t_end: Option<f64> = None;
     let mut keep = Keep::default();
+    let mut merged = false;
     let mut rest = args[1..].iter();
     while let Some(a) = rest.next() {
         match a.as_str() {
@@ -25,6 +27,7 @@ fn main() {
                 let names = rest.next().expect("names");
                 keep.signals = Some(names.split(',').map(String::from).collect());
             }
+            "--merged" => merged = true,
             "--every" => keep.every = rest.next().expect("N").parse().expect("a whole number"),
             t => t_end = Some(t.parse().expect("a number")),
         }
@@ -34,7 +37,7 @@ fn main() {
     let folder = std::path::Path::new(path).parent().map(|p| p.to_path_buf());
     let start = Instant::now();
     let run = simsandbox_core::registry::in_folder(folder.as_deref(), || {
-        if simsandbox_file::compose::is_composition(&text) {
+        if simsandbox_file::compose::is_composition(&text) && !merged {
             simsandbox_session::compose::run_composition_keeping(
                 &text,
                 &registry,

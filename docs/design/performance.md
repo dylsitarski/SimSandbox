@@ -82,9 +82,23 @@ Headless runs kept every output at every step ([ADR 0076](../decisions/0076-head
 | | `a/gs.v_mean,b/gs.v_mean` | 0.29 | 28 |
 | | every 10th step | 0.31 | 54 |
 
+## The app's engine on long-lived threads (2026-11-06)
+
+Several models on their own clocks in one simulator (the app's engine, and headless runs with inputs, probes or run files) met at every instant on threads started for that instant. On mid-size models this was slower on four cores than on one: starting threads cost more than the step. The simulator now keeps a pool of threads for the run and lends each clock's blocks to it, owned, at each instant worth sharing ([ADR 0066](../decisions/0066-models-nest-as-blocks.md) As built). Idle threads check for work for 50 µs before sleeping.
+
+Two unlinked Gray–Scott models on their own clocks in one simulator (`profile_run --merged --signals a`), medians of five, seconds:
+
+| Grid per model | Before | After | One core | Apart (headless, a thread per model) |
+|---|---|---|---|---|
+| 128 × 128, 200 steps | 0.46 | 0.43 | 0.64 | 0.29 |
+| 48 × 48, 3000 steps | 1.31 | 0.87 | 1.44 | 0.60 |
+| 24 × 24, 20 000 steps | 1.78 | 1.11 | 1.78 | 0.73 |
+
+Single-clock cases (grid, platoon, small ODE, fused group) are unchanged: they never share an instant. The rest of the gap to "apart" is the meeting itself: outputs, links and recording after each instant run on one thread.
+
 ## What is left, by expected gain
 
-1. **The app's engine meets at every instant on new threads** (ADR 0066 step 6): about 10–20% for several heavy models on their own clocks in the app; a redesign of the simulator (each clock's blocks on a thread of their own for the whole run).
-2. **Linked models running ahead** where links go one way only (ADR 0066 step 6): removes the meeting at every instant for pipelines; not for feedback loops.
-3. **Sums on several cores**: reductions run in order on one core. A fixed-chunk sum is exact on any machine but changes results from earlier runs' last bits; worth it only where reductions are a large share.
-4. **Integrators' vector updates** (`x + h·k` in RK4 and the like) run on one core over the whole state: for large grids a growing share now that evaluation is split and copies are gone.
+1. **Linked models running ahead** where links go one way only (ADR 0066 step 6): removes the meeting at every instant for pipelines; not for feedback loops.
+2. **Sums on several cores**: reductions run in order on one core. A fixed-chunk sum is exact on any machine but changes results from earlier runs' last bits; worth it only where reductions are a large share.
+3. **Integrators' vector updates** (`x + h·k` in RK4 and the like) run on one core over the whole state: for large grids a growing share now that evaluation is split and copies are gone.
+4. **Linked models headless meet on new threads**: within a group of linked models, the headless runner still starts threads at each instant they share (`parallel::each` in `compose::point`); the pool would serve there too.
