@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-06: ADR 0062 step 3: `simsandbox-expr/src/cells.rs` (`Phase`, `CellOp`, `Step`, `Choice`), `plan` and `Gathering` in `program.rs`; scalar temporaries apart from array ones (not reused with arrays); a phase floor of 2^20 cell operations and a measured choice; test over 1, 2, 3 and 7 chunks; examples and cases byte-identical; timings in `docs/design/performance.md`
 - 2026-11-05: profiling pass (`docs/design/performance.md`): callgrind on eight cases; `GroupScratch`, `Workspace::buffers`, `parallel::threads` cached, block copies in `exchange`, reserved result rows; `examples/profile_run.rs`, `scripts/profile_cases.py`; outputs compared bit for bit with the previous commit.
 - 2026-11-05: headless runner by groups of linked models (`Plan`, `groups`, `restrict`, `timeline`), each group on a thread for the whole run; a pool (rayon) measured and not adopted; tests; examples unchanged.
 - 2026-11-05: ADR 0066 step 6: `simsandbox_core::parallel` (`each`, `Costs`, `Parallel`); `Simulator::advance` by units per clock (`Unit`, `Slot`), `GroupPlan::rhs` by member, `set_parallel`; `run_composition_with`, parallel recording in `point`; bit-identity tests; examples unchanged; timings with a scratch benchmark (two Gray–Scott models), repeated after single runs proved noisy; the remaining gap measured (meeting at every instant, about 14% more CPU side by side; not the allocator) and recorded in ADR 0066.
@@ -152,6 +153,7 @@
 
 ## Decided
 
+- 2026-11-06: one model on several cores splits only cell-by-cell work; sums stay in order on one core, so earlier runs' results are kept bit for bit (ADR 0062 As built step 3). Small phases stay on one core; no thread pool dependency (rayon measured, no faster).
 - 2026-11-05 (owner): wiring and unwiring a parameter do not change its own value; the wire overrides it while there (ADR 0075 decision 1 amended).
 - 2026-11-05 (owner): parameters are inputs with defaults: any block's declared parameter may be wired, read whenever its owner reads it (each evaluation, at start, when a study runs); which outputs it reaches is worked out for typed equations, declared by code blocks (undeclared: every output but state copies) and checked by a perturbation test; activation by events gets its own ADR (ADR 0075, Q53).
 - 2026-11-05: a wire to an inner port that is not exposed is refused with a hint rather than exposing it in the same gesture (two edits at two levels, one possibly asking where it goes); recorded in ADR 0074 As built.

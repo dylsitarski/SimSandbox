@@ -15,6 +15,7 @@
 //!   names to slots in a value buffer and gives an [`Expr`] that evaluates
 //!   quickly. Errors carry a 1-based column.
 
+mod cells;
 pub mod program;
 pub mod units;
 

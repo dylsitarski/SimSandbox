@@ -12,6 +12,7 @@
 //! A program gives the same numbers as [`Expr::eval`], operation for
 //! operation, apart from `x^2`, which is computed as `x*x`.
 
+use crate::cells::{CellOp, Kind, Operand, Phase, Step};
 use crate::{ArrayOp, Edge, Expr, Func, Line, Op};
 
 /// Where a variable's values are in the register buffer: `len` registers
@@ -91,7 +92,7 @@ fn arg_extreme(cells: &[f64], greatest: bool) -> f64 {
 
 /// An edge with its registers resolved.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum EdgeAt {
+pub(crate) enum EdgeAt {
     Value(usize),
     Gradient(Option<usize>),
     Periodic,
@@ -208,7 +209,7 @@ fn split(r: &mut [f64], a: usize, d: usize, n: usize) -> (&[f64], &mut [f64]) {
 
 /// An edge with its value read.
 #[derive(Debug, Clone, Copy)]
-enum EdgeValue {
+pub(crate) enum EdgeValue {
     Value(f64),
     Gradient(f64),
     Periodic,
@@ -216,7 +217,7 @@ enum EdgeValue {
 
 /// The value beyond an end cell holding `end`, the line's far end
 /// holding `far`, with spacing `h`.
-fn ghost(edge: EdgeValue, end: f64, far: f64, h: f64) -> f64 {
+pub(crate) fn ghost(edge: EdgeValue, end: f64, far: f64, h: f64) -> f64 {
     match edge {
         // The edge value is the mean of the end cell and the ghost.
         EdgeValue::Value(v) => 2.0 * v - end,
@@ -352,6 +353,265 @@ impl ArrIns {
     }
 }
 
+impl ArrIns {
+    /// As one operation of a phase (ADR 0062 step 3), if it fills its
+    /// result cell by cell: `(n, kind, d, a, b, regs)`, operands as
+    /// (register, is an array), with the scalar registers it reads.
+    fn as_cell_op(&self) -> Option<(usize, Kind, usize, Src, Src, Vec<usize>)> {
+        let scalar = |at: usize| Src { at, array: false };
+        let edge_regs = |edges: [EdgeAt; 2]| -> Vec<usize> {
+            edges
+                .iter()
+                .filter_map(|e| match *e {
+                    EdgeAt::Value(v) => Some(v),
+                    EdgeAt::Gradient(g) => g,
+                    EdgeAt::Periodic => None,
+                })
+                .collect()
+        };
+        Some(match *self {
+            ArrIns::Copy { d, a, n } => (n, Kind::Copy, d, a, a, Vec::new()),
+            ArrIns::Neg { d, a, n } => (n, Kind::Neg, d, a, a, Vec::new()),
+            ArrIns::Bin { op, d, a, b, n } => (n, Kind::Bin(op), d, a, b, Vec::new()),
+            ArrIns::Call1 { f, d, a, n } => (n, Kind::Call1(f), d, a, a, Vec::new()),
+            ArrIns::Call2 { f, d, a, b, n } => (n, Kind::Call2(f), d, a, b, Vec::new()),
+            ArrIns::Axis { d, lo, h, n, line } => {
+                (n, Kind::Axis(line), d, scalar(lo), scalar(h), Vec::new())
+            }
+            ArrIns::Stencil {
+                second,
+                d,
+                a,
+                h,
+                n,
+                line,
+                edges,
+            } => (
+                n,
+                Kind::Stencil {
+                    second,
+                    line,
+                    edges,
+                },
+                d,
+                Src { at: a, array: true },
+                scalar(h),
+                edge_regs(edges),
+            ),
+            ArrIns::Shift {
+                up,
+                d,
+                a,
+                h,
+                n,
+                line,
+                edges,
+            } => (
+                n,
+                Kind::Shift { up, line, edges },
+                d,
+                Src { at: a, array: true },
+                scalar(h),
+                edge_regs(edges),
+            ),
+            _ => return None,
+        })
+    }
+}
+
+/// The registers a scalar instruction writes and reads.
+fn scalar_regs(ins: Ins) -> Option<(usize, Vec<usize>)> {
+    let u = |x: u32| x as usize;
+    Some(match ins {
+        Ins::Copy(d, a) | Ins::Neg(d, a) | Ins::Sqr(d, a) | Ins::Call1(_, d, a) => {
+            (u(d), vec![u(a)])
+        }
+        Ins::Add(d, a, b)
+        | Ins::Sub(d, a, b)
+        | Ins::Mul(d, a, b)
+        | Ins::Div(d, a, b)
+        | Ins::Pow(d, a, b)
+        | Ins::Cmp(_, d, a, b)
+        | Ins::Call2(_, d, a, b) => (u(d), vec![u(a), u(b)]),
+        Ins::Arr(_) => return None,
+    })
+}
+
+/// A phase being gathered: its cells, scalar instructions run first, the
+/// arrays it writes and those it only reads (by first register), the
+/// scalar registers its operations read, and its operations.
+struct Gathering {
+    n: usize,
+    first: Vec<usize>,
+    written: Vec<usize>,
+    read: Vec<usize>,
+    scalars: Vec<usize>,
+    ops: Vec<(Kind, usize, Src, Src)>,
+}
+
+impl Gathering {
+    fn new(n: usize) -> Self {
+        Self {
+            n,
+            first: Vec::new(),
+            written: Vec::new(),
+            read: Vec::new(),
+            scalars: Vec::new(),
+            ops: Vec::new(),
+        }
+    }
+
+    fn inside(&self, reg: usize, arrays: &[usize]) -> bool {
+        arrays.iter().any(|&x| reg >= x && reg < x + self.n)
+    }
+
+    /// Take an operation if it fits. Arrays read cell by cell are split
+    /// into chunks with those written (each chunk reads its own cells);
+    /// a stencil's or shift's source is read whole by every chunk, so the
+    /// phase must not write it. All arrays must be the phase's own or
+    /// apart from them, and no scalar read may lie in a chunked array.
+    fn take(&mut self, n: usize, kind: Kind, d: usize, a: Src, b: Src, regs: &[usize]) -> bool {
+        if n != self.n {
+            return false;
+        }
+        let whole = matches!(kind, Kind::Stencil { .. } | Kind::Shift { .. });
+        let mut chunked = self.written.clone();
+        let mut read = self.read.clone();
+        let add = |list: &mut Vec<usize>, at: usize| {
+            if !list.contains(&at) {
+                list.push(at);
+            }
+        };
+        add(&mut chunked, d);
+        for (k, s) in [a, b].iter().enumerate().filter(|(_, s)| s.array) {
+            if whole && k == 0 {
+                add(&mut read, s.at);
+            } else {
+                add(&mut chunked, s.at);
+            }
+        }
+        if chunked.iter().any(|x| read.contains(x)) {
+            return false;
+        }
+        let all: Vec<usize> = chunked.iter().chain(&read).copied().collect();
+        let apart = all
+            .iter()
+            .all(|&x| all.iter().all(|&y| x == y || x.abs_diff(y) >= n));
+        let new_scalars: Vec<usize> = [a, b]
+            .iter()
+            .filter(|s| !s.array)
+            .map(|s| s.at)
+            .chain(regs.iter().copied())
+            .collect();
+        let clear = self
+            .scalars
+            .iter()
+            .chain(&new_scalars)
+            .all(|&reg| !self.inside(reg, &chunked));
+        if !apart || !clear {
+            return false;
+        }
+        self.written = chunked;
+        self.read = read;
+        self.scalars.extend(new_scalars);
+        self.ops.push((kind, d, a, b));
+        true
+    }
+
+    /// Take scalar instruction `i` (writing `d`, reading `reads`) to run
+    /// before the phase, if no operation already taken reads `d` (it would
+    /// see the new value) and nothing it touches lies in the phase's
+    /// arrays.
+    fn take_first(&mut self, i: usize, d: usize, reads: &[usize]) -> bool {
+        let all: Vec<usize> = self.written.iter().chain(&self.read).copied().collect();
+        if self.scalars.contains(&d)
+            || self.inside(d, &all)
+            || reads.iter().any(|&r| self.inside(r, &self.written))
+        {
+            return false;
+        }
+        self.first.push(i);
+        true
+    }
+
+    fn finish(mut self) -> Phase {
+        self.written.sort_unstable();
+        self.read.sort_unstable();
+        let (written, read) = (&self.written, &self.read);
+        let operand = |s: Src| {
+            if !s.array {
+                Operand::Scalar(s.at)
+            } else if let Some(k) = written.iter().position(|&x| x == s.at) {
+                Operand::Written(k)
+            } else {
+                Operand::Read(read.iter().position(|&x| x == s.at).expect("read"))
+            }
+        };
+        let ops = self
+            .ops
+            .iter()
+            .map(|&(kind, d, a, b)| CellOp {
+                kind,
+                d: written.iter().position(|&x| x == d).expect("written"),
+                a: operand(a),
+                b: operand(b),
+            })
+            .collect();
+        Phase {
+            n: self.n,
+            first: self.first,
+            written: self.written,
+            read: self.read,
+            ops,
+            choice: crate::cells::Choice::default(),
+        }
+    }
+}
+
+/// The code as steps for several cores (ADR 0062 step 3).
+fn plan(code: &[Ins], arrays: &[ArrIns]) -> Vec<Step> {
+    let mut steps = Vec::new();
+    let mut open: Option<Gathering> = None;
+    let close = |open: &mut Option<Gathering>, steps: &mut Vec<Step>| {
+        if let Some(g) = open.take() {
+            steps.push(Step::Cells(g.finish()));
+        }
+    };
+    for (i, &ins) in code.iter().enumerate() {
+        // A scalar instruction: before the open phase if it can be.
+        if let Some((d, reads)) = scalar_regs(ins) {
+            if !open.as_mut().is_some_and(|g| g.take_first(i, d, &reads)) {
+                close(&mut open, &mut steps);
+                steps.push(Step::One(i));
+            }
+            continue;
+        }
+        let Ins::Arr(k) = ins else {
+            unreachable!("scalars above")
+        };
+        let Some((n, kind, d, a, b, regs)) = arrays[k as usize].as_cell_op() else {
+            close(&mut open, &mut steps);
+            steps.push(Step::One(i));
+            continue;
+        };
+        if open
+            .as_mut()
+            .is_some_and(|g| g.take(n, kind, d, a, b, &regs))
+        {
+            continue;
+        }
+        close(&mut open, &mut steps);
+        let mut g = Gathering::new(n);
+        if g.take(n, kind, d, a, b, &regs) {
+            open = Some(g);
+        } else {
+            steps.push(Step::One(i));
+        }
+    }
+    close(&mut open, &mut steps);
+    steps
+}
+
 /// The sorted union of sorted index lists.
 fn union(sets: &[&Vec<usize>]) -> Vec<usize> {
     let mut out: Vec<usize> = sets.iter().flat_map(|s| s.iter().copied()).collect();
@@ -476,19 +736,30 @@ pub struct Program {
     arrays: Vec<ArrIns>,
     /// The registers, constants filled in; copied by [`Program::registers`].
     template: Vec<f64>,
+    /// For arrays large enough to be worth several cores: the code as
+    /// phases, stencils and single instructions (ADR 0062 step 3); empty
+    /// otherwise.
+    steps: Vec<Step>,
 }
 
 struct Builder<'a> {
     vars: &'a [Span],
-    /// Where constants start, then where temporaries start; each temporary
-    /// takes `width` registers, room for the longest array.
+    /// Where constants start, then where scalar temporaries start, then
+    /// array temporaries, each taking `width` registers, room for the
+    /// longest array. Scalars kept apart from arrays let a phase of cells
+    /// compute its scalars first (ADR 0062 step 3).
     consts_at: usize,
+    scalars_at: usize,
     temps_at: usize,
     width: usize,
     code: Vec<Ins>,
     arrays: Vec<ArrIns>,
     consts: Vec<f64>,
-    /// Temporaries in use, and the most ever in use.
+    /// Temporaries in use and the most ever in use: scalars (not reused
+    /// when there are arrays, so a phase of cells can compute those it
+    /// reads first), arrays.
+    scalars: usize,
+    max_scalars: usize,
     temps: usize,
     max_temps: usize,
 }
@@ -555,9 +826,15 @@ impl Builder<'_> {
             };
         }
         let n = self.len(e);
-        let at = self.temps_at + self.temps * self.width;
-        self.temps += 1;
-        self.max_temps = self.max_temps.max(self.temps);
+        let at = if n == 1 {
+            self.scalars += 1;
+            self.max_scalars = self.max_scalars.max(self.scalars);
+            self.scalars_at + self.scalars - 1
+        } else {
+            self.temps += 1;
+            self.max_temps = self.max_temps.max(self.temps);
+            self.temps_at + (self.temps - 1) * self.width
+        };
         self.emit(e, at, n);
         Src { at, array: n > 1 }
     }
@@ -570,7 +847,7 @@ impl Builder<'_> {
     /// Compute `e` into the `n` registers from `d` (a scalar `e` fills all
     /// `n`). Temporaries taken for its operands are free again after.
     fn emit(&mut self, e: &Expr, d: usize, n: usize) {
-        let mark = self.temps;
+        let mark = (self.scalars, self.temps);
         let scalar = n == 1;
         let dr = reg(d);
         match e {
@@ -724,7 +1001,12 @@ impl Builder<'_> {
             }
             Expr::Num(_) | Expr::Var(_) => unreachable!("copied above"),
         }
-        self.temps = mark;
+        // Scalar temporaries are reused only without arrays, where no
+        // phase of cells can form.
+        if self.width == 1 {
+            self.scalars = mark.0;
+        }
+        self.temps = mark.1;
     }
 }
 
@@ -748,15 +1030,18 @@ impl Program {
             "variables lie in the buffer"
         );
         let width = vars.iter().map(|s| s.len).max().unwrap_or(1).max(1);
-        let build = |consts: Vec<f64>| {
+        let build = |consts: Vec<f64>, scalars: usize| {
             let mut b = Builder {
                 vars,
                 consts_at: size,
-                temps_at: size + consts.len(),
+                scalars_at: size + consts.len(),
+                temps_at: size + consts.len() + scalars,
                 width,
                 code: Vec::new(),
                 arrays: Vec::new(),
                 consts,
+                scalars: 0,
+                max_scalars: 0,
                 temps: 0,
                 max_temps: 0,
             };
@@ -766,19 +1051,30 @@ impl Program {
             }
             b
         };
-        // First to find the constants, then with them in place so the
-        // temporaries can follow.
-        let consts = build(Vec::new()).consts;
-        let n = consts.len();
-        let b = build(consts);
+        // First to find the constants and scalar temporaries, then with
+        // them in place so the array temporaries can follow.
+        let first = build(Vec::new(), 0);
+        let (n, scalars) = (first.consts.len(), first.max_scalars);
+        let b = build(first.consts, scalars);
         assert_eq!(b.consts.len(), n, "the same constants both times");
+        assert_eq!(b.max_scalars, scalars, "the same scalars both times");
         let mut template = vec![0.0; size];
         template.extend_from_slice(&b.consts);
         template.resize(b.temps_at + b.max_temps * width, 0.0);
+        // Steps only when a phase is large enough to share.
+        let mut steps = plan(&b.code, &b.arrays);
+        let worth = steps.iter().any(|s| match s {
+            Step::Cells(p) => p.work() >= crate::cells::WORTH,
+            Step::One(_) => false,
+        });
+        if !worth {
+            steps.clear();
+        }
         Self {
             code: b.code,
             arrays: b.arrays,
             template,
+            steps,
         }
     }
 
@@ -835,8 +1131,44 @@ impl Program {
     /// Run every step on `r`, a buffer from [`Program::registers`] (or
     /// one at least as long, with the same constants).
     pub fn run(&self, r: &mut [f64]) {
-        for ins in &self.code {
-            match *ins {
+        // Large arrays: by phases, on several cores (the same bits).
+        if !self.steps.is_empty() && crate::cells::cores() > 1 {
+            self.run_steps(&self.steps, r, None);
+            return;
+        }
+        self.run_in_order(r);
+    }
+
+    /// Run by `steps`: phases of cells split over the cores, as they
+    /// choose or in `chunks` chunks.
+    fn run_steps(&self, steps: &[Step], r: &mut [f64], chunks: Option<usize>) {
+        for step in steps {
+            match step {
+                Step::One(i) => self.one(self.code[*i], r),
+                Step::Cells(phase) => {
+                    for &i in &phase.first {
+                        self.one(self.code[i], r);
+                    }
+                    match chunks {
+                        Some(c) => phase.run_in(r, c),
+                        None => phase.run(r),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run every instruction in order, on one core.
+    fn run_in_order(&self, r: &mut [f64]) {
+        for &ins in &self.code {
+            self.one(ins, r);
+        }
+    }
+
+    /// Run one instruction.
+    fn one(&self, ins: Ins, r: &mut [f64]) {
+        {
+            match ins {
                 Ins::Copy(d, a) => r[d as usize] = r[a as usize],
                 Ins::Neg(d, a) => r[d as usize] = -r[a as usize],
                 Ins::Add(d, a, b) => r[d as usize] = r[a as usize] + r[b as usize],
@@ -1018,6 +1350,119 @@ mod tests {
             &r[12..16],
             [(2.0 - 6.0) / 1.0, 3.0, 6.0, (13.0 - 4.0) / 1.0]
         );
+    }
+
+    #[test]
+    fn large_arrays_on_several_cores_give_the_same_bits() {
+        // A 128 × 128 grid: u, v and two results, with scalars around.
+        let n = 128 * 128;
+        let mut at = 0;
+        let spans: Vec<Span> = [1, 1, 1, n, n, n, n, 1]
+            .map(|len| {
+                let s = Span { at, len };
+                at += len;
+                s
+            })
+            .to_vec();
+        let (h, lo, k, u, v, out1, out2, total) = (0, 1, 2, 3, 4, 5, 6, 7);
+        let x = Line {
+            stride: 1,
+            count: 128,
+        };
+        let y = Line {
+            stride: 128,
+            count: 128,
+        };
+        let var = |i| Box::new(Expr::Var(i));
+        let bin = |op, a: Box<Expr>, b: Box<Expr>| Box::new(Expr::Bin(op, a, b));
+        let arr = |op, args: Vec<Expr>| Box::new(Expr::Array(op, args));
+        let lap = |line, edges| {
+            arr(
+                ArrayOp::Second { line, edges },
+                vec![Expr::Var(u), Expr::Var(h)],
+            )
+        };
+        // out1 = lap_x(u) + lap_y(u) - u*v*v + k*(1 - u) + sin(v)
+        let reaction = bin(Op::Mul, bin(Op::Mul, var(u), var(v)), var(v));
+        let feed = bin(
+            Op::Mul,
+            var(k),
+            bin(Op::Sub, Box::new(Expr::Num(1.0)), var(u)),
+        );
+        let e1 = bin(
+            Op::Add,
+            bin(
+                Op::Add,
+                bin(
+                    Op::Sub,
+                    bin(
+                        Op::Add,
+                        lap(x, [Edge::Periodic; 2]),
+                        lap(y, [Edge::Value(k), Edge::Gradient(Some(k))]),
+                    ),
+                    reaction,
+                ),
+                feed,
+            ),
+            Box::new(Expr::Call(Func::Sin, vec![Expr::Var(v)])),
+        );
+        // out2 = shifted v + d/dy(u) + the x axis + mean(out1)*v + u at 5
+        let e2 = bin(
+            Op::Add,
+            bin(
+                Op::Add,
+                bin(
+                    Op::Add,
+                    arr(
+                        ArrayOp::Shift {
+                            line: y,
+                            edges: [Edge::Value(k), Edge::Periodic],
+                            up: true,
+                        },
+                        vec![Expr::Var(v), Expr::Var(h)],
+                    ),
+                    arr(
+                        ArrayOp::First {
+                            line: y,
+                            edges: [Edge::Gradient(None); 2],
+                        },
+                        vec![Expr::Var(u), Expr::Var(h)],
+                    ),
+                ),
+                arr(
+                    ArrayOp::Axis { line: x, cells: n },
+                    vec![Expr::Var(lo), Expr::Var(h)],
+                ),
+            ),
+            bin(
+                Op::Add,
+                bin(Op::Mul, arr(ArrayOp::Mean, vec![Expr::Var(out1)]), var(v)),
+                arr(ArrayOp::At(5), vec![Expr::Var(u)]),
+            ),
+        );
+        let e3 = arr(ArrayOp::Sum, vec![Expr::Var(out2)]);
+        let p = Program::with_layout(&spans, at, &[(out1, &e1), (out2, &e2), (total, &e3)]);
+        // Planned whatever the size, run in several chunks.
+        let steps = plan(&p.code, &p.arrays);
+        let phases = steps.iter().filter(|s| matches!(s, Step::Cells(_))).count();
+        assert!(phases >= 1 && phases < steps.len(), "{steps:?}");
+        let mut r = p.registers();
+        r[h] = 0.01;
+        r[lo] = -0.5;
+        r[k] = 0.3;
+        for c in 0..n {
+            r[spans[u].at + c] = (c as f64 * 0.37).sin();
+            r[spans[v].at + c] = (c as f64 * 0.11).cos();
+        }
+        let mut in_order = r.clone();
+        p.run_in_order(&mut in_order);
+        let bits = |r: &[f64]| r.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        for chunks in [1, 2, 3, 7] {
+            let mut split = r.clone();
+            p.run_steps(&steps, &mut split, Some(chunks));
+            assert_eq!(bits(&split), bits(&in_order), "{chunks} chunks");
+        }
+        assert!(in_order[spans[total].at].is_finite());
     }
 
     #[test]
