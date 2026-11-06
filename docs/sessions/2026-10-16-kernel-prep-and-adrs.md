@@ -161,6 +161,7 @@
 
 ## Decided
 
+- 2026-11-06 (owner): one-way links are not run ahead in the app's engine: little gain while the app plays at a set speed, and it conflicts with live edits, rewind and recording (`docs/design/performance.md`, ADR 0066 As built).
 - 2026-11-06 (owner's go-ahead): sums in fixed chunks of 4096 cells with four lanes, changing large sums' last bits once (ADR 0077).
 - 2026-11-06: one-way links split a run into parts only where every link between parts runs forward in the evaluation order; otherwise the group stays one part (exactness first). The app's engine is not split (one simulator, rewind at one time).
 - 2026-11-06: no `unsafe` and no dependency for long-lived threads: a clock's blocks are moved to a pool thread and back at each shared instant; threads spin 50 µs before sleeping (CPU kept busy at most that long between instants).

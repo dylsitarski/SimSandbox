@@ -136,7 +136,21 @@ Headless, models that feed each other meet at every instant they share; between 
 
 Parts of one model (the linked and chain cases), unlinked grids and single models are unchanged; every example and case gives the same bytes.
 
+## Not done: one-way links in the app's engine (2026-11-06)
+
+Decided with the owner: the app's engine does not run a model linked one way ahead of the models it feeds, as headless runs do. Measured in one simulator (`profile_run --merged`) against headless parts:
+
+| One-way case | One simulator (the app's engine) | Parts (headless) |
+|---|---|---|
+| A driver feeding two springs | 0.31–0.33 s | 0.16–0.21 s |
+| A chain of five small models | 0.58–0.71 s | 0.22–0.27 s |
+| Two 128 × 128 grids, one feeding the other | 0.37–0.40 s | 0.37–0.48 s |
+| Two 48 × 48 grids, one feeding the other | 0.84–0.92 s | 0.64–0.70 s |
+
+- **Little to gain in the app:** it plays at a set speed. Through its stepping path (`profile_steps`) the chain manages about 250 000 steps a second and the 48 × 48 pair about 1 600, where both cases need about 100 (the chain at 1× with its 0.01 s step, the grids at their 100× default); a faster engine shows only when the app cannot keep up. Heavy models already step on the pool at each instant: for 128 × 128 grids one simulator is as fast as parts.
+- **It conflicts with the app:** a model run ahead would have computed its future before it is shown. A slider, an input driven by hand or a diagram edit acts at the current time, so that future would have to be thrown away and computed again; rewind, probes and views would need each model's history to stop at a different time and be brought back into line on every pause and rewind. A redesign of the engine and its recording, with risk to exact replay, for a gain rarely seen.
+- Headless runs, where nothing changes during the run, already have it. If a model cannot keep up in the app, profile that model rather than reopening this.
+
 ## What is left, by expected gain
 
-1. **Models linked one way in the app**: the app's engine is one simulator; running a feeding model ahead there would mean recording and rewinding models at different times.
-2. **Updates on states from 2^17 to 2^20 values**: memory-bound, gaining from several cores only with threads that are already running and close to the data (a pool kept by the integrator); the gain would be at most about a third of the updates' share.
+1. **Updates on states from 2^17 to 2^20 values**: memory-bound, gaining from several cores only with threads that are already running and close to the data (a pool kept by the integrator); the gain would be at most about a third of the updates' share.
