@@ -33,6 +33,7 @@ _Last updated: 2026-11-06_
 
 ## Done recently
 
+- 2026-11-06: the performance list is closed ([performance](design/performance.md)): integrator updates on mid-size states would need a rayon pool for 2–8% on 256–512 grids, not worth a new dependency (owner's decision).
 - 2026-11-06: headless, models that feed each other step and record on a pool of threads kept for the run, not threads started at each shared instant: two linked Gray–Scott models 1.3–1.6× faster (48 × 48: 1.43 → 0.96 s); the same bits.
 - 2026-11-06: Euler's and RK4's vector updates split over the cores from 2^20 state values, the same bits: a 1024 × 1024 grid 7% faster; smaller states unchanged (on this machine the updates are memory-bound and gain nothing from several cores below that).
 - 2026-11-06: [ADR 0077](decisions/0077-sums-in-fixed-chunks.md), sums in fixed chunks: `sum` and `mean` over more than 4096 cells add in chunks of 4096, four lanes each, the same bits on any machine and core count; about 4× faster on one core, more on several from 2^20 cells. Reductions run before a phase of cell work instead of splitting it (a 512 × 512 grid with means in its rates 1.37 → 1.19 s). Changes once the last bits of large sums (Gray–Scott's `v_mean`, by 7 parts in 10^15); states unchanged.

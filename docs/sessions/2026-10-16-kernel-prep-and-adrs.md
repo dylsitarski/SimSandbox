@@ -161,6 +161,7 @@
 
 ## Decided
 
+- 2026-11-06 (owner): integrator updates on states of 2^17 to 2^20 values stay on one core: only a rayon pool would gain (2–4% at 256 × 256, 8% at 512 × 512), not worth a new dependency; the performance list is closed.
 - 2026-11-06 (owner): one-way links are not run ahead in the app's engine: little gain while the app plays at a set speed, and it conflicts with live edits, rewind and recording (`docs/design/performance.md`, ADR 0066 As built).
 - 2026-11-06 (owner's go-ahead): sums in fixed chunks of 4096 cells with four lanes, changing large sums' last bits once (ADR 0077).
 - 2026-11-06: one-way links split a run into parts only where every link between parts runs forward in the evaluation order; otherwise the group stays one part (exactness first). The app's engine is not split (one simulator, rewind at one time).

@@ -151,6 +151,10 @@ Decided with the owner: the app's engine does not run a model linked one way ahe
 - **It conflicts with the app:** a model run ahead would have computed its future before it is shown. A slider, an input driven by hand or a diagram edit acts at the current time, so that future would have to be thrown away and computed again; rewind, probes and views would need each model's history to stop at a different time and be brought back into line on every pause and rewind. A redesign of the engine and its recording, with risk to exact replay, for a gain rarely seen.
 - Headless runs, where nothing changes during the run, already have it. If a model cannot keep up in the app, profile that model rather than reopening this.
 
-## What is left, by expected gain
+## Not done: mid-size updates on a pool (2026-11-06)
 
-1. **Updates on states from 2^17 to 2^20 values**: memory-bound, gaining from several cores only with threads that are already running and close to the data (a pool kept by the integrator); the gain would be at most about a third of the updates' share.
+Decided with the owner. Integrator updates on states of 2^17 to 2^20 values gain from several cores only on threads already running, working on the integrator's vectors where they are. The project's own pool takes only owned work, and without `unsafe` the vectors cannot be lent to it (the state belongs to the calling block); copying chunks to it costs more than the update. A rayon pool can, and was measured (one update, one core against the pool): 2^17 values 182–188 → 106–143 µs, 2^18 352–375 → 210–226 µs, 2^19 0.78–0.93 → 0.31 ms, 2^20 1.6 → 0.46 ms. In models the updates take about 60 ms of a 256 × 256 grid's 0.66 s and 121 ms of a 512 × 512 grid's 0.96 s, so the gain would be about 2–4% and 8%. Not worth a new dependency on its own; if rayon is adopted for another reason, this is a small follow-up.
+
+## The list is closed (2026-11-06)
+
+Every item found by the profiling pass of 2026-11-05 is done or decided against, above. New work starts from a new profile of the model that is slow (`profile_run`, `profile_steps`, callgrind), timed in release builds and compared bit for bit.
