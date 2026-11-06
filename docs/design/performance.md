@@ -96,9 +96,21 @@ Two unlinked Gray–Scott models on their own clocks in one simulator (`profile_
 
 Single-clock cases (grid, platoon, small ODE, fused group) are unchanged: they never share an instant. The rest of the gap to "apart" is the meeting itself: outputs, links and recording after each instant run on one thread.
 
+## Models linked one way run ahead (2026-11-06)
+
+Headless, linked models met at every instant they shared, even where the links run one way. Now a model that only feeds others runs ahead of them on a thread of its own, passing its samples on in batches ([ADR 0066](../decisions/0066-models-nest-as-blocks.md) As built). Medians of five or seven, keeping one output:
+
+| Case | Before | After |
+|---|---|---|
+| A driver feeding two springs (linked case) | 0.30 | 0.18 |
+| A chain of five models (driver, spring, three followers) | 0.61 | 0.24 |
+| Two unlinked grids, fused group, small ODE, study | | unchanged |
+
+A first version passing samples on at every instant made the linked case four times slower: waking the receiving thread for each sample costs more than a step of these small models. Passing them on every 64 instants as one array, and removing per-instant allocations in the instant loop, gave the gains above.
+
 ## What is left, by expected gain
 
-1. **Linked models running ahead** where links go one way only (ADR 0066 step 6): removes the meeting at every instant for pipelines; not for feedback loops.
-2. **Sums on several cores**: reductions run in order on one core. A fixed-chunk sum is exact on any machine but changes results from earlier runs' last bits; worth it only where reductions are a large share.
-3. **Integrators' vector updates** (`x + h·k` in RK4 and the like) run on one core over the whole state: for large grids a growing share now that evaluation is split and copies are gone.
-4. **Linked models headless meet on new threads**: within a group of linked models, the headless runner still starts threads at each instant they share (`parallel::each` in `compose::point`); the pool would serve there too.
+1. **Sums on several cores**: reductions run in order on one core. A fixed-chunk sum is exact on any machine but changes results from earlier runs' last bits; worth it only where reductions are a large share.
+2. **Integrators' vector updates** (`x + h·k` in RK4 and the like) run on one core over the whole state: for large grids a growing share now that evaluation is split and copies are gone.
+3. **Models feeding each other headless meet on new threads**: within a part of models that feed each other, the headless runner still starts threads at each instant they share (`parallel::each` in `compose::point`); the pool would serve there too.
+4. **Models linked one way in the app**: the app's engine is one simulator; running a feeding model ahead there would mean recording and rewinding models at different times.

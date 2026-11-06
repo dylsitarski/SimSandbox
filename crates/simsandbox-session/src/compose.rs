@@ -14,6 +14,7 @@ use simsandbox_core::registry::Registry;
 use simsandbox_core::schedule::Trigger;
 use simsandbox_core::sim::Simulator;
 use simsandbox_file::compose::{load_composition, Composition};
+use std::sync::mpsc;
 
 /// What a run produced: each domain's results at its own times, by its
 /// name (`.` for the top level's own blocks, else its path, `plant`), in
@@ -271,7 +272,176 @@ impl Running {
 struct Links {
     triggers: Vec<Trigger>,
     latest: Vec<f64>,
+    /// The time of the model each link's latest sample came from.
+    time: Vec<f64>,
     delayed: bool,
+}
+
+/// A link end in another part of the run (ADR 0066 step 6): its samples
+/// come from, or go to, a part on another thread.
+const OUTSIDE: usize = usize::MAX;
+
+/// A sample passed on: (link, value, the sampling model's time), the link
+/// by its place in the whole run.
+type Sample = (usize, f64, f64);
+
+/// What one part of a run passed on since it last did: from part `from`,
+/// the instants with samples and how many each has, the samples in that
+/// order (one array, not one per instant: each costs an allocation, and
+/// freeing it on another thread costs more), and the last instant it has
+/// passed (`u128::MAX`: it has finished).
+#[derive(Default)]
+struct Batch {
+    from: usize,
+    upto: u128,
+    instants: Vec<(u128, usize)>,
+    samples: Vec<Sample>,
+}
+
+/// Microseconds each part sleeps before passing samples on (tests).
+#[cfg(test)]
+static LAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Samples received from one part, not yet reached: its instants with
+/// their counts, and the samples in order.
+type Pending = (
+    std::collections::VecDeque<(u128, usize)>,
+    std::collections::VecDeque<Sample>,
+);
+
+/// A part passes its samples on every this many instants (and when it
+/// finishes): passing them on wakes the part they reach, which costs more
+/// than a small model's step.
+const FLUSH: usize = 64;
+
+/// How a part of the run meets the parts it is linked to one way: the
+/// samples it receives, and those it passes on.
+#[derive(Default)]
+struct Wire {
+    me: usize,
+    inbox: Option<mpsc::Receiver<Batch>>,
+    /// The parts feeding this one, and the last tick each has passed
+    /// (`None`: none yet).
+    upstream: Vec<usize>,
+    passed: Vec<Option<u128>>,
+    /// Samples received, not yet reached, from each part feeding this one:
+    /// its instants with their counts, and the samples.
+    pending: Vec<Pending>,
+    /// Each link into this part by its place in the whole run: its place
+    /// here.
+    local: std::collections::HashMap<usize, usize>,
+    /// The parts this one feeds, and for each link leaving it (by its
+    /// place here) the run's place and which of `downstream` it goes to;
+    /// the instants not yet passed on to each, and how many there were.
+    downstream: Vec<mpsc::Sender<Batch>>,
+    out: Vec<(usize, usize, usize)>,
+    held: Vec<Batch>,
+    since: usize,
+}
+
+impl Wire {
+    /// Receive until every part feeding this one has passed `until` (or,
+    /// with `None`, finished).
+    fn wait(&mut self, until: Option<u128>) {
+        let Some(inbox) = &self.inbox else { return };
+        let behind = |p: &Option<u128>| match (p, until) {
+            (None, _) => true,
+            (Some(p), _) if *p == u128::MAX => false,
+            (Some(_), None) => true,
+            (Some(p), Some(u)) => *p < u,
+        };
+        while self.passed.iter().any(behind) {
+            let Ok(b) = inbox.recv() else {
+                // Every sender gone: every part feeding this one finished.
+                self.passed.iter_mut().for_each(|p| *p = Some(u128::MAX));
+                break;
+            };
+            let k = self
+                .upstream
+                .iter()
+                .position(|&u| u == b.from)
+                .expect("a part feeding this one");
+            self.passed[k] = Some(b.upto);
+            self.pending[k].0.extend(b.instants);
+            self.pending[k].1.extend(b.samples);
+        }
+    }
+
+    /// The earliest instant received samples are for.
+    fn next(&self) -> Option<u128> {
+        self.pending
+            .iter()
+            .filter_map(|q| q.0.front())
+            .map(|i| i.0)
+            .min()
+    }
+
+    /// Take the samples for `tick` into `links`: the links they reach,
+    /// fresh in this instant.
+    fn apply(&mut self, tick: u128, links: &mut Links, mut fresh: Vec<bool>) -> Vec<bool> {
+        fresh.clear();
+        fresh.resize(links.latest.len(), false);
+        for (instants, samples) in &mut self.pending {
+            if instants.front().is_none_or(|i| i.0 != tick) {
+                continue;
+            }
+            let (_, n) = instants.pop_front().expect("checked");
+            for (g, v, t) in samples.drain(..n) {
+                let k = self.local[&g];
+                links.latest[k] = v;
+                links.time[k] = t;
+                fresh[k] = true;
+            }
+        }
+        fresh
+    }
+
+    /// Keep the samples taken at `tick` for the parts they reach, and
+    /// pass them on every [`FLUSH`] instants.
+    fn send(&mut self, tick: u128, fresh: &[bool], links: &Links) {
+        // Tests make a feeding part lag, so the parts it feeds must wait.
+        #[cfg(test)]
+        {
+            let lag = LAG.load(std::sync::atomic::Ordering::Relaxed);
+            if lag > 0 {
+                std::thread::sleep(std::time::Duration::from_micros(lag));
+            }
+        }
+        for &(k, g, d) in &self.out {
+            if fresh[k] {
+                let held = &mut self.held[d];
+                match held.instants.last_mut() {
+                    Some((t, n)) if *t == tick => *n += 1,
+                    _ => held.instants.push((tick, 1)),
+                }
+                held.samples.push((g, links.latest[k], links.time[k]));
+            }
+        }
+        self.since += 1;
+        if self.since >= FLUSH {
+            self.flush(tick);
+        }
+    }
+
+    /// Pass on what is held, the instants up to `upto` passed.
+    fn flush(&mut self, upto: u128) {
+        self.since = 0;
+        for (d, held) in self.held.iter_mut().enumerate() {
+            let mut b = std::mem::take(held);
+            b.from = self.me;
+            b.upto = upto;
+            // A part that stopped early (an error) no longer listens.
+            let _ = self.downstream[d].send(b);
+        }
+    }
+}
+
+impl Drop for Wire {
+    /// Pass on what is held and say this part has finished, however it
+    /// ended.
+    fn drop(&mut self) {
+        self.flush(u128::MAX);
+    }
 }
 
 /// Run a model that uses model files to `t_end` (the file's, if not
@@ -305,6 +475,19 @@ pub fn run_composition_keeping(
     parallel: Parallel,
     keep: &Keep,
 ) -> Result<Composed, String> {
+    run_in_parts(text, registry, t_end, parallel, keep, true)
+}
+
+/// [`run_composition_keeping`]; with `split` false, linked models all
+/// meet at every instant (one part per group), for tests to compare.
+fn run_in_parts(
+    text: &str,
+    registry: &Registry,
+    t_end: Option<f64>,
+    parallel: Parallel,
+    keep: &Keep,
+    split: bool,
+) -> Result<Composed, String> {
     if let Some(t) = t_end.filter(|t| !(t.is_finite() && *t > 0.0)) {
         return Err(format!("the end time must be positive, got {t}"));
     }
@@ -325,33 +508,106 @@ pub fn run_composition_keeping(
     let mut warnings = c.warnings.clone();
     warnings.extend(c.loops.iter().map(|l| format!("loop between models: {l}")));
     let runs = start(&mut c, t_end, keep)?;
-    // Models no link joins never meet: each group runs its whole time on
-    // a thread of its own, meeting none of the others (ADR 0066 step 6).
-    // Linked models meet at every instant they share.
+    // The run in parts (ADR 0066 step 6): models that feed each other run
+    // together, meeting at every instant they share; a part linked to
+    // another one way only runs ahead of it on a thread of its own,
+    // passing its samples on; parts no link joins never meet.
     let plan = Plan::of(&c);
-    let groups = plan.groups(runs.len());
+    let parts = if split {
+        plan.parts(runs.len())
+    } else {
+        plan.groups(runs.len())
+    };
     let mut slots: Vec<Option<Running>> = runs.into_iter().map(Some).collect();
-    let work: Vec<(Plan, Vec<Running>)> = groups
-        .iter()
-        .map(|g| {
-            let mine = g
-                .iter()
-                .map(|&u| slots[u].take().expect("each model in one group"))
-                .collect();
-            (plan.restrict(g), mine)
+    let part_of = |u: usize| parts.iter().position(|p| p.contains(&u)).expect("a part");
+    let mut wires: Vec<Wire> = (0..parts.len())
+        .map(|me| {
+            let mut w = Wire::default();
+            w.me = me;
+            w
         })
         .collect();
-    let apart = groups.len() > 1 && parallel != Parallel::Never;
-    let done = simsandbox_core::parallel::each(work, apart, |(sub, mine)| {
-        timeline(&sub, mine, end_tick, parallel)
-    });
-    let mut delayed = false;
-    for (g, result) in groups.iter().zip(done) {
-        let (mine, late) = result?;
-        delayed |= late;
-        for (&u, r) in g.iter().zip(mine) {
-            slots[u] = Some(r);
+    let mut work: Vec<(Plan, Vec<Running>)> = Vec::new();
+    for (me, members) in parts.iter().enumerate() {
+        let (sub, global) = plan.part(members);
+        for (k, l) in sub.links.iter().enumerate() {
+            let g = global[k];
+            if l.from == OUTSIDE {
+                wires[me].local.insert(g, k);
+                let from = part_of(plan.links[g].from);
+                if !wires[me].upstream.contains(&from) {
+                    wires[me].upstream.push(from);
+                }
+            }
         }
+        let mine = members
+            .iter()
+            .map(|&u| slots[u].take().expect("each model in one part"))
+            .collect();
+        work.push((sub, mine));
+    }
+    // A channel into each part fed by another, a sender from each feeder.
+    for me in 0..parts.len() {
+        if wires[me].upstream.is_empty() {
+            continue;
+        }
+        let (tx, rx) = mpsc::channel();
+        wires[me].passed = vec![None; wires[me].upstream.len()];
+        wires[me].pending = vec![Default::default(); wires[me].upstream.len()];
+        wires[me].inbox = Some(rx);
+        for from in wires[me].upstream.clone() {
+            let d = wires[from].downstream.len();
+            wires[from].downstream.push(tx.clone());
+            wires[from].held.push(Batch::default());
+            let (sub, global) = (&work[from].0, plan.part(&parts[from]).1);
+            for (k, l) in sub.links.iter().enumerate() {
+                if l.to == OUTSIDE && part_of(plan.links[global[k]].to) == me {
+                    wires[from].out.push((k, global[k], d));
+                }
+            }
+        }
+    }
+    let apart = parts.len() > 1 && parallel != Parallel::Never;
+    let items: Vec<((Plan, Vec<Running>), Wire)> = work.into_iter().zip(wires).collect();
+    let run_part = |((sub, mine), mut wire): ((Plan, Vec<Running>), Wire)| {
+        let result = timeline(&sub, mine, end_tick, parallel, &mut wire);
+        drop(wire);
+        result
+    };
+    // Each part on a thread of its own when apart (a part waiting for
+    // another must not hold the thread that one needs); else upstream
+    // first, its samples queued.
+    let done: Vec<Result<(Vec<Running>, bool), String>> = if apart {
+        std::thread::scope(|s| {
+            let handles: Vec<_> = items
+                .into_iter()
+                .map(|item| s.spawn(move || run_part(item)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("a part of the run panicked"))
+                .collect()
+        })
+    } else {
+        items.into_iter().map(run_part).collect()
+    };
+    let mut delayed = false;
+    let mut failed = None;
+    for (members, result) in parts.iter().zip(done) {
+        match result {
+            Ok((mine, late)) => {
+                delayed |= late;
+                for (&u, r) in members.iter().zip(mine) {
+                    slots[u] = Some(r);
+                }
+            }
+            Err(e) => {
+                failed.get_or_insert(e);
+            }
+        }
+    }
+    if let Some(e) = failed {
+        return Err(e);
     }
     let runs: Vec<Running> = slots
         .into_iter()
@@ -434,25 +690,75 @@ impl Plan {
         groups
     }
 
-    /// The plan of the models `members`, numbered by their place there.
-    fn restrict(&self, members: &[usize]) -> Self {
+    /// The parts a run splits into, upstream first: models that feed
+    /// each other, directly or around, in one part; parts joined only one
+    /// way. Every link between parts must run from earlier to later in
+    /// `order` (it does, unless a loop broken in written order puts a
+    /// model before one feeding it); where one would not, its group of
+    /// linked models is one part.
+    fn parts(&self, n: usize) -> Vec<Vec<usize>> {
+        // Which models each reaches through links.
+        let mut reach = vec![vec![false; n]; n];
+        for (u, row) in reach.iter_mut().enumerate() {
+            let mut stack = vec![u];
+            while let Some(v) = stack.pop() {
+                for l in self.links.iter().filter(|l| l.from == v) {
+                    if !row[l.to] {
+                        row[l.to] = true;
+                        stack.push(l.to);
+                    }
+                }
+            }
+        }
+        let place = |u: usize| self.order.iter().position(|&o| o == u).unwrap_or(u);
+        let together = |u: usize, v: usize| u == v || (reach[u][v] && reach[v][u]);
+        let mut parts: Vec<Vec<usize>> = Vec::new();
+        for group in self.groups(n) {
+            let split_ok = self.links.iter().all(|l| {
+                !group.contains(&l.from) || together(l.from, l.to) || place(l.from) < place(l.to)
+            });
+            if !split_ok {
+                parts.push(group);
+                continue;
+            }
+            let mut left = group.clone();
+            while let Some(&u) = left.first() {
+                let part: Vec<usize> = left.iter().copied().filter(|&v| together(u, v)).collect();
+                left.retain(|v| !part.contains(v));
+                parts.push(part);
+            }
+        }
+        parts.sort_by_key(|p| p.iter().map(|&u| place(u)).min());
+        parts
+    }
+
+    /// The plan of the models `members`, numbered by their place there,
+    /// with the links reaching them from other parts or leaving them for
+    /// other parts, their other end [`OUTSIDE`]; and each link's place in
+    /// this plan.
+    fn part(&self, members: &[usize]) -> (Self, Vec<usize>) {
         let local = |u: usize| members.iter().position(|&m| m == u);
         let probes: Vec<usize> = (0..self.probes.len())
             .filter(|&p| local(self.probes[p].domain).is_some())
             .collect();
-        Self {
-            links: self
-                .links
-                .iter()
-                .filter_map(|l| {
-                    Some(simsandbox_file::compose::Link {
-                        probe: probes.iter().position(|&p| p == l.probe)?,
-                        from: local(l.from)?,
-                        to: local(l.to)?,
-                        ..l.clone()
-                    })
-                })
-                .collect(),
+        let mut global = Vec::new();
+        let links = self
+            .links
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| local(l.from).is_some() || local(l.to).is_some())
+            .map(|(g, l)| {
+                global.push(g);
+                simsandbox_file::compose::Link {
+                    probe: probes.iter().position(|&p| p == l.probe).unwrap_or(OUTSIDE),
+                    from: local(l.from).unwrap_or(OUTSIDE),
+                    to: local(l.to).unwrap_or(OUTSIDE),
+                    ..l.clone()
+                }
+            })
+            .collect();
+        let plan = Self {
+            links,
             probes: probes
                 .iter()
                 .map(|&p| simsandbox_file::compose::LinkProbe {
@@ -462,7 +768,8 @@ impl Plan {
                 .collect(),
             order: self.order.iter().filter_map(|&u| local(u)).collect(),
             names: members.iter().map(|&u| self.names[u].clone()).collect(),
-        }
+        };
+        (plan, global)
     }
 }
 
@@ -474,6 +781,7 @@ fn timeline(
     mut runs: Vec<Running>,
     end_tick: u128,
     parallel: Parallel,
+    wire: &mut Wire,
 ) -> Result<(Vec<Running>, bool), String> {
     let mut links = Links {
         triggers: c
@@ -482,6 +790,7 @@ fn timeline(
             .map(|p| Trigger::new(p.every.clone()))
             .collect(),
         latest: vec![f64::NAN; c.links.len()],
+        time: vec![f64::NAN; c.links.len()],
         delayed: false,
     };
     // The start: every model has a point at t = 0.
@@ -493,7 +802,13 @@ fn timeline(
     let clocked: Vec<usize> = (0..runs.len()).filter(|&u| !runs[u].on_data).collect();
     let names = &c.names;
     let mut costs = simsandbox_core::parallel::Costs::new(runs.len());
-    point(c, &mut runs, &clocked, true, &mut links, &[], false)?;
+    // Samples from parts feeding this one at the start come first.
+    wire.wait(Some(0));
+    let fresh = wire.apply(0, &mut links, Vec::new());
+    let fresh = point(c, &mut runs, &clocked, true, &mut links, &[], false, fresh)?;
+    wire.send(0, &fresh, &links);
+    // Which links are fresh at an instant, kept between instants.
+    let mut buffer = fresh;
     // Each model's next instant: its next step, or its next listed time
     // up to the end.
     let next_of = |r: &Running| -> Option<(u128, f64)> {
@@ -506,7 +821,30 @@ fn timeline(
         }
         (!r.on_data && r.taken < r.total).then(|| ((r.taken + 1) * r.every, f64::NAN))
     };
-    while let Some(tick) = runs.iter().filter_map(next_of).map(|n| n.0).min() {
+    loop {
+        // The next instant: this part's own, or one at which a part
+        // feeding it passed samples on, once those have all passed it.
+        let own = runs.iter().filter_map(next_of).map(|n| n.0).min();
+        wire.wait(own);
+        let tick = match (own, wire.next()) {
+            (None, None) => break,
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (Some(a), Some(b)) => a.min(b),
+        };
+        let fresh = wire.apply(tick, &mut links, std::mem::take(&mut buffer));
+        if own != Some(tick) {
+            // Only received samples now: models on new data they reach
+            // are evaluated; the rest take them at their own instants.
+            buffer = if runs.iter().any(|r| r.on_data) {
+                let fresh = point(c, &mut runs, &[], false, &mut links, &[], false, fresh)?;
+                wire.send(tick, &fresh, &links);
+                fresh
+            } else {
+                fresh
+            };
+            continue;
+        }
         let reaching: Vec<usize> = (0..runs.len())
             .filter(|&u| !runs[u].on_data && next_of(&runs[u]).map(|n| n.0) == Some(tick))
             .collect();
@@ -521,32 +859,43 @@ fn timeline(
         // Between points the models step apart, their link inputs held:
         // by `dt`, or to their next listed time; on several cores when
         // worth it (ADR 0066 step 6).
-        let work: Vec<(usize, &mut Running)> = runs
-            .iter_mut()
-            .enumerate()
-            .filter(|(u, _)| reaching.contains(u))
-            .collect();
+        let step_one = |u: usize, r: &mut Running| {
+            let now = r.sim.time();
+            r.apply(now)?;
+            let dt = match r.listed.get(r.taken as usize) {
+                Some(&(_, t)) => t - now,
+                None => r.dt,
+            };
+            r.sim.step(dt).map_err(|e| format!("{}: {e}", names[u]))?;
+            r.taken += 1;
+            Ok::<(), String>(())
+        };
         let cores = costs.worth(parallel, &reaching);
-        let done = simsandbox_core::parallel::each(work, cores, |(u, r)| {
-            let start = std::time::Instant::now();
-            let stepped = (|| {
-                let now = r.sim.time();
-                r.apply(now)?;
-                let dt = match r.listed.get(r.taken as usize) {
-                    Some(&(_, t)) => t - now,
-                    None => r.dt,
-                };
-                r.sim.step(dt).map_err(|e| format!("{}: {e}", names[u]))?;
-                r.taken += 1;
-                Ok::<(), String>(())
-            })();
-            (u, stepped, start.elapsed())
-        });
-        for (u, stepped, took) in done {
-            costs.record(u, took);
-            stepped?;
+        if reaching.len() == 1 {
+            // One model: nothing to share or to measure for sharing.
+            let u = reaching[0];
+            step_one(u, &mut runs[u])?;
+        } else {
+            let work: Vec<(usize, &mut Running)> = runs
+                .iter_mut()
+                .enumerate()
+                .filter(|(u, _)| reaching.contains(u))
+                .collect();
+            let done = simsandbox_core::parallel::each(work, cores, |(u, r)| {
+                let start = std::time::Instant::now();
+                let stepped = step_one(u, r);
+                (u, stepped, start.elapsed())
+            });
+            for (u, stepped, took) in done {
+                costs.record(u, took);
+                stepped?;
+            }
         }
-        point(c, &mut runs, &reaching, false, &mut links, &due, cores)?;
+        let fresh = point(
+            c, &mut runs, &reaching, false, &mut links, &due, cores, fresh,
+        )?;
+        wire.send(tick, &fresh, &links);
+        buffer = fresh;
     }
     Ok((runs, links.delayed))
 }
@@ -660,6 +1009,7 @@ fn start(c: &mut Composition, t_end: f64, keep: &Keep) -> Result<Vec<Running>, S
 /// time of the model that delivered it; then its probes sample. A model
 /// that read one evaluated after it (a loop) then takes those samples
 /// too: for its next step, or, on new data, evaluated again.
+#[allow(clippy::too_many_arguments)]
 fn point(
     c: &Plan,
     runs: &mut [Running],
@@ -668,23 +1018,25 @@ fn point(
     links: &mut Links,
     due: &[(usize, f64)],
     parallel: bool,
-) -> Result<(), String> {
+    fresh: Vec<bool>,
+) -> Result<Vec<bool>, String> {
     let order: Vec<usize> = c
         .order
         .iter()
         .copied()
         .filter(|&u| reaching.contains(&u) || runs[u].on_data)
         .collect();
-    // When each link last received a sample in this pass, and which
-    // models on new data were evaluated, at what time.
-    let mut fresh = vec![false; c.links.len()];
+    // Which links received a sample in this pass (those from other parts
+    // given), and which models on new data were evaluated, at what time.
+    let mut fresh = fresh;
     let mut evaluated: Vec<Option<f64>> = vec![None; runs.len()];
-    let delivery = |runs: &[Running], fresh: &[bool], u: usize| -> Option<f64> {
+    // When a link delivered to `u`: the time of the model it sampled.
+    let delivery = |time: &[f64], fresh: &[bool], u: usize| -> Option<f64> {
         c.links
             .iter()
             .enumerate()
             .find(|(k, l)| l.to == u && fresh[*k])
-            .map(|(_, l)| runs[l.from].sim.time())
+            .map(|(k, _)| time[k])
     };
     for &u in &order {
         if runs[u].on_data {
@@ -694,7 +1046,7 @@ fn point(
             let at = if start {
                 Some(0.0)
             } else {
-                own.or_else(|| delivery(runs, &fresh, u))
+                own.or_else(|| delivery(&links.time, &fresh, u))
             };
             let Some(t) = at else { continue };
             take_links(c, runs, u, &links.latest)?;
@@ -717,7 +1069,7 @@ fn point(
             .collect();
         let changed = take_links(c, runs, u, &links.latest)?;
         if runs[u].on_data && changed {
-            let Some(t) = evaluated[u].or_else(|| delivery(runs, &fresh, u)) else {
+            let Some(t) = evaluated[u].or_else(|| delivery(&links.time, &fresh, u)) else {
                 continue;
             };
             // Evaluated again with what arrived: its record for this
@@ -746,14 +1098,20 @@ fn point(
     }
     // Each model records its own outputs: on several cores when its
     // stepping was (ADR 0066 step 6).
-    let recording: Vec<&mut Running> = runs
-        .iter_mut()
-        .enumerate()
-        .filter(|(u, _)| reaching.contains(u))
-        .map(|(_, r)| r)
-        .collect();
-    simsandbox_core::parallel::each(recording, parallel, Running::record);
-    Ok(())
+    if parallel {
+        let recording: Vec<&mut Running> = runs
+            .iter_mut()
+            .enumerate()
+            .filter(|(u, _)| reaching.contains(u))
+            .map(|(_, r)| r)
+            .collect();
+        simsandbox_core::parallel::each(recording, parallel, Running::record);
+    } else {
+        for &u in reaching {
+            runs[u].record();
+        }
+    }
+    Ok(fresh)
 }
 
 /// The probes on model `u` sample if due: each link they feed takes the
@@ -774,6 +1132,7 @@ fn sample(c: &Plan, runs: &[Running], u: usize, links: &mut Links, fresh: &mut [
         }
         for (k, l) in c.links.iter().enumerate().filter(|(_, l)| l.probe == p) {
             links.latest[k] = value(&r.sim, &l.source);
+            links.time[k] = t;
             fresh[k] = true;
         }
     }
@@ -2190,12 +2549,19 @@ mod tests {
         let plan = Plan::of(&loaded);
         // Linked both ways: one group, all of it.
         assert_eq!(plan.groups(2), [vec![0, 1]]);
-        let all = plan.restrict(&[0, 1]);
+        // Feeding each other: one part.
+        assert_eq!(plan.parts(2), [vec![0, 1]]);
+        let (all, global) = plan.part(&[0, 1]);
         assert_eq!(all.links.len(), plan.links.len());
+        assert_eq!(global, (0..plan.links.len()).collect::<Vec<_>>());
         assert_eq!(all.order, plan.order);
-        // One model alone keeps no link that reaches another.
-        let one = plan.restrict(&[1]);
-        assert!(one.links.is_empty());
+        // One model alone keeps its links to the other, that end outside.
+        let (one, _) = plan.part(&[1]);
+        assert_eq!(one.links.len(), plan.links.len());
+        assert!(one
+            .links
+            .iter()
+            .all(|l| (l.from == OUTSIDE) != (l.to == OUTSIDE)));
         assert_eq!(one.names, [plan.names[1].clone()]);
         assert!(one.probes.iter().all(|p| p.domain == 0));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -2968,6 +3334,93 @@ mod tests {
         assert_eq!(d.rows(), 7);
         let y: Vec<f64> = (0..=6).map(|k| 2.0 * x[2 * k]).collect();
         assert_eq!(bits(series(d, "d/f.y")), bits(&y));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Linked one way, models run ahead of the models they feed, in parts
+    /// on threads of their own (ADR 0066 step 6): the same bits as all
+    /// meeting at every instant.
+    #[test]
+    fn models_linked_one_way_run_ahead_with_the_same_bits() {
+        let dir = temp_dir("one-way");
+        on_data_files(&dir);
+        write(
+            &dir,
+            "add.ssbx.json",
+            &json!({"format": 1,
+            "blocks": [
+                {"name": "u", "type": "input.value", "settings": {"unit": "m"}},
+                {"name": "w", "type": "input.value", "settings": {"unit": "m*s"}},
+                {"name": "f", "type": "eq.equations", "equations": [
+                    "input u [m]", "input w [m*s]", "param c [1/s] = 0.25", "y = u + c*w [m]"]}],
+            "connections": [{"from": "u.y", "to": "f.u"}, {"from": "w.y", "to": "f.w"}]}),
+        );
+        // a → b, a and b → d (on new data), d → e; and f, g feeding each
+        // other beside them. Clocks 0.1, 0.3, 0.2, 0.3, 0.1 s.
+        let mut e = use_of("e", "b.ssbx.json");
+        e["clock"] = json!({"dt": 0.2});
+        let model = json!({"format": 1, "run": {"t_end": 6.1},
+            "blocks": [use_of("a", "a.ssbx.json"), use_of("b", "b.ssbx.json"),
+                use_of("d", "add.ssbx.json"), e,
+                use_of("f", "a.ssbx.json"), use_of("g", "b.ssbx.json")],
+            "connections": [
+                {"from": "probe:p.a/count.x", "to": "b/u"},
+                {"from": "probe:p.a/count.x", "to": "d/u"},
+                {"from": "probe:q.b/sum.z", "to": "d/w"},
+                {"from": "probe:r.d/f.y", "to": "e/u"},
+                {"from": "probe:s.f/count.x", "to": "g/u"},
+                {"from": "probe:t.g/sum.z", "to": "f/w"}],
+            "controls": {"probes": [
+                {"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.3}},
+                {"name": "q", "record": ["b/sum.z"]},
+                {"name": "r", "record": ["d/f.y"]},
+                {"name": "s", "record": ["f/count.x"]},
+                {"name": "t", "record": ["g/sum.z"], "every": {"steps": 2}}]}});
+        let text = model.to_string();
+        let run = |parallel, split| {
+            simsandbox_core::registry::in_folder(Some(&dir), || {
+                run_in_parts(&text, &registry(), None, parallel, &Keep::default(), split)
+            })
+            .unwrap()
+        };
+        let loaded = simsandbox_core::registry::in_folder(Some(&dir), || {
+            load_composition(&text, &registry(), None)
+        })
+        .unwrap();
+        let plan = Plan::of(&loaded);
+        let names = &plan.names;
+        let parts: Vec<Vec<&str>> = plan
+            .parts(names.len())
+            .iter()
+            .map(|p| p.iter().map(|&u| names[u].as_str()).collect())
+            .collect();
+        assert_eq!(
+            parts,
+            [vec!["a"], vec!["b"], vec!["d"], vec!["e"], vec!["f", "g"]]
+        );
+        let together = run(Parallel::Never, false);
+        for (parallel, lag) in [
+            (Parallel::Never, 0),
+            (Parallel::Auto, 0),
+            (Parallel::Always, 200),
+        ] {
+            // With feeders lagging, the parts they feed must wait for them.
+            LAG.store(lag, std::sync::atomic::Ordering::Relaxed);
+            let apart = run(parallel, true);
+            LAG.store(0, std::sync::atomic::Ordering::Relaxed);
+            for ((name, one), (_, other)) in together.models.iter().zip(&apart.models) {
+                assert_eq!(bits(&one.index[0].1), bits(&other.index[0].1), "{name} t");
+                for (o, p) in one.outputs.iter().zip(&other.outputs) {
+                    assert_eq!(bits(&o.values), bits(&p.values), "{}", o.name);
+                }
+            }
+            assert_eq!(together.warnings, apart.warnings);
+        }
+        // d answers when either feeder delivers, so it ran.
+        assert!(together.model("e").unwrap().rows() > 1);
+        assert!(series(together.model("d").unwrap(), "d/f.y")
+            .iter()
+            .any(|&y| y > 0.0));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
