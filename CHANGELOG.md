@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Large typed-equation models run 10–20% faster: their state arrays are read, and their rates written, where the integrator keeps them instead of being copied at every evaluation. Results are unchanged bit for bit.
 - Large array models use several cores within one model, with the same results bit for bit: cell-by-cell work runs in chunks, one per core, when its arrays are large enough for sharing to pay (each part measures itself). A 512 × 512 Gray–Scott grid runs about 1.7× faster on 4 cores; smaller grids run as before.
 - Faster runs, with the same results bit for bit: fused groups about 2.7× (no allocation at each evaluation), small models about 1.8× and large grids about 1.25× (integrators keep their working arrays), models on their own clocks with links about 9× (the core count was asked of the system at every instant). A block's `Equations::rhs` must write every element of `dx`.
 
