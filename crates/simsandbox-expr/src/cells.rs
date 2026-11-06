@@ -29,6 +29,11 @@ use crate::{Func, Line, Op};
 /// 1.7 times faster).
 pub(crate) const WORTH: usize = 1 << 20;
 
+/// Below this many cell operations in every phase a program runs its
+/// instructions in order, without phases: they would cost more to set up
+/// than they save.
+pub(crate) const PLAN: usize = 1 << 14;
+
 /// How often a phase tries the way it does not use, by calls.
 const RETRY: u64 = 64;
 
@@ -92,7 +97,23 @@ pub(crate) struct Phase {
     pub written: Vec<usize>,
     pub read: Vec<usize>,
     pub ops: Vec<CellOp>,
+    /// Which written and which read arrays lie [`Outside`] the registers
+    /// when the program runs with them there.
+    pub written_out: Vec<bool>,
+    pub read_out: Vec<bool>,
     pub choice: Choice,
+}
+
+/// Arrays kept by the caller instead of in the registers: registers from
+/// `reads_at` are read from `reads`, those from `writes_at` written to
+/// `writes`, for the arrays the program placed there
+/// ([`Program::place_outside`](crate::Program::place_outside)). Saves
+/// copying large states in and rates out at every evaluation.
+pub struct Outside<'a> {
+    pub reads: &'a [f64],
+    pub reads_at: usize,
+    pub writes: &'a mut [f64],
+    pub writes_at: usize,
 }
 
 /// What a phase took on one core and on several, smoothed over its recent
@@ -174,6 +195,42 @@ struct Ready {
 }
 
 impl Phase {
+    /// Place arrays outside the registers: those `read_out` says (read
+    /// only, so moved to the read arrays) and those `write_out` says
+    /// (written, never read).
+    pub fn place(&mut self, read_out: impl Fn(usize) -> bool, write_out: impl Fn(usize) -> bool) {
+        let moved: Vec<bool> = self.written.iter().map(|&at| read_out(at)).collect();
+        if moved.iter().any(|&m| m) {
+            let mut new_index = vec![Operand::Written(0); self.written.len()];
+            let (mut written, mut read) = (Vec::new(), self.read.clone());
+            for (k, &at) in self.written.iter().enumerate() {
+                new_index[k] = if moved[k] {
+                    read.push(at);
+                    Operand::Read(read.len() - 1)
+                } else {
+                    written.push(at);
+                    Operand::Written(written.len() - 1)
+                };
+            }
+            let remap = |o: Operand| match o {
+                Operand::Written(k) => new_index[k],
+                o => o,
+            };
+            for op in &mut self.ops {
+                let Operand::Written(d) = new_index[op.d] else {
+                    unreachable!("an array read outside is not written")
+                };
+                op.d = d;
+                op.a = remap(op.a);
+                op.b = remap(op.b);
+            }
+            self.written = written;
+            self.read = read;
+        }
+        self.written_out = self.written.iter().map(|&at| write_out(at)).collect();
+        self.read_out = self.read.iter().map(|&at| read_out(at)).collect();
+    }
+
     /// The work it does: cells times operations, a stencil as four.
     pub fn work(&self) -> usize {
         let weight = |op: &CellOp| match op.kind {
@@ -185,19 +242,20 @@ impl Phase {
 
     /// Run on the registers `r` (after the scalar instructions `first`),
     /// on several cores when large enough and faster so.
-    pub fn run(&self, r: &mut [f64]) {
+    pub fn run(&self, r: &mut [f64], out: Option<&mut Outside>) {
         if self.work() < WORTH || cores() < 2 {
-            return self.run_in(r, 1);
+            return self.run_in(r, 1, out);
         }
         let several = self.choice.several();
         let start = std::time::Instant::now();
-        self.run_in(r, if several { cores() } else { 1 });
+        self.run_in(r, if several { cores() } else { 1 }, out);
         self.choice
             .record(several, start.elapsed().as_secs_f64() * 1e9);
     }
 
-    /// Run in `chunks` chunks of cells, on as many cores as there are.
-    pub fn run_in(&self, r: &mut [f64], chunks: usize) {
+    /// Run in `chunks` chunks of cells, on as many cores as there are,
+    /// with the arrays placed outside in `out` if given.
+    pub fn run_in(&self, r: &mut [f64], chunks: usize, out: Option<&mut Outside>) {
         let value = |o: Operand, r: &[f64]| match o {
             Operand::Written(k) => Value::Mine(k),
             Operand::Read(k) => Value::Whole(k),
@@ -225,30 +283,60 @@ impl Phase {
             })
             .collect();
         // The arrays' registers, apart: those written to be chunked, those
-        // read shared whole.
-        let mut all: Vec<(usize, bool)> = self
-            .written
-            .iter()
-            .map(|&a| (a, true))
-            .chain(self.read.iter().map(|&a| (a, false)))
-            .collect();
-        all.sort_unstable();
+        // read shared whole; in the registers or outside them.
+        let n = self.n;
         let mut written: Vec<Option<&mut [f64]>> = (0..self.written.len()).map(|_| None).collect();
         let mut read: Vec<Option<&[f64]>> = (0..self.read.len()).map(|_| None).collect();
+        let (out_reads, out_writes) = match out {
+            Some(o) => (
+                Some((o.reads, o.reads_at)),
+                Some((&mut *o.writes, o.writes_at)),
+            ),
+            None => (None, None),
+        };
+        let away = |outside: &[bool], k: usize, there: bool| there && outside[k];
+        let mut here: Vec<(usize, bool, usize)> = Vec::new();
+        let mut there: Vec<(usize, usize)> = Vec::new();
+        for (k, &at) in self.written.iter().enumerate() {
+            if away(&self.written_out, k, out_writes.is_some()) {
+                there.push((at, k));
+            } else {
+                here.push((at, true, k));
+            }
+        }
+        for (k, &at) in self.read.iter().enumerate() {
+            match out_reads {
+                Some((cells, from)) if self.read_out[k] => {
+                    read[k] = Some(&cells[at - from..at - from + n]);
+                }
+                _ => here.push((at, false, k)),
+            }
+        }
+        here.sort_unstable();
         let mut rest = r;
         let mut taken = 0;
-        for (at, writes) in all {
+        for (at, writes, k) in here {
             let (_, tail) = rest.split_at_mut(at - taken);
-            let (cells, after) = tail.split_at_mut(self.n);
+            let (cells, after) = tail.split_at_mut(n);
             if writes {
-                let k = self.written.iter().position(|&x| x == at).expect("written");
                 written[k] = Some(cells);
             } else {
-                let k = self.read.iter().position(|&x| x == at).expect("read");
                 read[k] = Some(&*cells);
             }
             rest = after;
-            taken = at + self.n;
+            taken = at + n;
+        }
+        if let Some((cells, from)) = out_writes {
+            there.sort_unstable();
+            let mut rest = cells;
+            let mut taken = from;
+            for (at, k) in there {
+                let (_, tail) = rest.split_at_mut(at - taken);
+                let (mine, after) = tail.split_at_mut(n);
+                written[k] = Some(mine);
+                rest = after;
+                taken = at + n;
+            }
         }
         let read: Vec<&[f64]> = read.into_iter().map(|c| c.expect("split")).collect();
         let size = self.n.div_ceil(chunks.max(1)).max(1);

@@ -202,6 +202,10 @@ The heat equation is the reference problem for arrays (`crates/simsandbox-eq/tes
   - Memory: 0.47 MB a step until the history thins at 1000 samples (about 400 MB), then about 0.09 MB a step from rewind snapshots (1 MB each, every 10 steps) up to their cap of 10 000 (about 10 GB, some minutes of live play). The example was held out of the app's Examples menu until memory was bounded ([Q38](../open-questions.md)).
 - **Safety net (2026-10-28), until probes settle Q38:** grid history keeps about 32 million values (256 MB; at least 100 samples, down from 1000), and rewind snapshots are thinned when they hold more than 32 million values (256 MB) as well as past 10 000 of them. Gray–Scott at 128 × 128 now levels off at about 510 MB (measured over 8000 steps), and the example is in the Examples menu. Snapshots still hold outputs: recomputing them on rewind could change the last bits where loops are solved by iteration, so dropping them waits for the probes design.
 
+### As built (states and rates in place, 2026-11-06)
+
+Typed equations no longer copy large arrays in and out at every evaluation ([performance](../design/performance.md)). `Program::place_outside` finds the arrays that only phases of cells ([ADR 0062](0062-probes-recording-and-replay.md) step 3) read from the states, or only they write among the rates or outputs and nothing reads; `Program::run_outside` reads those from the integrator's state vector and writes them into its rate vector (or the block's outputs) where they are (`simsandbox_expr::Outside`). Everything else is copied as before, so a program whose arrays are summed or picked in a single instruction keeps them in its registers, and models without large arrays (fewer than 2^14 cell operations in every phase) run exactly as before. Same bits: the same operations on the same values.
+
 ## Consequences
 
 - Q35 is resolved as option (b), with (c) kept for later measurement. Q17 is resolved as option (a) with one-step methods. Q26 stays open, revisited after the gate.

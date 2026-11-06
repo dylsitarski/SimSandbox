@@ -51,10 +51,25 @@ Gray–Scott with typed equations, medians of five, this machine (seconds):
 
 The 128 × 128 and 256 × 256 rows are equal within this machine's noise: no phase there is large enough to share, and the program runs as before. At 512 × 512 the phases are faster even on one core, since a phase runs all its operations on a chunk while it is in the cache.
 
+## States and rates in place (2026-11-06)
+
+Typed equations copied the states into the program's registers and the rates out at every evaluation, and the states again for the outputs. Timed (not counted: callgrind counts `memcpy` at about 25% of a grid's instructions, which overstates its time), the copies were about 7% of the 128 × 128 grid's run and 14% of the 512 × 512 one, where the rest runs on four cores. Now arrays that only phases of cells read or write stay where the integrator keeps them ([ADR 0060](../decisions/0060-arrays-in-typed-equations.md) As built). Small models keep the old path unchanged: a first version that went through the new bookkeeping on every call made the 40-car platoon 15% slower.
+
+Medians of seven paired runs (eleven for 128 × 128), seconds:
+
+| Case | Before | After |
+|---|---|---|
+| Grid 128 × 128, t_end 600 | 1.12 | 0.96 (faster in 11 of 11) |
+| Grid 256 × 256, t_end 100 | 0.95 | 0.77 |
+| Grid 512 × 512, t_end 40 | 1.68 | 1.44 |
+| Two grids | 0.42 | 0.38 |
+| Many blocks, fused group, small ODE, agents, linked, study | | unchanged within noise |
+
+The machine was slower this day than for the table above (the same grid's "before" here is the "now" there); compare within a table.
+
 ## What is left, by expected gain
 
-1. **Typed equations copy the state in and out at every evaluation** (`EquationSet::fill`, `rhs`, `outputs`): about 20% of a grid's instructions, 6% of the platoon's. The instructions could read the state and inputs where they are instead of from a copy: a change to the expression engine's layout. With cell-by-cell work on several cores, this copying (and the integrator's vector updates, still on one core) is a larger share of large grids' time.
-2. **Headless runs keep every output at every step** (131 MB per grid model in the two-grid case): copying and page faults. Keeping only what is asked for (`--model`, named signals, probes) would save memory and time.
+1. **Headless runs keep every output at every step** (131 MB per grid model in the two-grid case): copying and page faults. Keeping only what is asked for (`--model`, named signals, probes) would save memory and time.
 3. **The app's engine meets at every instant on new threads** (ADR 0066 step 6): about 10–20% for several heavy models on their own clocks in the app; a redesign of the simulator (each clock's blocks on a thread of their own for the whole run).
 4. **Linked models running ahead** where links go one way only (ADR 0066 step 6): removes the meeting at every instant for pipelines; not for feedback loops.
 5. **Sums on several cores**: reductions run in order on one core. A fixed-chunk sum is exact on any machine but changes results from earlier runs' last bits; worth it only where reductions are a large share.

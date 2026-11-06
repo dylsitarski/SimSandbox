@@ -50,7 +50,7 @@ use simsandbox_core::{Result, SimError};
 use simsandbox_expr::program::Span;
 use simsandbox_expr::units::{dim_text, dimension_with, from_si, in_si, Dim, NO_DIM};
 use simsandbox_expr::{
-    is_reserved, parse, ArrayOp, Ast, Edge, Expr, Line as GridLine, Op, Program,
+    is_reserved, parse, ArrayOp, Ast, Edge, Expr, Line as GridLine, Op, Outside, Program,
 };
 use std::cell::RefCell;
 
@@ -103,6 +103,53 @@ pub struct EquationSet {
     initial: Vec<(usize, Option<usize>)>,
     /// Register buffers of the programs: outputs, rates, initial values.
     scratch: RefCell<[Vec<f64>; 3]>,
+    /// What the outputs and rates programs need copied, the rest of their
+    /// large arrays read from the states and written to the results where
+    /// they are.
+    outputs_copy: Copies,
+    rates_copy: Copies,
+}
+
+/// The parts of the states a program needs copied into its registers and
+/// of its results it needs copied out (offsets from the first of each);
+/// the others it reads and writes in place ([`Program::place_outside`]).
+#[derive(Debug, Clone)]
+struct Copies {
+    /// Whether any array was placed; if not, everything is copied.
+    placed: bool,
+    states: Vec<std::ops::Range<usize>>,
+    results: Vec<std::ops::Range<usize>>,
+}
+
+impl Copies {
+    /// Place what `program` can in place: it reads the `states` registers
+    /// from 1, and its `len` results from `at`.
+    fn place(program: &mut Program, states: usize, at: usize, len: usize) -> Self {
+        let (read, written) = program.place_outside(1..1 + states, at..at + len);
+        Self {
+            placed: !read.is_empty() || !written.is_empty(),
+            states: rest(states, &read, 1),
+            results: rest(len, &written, at),
+        }
+    }
+}
+
+/// The ranges of `0..len` outside `spans` (registers from `from`).
+fn rest(len: usize, spans: &[Span], from: usize) -> Vec<std::ops::Range<usize>> {
+    let mut taken: Vec<(usize, usize)> = spans.iter().map(|s| (s.at - from, s.len)).collect();
+    taken.sort_unstable();
+    let mut out = Vec::new();
+    let mut next = 0;
+    for (at, n) in taken {
+        if at > next {
+            out.push(next..at);
+        }
+        next = at + n;
+    }
+    if next < len {
+        out.push(next..len);
+    }
+    out
 }
 
 /// Register positions of an [`EquationSet`]: `t` at 0, then the state
@@ -1805,8 +1852,15 @@ impl EquationSet {
         let mut rate_steps = output_steps.clone();
         rate_steps.extend(rhs.iter().enumerate().map(|(k, e)| (rate_vars[k], e)));
         let rate_steps = needed(rate_steps, &rate_vars);
-        let outputs = Program::with_layout(&spans, size, &output_steps);
-        let rates = Program::with_layout(&spans, size, &rate_steps);
+        let mut outputs = Program::with_layout(&spans, size, &output_steps);
+        let mut rates = Program::with_layout(&spans, size, &rate_steps);
+        let outputs_copy = Copies::place(
+            &mut outputs,
+            layout.states,
+            layout.outputs_at,
+            layout.outputs_len,
+        );
+        let rates_copy = Copies::place(&mut rates, layout.states, layout.rates_at, layout.states);
         let init = (!array_init.is_empty()).then(|| {
             let steps: Vec<(usize, &Expr)> = init_steps.iter().map(|(v, e)| (*v, e)).collect();
             Program::with_layout(&spans, size, &steps)
@@ -1852,6 +1906,8 @@ impl EquationSet {
             init,
             initial,
             scratch,
+            outputs_copy,
+            rates_copy,
         })
     }
 
@@ -1862,6 +1918,31 @@ impl EquationSet {
     /// Put time `t`, states `x`, inputs `u` and parameters `p` in the
     /// registers `v`. Missing inputs read as 0.
     fn fill(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], v: &mut [f64]) {
+        let ns = self.layout.states;
+        v[1..=ns].copy_from_slice(&x[..ns]);
+        self.fill_rest(t, u, p, v);
+    }
+
+    /// As [`EquationSet::fill`], with only the parts `states` of the
+    /// states.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_parts(
+        &self,
+        t: f64,
+        x: &[f64],
+        states: &[std::ops::Range<usize>],
+        u: &[f64],
+        p: &[f64],
+        v: &mut [f64],
+    ) {
+        for r in states {
+            v[1 + r.start..1 + r.end].copy_from_slice(&x[r.clone()]);
+        }
+        self.fill_rest(t, u, p, v);
+    }
+
+    /// Time, inputs and parameters into the registers.
+    fn fill_rest(&self, t: f64, u: &[f64], p: &[f64], v: &mut [f64]) {
         let Layout {
             states: ns,
             inputs: ni,
@@ -1869,7 +1950,6 @@ impl EquationSet {
             ..
         } = self.layout;
         v[0] = t;
-        v[1..=ns].copy_from_slice(&x[..ns]);
         for (k, slot) in v[1 + ns..1 + ns + ni].iter_mut().enumerate() {
             *slot = u.get(k).copied().unwrap_or(0.0);
         }
@@ -1880,21 +1960,58 @@ impl EquationSet {
 impl Equations for EquationSet {
     fn rhs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], dx: &mut [f64]) {
         let v = &mut self.scratch.borrow_mut()[1];
-        self.fill(t, x, u, p, v);
-        self.rates.run(v);
-        let first = self.layout.rates_at;
-        let n = dx.len().min(self.layout.states);
-        dx[..n].copy_from_slice(&v[first..first + n]);
+        let (ns, at) = (self.layout.states, self.layout.rates_at);
+        let copies = &self.rates_copy;
+        if !copies.placed || dx.len() < ns {
+            self.fill(t, x, u, p, v);
+            self.rates.run(v);
+            let n = dx.len().min(ns);
+            dx[..n].copy_from_slice(&v[at..at + n]);
+            return;
+        }
+        // Large arrays read from `x` and written to `dx` where they are.
+        self.fill_parts(t, x, &copies.states, u, p, v);
+        self.rates.run_outside(
+            v,
+            Outside {
+                reads: &x[..ns],
+                reads_at: 1,
+                writes: &mut dx[..ns],
+                writes_at: at,
+            },
+        );
+        for r in &copies.results {
+            dx[r.clone()].copy_from_slice(&v[at + r.start..at + r.end]);
+        }
     }
 
     fn outputs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], y: &mut [f64]) {
         let v = &mut self.scratch.borrow_mut()[0];
-        self.fill(t, x, u, p, v);
-        self.outputs.run(v);
         let ns = self.layout.states;
-        y[..ns].copy_from_slice(&x[..ns]);
         let (at, len) = (self.layout.outputs_at, self.layout.outputs_len);
-        y[ns..ns + len].copy_from_slice(&v[at..at + len]);
+        let copies = &self.outputs_copy;
+        y[..ns].copy_from_slice(&x[..ns]);
+        if !copies.placed {
+            self.fill(t, x, u, p, v);
+            self.outputs.run(v);
+            y[ns..ns + len].copy_from_slice(&v[at..at + len]);
+            return;
+        }
+        self.fill_parts(t, x, &copies.states, u, p, v);
+        // Large arrays read from `x` and written to `y` where they are.
+        let (_, rest) = y.split_at_mut(ns);
+        self.outputs.run_outside(
+            v,
+            Outside {
+                reads: &x[..ns],
+                reads_at: 1,
+                writes: &mut rest[..len],
+                writes_at: at,
+            },
+        );
+        for r in &copies.results {
+            y[ns + r.start..ns + r.end].copy_from_slice(&v[at + r.start..at + r.end]);
+        }
     }
 }
 

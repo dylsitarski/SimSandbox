@@ -12,7 +12,7 @@
 //! A program gives the same numbers as [`Expr::eval`], operation for
 //! operation, apart from `x^2`, which is computed as `x*x`.
 
-use crate::cells::{CellOp, Kind, Operand, Phase, Step};
+use crate::cells::{CellOp, Kind, Operand, Outside, Phase, Step};
 use crate::{ArrayOp, Edge, Expr, Func, Line, Op};
 
 /// Where a variable's values are in the register buffer: `len` registers
@@ -419,6 +419,41 @@ impl ArrIns {
     }
 }
 
+impl ArrIns {
+    /// The runs of registers it reads or writes, as (first, count).
+    fn touches(&self) -> Vec<(usize, usize)> {
+        let src = |s: Src, n: usize| (s.at, if s.array { n } else { 1 });
+        let edge_regs = |edges: [EdgeAt; 2]| {
+            edges.into_iter().filter_map(|e| match e {
+                EdgeAt::Value(v) => Some((v, 1)),
+                EdgeAt::Gradient(g) => g.map(|g| (g, 1)),
+                EdgeAt::Periodic => None,
+            })
+        };
+        match *self {
+            ArrIns::Copy { d, a, n } | ArrIns::Neg { d, a, n } | ArrIns::Call1 { d, a, n, .. } => {
+                vec![(d, n), src(a, n)]
+            }
+            ArrIns::Bin { d, a, b, n, .. } | ArrIns::Call2 { d, a, b, n, .. } => {
+                vec![(d, n), src(a, n), src(b, n)]
+            }
+            ArrIns::Axis { d, lo, h, n, .. } => vec![(d, n), (lo, 1), (h, 1)],
+            ArrIns::Stencil {
+                d, a, h, n, edges, ..
+            }
+            | ArrIns::Shift {
+                d, a, h, n, edges, ..
+            } => {
+                let mut all = vec![(d, n), (a, n), (h, 1)];
+                all.extend(edge_regs(edges));
+                all
+            }
+            ArrIns::Reduce { d, a, n, .. } => vec![(d, 1), (a, n)],
+            ArrIns::Pick { d, a, n, i } => vec![(d, 1), (a, n), (i, 1)],
+        }
+    }
+}
+
 /// The registers a scalar instruction writes and reads.
 fn scalar_regs(ins: Ins) -> Option<(usize, Vec<usize>)> {
     let u = |x: u32| x as usize;
@@ -560,6 +595,8 @@ impl Gathering {
         Phase {
             n: self.n,
             first: self.first,
+            written_out: vec![false; self.written.len()],
+            read_out: vec![false; self.read.len()],
             written: self.written,
             read: self.read,
             ops,
@@ -736,10 +773,13 @@ pub struct Program {
     arrays: Vec<ArrIns>,
     /// The registers, constants filled in; copied by [`Program::registers`].
     template: Vec<f64>,
-    /// For arrays large enough to be worth several cores: the code as
-    /// phases, stencils and single instructions (ADR 0062 step 3); empty
-    /// otherwise.
+    /// For large arrays: the code as phases of cells and single
+    /// instructions (ADR 0062 step 3); empty otherwise.
     steps: Vec<Step>,
+    /// Whether a phase is large enough to share among cores.
+    split: bool,
+    /// Whether some arrays were placed outside the registers.
+    outside: bool,
 }
 
 struct Builder<'a> {
@@ -1061,13 +1101,17 @@ impl Program {
         let mut template = vec![0.0; size];
         template.extend_from_slice(&b.consts);
         template.resize(b.temps_at + b.max_temps * width, 0.0);
-        // Steps only when a phase is large enough to share.
+        // Steps only when a phase is large enough.
         let mut steps = plan(&b.code, &b.arrays);
-        let worth = steps.iter().any(|s| match s {
-            Step::Cells(p) => p.work() >= crate::cells::WORTH,
-            Step::One(_) => false,
-        });
-        if !worth {
+        let largest = steps
+            .iter()
+            .map(|s| match s {
+                Step::Cells(p) => p.work(),
+                Step::One(_) => 0,
+            })
+            .max()
+            .unwrap_or(0);
+        if largest < crate::cells::PLAN {
             steps.clear();
         }
         Self {
@@ -1075,6 +1119,8 @@ impl Program {
             arrays: b.arrays,
             template,
             steps,
+            split: largest >= crate::cells::WORTH,
+            outside: false,
         }
     }
 
@@ -1132,16 +1178,120 @@ impl Program {
     /// one at least as long, with the same constants).
     pub fn run(&self, r: &mut [f64]) {
         // Large arrays: by phases, on several cores (the same bits).
-        if !self.steps.is_empty() && crate::cells::cores() > 1 {
-            self.run_steps(&self.steps, r, None);
+        if self.split && crate::cells::cores() > 1 {
+            self.run_steps(&self.steps, r, None, None);
             return;
         }
         self.run_in_order(r);
     }
 
+    /// Let the program read the arrays in registers `reads` and write
+    /// those in `writes` where the caller keeps them, with
+    /// [`Program::run_outside`], instead of in its registers: arrays only
+    /// phases of cells read (from `reads`), or only they write and nothing
+    /// reads (in `writes`). Returns those it placed, read and written; the
+    /// caller fills the other registers and copies the other results as
+    /// for [`Program::run`]. None for small arrays, without phases.
+    pub fn place_outside(
+        &mut self,
+        reads: std::ops::Range<usize>,
+        writes: std::ops::Range<usize>,
+    ) -> (Vec<Span>, Vec<Span>) {
+        // Registers touched other than as a phase's arrays, the arrays
+        // phases write and those they read.
+        let mut busy: Vec<(usize, usize)> = Vec::new();
+        let mut written: Vec<usize> = Vec::new();
+        let mut used: Vec<usize> = Vec::new();
+        let mut arrays: Vec<Span> = Vec::new();
+        let scalar = |ins: Ins, busy: &mut Vec<(usize, usize)>| {
+            let (d, regs) = scalar_regs(ins).expect("a scalar instruction");
+            busy.push((d, 1));
+            busy.extend(regs.into_iter().map(|r| (r, 1)));
+        };
+        for step in &self.steps {
+            match step {
+                Step::One(i) => match self.code[*i] {
+                    Ins::Arr(k) => busy.extend(self.arrays[k as usize].touches()),
+                    ins => scalar(ins, &mut busy),
+                },
+                Step::Cells(p) => {
+                    for &i in &p.first {
+                        scalar(self.code[i], &mut busy);
+                    }
+                    for &at in p.written.iter().chain(&p.read) {
+                        arrays.push(Span { at, len: p.n });
+                    }
+                    for op in &p.ops {
+                        written.push(p.written[op.d]);
+                        for o in [op.a, op.b] {
+                            match o {
+                                Operand::Written(k) => used.push(p.written[k]),
+                                Operand::Read(k) => used.push(p.read[k]),
+                                Operand::Scalar(at) => busy.push((at, 1)),
+                            }
+                        }
+                        if let Kind::Stencil { edges, .. } | Kind::Shift { edges, .. } = op.kind {
+                            for e in edges {
+                                match e {
+                                    EdgeAt::Value(v) | EdgeAt::Gradient(Some(v)) => {
+                                        busy.push((v, 1))
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        arrays.sort_unstable_by_key(|s| s.at);
+        arrays.dedup();
+        let free = |s: &Span| !busy.iter().any(|&(b, m)| b < s.at + s.len && s.at < b + m);
+        let within =
+            |s: &Span, r: &std::ops::Range<usize>| r.start <= s.at && s.at + s.len <= r.end;
+        let read_out: Vec<Span> = arrays
+            .iter()
+            .filter(|s| within(s, &reads) && !written.contains(&s.at) && free(s))
+            .copied()
+            .collect();
+        let write_out: Vec<Span> = arrays
+            .iter()
+            .filter(|s| {
+                within(s, &writes) && written.contains(&s.at) && !used.contains(&s.at) && free(s)
+            })
+            .copied()
+            .collect();
+        for step in &mut self.steps {
+            if let Step::Cells(p) = step {
+                p.place(
+                    |at| read_out.iter().any(|s| s.at == at),
+                    |at| write_out.iter().any(|s| s.at == at),
+                );
+            }
+        }
+        self.outside = !read_out.is_empty() || !write_out.is_empty();
+        (read_out, write_out)
+    }
+
+    /// Run as [`Program::run`], with the arrays placed outside read from
+    /// and written to `out`.
+    pub fn run_outside(&self, r: &mut [f64], mut out: Outside) {
+        if self.outside {
+            self.run_steps(&self.steps, r, None, Some(&mut out));
+        } else {
+            self.run(r);
+        }
+    }
+
     /// Run by `steps`: phases of cells split over the cores, as they
-    /// choose or in `chunks` chunks.
-    fn run_steps(&self, steps: &[Step], r: &mut [f64], chunks: Option<usize>) {
+    /// choose or in `chunks` chunks, arrays outside in `out`.
+    fn run_steps(
+        &self,
+        steps: &[Step],
+        r: &mut [f64],
+        chunks: Option<usize>,
+        mut out: Option<&mut Outside>,
+    ) {
         for step in steps {
             match step {
                 Step::One(i) => self.one(self.code[*i], r),
@@ -1150,8 +1300,8 @@ impl Program {
                         self.one(self.code[i], r);
                     }
                     match chunks {
-                        Some(c) => phase.run_in(r, c),
-                        None => phase.run(r),
+                        Some(c) => phase.run_in(r, c, out.as_deref_mut()),
+                        None => phase.run(r, out.as_deref_mut()),
                     }
                 }
             }
@@ -1459,10 +1609,95 @@ mod tests {
         let bits = |r: &[f64]| r.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
         for chunks in [1, 2, 3, 7] {
             let mut split = r.clone();
-            p.run_steps(&steps, &mut split, Some(chunks));
+            p.run_steps(&steps, &mut split, Some(chunks), None);
             assert_eq!(bits(&split), bits(&in_order), "{chunks} chunks");
         }
         assert!(in_order[spans[total].at].is_finite());
+    }
+
+    #[test]
+    fn arrays_outside_the_registers_give_the_same_bits() {
+        // Gray–Scott's rates: u and v read, du and dv written, each only
+        // by phases of cells, so all four can stay with the caller.
+        let n = 128 * 128;
+        let mut at = 0;
+        let spans: Vec<Span> = [1, 1, n, n, n, n, 1]
+            .map(|len| {
+                let s = Span { at, len };
+                at += len;
+                s
+            })
+            .to_vec();
+        let (h, k, u, v, du, dv, total) = (0, 1, 2, 3, 4, 5, 6);
+        let line = Line {
+            stride: 128,
+            count: 128,
+        };
+        let var = |i| Box::new(Expr::Var(i));
+        let bin = |op, a: Box<Expr>, b: Box<Expr>| Box::new(Expr::Bin(op, a, b));
+        let lap = |of| {
+            Box::new(Expr::Array(
+                ArrayOp::Second {
+                    line,
+                    edges: [Edge::Periodic; 2],
+                },
+                vec![Expr::Var(of), Expr::Var(h)],
+            ))
+        };
+        let uvv = || bin(Op::Mul, bin(Op::Mul, var(u), var(v)), var(v));
+        let feed = bin(
+            Op::Mul,
+            var(k),
+            bin(Op::Sub, Box::new(Expr::Num(1.0)), var(u)),
+        );
+        let e_du = bin(Op::Add, bin(Op::Sub, lap(u), uvv()), feed);
+        let e_dv = bin(
+            Op::Sub,
+            bin(Op::Add, lap(v), uvv()),
+            bin(Op::Mul, var(k), var(v)),
+        );
+        // A sum of u read by a single instruction keeps u in the registers.
+        let e_total = Expr::Array(ArrayOp::Sum, vec![Expr::Var(u)]);
+        let p = Program::with_layout(&spans, at, &[(du, &e_du), (dv, &e_dv), (total, &e_total)]);
+        let mut r = p.registers();
+        r[h] = 0.01;
+        r[k] = 0.04;
+        for c in 0..n {
+            r[spans[u].at + c] = (c as f64 * 0.37).sin();
+            r[spans[v].at + c] = (c as f64 * 0.11).cos();
+        }
+        let mut want = r.clone();
+        p.run_in_order(&mut want);
+
+        let mut q = p.clone();
+        let states = spans[u].at..spans[v].at + n;
+        let rates = spans[du].at..spans[dv].at + n;
+        let (read, written) = q.place_outside(states.clone(), rates.clone());
+        assert_eq!(read, vec![spans[v]], "u is summed in the registers");
+        assert_eq!(written, vec![spans[du], spans[dv]]);
+        // The registers hold u but not v; the rates go to `out`.
+        let mut regs = r.clone();
+        regs[spans[v].at..spans[v].at + n].fill(f64::NAN);
+        let mut out = vec![f64::NAN; 2 * n];
+        q.run_outside(
+            &mut regs,
+            Outside {
+                reads: &r[states.clone()],
+                reads_at: states.start,
+                writes: &mut out,
+                writes_at: rates.start,
+            },
+        );
+        let bits = |r: &[f64]| r.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&out), bits(&want[rates]));
+        assert_eq!(
+            regs[spans[total].at].to_bits(),
+            want[spans[total].at].to_bits()
+        );
+        // Run plainly, the placed program still gives the same bits.
+        let mut plain = r.clone();
+        q.run(&mut plain);
+        assert_eq!(bits(&plain), bits(&want));
     }
 
     #[test]

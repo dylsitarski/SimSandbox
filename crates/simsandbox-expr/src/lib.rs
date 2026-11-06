@@ -19,6 +19,7 @@ mod cells;
 pub mod program;
 pub mod units;
 
+pub use cells::Outside;
 pub use program::Program;
 
 use std::fmt;
