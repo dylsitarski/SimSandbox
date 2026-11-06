@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- `sum` and `mean` over more than 4096 cells add in fixed chunks (ADR 0077): about 4× faster, on several cores for very large arrays, and the same bits on any machine. Their last bits differ once from earlier versions (Gray–Scott's `v_mean` by 7 parts in 10^15); run files of such models recorded earlier no longer replay bit for bit. A mean or sum in a grid model's rates no longer slows the rest of the evaluation.
 - Headless runs of models linked one way (a model feeding another that does not feed it back) are faster: each runs ahead on a thread of its own, its samples passed on; results are unchanged bit for bit. A chain of five small models runs about 2.5× faster.
 - Models on their own clocks run faster in the app (and headless with inputs, probes or run files): the simulator keeps its threads for the whole run instead of starting them at each instant. Two mid-size models are about 1.5× faster; results are unchanged bit for bit.
 - Large typed-equation models run 10–20% faster: their state arrays are read, and their rates written, where the integrator keeps them instead of being copied at every evaluation. Results are unchanged bit for bit.

@@ -84,6 +84,7 @@ The owner accepted the proposal on 2026-10-29 with these choices: probes thin by
 - **When it splits:** only phases of at least 2^20 cell operations (a stencil counts four); above that, each phase measures itself on one core and on several and keeps the faster, trying the other every 64 calls. On this 4-core virtual machine a 128 × 128 grid stays on one core (four cores were 10% slower), and a 512 × 512 Gray–Scott grid runs 1.7 times faster.
 - **Scalar temporaries** in programs with arrays are no longer reused and lie apart from array temporaries, so a phase can compute its scalars first. Programs without arrays are unchanged.
 - **Differences from the proposal:** sums are not split. They run in order on one core, as before, so their bits are unchanged; a fixed-chunk sum would be exact too, but would change results from those of earlier runs, and sums are a small share of a grid's time. Fast mode (step 4) is not built.
+- **Sums since 2026-11-06:** in fixed chunks, the same bits on any machine and core count ([ADR 0077](0077-sums-in-fixed-chunks.md)).
 
 ## Options considered
 

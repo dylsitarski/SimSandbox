@@ -108,9 +108,12 @@ Headless, linked models met at every instant they shared, even where the links r
 
 A first version passing samples on at every instant made the linked case four times slower: waking the receiving thread for each sample costs more than a step of these small models. Passing them on every 64 instants as one array, and removing per-instant allocations in the instant loop, gave the gains above.
 
+## Sums in fixed chunks (2026-11-06)
+
+[ADR 0077](../decisions/0077-sums-in-fixed-chunks.md). Sums alone, one after another against the fixed rule (four lanes per chunk of 4096 cells): 2^14 cells 11.5 → 2.9 µs, 2^18 187 → 49 µs, 2^22 3.4 → 0.8 ms; from 2^20 cells, chunks on several cores 1.5–2.5× faster than four lanes on one. In a model the sums were a small share: a 512 × 512 Gray–Scott grid with `mean(u)` and `mean(v)` in its rates gained little from the faster sum itself (1.35 → 1.34 s); what cost time was each mean splitting the phase of cell-by-cell work in two. Running such reductions before the phase took it to 1.19 s (the grid without means: 0.97 s).
+
 ## What is left, by expected gain
 
-1. **Sums on several cores**: reductions run in order on one core. A fixed-chunk sum is exact on any machine but changes results from earlier runs' last bits; worth it only where reductions are a large share.
-2. **Integrators' vector updates** (`x + h·k` in RK4 and the like) run on one core over the whole state: for large grids a growing share now that evaluation is split and copies are gone.
-3. **Models feeding each other headless meet on new threads**: within a part of models that feed each other, the headless runner still starts threads at each instant they share (`parallel::each` in `compose::point`); the pool would serve there too.
-4. **Models linked one way in the app**: the app's engine is one simulator; running a feeding model ahead there would mean recording and rewinding models at different times.
+1. **Integrators' vector updates** (`x + h·k` in RK4 and the like) run on one core over the whole state: for large grids a growing share now that evaluation is split and copies are gone.
+2. **Models feeding each other headless meet on new threads**: within a part of models that feed each other, the headless runner still starts threads at each instant they share (`parallel::each` in `compose::point`); the pool would serve there too.
+3. **Models linked one way in the app**: the app's engine is one simulator; running a feeding model ahead there would mean recording and rewinding models at different times.

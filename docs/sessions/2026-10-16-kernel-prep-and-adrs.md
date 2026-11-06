@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-06: ADR 0077 written and built: `program::sum` (`SUM_CHUNK` 4096, four lanes, `SUM_SPLIT` 2^20 on several cores), `Gathering::take_first_array` running reductions and picked cells before a phase; tests of the rule, of several cores and of a hoisted mean; examples compared: only `gs.v_mean` changes (7e-15)
 - 2026-11-06: one-way links run ahead: `Plan::parts` (strongly connected parts, checked against `order`), `Plan::part` (links ending `OUTSIDE`), `Wire`/`Batch` (samples every 64 instants as one array, waiting until feeders pass an instant), `Links::time`, `point` taking and returning fresh links; fewer per-instant allocations in `timeline`/`point`; test against all meeting with lagging feeders (mutations of the waiting caught); 30 runs byte-identical
 - 2026-11-06: the simulator on long-lived threads: `parallel::Pool` (`each` with `fn` items, `wait` spinning 50 µs), `Costs::pooled` (20 µs); `Simulator::step_lent` with `OwnedUnit`/`OwnedSlot`/`OwnedGroup`, `Lent`/`LentSolver`, `take_slot`/`put_slot`, plans in `Arc`; `step_here` the old path; `profile_run --merged`; tests pass, 30 runs byte-identical
 - 2026-11-06: ADR 0076 written and built: `run::Keep` (`wants`, `check`, `thin`), `Thin` (with `undo` for a model on new data evaluated again), `run_keeping`, `run_composition_keeping`; CLI `--signals`, `--every`, `--model` keeping one model; Python `signals=`, `every=`; `profile_run` options; tests against whole runs (single model, models on new data in a loop); 56 default runs byte-identical
@@ -157,6 +158,7 @@
 
 ## Decided
 
+- 2026-11-06 (owner's go-ahead): sums in fixed chunks of 4096 cells with four lanes, changing large sums' last bits once (ADR 0077).
 - 2026-11-06: one-way links split a run into parts only where every link between parts runs forward in the evaluation order; otherwise the group stays one part (exactness first). The app's engine is not split (one simulator, rewind at one time).
 - 2026-11-06: no `unsafe` and no dependency for long-lived threads: a clock's blocks are moved to a pool thread and back at each shared instant; threads spin 50 µs before sleeping (CPU kept busy at most that long between instants).
 - 2026-11-06 (owner's go-ahead): headless runs keep what is asked for, default unchanged (ADR 0076); streaming CSV rows not done.

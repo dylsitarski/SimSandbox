@@ -71,6 +71,52 @@ enum Reduce {
     ArgMax,
 }
 
+/// Up to this many cells a sum adds them one after another; past it, in
+/// chunks of this many, each added in four interleaved lanes, the chunks'
+/// sums then added in order (ADR 0077). The rule depends only on the
+/// number of cells, so a sum is the same bits on any machine and any
+/// number of cores.
+pub const SUM_CHUNK: usize = 4096;
+
+/// From this many cells a sum's chunks are added on several cores.
+const SUM_SPLIT: usize = 1 << 20;
+
+/// The sum of `cells` (ADR 0077).
+pub fn sum(cells: &[f64]) -> f64 {
+    sum_split(cells, cells.len() >= SUM_SPLIT)
+}
+
+/// [`sum`], its chunks added on several cores when `split`: the same bits.
+fn sum_split(cells: &[f64], split: bool) -> f64 {
+    if cells.len() <= SUM_CHUNK {
+        return cells.iter().sum();
+    }
+    // Four lanes: cell i to lane i mod 4, so the additions of a chunk run
+    // side by side (vector instructions) instead of one waiting for the last.
+    let chunk = |c: &[f64]| -> f64 {
+        let mut lanes = [0.0f64; 4];
+        let mut quads = c.chunks_exact(4);
+        for q in &mut quads {
+            lanes[0] += q[0];
+            lanes[1] += q[1];
+            lanes[2] += q[2];
+            lanes[3] += q[3];
+        }
+        for (lane, &x) in lanes.iter_mut().zip(quads.remainder()) {
+            *lane += x;
+        }
+        (lanes[0] + lanes[1]) + (lanes[2] + lanes[3])
+    };
+    if split && simsandbox_core::parallel::threads() > 1 {
+        let chunks: Vec<&[f64]> = cells.chunks(SUM_CHUNK).collect();
+        simsandbox_core::parallel::each(chunks, true, chunk)
+            .into_iter()
+            .sum()
+    } else {
+        cells.chunks(SUM_CHUNK).map(chunk).sum()
+    }
+}
+
 /// The first cell holding the least (`greatest` false) or greatest value,
 /// NaN cells skipped; NaN if all are.
 fn arg_extreme(cells: &[f64], greatest: bool) -> f64 {
@@ -333,8 +379,8 @@ impl ArrIns {
             ArrIns::Reduce { op, d, a, n } => {
                 let cells = &r[a..a + n];
                 r[d] = match op {
-                    Reduce::Sum => cells.iter().sum(),
-                    Reduce::Mean => cells.iter().sum::<f64>() / n as f64,
+                    Reduce::Sum => sum(cells),
+                    Reduce::Mean => sum(cells) / n as f64,
                     Reduce::Min => cells.iter().copied().fold(f64::INFINITY, f64::min),
                     Reduce::Max => cells.iter().copied().fold(f64::NEG_INFINITY, f64::max),
                     Reduce::ArgMin => arg_extreme(cells, false),
@@ -569,6 +615,23 @@ impl Gathering {
         true
     }
 
+    /// Take instruction `i`, a reduction or a picked cell writing the
+    /// scalar `d` from the runs of registers `reads`, to run before the
+    /// phase: if no operation taken reads `d`, `d` lies outside the
+    /// phase's arrays, and no operation taken writes what it reads (it
+    /// would read them as they were before the phase).
+    fn take_first_array(&mut self, i: usize, d: usize, reads: &[(usize, usize)]) -> bool {
+        let all: Vec<usize> = self.written.iter().chain(&self.read).copied().collect();
+        let n = self.n;
+        let overlaps =
+            |(a, m): (usize, usize)| self.ops.iter().any(|&(_, w, _, _)| a < w + n && w < a + m);
+        if self.scalars.contains(&d) || self.inside(d, &all) || reads.iter().any(|&r| overlaps(r)) {
+            return false;
+        }
+        self.first.push(i);
+        true
+    }
+
     fn finish(mut self) -> Phase {
         self.written.sort_unstable();
         self.read.sort_unstable();
@@ -627,6 +690,18 @@ fn plan(code: &[Ins], arrays: &[ArrIns]) -> Vec<Step> {
             unreachable!("scalars above")
         };
         let Some((n, kind, d, a, b, regs)) = arrays[k as usize].as_cell_op() else {
+            // A reduction or a picked cell: before the open phase if it
+            // can be (a mean of a state, say, need not split the phase).
+            let ins = &arrays[k as usize];
+            let scalar_result = matches!(ins, ArrIns::Reduce { .. } | ArrIns::Pick { .. });
+            let touches = ins.touches();
+            if scalar_result
+                && open
+                    .as_mut()
+                    .is_some_and(|g| g.take_first_array(i, touches[0].0, &touches[1..]))
+            {
+                continue;
+            }
             close(&mut open, &mut steps);
             steps.push(Step::One(i));
             continue;
@@ -1216,7 +1291,10 @@ impl Program {
                 },
                 Step::Cells(p) => {
                     for &i in &p.first {
-                        scalar(self.code[i], &mut busy);
+                        match self.code[i] {
+                            Ins::Arr(k) => busy.extend(self.arrays[k as usize].touches()),
+                            ins => scalar(ins, &mut busy),
+                        }
                     }
                     for &at in p.written.iter().chain(&p.read) {
                         arrays.push(Span { at, len: p.n });
@@ -1532,8 +1610,14 @@ mod tests {
                 vec![Expr::Var(u), Expr::Var(h)],
             )
         };
-        // out1 = lap_x(u) + lap_y(u) - u*v*v + k*(1 - u) + sin(v)
-        let reaction = bin(Op::Mul, bin(Op::Mul, var(u), var(v)), var(v));
+        // out1 = lap_x(u) + lap_y(u) - u*v*v + k*(1 - u) + sin(v), the
+        // reaction's u less its mean (a reduction run before the phase)
+        let centred = bin(
+            Op::Sub,
+            var(u),
+            Box::new(Expr::Array(ArrayOp::Mean, vec![Expr::Var(u)])),
+        );
+        let reaction = bin(Op::Mul, bin(Op::Mul, centred, var(v)), var(v));
         let feed = bin(
             Op::Mul,
             var(k),
@@ -1596,6 +1680,14 @@ mod tests {
         let steps = plan(&p.code, &p.arrays);
         let phases = steps.iter().filter(|s| matches!(s, Step::Cells(_))).count();
         assert!(phases >= 1 && phases < steps.len(), "{steps:?}");
+        // The mean of u runs before the first phase, not between phases.
+        let Some(Step::Cells(first)) = steps.iter().find(|s| matches!(s, Step::Cells(_))) else {
+            unreachable!("a phase")
+        };
+        assert!(first
+            .first
+            .iter()
+            .any(|&i| matches!(p.code[i], Ins::Arr(k) if matches!(p.arrays[k as usize], ArrIns::Reduce { .. }))));
         let mut r = p.registers();
         r[h] = 0.01;
         r[lo] = -0.5;
@@ -1698,6 +1790,44 @@ mod tests {
         let mut plain = r.clone();
         q.run(&mut plain);
         assert_eq!(bits(&plain), bits(&want));
+    }
+
+    /// A sum's definition (ADR 0077): up to `SUM_CHUNK` cells one after
+    /// another; past it, chunks in four lanes, added in order; the same
+    /// bits on several cores.
+    #[test]
+    fn sums_follow_their_fixed_rule_on_any_number_of_cores() {
+        let cells: Vec<f64> = (0..(3 * SUM_CHUNK + 7))
+            .map(|i| ((i as f64) * 0.618).sin() * 10f64.powi((i % 7) as i32 - 3))
+            .collect();
+        let small = &cells[..SUM_CHUNK];
+        assert_eq!(sum(small).to_bits(), small.iter().sum::<f64>().to_bits());
+        let by_rule = |c: &[f64]| -> f64 {
+            c.chunks(SUM_CHUNK)
+                .map(|chunk| {
+                    let mut lanes = [0.0f64; 4];
+                    for (i, &x) in chunk.iter().enumerate() {
+                        lanes[i % 4] += x;
+                    }
+                    (lanes[0] + lanes[1]) + (lanes[2] + lanes[3])
+                })
+                .sum()
+        };
+        assert_eq!(sum(&cells).to_bits(), by_rule(&cells).to_bits());
+        assert_eq!(
+            sum_split(&cells, true).to_bits(),
+            sum_split(&cells, false).to_bits()
+        );
+        // As accurate as one after another, here more: against the sum
+        // done exactly in integers.
+        let ints: Vec<f64> = (0..(5 * SUM_CHUNK))
+            .map(|i| ((i * 7919) % 1000) as f64 * 0.001 + 1e6)
+            .collect();
+        let exact: i128 = (0..(5 * SUM_CHUNK))
+            .map(|i| ((i * 7919) % 1000) as i128 + 1_000_000_000)
+            .sum();
+        let exact = exact as f64 / 1000.0;
+        assert!((sum(&ints) - exact).abs() <= (ints.iter().sum::<f64>() - exact).abs());
     }
 
     #[test]
