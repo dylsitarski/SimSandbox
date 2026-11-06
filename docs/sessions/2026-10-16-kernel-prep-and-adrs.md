@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-06: models feeding each other headless on a pool: `compose::lend`, `step_model`/`step_lent`/`record_lent`, `point` taking the pool, `Costs::pooled`; error messages unchanged (`named`); looped two-grid cases; all runs byte-identical
 - 2026-11-06: integrators' updates on several cores: `integrators::SPLIT` (2^20), `by_parts`, `rk4_step_split`, `euler_split`, chosen per step so smaller states keep the original loops (inside them the split cost a 128 × 128 grid 3%); test against the original loops; 1024 × 1024 state byte-identical
 - 2026-11-06: README and setup guide run the app and CLI with `--release`; a debug and release builds section (Gray–Scott at about 57× instead of 200× in a debug build, confirmed by the owner)
 - 2026-11-06: ADR 0077 written and built: `program::sum` (`SUM_CHUNK` 4096, four lanes, `SUM_SPLIT` 2^20 on several cores), `Gathering::take_first_array` running reductions and picked cells before a phase; tests of the rule, of several cores and of a hoisted mean; examples compared: only `gs.v_mean` changes (7e-15)

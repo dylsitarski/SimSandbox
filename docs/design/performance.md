@@ -124,8 +124,19 @@ Euler's and RK4's vector updates (`x + h·k`) split over the cores from 2^20 val
 
 On the 512 × 512 grid the updates took about 125 ms of 1.0 s; split at 2^17 they made 256 × 256 20% slower and 512 × 512 no faster. Putting the split inside the existing loops also made the 128 × 128 grid 3% slower (the compiler treats the loops differently); the split versions are now functions of their own (`rk4_step_split`, `euler_split`), chosen once per step, and smaller states run the original loops. Dormand–Prince's stages are not split (its error estimate is a sum, and its stages read seven arrays: a separate split version was not worth it here); the implicit methods' solves are their own matter.
 
+## Models feeding each other on long-lived threads (2026-11-06)
+
+Headless, models that feed each other meet at every instant they share; between instants they stepped on threads started for that instant (`parallel::each`). They now step, and record, on a pool kept for their part's run, each model moved to a thread and back (`compose::lend`), as the app's engine does with clocks (ADR 0066 As built). Two Gray–Scott models on their own clocks linked both ways (each driving the other's `F`), keeping one output, medians of five:
+
+| Grid per model | Before | After |
+|---|---|---|
+| 128 × 128, 200 steps | 0.43 | 0.34 |
+| 48 × 48, 3000 steps | 1.43 | 0.96 |
+| 24 × 24, 20 000 steps | 3.27 | 2.01 |
+
+Parts of one model (the linked and chain cases), unlinked grids and single models are unchanged; every example and case gives the same bytes.
+
 ## What is left, by expected gain
 
-1. **Models feeding each other headless meet on new threads**: within a part of models that feed each other, the headless runner still starts threads at each instant they share (`parallel::each` in `compose::point`); the pool would serve there too.
-2. **Models linked one way in the app**: the app's engine is one simulator; running a feeding model ahead there would mean recording and rewinding models at different times.
-3. **Updates on states from 2^17 to 2^20 values**: memory-bound, gaining from several cores only with threads that are already running and close to the data (a pool kept by the integrator); the gain would be at most about a third of the updates' share.
+1. **Models linked one way in the app**: the app's engine is one simulator; running a feeding model ahead there would mean recording and rewinding models at different times.
+2. **Updates on states from 2^17 to 2^20 values**: memory-bound, gaining from several cores only with threads that are already running and close to the data (a pool kept by the integrator); the gain would be at most about a third of the updates' share.

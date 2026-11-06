@@ -801,11 +801,14 @@ fn timeline(
     }
     let clocked: Vec<usize> = (0..runs.len()).filter(|&u| !runs[u].on_data).collect();
     let names = &c.names;
-    let mut costs = simsandbox_core::parallel::Costs::new(runs.len());
+    let mut costs = simsandbox_core::parallel::Costs::pooled(runs.len());
+    // Threads kept for the part's run, started the first time models are
+    // worth stepping on several cores.
+    let mut pool: Option<simsandbox_core::parallel::Pool> = None;
     // Samples from parts feeding this one at the start come first.
     wire.wait(Some(0));
     let fresh = wire.apply(0, &mut links, Vec::new());
-    let fresh = point(c, &mut runs, &clocked, true, &mut links, &[], false, fresh)?;
+    let fresh = point(c, &mut runs, &clocked, true, &mut links, &[], None, fresh)?;
     wire.send(0, &fresh, &links);
     // Which links are fresh at an instant, kept between instants.
     let mut buffer = fresh;
@@ -837,7 +840,7 @@ fn timeline(
             // Only received samples now: models on new data they reach
             // are evaluated; the rest take them at their own instants.
             buffer = if runs.iter().any(|r| r.on_data) {
-                let fresh = point(c, &mut runs, &[], false, &mut links, &[], false, fresh)?;
+                let fresh = point(c, &mut runs, &[], false, &mut links, &[], None, fresh)?;
                 wire.send(tick, &fresh, &links);
                 fresh
             } else {
@@ -859,40 +862,39 @@ fn timeline(
         // Between points the models step apart, their link inputs held:
         // by `dt`, or to their next listed time; on several cores when
         // worth it (ADR 0066 step 6).
-        let step_one = |u: usize, r: &mut Running| {
-            let now = r.sim.time();
-            r.apply(now)?;
-            let dt = match r.listed.get(r.taken as usize) {
-                Some(&(_, t)) => t - now,
-                None => r.dt,
-            };
-            r.sim.step(dt).map_err(|e| format!("{}: {e}", names[u]))?;
-            r.taken += 1;
-            Ok::<(), String>(())
-        };
         let cores = costs.worth(parallel, &reaching);
         if reaching.len() == 1 {
             // One model: nothing to share or to measure for sharing.
             let u = reaching[0];
-            step_one(u, &mut runs[u])?;
-        } else {
-            let work: Vec<(usize, &mut Running)> = runs
-                .iter_mut()
-                .enumerate()
-                .filter(|(u, _)| reaching.contains(u))
-                .collect();
-            let done = simsandbox_core::parallel::each(work, cores, |(u, r)| {
-                let start = std::time::Instant::now();
-                let stepped = step_one(u, r);
-                (u, stepped, start.elapsed())
+            step_model(&mut runs[u]).map_err(|e| named(&names[u], e))?;
+        } else if cores {
+            // On the part's pool of threads, kept for the run: each model
+            // lent to it, moved out and back (ADR 0066 step 6).
+            let threads = simsandbox_core::parallel::threads();
+            let pool = pool.get_or_insert_with(|| {
+                simsandbox_core::parallel::Pool::new(threads.saturating_sub(1))
             });
-            for (u, stepped, took) in done {
+            for (u, (stepped, took)) in lend(pool, &mut runs, &reaching, step_lent) {
                 costs.record(u, took);
-                stepped?;
+                stepped.map_err(|e| named(&names[u], e))?;
+            }
+        } else {
+            for &u in &reaching {
+                let start = std::time::Instant::now();
+                let stepped = step_model(&mut runs[u]);
+                costs.record(u, start.elapsed());
+                stepped.map_err(|e| named(&names[u], e))?;
             }
         }
         let fresh = point(
-            c, &mut runs, &reaching, false, &mut links, &due, cores, fresh,
+            c,
+            &mut runs,
+            &reaching,
+            false,
+            &mut links,
+            &due,
+            pool.as_ref().filter(|_| cores),
+            fresh,
         )?;
         wire.send(tick, &fresh, &links);
         buffer = fresh;
@@ -1012,12 +1014,12 @@ fn start(c: &mut Composition, t_end: f64, keep: &Keep) -> Result<Vec<Running>, S
 #[allow(clippy::too_many_arguments)]
 fn point(
     c: &Plan,
-    runs: &mut [Running],
+    runs: &mut Vec<Running>,
     reaching: &[usize],
     start: bool,
     links: &mut Links,
     due: &[(usize, f64)],
-    parallel: bool,
+    pool: Option<&simsandbox_core::parallel::Pool>,
     fresh: Vec<bool>,
 ) -> Result<Vec<bool>, String> {
     let order: Vec<usize> = c
@@ -1098,20 +1100,81 @@ fn point(
     }
     // Each model records its own outputs: on several cores when its
     // stepping was (ADR 0066 step 6).
-    if parallel {
-        let recording: Vec<&mut Running> = runs
-            .iter_mut()
-            .enumerate()
-            .filter(|(u, _)| reaching.contains(u))
-            .map(|(_, r)| r)
-            .collect();
-        simsandbox_core::parallel::each(recording, parallel, Running::record);
+    if let Some(pool) = pool.filter(|_| reaching.len() > 1) {
+        lend(pool, runs, reaching, record_lent);
     } else {
         for &u in reaching {
             runs[u].record();
         }
     }
     Ok(fresh)
+}
+
+/// Step one model between instants, its link inputs held: by `dt`, or to
+/// its next listed time. An error from the step itself is `Err((true,
+/// …))`, to be named by its model; one from scheduled input `(false, …)`,
+/// which names itself.
+fn step_model(r: &mut Running) -> Result<(), (bool, String)> {
+    let now = r.sim.time();
+    r.apply(now).map_err(|e| (false, e))?;
+    let dt = match r.listed.get(r.taken as usize) {
+        Some(&(_, t)) => t - now,
+        None => r.dt,
+    };
+    r.sim.step(dt).map_err(|e| (true, e.to_string()))?;
+    r.taken += 1;
+    Ok(())
+}
+
+/// A stepping error as the instant loop reports it.
+fn named(name: &str, (of_step, e): (bool, String)) -> String {
+    if of_step {
+        format!("{name}: {e}")
+    } else {
+        e
+    }
+}
+
+/// How a model's step went, and what it took.
+type Stepped = (Result<(), (bool, String)>, std::time::Duration);
+
+/// [`step_model`] on a model lent to a pool, timed.
+fn step_lent((u, mut r): (usize, Running)) -> (usize, Running, Stepped) {
+    let start = std::time::Instant::now();
+    let stepped = step_model(&mut r);
+    (u, r, (stepped, start.elapsed()))
+}
+
+/// [`Running::record`] on a model lent to a pool.
+fn record_lent((u, mut r): (usize, Running)) -> (usize, Running, ()) {
+    r.record();
+    (u, r, ())
+}
+
+/// Run `f` on the models `which` on `pool`'s threads: each moved out of
+/// `runs`, worked on and moved back; what each gave, by model.
+fn lend<R: Send + 'static>(
+    pool: &simsandbox_core::parallel::Pool,
+    runs: &mut Vec<Running>,
+    which: &[usize],
+    f: fn((usize, Running)) -> (usize, Running, R),
+) -> Vec<(usize, R)> {
+    let mut slots: Vec<Option<Running>> = std::mem::take(runs).into_iter().map(Some).collect();
+    let items: Vec<(usize, Running)> = which
+        .iter()
+        .map(|&u| (u, slots[u].take().expect("each model lent once")))
+        .collect();
+    let done = pool.each(items, f);
+    let mut out = Vec::with_capacity(done.len());
+    for (u, r, result) in done {
+        slots[u] = Some(r);
+        out.push((u, result));
+    }
+    *runs = slots
+        .into_iter()
+        .map(|r| r.expect("every model back"))
+        .collect();
+    out
 }
 
 /// The probes on model `u` sample if due: each link they feed takes the
