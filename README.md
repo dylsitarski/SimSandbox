@@ -19,7 +19,7 @@ cargo run --release -p simsandbox-cli -- render examples/grazing.ssbx.json --t-e
 pip install ./python                             # Python: import simsandbox
 ```
 
-Use `--release` to run models: a debug build (`cargo run` without it) compiles faster but simulates 15–20 times slower, so the app cannot keep up with a large model's speed (Gray–Scott plays at about 57× instead of 200×). Debug builds are for developing and debugging the code ([setup guide](docs/guides/development-setup.md#debug-and-release-builds)).
+Use `--release` to run models: a debug build (`cargo run` without it) compiles faster but simulates more than ten times slower, so the app cannot keep up with a large model's speed (Gray–Scott plays at about 57× instead of 200×). Debug builds are for developing and debugging the code ([setup guide](docs/guides/development-setup.md#debug-and-release-builds)).
 
 People and AI agents can describe, check, run and render models without the window: see the [headless guide](docs/guides/headless.md).
 
