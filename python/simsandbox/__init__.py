@@ -278,10 +278,17 @@ class Model:
         t_end: float | None = None,
         dt: float | None = None,
         inputs: "Iterable[tuple[float, str, float]] | Run | None" = None,
+        signals: "Iterable[str] | None" = None,
+        every: int = 1,
     ) -> "Results | Composed":
         """Run to ``t_end`` in steps of ``dt`` (each defaulting to the file's
         ``run`` section). A model whose only runs are its studies'
-        (ADR 0071) gives a row per run. ``inputs`` are
+        (ADR 0071) gives a row per run. ``signals`` keeps only those
+        outputs (``"block.port"``, ``"block"`` for all its ports; in a
+        model using models also a model's name, ``"."`` for the top
+        level, or a path in one, ``"plant/car.v"``), and ``every`` only
+        every so many steps and the last (ADR 0076): less memory and
+        time, the same values. ``inputs`` are
         changes made during the run (ADR 0058): ``(t, key, value)``
         tuples, each applied at the first step boundary at or after ``t``
         along with the file's schedule (``run.inputs``); or a :class:`Run`,
@@ -294,12 +301,18 @@ class Model:
         ``"slow/u.y"``)."""
         # A use names a model and has no type; a study names one too (ADR 0070).
         uses = any(("file" in b or "model" in b) and "type" not in b for b in self.data.get("blocks", []))
+        if isinstance(signals, str):
+            signals = [signals]
+        sig = None if signals is None else [str(s) for s in signals]
+        if int(every) < 1:
+            raise ValueError("every must be 1 or more steps")
+        every = int(every)
         if uses and inputs is None:
             if dt is not None:
                 raise ValueError("a model using models keeps each model's own clock: dt does not apply")
             try:
                 with _in_folder(self.folder):
-                    return Composed(_native.run_composition(self.to_json(), t_end))
+                    return Composed(_native.run_composition(self.to_json(), t_end, sig, every))
             except ModelError as e:
                 with _in_folder(self.folder):
                     report = json.loads(_native.check(self.to_json()))
@@ -308,7 +321,7 @@ class Model:
         text = model.to_json()
         try:
             with _in_folder(self.folder):
-                raw = _native.run(text, t_end, dt, track)
+                raw = _native.run(text, t_end, dt, track, sig, every)
         except ModelError as e:
             with _in_folder(self.folder):
                 report = json.loads(_native.check(text))

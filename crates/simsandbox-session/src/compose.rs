@@ -5,7 +5,7 @@
 //! each taking the latest samples of the probes feeding it, and its probes
 //! sample.
 
-use crate::run::{Output, Population, Results, DEFAULT_T_END};
+use crate::run::{Keep, Output, Population, Results, Thin, DEFAULT_T_END};
 use crate::session::{set_key, InputEvent, Track};
 use serde_json::{json, Value};
 use simsandbox_core::block::Shape;
@@ -187,6 +187,8 @@ struct Running {
     variable: Vec<(simsandbox_core::graph::BlockId, String)>,
     results: Results,
     times: Vec<f64>,
+    /// Which of its steps it keeps (ADR 0076).
+    thin: Thin,
     events: Track,
     dt: f64,
     /// Its step in ticks, the steps it takes, and those taken; all 0 for
@@ -205,7 +207,30 @@ struct Running {
 }
 
 impl Running {
+    /// Record the step just reached, if kept.
     fn record(&mut self) {
+        if self.thin.keep() {
+            self.record_now();
+        }
+    }
+
+    /// Take back the latest step's record, to record it again.
+    fn unrecord(&mut self) {
+        if !self.thin.undo() {
+            return;
+        }
+        self.times.pop();
+        for o in &mut self.results.outputs {
+            let n = o.shape.len();
+            o.values.truncate(o.values.len() - n);
+        }
+        for p in &mut self.results.populations {
+            p.frames.pop();
+        }
+    }
+
+    /// Record the step just reached.
+    fn record_now(&mut self) {
         self.times.push(self.sim.time());
         for (o, (id, port)) in self.results.outputs.iter_mut().zip(&self.fixed) {
             o.values
@@ -268,6 +293,18 @@ pub fn run_composition_with(
     t_end: Option<f64>,
     parallel: Parallel,
 ) -> Result<Composed, String> {
+    run_composition_keeping(text, registry, t_end, parallel, &Keep::default())
+}
+
+/// [`run_composition_with`], keeping only what `keep` asks for (ADR
+/// 0076): outputs by full name or model, every few steps of each model.
+pub fn run_composition_keeping(
+    text: &str,
+    registry: &Registry,
+    t_end: Option<f64>,
+    parallel: Parallel,
+    keep: &Keep,
+) -> Result<Composed, String> {
     if let Some(t) = t_end.filter(|t| !(t.is_finite() && *t > 0.0)) {
         return Err(format!("the end time must be positive, got {t}"));
     }
@@ -287,7 +324,7 @@ pub fn run_composition_with(
     let end_tick = c.ticks.within(t_end).map_err(|e| e.to_string())?;
     let mut warnings = c.warnings.clone();
     warnings.extend(c.loops.iter().map(|l| format!("loop between models: {l}")));
-    let runs = start(&mut c, t_end)?;
+    let runs = start(&mut c, t_end, keep)?;
     // Models no link joins never meet: each group runs its whole time on
     // a thread of its own, meeting none of the others (ADR 0066 step 6).
     // Linked models meet at every instant they share.
@@ -333,6 +370,10 @@ pub fn run_composition_with(
             .iter()
             .zip(runs)
             .map(|(d, mut r)| {
+                // Its last step, kept whatever `every` says.
+                if r.thin.behind {
+                    r.record_now();
+                }
                 r.results.index = vec![("t".into(), std::mem::take(&mut r.times))];
                 (d.name().to_string(), r.results)
             })
@@ -511,7 +552,7 @@ fn timeline(
 }
 
 /// Each domain's simulator and recording, before the first step.
-fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
+fn start(c: &mut Composition, t_end: f64, keep: &Keep) -> Result<Vec<Running>, String> {
     // Scheduled input by full name goes to the domain holding it.
     let mut schedules: Vec<Vec<InputEvent>> = c.domains.iter().map(|_| Vec::new()).collect();
     for e in &c.file.run.inputs {
@@ -525,6 +566,7 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
         });
     }
     let mut runs = Vec::new();
+    let mut all = Vec::new();
     for (k, (u, schedule)) in c.domains.iter_mut().zip(schedules).enumerate() {
         let (every, total) = match c.clocks[k] {
             Some(i) => (
@@ -539,6 +581,7 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
             format!("{}/", u.path)
         };
         let name = u.name().to_string();
+        let model = name.clone();
         let on_data = u.on_data;
         let loaded = &mut u.loaded;
         let mut fixed = Vec::new();
@@ -550,6 +593,10 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
             let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
             for port in spec.outputs() {
                 let name = format!("{prefix}{}.{}", entry.name, port.name);
+                all.push((model.clone(), name.clone()));
+                if !keep.wants(&model, &name) {
+                    continue;
+                }
                 if let Shape::Population { dim } = port.shape {
                     variable.push((id, port.name.clone()));
                     populations.push(Population {
@@ -564,7 +611,9 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
                         shape: port.shape,
                         // Its rows, when it steps every `dt`: room from the
                         // start, not grown as they come.
-                        values: Vec::with_capacity((total as usize + 1) * port.shape.len()),
+                        values: Vec::with_capacity(
+                            (total as usize / keep.every.max(1) + 2) * port.shape.len(),
+                        ),
                     });
                 }
             }
@@ -589,6 +638,7 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
             variable,
             results,
             times: Vec::new(),
+            thin: keep.thin(),
             events: Track::new(schedule, Vec::new()),
             dt: u.dt,
             every,
@@ -599,6 +649,7 @@ fn start(c: &mut Composition, t_end: f64) -> Result<Vec<Running>, String> {
             listed: c.times[k].clone(),
         });
     }
+    keep.check(&all)?;
     Ok(runs)
 }
 
@@ -672,15 +723,7 @@ fn point(
             // Evaluated again with what arrived: its record for this
             // instant is the new one.
             if evaluated[u].is_some() {
-                let r = &mut runs[u];
-                r.times.pop();
-                for o in &mut r.results.outputs {
-                    let n = o.shape.len();
-                    o.values.truncate(o.values.len() - n);
-                }
-                for p in &mut r.results.populations {
-                    p.frames.pop();
-                }
+                runs[u].unrecord();
             }
             runs[u]
                 .evaluate(t)
@@ -790,6 +833,50 @@ mod tests {
             run_composition(&model.to_string(), &registry(), None)
         })
         .unwrap()
+    }
+
+    /// Each model's rows as kept with `every` (and its last), and its
+    /// outputs `signals` keeps, equal bit for bit to the whole run's.
+    fn keeps_the_same(dir: &Path, model: &Value, signals: Option<Vec<String>>, every: usize) {
+        let all = run_in(dir, model);
+        let keep = Keep {
+            signals: signals.clone(),
+            every,
+        };
+        let some = simsandbox_core::registry::in_folder(Some(dir), || {
+            run_composition_keeping(&model.to_string(), &registry(), None, Parallel::Auto, &keep)
+        })
+        .unwrap();
+        for ((name, full), (_, kept)) in all.models.iter().zip(&some.models) {
+            let rows = full.rows();
+            let mut want: Vec<usize> = (0..rows).step_by(every).collect();
+            if rows > 0 && want.last() != Some(&(rows - 1)) {
+                want.push(rows - 1);
+            }
+            let pick = |v: &[f64], n: usize| -> Vec<u64> {
+                want.iter()
+                    .flat_map(|&r| v[r * n..(r + 1) * n].iter().map(|x| x.to_bits()))
+                    .collect()
+            };
+            assert_eq!(bits(&kept.index[0].1), pick(&full.index[0].1, 1), "{name}");
+            let names: Vec<&str> = full
+                .outputs
+                .iter()
+                .map(|o| o.name.as_str())
+                .filter(|n| keep.wants(name, n))
+                .collect();
+            let got: Vec<&str> = kept.outputs.iter().map(|o| o.name.as_str()).collect();
+            assert_eq!(got, names, "{name}");
+            for o in &kept.outputs {
+                let f = full.outputs.iter().find(|f| f.name == o.name).unwrap();
+                assert_eq!(
+                    bits(&o.values),
+                    pick(&f.values, o.shape.len()),
+                    "{}",
+                    o.name
+                );
+            }
+        }
     }
 
     fn check_in(dir: &Path, v: &Value) -> Value {
@@ -2909,6 +2996,46 @@ mod tests {
         let x = counted(12);
         let w: Vec<f64> = (0..=12).map(|n| 2.0 * x[3 * (n / 3)]).collect();
         assert_eq!(bits(composed.values("a/count.y").unwrap()), bits(&w));
+        // Keeping less (ADR 0076), d evaluated again within instants.
+        let model = json!({"format": 1, "run": {"t_end": 1.2},
+            "blocks": [use_of("a", "a.ssbx.json"), use_of("d", "double.ssbx.json")],
+            "connections": [
+                {"from": "probe:p.a/count.x", "to": "d/u"},
+                {"from": "probe:q.d/f.y", "to": "a/w"}],
+            "controls": {"probes": [
+                {"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.3}},
+                {"name": "q", "record": ["d/f.y"]}]}});
+        for every in [1, 2, 5] {
+            keeps_the_same(&dir, &model, None, every);
+        }
+        keeps_the_same(&dir, &model, Some(vec!["a/count.y".into(), "d".into()]), 3);
+        // Two models on new data in a loop: d is evaluated again within an
+        // instant once e answers, its row for the instant taken back.
+        write(
+            &dir,
+            "add.ssbx.json",
+            &json!({"format": 1,
+            "blocks": [
+                {"name": "u", "type": "input.value", "settings": {"unit": "m"}},
+                {"name": "w", "type": "input.value", "settings": {"unit": "m*s"}},
+                {"name": "f", "type": "eq.equations", "equations": [
+                    "input u [m]", "input w [m*s]", "param c [1/s] = 0.25", "y = u + c*w [m]"]}],
+            "connections": [{"from": "u.y", "to": "f.u"}, {"from": "w.y", "to": "f.w"}]}),
+        );
+        let looped = json!({"format": 1, "run": {"t_end": 1.2},
+            "blocks": [use_of("a", "a.ssbx.json"), use_of("d", "add.ssbx.json"),
+                use_of("e", "double.ssbx.json")],
+            "connections": [
+                {"from": "probe:p.a/count.x", "to": "d/u"},
+                {"from": "probe:q.e/f.y", "to": "d/w"},
+                {"from": "probe:r.d/f.y", "to": "e/u"}],
+            "controls": {"probes": [
+                {"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.3}},
+                {"name": "q", "record": ["e/f.y"]},
+                {"name": "r", "record": ["d/f.y"]}]}});
+        for every in [1, 2, 3] {
+            keeps_the_same(&dir, &looped, None, every);
+        }
         assert!(!composed
             .warnings
             .iter()

@@ -66,6 +66,29 @@ def test_connected_blocks_with_feedthrough_and_parameter_edits():
     assert car.block("cruise")["params"]["ki"] == 0.0
 
 
+def test_a_run_keeps_only_what_it_is_asked_for():
+    car = ss.Model.example("Cruise control")
+    full = car.run(t_end=20.0)
+    some = car.run(t_end=20.0, signals=["car.v", "cruise"], every=7)
+    # Every 7th step and the last, the same values bit for bit.
+    rows = list(range(0, full.rows, 7))
+    if rows[-1] != full.rows - 1:
+        rows.append(full.rows - 1)
+    assert np.array_equal(some.index["t"], full.index["t"][rows])
+    assert np.array_equal(some["car.v"], full["car.v"][rows])
+    kept = set(some.outputs)
+    assert "car.v" in kept and all(n == "car.v" or n.startswith("cruise.") for n in kept)
+    with pytest.raises(ss.ModelError, match="no output named nope"):
+        car.run(t_end=1.0, signals=["nope"])
+    # Models using models: one car's outputs, every other step.
+    platoon = ss.Model.example("Platoon")
+    whole = platoon.run(t_end=1.0)
+    one = platoon.run(t_end=1.0, signals="car2", every=2)
+    assert np.array_equal(one["car2/car.v"], whole["car2/car.v"][::2])
+    with pytest.raises(KeyError):
+        one["car1/car.v"]
+
+
 def test_studies_and_grids_come_back_as_arrays():
     # The resonance curve is a study (ADR 0071): a row per run.
     curve = ss.Model.example("Resonance curve").run()

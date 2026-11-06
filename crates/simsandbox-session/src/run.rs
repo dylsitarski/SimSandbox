@@ -16,6 +16,106 @@ use std::path::{Path, PathBuf};
 /// Used when neither the caller nor the model file gives an end time.
 pub const DEFAULT_T_END: f64 = 20.0;
 
+/// What a headless run keeps (ADR 0076): by default every output at
+/// every step. Keeping less saves memory and time; what is kept is the
+/// same values, bit for bit.
+#[derive(Clone, Debug, Default)]
+pub struct Keep {
+    /// The outputs to keep, each named as `block.port`, as `block` (all
+    /// its ports), or, in a model using models, as a model's name (all
+    /// its outputs: `plant`, or `.` for the top level's own blocks) or a
+    /// path inside one (`plant/car`, `plant/car.v`). `None`: all.
+    pub signals: Option<Vec<String>>,
+    /// Keep every `every`-th step from the first, and always the last
+    /// (0 or 1: every step).
+    pub every: usize,
+}
+
+impl Keep {
+    /// Whether output `name` of model `model` (`.` for a single model's or
+    /// the top level's own) is kept.
+    pub fn wants(&self, model: &str, name: &str) -> bool {
+        let Some(signals) = &self.signals else {
+            return true;
+        };
+        signals.iter().any(|s| {
+            s == model
+                || name == s
+                || name
+                    .strip_prefix(s.as_str())
+                    .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('/'))
+        })
+    }
+
+    /// An error naming each signal that keeps nothing of `outputs`, as
+    /// (model, name).
+    pub fn check(&self, outputs: &[(String, String)]) -> Result<(), String> {
+        let Some(signals) = &self.signals else {
+            return Ok(());
+        };
+        let one = |s: &String| Keep {
+            signals: Some(vec![s.clone()]),
+            every: 1,
+        };
+        let missing: Vec<&str> = signals
+            .iter()
+            .filter(|s| !outputs.iter().any(|(m, n)| one(s).wants(m, n)))
+            .map(String::as_str)
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let mut names: Vec<&str> = outputs.iter().map(|(_, n)| n.as_str()).collect();
+        let more = names.len().saturating_sub(12);
+        names.truncate(12);
+        Err(format!(
+            "no output named {}; outputs: {}{}",
+            missing.join(", "),
+            names.join(", "),
+            if more > 0 {
+                format!(" and {more} more")
+            } else {
+                String::new()
+            }
+        ))
+    }
+
+    /// The steps to keep, counted as they come.
+    pub(crate) fn thin(&self) -> Thin {
+        Thin {
+            every: self.every.max(1),
+            seen: 0,
+            behind: false,
+        }
+    }
+}
+
+/// Which steps a run keeps: every `every`-th, and the last (`behind`
+/// says the latest was left out, so it is kept at the end).
+#[derive(Clone, Debug)]
+pub(crate) struct Thin {
+    every: usize,
+    seen: usize,
+    pub behind: bool,
+}
+
+impl Thin {
+    /// Whether to keep the step just reached.
+    pub fn keep(&mut self) -> bool {
+        let keep = self.seen.is_multiple_of(self.every);
+        self.seen += 1;
+        self.behind = !keep;
+        keep
+    }
+
+    /// Forget the latest step; whether it was kept.
+    pub fn undo(&mut self) -> bool {
+        self.seen -= 1;
+        self.behind = false;
+        self.seen.is_multiple_of(self.every)
+    }
+}
+
 /// One fixed-size output, `block.port`, at every row.
 #[derive(Clone, Debug)]
 pub struct Output {
@@ -161,6 +261,18 @@ pub fn run_with(
     dt: Option<f64>,
     track: Vec<InputEvent>,
 ) -> Result<Results, String> {
+    run_keeping(text, registry, t_end, dt, track, &Keep::default())
+}
+
+/// [`run_with`], keeping only what `keep` asks for (ADR 0076).
+pub fn run_keeping(
+    text: &str,
+    registry: &Registry,
+    t_end: Option<f64>,
+    dt: Option<f64>,
+    track: Vec<InputEvent>,
+    keep: &Keep,
+) -> Result<Results, String> {
     for v in [t_end, dt].into_iter().flatten() {
         if !(v.is_finite() && v > 0.0) {
             return Err("the end time and step must be positive".into());
@@ -174,7 +286,22 @@ pub fn run_with(
         && loaded.file.run.inputs.is_empty()
         && loaded.model.clocks().0.is_empty();
     if untimed && only_studies_in_time(&loaded) {
-        return study_rows(loaded);
+        // A row per run: kept whole, only the outputs chosen.
+        let mut r = study_rows(loaded)?;
+        let all: Vec<(String, String)> = r
+            .outputs
+            .iter()
+            .map(|o| (".".to_string(), o.name.clone()))
+            .chain(
+                r.populations
+                    .iter()
+                    .map(|p| (".".to_string(), p.name.clone())),
+            )
+            .collect();
+        keep.check(&all)?;
+        r.outputs.retain(|o| keep.wants(".", &o.name));
+        r.populations.retain(|p| keep.wants(".", &p.name));
+        return Ok(r);
     }
     let dt = dt.unwrap_or(loaded.file.run.dt);
     let t_end = end_time(&loaded.model, t_end.or(loaded.file.run.t_end));
@@ -194,11 +321,16 @@ pub fn run_with(
 
     let mut fixed = Vec::new();
     let mut variable = Vec::new();
+    let mut all = Vec::new();
     for entry in &loaded.flat.blocks {
         let id = loaded.ids[&entry.name];
         let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
         for port in spec.outputs() {
             let name = format!("{}.{}", entry.name, port.name);
+            all.push((".".to_string(), name.clone()));
+            if !keep.wants(".", &name) {
+                continue;
+            }
             if let Shape::Population { dim } = port.shape {
                 variable.push((id, port.name.clone(), name, dim));
             } else {
@@ -206,16 +338,18 @@ pub fn run_with(
             }
         }
     }
+    keep.check(&all)?;
     // A model using models steps from instant to instant of its clocks
     // (ADR 0066 step 5), not by `dt`.
     let clocked = !loaded.model.clocks().0.is_empty();
     let mut sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
     // The rows recorded, when known: room for them from the start, not
     // grown (and copied) as they come.
+    let steps = (t_end / dt).round() as usize;
     let rows = if clocked {
         0
     } else {
-        (t_end / dt).round() as usize + 1
+        steps / keep.every.max(1) + 2
     };
     let mut r = Results {
         index: Vec::new(),
@@ -263,12 +397,22 @@ pub fn run_with(
     if apply(&mut sim)? {
         sim.restart(0.0).map_err(|e| e.to_string())?;
     }
-    let mut t = vec![sim.time()];
+    let mut t = Vec::with_capacity(rows);
+    let mut thin = keep.thin();
+    thin.keep();
+    t.push(sim.time());
     record(&mut r, &sim);
     advance(&mut sim, (dt, t_end, clocked), &mut apply, |sim| {
-        t.push(sim.time());
-        record(&mut r, sim);
+        if thin.keep() {
+            t.push(sim.time());
+            record(&mut r, sim);
+        }
     })?;
+    // The last step, kept whatever `every` says.
+    if thin.behind {
+        t.push(sim.time());
+        record(&mut r, &sim);
+    }
     r.index = vec![("t".to_string(), t)];
     Ok(r)
 }
@@ -938,6 +1082,55 @@ mod tests {
             .find(|e| e.text.contains(part))
             .unwrap()
             .text
+    }
+
+    /// Keeping less (ADR 0076) gives the chosen rows and outputs of the
+    /// whole run, bit for bit, and the last step whatever `every` says.
+    #[test]
+    fn keeping_less_gives_the_same_values() {
+        let text = example("cruise");
+        let all = run(text, &registry(), Some(10.0), Some(0.1)).unwrap();
+        let rows = all.rows();
+        let names: Vec<&str> = all.outputs.iter().map(|o| o.name.as_str()).collect();
+        let block = names[0].split('.').next().unwrap().to_string();
+        let keep = Keep {
+            signals: Some(vec![names[1].to_string(), block.clone()]),
+            every: 7,
+        };
+        let some =
+            run_keeping(text, &registry(), Some(10.0), Some(0.1), Vec::new(), &keep).unwrap();
+        let mut want: Vec<usize> = (0..rows).step_by(7).collect();
+        if want.last() != Some(&(rows - 1)) {
+            want.push(rows - 1);
+        }
+        assert_eq!(some.rows(), want.len());
+        let t = &all.index[0].1;
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let picked: Vec<f64> = want.iter().map(|&r| t[r]).collect();
+        assert_eq!(bits(&some.index[0].1), bits(&picked));
+        let kept: Vec<&str> = some.outputs.iter().map(|o| o.name.as_str()).collect();
+        let expected: Vec<&str> = names
+            .iter()
+            .copied()
+            .filter(|n| *n == names[1] || n.starts_with(&format!("{block}.")))
+            .collect();
+        assert_eq!(kept, expected);
+        for o in &some.outputs {
+            let full = all.outputs.iter().find(|f| f.name == o.name).unwrap();
+            let n = o.shape.len();
+            let rows: Vec<f64> = want
+                .iter()
+                .flat_map(|&r| full.values[r * n..(r + 1) * n].iter().copied())
+                .collect();
+            assert_eq!(bits(&o.values), bits(&rows), "{}", o.name);
+        }
+        // A name that keeps nothing is an error naming it.
+        let wrong = Keep {
+            signals: Some(vec!["nothing.here".into()]),
+            every: 1,
+        };
+        let e = run_keeping(text, &registry(), Some(1.0), None, Vec::new(), &wrong).unwrap_err();
+        assert!(e.contains("no output named nothing.here"), "{e}");
     }
 
     #[test]

@@ -5,8 +5,12 @@
 //!
 //! ```text
 //! simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json] [--inputs RUN]
-//!                 [--probe NAME] [--save-probes DIR]
+//!                 [--probe NAME] [--save-probes DIR] [--model NAME]
+//!                 [--signals NAMES] [--every N]
 //!                                   (default: the file's `run` section)
+//!                                   (--signals: only these outputs, comma-separated: block.port, block,
+//!                                    or in a model using models a model (`.` the top level) or path in it, ADR 0076)
+//!                                   (--every: every N-th step and the last, ADR 0076)
 //!                                   (FILE a run file: replays it, ADR 0059)
 //!                                   (a model whose only runs are its studies: one row per run, ADR 0071)
 //!                                   (--probe: what that probe records, not every output, ADR 0062)
@@ -34,7 +38,7 @@ use simsandbox_file::runs::RunFile;
 use simsandbox_file::ModelFile;
 use simsandbox_session::examples::{registry, view_registry};
 use simsandbox_session::render::{png, render, render_diagram, RenderOptions};
-use simsandbox_session::run::{run_probes, run_with, start_from, DEFAULT_T_END};
+use simsandbox_session::run::{run_keeping, run_probes, start_from, Keep, DEFAULT_T_END};
 use simsandbox_session::session::InputEvent;
 use simsandbox_session::{describe, probe, Session};
 use std::collections::BTreeMap;
@@ -43,7 +47,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json] [--inputs RUN]
-                  [--probe NAME] [--save-probes DIR] [--model NAME]
+                  [--probe NAME] [--save-probes DIR] [--model NAME] [--signals NAMES] [--every N]
   simsandbox check FILE
   simsandbox describe [TYPE | units]
   simsandbox schema [run]
@@ -223,8 +227,11 @@ fn run_file(args: &[String]) -> Result<(), String> {
             "--probe",
             "--save-probes",
             "--model",
+            "--signals",
+            "--every",
         ],
     )?;
+    let mut keep = keep_of(&flags)?;
     let json = match flags.get("--format") {
         None | Some("csv") => false,
         Some("json") => true,
@@ -244,7 +251,11 @@ fn run_file(args: &[String]) -> Result<(), String> {
     }
     let merged = flags.has("--inputs") || flags.has("--probe") || flags.has("--save-probes");
     if composed && !merged && !is_run_file(path) {
-        return run_composition_file(path, &read(path)?, t_end, &flags, json);
+        // One model printed: only it recorded, unless signals say what.
+        if let (Some(m), None) = (flags.get("--model"), &keep.signals) {
+            keep.signals = Some(vec![m.to_string()]);
+        }
+        return run_composition_file(path, &read(path)?, t_end, &flags, json, &keep);
     }
     if composed && flags.has("--model") {
         return Err("--model picks one model's own times; with inputs, probes or a run file the models run as one: drop --model".into());
@@ -257,9 +268,16 @@ fn run_file(args: &[String]) -> Result<(), String> {
     }
     let (text, track) = model_and_track(path, flags.get("--inputs"))?;
     if flags.has("--probe") || flags.has("--save-probes") {
+        if flags.has("--signals") || flags.has("--every") {
+            return Err(
+                "--signals and --every choose what run prints; a probe records what it is set to: drop one"
+                    .into(),
+            );
+        }
         return run_file_probes(path, &text, track, (t_end, dt), &flags, json);
     }
-    let r = run_with(&text, &registry(), t_end, dt, track).map_err(|e| format!("{path}: {e}"))?;
+    let r = run_keeping(&text, &registry(), t_end, dt, track, &keep)
+        .map_err(|e| format!("{path}: {e}"))?;
     for w in &r.warnings {
         eprintln!("warning: {path}: {w}");
     }
@@ -298,9 +316,16 @@ fn run_composition_file(
     t_end: Option<f64>,
     flags: &Flags,
     json: bool,
+    keep: &Keep,
 ) -> Result<(), String> {
-    let c = simsandbox_session::compose::run_composition(text, &registry(), t_end)
-        .map_err(|e| format!("{path}: {e}"))?;
+    let c = simsandbox_session::compose::run_composition_keeping(
+        text,
+        &registry(),
+        t_end,
+        simsandbox_core::parallel::Parallel::Auto,
+        keep,
+    )
+    .map_err(|e| format!("{path}: {e}"))?;
     for w in &c.warnings {
         eprintln!("warning: {path}: {w}");
     }
@@ -338,6 +363,32 @@ fn run_composition_file(
     written
         .and_then(|()| out.flush())
         .map_err(|e| e.to_string())
+}
+
+/// What `run` keeps (ADR 0076): `--signals a.x,b` and `--every N`.
+fn keep_of(flags: &Flags) -> Result<Keep, String> {
+    let signals = flags.get("--signals").map(|s| {
+        s.split(',')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(String::from)
+            .collect::<Vec<_>>()
+    });
+    if signals.as_ref().is_some_and(Vec::is_empty) {
+        return Err("--signals needs at least one name".into());
+    }
+    let every = match flags.get("--every") {
+        None => 1,
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) if n >= 1 => n,
+            _ => {
+                return Err(format!(
+                    "--every must be a whole number of steps, 1 or more, not '{v}'"
+                ))
+            }
+        },
+    };
+    Ok(Keep { signals, every })
 }
 
 /// `run` with probes (ADR 0062): print one (`--probe`), write their files

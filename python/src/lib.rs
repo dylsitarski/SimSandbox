@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use simsandbox_session::examples::{registry, view_registry, EXAMPLES};
 use simsandbox_session::render::{png, render as render_views, RenderOptions};
-use simsandbox_session::run::{run_probes as run_model_probes, run_with as run_model};
+use simsandbox_session::run::{run_keeping as run_model, run_probes as run_model_probes};
 use simsandbox_session::session::InputEvent;
 use simsandbox_session::{describe as catalogue, Session};
 
@@ -90,17 +90,25 @@ fn examples() -> Vec<(&'static str, &'static str)> {
     EXAMPLES.iter().map(|e| (e.name, e.text)).collect()
 }
 
+/// What a run keeps (ADR 0076): the outputs named, every `every`-th step.
+fn keep(signals: Option<Vec<String>>, every: usize) -> simsandbox_session::run::Keep {
+    simsandbox_session::run::Keep { signals, every }
+}
+
 /// Run a model file. Returns a dict: `index` and `outputs` as lists of
 /// (name, shape, bytes), `populations` as (name, dim, [bytes per row]),
-/// and `labels`, `notes`, `warnings` as JSON text.
+/// and `labels`, `notes`, `warnings` as JSON text. `signals` and `every`
+/// keep only those outputs and every so many steps (ADR 0076).
 #[pyfunction]
-#[pyo3(signature = (text, t_end=None, dt=None, track=None))]
+#[pyo3(signature = (text, t_end=None, dt=None, track=None, signals=None, every=1))]
 fn run<'py>(
     py: Python<'py>,
     text: &str,
     t_end: Option<f64>,
     dt: Option<f64>,
     track: Option<Vec<(f64, String, f64)>>,
+    signals: Option<Vec<String>>,
+    every: usize,
 ) -> PyResult<Bound<'py, PyDict>> {
     // Recorded input (ADR 0058), applied with the file's schedule.
     let track: Vec<InputEvent> = track
@@ -109,7 +117,7 @@ fn run<'py>(
         .map(|(t, key, value)| InputEvent { t, key, value })
         .collect();
     let r = py
-        .detach(|| run_model(text, &registry(), t_end, dt, track))
+        .detach(|| run_model(text, &registry(), t_end, dt, track, &keep(signals, every)))
         .map_err(ModelError::new_err)?;
     results(py, &r)
 }
@@ -152,14 +160,24 @@ fn results<'py>(
 /// a dict of each model's results, as [`run`] gives one model's, under
 /// `models` (in written order), with `tick` and `warnings`.
 #[pyfunction]
-#[pyo3(signature = (text, t_end=None))]
+#[pyo3(signature = (text, t_end=None, signals=None, every=1))]
 fn run_composition<'py>(
     py: Python<'py>,
     text: &str,
     t_end: Option<f64>,
+    signals: Option<Vec<String>>,
+    every: usize,
 ) -> PyResult<Bound<'py, PyDict>> {
     let c = py
-        .detach(|| simsandbox_session::compose::run_composition(text, &registry(), t_end))
+        .detach(|| {
+            simsandbox_session::compose::run_composition_keeping(
+                text,
+                &registry(),
+                t_end,
+                simsandbox_core::parallel::Parallel::Auto,
+                &keep(signals, every),
+            )
+        })
         .map_err(ModelError::new_err)?;
     let models = PyList::empty(py);
     for (name, r) in &c.models {

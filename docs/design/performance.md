@@ -5,7 +5,7 @@ Where run time goes, how it was measured, and what is left to gain. Each optimis
 ## How to measure
 
 - **Cases:** `python3 scripts/profile_cases.py DIR` writes eight heavier versions of the examples, one per kind of simulation: a large grid (Gray–Scott, 128 × 128, typed equations), two such grids on their own clocks, a small ODE (Lorenz, 200 000 steps), a fused group (coupled oscillators), many blocks on one clock (a platoon of 40 cars), linked models on their own clocks, agents with a field (grazing), and a study of a model in time (cruise tuning).
-- **Timing:** `cargo run --release -p simsandbox-session --example profile_run -- FILE [T_END]` runs a file headless, as `simsandbox run` does, without writing results. This machine (a 4-core virtual machine) varies by about 10% between runs: take the median of three, and compare against the previous commit built the same way.
+- **Timing:** `cargo run --release -p simsandbox-session --example profile_run -- FILE [T_END] [--signals A,B] [--every N]` runs a file headless, as `simsandbox run` does, without writing results. This machine (a 4-core virtual machine) varies by about 10% between runs: take the median of three, and compare against the previous commit built the same way.
 - **Profiling:** `valgrind --tool=callgrind` on the same program, built with `debug = true` in the release profile, at a shortened `T_END`; `callgrind_annotate` for the functions with the most instructions of their own, and `--tree=caller` for who calls them. Instruction counts miss time spent in the system (reading files, page faults): confirm with timings.
 - **Exactness:** run every example and case with `simsandbox run --format json` before and after, and compare.
 
@@ -67,10 +67,24 @@ Medians of seven paired runs (eleven for 128 × 128), seconds:
 
 The machine was slower this day than for the table above (the same grid's "before" here is the "now" there); compare within a table.
 
+## Keeping what is asked for (2026-11-06)
+
+Headless runs kept every output at every step ([ADR 0076](../decisions/0076-headless-runs-keep-what-is-asked.md)); they still do by default, but now keep only the outputs and steps asked for (`--signals`, `--every`, `--model`). Medians of five, with the largest memory held:
+
+| Case | Kept | Time (s) | Memory (MB) |
+|---|---|---|---|
+| Grid 128 × 128, t_end 600 | everything | 1.04 | 392 |
+| | `gs.v_mean` | 0.80 | 17 |
+| | `gs.u` | 0.88 | 92 |
+| | every 10th step | 0.81 | 55 |
+| Two grids, t_end 200 | everything | 0.39 | 279 |
+| | one model (`a`) | 0.37 | 154 |
+| | `a/gs.v_mean,b/gs.v_mean` | 0.29 | 28 |
+| | every 10th step | 0.31 | 54 |
+
 ## What is left, by expected gain
 
-1. **Headless runs keep every output at every step** (131 MB per grid model in the two-grid case): copying and page faults. Keeping only what is asked for (`--model`, named signals, probes) would save memory and time.
-2. **The app's engine meets at every instant on new threads** (ADR 0066 step 6): about 10–20% for several heavy models on their own clocks in the app; a redesign of the simulator (each clock's blocks on a thread of their own for the whole run).
-3. **Linked models running ahead** where links go one way only (ADR 0066 step 6): removes the meeting at every instant for pipelines; not for feedback loops.
-4. **Sums on several cores**: reductions run in order on one core. A fixed-chunk sum is exact on any machine but changes results from earlier runs' last bits; worth it only where reductions are a large share.
-5. **Integrators' vector updates** (`x + h·k` in RK4 and the like) run on one core over the whole state: for large grids a growing share now that evaluation is split and copies are gone.
+1. **The app's engine meets at every instant on new threads** (ADR 0066 step 6): about 10–20% for several heavy models on their own clocks in the app; a redesign of the simulator (each clock's blocks on a thread of their own for the whole run).
+2. **Linked models running ahead** where links go one way only (ADR 0066 step 6): removes the meeting at every instant for pipelines; not for feedback loops.
+3. **Sums on several cores**: reductions run in order on one core. A fixed-chunk sum is exact on any machine but changes results from earlier runs' last bits; worth it only where reductions are a large share.
+4. **Integrators' vector updates** (`x + h·k` in RK4 and the like) run on one core over the whole state: for large grids a growing share now that evaluation is split and copies are gone.

@@ -45,6 +45,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- `simsandbox run --signals NAMES --every N` and Python `run(signals=..., every=...)`: keep only the outputs named and every N-th step (and the last), for less memory and time; the values are the same. `--model` on a model using models records only that model.
 - A model can expose its blocks' inputs (`"inputs": [{"name": ..., "to": [...], "unit": ...}]`, ADR 0074): signals with no default, wired by every use and study, without input blocks; a use that leaves one unwired is refused, naming it.
 
 - A study selected on the diagram has a form in the Inspector: its design, a row per parameter it varies (chosen from its model's parameters, with range and points), count and seed, replicates and seeds, its named results, and the number of runs; the sample as JSON stays one click away.
