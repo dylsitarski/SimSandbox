@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-06: ADR 0079 (tables of members: one structure for adaptive studies, AMR, meshes and agents) written as Proposed; ADR 0078 revised to rest on it (lists dropped)
 - 2026-11-06: ADR 0078 (adaptive studies) written as Proposed, not built; rewritten at the owner's request: strategies as models choosing a study's points through its inputs, lists for refinement with any number of new points per round
 - 2026-11-06: models feeding each other headless on a pool: `compose::lend`, `step_model`/`step_lent`/`record_lent`, `point` taking the pool, `Costs::pooled`; error messages unchanged (`named`); looped two-grid cases; all runs byte-identical
 - 2026-11-06: integrators' updates on several cores: `integrators::SPLIT` (2^20), `by_parts`, `rk4_step_split`, `euler_split`, chosen per step so smaller states keep the original loops (inside them the split cost a 128 × 128 grid 3%); test against the original loops; 1024 × 1024 state byte-identical
