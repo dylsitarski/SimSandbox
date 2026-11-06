@@ -113,8 +113,19 @@ A first version passing samples on at every instant made the linked case four ti
 
 [ADR 0077](../decisions/0077-sums-in-fixed-chunks.md). Sums alone, one after another against the fixed rule (four lanes per chunk of 4096 cells): 2^14 cells 11.5 → 2.9 µs, 2^18 187 → 49 µs, 2^22 3.4 → 0.8 ms; from 2^20 cells, chunks on several cores 1.5–2.5× faster than four lanes on one. In a model the sums were a small share: a 512 × 512 Gray–Scott grid with `mean(u)` and `mean(v)` in its rates gained little from the faster sum itself (1.35 → 1.34 s); what cost time was each mean splitting the phase of cell-by-cell work in two. Running such reductions before the phase took it to 1.19 s (the grid without means: 0.97 s).
 
+## Integrators' updates on several cores (2026-11-06)
+
+Euler's and RK4's vector updates (`x + h·k`) split over the cores from 2^20 values (`integrators::SPLIT`); each value is computed by the same expression, so the same bits in any split. They read and write memory more than they compute, so cores help only on long vectors: one update alone, one core against four, was 126 against 125 µs at 2^17 values (starting threads costs about 0.1 ms), 0.53 against 0.35 ms at 2^19, 2.6 against 1.1 ms at 2^21. In models (medians of seven to thirteen):
+
+| Case (state values) | Before | After |
+|---|---|---|
+| Grid 1024 × 1024 (2^21), t_end 8 | 1.36–1.41 | 1.26 |
+| Grid 512 × 512 (2^19) and smaller, small models | | unchanged |
+
+On the 512 × 512 grid the updates took about 125 ms of 1.0 s; split at 2^17 they made 256 × 256 20% slower and 512 × 512 no faster. Putting the split inside the existing loops also made the 128 × 128 grid 3% slower (the compiler treats the loops differently); the split versions are now functions of their own (`rk4_step_split`, `euler_split`), chosen once per step, and smaller states run the original loops. Dormand–Prince's stages are not split (its error estimate is a sum, and its stages read seven arrays: a separate split version was not worth it here); the implicit methods' solves are their own matter.
+
 ## What is left, by expected gain
 
-1. **Integrators' vector updates** (`x + h·k` in RK4 and the like) run on one core over the whole state: for large grids a growing share now that evaluation is split and copies are gone.
-2. **Models feeding each other headless meet on new threads**: within a part of models that feed each other, the headless runner still starts threads at each instant they share (`parallel::each` in `compose::point`); the pool would serve there too.
-3. **Models linked one way in the app**: the app's engine is one simulator; running a feeding model ahead there would mean recording and rewinding models at different times.
+1. **Models feeding each other headless meet on new threads**: within a part of models that feed each other, the headless runner still starts threads at each instant they share (`parallel::each` in `compose::point`); the pool would serve there too.
+2. **Models linked one way in the app**: the app's engine is one simulator; running a feeding model ahead there would mean recording and rewinding models at different times.
+3. **Updates on states from 2^17 to 2^20 values**: memory-bound, gaining from several cores only with threads that are already running and close to the data (a pool kept by the integrator); the gain would be at most about a third of the updates' share.

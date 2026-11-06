@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-06: integrators' updates on several cores: `integrators::SPLIT` (2^20), `by_parts`, `rk4_step_split`, `euler_split`, chosen per step so smaller states keep the original loops (inside them the split cost a 128 × 128 grid 3%); test against the original loops; 1024 × 1024 state byte-identical
 - 2026-11-06: README and setup guide run the app and CLI with `--release`; a debug and release builds section (Gray–Scott at about 57× instead of 200× in a debug build, confirmed by the owner)
 - 2026-11-06: ADR 0077 written and built: `program::sum` (`SUM_CHUNK` 4096, four lanes, `SUM_SPLIT` 2^20 on several cores), `Gathering::take_first_array` running reductions and picked cells before a phase; tests of the rule, of several cores and of a hoisted mean; examples compared: only `gs.v_mean` changes (7e-15)
 - 2026-11-06: one-way links run ahead: `Plan::parts` (strongly connected parts, checked against `order`), `Plan::part` (links ending `OUTSIDE`), `Wire`/`Batch` (samples every 64 instants as one array, waiting until feeders pass an instant), `Links::time`, `point` taking and returning fresh links; fewer per-instant allocations in `timeline`/`point`; test against all meeting with lagging feeders (mutations of the waiting caught); 30 runs byte-identical

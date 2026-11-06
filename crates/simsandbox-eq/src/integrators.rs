@@ -186,6 +186,9 @@ impl Integrator {
             Integrator::Euler { substeps } => {
                 let h = dt / substeps.max(1) as f64;
                 let dx = &mut ws.buffers(1, x.len())[0];
+                if x.len() >= SPLIT {
+                    return euler_split(f, t, h, substeps.max(1), x, dx);
+                }
                 for i in 0..substeps.max(1) {
                     f(t + i as f64 * h, x, dx);
                     x.iter_mut()
@@ -197,8 +200,9 @@ impl Integrator {
             Integrator::Rk4 { substeps } => {
                 let h = dt / substeps.max(1) as f64;
                 let n = x.len();
+                let step = if n >= SPLIT { rk4_step_split } else { rk4_step };
                 for i in 0..substeps.max(1) {
-                    rk4_step(f, t + i as f64 * h, h, x, ws.buffers(5, n));
+                    step(f, t + i as f64 * h, h, x, ws.buffers(5, n));
                 }
                 Ok(())
             }
@@ -233,6 +237,92 @@ fn axpy(out: &mut [f64], x: &[f64], terms: &[(f64, &Vec<f64>)]) {
     for i in 0..x.len() {
         out[i] = x[i] + terms.iter().map(|(c, k)| c * k[i]).sum::<f64>();
     }
+}
+
+/// From this many values Euler's and RK4's vector updates are split over
+/// the cores (ADR 0062 step 3's companion for integrators). An update
+/// reads and writes memory more than it computes: on a 4-core virtual
+/// machine (2026-11-06) four cores gained nothing at 2^17 values
+/// (starting threads costs about 0.1 ms), a third at 2^19 and more than
+/// half from 2^21. Below it the original loops run, in functions of their
+/// own: adding the split to them made a 128 × 128 grid 3% slower.
+const SPLIT: usize = 1 << 20;
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: every update in one part, to compare with split ones.
+    static ONE_PART: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f(first, part)` over parts of `out` on several cores. Each value
+/// is computed by itself, from the same values in the same order, so the
+/// results are the same bits in any split.
+fn by_parts(out: &mut [f64], f: impl Fn(usize, &mut [f64]) + Sync) {
+    let cores = simsandbox_core::parallel::threads();
+    #[cfg(test)]
+    let cores = if ONE_PART.get() { 1 } else { cores };
+    if cores < 2 {
+        return f(0, out);
+    }
+    let size = out.len().div_ceil(cores);
+    let parts: Vec<(usize, &mut [f64])> = out
+        .chunks_mut(size)
+        .enumerate()
+        .map(|(c, part)| (c * size, part))
+        .collect();
+    simsandbox_core::parallel::each(parts, true, |(lo, part)| f(lo, part));
+}
+
+/// Euler's steps with the update split over the cores.
+fn euler_split(
+    f: &Rhs<'_>,
+    t: f64,
+    h: f64,
+    substeps: usize,
+    x: &mut [f64],
+    dx: &mut [f64],
+) -> Result<()> {
+    for i in 0..substeps {
+        f(t + i as f64 * h, x, dx);
+        let dx = &*dx;
+        by_parts(x, |lo, part| {
+            for (j, xi) in part.iter_mut().enumerate() {
+                *xi += h * dx[lo + j];
+            }
+        });
+    }
+    Ok(())
+}
+
+/// [`rk4_step`] with its updates split over the cores: the same
+/// arithmetic per value.
+fn rk4_step_split(f: &Rhs<'_>, t: f64, h: f64, x: &mut [f64], w: &mut [Vec<f64>]) {
+    let [k1, k2, k3, k4, tmp] = w else {
+        unreachable!("five working arrays")
+    };
+    let axpy = |out: &mut [f64], x: &[f64], c: f64, k: &[f64]| {
+        let terms = [(c, k)];
+        by_parts(out, |lo, part| {
+            for (j, o) in part.iter_mut().enumerate() {
+                let i = lo + j;
+                *o = x[i] + terms.iter().map(|(c, k)| c * k[i]).sum::<f64>();
+            }
+        });
+    };
+    f(t, x, k1);
+    axpy(tmp, x, 0.5 * h, k1);
+    f(t + 0.5 * h, tmp, k2);
+    axpy(tmp, x, 0.5 * h, k2);
+    f(t + 0.5 * h, tmp, k3);
+    axpy(tmp, x, h, k3);
+    f(t + h, tmp, k4);
+    let (k1, k2, k3, k4) = (&*k1, &*k2, &*k3, &*k4);
+    by_parts(x, |lo, part| {
+        for (j, xi) in part.iter_mut().enumerate() {
+            let i = lo + j;
+            *xi += h / 6.0 * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]);
+        }
+    });
 }
 
 // Dormand–Prince 5(4) tableau.
@@ -379,6 +469,47 @@ impl simsandbox_core::fusion::GroupSolver for GroupIntegrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Updates split over the cores give the same bits as the loops for
+    /// smaller states, for Euler and RK4, on a state long enough to split.
+    #[test]
+    fn long_updates_split_give_the_same_bits() {
+        let n = SPLIT + 3;
+        let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
+            for (i, (d, v)) in dx.iter_mut().zip(x).enumerate() {
+                *d = -(1.0 + (i % 7) as f64 * 0.1) * v + (t + i as f64 * 1e-3).sin();
+            }
+        };
+        let start: Vec<f64> = (0..n).map(|i| (i as f64 * 0.37).cos()).collect();
+        let bits = |x: &[f64]| x.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        // RK4: the split step against the step for smaller states.
+        let (mut a, mut b) = (start.clone(), start.clone());
+        let mut w: Vec<Vec<f64>> = (0..5).map(|_| vec![0.0; n]).collect();
+        rk4_step_split(&rhs, 0.0, 0.05, &mut a, &mut w);
+        rk4_step(&rhs, 0.0, 0.05, &mut b, &mut w);
+        assert_eq!(bits(&a), bits(&b), "rk4");
+        // In one part, as on one core, too.
+        let mut c = start.clone();
+        ONE_PART.set(true);
+        rk4_step_split(&rhs, 0.0, 0.05, &mut c, &mut w);
+        ONE_PART.set(false);
+        assert_eq!(bits(&c), bits(&b), "rk4 in one part");
+        // Euler, through the integrator, against the loop for smaller states.
+        let mut e = start.clone();
+        Integrator::Euler { substeps: 3 }
+            .advance_in(&rhs, 0.0, 0.1, &mut e, &mut Workspace::default(), None)
+            .unwrap();
+        let mut by_hand = start.clone();
+        let mut dx = vec![0.0; n];
+        for i in 0..3 {
+            rhs(i as f64 * (0.1 / 3.0), &by_hand, &mut dx);
+            by_hand
+                .iter_mut()
+                .zip(&dx)
+                .for_each(|(xi, di)| *xi += 0.1 / 3.0 * di);
+        }
+        assert_eq!(bits(&e), bits(&by_hand), "euler");
+    }
 
     /// x' = -x, x(0) = 1  =>  x(t) = exp(-t)
     fn decay(_t: f64, x: &[f64], dx: &mut [f64]) {
