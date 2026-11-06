@@ -189,7 +189,7 @@ _Last updated: 2026-11-06_
 
 In priority order. Each item should end with tests and updated docs.
 
-1. **Adaptive experiments** (ADR 0067 step 5): optimisation, fitting and continuation as strategies that choose points in rounds (ADR 0070 point 4); needs its own ADR.
+1. **Adaptive experiments** (ADR 0067 step 5): optimisation, fitting and continuation as strategies that choose points in rounds (ADR 0070 point 4); proposed in [ADR 0078](decisions/0078-adaptive-studies.md) 2026-11-06, waiting for the owner.
 2. **Probes** ([ADR 0062](decisions/0062-probes-recording-and-replay.md), between Phase 2 items 2 and 3), in order (steps 1 and 2 done 2026-10-29, step 3, cell-by-cell work on several cores, 2026-11-06): (4) fast mode (`run.mode`), recorded in run files; (5) the memory budget as an app setting. Recompute on demand after, as an action, never automatic. Follow-up from item 2: implicit methods on large 2D grids (the LU ordering).
 3. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)), Duplicate, array parameters and neighbours done 2026-11-02: network grids (nodes and edges from a file) and array parameters read from a data file when a model needs them; `count` on uses waits.
 4. **Activation** ([Q53](open-questions.md)): models and studies that run or restart when an event fires, reading their driven starting values and parameters then (ADR 0075 decision 6); needs its own ADR.
