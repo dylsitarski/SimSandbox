@@ -1,6 +1,6 @@
 # Open questions
 
-_Last updated: 2026-11-04_
+_Last updated: 2026-11-07_
 
 Decisions not yet made. When one is resolved, write an ADR, link it in the **Resolved** table and remove the row from **Open**.
 
@@ -8,6 +8,7 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Options | Needed by | Notes |
 | --- | --- | --- | --- | --- |
+| Q54 | Where typed equations stop and wrapped libraries, FMI or other backends begin ([ADR 0017](decisions/0017-typed-equations.md) kept the language small; named axes, `solve` and strategies written as models push at that line) | (a) Small, verified primitives in the language (`solve`, `rcond`, `lstsq`, `eig`), anything larger (optimisers, DAE index reduction, acausal models, large sparse solvers) wrapped from a library or brought in as an FMU; (b) case by case, each ADR adding to the language with an option row "use library X instead" and why not; (c) grow typed equations into a general modelling language | Before the next feature of the language after ADR 0080 stage 3; Levenberg–Marquardt as a model (stage 4) is the borderline case | Raised by the owner 2026-11-07, worried about reinventing what exists. Exact bits and no outside compiler rule out most libraries at run time ([ADR 0082](decisions/0082-exactness-is-labelled.md)); they remain test oracles (SciPy `least_squares` for the fitting example) |
 | Q53 | How a model or study runs or restarts when an event fires (activation), reading its driven starting values and parameters then ([ADR 0075](decisions/0075-parameters-are-inputs-with-defaults.md) decision 6) | (a) A use or study with an `activate` input: it runs (a study) or restarts (a model) on a rising edge, its outputs held between; (b) an event signal kind, with blocks that fire and blocks that are fired; (c) activation by listed instants only ([ADR 0067](decisions/0067-experiments-and-time-from-data.md) step 4) | After ADR 0075 | Raised by the owner 2026-11-05; a new concept, so its own ADR |
 | Q52 | How a study keeps each run's series, now that experiments are studies (ADR 0071) and `keep: "series"` is refused | (a) A 2D output per signal, runs × samples, on a common time grid; (b) a probe inside the studied model writing a file per run; (c) not at all: reduce, or run the model alone at that point | When someone needs whole runs of a study | Experiments kept them headless (`Results.series`) until 2026-11-04; nothing used them besides tests |
 | Q43 | Re-reading a data file that changes while its model is open (`input.file`, ADR 0063) | (a) Read when the model is built only (as built 2026-10-30): reopen or edit to re-read; (b) re-read on Restart; (c) watch the file and offer to reload | When the owner reads files that change, e.g. another model's streamed probe | Step 5 (several models in one session) links models by probes directly, which may make this rare |

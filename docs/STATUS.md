@@ -33,6 +33,7 @@ _Last updated: 2026-11-07_
 
 ## Done recently
 
+- 2026-11-07: typed equations measured against fused Rust (`simsandbox-eq/examples/fused_speed.rs`, [performance](design/performance.md#typed-equations-against-fused-code-2026-11-07)): the same bits, 4–6× slower on large grids; fused multiply-add gains nothing, a cheaper formula exact on every machine 1.4–2×. ADR 0082 (exactness as labelled levels; no outside compiler) proposed; Q54 (where typed equations stop) opened.
 - 2026-11-07: `solve(A, b)` in typed equations ([ADR 0080](decisions/0080-named-axes.md) stage 2): the axes say which system (rows and columns), Gaussian elimination with partial pivoting in a fixed order, NaN when singular; `dd(T, x)`; `prev`/`next` over two axes name their axis. ADR 0081 (shapes as lists of axes) accepted.
 - 2026-11-07: named axes in typed equations ([ADR 0080](decisions/0080-named-axes.md) stage 1): each `grid` line an axis of its own, quantities over the axes they name or use, broadcasting by name, reductions along an axis (`sum(T, k)`), `on(T, a, b)`; an axis's own output over itself alone (`gs.x` in Gray–Scott: 128 values). Every example gives the same bits and renders to the same images.
 - 2026-11-06: ADR 0078 step 1: a study's points may come from its inputs (`"design": "inputs"`), each point's results kept by its values so only changed points run; maps may use grids and array states; pattern search shipped as a model (`examples/cruise-search.ssbx.json`, tuning two cruise-control gains); a study no longer runs its points once on zero inputs when a run starts. ADRs 0078 and 0079 accepted.
@@ -197,7 +198,8 @@ In priority order. Each item should end with tests and updated docs.
 3. **Repetition in blocks** ([ADR 0069](decisions/0069-repetition-in-blocks.md)), Duplicate, array parameters and neighbours done 2026-11-02: network grids (nodes and edges from a file) and array parameters read from a data file when a model needs them; `count` on uses waits.
 4. **Shapes as lists of axes** ([ADR 0081](decisions/0081-shapes-are-lists-of-axes.md), accepted 2026-11-07): ports of any number of axes, recorded and read from Python, and views that bind to axes by role (pick, reduce, facet); to settle before views are generalized.
 5. **Activation** ([Q53](open-questions.md)): models and studies that run or restart when an event fires, reading their driven starting values and parameters then (ADR 0075 decision 6); needs its own ADR.
-6. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
+6. **Typed equations at fused speed** ([performance](design/performance.md#typed-equations-against-fused-code-2026-11-07), measured 2026-11-07): large grids evaluate 4–6× slower than fused code of the same operations, with the same bits; evaluate a phase's cells together (or compile in the process), keeping the operations and their order; stencils multiplying by 1/h² (1.4–2× more, the last bits changing once). Exactness as labelled levels ([ADR 0082](decisions/0082-exactness-is-labelled.md), proposed 2026-11-07) is built when the first block that is not exact arrives; where typed equations stop is [Q54](open-questions.md).
+7. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
 

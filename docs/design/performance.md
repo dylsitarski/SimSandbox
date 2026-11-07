@@ -158,3 +158,25 @@ Decided with the owner. Integrator updates on states of 2^17 to 2^20 values gain
 ## The list is closed (2026-11-06)
 
 Every item found by the profiling pass of 2026-11-05 is done or decided against, above. New work starts from a new profile of the model that is slow (`profile_run`, `profile_steps`, callgrind), timed in release builds and compared bit for bit.
+
+## Typed equations against fused code (2026-11-07)
+
+Asked by the owner: are typed equations much slower than compiled code, and what do exact bits cost? `cargo run --release -p simsandbox-eq --example fused_speed` evaluates Gray–Scott's right-hand side once, typed, and as hand-written Rust in one loop over the cells, in several forms. Microseconds per evaluation, one core (`taskset -c 0`), this machine (Xeon at 2.1 GHz); in brackets the largest difference from "fused" against the largest rate:
+
+| Grid | Typed | Fused, same operations | Rewritten (×1/h² once) | FMA only | Rewritten + FMA |
+|---|---|---|---|---|---|
+| Default build: | | | | | |
+| 128 × 128 | 213 | 50 | 30 (9e-15) | 293 (3e-16) | 289 (9e-15) |
+| 256 × 256 | 1094 | 210 | 145 (3e-14) | 1188 (3e-16) | 1178 (3e-14) |
+| 512 × 512 | 5355 | 842 | 647 (1e-13) | 4745 (3e-16) | 4733 (1e-13) |
+| Built for this CPU (`-C target-cpu=native`: AVX2, FMA): | | | | | |
+| 128 × 128 | 213 | 47 | 24 (9e-15) | 49 (3e-16) | 25 (9e-15) |
+| 256 × 256 | 1126 | 187 | 107 (3e-14) | 196 (3e-16) | 109 (3e-14) |
+| 512 × 512 | 5184 | 745 | 499 (1e-13) | 793 (3e-16) | 526 (1e-13) |
+
+On four cores the typed 512 × 512 evaluation takes 3.2–3.5 ms (its phases split); the others are as on one.
+
+- **Typed equations are 4–6× slower than fused code of the same operations on large grids, with the same bits.** The fused kernel gives exactly the typed block's values. The gap is how the program runs: one instruction at a time over whole arrays, each a pass through memory with temporaries between. Fusing (each cell's operations together while it is in the cache) keeps every operation and its order, so it keeps exact bits. This corrects the earlier reading of "near compiled speed" (ADR 0060: 1.0× the built-in heat rod of 50 cells): that holds against the built-in blocks, which are also written array by array, and for grids that fit in the cache, not against fused code on large grids.
+- **Exactness costs nothing here.** Fused multiply-add gives no gain (slightly slower; a library call, 6× slower, unless built for a CPU that has it). Building for this CPU's instructions gains 5–20% for fused code and nothing for typed code.
+- **A cheaper formula keeps exactness on any machine.** Multiplying by 1/h² once instead of dividing by h² twice is 1.4–2× faster. It changes the last bits once, as ADR 0077's sums did, and is then the same on every machine.
+- **What would gain:** evaluating a phase's cells together (an interpreter over cells within chunks, or code compiled in the process such as Cranelift) with the same operations in the same order; stencils multiplying by 1/h². Both keep exact bits ([ADR 0082](../decisions/0082-exactness-is-labelled.md) point 4). Listed in [STATUS](../STATUS.md) Next up.
