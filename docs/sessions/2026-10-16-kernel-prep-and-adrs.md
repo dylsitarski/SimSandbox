@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-07: ADR 0078 step 2 found to need arrays of several sizes in one block and vectors per run; ADR 0080 (named axes) written as Proposed at the owner's request
 - 2026-11-06: ADR 0078 step 1: `Design::Inputs`, study array inputs and `evaluate_points` (results kept by point, `RUNS_MADE` in tests), `Simulator::late` with `OutputPlan::computes_all_of` (no study runs on zero inputs at the start), maps with grids and array states (arrays inferred in any order), `examples/cruise-search.ssbx.json`, tests (only changed points run, bit for bit with a fresh study; pattern search finds a bowl's minimum and then runs nothing); 28 runs byte-identical
 - 2026-11-06: ADR 0079 (tables of members: one structure for adaptive studies, AMR, meshes and agents) written as Proposed; ADR 0078 revised to rest on it (lists dropped)
 - 2026-11-06: ADR 0078 (adaptive studies) written as Proposed, not built; rewritten at the owner's request: strategies as models choosing a study's points through its inputs, lists for refinement with any number of new points per round
