@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-07: ADR 0080 stage 2: `ArrayOp::Solve`/`ArrIns::Solve` with `program::solve_into` (partial pivoting, fixed order, NaN when singular), `solve` in `axes_of`/`lower` (rows from the axis `b` is over) and its unit; `dd(T, x)`; `prev`/`next` name their axis over two axes; `dd` and `solve` in `ARRAY_OPS`
 - 2026-11-07: ADR 0081 (shapes are lists of named axes: ports of any rank, views by axis roles) written as Proposed at the owner's request
 - 2026-11-07: ADR 0080 stage 1 (named axes): `ArrayOp::Gather` and `ArrayOp::Along` with `ArrIns::Gather`/`Along`, `gather_places`, `along_lines`, `program::reduce`, temporaries sized by `longest`; in `symbolic.rs` `Shapes`, `axes_of` (checks and axes, replacing `is_array`/`check_array_ops`), `lower` (replacing `resolve_with`), `fit`, `line_of`, per-quantity layout, 1D axis outputs and coordinates by place; `split_dims` returns the axes; views and the session accept 1D coordinates; examples, profiling cases and every view's render compared with the previous commit (only `gs.x`/`gs.y` differ, as planned)
 - 2026-11-07: ADR 0078 step 2 found to need arrays of several sizes in one block and vectors per run; ADR 0080 (named axes) written as Proposed at the owner's request
@@ -167,6 +168,7 @@
 
 ## Decided
 
+- 2026-11-07 (owner): ADR 0081 (shapes are lists of named axes) accepted; ADR 0080 stage 2 built the same day.
 - 2026-11-07 (owner): feature spaces and the coming generalization of views call for ports of any number of axes, so ADR 0081 is written before views are reworked; ADR 0080 stage 2 also gets `dd(T, x)` and the axis named in `prev`/`next` over two axes.
 - 2026-11-07 (owner): ADR 0080 (named axes) accepted; stage 1 built the same day.
 - 2026-11-06 (owner): ADR 0078 (strategies are models choosing a study's points) and ADR 0079 (tables of members: one structure for adaptive studies, AMR, meshes and agents) accepted.

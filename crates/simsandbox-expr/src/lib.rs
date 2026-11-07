@@ -188,12 +188,13 @@ pub fn is_reserved(name: &str) -> bool {
 }
 
 /// Operations on arrays (ADR 0060), written like functions: stencils,
-/// reductions, one element, an axis's spacing. A derivative along an
-/// axis is `dd` and the axis name (`ddx`). Only typed equations with a
-/// grid give them a meaning ([`Ast::resolve_with`]).
+/// reductions, one element, an axis's spacing, relabelling and a linear
+/// solve. A derivative along an axis is `dd` and the axis name (`ddx`),
+/// or `dd(T, x)`. Only typed equations with a grid give them a meaning
+/// ([`Ast::resolve_with`]).
 pub const ARRAY_OPS: &[&str] = &[
     "lap", "sum", "mean", "minof", "maxof", "argminof", "argmaxof", "at", "spacing", "prev",
-    "next", "on",
+    "next", "on", "solve", "dd",
 ];
 
 /// The most axes an array or an intermediate value has (ADR 0080).
@@ -302,6 +303,16 @@ pub enum ArrayOp {
         rank: usize,
         dims: [usize; MAX_AXES],
         strides: [usize; MAX_AXES],
+    },
+    /// The solution `x` of `A x = b` (ADR 0080): `A` the first argument,
+    /// `n` by `n` with element (i, j) at `i*rows + j*cols`, `b` the second
+    /// (`n` cells). Gaussian elimination with partial pivoting in a fixed
+    /// order (the first of equal pivots); NaN throughout when `A` is
+    /// singular or a value is not finite.
+    Solve {
+        n: usize,
+        rows: usize,
+        cols: usize,
     },
     /// A reduction of the argument, over `rank` axes of `dims` cells,
     /// along axis `axis`, leaving the others in order (ADR 0080).
@@ -917,7 +928,9 @@ mod tests {
         let names: Vec<_> = ast.names().into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, ["alpha", "T"]);
         assert!(matches!(&ast, Ast::Bin(..)));
-        assert!(is_array_op("ddr") && is_array_op("spacing") && !is_array_op("dd"));
+        assert!(is_array_op("ddr") && is_array_op("spacing"));
+        // `dd(T, x)` names its axis as an argument (ADR 0080).
+        assert!(is_array_op("dd") && is_array_op("solve") && !is_array_op("d"));
         // Elsewhere (parameter formulas, filters) they are an error.
         let e = parse("2*lap(T)")
             .unwrap()

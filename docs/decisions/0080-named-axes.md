@@ -1,6 +1,6 @@
 # 0080 — Named axes: arrays of different sizes in one block
 
-- **Status:** Accepted (stage 1 built 2026-11-07)
+- **Status:** Accepted (stages 1 and 2 built 2026-11-07)
 - **Date:** 2026-11-07
 - **Amends:** [ADR 0060](0060-arrays-in-typed-equations.md) (one grid per block; a second `grid` line makes it 2D), [ADR 0070](0070-studies-are-blocks.md) (study results: one value per run)
 - **Used by:** [ADR 0078](0078-adaptive-studies.md) step 2 (`solve`, Levenberg–Marquardt fitting); [ADR 0079](0079-tables-of-members.md) (quantities over tables beside grids)
@@ -87,3 +87,9 @@ Later: tables as axes whose length changes (ADR 0079 stage 1); ports of more tha
 - ADR 0079's quantities over tables are axes of a third kind: their length changes between steps.
 - The array compiler grows broadcasting, reductions along an axis and `solve`; error messages name axes ("`a[i] + b[i]`: `b` is over `k`, not `i`").
 - **Concepts added:** none. Axes are part of Members (arrays and their cells); naming them makes several sizes possible in one block.
+
+**Stage 2 (2026-11-07): `solve`, `dd(T, x)`, axes named by `prev` and `next`.**
+- **`solve(A, b)`:** `A` over two axes of the same length, `b` over one of them (the rows); the result is over the other (the columns), with `sum(A*x, j) = b`. A vector over the other axis solves the transposed system: the axes say which. Its unit is `b`'s over `A`'s. Built as `ArrayOp::Solve` (`program::solve_into`): Gaussian elimination with partial pivoting, the first of equal pivots, each step in a fixed order, so the same bits on any machine; NaN throughout when a pivot is 0 or a value is not finite. Each evaluation copies `A` into a working matrix (`n²` values): fine for the small systems of strategies, not for large ones (which would want a sparse solver of their own).
+- **`dd(T, x)`** is the derivative of `T` along `x`, as `ddx(T)`; `dd` and `solve` join `ARRAY_OPS`.
+- **`prev` and `next`** of an array over two axes name the axis (`prev(u, x)`); the error names both choices. Over one axis it may be left out. No example used them on two axes.
+- **Checked:** tests of a 3 × 3 system needing a row exchange, its transpose, the residual `sum(A*x, j) - b` below 1e-14, a singular matrix giving NaN, units, `dd(v, y)` equal to `ddy(v)` and `dd(T, x)` to `ddx(T)`, and the mistakes. Every example and profiling case gives the same bits as stage 1.

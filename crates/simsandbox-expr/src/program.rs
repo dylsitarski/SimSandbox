@@ -266,6 +266,15 @@ enum ArrIns {
         dims: [usize; MAX_AXES],
         strides: [usize; MAX_AXES],
     },
+    /// [`ArrayOp::Solve`] of the matrix at `a` and the vector at `b`.
+    Solve {
+        d: usize,
+        a: usize,
+        b: usize,
+        n: usize,
+        rows: usize,
+        cols: usize,
+    },
     /// [`ArrayOp::Along`] of the array at `a` (`n` cells written).
     Along {
         op: Reduce,
@@ -276,6 +285,51 @@ enum ArrIns {
         dims: [usize; MAX_AXES],
         axis: usize,
     },
+}
+
+/// The solution of `a x = b` into `x` (ADR 0080): `a` row by row, `n` by
+/// `n`, both overwritten. Gaussian elimination with partial pivoting, each
+/// step in a fixed order, so the same bits on any machine; NaN throughout
+/// when a pivot is zero or a value is not finite.
+fn solve_into(n: usize, a: &mut [f64], b: &mut [f64], x: &mut [f64]) {
+    if a.iter().chain(b.iter()).any(|v| !v.is_finite()) {
+        x.fill(f64::NAN);
+        return;
+    }
+    for k in 0..n {
+        // The first row from k down with the largest |a[i][k]|.
+        let mut p = k;
+        for i in k + 1..n {
+            if a[i * n + k].abs() > a[p * n + k].abs() {
+                p = i;
+            }
+        }
+        if a[p * n + k] == 0.0 {
+            x.fill(f64::NAN);
+            return;
+        }
+        if p != k {
+            for j in 0..n {
+                a.swap(p * n + j, k * n + j);
+            }
+            b.swap(p, k);
+        }
+        let pivot = a[k * n + k];
+        for i in k + 1..n {
+            let f = a[i * n + k] / pivot;
+            for j in k + 1..n {
+                a[i * n + j] -= f * a[k * n + j];
+            }
+            b[i] -= f * b[k];
+        }
+    }
+    for i in (0..n).rev() {
+        let mut s = b[i];
+        for j in i + 1..n {
+            s -= a[i * n + j] * x[j];
+        }
+        x[i] = s / a[i * n + i];
+    }
 }
 
 /// The source place of each cell of a [`ArrayOp::Gather`], in order.
@@ -489,6 +543,22 @@ impl ArrIns {
                     r[d + k] = r[a + at];
                 }
             }
+            ArrIns::Solve {
+                d,
+                a,
+                b,
+                n,
+                rows,
+                cols,
+            } => {
+                let mut m: Vec<f64> = (0..n * n)
+                    .map(|k| r[a + (k / n) * rows + (k % n) * cols])
+                    .collect();
+                let mut v = r[b..b + n].to_vec();
+                let mut x = vec![0.0; n];
+                solve_into(n, &mut m, &mut v, &mut x);
+                r[d..d + n].copy_from_slice(&x);
+            }
             ArrIns::Along {
                 op,
                 d,
@@ -637,6 +707,14 @@ impl ArrIns {
                 ref dims,
                 ..
             } => vec![(d, n), (a, dims[..rank].iter().product())],
+            ArrIns::Solve {
+                d,
+                a,
+                b,
+                n,
+                rows,
+                cols,
+            } => vec![(d, n), (a, (n - 1) * (rows + cols) + 1), (b, n)],
         }
     }
 }
@@ -994,6 +1072,23 @@ impl ArrIns {
                     deps[d + k] = f;
                 }
             }
+            ArrIns::Solve {
+                d,
+                a,
+                b,
+                n,
+                rows,
+                cols,
+            } => {
+                let mut all: Vec<&Vec<usize>> = (0..n * n)
+                    .map(|k| &deps[a + (k / n) * rows + (k % n) * cols])
+                    .collect();
+                all.extend(&deps[b..b + n]);
+                let one = union(&all);
+                for k in 0..n {
+                    deps[d + k] = one.clone();
+                }
+            }
             ArrIns::Along {
                 d,
                 a,
@@ -1082,6 +1177,7 @@ impl Builder<'_> {
                     self.len(&args[0])
                 }
                 ArrayOp::Gather { rank, ref dims, .. } => dims[..*rank].iter().product(),
+                ArrayOp::Solve { n, .. } => *n,
                 ArrayOp::Along {
                     rank,
                     ref dims,
@@ -1288,6 +1384,21 @@ impl Builder<'_> {
                             rank,
                             dims,
                             strides,
+                        });
+                        self.spread(d, cells, n);
+                    }
+                    ArrayOp::Solve {
+                        n: cells,
+                        rows,
+                        cols,
+                    } => {
+                        self.array(ArrIns::Solve {
+                            d,
+                            a: one(0),
+                            b: one(1),
+                            n: cells,
+                            rows,
+                            cols,
                         });
                         self.spread(d, cells, n);
                     }

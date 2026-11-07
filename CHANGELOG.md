@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Typed equations: `prev` and `next` of an array over two axes must name the axis (`prev(u, x)`); before, they ran along the first.
 - Typed equations: each `grid` line is an axis of its own (ADR 0080). An axis's output is over that axis alone: Gray–Scott's `gs.x` and `gs.y` are 128 values each instead of 128 × 128 (views show the same pictures). `state T[x]` in a block that also has `grid y` now declares T over x alone instead of being refused. Results of every example are unchanged.
 
 - A study block no longer runs its points once on inputs of zero when a run starts; the results are unchanged.
@@ -52,6 +53,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Subsystems are replaced by models defined in the file (ADR 0068): `subsystems` is refused with how to write it under `models`; "Make subsystem" is "Make model"; a model's inputs are input blocks and its outputs are offered from a block's menu ("Offer X as an output"); `render --diagram --inside PATH` (and Python `render(inside=)`) draws a used model's inside; Python `Model.group` makes a model. The Platoon example defines its follower once. Problems inside a used model are reported where they are written (`models.follower.blocks[0].equations`). "Edit…" on a block inside a used model opens its equations.
 
 ### Added
+
+- `solve(A, b)` in typed equations (ADR 0080): `A` over two axes of the same length, `b` over one of them; the result, over the other axis, solves `sum(A*x, j) = b`, the same bits on any machine, NaN if `A` is singular. `dd(T, x)` is the derivative along a named axis, as `ddx(T)`.
 
 - Named axes in typed equations (ADR 0080): quantities over some of a block's axes (`param m[k]`, `input r[i, k]`, `state T[x]` beside `grid y`), quantities over different axes combined over all of them (`a[i] + b[k]`), `sum(T, k)`, `mean`, `minof`, `maxof`, `argminof` and `argmaxof` along one axis, and `on(T, a, b)` to read an axis as another of the same length (`sum(J*on(J, p, q), r)` is JᵀJ).
 

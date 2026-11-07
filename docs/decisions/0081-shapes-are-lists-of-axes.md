@@ -1,6 +1,6 @@
 # 0081 — Shapes are lists of named axes
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-07)
 - **Date:** 2026-11-07
 - **Amends:** [ADR 0080](0080-named-axes.md) point 5 (ports of one or two axes), [ADR 0015](0015-pluggable-views.md) and [ADR 0024](0024-heat-map-axes-and-coordinates.md) (views of fields and their coordinates)
 - **Builds on:** [ADR 0080](0080-named-axes.md) (named axes in typed equations), [ADR 0079](0079-tables-of-members.md) (tables: axes whose length changes)

@@ -722,6 +722,22 @@ fn axes_of(
         "prev" | "next" => {
             count(matches!(args.len(), 1 | 2), "an array and an axis")?;
             let axes = named_array()?;
+            // Over two axes, which one is named (ADR 0080).
+            if args.len() == 1 && axes.len() > 1 {
+                let ways: Vec<String> = axes
+                    .iter()
+                    .map(|&a| format!("{name}({}, {})", ast_name(&args[0]), names[a]))
+                    .collect();
+                return Err((
+                    col,
+                    format!(
+                        "{} is over {}: name the axis, {}",
+                        ast_name(&args[0]),
+                        list(&axes),
+                        ways.join(" or ")
+                    ),
+                ));
+            }
             if let Some(a) = args.get(1) {
                 match axis_named(a) {
                     Some(i) if axes.contains(&i) => {}
@@ -739,10 +755,63 @@ fn axes_of(
             }
             Ok(axes)
         }
+        "dd" => {
+            // dd(T, x): the derivative along a named axis (ADR 0080).
+            count(args.len() == 2, "an array and an axis, e.g. dd(T, x)")?;
+            let Some(i) = axis_named(&args[1]) else {
+                return Err((
+                    col,
+                    format!(
+                        "'dd(T, {})' differentiates along an axis of the grid ({})",
+                        names[0],
+                        names.join(", ")
+                    ),
+                ));
+            };
+            let axes = named_array()?;
+            if !axes.contains(&i) {
+                return not_over(&format!("'dd' of {}", ast_name(&args[0])), &axes, names[i]);
+            }
+            Ok(axes)
+        }
+        "solve" => {
+            // solve(A, b): A over two axes of one length, b over one of
+            // them; the result over the other (ADR 0080).
+            count(args.len() == 2, "a matrix and a vector, e.g. solve(A, b)")?;
+            let (a, b) = (of(&args[0])?, of(&args[1])?);
+            if a.len() != 2 || grid[a[0]].cells != grid[a[1]].cells {
+                return Err((
+                    col,
+                    format!(
+                        "solve(A, b) needs A over two axes of the same length, not over {}",
+                        if a.is_empty() {
+                            "no axis".to_string()
+                        } else {
+                            list(&a)
+                        }
+                    ),
+                ));
+            }
+            match b[..] {
+                [r] if a.contains(&r) => Ok(a.into_iter().filter(|&c| c != r).collect()),
+                _ => Err((
+                    col,
+                    format!(
+                        "solve(A, b) needs b over one of A's axes ({}), not over {}",
+                        list(&a),
+                        if b.is_empty() {
+                            "no axis".to_string()
+                        } else {
+                            list(&b)
+                        }
+                    ),
+                )),
+            }
+        }
         d if d.starts_with("dd") => {
             count(args.len() == 1, "1 argument")?;
             let Some(i) = names.iter().position(|n| *n == &d[2..]) else {
-                return Err((col, format!("'{d}' is a derivative along '{}', which is not an axis of the grid ({}): write dd{}", &d[2..], names.join(", "), names[0])));
+                return Err((col, format!("'{d}' is a derivative along '{}', which is not an axis of the grid ({}): write dd{} or dd(T, {})", &d[2..], names.join(", "), names[0], names[0])));
             };
             let axes = named_array()?;
             if !axes.contains(&i) {
@@ -945,6 +1014,20 @@ fn lower(
                 }
                 d if d.starts_with("dd") => {
                     (stencil(name, args), shapes[ast_name(&args[0])].clone())
+                }
+                "solve" => {
+                    let ((ea, sa), (eb, sb)) = (low(&args[0])?, low(&args[1])?);
+                    let (r, c) = if sb[0] == sa[0] {
+                        (sa[0], sa[1])
+                    } else {
+                        (sa[1], sa[0])
+                    };
+                    let op = ArrayOp::Solve {
+                        n: grid[r].cells,
+                        rows: line_of(&sa, r, grid).stride,
+                        cols: line_of(&sa, c, grid).stride,
+                    };
+                    (Expr::Array(op, vec![ea, eb]), vec![c])
                 }
                 "on" => {
                     let (e, from) = low(&args[0])?;
@@ -1701,8 +1784,18 @@ impl EquationSet {
                     Ast::Name(n, _) => axis_dim_of(n),
                     _ => NO_DIM,
                 },
+                "solve" => {
+                    // A x = b: x in b's unit over A's.
+                    let b = args.get(1).map_or(NO_DIM, |a| a.1);
+                    std::array::from_fn(|i| b[i] - d[i])
+                }
                 n if n.starts_with("dd") => {
-                    let a = axis_dim_of(&n[2..]);
+                    let axis = if n == "dd" {
+                        args.get(1).map_or("", |a| ast_name(a.0))
+                    } else {
+                        &n[2..]
+                    };
+                    let a = axis_dim_of(axis);
                     std::array::from_fn(|i| d[i] - a[i])
                 }
                 "at" => {
@@ -1981,7 +2074,12 @@ impl EquationSet {
                 };
                 return Expr::Array(op, vec![Expr::Var(a), Expr::Var(spacing_of(axis))]);
             }
-            along(axis_named(&name[2..]), false)
+            let axis = if name == "dd" {
+                ast_name(&args[1])
+            } else {
+                &name[2..]
+            };
+            along(axis_named(axis), false)
         };
         // An expression with its axes; spread over `to` when given.
         let resolve = |ast: &Ast,
@@ -3249,6 +3347,100 @@ mod tests {
             .map(|c| (c.port.as_str(), c.axis))
             .collect();
         assert_eq!(of, [("m", 1), ("s", 0), ("lo", 0)]);
+    }
+
+    #[test]
+    fn solve_finds_x_with_pivoting_by_axis_names() {
+        // A over [i, j] (row i, column j); A x = b gives x over j, and a
+        // vector over j solves the transposed system (ADR 0080).
+        let s = set(&[
+            "grid i = 3",
+            "grid j = 3",
+            "input A[i, j], b[i], c[j]",
+            "x = solve(A, b)",
+            "y = solve(A, c)",
+            "res = sum(A*x, j) - b",
+            "z = solve(0*A, b)",
+        ])
+        .unwrap();
+        // The first column is 0, 1, 4: row 2 is the first pivot.
+        let a = [[0.0, 1.0, 1.0], [1.0, 3.0, 2.0], [4.0, 0.0, 1.0]];
+        let mut u: Vec<f64> = (0..9).map(|k| a[k % 3][k / 3]).collect();
+        u.extend([5.0, 13.0, 7.0]); // A·(1, 2, 3)
+        u.extend([14.0, 7.0, 8.0]); // Aᵀ·(1, 2, 3)
+        let (_, _, out) = eval(&s, &[], &u);
+        for (k, want) in [1.0, 2.0, 3.0].iter().enumerate() {
+            assert!((out[k] - want).abs() < 1e-14, "x {:?}", &out[..3]);
+            assert!((out[3 + k] - want).abs() < 1e-14, "y {:?}", &out[3..6]);
+            assert!(out[6 + k].abs() < 1e-14, "residual {:?}", &out[6..9]);
+            assert!(out[9 + k].is_nan(), "singular gives NaN");
+        }
+        // Units: x in b's unit over A's.
+        let s = set(&[
+            "grid i = 2",
+            "grid j = 2",
+            "input K[i, j] [N/m], F[i] [N]",
+            "x = solve(K, F)",
+        ])
+        .unwrap();
+        let x = s.spec().ports.iter().find(|p| p.name == "x").unwrap();
+        assert_eq!(x.unit.dim, unit("m").dim);
+        // Mistakes.
+        let base = [
+            "grid i = 3",
+            "grid j = 3",
+            "grid k = 2",
+            "input A[i, j], b[i], v[k], w[i, k]",
+        ];
+        let err = |line: &str| {
+            let mut l = base.to_vec();
+            l.push(line);
+            error(&l)
+        };
+        assert!(err("x = solve(w, b)").contains("same length, not over i, k"));
+        assert!(err("x = solve(A, v)").contains("b over one of A's axes (i, j), not over k"));
+        assert!(err("x = solve(A)").contains("a matrix and a vector"));
+    }
+
+    #[test]
+    fn dd_names_its_axis_and_shifts_name_theirs_over_two_axes() {
+        let s = set(&[
+            "grid x = 0 .. 4, 4",
+            "grid y = 0 .. 3, 3",
+            "state v[x, y] = x*y*y",
+            "state T[x] = x*x",
+            "dv/dt = 0*v",
+            "dT/dt = 0*T",
+            "a = ddy(v)",
+            "b = dd(v, y)",
+            "c = dd(T, x) - ddx(T)",
+            "p = prev(T)",
+            "q = prev(v, y)",
+        ])
+        .unwrap();
+        let (_, _, out) = eval(&s, &[], &[]);
+        // Outputs: v (12), T (4), a (12), b (12), c (4), p (4), q (12).
+        assert_eq!(out[16..28], out[28..40]);
+        assert!(out[40..44].iter().all(|&d| d == 0.0));
+        let base = [
+            "grid x = 0 .. 4, 4",
+            "grid y = 0 .. 3, 3",
+            "state v[x, y] = 0",
+            "dv/dt = 0*v",
+        ];
+        let err = |line: &str| {
+            let mut l = base.to_vec();
+            l.push(line);
+            error(&l)
+        };
+        let m = err("p = prev(v)");
+        assert!(
+            m.contains("v is over x, y: name the axis, prev(v, x) or prev(v, y)"),
+            "{m}"
+        );
+        assert!(err("p = next(v)").contains("next(v, y)"));
+        assert!(err("d = dd(v)").contains("an array and an axis"));
+        assert!(err("d = dd(v, z)").contains("differentiates along an axis of the grid (x, y)"));
     }
 
     #[test]
