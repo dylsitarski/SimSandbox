@@ -539,10 +539,17 @@ impl Session {
                 field_sources.push(field_sources[k].clone());
             }
         }
-        // A coordinate needs the field it places, recorded, of the same shape.
+        // A coordinate needs the field it places, recorded, of the same
+        // shape, or a line along its axis (ADR 0080).
         coordinates.retain(|c| {
             let shape = |n: &str| fields.iter().find(|(f, _)| f == n).map(|(_, s)| *s);
-            shape(&c.name).is_some() && shape(&c.name) == shape(&c.of)
+            match (shape(&c.name), shape(&c.of)) {
+                (Some(a), Some(b)) if a == b => true,
+                (Some(FieldShape::Grid { nx: n, ny: 1 }), Some(FieldShape::Grid { nx, ny })) => {
+                    n == if c.axis == 0 { nx } else { ny }
+                }
+                _ => false,
+            }
         });
         // Where a run only data drives ends (ADR 0067 step 4).
         let data_end = crate::run::data_end(&loaded.model);

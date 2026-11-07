@@ -87,14 +87,15 @@ impl Geometry {
         }
     }
 
-    /// Place axis `axis` by a coordinate grid's frame (row by row, `nx`
-    /// wide), if its values along that axis are finite and strictly
-    /// monotonic.
+    /// Place axis `axis` by a coordinate's frame, if its values along that
+    /// axis are finite and strictly monotonic. The frame is over that axis
+    /// alone (ADR 0080) or over the whole grid (row by row, `nx` wide).
     pub fn with_coordinate(mut self, axis: usize, name: &str, frame: &[f64]) -> Self {
         let cells = if axis == 0 { self.nx } else { self.ny };
+        let alone = frame.len() == cells;
         let values: Vec<f64> = (0..cells)
             .map(|k| {
-                let at = if axis == 0 { k } else { k * self.nx };
+                let at = if axis == 0 || alone { k } else { k * self.nx };
                 frame.get(at).copied().unwrap_or(f64::NAN)
             })
             .collect();

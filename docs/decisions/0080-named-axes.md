@@ -1,6 +1,6 @@
 # 0080 — Named axes: arrays of different sizes in one block
 
-- **Status:** Proposed
+- **Status:** Accepted (stage 1 built 2026-11-07)
 - **Date:** 2026-11-07
 - **Amends:** [ADR 0060](0060-arrays-in-typed-equations.md) (one grid per block; a second `grid` line makes it 2D), [ADR 0070](0070-studies-are-blocks.md) (study results: one value per run)
 - **Used by:** [ADR 0078](0078-adaptive-studies.md) step 2 (`solve`, Levenberg–Marquardt fitting); [ADR 0079](0079-tables-of-members.md) (quantities over tables beside grids)
@@ -66,6 +66,15 @@ The study's output for such a result is over two axes: the result's own (fastest
 4. Then ADR 0078 step 2: Levenberg–Marquardt fitting as a model.
 
 Later: tables as axes whose length changes (ADR 0079 stage 1); ports of more than two axes.
+
+## As built
+
+**Stage 1 (2026-11-07): named axes in typed equations.**
+- **Axes:** each `grid` line is an axis of its own, up to `MAX_AXES` (6) in a block. Declared quantities name theirs in the order of the grid lines (`state u[y, x]` is refused, asking for `u[x, y]`); a defined quantity's axes are those its right side uses (found in any order of the lines). A state's rate or next value may use fewer of its axes (spread over the rest), not others; so may an array state's initial value. A declared or defined quantity has at most two axes (it is a port); a value inside an expression may have up to six.
+- **Compiler:** two new array instructions in `simsandbox-expr`: `ArrayOp::Gather` (a cell of the result per cell of the target axes, read from the argument at a stride per axis, 0 for a new axis; it also relabels for `on`) and `ArrayOp::Along` (`sum`, `mean`, `minof`, `maxof`, `argminof`, `argmaxof` along one axis, each line in order, with `program::reduce`). `symbolic::lower` inserts them where operands' axes differ; operands over the same axes compile to the same instructions as before. Temporaries are sized for the longest value along the way, not only the longest variable.
+- **Stencils** (`lap`, `ddx`, `prev`, `next`) work along the array's own axes, at the strides of its layout; `lap` sums along each of them (their units must agree); an edge must be along one of the array's axes.
+- **Ports:** a quantity over one axis is a line (`nx` = its cells, `ny` = 1), over two a 2D field, first axis along x. Each axis's output is over itself alone, and is the coordinate of every output over it, at that axis's place in the output. The session keeps a coordinate that is a line along its axis of a 2D field (`Session::load_in`), and cuts and field views read it in either form.
+- **Checked:** every example and the profiling cases give the same bits as before. The only difference is `gs.x` and `gs.y` in Gray–Scott, now 128 values each, equal to the first row and column of the earlier 128 × 128. Every view of every example renders to the same image. Tests: broadcasting, reductions along each axis, `on` (`sum(m*on(m, i, j), k)` is mᵀm), states over some of the block's axes, stencils along the second axis of a 2D array, and the mistakes (order, too many axes, reductions along an axis a quantity does not have, `on` between axes of different lengths).
 
 ## Consequences
 

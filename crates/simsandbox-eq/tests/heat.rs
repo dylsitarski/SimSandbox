@@ -400,10 +400,11 @@ fn a_2d_mode_decays_at_the_exact_rate_with_second_order_in_space() {
             let mut sim = Simulator::new(m, 0.0).unwrap();
             run(&mut sim, t_end, 0.01);
             let t = sim.output(id, "T").unwrap();
+            // Each axis over itself alone (ADR 0080); x varies fastest.
             let (x, y) = (sim.output(id, "x").unwrap(), sim.output(id, "y").unwrap());
             t.iter()
-                .zip(x.iter().zip(y))
-                .map(|(t, (x, y))| (t - exact(*x, *y)).abs())
+                .enumerate()
+                .map(|(k, t)| (t - exact(x[k % cells], y[k / cells])).abs())
                 .fold(0.0, f64::max)
         })
         .collect();

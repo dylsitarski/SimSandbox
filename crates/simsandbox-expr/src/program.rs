@@ -13,7 +13,7 @@
 //! operation, apart from `x^2`, which is computed as `x*x`.
 
 use crate::cells::{CellOp, Kind, Operand, Outside, Phase, Step};
-use crate::{ArrayOp, Edge, Expr, Func, Line, Op};
+use crate::{Along, ArrayOp, Edge, Expr, Func, Line, Op, MAX_AXES};
 
 /// Where a variable's values are in the register buffer: `len` registers
 /// from `at` (1 for a scalar).
@@ -114,6 +114,44 @@ fn sum_split(cells: &[f64], split: bool) -> f64 {
             .sum()
     } else {
         cells.chunks(SUM_CHUNK).map(chunk).sum()
+    }
+}
+
+/// The most cells any part of `e` has, over variables laid out as `vars`.
+fn longest(e: &Expr, vars: &[Span]) -> usize {
+    let own = match e {
+        Expr::Num(_) => 1,
+        Expr::Var(i) => vars[*i].len,
+        Expr::Neg(_) | Expr::Bin(..) | Expr::Call(..) => 1,
+        Expr::Array(op, args) => match op {
+            ArrayOp::Axis { cells, .. } => *cells,
+            ArrayOp::Gather { rank, dims, .. } => dims[..*rank].iter().product(),
+            ArrayOp::Along {
+                rank, dims, axis, ..
+            } => (0..*rank).filter(|k| k != axis).map(|k| dims[k]).product(),
+            _ => args.first().map_or(1, |a| longest(a, vars)),
+        },
+    };
+    let inner = match e {
+        Expr::Num(_) | Expr::Var(_) => 1,
+        Expr::Neg(a) => longest(a, vars),
+        Expr::Bin(_, a, b) => longest(a, vars).max(longest(b, vars)),
+        Expr::Call(_, args) | Expr::Array(_, args) => {
+            args.iter().map(|a| longest(a, vars)).max().unwrap_or(1)
+        }
+    };
+    own.max(inner)
+}
+
+/// `op` of `cells`.
+fn reduce(op: Reduce, cells: &[f64]) -> f64 {
+    match op {
+        Reduce::Sum => sum(cells),
+        Reduce::Mean => sum(cells) / cells.len() as f64,
+        Reduce::Min => cells.iter().copied().fold(f64::INFINITY, f64::min),
+        Reduce::Max => cells.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        Reduce::ArgMin => arg_extreme(cells, false),
+        Reduce::ArgMax => arg_extreme(cells, true),
     }
 }
 
@@ -219,6 +257,66 @@ enum ArrIns {
         n: usize,
         i: usize,
     },
+    /// [`ArrayOp::Gather`] from the array at `a` (`n` cells written).
+    Gather {
+        d: usize,
+        a: usize,
+        n: usize,
+        rank: usize,
+        dims: [usize; MAX_AXES],
+        strides: [usize; MAX_AXES],
+    },
+    /// [`ArrayOp::Along`] of the array at `a` (`n` cells written).
+    Along {
+        op: Reduce,
+        d: usize,
+        a: usize,
+        n: usize,
+        rank: usize,
+        dims: [usize; MAX_AXES],
+        axis: usize,
+    },
+}
+
+/// The source place of each cell of a [`ArrayOp::Gather`], in order.
+fn gather_places(rank: usize, dims: &[usize; MAX_AXES], strides: &[usize; MAX_AXES]) -> Vec<usize> {
+    let n: usize = dims[..rank].iter().product();
+    let mut at = [0usize; MAX_AXES];
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push((0..rank).map(|k| at[k] * strides[k]).sum());
+        for k in 0..rank {
+            at[k] += 1;
+            if at[k] < dims[k] {
+                break;
+            }
+            at[k] = 0;
+        }
+    }
+    out
+}
+
+/// For each cell of an [`ArrayOp::Along`]'s result, in order, the places of
+/// the argument's cells it reduces, in order along the axis.
+fn along_lines(rank: usize, dims: &[usize; MAX_AXES], axis: usize) -> Vec<Vec<usize>> {
+    let stride: usize = dims[..axis].iter().product();
+    let count = dims[axis];
+    let mut rest = [1usize; MAX_AXES];
+    let mut rest_strides = [0usize; MAX_AXES];
+    let mut m = 0;
+    let mut s = 1;
+    for (k, &d) in dims[..rank].iter().enumerate() {
+        if k != axis {
+            rest[m] = d;
+            rest_strides[m] = s;
+            m += 1;
+        }
+        s *= d;
+    }
+    gather_places(m, &rest, &rest_strides)
+        .into_iter()
+        .map(|base| (0..count).map(|j| base + j * stride).collect())
+        .collect()
 }
 
 /// `r[d..d+n] = f(a, b)` cell by cell, a scalar operand read for every
@@ -377,15 +475,35 @@ impl ArrIns {
                 r[d..d + n].copy_from_slice(&out);
             }
             ArrIns::Reduce { op, d, a, n } => {
-                let cells = &r[a..a + n];
-                r[d] = match op {
-                    Reduce::Sum => sum(cells),
-                    Reduce::Mean => sum(cells) / n as f64,
-                    Reduce::Min => cells.iter().copied().fold(f64::INFINITY, f64::min),
-                    Reduce::Max => cells.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-                    Reduce::ArgMin => arg_extreme(cells, false),
-                    Reduce::ArgMax => arg_extreme(cells, true),
-                };
+                r[d] = reduce(op, &r[a..a + n]);
+            }
+            ArrIns::Gather {
+                d,
+                a,
+                rank,
+                ref dims,
+                ref strides,
+                ..
+            } => {
+                for (k, at) in gather_places(rank, dims, strides).into_iter().enumerate() {
+                    r[d + k] = r[a + at];
+                }
+            }
+            ArrIns::Along {
+                op,
+                d,
+                a,
+                rank,
+                ref dims,
+                axis,
+                ..
+            } => {
+                let mut cells = Vec::with_capacity(dims[axis]);
+                for (k, line) in along_lines(rank, dims, axis).into_iter().enumerate() {
+                    cells.clear();
+                    cells.extend(line.iter().map(|&at| r[a + at]));
+                    r[d + k] = reduce(op, &cells);
+                }
             }
             ArrIns::Pick { d, a, n, i } => {
                 let k = r[i].round();
@@ -496,6 +614,29 @@ impl ArrIns {
             }
             ArrIns::Reduce { d, a, n, .. } => vec![(d, 1), (a, n)],
             ArrIns::Pick { d, a, n, i } => vec![(d, 1), (a, n), (i, 1)],
+            ArrIns::Gather {
+                d,
+                a,
+                n,
+                rank,
+                ref dims,
+                ref strides,
+            } => {
+                let reach = gather_places(rank, dims, strides)
+                    .into_iter()
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
+                vec![(d, n), (a, reach)]
+            }
+            ArrIns::Along {
+                d,
+                a,
+                n,
+                rank,
+                ref dims,
+                ..
+            } => vec![(d, n), (a, dims[..rank].iter().product())],
         }
     }
 }
@@ -837,6 +978,38 @@ impl ArrIns {
                 all.push(&deps[i]);
                 deps[d] = union(&all);
             }
+            ArrIns::Gather {
+                d,
+                a,
+                rank,
+                ref dims,
+                ref strides,
+                ..
+            } => {
+                let from: Vec<Vec<usize>> = gather_places(rank, dims, strides)
+                    .into_iter()
+                    .map(|at| deps[a + at].clone())
+                    .collect();
+                for (k, f) in from.into_iter().enumerate() {
+                    deps[d + k] = f;
+                }
+            }
+            ArrIns::Along {
+                d,
+                a,
+                rank,
+                ref dims,
+                axis,
+                ..
+            } => {
+                let from: Vec<Vec<usize>> = along_lines(rank, dims, axis)
+                    .into_iter()
+                    .map(|line| union(&line.iter().map(|&at| &deps[a + at]).collect::<Vec<_>>()))
+                    .collect();
+                for (k, f) in from.into_iter().enumerate() {
+                    deps[d + k] = f;
+                }
+            }
         }
     }
 }
@@ -908,6 +1081,13 @@ impl Builder<'_> {
                 ArrayOp::Second { .. } | ArrayOp::First { .. } | ArrayOp::Shift { .. } => {
                     self.len(&args[0])
                 }
+                ArrayOp::Gather { rank, ref dims, .. } => dims[..*rank].iter().product(),
+                ArrayOp::Along {
+                    rank,
+                    ref dims,
+                    axis,
+                    ..
+                } => (0..*rank).filter(|k| k != axis).map(|k| dims[k]).product(),
                 _ => 1,
             },
         }
@@ -952,6 +1132,17 @@ impl Builder<'_> {
         };
         self.emit(e, at, n);
         Src { at, array: n > 1 }
+    }
+
+    /// A one-cell result at `d` spread over the `n` cells written there.
+    fn spread(&mut self, d: usize, cells: usize, n: usize) {
+        if cells == 1 && n > 1 {
+            let a = Src {
+                at: d,
+                array: false,
+            };
+            self.array(ArrIns::Copy { d, a, n });
+        }
     }
 
     fn array(&mut self, ins: ArrIns) {
@@ -1084,6 +1275,49 @@ impl Builder<'_> {
                             self.array(ArrIns::Copy { d, a, n });
                         }
                     }
+                    ArrayOp::Gather {
+                        rank,
+                        dims,
+                        strides,
+                    } => {
+                        let cells: usize = dims[..rank].iter().product();
+                        self.array(ArrIns::Gather {
+                            d,
+                            a: one(0),
+                            n: cells,
+                            rank,
+                            dims,
+                            strides,
+                        });
+                        self.spread(d, cells, n);
+                    }
+                    ArrayOp::Along {
+                        of,
+                        rank,
+                        dims,
+                        axis,
+                    } => {
+                        let op = match of {
+                            Along::Sum => Reduce::Sum,
+                            Along::Mean => Reduce::Mean,
+                            Along::MinOf => Reduce::Min,
+                            Along::MaxOf => Reduce::Max,
+                            Along::ArgMinOf => Reduce::ArgMin,
+                            Along::ArgMaxOf => Reduce::ArgMax,
+                        };
+                        let cells: usize =
+                            (0..rank).filter(|&k| k != axis).map(|k| dims[k]).product();
+                        self.array(ArrIns::Along {
+                            op,
+                            d,
+                            a: one(0),
+                            n: cells,
+                            rank,
+                            dims,
+                            axis,
+                        });
+                        self.spread(d, cells, n);
+                    }
                     ArrayOp::Sum
                     | ArrayOp::Mean
                     | ArrayOp::MinOf
@@ -1144,7 +1378,20 @@ impl Program {
             vars.iter().all(|s| s.at + s.len <= size),
             "variables lie in the buffer"
         );
-        let width = vars.iter().map(|s| s.len).max().unwrap_or(1).max(1);
+        // Room for the longest variable or value along the way (ADR 0080:
+        // an array over more axes than any variable).
+        let longest = steps
+            .iter()
+            .map(|(_, e)| longest(e, vars))
+            .max()
+            .unwrap_or(1);
+        let width = vars
+            .iter()
+            .map(|s| s.len)
+            .max()
+            .unwrap_or(1)
+            .max(longest)
+            .max(1);
         let build = |consts: Vec<f64>, scalars: usize| {
             let mut b = Builder {
                 vars,

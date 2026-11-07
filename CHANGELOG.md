@@ -6,6 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Typed equations: each `grid` line is an axis of its own (ADR 0080). An axis's output is over that axis alone: Gray–Scott's `gs.x` and `gs.y` are 128 values each instead of 128 × 128 (views show the same pictures). `state T[x]` in a block that also has `grid y` now declares T over x alone instead of being refused. Results of every example are unchanged.
+
 - A study block no longer runs its points once on inputs of zero when a run starts; the results are unchanged.
 - Headless runs of models that feed each other on their own clocks are faster (1.3–1.6× for two mid-size grids): they keep their threads for the whole run. Results are unchanged bit for bit.
 - Very large models (a million state values or more, such as a 1024 × 1024 grid) run several percent faster with Euler and RK4: their state updates use several cores. Results are unchanged bit for bit.
@@ -50,6 +52,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Subsystems are replaced by models defined in the file (ADR 0068): `subsystems` is refused with how to write it under `models`; "Make subsystem" is "Make model"; a model's inputs are input blocks and its outputs are offered from a block's menu ("Offer X as an output"); `render --diagram --inside PATH` (and Python `render(inside=)`) draws a used model's inside; Python `Model.group` makes a model. The Platoon example defines its follower once. Problems inside a used model are reported where they are written (`models.follower.blocks[0].equations`). "Edit…" on a block inside a used model opens its equations.
 
 ### Added
+
+- Named axes in typed equations (ADR 0080): quantities over some of a block's axes (`param m[k]`, `input r[i, k]`, `state T[x]` beside `grid y`), quantities over different axes combined over all of them (`a[i] + b[k]`), `sum(T, k)`, `mean`, `minof`, `maxof`, `argminof` and `argmaxof` along one axis, and `on(T, a, b)` to read an axis as another of the same length (`sum(J*on(J, p, q), r)` is JᵀJ).
 
 - Search strategies as models (ADR 0078): a study's points can come from its inputs (`"design": "inputs"`), and it reruns only points that changed; maps can use grids and array states; a pattern-search example tunes two cruise-control gains (`cruise-search.ssbx.json`).
 - `simsandbox run --signals NAMES --every N` and Python `run(signals=..., every=...)`: keep only the outputs named and every N-th step (and the last), for less memory and time; the values are the same. `--model` on a model using models records only that model.

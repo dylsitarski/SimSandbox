@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-07: ADR 0080 stage 1 (named axes): `ArrayOp::Gather` and `ArrayOp::Along` with `ArrIns::Gather`/`Along`, `gather_places`, `along_lines`, `program::reduce`, temporaries sized by `longest`; in `symbolic.rs` `Shapes`, `axes_of` (checks and axes, replacing `is_array`/`check_array_ops`), `lower` (replacing `resolve_with`), `fit`, `line_of`, per-quantity layout, 1D axis outputs and coordinates by place; `split_dims` returns the axes; views and the session accept 1D coordinates; examples, profiling cases and every view's render compared with the previous commit (only `gs.x`/`gs.y` differ, as planned)
 - 2026-11-07: ADR 0078 step 2 found to need arrays of several sizes in one block and vectors per run; ADR 0080 (named axes) written as Proposed at the owner's request
 - 2026-11-06: ADR 0078 step 1: `Design::Inputs`, study array inputs and `evaluate_points` (results kept by point, `RUNS_MADE` in tests), `Simulator::late` with `OutputPlan::computes_all_of` (no study runs on zero inputs at the start), maps with grids and array states (arrays inferred in any order), `examples/cruise-search.ssbx.json`, tests (only changed points run, bit for bit with a fresh study; pattern search finds a bowl's minimum and then runs nothing); 28 runs byte-identical
 - 2026-11-06: ADR 0079 (tables of members: one structure for adaptive studies, AMR, meshes and agents) written as Proposed; ADR 0078 revised to rest on it (lists dropped)
@@ -165,6 +166,7 @@
 
 ## Decided
 
+- 2026-11-07 (owner): ADR 0080 (named axes) accepted; stage 1 built the same day.
 - 2026-11-06 (owner): ADR 0078 (strategies are models choosing a study's points) and ADR 0079 (tables of members: one structure for adaptive studies, AMR, meshes and agents) accepted.
 - 2026-11-06 (owner): integrator updates on states of 2^17 to 2^20 values stay on one core: only a rayon pool would gain (2–4% at 256 × 256, 8% at 512 × 512), not worth a new dependency; the performance list is closed.
 - 2026-11-06 (owner): one-way links are not run ahead in the app's engine: little gain while the app plays at a set speed, and it conflicts with live edits, rewind and recording (`docs/design/performance.md`, ADR 0066 As built).

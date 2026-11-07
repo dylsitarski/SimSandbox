@@ -50,7 +50,8 @@ use simsandbox_core::{Result, SimError};
 use simsandbox_expr::program::Span;
 use simsandbox_expr::units::{dim_text, dimension_with, from_si, in_si, Dim, NO_DIM};
 use simsandbox_expr::{
-    is_reserved, parse, ArrayOp, Ast, Edge, Expr, Line as GridLine, Op, Outside, Program,
+    is_reserved, parse, Along, ArrayOp, Ast, Edge, Expr, Line as GridLine, Op, Outside, Program,
+    MAX_AXES,
 };
 use std::cell::RefCell;
 
@@ -301,34 +302,43 @@ fn split_top(s: &str) -> Vec<&str> {
     out
 }
 
-/// A declared name with its grid axes, `T[x]` (ADR 0060): the
-/// declaration without them, and whether it is an array. Brackets right
-/// after the name hold axes when every item names an axis of the grid;
-/// otherwise they are a unit (`F[N]`), left in place.
-fn split_dims(head: &str, axes: &[&str], line: usize) -> Result<(String, bool)> {
+/// A declared name with its axes, `T[x, y]` (ADR 0060, ADR 0080): the
+/// declaration without them, and its axes (places in the grid lines) if
+/// it is an array. Brackets right after the name hold axes when every
+/// item names an axis of the grid; otherwise they are a unit (`F[N]`),
+/// left in place.
+fn split_dims(head: &str, axes: &[&str], line: usize) -> Result<(String, Option<Vec<usize>>)> {
     let h = head.trim_start();
     let Some(open) = h.find('[') else {
-        return Ok((head.to_string(), false));
+        return Ok((head.to_string(), None));
     };
     let (name, rest) = h.split_at(open);
     let Some(close) = rest.find(']') else {
-        return Ok((head.to_string(), false));
+        return Ok((head.to_string(), None));
     };
     let items: Vec<&str> = rest[1..close].split(',').map(str::trim).collect();
     if !is_name(name) || axes.is_empty() || !items.iter().all(|i| axes.contains(i)) {
-        return Ok((head.to_string(), false));
+        return Ok((head.to_string(), None));
     }
-    if items != axes {
+    let places: Vec<usize> = items
+        .iter()
+        .map(|i| axes.iter().position(|a| a == i).expect("an axis"))
+        .collect();
+    if places.windows(2).any(|w| w[0] >= w[1]) {
+        let mut sorted = places.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let names: Vec<&str> = sorted.iter().map(|&a| axes[a]).collect();
         return Err(definition_error(
             line,
             1,
             format!(
-                "an array lies on the whole grid: write {name}[{}]",
-                axes.join(", ")
+                "name each axis once, in the order of the grid lines: write {name}[{}]",
+                names.join(", ")
             ),
         ));
     }
-    Ok((format!("{name}{}", &rest[close + 1..]), true))
+    Ok((format!("{name}{}", &rest[close + 1..]), Some(places)))
 }
 
 /// A `grid x [m] = a .. b, n` line (ADR 0060), `rest` after `grid`.
@@ -560,141 +570,448 @@ fn number(ast: &Ast) -> Option<f64> {
     }
 }
 
-/// Whether `ast` has one value per cell: it uses an array (a name in
-/// `arrays`, a stencil) other than through a reduction.
-fn is_array(ast: &Ast, arrays: &[String]) -> bool {
-    match ast {
-        Ast::Num(_) => false,
-        Ast::Name(n, _) => arrays.contains(n),
-        Ast::Neg(a) => is_array(a, arrays),
-        Ast::Bin(_, a, b) => is_array(a, arrays) || is_array(b, arrays),
-        Ast::Call(_, args) => args.iter().any(|a| is_array(a, arrays)),
-        Ast::Apply(name, ..) => {
-            name == "lap" || name.starts_with("dd") || name == "prev" || name == "next"
+/// Axes by name (ADR 0080): each quantity's axes, places in the grid
+/// lines, in their order. A scalar has none and need not be listed.
+type Shapes = std::collections::HashMap<String, Vec<usize>>;
+
+/// The axes of `a` and `b` together, in grid order.
+fn union(a: &[usize], b: &[usize]) -> Vec<usize> {
+    let mut out: Vec<usize> = a.iter().chain(b).copied().collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// How axis `axis` runs through the cells of a quantity over `axes`
+/// (the first fastest).
+fn line_of(axes: &[usize], axis: usize, grid: &[Axis]) -> GridLine {
+    GridLine {
+        stride: axes
+            .iter()
+            .take_while(|&&a| a != axis)
+            .map(|&a| grid[a].cells)
+            .product(),
+        count: grid[axis].cells,
+    }
+}
+
+/// The number of cells of a quantity over `axes`.
+fn cells_of(axes: &[usize], grid: &[Axis]) -> usize {
+    axes.iter().map(|&a| grid[a].cells).product()
+}
+
+/// `e`, over `from`, spread over `to` (ADR 0080): each cell of `to` takes
+/// the cell of `e` at the same place along `e`'s axes, axis `a` of `e`
+/// read as `b` when `rename` is `Some((a, b))`. A scalar or a quantity
+/// already over `to` is left as it is.
+fn fit(
+    e: Expr,
+    from: &[usize],
+    to: &[usize],
+    rename: Option<(usize, usize)>,
+    grid: &[Axis],
+) -> Expr {
+    if from.is_empty() || from == to && rename.is_none() {
+        return e;
+    }
+    let mut dims = [1; MAX_AXES];
+    let mut strides = [0; MAX_AXES];
+    for (k, &t) in to.iter().enumerate() {
+        dims[k] = grid[t].cells;
+        let source = match rename {
+            Some((a, b)) if t == b => a,
+            _ => t,
+        };
+        if from.contains(&source) {
+            strides[k] = line_of(from, source, grid).stride;
+        }
+    }
+    Expr::Array(
+        ArrayOp::Gather {
+            rank: to.len(),
+            dims,
+            strides,
+        },
+        vec![e],
+    )
+}
+
+/// The axes of `ast`'s value (ADR 0080), checking every array operation:
+/// known, with the right arguments. Names not in `shapes` are scalars.
+fn axes_of(
+    ast: &Ast,
+    grid: &[Axis],
+    shapes: &Shapes,
+) -> std::result::Result<Vec<usize>, (usize, String)> {
+    let of = |a: &Ast| axes_of(a, grid, shapes);
+    let args = match ast {
+        Ast::Num(_) => return Ok(Vec::new()),
+        Ast::Name(n, _) => return Ok(shapes.get(n).cloned().unwrap_or_default()),
+        Ast::Neg(a) => return of(a),
+        Ast::Bin(_, a, b) => return Ok(union(&of(a)?, &of(b)?)),
+        Ast::Call(_, args) => {
+            let mut out = Vec::new();
+            for a in args {
+                out = union(&out, &of(a)?);
+            }
+            return Ok(out);
+        }
+        Ast::Apply(_, args, _) => args,
+    };
+    let Ast::Apply(name, _, col) = ast else {
+        unreachable!()
+    };
+    let col = *col;
+    if grid.is_empty() {
+        return Err((
+            col,
+            format!("'{name}' works on arrays: declare a grid with 'grid x [m] = 0 .. length, 50'"),
+        ));
+    }
+    let names: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
+    let axis_named = |a: &Ast| match a {
+        Ast::Name(n, _) => names.iter().position(|m| m == n),
+        _ => None,
+    };
+    let list = |axes: &[usize]| {
+        axes.iter()
+            .map(|&a| names[a])
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let count = |ok: bool, want: &str| {
+        if ok {
+            Ok(())
+        } else {
+            Err((
+                col,
+                format!("'{name}' takes {want}, got {} argument(s)", args.len()),
+            ))
+        }
+    };
+    // A stencil's array: a declared or defined quantity by name.
+    let named_array = || -> std::result::Result<Vec<usize>, (usize, String)> {
+        match &args[0] {
+            Ast::Name(n, _) if !names.contains(&n.as_str()) && shapes.get(n).is_some_and(|s| !s.is_empty()) => {
+                Ok(shapes[n].clone())
+            }
+            _ => Err((
+                col,
+                format!("'{name}' takes the name of an array, e.g. {name}(T); define one above (D = k*T) for an expression"),
+            )),
+        }
+    };
+    let not_over = |what: &str, axes: &[usize], a: &str| {
+        Err((
+            col,
+            format!(
+                "{what} is over {}, not {a}",
+                if axes.is_empty() {
+                    "no axis".to_string()
+                } else {
+                    list(axes)
+                }
+            ),
+        ))
+    };
+    match name.as_str() {
+        "lap" => {
+            count(args.len() == 1, "1 argument")?;
+            named_array()
+        }
+        "prev" | "next" => {
+            count(matches!(args.len(), 1 | 2), "an array and an axis")?;
+            let axes = named_array()?;
+            if let Some(a) = args.get(1) {
+                match axis_named(a) {
+                    Some(i) if axes.contains(&i) => {}
+                    _ => {
+                        return Err((
+                            col,
+                            format!(
+                                "'{name}' runs along an axis of the array ({}): {name}(v, {})",
+                                list(&axes),
+                                names[axes[0]]
+                            ),
+                        ))
+                    }
+                }
+            }
+            Ok(axes)
+        }
+        d if d.starts_with("dd") => {
+            count(args.len() == 1, "1 argument")?;
+            let Some(i) = names.iter().position(|n| *n == &d[2..]) else {
+                return Err((col, format!("'{d}' is a derivative along '{}', which is not an axis of the grid ({}): write dd{}", &d[2..], names.join(", "), names[0])));
+            };
+            let axes = named_array()?;
+            if !axes.contains(&i) {
+                return not_over(&format!("'{d}' of {}", ast_name(&args[0])), &axes, names[i]);
+            }
+            Ok(axes)
+        }
+        "spacing" => {
+            if args.len() != 1 || axis_named(&args[0]).is_none() {
+                return Err((
+                    col,
+                    format!("'spacing' takes an axis: spacing({})", names[0]),
+                ));
+            }
+            Ok(Vec::new())
+        }
+        "on" => {
+            count(args.len() == 3, "a quantity and two axes, e.g. on(J, p, q)")?;
+            let axes = of(&args[0])?;
+            let (Some(a), Some(b)) = (axis_named(&args[1]), axis_named(&args[2])) else {
+                return Err((
+                    col,
+                    "'on(T, a, b)' names two axes: T's axis a, read as b".into(),
+                ));
+            };
+            if !axes.contains(&a) {
+                return not_over("the quantity", &axes, names[a]);
+            }
+            if a != b && axes.contains(&b) {
+                return Err((col, format!("the quantity is over {} already", names[b])));
+            }
+            if grid[a].cells != grid[b].cells {
+                return Err((
+                    col,
+                    format!(
+                        "{} has {} cells and {} has {}: 'on' needs the same number",
+                        names[a], grid[a].cells, names[b], grid[b].cells
+                    ),
+                ));
+            }
+            let mut out: Vec<usize> = axes
+                .into_iter()
+                .map(|x| if x == a { b } else { x })
+                .collect();
+            out.sort_unstable();
+            Ok(out)
+        }
+        "at" => {
+            let axes = if args.is_empty() {
+                Vec::new()
+            } else {
+                of(&args[0])?
+            };
+            if axes.is_empty() {
+                return Err((
+                    col,
+                    "'at' takes an array and a cell number along each of its axes, e.g. at(T, 0)"
+                        .into(),
+                ));
+            }
+            // `at(T, k)` with a computed cell number (ADR 0070).
+            if args.len() == 2 && number(&args[1]).is_none() {
+                if !of(&args[1])?.is_empty() {
+                    return Err((
+                        col,
+                        "a computed cell number is one value, e.g. at(T, argmaxof(T))".into(),
+                    ));
+                }
+                return Ok(Vec::new());
+            }
+            if args.len() != 1 + axes.len() {
+                let cells = vec!["0"; axes.len()].join(", ");
+                return Err((
+                    col,
+                    format!("'at' takes {} argument(s), the array and a cell number along each of its axes ({}): at(T, {cells})", 1 + axes.len(), list(&axes)),
+                ));
+            }
+            for (&a, i) in axes.iter().zip(&args[1..]) {
+                match i {
+                    Ast::Num(i)
+                        if i.fract() == 0.0 && *i >= 0.0 && (*i as usize) < grid[a].cells => {}
+                    _ => {
+                        return Err((
+                            col,
+                            format!(
+                                "a cell number along {} is a whole number from 0 to {}",
+                                names[a],
+                                grid[a].cells - 1
+                            ),
+                        ))
+                    }
+                }
+            }
+            Ok(Vec::new())
+        }
+        _ => {
+            // The reductions: over all cells, or along one axis (ADR 0080).
+            count(
+                matches!(args.len(), 1 | 2),
+                "an array, and an axis to work along",
+            )?;
+            let axes = of(&args[0])?;
+            if axes.is_empty() {
+                return Err((col, format!("'{name}' takes an array, e.g. {name}(T)")));
+            }
+            let Some(a) = args.get(1) else {
+                return Ok(Vec::new());
+            };
+            match axis_named(a) {
+                Some(i) if axes.contains(&i) => Ok(axes.into_iter().filter(|&x| x != i).collect()),
+                Some(i) => not_over(&format!("'{name}''s array"), &axes, names[i]),
+                None => Err((
+                    col,
+                    format!(
+                        "'{name}(T, {})' works along an axis of T ({})",
+                        names[axes[0]],
+                        list(&axes)
+                    ),
+                )),
+            }
         }
     }
 }
 
-/// Check every array operation in `ast` (ADR 0060): known, with the
-/// right arguments. `arrays` are the names with a value per cell.
-fn check_array_ops(
+/// A name as written, for messages.
+fn ast_name(a: &Ast) -> &str {
+    match a {
+        Ast::Name(n, _) => n,
+        _ => "the array",
+    }
+}
+
+/// Lower `ast` to an expression (ADR 0080), with its axes: operands over
+/// different axes are spread over all of them, reductions along an axis
+/// and `on` become array instructions. `stencil` builds `lap`, `dd…`,
+/// `prev`, `next` and `spacing` from their arguments. Checked by
+/// [`axes_of`] first.
+fn lower(
     ast: &Ast,
     grid: &[Axis],
-    arrays: &[String],
-) -> std::result::Result<(), (usize, String)> {
-    let args = match ast {
-        Ast::Num(_) | Ast::Name(..) => return Ok(()),
-        Ast::Neg(a) => return check_array_ops(a, grid, arrays),
-        Ast::Bin(_, a, b) => {
-            check_array_ops(a, grid, arrays)?;
-            return check_array_ops(b, grid, arrays);
+    shapes: &Shapes,
+    slot: &dyn Fn(&str) -> Option<usize>,
+    stencil: &dyn Fn(&str, &[Ast]) -> Expr,
+) -> std::result::Result<(Expr, Vec<usize>), simsandbox_expr::Error> {
+    let low = |a: &Ast| lower(a, grid, shapes, slot, stencil);
+    Ok(match ast {
+        Ast::Num(v) => (Expr::Num(*v), Vec::new()),
+        Ast::Name(n, c) => match slot(n) {
+            Some(i) => (Expr::Var(i), shapes.get(n).cloned().unwrap_or_default()),
+            None => {
+                return Err(simsandbox_expr::Error {
+                    column: *c,
+                    message: format!("unknown name '{n}'"),
+                })
+            }
+        },
+        Ast::Neg(a) => {
+            let (e, axes) = low(a)?;
+            (Expr::Neg(Box::new(e)), axes)
         }
-        Ast::Call(_, args) => args,
-        Ast::Apply(name, args, col) => {
-            let col = *col;
-            if grid.is_empty() {
-                return Err((
-                    col,
-                    format!("'{name}' works on arrays: declare a grid with 'grid x [m] = 0 .. length, 50'"),
-                ));
-            }
-            let names: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
-            let all = names.join(", ");
-            let want = if name == "at" { 1 + grid.len() } else { 1 };
-            // `prev(v)` along the first axis, or `prev(v, y)` (ADR 0069).
-            let shift = name == "prev" || name == "next";
-            // `at(T, k)` with a computed cell number (ADR 0070).
-            let computed = name == "at" && args.len() == 2 && number(&args[1]).is_none();
-            if !(args.len() == want || shift && args.len() == 2 || computed) {
-                return Err((
-                    col,
-                    format!("'{name}' takes {want} argument(s), got {}", args.len()),
-                ));
-            }
-            let named_array = |what: &str| -> std::result::Result<(), (usize, String)> {
-                match &args[0] {
-                    Ast::Name(n, _) if arrays.contains(n) && !names.contains(&n.as_str()) => Ok(()),
-                    _ => Err((
-                        col,
-                        format!("{what} takes the name of an array, e.g. {name}(T); define one above (D = k*T) for an expression"),
-                    )),
-                }
+        Ast::Bin(op, a, b) => {
+            let ((ea, aa), (eb, ab)) = (low(a)?, low(b)?);
+            let to = union(&aa, &ab);
+            (
+                Expr::Bin(
+                    *op,
+                    Box::new(fit(ea, &aa, &to, None, grid)),
+                    Box::new(fit(eb, &ab, &to, None, grid)),
+                ),
+                to,
+            )
+        }
+        Ast::Call(f, args) => {
+            let low: Vec<(Expr, Vec<usize>)> = args
+                .iter()
+                .map(low)
+                .collect::<std::result::Result<_, _>>()?;
+            let to = low.iter().fold(Vec::new(), |t, (_, a)| union(&t, a));
+            let args = low
+                .into_iter()
+                .map(|(e, a)| fit(e, &a, &to, None, grid))
+                .collect();
+            (Expr::Call(*f, args), to)
+        }
+        Ast::Apply(name, args, _) => {
+            let axis_named = |a: &Ast| match a {
+                Ast::Name(n, _) => grid
+                    .iter()
+                    .position(|g| &g.name == n)
+                    .expect("checked: an axis"),
+                _ => unreachable!("checked: an axis"),
             };
             match name.as_str() {
-                "lap" => named_array("'lap'")?,
-                "prev" | "next" => {
-                    named_array(&format!("'{name}'"))?;
-                    if let Some(a) = args.get(1) {
-                        if !matches!(a, Ast::Name(n, _) if names.contains(&n.as_str())) {
-                            return Err((
-                                col,
-                                format!("'{name}' runs along an axis of the grid ({all}): {name}(v, {})", names[0]),
-                            ));
-                        }
-                    }
-                    return Ok(());
+                "lap" | "prev" | "next" | "spacing" => {
+                    let axes = match name.as_str() {
+                        "spacing" => Vec::new(),
+                        _ => shapes[ast_name(&args[0])].clone(),
+                    };
+                    (stencil(name, args), axes)
                 }
                 d if d.starts_with("dd") => {
-                    if !names.contains(&&d[2..]) {
-                        return Err((col, format!("'{d}' is a derivative along '{}', which is not an axis of the grid ({all}): write dd{}", &d[2..], names[0])));
-                    }
-                    named_array(&format!("'{d}'"))?
+                    (stencil(name, args), shapes[ast_name(&args[0])].clone())
                 }
-                "spacing" => {
-                    if !matches!(&args[0], Ast::Name(n, _) if names.contains(&n.as_str())) {
-                        return Err((
-                            col,
-                            format!("'spacing' takes an axis: spacing({})", names[0]),
-                        ));
-                    }
+                "on" => {
+                    let (e, from) = low(&args[0])?;
+                    let (a, b) = (axis_named(&args[1]), axis_named(&args[2]));
+                    let mut to: Vec<usize> =
+                        from.iter().map(|&x| if x == a { b } else { x }).collect();
+                    to.sort_unstable();
+                    (fit(e, &from, &to, Some((a, b)), grid), to)
                 }
                 "at" => {
-                    if !is_array(&args[0], arrays) {
-                        let cells = vec!["0"; grid.len()].join(", ");
-                        return Err((
-                            col,
-                            format!("'at' takes an array and a cell number along each axis, e.g. at(T, {cells})"),
-                        ));
-                    }
-                    if computed {
-                        if is_array(&args[1], arrays) {
-                            return Err((
-                                col,
-                                "a computed cell number is one value, e.g. at(T, argmaxof(T))"
-                                    .into(),
-                            ));
-                        }
-                        return check_array_ops(&args[0], grid, arrays)
-                            .and_then(|()| check_array_ops(&args[1], grid, arrays));
-                    }
-                    for (a, i) in grid.iter().zip(&args[1..]) {
-                        match i {
-                            Ast::Num(i)
-                                if i.fract() == 0.0 && *i >= 0.0 && (*i as usize) < a.cells => {}
-                            _ => {
-                                return Err((
-                                    col,
-                                    format!(
-                                        "a cell number along {} is a whole number from 0 to {}",
-                                        a.name,
-                                        a.cells - 1
-                                    ),
-                                ))
-                            }
-                        }
+                    let (first, axes) = low(&args[0])?;
+                    if args.len() == 2 && number(&args[1]).is_none() {
+                        // at(T, k), k computed: cell k in storage order.
+                        let (k, _) = low(&args[1])?;
+                        (Expr::Array(ArrayOp::Cell, vec![first, k]), Vec::new())
+                    } else {
+                        // at(T, i, j): cell i + j·(T's first axis), and so on.
+                        let place = args[1..]
+                            .iter()
+                            .zip(&axes)
+                            .map(|(a, &axis)| match a {
+                                Ast::Num(i) => *i as usize * line_of(&axes, axis, grid).stride,
+                                _ => unreachable!("checked: a whole number"),
+                            })
+                            .sum();
+                        (Expr::Array(ArrayOp::At(place), vec![first]), Vec::new())
                     }
                 }
                 _ => {
-                    if !is_array(&args[0], arrays) {
-                        return Err((col, format!("'{name}' takes an array, e.g. {name}(T)")));
+                    let (first, axes) = low(&args[0])?;
+                    if let Some(a) = args.get(1) {
+                        let axis = axis_named(a);
+                        let of = match name.as_str() {
+                            "sum" => Along::Sum,
+                            "mean" => Along::Mean,
+                            "minof" => Along::MinOf,
+                            "maxof" => Along::MaxOf,
+                            "argminof" => Along::ArgMinOf,
+                            _ => Along::ArgMaxOf,
+                        };
+                        let mut dims = [1; MAX_AXES];
+                        for (k, &x) in axes.iter().enumerate() {
+                            dims[k] = grid[x].cells;
+                        }
+                        let op = ArrayOp::Along {
+                            of,
+                            rank: axes.len(),
+                            dims,
+                            axis: axes.iter().position(|&x| x == axis).expect("checked"),
+                        };
+                        let rest = axes.into_iter().filter(|&x| x != axis).collect();
+                        (Expr::Array(op, vec![first]), rest)
+                    } else {
+                        let op = match name.as_str() {
+                            "sum" => ArrayOp::Sum,
+                            "mean" => ArrayOp::Mean,
+                            "minof" => ArrayOp::MinOf,
+                            "maxof" => ArrayOp::MaxOf,
+                            "argminof" => ArrayOp::ArgMinOf,
+                            _ => ArrayOp::ArgMaxOf,
+                        };
+                        (Expr::Array(op, vec![first]), Vec::new())
                     }
                 }
             }
-            args
         }
-    };
-    args.iter()
-        .try_for_each(|a| check_array_ops(a, grid, arrays))
+    })
 }
 
 impl EquationSet {
@@ -716,11 +1033,11 @@ impl EquationSet {
                 continue;
             };
             let (a, unit) = read_grid(text, &rest, k + 1)?;
-            if grid.len() == 2 {
+            if grid.len() == MAX_AXES {
                 return Err(definition_error(
                     k + 1,
                     1,
-                    "a grid has one or two axes (3D grids are not built yet)",
+                    format!("a block has at most {MAX_AXES} axes"),
                 ));
             }
             if grid.iter().any(|g| g.name == a.name) {
@@ -736,16 +1053,6 @@ impl EquationSet {
             grid.push(a);
         }
         let axes: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
-        // How each axis runs through the cells, stored row by row.
-        let nx = grid.first().map_or(1, |a| a.cells);
-        let lines_of: Vec<GridLine> = grid
-            .iter()
-            .enumerate()
-            .map(|(i, a)| GridLine {
-                stride: if i == 0 { 1 } else { nx },
-                count: a.cells,
-            })
-            .collect();
 
         // Then the left-hand sides, which decide the kind of block, and
         // the declarations.
@@ -755,9 +1062,13 @@ impl EquationSet {
         let mut declared: Vec<(String, f64, usize)> = Vec::new();
         // `state` declarations (ADR 0049): name and line.
         let mut state_decls: Vec<(String, usize)> = Vec::new();
-        // Names with a value per cell, and array states' initial values
-        // as written (expression, line, column).
-        let mut arrays: Vec<String> = axes.iter().map(|a| a.to_string()).collect();
+        // Each array's axes (an axis is over itself), and array states'
+        // initial values as written (expression, line, column).
+        let mut shapes: Shapes = axes
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (a.to_string(), vec![i]))
+            .collect();
         let mut array_init: Vec<(String, Option<Written>)> = Vec::new();
         let mut edges: Vec<EdgeLine> = Vec::new();
         // Array parameters (ADR 0069): name and number of cells.
@@ -801,10 +1112,10 @@ impl EquationSet {
                 if let Some(u) = unit {
                     units.insert(n.clone(), read_unit(&u, number, 1)?);
                 }
-                if array {
+                if let Some(dims) = array {
                     let init = value.map(|v| (v.to_string(), number, column_of(text, v.trim())));
                     array_init.push((n.clone(), init));
-                    arrays.push(n.clone());
+                    shapes.insert(n.clone(), dims);
                 } else if let Some(v) = value {
                     let v = v.trim().parse::<f64>().map_err(|_| {
                         definition_error(number, 1, format!("'{}' is not a number", v.trim()))
@@ -862,8 +1173,8 @@ impl EquationSet {
                 if let Some(u) = unit {
                     units.insert(n.clone(), read_unit(&u, number, 1)?);
                 }
-                if array {
-                    let cells: usize = grid.iter().map(|a| a.cells).product();
+                if let Some(dims) = array {
+                    let cells = cells_of(&dims, &grid);
                     for k in 0..cells {
                         let e = format!("{n}[{k}]");
                         if let Some(u) = units.get(&n).copied() {
@@ -872,7 +1183,7 @@ impl EquationSet {
                         declared.push((e, value, number));
                     }
                     array_params.push((n.clone(), cells));
-                    arrays.push(n);
+                    shapes.insert(n, dims);
                     continue;
                 }
                 declared.push((n, value, number));
@@ -887,7 +1198,7 @@ impl EquationSet {
                     let (item, unit) = name_and_unit(&item);
                     // Names may also be separated by spaces (no units then).
                     let parts: Vec<&str> = item.split(' ').filter(|n| !n.is_empty()).collect();
-                    if (unit.is_some() || array) && parts.len() != 1 {
+                    if (unit.is_some() || array.is_some()) && parts.len() != 1 {
                         return Err(definition_error(
                             number,
                             1,
@@ -913,8 +1224,8 @@ impl EquationSet {
                             ));
                         }
                         inputs.push(n.to_string());
-                        if array {
-                            arrays.push(n.to_string());
+                        if let Some(dims) = &array {
+                            shapes.insert(n.to_string(), dims.clone());
                         }
                     }
                 }
@@ -1063,43 +1374,81 @@ impl EquationSet {
                 }
             }
         }
-        // Which quantities are arrays (ADR 0060): a defined quantity is one
-        // when its right side is, in any order of the lines. A scalar state
-        // cannot change by an array.
-        loop {
-            let before = arrays.len();
+        // Each defined quantity's axes (ADR 0080): those its right side
+        // uses, found in any order of the lines.
+        for _ in 0..=parsed.len() {
+            let mut changed = false;
             for line in &parsed {
                 if let Lhs::Defined(n) = &line.lhs {
-                    if !arrays.contains(n) && is_array(&line.ast, &arrays) {
-                        arrays.push(n.clone());
+                    if let Ok(a) = axes_of(&line.ast, &grid, &shapes) {
+                        if shapes.get(n).map_or(!a.is_empty(), |b| *b != a) {
+                            shapes.insert(n.clone(), a);
+                            changed = true;
+                        }
                     }
                 }
             }
-            if arrays.len() == before {
+            if !changed {
                 break;
             }
         }
+        let axes_of_name = |n: &str| shapes.get(n).cloned().unwrap_or_default();
+        let list = |a: &[usize]| a.iter().map(|&i| axes[i]).collect::<Vec<_>>().join(", ");
         for line in &parsed {
-            let array = is_array(&line.ast, &arrays);
-            match &line.lhs {
-                Lhs::State(n) if array && !arrays.contains(n) => {
-                    return Err(definition_error(
-                        line.number,
-                        line.offset + 1,
-                        format!("d{n}/dt has a value per cell, so {n} must be an array: declare 'state {n}[{}]'", axes.join(", ")),
-                    ))
-                }
-                Lhs::Map(n) if array && !arrays.contains(n) => {
-                    return Err(definition_error(
-                        line.number,
-                        line.offset + 1,
-                        format!("{n}[n+1] has a value per cell, so {n} must be an array: declare 'state {n}[{}]'", axes.join(", ")),
-                    ))
-                }
-                _ => {}
-            }
-            check_array_ops(&line.ast, &grid, &arrays)
+            let got = axes_of(&line.ast, &grid, &shapes)
                 .map_err(|(c, m)| definition_error(line.number, line.offset + c, m))?;
+            let (n, what) = match &line.lhs {
+                Lhs::State(n) => (n, format!("d{n}/dt")),
+                Lhs::Map(n) => (n, format!("{n}[n+1]")),
+                Lhs::Defined(n) => {
+                    if got.len() > 2 {
+                        return Err(definition_error(
+                            line.number,
+                            1,
+                            format!("{n} would be over {} axes ({}): a quantity has at most two; reduce along one with sum({n}, {})", got.len(), list(&got), axes[got[0]]),
+                        ));
+                    }
+                    continue;
+                }
+            };
+            let own = axes_of_name(n);
+            if got.iter().any(|a| !own.contains(a)) {
+                let all = union(&own, &got);
+                let how = if own.is_empty() {
+                    format!("{what} has a value per cell, so {n} must be an array: declare 'state {n}[{}]'", list(&all))
+                } else {
+                    format!(
+                        "{what} is over {}, but {n} is over {}: declare 'state {n}[{}]'",
+                        list(&got),
+                        list(&own),
+                        list(&all)
+                    )
+                };
+                return Err(definition_error(line.number, line.offset + 1, how));
+            }
+        }
+        for (n, dims) in &shapes {
+            if dims.len() > 2 && !axes.contains(&n.as_str()) {
+                let line = state_decls
+                    .iter()
+                    .find(|d| &d.0 == n)
+                    .map(|d| d.1)
+                    .or_else(|| {
+                        declared
+                            .iter()
+                            .find(|d| d.0 == format!("{n}[0]"))
+                            .map(|d| d.2)
+                    })
+                    .unwrap_or(1);
+                return Err(definition_error(
+                    line,
+                    1,
+                    format!(
+                        "{n} is over {} axes: a quantity has at most two (ADR 0080)",
+                        dims.len()
+                    ),
+                ));
+            }
         }
         // Array states' initial values, edge values and the grid's ends.
         let mut inits: Vec<(String, Ast, usize, usize)> = Vec::new();
@@ -1111,13 +1460,26 @@ impl EquationSet {
             }
         }
         for e in &edges {
-            if !arrays.contains(&e.array) || axes.contains(&e.array.as_str()) {
+            let own = axes_of_name(&e.array);
+            if own.is_empty() || axes.contains(&e.array.as_str()) {
                 return Err(definition_error(
                     e.line,
                     1,
                     format!(
                         "'{}' is not an array on the grid, so it has no edges",
                         e.array
+                    ),
+                ));
+            }
+            if !own.contains(&e.axis) {
+                return Err(definition_error(
+                    e.line,
+                    e.column,
+                    format!(
+                        "{} is over {}, so it has no edges along {}",
+                        e.array,
+                        list(&own),
+                        axes[e.axis]
                     ),
                 ));
             }
@@ -1202,9 +1564,21 @@ impl EquationSet {
                 )?;
             }
         }
-        for (_, ast, line, col) in &inits {
-            check_array_ops(ast, &grid, &arrays)
+        for (n, ast, line, col) in &inits {
+            let got = axes_of(ast, &grid, &shapes)
                 .map_err(|(c, m)| definition_error(*line, col + c - 1, m))?;
+            let own = axes_of_name(n);
+            if got.iter().any(|a| !own.contains(a)) {
+                return Err(definition_error(
+                    *line,
+                    *col,
+                    format!(
+                        "{n}'s initial value is over {}, but {n} is over {}",
+                        list(&got),
+                        list(&own)
+                    ),
+                ));
+            }
             only(
                 ast,
                 *line,
@@ -1222,7 +1596,7 @@ impl EquationSet {
                     &|n| {
                         n == "t"
                             || is_param(n)
-                            || inputs.iter().any(|i| i == n) && !arrays.contains(&n.to_string())
+                            || inputs.iter().any(|i| i == n) && axes_of_name(n).is_empty()
                     },
                     "an edge value is written with parameters, scalar inputs and t",
                 )?;
@@ -1244,7 +1618,7 @@ impl EquationSet {
         // initial expression (0 if none).
         let mut initial: Vec<Option<usize>> = Vec::new();
         for s in &states {
-            if arrays.contains(s) {
+            if !axes_of_name(s).is_empty() {
                 initial.push(None);
                 continue;
             }
@@ -1303,16 +1677,25 @@ impl EquationSet {
             let d = args.first().map_or(NO_DIM, |a| a.1);
             Ok(match name {
                 "lap" => {
-                    if axis_dims.iter().any(|a| *a != axis_dims[0]) {
+                    // Along the array's own axes (ADR 0080).
+                    let own = match args[0].0 {
+                        Ast::Name(n, _) => axes_of_name(n),
+                        _ => Vec::new(),
+                    };
+                    let Some(&first) = own.first() else {
+                        return Ok(d);
+                    };
+                    if own.iter().any(|&a| axis_dims[a] != axis_dims[first]) {
+                        let names: Vec<&str> = own.iter().map(|&a| axes[a]).collect();
                         return Err((
                             col,
                             format!(
                                 "lap adds second derivatives along {}, so the axes need the same unit",
-                                axes.join(" and ")
+                                names.join(" and ")
                             ),
                         ));
                     }
-                    std::array::from_fn(|i| d[i] - 2 * axis_dims[0][i])
+                    std::array::from_fn(|i| d[i] - 2 * axis_dims[first][i])
                 }
                 "spacing" => match args[0].0 {
                     Ast::Name(n, _) => axis_dim_of(n),
@@ -1439,14 +1822,7 @@ impl EquationSet {
         // Variables, laid out in the registers in this order: t, states,
         // inputs, parameters, defined quantities, the axis (these two read
         // as outputs), the grid's ends and spacing, edge values, rates.
-        let cells: usize = grid.iter().map(|a| a.cells).product();
-        let len_of = |n: &str| {
-            if arrays.iter().any(|a| a == n) {
-                cells
-            } else {
-                1
-            }
-        };
+        let len_of = |n: &str| cells_of(&axes_of_name(n), &grid);
         let mut spans: Vec<Span> = Vec::new();
         let mut scales: Vec<f64> = Vec::new();
         let mut size = 0;
@@ -1473,7 +1849,11 @@ impl EquationSet {
         let axis_scales: Vec<f64> = grid.iter().map(|a| unit_of(&a.name).scale).collect();
         // Each axis's position of every cell (read as outputs, after the
         // defined quantities), then its ends and spacing, all in its unit.
-        let axis_vars: Vec<usize> = axis_scales.iter().map(|&s| add(cells, s)).collect();
+        let axis_vars: Vec<usize> = grid
+            .iter()
+            .zip(&axis_scales)
+            .map(|(a, &s)| add(a.cells, s))
+            .collect();
         let grid_vars: Vec<(usize, usize, usize, usize)> = axis_vars
             .iter()
             .zip(&axis_scales)
@@ -1497,14 +1877,14 @@ impl EquationSet {
         // another (ADR 0069).
         let array_param_vars: Vec<usize> = array_params
             .iter()
-            .map(|(n, _)| {
+            .map(|(n, cells)| {
                 let first = params
                     .iter()
                     .position(|p| *p == format!("{n}[0]"))
                     .expect("declared");
                 spans.push(Span {
                     at: spans[param_vars[first]].at,
-                    len: cells,
+                    len: *cells,
                 });
                 scales.push(unit_of(n).scale);
                 spans.len() - 1
@@ -1564,18 +1944,18 @@ impl EquationSet {
             out
         };
         let spacing_of = |axis: usize| grid_vars[axis].3;
-        let apply = |name: &str,
-                     args: &[Ast],
-                     resolved: Vec<Expr>,
-                     _col: usize|
-         -> std::result::Result<Expr, simsandbox_expr::Error> {
-            let Some(Ast::Name(first_name, _)) = args.first() else {
-                unreachable!("checked: one argument at least")
-            };
+        // The stencils, along an array's own axes (ADR 0080).
+        let stencil = |name: &str, args: &[Ast]| -> Expr {
+            let first_name = ast_name(&args[0]);
+            let axis_named = |n: &str| axes.iter().position(|a| *a == n).expect("checked: an axis");
+            if name == "spacing" {
+                return Expr::Var(spacing_of(axis_named(first_name)));
+            }
+            let own = axes_of_name(first_name);
+            let a = slot_of(first_name, defined.len()).expect("checked: an array");
             // A derivative of an array along one axis.
             let along = |axis: usize, second: bool| {
-                let a = slot_of(first_name, defined.len()).expect("checked: an array");
-                let (line, edges) = (lines_of[axis], edges_of(first_name, axis));
+                let (line, edges) = (line_of(&own, axis, &grid), edges_of(first_name, axis));
                 let op = if second {
                     ArrayOp::Second { line, edges }
                 } else {
@@ -1583,69 +1963,34 @@ impl EquationSet {
                 };
                 Expr::Array(op, vec![Expr::Var(a), Expr::Var(spacing_of(axis))])
             };
-            let axis_named = |n: &str| axes.iter().position(|a| *a == n).expect("checked: an axis");
             if name == "lap" {
                 // The sum of the second derivatives along each axis.
-                return Ok((1..grid.len()).fold(along(0, true), |sum, i| {
+                return own[1..].iter().fold(along(own[0], true), |sum, &i| {
                     Expr::Bin(Op::Add, Box::new(sum), Box::new(along(i, true)))
-                }));
-            }
-            if name == "spacing" {
-                return Ok(Expr::Var(spacing_of(axis_named(first_name))));
+                });
             }
             if name == "prev" || name == "next" {
                 let axis = match args.get(1) {
                     Some(Ast::Name(n, _)) => axis_named(n),
-                    _ => 0,
+                    _ => own[0],
                 };
-                let a = slot_of(first_name, defined.len()).expect("checked: an array");
                 let op = ArrayOp::Shift {
-                    line: lines_of[axis],
+                    line: line_of(&own, axis, &grid),
                     edges: edges_of(first_name, axis),
                     up: name == "next",
                 };
-                return Ok(Expr::Array(
-                    op,
-                    vec![Expr::Var(a), Expr::Var(spacing_of(axis))],
-                ));
+                return Expr::Array(op, vec![Expr::Var(a), Expr::Var(spacing_of(axis))]);
             }
-            if let Some(ax) = name.strip_prefix("dd") {
-                return Ok(along(axis_named(ax), false));
-            }
-            let mut resolved = resolved.into_iter();
-            let first = resolved.next().expect("checked: one argument at least");
-            let resolved_rest: Vec<Expr> = resolved.collect();
-            Ok(match name {
-                "sum" => Expr::Array(ArrayOp::Sum, vec![first]),
-                "mean" => Expr::Array(ArrayOp::Mean, vec![first]),
-                "minof" => Expr::Array(ArrayOp::MinOf, vec![first]),
-                "maxof" => Expr::Array(ArrayOp::MaxOf, vec![first]),
-                "argminof" => Expr::Array(ArrayOp::ArgMinOf, vec![first]),
-                "argmaxof" => Expr::Array(ArrayOp::ArgMaxOf, vec![first]),
-                _ if number(&args[1]).is_none() => {
-                    // at(T, k), k computed: cell k in storage order.
-                    let k = resolved_rest
-                        .first()
-                        .cloned()
-                        .expect("checked: a cell number");
-                    Expr::Array(ArrayOp::Cell, vec![first, k])
-                }
-                _ => {
-                    // at(T, i) or at(T, i, j): cell i + j·nx.
-                    let place = args[1..]
-                        .iter()
-                        .zip(&lines_of)
-                        .map(|(a, line)| match a {
-                            Ast::Num(i) => *i as usize * line.stride,
-                            _ => unreachable!("checked: a whole number"),
-                        })
-                        .sum();
-                    Expr::Array(ArrayOp::At(place), vec![first])
-                }
-            })
+            along(axis_named(&name[2..]), false)
         };
-        let resolve = |ast: &Ast, visible: usize, line: usize, offset: usize| -> Result<Expr> {
-            ast.resolve_with(&|n| slot_of(n, visible), &apply)
+        // An expression with its axes; spread over `to` when given.
+        let resolve = |ast: &Ast,
+                       visible: usize,
+                       to: Option<&[usize]>,
+                       line: usize,
+                       offset: usize|
+         -> Result<Expr> {
+            let (e, from) = lower(ast, &grid, &shapes, &|n| slot_of(n, visible), &stencil)
                 .map_err(|e| {
                     let hint = if defined
                         .iter()
@@ -1656,7 +2001,11 @@ impl EquationSet {
                         ""
                     };
                     definition_error(line, offset + e.column, format!("{}{hint}", e.message))
-                })
+                })?;
+            Ok(match to {
+                Some(to) => fit(e, &from, to, None, &grid),
+                None => e,
+            })
         };
         // In the unit of the variable it is stored in.
         let stored = |e: Expr, var: usize| from_si(in_si(e, &scales), scales[var]);
@@ -1666,24 +2015,31 @@ impl EquationSet {
             match &line.lhs {
                 Lhs::State(n) | Lhs::Map(n) => {
                     let i = states.iter().position(|s| s == n).expect("state listed");
-                    let e = resolve(&line.ast, defined.len(), line.number, line.offset)?;
+                    let own = axes_of_name(n);
+                    let e = resolve(
+                        &line.ast,
+                        defined.len(),
+                        Some(&own),
+                        line.number,
+                        line.offset,
+                    )?;
                     rhs[i] = Some(stored(e, state_vars[i]));
                 }
                 Lhs::Defined(_) => {
                     let k = defined_exprs.len();
-                    let e = resolve(&line.ast, k, line.number, line.offset)?;
+                    let e = resolve(&line.ast, k, None, line.number, line.offset)?;
                     defined_exprs.push(stored(e, defined_vars[k]));
                 }
             }
         }
         // The grid: its ends, spacing and cell centres.
         let mut grid_steps: Vec<(usize, Expr)> = Vec::new();
-        for ((a, &(x, lo, hi, h)), &line) in grid.iter().zip(&grid_vars).zip(&lines_of) {
+        for (a, &(x, lo, hi, h)) in grid.iter().zip(&grid_vars) {
             // A plain number is in the axis unit: `0 .. 4` in cm.
             for (end, var) in [(&a.lo, lo), (&a.hi, hi)] {
                 let e = match number(end) {
                     Some(v) => Expr::Num(v),
-                    None => stored(resolve(end, 0, a.line, 0)?, var),
+                    None => stored(resolve(end, 0, None, a.line, 0)?, var),
                 };
                 grid_steps.push((var, e));
             }
@@ -1698,8 +2054,15 @@ impl EquationSet {
             ));
             grid_steps.push((
                 x,
+                // Over the axis alone (ADR 0080).
                 Expr::Array(
-                    ArrayOp::Axis { line, cells },
+                    ArrayOp::Axis {
+                        line: GridLine {
+                            stride: 1,
+                            count: a.cells,
+                        },
+                        cells: a.cells,
+                    },
                     vec![Expr::Var(lo), Expr::Var(h)],
                 ),
             ));
@@ -1709,7 +2072,7 @@ impl EquationSet {
             if let (EdgeKind::Value(ast) | EdgeKind::Gradient(ast), Some(v)) = (&e.kind, v) {
                 let x = match number(ast) {
                     Some(n) => Expr::Num(n),
-                    None => stored(resolve(ast, 0, e.line, e.column - 1)?, *v),
+                    None => stored(resolve(ast, 0, None, e.line, e.column - 1)?, *v),
                 };
                 edge_steps.push((*v, x));
             }
@@ -1720,7 +2083,10 @@ impl EquationSet {
             // A plain number is in the state's unit, as for `state x [m] = 0`.
             let x = match number(ast) {
                 Some(v) => Expr::Num(v),
-                None => stored(resolve(ast, 0, *line, col - 1)?, state_vars[i]),
+                None => stored(
+                    resolve(ast, 0, Some(&axes_of_name(n)), *line, col - 1)?,
+                    state_vars[i],
+                ),
             };
             init_steps.push((state_vars[i], x));
         }
@@ -1802,12 +2168,18 @@ impl EquationSet {
             uses.push(u);
             reads.push(r);
         }
-        let shape = |n: &str| {
-            if !grid.is_empty() && arrays.iter().any(|a| a == n) {
-                Shape::Grid { nx, ny: cells / nx }
-            } else {
-                Shape::Scalar
-            }
+        // A port has its quantity's axes (ADR 0080): one is a line, two a
+        // 2D field with the first along x.
+        let shape = |n: &str| match axes_of_name(n)[..] {
+            [] => Shape::Scalar,
+            [a] => Shape::Grid {
+                nx: grid[a].cells,
+                ny: 1,
+            },
+            [a, b, ..] => Shape::Grid {
+                nx: grid[a].cells,
+                ny: grid[b].cells,
+            },
         };
         // A state's output is the state itself (ADR 0063), in state order.
         let mut state_at = 0;
@@ -1833,7 +2205,7 @@ impl EquationSet {
             )
             .collect();
         for (i, a) in grid.iter().enumerate() {
-            // Each axis is the coordinate of every array output on the grid.
+            // Each axis is the coordinate of every output over it.
             let bounds: Vec<String> = [&a.lo, &a.hi]
                 .iter()
                 .flat_map(|e| e.names())
@@ -1842,8 +2214,10 @@ impl EquationSet {
             let bounds: Vec<&str> = bounds.iter().map(String::as_str).collect();
             let mut x = PortSpec::output(&a.name, unit_of(&a.name), shape(&a.name))
                 .depends_on_params(&bounds);
-            for n in states.iter().chain(&defined).filter(|n| arrays.contains(n)) {
-                x = x.coordinate_of(n, i);
+            for n in states.iter().chain(&defined) {
+                if let Some(k) = axes_of_name(n).iter().position(|&a| a == i) {
+                    x = x.coordinate_of(n, k);
+                }
             }
             ports.push(x);
         }
@@ -1885,8 +2259,10 @@ impl EquationSet {
         let state_names = states
             .iter()
             .flat_map(|s| {
-                if arrays.contains(s) {
-                    (0..cells).map(|k| format!("{s}[{k}]")).collect::<Vec<_>>()
+                if !axes_of_name(s).is_empty() {
+                    (0..len_of(s))
+                        .map(|k| format!("{s}[{k}]"))
+                        .collect::<Vec<_>>()
                 } else {
                     vec![s.clone()]
                 }
@@ -1895,7 +2271,7 @@ impl EquationSet {
         let initial = states
             .iter()
             .zip(initial)
-            .map(|(s, i)| (if arrays.contains(s) { cells } else { 1 }, i))
+            .map(|(s, i)| (len_of(s), i))
             .collect();
         Ok(Self {
             kind,
@@ -2670,14 +3046,48 @@ mod tests {
         );
         assert!(with(&["dT/dt = k*T", "s = sum(t)"]).contains("takes an array"));
         assert!(with(&["dT/dt = k*T", "state v", "dv/dt = T"]).contains("must be an array"));
-        // A second axis makes the grid 2D, so T[x] no longer covers it.
-        assert!(with(&["dT/dt = k*T", "grid y [m] = 0 .. 1, 4"]).contains("write T[x, y]"));
-        assert!(with(&[
-            "dT/dt = k*T",
-            "grid y [m] = 0 .. 1, 4",
-            "grid z [m] = 0 .. 1, 4"
+        // Axes are independent (ADR 0080): T stays over x beside y.
+        assert!(set(&[
+            "grid x [m] = 0 .. 1, 4",
+            "grid y [m] = 0 .. 1, 3",
+            "state T[x] [K] = 0",
+            "param k [1/s] = 0",
+            "dT/dt = k*T"
         ])
-        .contains("one or two axes"));
+        .is_ok());
+        let m = with(&["dT/dt = k*T", "grid y [m] = 0 .. 1, 3", "edge T: y- = 1"]);
+        assert!(m.contains("T is over x, so it has no edges along y"), "{m}");
+        let m = with(&["grid y = 3", "dT/dt = k*T*y"]);
+        assert!(
+            m.contains("but T is over x: declare 'state T[x, y]'"),
+            "{m}"
+        );
+        let m = with(&[
+            "grid y = 3",
+            "dT/dt = k*T",
+            "state u[y, x] = 0",
+            "du/dt = u",
+        ]);
+        assert!(
+            m.contains("in the order of the grid lines: write u[x, y]"),
+            "{m}"
+        );
+        let m = with(&[
+            "grid y = 3",
+            "grid z = 2",
+            "dT/dt = k*T",
+            "state u[x, y, z] = 0",
+            "du/dt = u",
+        ]);
+        assert!(m.contains("at most two"), "{m}");
+        let m = with(&["grid y = 3", "grid z = 2", "dT/dt = k*T", "q = T*y*z"]);
+        assert!(m.contains("q would be over 3 axes (x, y, z)"), "{m}");
+        let m = with(&["grid y = 3", "dT/dt = k*T", "q = sum(T, y)"]);
+        assert!(m.contains("not y"), "{m}");
+        let m = with(&["grid y = 3", "dT/dt = k*T", "q = on(T, x, y)"]);
+        assert!(m.contains("x has 4 cells and y has 3"), "{m}");
+        let m = with(&["grid y = 3", "dT/dt = k*T", "q = at(T*y, 1)"]);
+        assert!(m.contains("'at' takes 3 argument(s)"), "{m}");
         assert!(
             with(&["dT/dt = lap(T)"]).contains("dT/dt is in K/s but the right side is in K/m^2")
         );
@@ -2735,8 +3145,8 @@ mod tests {
                 ("u", grid),
                 ("corner", Shape::Scalar),
                 ("slope", grid),
-                ("x", grid),
-                ("y", grid)
+                ("x", Shape::Grid { nx: 4, ny: 1 }),
+                ("y", Shape::Grid { nx: 3, ny: 1 })
             ]
         );
         let y = spec.ports.iter().find(|p| p.name == "y").unwrap();
@@ -2744,11 +3154,11 @@ mod tests {
         let p = [2.0, 3.0, 1.0, 1.0];
         let (u, du, out) = eval(&s, &p, &[]);
         // Cell centres: x at 0.25, 0.75, 1.25, 1.75 (fastest); y at 0.5, 1.5, 2.5.
-        // Outputs: u (12), corner, slope (12), x (12), y (12).
+        // Outputs: u (12), corner, slope (12), x (4), y (3): each axis over
+        // itself alone (ADR 0080).
+        assert_eq!(out.len(), 32);
         assert_eq!(out[25..29], [0.25, 0.75, 1.25, 1.75]);
-        assert_eq!(out[33..37], [0.25, 0.75, 1.25, 1.75]);
-        assert_eq!(out[37..41], [0.5, 0.5, 0.5, 0.5]);
-        assert_eq!(out[45..49], [2.5, 2.5, 2.5, 2.5]);
+        assert_eq!(out[29..32], [0.5, 1.5, 2.5]);
         let exact = |i: usize, j: usize| {
             ((i as f64 + 0.5) * 0.5 * PI / 2.0).cos() * ((j as f64 + 0.5) * PI / 3.0).cos()
         };
@@ -2774,6 +3184,106 @@ mod tests {
         let rows = s.sparsity().unwrap();
         assert_eq!(rows[5], [1, 4, 5, 6, 9]);
         assert_eq!(rows[0], [0, 1, 4]);
+    }
+
+    #[test]
+    fn named_axes_broadcast_reduce_and_relabel() {
+        // ADR 0080: a over i and b over k make m over [i, k]; reductions
+        // along one axis leave the others; on() meets m with itself.
+        let s = set(&[
+            "grid i = 2",
+            "grid k = 3",
+            "grid j = 2",
+            "input a[i], b[k]",
+            "m = a + b",
+            "s = sum(m, i)",
+            "r = sum(m, k)",
+            "mk = mean(m, k)",
+            "w = argmaxof(m, k)",
+            "lo = minof(m, i)",
+            "g = sum(m*on(m, i, j), k)",
+            "c = at(g, 1, 0)",
+            "tot = sum(m)",
+            "e = at(m, 1, 2)",
+        ])
+        .unwrap();
+        let shapes: Vec<(&str, usize)> = s
+            .spec()
+            .outputs()
+            .map(|p| (p.name.as_str(), p.shape.len()))
+            .collect();
+        assert_eq!(
+            shapes,
+            [
+                ("m", 6),
+                ("s", 3),
+                ("r", 2),
+                ("mk", 2),
+                ("w", 2),
+                ("lo", 3),
+                ("g", 4),
+                ("c", 1),
+                ("tot", 1),
+                ("e", 1),
+                ("i", 2),
+                ("k", 3),
+                ("j", 2)
+            ]
+        );
+        let (_, _, y) = eval(&s, &[], &[1.0, 2.0, 10.0, 20.0, 30.0]);
+        assert_eq!(y[..6], [11.0, 12.0, 21.0, 22.0, 31.0, 32.0]);
+        assert_eq!(y[6..9], [23.0, 43.0, 63.0]);
+        assert_eq!(y[9..11], [63.0, 66.0]);
+        assert_eq!(y[11..13], [21.0, 22.0]);
+        assert_eq!(y[13..15], [2.0, 2.0]);
+        assert_eq!(y[15..18], [11.0, 21.0, 31.0]);
+        assert_eq!(y[18..22], [1523.0, 1586.0, 1586.0, 1652.0]);
+        assert_eq!(y[22..25], [1586.0, 129.0, 32.0]);
+        assert_eq!(y[25..], [0.0, 1.0, 0.0, 1.0, 2.0, 0.0, 1.0]);
+        // The axis port of k is a coordinate of m (its second axis) and s
+        // (its first).
+        let k = s.spec().ports.iter().find(|p| p.name == "k").unwrap();
+        let of: Vec<(&str, usize)> = k
+            .coordinate
+            .iter()
+            .map(|c| (c.port.as_str(), c.axis))
+            .collect();
+        assert_eq!(of, [("m", 1), ("s", 0), ("lo", 0)]);
+    }
+
+    #[test]
+    fn states_over_some_of_the_axes() {
+        // T over x alone beside v over [x, y] (ADR 0080).
+        let s = set(&[
+            "grid x = 0 .. 4, 4",
+            "grid y = 0 .. 3, 3",
+            "state T[x] = x",
+            "state v[x, y] = x*y",
+            "dT/dt = sum(v, y) - T",
+            "dv/dt = T - y",
+            "q = ddy(v)",
+            "d = ddx(T)",
+        ])
+        .unwrap();
+        assert_eq!(s.spec().states.len(), 16);
+        let (x, dx, y) = eval(&s, &[], &[]);
+        let xs = [0.5, 1.5, 2.5, 3.5];
+        let ys = [0.5, 1.5, 2.5];
+        assert_eq!(x[..4], xs);
+        for (j, yv) in ys.iter().enumerate() {
+            for (i, xv) in xs.iter().enumerate() {
+                assert_eq!(x[4 + i + 4 * j], xv * yv);
+                assert_eq!(dx[4 + i + 4 * j], xv - yv);
+            }
+        }
+        assert_eq!(dx[..4], xs.map(|v| 3.5 * v));
+        // Outputs: T (4), v (12), q (12), d (4), x (4), y (3).
+        assert_eq!(y.len(), 39);
+        // Along y in the middle row: (v(x, 2.5) - v(x, 0.5)) / 2 = x.
+        assert_eq!(y[16 + 4..16 + 8], xs);
+        assert_eq!(y[28 + 1..28 + 3], [1.0, 1.0]);
+        assert_eq!(y[32..36], xs);
+        assert_eq!(y[36..], ys);
     }
 
     #[test]

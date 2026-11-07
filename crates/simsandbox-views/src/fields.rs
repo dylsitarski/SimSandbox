@@ -495,10 +495,12 @@ fn heat_axes(input: &ViewInput<'_>, field: usize, samples: &[usize]) -> Option<(
             (Dim::Time, _) => samples.iter().map(|&k| h.times()[k]).collect(),
             (Dim::Grid(a), Some(c)) => {
                 let frame = h.fields()[c].frame(h.len() - 1);
+                // Over its axis alone (ADR 0080) or over the whole grid.
+                let alone = frame.len() == cells;
                 let along: Vec<f64> = (0..cells)
                     .map(|i| {
                         frame
-                            .get(if a == 0 { i } else { i * nx })
+                            .get(if a == 0 || alone { i } else { i * nx })
                             .copied()
                             .unwrap_or(f64::NAN)
                     })

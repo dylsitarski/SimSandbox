@@ -192,8 +192,24 @@ pub fn is_reserved(name: &str) -> bool {
 /// axis is `dd` and the axis name (`ddx`). Only typed equations with a
 /// grid give them a meaning ([`Ast::resolve_with`]).
 pub const ARRAY_OPS: &[&str] = &[
-    "lap", "sum", "mean", "minof", "maxof", "argminof", "argmaxof", "at", "spacing", "prev", "next",
+    "lap", "sum", "mean", "minof", "maxof", "argminof", "argmaxof", "at", "spacing", "prev",
+    "next", "on",
 ];
+
+/// The most axes an array or an intermediate value has (ADR 0080).
+pub const MAX_AXES: usize = 6;
+
+/// A reduction along one axis (ADR 0080).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Along {
+    Sum,
+    Mean,
+    MinOf,
+    MaxOf,
+    /// The place along the axis of the least or greatest value.
+    ArgMinOf,
+    ArgMaxOf,
+}
 
 /// Whether `name(...)` is an array operation: one of [`ARRAY_OPS`] or
 /// `dd` followed by a name.
@@ -277,6 +293,24 @@ pub enum ArrayOp {
     /// One element by a computed cell number (the second argument, in
     /// storage order, rounded); NaN outside the array (ADR 0070).
     Cell,
+    /// An array over `rank` axes of `dims` cells (the first fastest), each
+    /// cell read from the argument at the sum of its place along each axis
+    /// times `strides` (0: the argument does not run along that axis). It
+    /// spreads an array over more axes, or puts its axes in another order
+    /// (ADR 0080).
+    Gather {
+        rank: usize,
+        dims: [usize; MAX_AXES],
+        strides: [usize; MAX_AXES],
+    },
+    /// A reduction of the argument, over `rank` axes of `dims` cells,
+    /// along axis `axis`, leaving the others in order (ADR 0080).
+    Along {
+        of: Along,
+        rank: usize,
+        dims: [usize; MAX_AXES],
+        axis: usize,
+    },
 }
 
 /// A parsed expression that still refers to variables by name.
