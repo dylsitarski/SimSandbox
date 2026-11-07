@@ -67,6 +67,11 @@ The study's output for such a result is over two axes: the result's own (fastest
 
 Later: tables as axes whose length changes (ADR 0079 stage 1); ports of more than two axes.
 
+## Additions (owner, 2026-11-07)
+
+- **Stage 2 also names the axis of stencils:** `dd(T, x)` is the derivative of `T` along `x` (`ddx(T)` stays as its shorthand), and `prev` and `next` of an array over two axes must name the axis (`prev(u, x)`); over one axis it may be left out, as now.
+- **Ports of any number of axes** are proposed in [ADR 0081](0081-shapes-are-lists-of-axes.md), which would replace point 5's limit of two.
+
 ## As built
 
 **Stage 1 (2026-11-07): named axes in typed equations.**

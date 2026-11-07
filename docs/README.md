@@ -150,6 +150,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0078-adaptive-studies.md](decisions/0078-adaptive-studies.md) | Decision record | Adaptive studies |
 | [decisions/0079-tables-of-members.md](decisions/0079-tables-of-members.md) | Decision record | Tables of members |
 | [decisions/0080-named-axes.md](decisions/0080-named-axes.md) | Decision record | Named axes |
+| [decisions/0081-shapes-are-lists-of-axes.md](decisions/0081-shapes-are-lists-of-axes.md) | Decision record | Shapes are lists of named axes |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 
