@@ -54,6 +54,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Studies give a vector per run (ADR 0080): `at_times(e, t1, t2, …)` and `at_samples(e, data)` in `reduce`, the latter at each sample of a recorded-data block, for model-minus-data residuals. Such a result is over its own axis and the runs, read in typed equations as `input res[obs, run]`.
+
 - `solve(A, b)` in typed equations (ADR 0080): `A` over two axes of the same length, `b` over one of them; the result, over the other axis, solves `sum(A*x, j) = b`, the same bits on any machine, NaN if `A` is singular. `dd(T, x)` is the derivative along a named axis, as `ddx(T)`.
 
 - Named axes in typed equations (ADR 0080): quantities over some of a block's axes (`param m[k]`, `input r[i, k]`, `state T[x]` beside `grid y`), quantities over different axes combined over all of them (`a[i] + b[k]`), `sum(T, k)`, `mean`, `minof`, `maxof`, `argminof` and `argmaxof` along one axis, and `on(T, a, b)` to read an axis as another of the same length (`sum(J*on(J, p, q), r)` is JᵀJ).

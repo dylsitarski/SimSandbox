@@ -579,6 +579,8 @@ pub const REDUCTIONS: &[&str] = &[
     "amplitude",
     "period",
     "first_time",
+    "at_times",
+    "at_samples",
 ];
 
 impl Parser {

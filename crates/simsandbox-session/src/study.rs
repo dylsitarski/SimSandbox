@@ -111,6 +111,8 @@ pub struct StudyBlock {
     /// `spec.params` order, set before every point.
     declared: Vec<String>,
     from: Vec<From>,
+    /// Values per run of each output: 1, or a vector's length (ADR 0080).
+    widths: Vec<usize>,
     runs: usize,
     /// The inputs last run with, by their bits, and the outputs.
     kept: Mutex<Option<(Vec<u64>, Vec<f64>)>>,
@@ -306,25 +308,41 @@ impl StudyBlock {
         let inputs: Vec<String> = ports.iter().map(|p| p.name.clone()).collect();
         let inputs: Vec<&str> = inputs.iter().map(String::as_str).collect();
         let mut from = Vec::new();
-        let mut out = |name: String, unit: Unit, f: From| -> Result<()> {
+        let mut widths = Vec::new();
+        let mut vectors = Vec::new();
+        let mut out = |name: String, unit: Unit, f: From, width: Option<usize>| -> Result<()> {
             if ports.iter().any(|p| p.name == name) {
                 return Err(invalid(format!(
                     "two of its ports would be named '{name}': rename a result or an input block"
                 )));
             }
             // A line of cells, one per run, as array formulas read them
-            // (`grid k = runs`, `input a[k]`).
-            let shape = match grid2 {
-                Some((nx, ny)) => Shape::Grid { nx, ny },
-                None => Shape::Grid { nx: runs, ny: 1 },
+            // (`grid k = runs`, `input a[k]`); a vector per run is over its
+            // own axis (fastest) and the runs (ADR 0080).
+            let shape = match (grid2, width) {
+                (Some((nx, ny)), None) => Shape::Grid { nx, ny },
+                (None, None) => Shape::Grid { nx: runs, ny: 1 },
+                (None, Some(n)) => Shape::Grid { nx: n, ny: runs },
+                (Some(_), Some(_)) => {
+                    return Err(invalid(format!(
+                        "sample.reduce.{name}: a vector per run over a grid of two parameters would have three axes; a port has at most two until ADR 0081 is built"
+                    )))
+                }
             };
             ports.push(PortSpec::output(&name, unit, shape).depends_on(&inputs));
             from.push(f);
+            widths.push(width.unwrap_or(1));
+            vectors.push(width.is_some());
             Ok(())
         };
         // Ids given by a points file, as the rows give them.
         if plan.ids.is_some() {
-            out("id".into(), Unit::DIMENSIONLESS, From::Index("id".into()))?;
+            out(
+                "id".into(),
+                Unit::DIMENSIONLESS,
+                From::Index("id".into()),
+                None,
+            )?;
         }
         // The points are outputs too, unless they came in as inputs.
         for key in plan.keys.iter().filter(|_| from_inputs.is_none()) {
@@ -332,6 +350,7 @@ impl StudyBlock {
                 port_name(key),
                 key_unit(&loaded, key),
                 From::Index(key.clone()),
+                None,
             )?;
         }
         let fixed = loaded_outputs(&loaded).map_err(invalid)?;
@@ -355,7 +374,7 @@ impl StudyBlock {
                     .outputs()
                     .find(|p| &p.name == port)
                     .map_or(Unit::DIMENSIONLESS, |p| p.unit);
-                out(port_name(full), unit, From::Output(full.clone()))?;
+                out(port_name(full), unit, From::Output(full.clone()), None)?;
             }
         } else {
             for (name, formula) in &plan.reduce {
@@ -364,14 +383,18 @@ impl StudyBlock {
                         "sample.reduce.{name}: a result's name is letters, digits and '_'"
                     )));
                 }
-                let r = Reducer::parse(name, formula)
+                let mut r = Reducer::parse(name, formula)
+                    .map_err(|e| invalid(format!("sample.reduce.{e}")))?;
+                // `at_samples` reads its data's times within the run.
+                let t_end = crate::run::end_time(&loaded.model, loaded.file.run.t_end);
+                r.place(&|d| crate::run::sample_times(&loaded, d, t_end))
                     .map_err(|e| invalid(format!("sample.reduce.{e}")))?;
                 let unit = match r.unit_of() {
                     UnitOf::Time => Unit::parse("s").expect("seconds parse"),
                     UnitOf::Signal(s) => signal_unit(&loaded, &fixed, &s),
                     UnitOf::Unknown => Unit::DIMENSIONLESS,
                 };
-                out(name.clone(), unit, From::Output(name.clone()))?;
+                out(name.clone(), unit, From::Output(name.clone()), r.width())?;
             }
         }
         // One parameter on a grid, run once each: its values are the
@@ -386,14 +409,17 @@ impl StudyBlock {
         if keys_placing > 0 {
             let first_key = ports.len() - from.len() + usize::from(plan.ids.is_some());
             let first_result = first_key + keys_placing;
-            let results: Vec<String> = ports[first_result..]
+            // Over the runs: the first axis, or the second of a vector
+            // per run.
+            let results: Vec<(String, usize)> = ports[first_result..]
                 .iter()
-                .map(|p| p.name.clone())
+                .zip(&vectors[vectors.len() + first_result - ports.len()..])
+                .map(|(p, &v)| (p.name.clone(), usize::from(v)))
                 .collect();
             for axis in 0..keys_placing {
                 let key = &mut ports[first_key + axis];
-                for r in &results {
-                    *key = key.clone().coordinate_of(r, axis);
+                for (r, along) in &results {
+                    *key = key.clone().coordinate_of(r, axis + along);
                 }
             }
         }
@@ -432,6 +458,7 @@ impl StudyBlock {
             keys,
             declared,
             from,
+            widths,
             runs,
             kept: Mutex::new(None),
             from_inputs,
@@ -443,7 +470,10 @@ impl StudyBlock {
     fn evaluate(&self, inputs: &[f64], params: &[f64]) -> Result<Vec<f64>> {
         // Built only to be checked or opened: nothing run, nothing kept.
         if !studies_run() {
-            return Ok(vec![f64::NAN; self.from.len() * self.runs]);
+            return Ok(vec![
+                f64::NAN;
+                self.widths.iter().sum::<usize>() * self.runs
+            ]);
         }
         if let Some(n) = self.from_inputs {
             return self.evaluate_points(n, inputs, params);
@@ -536,21 +566,29 @@ impl StudyBlock {
             plan.points = todo.iter().map(|&p| point(p)).collect();
             plan.ids = Some(todo.iter().map(|&p| p as u64).collect());
             let values = self.run(plan, shared, params)?;
-            // `values` holds each output's runs for the points run, in turn.
+            // `values` holds each output's runs for the points run, in
+            // turn, each run `width` values.
             let runs = todo.len() * reps;
             for (i, &p) in todo.iter().enumerate() {
-                let mine: Vec<f64> = (0..self.from.len())
-                    .flat_map(|f| values[f * runs + i * reps..f * runs + (i + 1) * reps].to_vec())
-                    .collect();
+                let mut start = 0;
+                let mut mine = Vec::new();
+                for &w in &self.widths {
+                    let at = start + i * reps * w;
+                    mine.extend_from_slice(&values[at..at + reps * w]);
+                    start += runs * w;
+                }
                 memory.points[p] = Some((bits(&point(p)), mine));
             }
         }
-        let mut out = Vec::with_capacity(self.from.len() * n * reps);
-        for f in 0..self.from.len() {
+        let width: usize = self.widths.iter().sum();
+        let mut out = Vec::with_capacity(width * n * reps);
+        let mut start = 0;
+        for &w in &self.widths {
             for p in 0..n {
                 let (_, mine) = memory.points[p].as_ref().expect("every point ran");
-                out.extend_from_slice(&mine[f * reps..(f + 1) * reps]);
+                out.extend_from_slice(&mine[start * reps..(start + w) * reps]);
             }
+            start += w;
         }
         Ok(out)
     }
@@ -920,6 +958,103 @@ mod tests {
             w.coordinate.iter().any(|c| c.port == "spring_amplitude"),
             "{w:?}"
         );
+    }
+
+    /// ADR 0080 stage 3: `at_times` and `at_samples` give a vector per
+    /// run, over the result's own axis (fastest) and the runs; read by a
+    /// typed-equation block as `res[obs, run]`.
+    #[test]
+    fn vectors_per_run_at_times_and_at_samples() {
+        let r = registry();
+        let dir = std::env::temp_dir().join(format!("simsandbox-study-vec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Observations at 0.5, 1 and 2.5 s; 4 s is past the run's end.
+        std::fs::write(dir.join("obs.csv"), "t,x\n0.5,0.6\n1,0.4\n2.5,0.1\n4,0\n").unwrap();
+        let mut model = decay();
+        model["blocks"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "data", "type": "input.file", "settings": {"file": "obs.csv"}}));
+        let reduce = json!({"xs": "at_times(x.x, 0.5, 1, 9)",
+                            "res": "at_samples(x.x - data.x, data)",
+                            "half": "first_time(x.x < 0.5)"});
+        let file = json!({"format": 1, "models": {"decay": model},
+            "blocks": [
+                {"name": "rate", "type": "input.value", "params": {"y": 1.0}},
+                {"name": "pick", "type": "eq.equations", "equations": ["grid k = 2", "x0 = 1 + k"]},
+                {"name": "s", "type": "study", "model": "decay",
+                 "sample": {"design": "list", "params": [{"param": "x.x0"}], "values": [[1.0], [2.0]],
+                            "reduce": reduce}},
+                {"name": "s2", "type": "study", "model": "decay",
+                 "sample": {"design": "inputs", "count": 2, "params": [{"param": "x.x0"}],
+                            "reduce": reduce}},
+                {"name": "fit", "type": "eq.equations", "equations": [
+                    "grid obs = 3", "grid run = 2", "input res[obs, run]", "sse = sum(res*res, obs)"]}],
+            "connections": [{"from": "rate.y", "to": "s.k"}, {"from": "rate.y", "to": "s2.k"},
+                            {"from": "pick.x0", "to": "s2.x_x0"}, {"from": "s.res", "to": "fit.res"}]});
+        let text = file.to_string();
+        let in_dir = |f: &dyn Fn() -> Results| simsandbox_core::registry::in_folder(Some(&dir), f);
+        let check =
+            simsandbox_core::registry::in_folder(Some(&dir), || crate::describe::check(&text, &r));
+        assert_eq!(check["ok"], true, "{check}");
+        // Shapes: a vector per run is over [its own axis, runs]; the
+        // swept parameter places the runs, along the second axis.
+        let loaded = simsandbox_core::registry::in_folder(Some(&dir), || {
+            simsandbox_file::load_in(&text, &r, Some(&dir))
+        })
+        .unwrap();
+        let spec = loaded.model.block(loaded.ids["s"]).unwrap().spec().clone();
+        let shape = |n: &str| spec.ports.iter().find(|p| p.name == n).unwrap().shape;
+        assert_eq!(shape("xs"), Shape::Grid { nx: 3, ny: 2 });
+        assert_eq!(shape("res"), Shape::Grid { nx: 3, ny: 2 });
+        assert_eq!(shape("half"), Shape::Grid { nx: 2, ny: 1 });
+        // The run: rows by run, vectors per row.
+        let y = in_dir(&|| run(&text, &r, None, None).unwrap());
+        let xs = value(&y, "s.xs");
+        let exact = |x0: f64, t: f64| x0 * (-t).exp();
+        for (run, x0) in [1.0, 2.0].iter().enumerate() {
+            let row = &xs[3 * run..3 * run + 3];
+            assert!((row[0] - exact(*x0, 0.5)).abs() < 1e-9, "{row:?}");
+            assert!((row[1] - exact(*x0, 1.0)).abs() < 1e-9, "{row:?}");
+            assert!(row[2].is_nan(), "past the end: {row:?}");
+            // Each sample with the model at the step where the data shows
+            // it: 2500 steps of 0.001 s end a hair short of 2.5 s, so the
+            // data shows 0.1 from the step after.
+            let res = &value(&y, "s.res")[3 * run..3 * run + 3];
+            for (k, (t, obs)) in [(0.5, 0.6), (1.0, 0.4), (2.501, 0.1)].iter().enumerate() {
+                assert!((res[k] - (exact(*x0, *t) - obs)).abs() < 1e-9, "{res:?}");
+            }
+        }
+        // Points from inputs keep vectors point by point: the same values.
+        for n in ["xs", "res", "half"] {
+            let (a, b) = (value(&y, &format!("s.{n}")), value(&y, &format!("s2.{n}")));
+            assert_eq!(
+                a.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                b.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "{n}"
+            );
+        }
+        // A formula sums each run's squared residuals along obs.
+        let sim = simsandbox_core::sim::Simulator::new(loaded.model, 0.0).unwrap();
+        let sse = sim.output(loaded.ids["fit"], "sse").unwrap();
+        let res = value(&y, "s.res");
+        for run in 0..2 {
+            let want: f64 = res[3 * run..3 * run + 3].iter().map(|v| v * v).sum();
+            assert!((sse[run] - want).abs() < 1e-15, "{sse:?}");
+        }
+        // Mistakes.
+        let bad = |formula: &str| {
+            let mut f = file.clone();
+            f["blocks"][2]["sample"]["reduce"] = json!({"z": formula});
+            let t = f.to_string();
+            simsandbox_core::registry::in_folder(Some(&dir), || crate::describe::check(&t, &r))
+                .to_string()
+        };
+        assert!(bad("at_samples(x.x, k)").contains("not recorded data"));
+        assert!(bad("at_samples(x.x, nothing)").contains("no block 'nothing'"));
+        assert!(bad("at_times(x.x, 1) - at_samples(x.x, data)").contains("different lengths"));
+        assert!(bad("at_times(x.x, k.y)").contains("times as numbers"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

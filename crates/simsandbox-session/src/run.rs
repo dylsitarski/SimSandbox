@@ -455,22 +455,46 @@ fn only_studies_in_time(loaded: &simsandbox_file::Loaded) -> bool {
 /// study output (`kp.v_max`). Every study must make the same number of
 /// runs. Other outputs, evaluated once, are notes.
 fn study_rows(loaded: simsandbox_file::Loaded) -> Result<Results, String> {
+    // Each study output: block, port, name, runs and values per run.
     let mut columns = Vec::new();
     let mut others = Vec::new();
     for entry in &loaded.flat.blocks {
         let id = loaded.ids[&entry.name];
         let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
+        let study = entry.type_name == crate::study::STUDY;
+        // A study's runs: a line of one value per run among its outputs,
+        // else the second axis of vectors per run when its points arrive
+        // as array inputs, else a grid over two parameters (ADR 0071,
+        // ADR 0080).
+        let grid = |s: Shape| match s {
+            Shape::Grid { nx, ny } => (nx, ny),
+            s => (s.len(), 1),
+        };
+        let line = spec
+            .outputs()
+            .map(|p| grid(p.shape))
+            .find(|&(_, ny)| ny == 1)
+            .map(|(nx, _)| nx);
+        let from_inputs = spec
+            .inputs()
+            .any(|p| matches!(p.shape, Shape::Grid { ny: 1, nx } if nx > 1));
         for port in spec.outputs() {
             let name = format!("{}.{}", entry.name, port.name);
-            if entry.type_name == crate::study::STUDY {
-                columns.push((id, port.name.clone(), name, port.shape.len()));
+            if study {
+                let (nx, ny) = grid(port.shape);
+                let (runs, width) = match line {
+                    Some(runs) => (runs, (nx * ny / runs.max(1)).max(1)),
+                    None if from_inputs => (ny, nx),
+                    None => (nx * ny, 1),
+                };
+                columns.push((id, port.name.clone(), name, runs, width));
             } else if !port.shape.is_variable() {
                 others.push((id, port.name.clone(), name));
             }
         }
     }
     let runs = columns[0].3;
-    if let Some((_, _, name, n)) = columns.iter().find(|c| c.3 != runs) {
+    if let Some((_, _, name, n, _)) = columns.iter().find(|c| c.3 != runs) {
         return Err(format!(
             "{name} has {n} runs and {} has {runs}: studies written as rows make as many runs \
              each; run them from separate files",
@@ -492,9 +516,14 @@ fn study_rows(loaded: simsandbox_file::Loaded) -> Result<Results, String> {
         index: vec![("run".to_string(), (0..runs).map(|k| k as f64).collect())],
         outputs: columns
             .iter()
-            .map(|(id, port, name, _)| Output {
+            .map(|(id, port, name, _, width)| Output {
                 name: name.clone(),
-                shape: Shape::Scalar,
+                // A vector per run (ADR 0080): its values, run by run.
+                shape: if *width > 1 {
+                    Shape::Vector(*width)
+                } else {
+                    Shape::Scalar
+                },
                 values: sim.output(*id, port).unwrap_or(&[]).to_vec(),
             })
             .collect(),
@@ -704,7 +733,8 @@ pub(crate) fn run_study(
         all.extend(c?);
     }
     let first = loaded_outputs(loaded)?;
-    let reduced = reducers(plan, &first)?;
+    let t_end = end_time(&loaded.model, study.t_end.or(loaded.file.run.t_end));
+    let reduced = reducers(plan, loaded, &first, t_end)?;
     let mut index = vec![("sample".to_string(), Vec::new())];
     if plan.replicates > 1 {
         index.push(("replicate".to_string(), Vec::new()));
@@ -730,7 +760,8 @@ pub(crate) fn run_study(
             .iter()
             .map(|(r, _)| Output {
                 name: r.name.clone(),
-                shape: Shape::Scalar,
+                // A vector per run (ADR 0080).
+                shape: r.width().map_or(Shape::Scalar, Shape::Vector),
                 values: Vec::new(),
             })
             .collect()
@@ -779,11 +810,18 @@ struct Row {
 /// is among `fixed` (output and element), `None` for `t`.
 type Reducers = Vec<(crate::reduce::Reducer, Vec<Option<(usize, usize)>>)>;
 
-fn reducers(plan: &simsandbox_file::Plan, fixed: &Outputs) -> Result<Reducers, String> {
+fn reducers(
+    plan: &simsandbox_file::Plan,
+    loaded: &simsandbox_file::Loaded,
+    fixed: &Outputs,
+    t_end: f64,
+) -> Result<Reducers, String> {
     let mut out = Vec::new();
     for (name, text) in &plan.reduce {
-        let r =
+        let mut r =
             crate::reduce::Reducer::parse(name, text).map_err(|e| format!("sample.reduce.{e}"))?;
+        r.place(&|d| sample_times(loaded, d, t_end))
+            .map_err(|e| format!("sample.reduce.{e}"))?;
         let mut at = Vec::new();
         for n in &r.names {
             if n == "t" {
@@ -808,6 +846,29 @@ fn reducers(plan: &simsandbox_file::Plan, fixed: &Outputs) -> Result<Reducers, S
         out.push((r, at));
     }
     Ok(out)
+}
+
+/// The sample times of the recorded-data block `name` within a run to
+/// `t_end`, for `at_samples` (ADR 0080).
+pub(crate) fn sample_times(
+    loaded: &simsandbox_file::Loaded,
+    name: &str,
+    t_end: f64,
+) -> Result<Vec<f64>, String> {
+    let block = loaded
+        .ids
+        .get(name)
+        .and_then(|id| loaded.model.block(*id).ok())
+        .ok_or_else(|| format!("at_samples: the model has no block '{name}'"))?;
+    let times = block.instants().ok_or_else(|| {
+        format!("at_samples: '{name}' is not recorded data (an input.file block)")
+    })?;
+    let end = t_end + 1e-9 * t_end.abs().max(1.0);
+    Ok(times
+        .iter()
+        .copied()
+        .filter(|&t| t >= 0.0 && t <= end)
+        .collect())
 }
 
 /// The fixed-shape outputs of a loaded model: block, port, full name and
@@ -863,7 +924,7 @@ fn run_rows(
         .collect();
     let ids = loaded.ids.clone();
     let mut params = loaded.params.clone();
-    let reduced = reducers(plan, &fixed)?;
+    let reduced = reducers(plan, &loaded, &fixed, t_end)?;
     let mut sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
     let values = |sim: &Simulator| -> Vec<Vec<f64>> {
         fixed
@@ -942,7 +1003,7 @@ fn run_rows(
                             }
                         })
                         .collect();
-                    vec![r.eval(&t, &series)]
+                    r.eval(&t, &series)
                 })
                 .collect()
         };

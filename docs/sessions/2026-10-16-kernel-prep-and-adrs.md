@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-07: ADR 0080 stage 3: `Kind::AtTimes`/`AtSamples` in `reduce.rs` (`place`, `width`, `eval` to a vector), `run::sample_times`, `reducers` placing them, vector outputs in `run_study` and `study_rows`, `StudyBlock::widths` and 2D ports; `at_times`/`at_samples` in `REDUCTIONS`
 - 2026-11-07: `examples/fused_speed.rs` (typed Gray–Scott against fused Rust, rewritten and FMA forms, default and native builds, one and four cores); results in `docs/design/performance.md`; ADR 0082 written as Proposed; Q54 opened
 - 2026-11-07: ADR 0080 stage 2: `ArrayOp::Solve`/`ArrIns::Solve` with `program::solve_into` (partial pivoting, fixed order, NaN when singular), `solve` in `axes_of`/`lower` (rows from the axis `b` is over) and its unit; `dd(T, x)`; `prev`/`next` name their axis over two axes; `dd` and `solve` in `ARRAY_OPS`
 - 2026-11-07: ADR 0081 (shapes are lists of named axes: ports of any rank, views by axis roles) written as Proposed at the owner's request

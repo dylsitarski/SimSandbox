@@ -1,6 +1,6 @@
 # 0080 — Named axes: arrays of different sizes in one block
 
-- **Status:** Accepted (stages 1 and 2 built 2026-11-07)
+- **Status:** Accepted (stages 1 to 3 built 2026-11-07)
 - **Date:** 2026-11-07
 - **Amends:** [ADR 0060](0060-arrays-in-typed-equations.md) (one grid per block; a second `grid` line makes it 2D), [ADR 0070](0070-studies-are-blocks.md) (study results: one value per run)
 - **Used by:** [ADR 0078](0078-adaptive-studies.md) step 2 (`solve`, Levenberg–Marquardt fitting); [ADR 0079](0079-tables-of-members.md) (quantities over tables beside grids)
@@ -94,3 +94,8 @@ Later: tables as axes whose length changes (ADR 0079 stage 1); ports of more tha
 - **`dd(T, x)`** is the derivative of `T` along `x`, as `ddx(T)`; `dd` and `solve` join `ARRAY_OPS`.
 - **`prev` and `next`** of an array over two axes name the axis (`prev(u, x)`); the error names both choices. Over one axis it may be left out. No example used them on two axes.
 - **Checked:** tests of a 3 × 3 system needing a row exchange, its transpose, the residual `sum(A*x, j) - b` below 1e-14, a singular matrix giving NaN, units, `dd(v, y)` equal to `ddy(v)` and `dd(T, x)` to `ddx(T)`, and the mistakes. Every example and profiling case gives the same bits as stage 1.
+
+**Stage 3 (2026-11-07): vectors per run.**
+- **In `reduce`:** `at_times(e, t1, t2, …)` (times as numbers) and `at_samples(e, data)` (`data` an `input.file` block of the studied model; its sample times within the run, found when the study is built, so the length is known). Each takes the first recorded step at or after the time, NaN past the end. That is how a data block takes a sample's value, so `at_samples(car.v - data.v, data)` pairs each sample with the model where the data shows it. Steps summed from `dt` can fall a hair short of a time (2.4999999999998 after 2500 steps of 0.001), and then it is the next step: the residual is the model one step later, an error of order `dt`. Scalar reductions in a formula go with every element; vectors in one formula must have one length. `Reducer::place`, `width`, `eval` returning the values.
+- **Study outputs:** a vector result of length `n` over `r` runs is a port `Grid { nx: n, ny: r }`, its own axis first; a swept parameter of a grid over one parameter is its coordinate along the second axis. Over a grid of two parameters it would have three axes and is refused until ADR 0081. Points from inputs keep each point's vectors (`StudyBlock::widths`). Headless runs and Python give a vector per row (`Shape::Vector`); a model of studies only works out which outputs are vectors from its ports (`study_rows`).
+- **Checked:** a decay model studied over two starting values, against `exp(-t)` at given times and against a data file's samples; the same results through points from inputs, bit for bit; a typed block summing `res*res` along `obs` per run; the mistakes (not recorded data, no such block, different lengths, times not numbers). Every example and profiling case unchanged. A study's default view shows a vector result as a heat map, samples across and runs up.
