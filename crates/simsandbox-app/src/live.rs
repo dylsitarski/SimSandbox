@@ -45,6 +45,8 @@ pub struct Model {
     pub unevaluated: bool,
     /// Nothing in it runs in time: evaluated, not run (ADR 0072).
     pub timeless: bool,
+    /// Only maps that never read time: it iterates, unpaced (ADR 0083).
+    pub iterates: bool,
     /// Everything views can bind, recorded or not (ADR 0063).
     pub scalars: Vec<String>,
     /// The 2D grids cut filters can take.
@@ -82,6 +84,7 @@ impl Model {
             real_time: s.real_time(),
             unevaluated: s.unevaluated(),
             timeless: s.timeless(),
+            iterates: s.iterates(),
             scalars: s.bindable_scalars().to_vec(),
             cut_inputs: s.cut_inputs(),
             derived: s.derived_names().to_vec(),
@@ -127,6 +130,11 @@ pub struct Status {
     pub limited: bool,
     /// Recorded input lies ahead: running on replays it (ADR 0058).
     pub replaying: bool,
+    /// An iterating model (ADR 0083): rounds run, whether rounds remain,
+    /// and whether the last changed nothing.
+    pub round: u64,
+    pub iterating: bool,
+    pub held_still: bool,
 }
 
 /// Something for the log.
@@ -376,6 +384,9 @@ fn status(s: &Session, running: bool, achieved: f64, limited: bool) -> Status {
         achieved,
         limited,
         replaying: s.replaying(),
+        round: s.round(),
+        iterating: s.rounds_pending(),
+        held_still: s.held_still(),
     }
 }
 
@@ -387,8 +398,9 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
     let mut last = Instant::now();
     loop {
         let mut commands = Vec::new();
-        // A model with nothing in time is never stepped (ADR 0072).
-        let stepping = c.running && !s.timeless();
+        // A model with nothing in time is never stepped (ADR 0072); one
+        // that iterates steps while it has rounds to run (ADR 0083).
+        let stepping = stepping_now(&s, &c);
         if !stepping && !s.unevaluated() {
             // Idle: everything recorded is visible, then wait for a command.
             s.flush(true);
@@ -454,12 +466,32 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
         }
 
         // The commands may have paused or run it.
-        let stepping = c.running && !s.timeless();
+        let stepping = stepping_now(&s, &c);
         let tick = Instant::now();
         let elapsed = tick.duration_since(last).as_secs_f64();
         last = tick;
         let mut recorded = false;
-        if stepping {
+        if stepping && s.iterates() {
+            // Rounds, unpaced, as many as the tick allows (ADR 0083).
+            while s.rounds_pending() && tick.elapsed() < TICK_BUDGET {
+                shared.progress.reset();
+                *lock(&shared.stepping) = Some(Instant::now());
+                let r = s.step();
+                *lock(&shared.stepping) = None;
+                match r {
+                    Err(e) if given_up(&e) => break,
+                    Err(e) => {
+                        s.stop_rounds();
+                        c.error(format!("stopped at round {}: {e}", s.round()));
+                        break;
+                    }
+                    Ok(()) => recorded = true,
+                }
+                if s.take_end_reached() {
+                    s.stop_rounds();
+                }
+            }
+        } else if stepping {
             pacer.speed = c.speed;
             let dt = s.step_dt();
             let result = pacer.frame(
@@ -511,11 +543,22 @@ fn work(mut s: Session, shared: Arc<Shared>, rx: Receiver<Command>, mut c: Contr
         if recorded || news {
             shared.repaint();
         }
-        if stepping {
+        if stepping && !s.iterates() {
             if let Some(rest) = TICK.checked_sub(tick.elapsed()) {
                 std::thread::sleep(rest);
             }
         }
+    }
+}
+
+/// Whether the worker steps now: a model in time while running, an
+/// iterating one while it has rounds to run (ADR 0083), a model with
+/// nothing in time never (ADR 0072).
+fn stepping_now(s: &Session, c: &Control) -> bool {
+    if s.iterates() {
+        s.rounds_pending()
+    } else {
+        c.running && !s.timeless()
     }
 }
 
@@ -738,6 +781,67 @@ mod tests {
             f.frame(h.len() - 1).to_vec()
         };
         assert_eq!(newest(&live.history()), newest(&direct.signals()));
+    }
+
+    #[test]
+    fn a_model_that_iterates_runs_its_rounds_unpaced() {
+        // ADR 0083: at 1× the search would take a second a round; it holds
+        // still within its 40 rounds at once, and a change runs it again
+        // from round 0 to the same values a direct run gives.
+        let text = example("Searching");
+        let live = Live::start(Session::load("s", text, &registry()).unwrap(), 1.0, false);
+        let settled = |live: &Live| {
+            let start = Instant::now();
+            loop {
+                let st = live.status();
+                if !live.model().unevaluated && !st.iterating && st.round > 0 {
+                    return st;
+                }
+                assert!(start.elapsed() < Duration::from_secs(20), "timed out");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let start = Instant::now();
+        let st = settled(&live);
+        assert!(live.model().iterates);
+        assert!(st.held_still && st.round < 40, "round {}", st.round);
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+        live.send(Some("param:search.limit"), |s, _| {
+            s.set_param_key("search.limit", 30.0).unwrap();
+        });
+        // The change restarts it; wait for it to hold still again.
+        let begin = Instant::now();
+        while live.status().round != 0 && !live.status().iterating {
+            assert!(begin.elapsed() < Duration::from_secs(20), "timed out");
+            std::thread::sleep(Duration::from_millis(1));
+            if live
+                .model()
+                .params
+                .iter()
+                .any(|r| r.key == "search.limit" && r.value == 30.0)
+            {
+                break;
+            }
+        }
+        live.sync();
+        let st = settled(&live);
+        let mut direct = Session::load("s", text, &registry()).unwrap();
+        direct.set_param_key("search.limit", 30.0).unwrap();
+        for _ in 0..st.round {
+            direct.step().unwrap();
+        }
+        let last = |h: &History, n: &str| *values(h, n).last().unwrap();
+        for n in ["search.kp", "search.ki", "search.best_score"] {
+            assert_eq!(
+                last(&live.history(), n).to_bits(),
+                last(&direct.signals(), n).to_bits(),
+                "{n}"
+            );
+        }
     }
 
     #[test]

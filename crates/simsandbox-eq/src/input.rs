@@ -174,6 +174,12 @@ impl Block for Input {
         Ok(())
     }
 
+    /// A value set from outside does not read time (ADR 0083); a pointer
+    /// follows the hand, so it does not say.
+    fn reads_time(&self) -> Option<bool> {
+        (self.spec.params.len() == 1).then_some(false)
+    }
+
     /// An input joins a fused group it feeds (ADR 0051).
     fn as_equations(&self) -> Option<&dyn Equations> {
         Some(self)

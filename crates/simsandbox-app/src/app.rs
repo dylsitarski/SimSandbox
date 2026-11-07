@@ -646,6 +646,26 @@ impl SimApp {
                      reads changes",
                 );
             });
+        } else if m.iterates {
+            // Rounds, not seconds: nothing to run, pause, pace or rewind
+            // (ADR 0083).
+            ui.horizontal(|ui| {
+                let state = if st.iterating {
+                    ui.ctx().request_repaint_after(Duration::from_millis(50));
+                    "iterating"
+                } else if st.held_still {
+                    "holds still"
+                } else {
+                    "reached its last round"
+                };
+                ui.label(format!("Iterates: round {} — {state}", st.round))
+                    .on_hover_text(
+                        "Only maps that never read time: its steps are rounds, not seconds. \
+                         It runs as fast as it can when opened and again from round 0 whenever \
+                         a value it reads changes, until a round changes nothing or its last \
+                         round (the file's t_end)",
+                    );
+            });
         } else {
             ui.horizontal(|ui| {
                 let label = if st.running { "⏸ Pause" } else { "▶ Run" };
@@ -805,7 +825,7 @@ impl SimApp {
         };
         // Without a recorder there is nothing to rewind to (ADR 0064).
         let m = live.model();
-        if m.recorder.is_none() || m.timeless {
+        if m.recorder.is_none() || m.timeless || m.iterates {
             return;
         }
         let (first, last) = live.status().history_range;

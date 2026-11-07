@@ -85,6 +85,8 @@ pub const EVALUATE: &str = "evaluate";
 /// A system of typed equations.
 pub struct EquationSet {
     kind: Kind,
+    /// Whether any equation, edge value or initial value reads `t`.
+    reads_time: bool,
     spec: BlockSpec,
     /// Where the values of `t`, the states, inputs and parameters go in
     /// the registers (each run of them is contiguous), and where the
@@ -2371,8 +2373,19 @@ impl EquationSet {
             .zip(initial)
             .map(|(s, i)| (len_of(s), i))
             .collect();
+        // Whether anything reads `t` (ADR 0083).
+        let reads_time = parsed
+            .iter()
+            .map(|l| &l.ast)
+            .chain(inits.iter().map(|i| &i.1))
+            .chain(edges.iter().filter_map(|e| match &e.kind {
+                EdgeKind::Value(a) | EdgeKind::Gradient(a) => Some(a),
+                EdgeKind::Periodic => None,
+            }))
+            .any(|a| a.names().iter().any(|(n, _)| n == "t"));
         Ok(Self {
             kind,
+            reads_time,
             spec: BlockSpec {
                 name: name.into(),
                 domain: Domain::Equations,
@@ -2622,6 +2635,10 @@ impl Block for ExplicitBlock {
     /// Formulas can join a fused group (ADR 0051); maps step on their own.
     fn as_equations(&self) -> Option<&dyn Equations> {
         (self.set.kind == Kind::Formulas).then_some(&self.set as &dyn Equations)
+    }
+
+    fn reads_time(&self) -> Option<bool> {
+        Some(self.set.reads_time)
     }
 }
 

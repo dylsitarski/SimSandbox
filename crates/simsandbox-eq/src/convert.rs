@@ -115,6 +115,10 @@ impl Block for Convert {
         Ok(())
     }
 
+    fn reads_time(&self) -> Option<bool> {
+        Some(false)
+    }
+
     /// A conversion joins a fused group it sits in (ADR 0051).
     fn as_equations(&self) -> Option<&dyn Equations> {
         Some(self)

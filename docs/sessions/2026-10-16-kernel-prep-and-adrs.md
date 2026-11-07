@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-07: ADR 0083 written and built: `Block::reads_time`, `EquationSet::reads_time`, `Session::iterates`/`rounds_pending`/`held_still`/`round`/`stop_rounds`, the worker's unpaced rounds (`stepping_now`), the toolbar's round; screenshot under Xvfb of the search holding still at round 29
 - 2026-11-07: ADR 0080 stage 3: `Kind::AtTimes`/`AtSamples` in `reduce.rs` (`place`, `width`, `eval` to a vector), `run::sample_times`, `reducers` placing them, vector outputs in `run_study` and `study_rows`, `StudyBlock::widths` and 2D ports; `at_times`/`at_samples` in `REDUCTIONS`
 - 2026-11-07: `examples/fused_speed.rs` (typed Gray–Scott against fused Rust, rewritten and FMA forms, default and native builds, one and four cores); results in `docs/design/performance.md`; ADR 0082 written as Proposed; Q54 opened
 - 2026-11-07: ADR 0080 stage 2: `ArrayOp::Solve`/`ArrIns::Solve` with `program::solve_into` (partial pivoting, fixed order, NaN when singular), `solve` in `axes_of`/`lower` (rows from the axis `b` is over) and its unit; `dd(T, x)`; `prev`/`next` name their axis over two axes; `dd` and `solve` in `ARRAY_OPS`
@@ -170,6 +171,7 @@
 
 ## Decided
 
+- 2026-11-07 (owner): rounds are not seconds (ADR 0083): models that iterate run unpaced in the app and stop when they hold still. Decided while building (not yet seen by the owner): an open-ended map (no `t_end`, the logistic map) stays paced, since a chaotic map never holds still.
 - 2026-11-07 (owner): `solve` keeps one method for now; `rcond(A)` comes with Levenberg–Marquardt (ADR 0080 stage 4), `lstsq` when a fit shows conditioning trouble, `eig`/`svd` with ADR 0081's feature-space work.
 - 2026-11-07 (owner): ADR 0081 (shapes are lists of named axes) accepted; ADR 0080 stage 2 built the same day.
 - 2026-11-07 (owner): feature spaces and the coming generalization of views call for ports of any number of axes, so ADR 0081 is written before views are reworked; ADR 0080 stage 2 also gets `dd(T, x)` and the axis named in `prev`/`next` over two axes.

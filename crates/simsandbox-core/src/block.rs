@@ -384,6 +384,15 @@ pub trait Block: Send {
     fn instants(&self) -> Option<&[f64]> {
         None
     }
+
+    /// Whether its outputs or next state depend on the time itself, beyond
+    /// its state, inputs and parameters (ADR 0083): `Some(false)` for a
+    /// block that never reads `t`, so a model of such blocks with only
+    /// maps iterates instead of running in time. `None`: not said, as for
+    /// most blocks.
+    fn reads_time(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// Capability: the Block can expose its equations, so the equation domain can

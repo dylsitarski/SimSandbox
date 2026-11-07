@@ -720,6 +720,12 @@ impl Block for StudyBlock {
         io.outputs.copy_from_slice(&values);
         Ok(())
     }
+
+    /// Its runs have their own time; its results depend on its inputs and
+    /// parameters only (ADR 0083).
+    fn reads_time(&self) -> Option<bool> {
+        Some(false)
+    }
 }
 
 #[cfg(test)]

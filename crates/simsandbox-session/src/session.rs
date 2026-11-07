@@ -3,7 +3,7 @@
 
 use crate::filters::Filters;
 use crate::probe::{ProbeSpec, Trigger};
-use simsandbox_core::block::{MethodLabels, Shape};
+use simsandbox_core::block::{MethodLabels, Shape, TimeSemantics};
 use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::{Simulator, Snapshot};
@@ -329,6 +329,13 @@ pub struct Session {
     unevaluated: bool,
     /// Nothing in it runs in time (ADR 0072): evaluated, not stepped.
     timeless: bool,
+    /// Only maps, and nothing reads time (ADR 0083): it iterates.
+    iterates: bool,
+    /// An iterating model has rounds still to run: since it opened or last
+    /// changed, it has neither held still nor reached its last round.
+    rounds_pending: bool,
+    /// Its last round changed no state.
+    held_still: bool,
     /// Changes to a model with nothing in time leave it unevaluated, for
     /// the caller to [`Session::evaluate`] (the app's worker, ADR 0072),
     /// instead of evaluating it at once.
@@ -621,9 +628,14 @@ impl Session {
             data,
             unevaluated: false,
             timeless: false,
+            iterates: false,
+            rounds_pending: false,
+            held_still: false,
             evaluate_later: false,
         };
         session.timeless = session.nothing_in_time();
+        session.iterates = !session.timeless && session.only_rounds();
+        session.rounds_pending = session.iterates;
         session.unevaluated = !crate::study::studies_run()
             && session.block_types.iter().any(|t| t == crate::study::STUDY);
         session.check_events(
@@ -1874,11 +1886,20 @@ impl Session {
         self.apply_due();
         let studied = self.block_types.iter().any(|t| t == simsandbox_file::STUDY);
         let before = studied.then(|| self.sim.snapshot());
+        let states_before = self.iterates.then(|| self.state_bits());
         if let Err(e) = self.sim.step(self.dt) {
             if let Some(b) = before.filter(|_| crate::run::given_up(&e)) {
                 self.sim.restore(&b);
             }
             return Err(e);
+        }
+        // A round that changes no state is the last that changes anything
+        // (ADR 0083).
+        if let Some(b) = states_before {
+            if b == self.state_bits() {
+                self.held_still = true;
+                self.rounds_pending = false;
+            }
         }
         self.record();
         let Some(r) = &self.recorder else {
@@ -2079,6 +2100,10 @@ impl Session {
             self.unevaluated = true;
             return Ok(());
         }
+        // An iteration starts again from round 0 (ADR 0083).
+        if self.iterates && self.evaluate_later {
+            return self.restart().map_err(|e| e.to_string());
+        }
         if self.time() == 0.0 && self.sim.step_count() == 0 {
             self.restart().map_err(|e| e.to_string())?;
         }
@@ -2097,6 +2122,61 @@ impl Session {
     /// inputs. The app evaluates such a model and never steps it.
     pub fn timeless(&self) -> bool {
         self.timeless
+    }
+
+    /// Only maps, with a last round, and nothing reads time or happens at a
+    /// time (ADR 0083): a `t_end`; no continuous states, tables, clocks,
+    /// data or scheduled inputs; and every block says it never reads `t`. The app iterates such a model
+    /// as fast as it can instead of pacing it.
+    pub fn iterates(&self) -> bool {
+        self.iterates
+    }
+
+    /// An iterating model still has rounds to run: it has neither held
+    /// still nor reached its last round since it opened or last changed.
+    pub fn rounds_pending(&self) -> bool {
+        self.rounds_pending
+    }
+
+    /// Stop iterating (its last round was reached, or a step failed).
+    pub fn stop_rounds(&mut self) {
+        self.rounds_pending = false;
+    }
+
+    /// Its last round changed no state, so no later round changes anything.
+    pub fn held_still(&self) -> bool {
+        self.held_still
+    }
+
+    /// Rounds run since it started.
+    pub fn round(&self) -> u64 {
+        self.sim.step_count()
+    }
+
+    /// Every block's state, by its bits.
+    fn state_bits(&self) -> Vec<u64> {
+        self.ids
+            .values()
+            .flat_map(|&id| self.sim.state(id).iter().map(|v| v.to_bits()))
+            .collect()
+    }
+
+    fn only_rounds(&self) -> bool {
+        let model = self.sim.model();
+        // A last round: an open-ended map (the logistic map) is watched as
+        // it goes, paced as any model.
+        self.file.run.t_end.is_some()
+            && model.clocks().0.is_empty()
+            && self.track.schedule.is_empty()
+            && self.ids.values().all(|&id| {
+                model.block(id).is_ok_and(|b| {
+                    b.reads_time() == Some(false)
+                        && b.spec().tables.is_empty()
+                        && b.instants().is_none()
+                        && (b.spec().states.is_empty()
+                            || b.spec().time == TimeSemantics::DiscreteEvent)
+                })
+            })
     }
 
     fn nothing_in_time(&self) -> bool {
@@ -2145,6 +2225,8 @@ impl Session {
             }
         }
         let r = self.restart_keeping_recorded();
+        self.rounds_pending = self.iterates;
+        self.held_still = false;
         // Any restart outside `without_running_studies` runs them.
         if r.is_ok() && crate::study::studies_run() {
             self.unevaluated = false;
@@ -3034,6 +3116,52 @@ mod tests {
         // A plain number has none.
         let l = example("Logistic");
         assert_eq!(l.signals().unit("population.x"), None);
+    }
+
+    #[test]
+    fn models_of_maps_that_never_read_time_iterate() {
+        // ADR 0083: the search iterates; maps that read t, open-ended maps
+        // and models with continuous states do not.
+        for (part, iterates) in [
+            ("Searching", true),
+            ("Logistic", false),
+            ("Cruise control", false),
+            ("Resonance curve", false),
+        ] {
+            assert_eq!(example(part).iterates(), iterates, "{part}");
+        }
+        let lines = |eq: &str| {
+            format!(
+                r#"{{"format": 1, "run": {{"dt": 1, "t_end": 50}}, "blocks": [
+                {{"name": "m", "type": "eq.equations", "equations": ["state x = 0", "{eq}"]}}]}}"#
+            )
+        };
+        let load = |text: &str| Session::load("m", text, &registry()).unwrap();
+        assert!(load(&lines("x[n+1] = (x + 2/max(x, 1))/2")).iterates());
+        assert!(!load(&lines("x[n+1] = x + t")).iterates());
+        // It iterates until a round changes nothing: Newton's square root
+        // of 2 holds still well before its last round.
+        let mut s = load(&lines("x[n+1] = (x + 2/max(x, 1))/2"));
+        s.evaluate_later();
+        let mut rounds = 0;
+        while s.rounds_pending() {
+            s.step().unwrap();
+            rounds += 1;
+            assert!(rounds <= 50, "it ends by its last round");
+        }
+        assert!(s.held_still() && rounds < 20, "{rounds}");
+        assert_eq!(s.round(), rounds);
+        // The search holds still before its 40 rounds; a change starts it
+        // again from round 0.
+        let mut s = example("Searching");
+        s.evaluate_later();
+        while s.rounds_pending() && !s.take_end_reached() {
+            s.step().unwrap();
+        }
+        assert!(s.held_still() && s.round() < 40, "{}", s.round());
+        s.set_param_key("search.limit", 30.0).unwrap();
+        assert!(s.rounds_pending() && !s.held_still());
+        assert_eq!(s.round(), 0);
     }
 
     #[test]
