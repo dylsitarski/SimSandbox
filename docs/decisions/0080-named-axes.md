@@ -70,6 +70,7 @@ Later: tables as axes whose length changes (ADR 0079 stage 1); ports of more tha
 ## Additions (owner, 2026-11-07)
 
 - **Stage 2 also names the axis of stencils:** `dd(T, x)` is the derivative of `T` along `x` (`ddx(T)` stays as its shorthand), and `prev` and `next` of an array over two axes must name the axis (`prev(u, x)`); over one axis it may be left out, as now.
+- **`solve` keeps one method** (LU with partial pivoting); a method argument (`solve(A, b, cholesky)`) waits for a model that needs a second algorithm, with its labels and test. Stage 4 adds `rcond(A)`, an estimate of the reciprocal condition number, so a strategy can tell a nearly singular system from a good one; `lstsq(J, r)` (least squares by QR, accurate to cond(J) instead of cond(J)²) comes when a fit shows conditioning trouble; `eig` and `svd` with the views and feature-space work of ADR 0081.
 - **Ports of any number of axes** are proposed in [ADR 0081](0081-shapes-are-lists-of-axes.md), which would replace point 5's limit of two.
 
 ## As built

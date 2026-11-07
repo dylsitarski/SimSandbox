@@ -168,6 +168,7 @@
 
 ## Decided
 
+- 2026-11-07 (owner): `solve` keeps one method for now; `rcond(A)` comes with Levenberg–Marquardt (ADR 0080 stage 4), `lstsq` when a fit shows conditioning trouble, `eig`/`svd` with ADR 0081's feature-space work.
 - 2026-11-07 (owner): ADR 0081 (shapes are lists of named axes) accepted; ADR 0080 stage 2 built the same day.
 - 2026-11-07 (owner): feature spaces and the coming generalization of views call for ports of any number of axes, so ADR 0081 is written before views are reworked; ADR 0080 stage 2 also gets `dd(T, x)` and the axis named in `prev`/`next` over two axes.
 - 2026-11-07 (owner): ADR 0080 (named axes) accepted; stage 1 built the same day.
