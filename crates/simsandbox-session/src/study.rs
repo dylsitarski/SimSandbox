@@ -120,6 +120,19 @@ pub struct StudyBlock {
     /// kept by its values.
     from_inputs: Option<usize>,
     by_point: Mutex<ByPoint>,
+    /// A point per row of a table (ADR 0079 stage 1d): each row's results
+    /// kept by its id.
+    by_rows: bool,
+    by_row: Mutex<ByRow>,
+}
+
+/// A study's results kept row by row (ADR 0079 stage 1d): the shared
+/// inputs and parameters, by their bits, and for each row id its values'
+/// bits and its results (each output's values, in output order).
+#[derive(Default)]
+struct ByRow {
+    shared: Option<Vec<u64>>,
+    rows: std::collections::HashMap<u64, (Vec<u64>, Vec<f64>)>,
 }
 
 #[cfg(test)]
@@ -270,6 +283,12 @@ impl StudyBlock {
                  run on its own (`simsandbox run` of the model)",
             ));
         }
+        let by_rows = plan.design == simsandbox_file::Design::Rows;
+        if by_rows && plan.replicates > 1 {
+            return Err(invalid(
+                "sample.replicates: a point per row runs once (ADR 0079 stage 1d)",
+            ));
+        }
         let runs = plan.points.len() * plan.replicates;
         // A grid over two parameters, run once each: 2D results, the first
         // parameter fastest (ADR 0071).
@@ -283,6 +302,17 @@ impl StudyBlock {
         let mut keys = Vec::new();
         let from_inputs =
             (plan.design == simsandbox_file::Design::Inputs).then_some(plan.points.len());
+        // A table's rows (ADR 0079 stage 1d): one input of rows per swept
+        // parameter.
+        if by_rows {
+            for key in &plan.keys {
+                ports.push(PortSpec::input(
+                    &port_name(key),
+                    key_unit(&loaded, key),
+                    Shape::Rows { dim: 1 },
+                ));
+            }
+        }
         if let Some(n) = from_inputs {
             for key in &plan.keys {
                 ports.push(PortSpec::input(
@@ -334,9 +364,18 @@ impl StudyBlock {
                 let mut dims: Vec<usize> = width.into_iter().collect();
                 dims.extend(&runs_dims);
                 let mut names: Vec<&str> = vector.iter().map(|v| v.1).collect();
-                names.extend(run_axes.iter().map(String::as_str));
+                // Over a table's rows, a value (or a vector) per row.
+                let shape = if by_rows {
+                    names.push("row");
+                    Shape::Rows {
+                        dim: width.unwrap_or(1),
+                    }
+                } else {
+                    names.extend(run_axes.iter().map(String::as_str));
+                    Shape::of_axes(&dims)
+                };
                 ports.push(
-                    PortSpec::output(&name, unit, Shape::of_axes(&dims))
+                    PortSpec::output(&name, unit, shape)
                         .axes_named(&names)
                         .depends_on(&inputs),
                 );
@@ -355,7 +394,7 @@ impl StudyBlock {
             )?;
         }
         // The points are outputs too, unless they came in as inputs.
-        for key in plan.keys.iter().filter(|_| from_inputs.is_none()) {
+        for key in plan.keys.iter().filter(|_| !plan.design.from_inputs()) {
             out(
                 port_name(key),
                 key_unit(&loaded, key),
@@ -478,7 +517,106 @@ impl StudyBlock {
             kept: Mutex::new(None),
             from_inputs,
             by_point: Mutex::new(ByPoint::default()),
+            by_rows,
+            by_row: Mutex::new(ByRow::default()),
         })
+    }
+
+    /// A point per row (ADR 0079 stage 1d): the rows of the first swept
+    /// parameter's input are the points (the others' joined by id, NaN
+    /// where a row is missing), `shared` the model's input blocks. Only
+    /// rows that are new, or whose values (or the shared inputs) changed,
+    /// run now, under their ids, so their seeds and results are those of
+    /// running every row again. Each output's frame: the rows' version
+    /// and ids, and their results in that order.
+    fn evaluate_rows(
+        &self,
+        frames: &[Vec<f64>],
+        shared: &[f64],
+        params: &[f64],
+    ) -> Result<Vec<Vec<f64>>> {
+        use simsandbox_core::table::RowsFrame;
+        let d = self.plan.keys.len();
+        let decoded: Vec<Option<RowsFrame>> = (0..d)
+            .map(|k| frames.get(k).and_then(|f| RowsFrame::decode(f, 1)))
+            .collect();
+        let (version, ids) = decoded[0]
+            .as_ref()
+            .map_or((0, Vec::new()), |f| (f.version, f.ids.clone()));
+        let columns: Vec<Vec<f64>> = decoded
+            .iter()
+            .map(|f| match f {
+                Some(f) if f.ids == ids => f.values.clone(),
+                Some(f) => {
+                    let at: std::collections::HashMap<u64, usize> =
+                        f.ids.iter().enumerate().map(|(r, &i)| (i, r)).collect();
+                    ids.iter()
+                        .map(|i| at.get(i).map_or(f64::NAN, |&r| f.values[r]))
+                        .collect()
+                }
+                None => vec![f64::NAN; ids.len()],
+            })
+            .collect();
+        let point = |r: usize| -> Vec<f64> { columns.iter().map(|c| c[r]).collect() };
+        let bits = |v: &[f64]| -> Vec<u64> { v.iter().map(|x| x.to_bits()).collect() };
+        let width: usize = self.widths.iter().sum();
+        let mut results: Vec<Vec<f64>> = vec![vec![f64::NAN; width]; ids.len()];
+        // Built only to be checked or opened: nothing run.
+        if studies_run() {
+            let shared_bits: Vec<u64> = shared.iter().chain(params).map(|v| v.to_bits()).collect();
+            let mut memory = self.by_row.lock().unwrap_or_else(|e| e.into_inner());
+            if memory.shared.as_ref() != Some(&shared_bits) {
+                memory.shared = Some(shared_bits);
+                memory.rows.clear();
+            }
+            let present: std::collections::HashSet<u64> = ids.iter().copied().collect();
+            memory.rows.retain(|id, _| present.contains(id));
+            let todo: Vec<usize> = (0..ids.len())
+                .filter(|&r| {
+                    memory
+                        .rows
+                        .get(&ids[r])
+                        .is_none_or(|(b, _)| *b != bits(&point(r)))
+                })
+                .collect();
+            #[cfg(test)]
+            RUNS_MADE.with(|n| n.set(n.get() + todo.len()));
+            if !todo.is_empty() {
+                let mut plan = self.plan.clone();
+                plan.points = todo.iter().map(|&r| point(r)).collect();
+                plan.ids = Some(todo.iter().map(|&r| ids[r]).collect());
+                let values = self.run(plan, shared, params)?;
+                // Each output's runs in turn, each run `width` values.
+                let runs = todo.len();
+                for (i, &r) in todo.iter().enumerate() {
+                    let mut start = 0;
+                    let mut mine = Vec::with_capacity(width);
+                    for &w in &self.widths {
+                        mine.extend_from_slice(&values[start + i * w..start + (i + 1) * w]);
+                        start += runs * w;
+                    }
+                    memory.rows.insert(ids[r], (bits(&point(r)), mine));
+                }
+            }
+            for (r, id) in ids.iter().enumerate() {
+                results[r].clone_from(&memory.rows[id].1);
+            }
+        }
+        let mut out = Vec::with_capacity(self.widths.len());
+        let mut start = 0;
+        for &w in &self.widths {
+            let frame = RowsFrame {
+                version,
+                ids: ids.clone(),
+                values: results
+                    .iter()
+                    .flat_map(|v| v[start..start + w].iter().copied())
+                    .collect(),
+            };
+            out.push(frame.encode());
+            start += w;
+        }
+        Ok(out)
     }
 
     /// Every output's values for these inputs and parameters, run or kept.
@@ -731,6 +869,13 @@ impl Block for StudyBlock {
     }
 
     fn compute_outputs(&self, _t: f64, io: StepIo<'_>) -> Result<()> {
+        if self.by_rows {
+            let frames = self.evaluate_rows(io.population_inputs, io.inputs, io.params)?;
+            for (to, f) in io.population_outputs.iter_mut().zip(frames) {
+                *to = f;
+            }
+            return Ok(());
+        }
         let values = self.evaluate(io.inputs, io.params)?;
         io.outputs.copy_from_slice(&values);
         Ok(())
@@ -820,6 +965,78 @@ mod tests {
             let last = &all[all.len() - 3..];
             assert_eq!(bits(last), bits(&value(&fresh, name)), "{name}");
         }
+    }
+
+    /// A point per row of a table (ADR 0079 stage 1d): rows come, change
+    /// and go; each runs when it is new or changed, its result leaves
+    /// under its id, and a block downstream follows them.
+    #[test]
+    fn a_study_runs_a_point_per_row_and_remembers_each_by_id() {
+        let r = registry();
+        let m = json!({"format": 1, "run": {"dt": 1, "t_end": 5},
+            "models": {"decay": decay()},
+            "blocks": [
+                {"name": "pop", "type": "eq.equations", "equations": [
+                    "table pts max 10",
+                    "start pts = 2",
+                    "state x0[pts] = 1 + id(pts)",
+                    "state round = 0",
+                    "round[n+1] = round + 1",
+                    "# row 1 changes once, on the step to round 3",
+                    "x0[n+1] = x0 + (id(pts) > 0.5)*(id(pts) < 1.5)*(round > 1.5)*(round < 2.5)",
+                    "add pts where round < 2.5: x0 = 5",
+                    "remove pts where (id(pts) < 0.5)*(round > 3.5)"]},
+                {"name": "rate", "type": "input.value", "params": {"y": 1.0}},
+                {"name": "halves", "type": "study", "model": "decay",
+                 "sample": {"design": "rows", "params": [{"param": "x.x0"}],
+                            "reduce": {"half": "first_time(x.x < 0.5)"}}},
+                {"name": "sum", "type": "eq.equations", "equations": [
+                    "table q", "input half[q] [s]", "total = sum(half)", "count = rows(q)"]}],
+            "connections": [
+                {"from": "pop.x0", "to": "halves.x_x0"},
+                {"from": "rate.y", "to": "halves.k"},
+                {"from": "halves.half", "to": "sum.half"}]});
+        super::RUNS_MADE.with(|c| c.set(0));
+        let y = run(&m.to_string(), &r, None, None).unwrap();
+        // Rows 0 and 1 at the start; 2 and 3 as they come; 1 again when it
+        // changes; none when 0 goes.
+        assert_eq!(super::RUNS_MADE.with(std::cell::Cell::get), 5);
+        let rows = |n: &str| y.populations.iter().find(|p| p.name == n).unwrap();
+        let (x0, half) = (rows("pop.x0"), rows("halves.half"));
+        let total = value(&y, "sum.total");
+        assert_eq!(total.len(), 6);
+        for (k, &sum) in total.iter().enumerate() {
+            let (_, ids, xs) = x0.rows_at(k).unwrap();
+            let (_, hids, hs) = half.rows_at(k).unwrap();
+            assert_eq!(ids, hids, "round {k}");
+            // x = x0 exp(-t) falls to 0.5 at t = ln(2 x0).
+            for (&x, &h) in xs.iter().zip(hs) {
+                assert!((h - (2.0 * x).ln()).abs() < 2e-3, "round {k}: x0 {x}, {h}");
+            }
+            assert_eq!(sum, hs.iter().sum::<f64>(), "round {k}");
+        }
+        assert_eq!(x0.rows_at(5).unwrap().1, &[1.0, 2.0, 3.0][..]);
+        // The same in a session, as the app runs it.
+        let mut s = crate::session::Session::load("m", &m.to_string(), &r).unwrap();
+        for _ in 0..5 {
+            s.step().unwrap();
+        }
+        let h = s.signals();
+        let got = h.values(h.resolve("sum.total").unwrap());
+        assert_eq!(got.len(), 6);
+        assert!(
+            got.iter().zip(&total).all(|(a, b)| a == b),
+            "{got:?} vs {total:?}"
+        );
+        // A count with a point per row, or replicates, is refused.
+        let mut bad = m.clone();
+        bad["blocks"][2]["sample"]["count"] = json!(3);
+        let e = run(&bad.to_string(), &r, None, None).unwrap_err();
+        assert!(e.contains("as many as its rows"), "{e}");
+        let mut bad = m.clone();
+        bad["blocks"][2]["sample"]["replicates"] = json!(2);
+        let e = run(&bad.to_string(), &r, None, None).unwrap_err();
+        assert!(e.contains("runs once"), "{e}");
     }
 
     /// The pattern-search strategy (ADR 0078) as a model: a map wired to a

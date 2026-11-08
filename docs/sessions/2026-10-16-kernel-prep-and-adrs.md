@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-08: ADR 0079 stage 1d: `Design::Rows` (`Design::from_inputs`), its plan a single placeholder point (`count` refused); `StudyBlock` rows inputs and outputs (`Shape::Rows`), `ByRow` memory and `evaluate_rows`; replicates refused; app study form. Test in `study.rs`; every example byte-identical. ADR 0079 stage 1 complete.
 - 2026-11-08: ADR 0079 stage 1c: `FieldShape::Rows`, `history::rows_frame`, `Field::{rows, by_id, ids}`; probe rows files (`RowsFile`, streamed, cut on rewind) and JSON frames; `run::Population::rows` (rows ride the varying-length outputs, so composed runs and thinning handle them), `rows_at`/`ids`, JSON `over_rows`, CSV by id; Python `Rows`; the probe-to-block refusal names rows. Tests in `table_ports.rs` and `test_api.py`; every example byte-identical apart from the empty `over_rows` key.
 - 2026-11-08: ADR 0079 stage 1b: `Shape::Rows { dim }`, `table::RowsFrame` (`[version, n, ids…, values…]`), `Table::version` and `Table::assign`; the output plan orders outputs along rows wires (`loops::RowsLink`) and refuses loops through them; `resolve` routes rows into a block just before computing it; a unit's factor scales values, not ids. Typed equations: quantities over rows are rows ports; `input u[q]` makes `q` follow those rows (`TableRows::follows`, `ExplicitBlock::follow`, new rows from `starting_rows`); outputs reading a followed table depend on its input. Tests `table_ports.rs`; every example byte-identical.
 - 2026-11-08: ADR 0081 stages 1–2: `Shape::Tensor`, `AxisLen`, `of_axes`/`axes`/`dims`, `PortSpec::axis_names`, `describe_shape`; typed-equation ports of any rank (`MAX_AXES` 8); study outputs named, vectors over two-parameter grids; `FieldShape::Tensor`, `.npy` of any rank; `Output::axes`, `describe::shape_with_axes`, CSV by places; Python `Results.axes`; `tests/axes.rs`
@@ -180,6 +181,7 @@
 
 ## Decided
 
+- 2026-11-08 (mine, ADR 0079 1d As built): studies over tables are a design of their own, `"design": "rows"`, rather than `"design": "inputs"` with a special count: the form and the file say what happens, and the study's inputs and results change shape with it. Replicates per row are refused for now (a row's results would need another axis).
 - 2026-11-08 (mine, ADR 0079 1c As built): rows go to CSV by id (a column per id ever seen, NaN where absent) and to probe files as one line per row per sample (`t,version,id,value`), which can be appended to while recording, unlike a column per id; JSON and Python keep each row's ids, values and the version.
 - 2026-11-08 (mine, ADR 0079 1b As built): an input over a table makes the table follow that input's rows (no `start` or rules on it), rather than a separate `follows` declaration: the fewest concepts. Other inputs over the same table join by id, NaN for a missing row.
 - 2026-11-08 (mine): rows pass at the same instant, not a step late: any output that reads a followed table depends on the input it follows, and the kernel orders outputs through rows wires; a loop through rows is refused rather than solved. Needed by 1d (studies over tables) and keeps a block's rows equal to its source's at every instant.

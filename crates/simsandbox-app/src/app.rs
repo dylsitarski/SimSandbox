@@ -3870,13 +3870,16 @@ fn study_fields(
         .unwrap_or_else(|| saved.clone());
     let mut changed = false;
     let mut commit = false;
-    let runs = study_runs(&s);
+    let runs = match s.design {
+        Design::Rows => "a run per row".to_string(),
+        _ => format!("{} runs", study_runs(&s)),
+    };
     ui.weak(match (&b.model, &b.file) {
         (Some(m), _) => {
-            format!("Studies the model {m}: {runs} runs (open the node to edit the model)")
+            format!("Studies the model {m}: {runs} (open the node to edit the model)")
         }
         (None, Some(f)) => {
-            format!("Studies the file {f}: {runs} runs (open the node to edit the model)")
+            format!("Studies the file {f}: {runs} (open the node to edit the model)")
         }
         _ => "Names no model to study".into(),
     });
@@ -3898,6 +3901,7 @@ fn study_fields(
                 (Design::Sobol, "Sobol sequence"),
                 (Design::File, "points from a file"),
                 (Design::Inputs, "points from its inputs"),
+                (Design::Rows, "a point per row of a table"),
             ];
             let label = designs.iter().find(|(d, _)| *d == s.design).map_or("", |(_, l)| l);
             egui::ComboBox::from_id_salt(("study-design", &b.name))
@@ -3905,12 +3909,17 @@ fn study_fields(
                 .show_ui(ui, |ui| {
                     for (d, l) in designs {
                         if ui.selectable_value(&mut s.design, d, l).clicked() {
-                            // Points from inputs need their number.
+                            // Points from inputs need their number; a
+                            // table's rows are as many as come.
                             if d == Design::Inputs && s.count.is_none() {
                                 s.count = Some(simsandbox_file::DEFAULT_SAMPLE_COUNT);
                             }
+                            if d == Design::Rows {
+                                s.count = None;
+                                s.replicates = None;
+                            }
                             // ... and have no ranges: their values arrive.
-                            if d == Design::Inputs {
+                            if d.from_inputs() {
                                 for p in &mut s.params {
                                     p.range = None;
                                     p.points = None;
@@ -3960,17 +3969,20 @@ fn study_fields(
                 commit |= r.lost_focus();
                 ui.end_row();
             }
-            ui.label("replicates");
-            let mut reps = s.replicates.unwrap_or(1);
-            let r = ui
-                .add(egui::DragValue::new(&mut reps).range(1..=10_000))
-                .on_hover_text("Runs of each point, each replicate with a seed of its own");
-            if r.changed() {
-                s.replicates = (reps > 1).then_some(reps);
-                changed = true;
+            // A table's rows run once each (ADR 0079 stage 1d).
+            if s.design != Design::Rows {
+                ui.label("replicates");
+                let mut reps = s.replicates.unwrap_or(1);
+                let r = ui
+                    .add(egui::DragValue::new(&mut reps).range(1..=10_000))
+                    .on_hover_text("Runs of each point, each replicate with a seed of its own");
+                if r.changed() {
+                    s.replicates = (reps > 1).then_some(reps);
+                    changed = true;
+                }
+                commit |= r.drag_stopped() || r.lost_focus();
+                ui.end_row();
             }
-            commit |= r.drag_stopped() || r.lost_focus();
-            ui.end_row();
             ui.label("seeds");
             egui::ComboBox::from_id_salt(("study-seeds", &b.name))
                 .selected_text(match s.seeds {
@@ -4002,9 +4014,11 @@ fn study_fields(
     } else {
         // Points from inputs have no range: another model sends the values
         // (ADR 0078).
-        let ranged = s.design != Design::Inputs;
+        let ranged = !s.design.from_inputs();
         ui.strong("varies");
-        if !ranged {
+        if s.design == Design::Rows {
+            ui.weak("Each parameter's values arrive as a table's rows through the study's input of the same name; each row is a point, and the results leave as rows with the same ids.");
+        } else if !ranged {
             ui.weak("Each parameter's values arrive through the study's input of the same name, one per point.");
         }
         let mut remove = None;
@@ -4210,7 +4224,8 @@ fn study_runs(s: &simsandbox_file::Sampling) -> usize {
         Design::Random | Design::LatinHypercube | Design::Sobol | Design::Inputs => {
             s.count.unwrap_or(simsandbox_file::DEFAULT_SAMPLE_COUNT)
         }
-        Design::File => 0,
+        // As many as arrive.
+        Design::File | Design::Rows => 0,
     };
     points * s.replicates.unwrap_or(1)
 }

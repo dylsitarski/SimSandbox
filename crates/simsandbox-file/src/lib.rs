@@ -249,6 +249,18 @@ pub enum Design {
     /// input per parameter (ADR 0078): chosen by another model, such as
     /// a search strategy.
     Inputs,
+    /// One point per row of a table (ADR 0079 stage 1d): each swept
+    /// parameter's values arrive through the study's input of its name as
+    /// a table's rows, and each result leaves as rows with the same ids.
+    /// A row runs again only when it is new or its values changed.
+    Rows,
+}
+
+impl Design {
+    /// Whether its points arrive through the study's inputs (no ranges).
+    pub fn from_inputs(self) -> bool {
+        matches!(self, Design::Inputs | Design::Rows)
+    }
 }
 
 /// What an experiment keeps of each run (ADR 0067).
@@ -606,6 +618,17 @@ impl Sampling {
                 let n = count(n)?;
                 let middle: Vec<f64> = ranges.iter().map(|[lo, hi]| 0.5 * (lo + hi)).collect();
                 (vec![middle; n], None)
+            }
+            // One placeholder: the rows give the points, as many as come.
+            Design::Rows => {
+                if self.count.is_some() {
+                    return Err(invalid(
+                        "sample.count",
+                        "points from a table's rows are as many as its rows: give no count",
+                    ));
+                }
+                let middle: Vec<f64> = ranges.iter().map(|[lo, hi]| 0.5 * (lo + hi)).collect();
+                (vec![middle], None)
             }
             Design::List => {
                 if self.values.is_empty() || self.values.len() > MAX_SAMPLES {
