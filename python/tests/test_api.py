@@ -158,6 +158,39 @@ def test_rows_of_a_table_come_back_by_id():
     assert all(np.array_equal(a, b) for a, b in zip(seen.ids, size.ids))
 
 
+def test_strategy_helpers_write_models_that_search():
+    # ADR 0078 point 7. Pattern search on a bowl: exactly its bottom.
+    m = ss.Model()
+    m.add_block("bowl", "eq.equations", "evaluate", equations=["y = (a - 3)^2 + (b + 1)^2"],
+                params={"a": 0.0, "b": 0.0})
+    note = m.minimize(None, {"bowl.a": {"start": 0, "span": 4}, "bowl.b": 0}, "final(bowl.y)",
+                      budget=40)
+    assert "search" in note
+    r = m.run()
+    assert r["search.best_bowl_a"][-1] == 3.0 and r["search.best_bowl_b"][-1] == -1.0
+    assert r["search.best_score"][-1] == 0.0
+    # Refinement of where a bistable state's fate changes: the cubic's
+    # middle root, bracketed within the tolerance.
+    b = ss.Model()
+    b.add_block("bi", "eq.equations", "rk4", equations=["state x", "dx/dt = r + x - x^3"],
+                params={"r": 0.2, "x0": 0.0})
+    b.set_run(dt=0.01, t_end=30.0)
+    b.refine(None, "bi.x0", (-2, 2), "final(bi.x) > 0", budget=15)
+    r = b.run()
+    root = sorted(np.roots([1, 0, -1, -0.2]).real)[1]
+    lo, hi = r["refine.lo"][-1], r["refine.hi"][-1]
+    assert lo < root < hi and hi - lo <= 1e-3
+    assert len(r["refine.bi_x0"].ids[-1]) == 18
+    # A study as the target: the fitting example refit by a new strategy.
+    f = ss.Model.example("Fitting a model")
+    f.fit("trials", {"osc.k": 2.0, "osc.c": 1.0}, "at_samples(osc.x - data.x, data)")
+    r = f.run()
+    assert abs(r["fit1.fit_osc_k"][-1] - 3.991282) < 1e-5
+    assert abs(r["fit1.fit_osc_c"][-1] - 0.501779) < 1e-5
+    with pytest.raises(ss.ModelError, match="at least one"):
+        ss.Model().minimize(None, {}, "final(x)")
+
+
 def test_problems_are_reported_where_they_are():
     m = ss.Model().add_block("a", "eq.lorenz", "leapfrog")
     report = m.check()

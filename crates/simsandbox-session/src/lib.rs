@@ -32,6 +32,7 @@ pub mod reduce;
 pub mod render;
 pub mod run;
 pub mod session;
+pub mod strategies;
 pub mod study;
 pub mod undo;
 pub mod views;

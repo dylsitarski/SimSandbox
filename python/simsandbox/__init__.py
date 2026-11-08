@@ -532,6 +532,123 @@ class Model:
             study["sample"] = sample
         return note
 
+    # Strategies as models (ADR 0078 point 7). Each writes a study whose
+    # points come from its inputs and a strategy block, a map whose rounds
+    # are its steps, wired to it, the same models as the examples. The
+    # target is a study block, a used model, or None for the whole model
+    # (moved into a definition the study runs). Run the model to search;
+    # open the strategy block to change it. Returns a note naming it.
+
+    def _strategy(self, target: str | None, spec: dict) -> str:
+        text, note = _native.strategy(self.to_json(), json.dumps(spec), target)
+        self.data = json.loads(text)
+        return note
+
+    @staticmethod
+    def _varied(params) -> list[dict]:
+        """``{"car.kp": 400}`` or ``{"car.kp": {"start": 400, "span": 1000,
+        "range": [1, 2000]}}`` as the strategy takes them."""
+        out = []
+        for key, v in params.items():
+            if isinstance(v, dict):
+                out.append({"param": key, **{k: v[k] for k in v}})
+            else:
+                out.append({"param": key, "start": float(v)})
+        return out
+
+    def minimize(
+        self,
+        target: str | None,
+        params: dict,
+        objective: str,
+        budget: float = 60,
+        tol: float = 1e-3,
+    ) -> str:
+        """Pattern search (``examples/cruise-search.ssbx.json``): lower the
+        ``objective`` (a reduce formula of each run, e.g.
+        ``"first_time(abs(cruise.e) < 0.5)"``) over ``params``, each a start
+        or ``{"start", "span", "range"}`` (the first step is a quarter of
+        the span; values stay in the range). Each round runs the centre and
+        a step either way on each parameter, moves to the best or halves
+        the step, and holds still once the step is below ``tol``; at most
+        ``budget`` rounds. Read ``search.best_<param>`` and
+        ``search.best_score``."""
+        return self._strategy(
+            target,
+            {"kind": "minimize", "params": self._varied(params), "objective": objective,
+             "budget": budget, "tol": tol},
+        )
+
+    def fit(
+        self,
+        target: str | None,
+        params: dict,
+        residuals: str,
+        budget: float = 60,
+        tol: float = 1e-9,
+    ) -> str:
+        """Levenberg–Marquardt least squares
+        (``examples/oscillator-fit.ssbx.json``): ``params`` from their
+        starts, ``residuals`` a vector per run (e.g.
+        ``"at_samples(osc.x - data.x, data)"``). Holds still at the fit;
+        read ``fit.fit_<param>``, ``fit.cost`` and ``fit.done``."""
+        return self._strategy(
+            target,
+            {"kind": "fit", "params": self._varied(params), "residuals": residuals,
+             "budget": budget, "tol": tol},
+        )
+
+    def refine(
+        self,
+        target: str | None,
+        param: str,
+        range: tuple[float, float],
+        result: str,
+        points: int = 9,
+        change: float = 0.5,
+        tol: float = 1e-3,
+        max: int = 200,
+        budget: float = 60,
+    ) -> str:
+        """Refinement over one parameter
+        (``examples/bistable-refinement.ssbx.json``): ``points`` values over
+        ``range``; each round a new point in the middle of every interval
+        whose ends' ``result`` (a reduce formula) differs by more than
+        ``change``, until intervals are narrower than ``tol``. Read
+        ``refine.lo`` and ``refine.hi`` (where it changes), and the points
+        as rows (``Results.over_rows``)."""
+        return self._strategy(
+            target,
+            {"kind": "refine", "param": param, "range": [float(range[0]), float(range[1])],
+             "result": result, "points": int(points), "change": change, "tol": tol,
+             "max": int(max), "budget": budget},
+        )
+
+    def continue_(
+        self,
+        target: str | None,
+        param: str,
+        range: tuple[float, float],
+        step: float,
+        state: str,
+        settled: str,
+        state_start: float = 0.0,
+        budget: float = 200,
+    ) -> str:
+        """Natural-parameter continuation
+        (``examples/bistable-continuation.ssbx.json``): one run a round,
+        ``param`` stepping by ``step`` across ``range`` and back, each run
+        starting from where the last settled: its starting-value parameter
+        ``state`` (e.g. ``"bi.x0"``) set to ``settled`` (e.g.
+        ``"final(bi.x)"``) of the last run, from ``state_start``. Plot
+        ``continuation.settled`` against ``continuation.value``."""
+        return self._strategy(
+            target,
+            {"kind": "continue", "param": param, "range": [float(range[0]), float(range[1])],
+             "step": step, "state": state, "settled": settled,
+             "state_start": state_start, "budget": budget},
+        )
+
     def group(self, blocks: Iterable[str]) -> str:
         """Move ``blocks`` into a new model defined in this file (ADR 0068)
         and use it in their place, as "Make model" does on the canvas:

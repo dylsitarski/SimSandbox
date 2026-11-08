@@ -4175,6 +4175,7 @@ fn study_fields(
             });
         }
     }
+    out.extend(search_fields(ui, b, &s, edits, keys));
     // Everything, as written in the file.
     egui::CollapsingHeader::new("sample as JSON")
         .id_salt(("study-json", &b.name))
@@ -4199,6 +4200,134 @@ fn study_fields(
                         sample: text,
                     });
                 }
+            }
+        });
+    out
+}
+
+/// "Search…" (ADR 0078 point 7): a strategy model written to drive this
+/// study over its parameters (their ranges as it has them): pattern
+/// search, Levenberg–Marquardt, refinement or continuation, with the one
+/// formula each needs. The study's sample is replaced and a strategy
+/// block wired to it, which can be opened and changed like any other.
+fn search_fields(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    s: &simsandbox_file::Sampling,
+    edits: &mut HashMap<String, String>,
+    keys: &[StudyKey],
+) -> Option<Edit> {
+    let mut out = None;
+    egui::CollapsingHeader::new("Search…")
+        .id_salt(("study-search", &b.name))
+        .show(ui, |ui| {
+            let field = |edits: &HashMap<String, String>, f: &str, default: &str| {
+                edits
+                    .get(&format!("search-{f}:{}", b.name))
+                    .cloned()
+                    .unwrap_or_else(|| default.to_string())
+            };
+            let kinds = [
+                ("minimize", "lower an objective (pattern search)"),
+                ("fit", "fit to data (Levenberg–Marquardt)"),
+                ("refine", "find where a result changes (refinement)"),
+                ("continue", "follow a branch (continuation)"),
+            ];
+            let mut kind = field(edits, "kind", "minimize");
+            egui::ComboBox::from_id_salt(("search-kind", &b.name))
+                .selected_text(kinds.iter().find(|k| k.0 == kind).map_or("", |k| k.1))
+                .show_ui(ui, |ui| {
+                    for (k, l) in kinds {
+                        ui.selectable_value(&mut kind, k.to_string(), l);
+                    }
+                });
+            edits.insert(format!("search-kind:{}", b.name), kind.clone());
+            let first = s.reduce.values().next().cloned().unwrap_or_default();
+            let (label, hint) = match kind.as_str() {
+                "minimize" => ("objective", "lower is better, e.g. first_time(abs(cruise.e) < 0.5)"),
+                "fit" => ("residuals", "a vector per run, e.g. at_samples(osc.x - data.x, data)"),
+                "refine" => ("result", "split where it changes, e.g. final(bi.x) > 0"),
+                _ => ("settled", "the state a run settles at, e.g. final(bi.x)"),
+            };
+            let mut formula = field(edits, "formula", &first);
+            ui.horizontal(|ui| {
+                ui.label(label);
+                ui.add(egui::TextEdit::singleline(&mut formula).hint_text(hint));
+            });
+            edits.insert(format!("search-formula:{}", b.name), formula.clone());
+            // Each swept parameter with its range: the study's, or the
+            // model's suggested one.
+            let params: Vec<(String, [f64; 2])> = s
+                .params
+                .iter()
+                .map(|p| {
+                    let range = p.range.or_else(|| {
+                        keys.iter().find(|k| k.0 == p.param).map(|k| k.1)
+                    });
+                    (p.param.clone(), range.unwrap_or([0.0, 1.0]))
+                })
+                .collect();
+            let mut state = field(edits, "state", "");
+            let mut step = field(edits, "step", "0.02").parse::<f64>().unwrap_or(0.02);
+            if kind == "continue" {
+                ui.horizontal(|ui| {
+                    ui.label("starting value");
+                    egui::ComboBox::from_id_salt(("search-state", &b.name))
+                        .selected_text(state.clone())
+                        .show_ui(ui, |ui| {
+                            for k in keys.iter().filter(|k| k.2) {
+                                ui.selectable_value(&mut state, k.0.clone(), &k.0);
+                            }
+                        });
+                    ui.label("step");
+                    ui.add(egui::DragValue::new(&mut step).speed(0.001));
+                });
+                edits.insert(format!("search-state:{}", b.name), state.clone());
+                edits.insert(format!("search-step:{}", b.name), step.to_string());
+            }
+            let mut budget = field(edits, "budget", "60").parse::<f64>().unwrap_or(60.0);
+            ui.horizontal(|ui| {
+                ui.label("rounds at most");
+                ui.add(egui::DragValue::new(&mut budget).range(1.0..=100_000.0));
+            });
+            edits.insert(format!("search-budget:{}", b.name), budget.to_string());
+            ui.weak(match kind.as_str() {
+                "refine" | "continue" => format!(
+                    "Over {} from {} to {}.",
+                    params.first().map_or("(no parameter)", |p| p.0.as_str()),
+                    params.first().map_or(0.0, |p| p.1[0]),
+                    params.first().map_or(0.0, |p| p.1[1])
+                ),
+                _ => format!(
+                    "Over {}, starting at the middle of each range.",
+                    params.iter().map(|p| p.0.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+            });
+            let mid = |r: [f64; 2]| 0.5 * (r[0] + r[1]);
+            let spec = match kind.as_str() {
+                "minimize" => serde_json::json!({"kind": "minimize", "objective": formula, "budget": budget,
+                    "params": params.iter().map(|(k, r)| serde_json::json!(
+                        {"param": k, "start": mid(*r), "span": r[1] - r[0], "range": r})).collect::<Vec<_>>()}),
+                "fit" => serde_json::json!({"kind": "fit", "residuals": formula, "budget": budget,
+                    "params": params.iter().map(|(k, r)| serde_json::json!(
+                        {"param": k, "start": mid(*r)})).collect::<Vec<_>>()}),
+                "refine" => serde_json::json!({"kind": "refine", "result": formula, "budget": budget,
+                    "param": params.first().map(|p| p.0.clone()).unwrap_or_default(),
+                    "range": params.first().map_or([0.0, 1.0], |p| p.1)}),
+                _ => serde_json::json!({"kind": "continue", "settled": formula, "budget": budget,
+                    "state": state, "step": step,
+                    "param": params.first().map(|p| p.0.clone()).unwrap_or_default(),
+                    "range": params.first().map_or([0.0, 1.0], |p| p.1)}),
+            };
+            if ui
+                .button("Write strategy")
+                .on_hover_text("Replace this study's sample and add a strategy block that drives it, one round a step")
+                .clicked()
+            {
+                out = Some(Edit::Search {
+                    study: b.name.clone(),
+                    strategy: spec.to_string(),
+                });
             }
         });
     out

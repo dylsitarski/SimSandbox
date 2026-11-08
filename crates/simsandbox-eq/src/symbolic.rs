@@ -2242,7 +2242,8 @@ impl EquationSet {
                 ast,
                 *line,
                 *col,
-                &|n| is_param(n) || axes.contains(&n),
+                // An array parameter too (`state x[p] = x_start`, ADR 0069).
+                &|n| is_param(n) || axes.contains(&n) || array_params.iter().any(|a| a.0 == n),
                 "an initial value is written with parameters and the axes",
             )?;
         }

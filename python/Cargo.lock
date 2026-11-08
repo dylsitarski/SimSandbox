@@ -1224,6 +1224,7 @@ version = "0.0.1"
 dependencies = [
  "egui",
  "png",
+ "serde",
  "serde_json",
  "simsandbox-agents",
  "simsandbox-core",

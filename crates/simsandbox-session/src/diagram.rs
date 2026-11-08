@@ -985,6 +985,10 @@ pub enum Edit {
     StudyModel,
     /// A study's `sample` (ADR 0070), as JSON.
     SetSample { block: String, sample: String },
+    /// A strategy driving a study (ADR 0078 point 7, "Search…"): the
+    /// strategy as JSON (`crate::strategies::Strategy`), written by
+    /// `crate::strategies::write`.
+    Search { study: String, strategy: String },
     /// A block, or a port node (renaming the port).
     Rename { from: String, to: String },
     /// `"node.port"` to `"node.port"`; replaces whatever fed the input.
@@ -1215,6 +1219,16 @@ fn apply_in_level(
     }
     if let Edit::StudyModel = edit {
         return study_model(file, scope, registry);
+    }
+    if let Edit::Search { study, strategy } = edit {
+        if *scope != Scope::Model {
+            return Err(
+                "a strategy drives a study of the model open, not inside a subsystem".into(),
+            );
+        }
+        let spec: crate::strategies::Strategy =
+            serde_json::from_str(strategy).map_err(|e| e.to_string())?;
+        return crate::strategies::write(file, registry, Some(study), &spec);
     }
     match edit {
         Edit::DeclareParam { name, value, unit } => {
@@ -1783,6 +1797,7 @@ fn edit_level(
         }
         Edit::GroupModel { .. }
         | Edit::StudyModel
+        | Edit::Search { .. }
         | Edit::DeclareOutput { .. }
         | Edit::RemoveOutput { .. }
         | Edit::HideOutput { .. }

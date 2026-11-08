@@ -446,6 +446,22 @@ fn study(text: &str, block: String) -> PyResult<(String, String)> {
     Ok((file.to_json(), note))
 }
 
+/// Write a strategy model (ADR 0078 point 7): `spec` is the strategy as
+/// JSON (`{"kind": "minimize", …}`), `target` a study, a used model or
+/// none (the whole model). Returns the changed model file and a note.
+#[pyfunction]
+#[pyo3(signature = (text, spec, target=None))]
+fn strategy(text: &str, spec: &str, target: Option<String>) -> PyResult<(String, String)> {
+    let (mut file, _) = simsandbox_session::ModelFile::from_json(text)
+        .map_err(|e| ModelError::new_err(e.to_string()))?;
+    let spec: simsandbox_session::strategies::Strategy =
+        serde_json::from_str(spec).map_err(|e| ModelError::new_err(e.to_string()))?;
+    let note =
+        simsandbox_session::strategies::write(&mut file, &registry(), target.as_deref(), &spec)
+            .map_err(ModelError::new_err)?;
+    Ok((file.to_json(), note))
+}
+
 /// Study the whole model (ADR 0071), as "Study this model" does on the
 /// canvas background. Returns the changed model file and a note.
 #[pyfunction]
@@ -513,6 +529,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(duplicate, m)?)?;
     m.add_function(wrap_pyfunction!(study, m)?)?;
     m.add_function(wrap_pyfunction!(study_model, m)?)?;
+    m.add_function(wrap_pyfunction!(strategy, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

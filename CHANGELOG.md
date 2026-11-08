@@ -62,6 +62,9 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Strategy helpers (ADR 0078 step 5): Python's `Model.minimize`, `Model.fit`, `Model.refine` and `Model.continue_` write a study and a strategy model (pattern search, Levenberg–Marquardt, refinement, continuation) that drives it, for any number of parameters, from a study, a used model or the whole model; the app's study form does the same under "Search…". The strategy is an ordinary block that can be opened and changed.
+- Typed equations: an array state's starting value may read an array parameter (`state x[p] = x_start` with `param x_start[p]`).
+
 - Example "Finding where a state's fate changes (refinement as a model)": a study runs a bistable state from each of a table of starting values, and a refining block splits the intervals whose ends settle on different branches, bracketing the boundary between the two within 0.001 in 18 runs.
 
 - Edge tables in typed equations (ADR 0079 stage 2): `edges segs of pts` joins rows of a table, `start segs = chain` joins each starting row to the next, `from_end(x, segs)` and `to_end(x, segs)` read a quantity at each edge's ends, and the rules `split segs where …` (a new row in the middle of each edge) and `merge segs where …` (an edge's two rows into one) change them between steps, each column filled by `copy`, `mean` or an expression. Removing a row removes its edges.
