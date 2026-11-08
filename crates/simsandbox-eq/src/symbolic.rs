@@ -155,6 +155,12 @@ pub struct TableRows {
     /// 0079 stage 1b): the first such input's place among the block's
     /// inputs over rows.
     pub follows: Option<usize>,
+    /// An edge table (ADR 0079 stage 2): the table (place in the block's
+    /// tables) whose rows its edges join. Its kernel table's columns are
+    /// each edge's `from` and `to` ids.
+    pub ends_of: Option<usize>,
+    /// An edge table starting as a chain of its table's starting rows.
+    pub chain: bool,
 }
 
 /// A rule as compiled: its table (by axis), whether it removes (else
@@ -163,9 +169,27 @@ pub struct TableRows {
 #[derive(Debug, Clone)]
 pub struct RuleRun {
     pub table: usize,
-    pub remove: bool,
+    pub kind: RuleKind,
+    /// `split` and `merge`: the edge table (by axis) whose edges they act
+    /// on; the values are computed over its rows.
+    pub edges: Option<usize>,
     pub cond: Span,
     pub values: Vec<Span>,
+}
+
+/// What a rule does (ADR 0079).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleKind {
+    /// `remove pts where c`: rows go (and the edges they end).
+    Remove,
+    /// `add pts [from k] [where c]: …`: new rows.
+    Add,
+    /// `split segs where c: …` (stage 2): a new row in the middle of
+    /// each edge where `c` holds, the edge replaced by two.
+    Split,
+    /// `merge segs where c: …` (stage 2): each edge's two rows become one
+    /// (its `from` row, with the values given), the edge removed.
+    Merge,
 }
 
 /// The parts of the states a program needs copied into its registers and
@@ -246,6 +270,9 @@ struct Axis {
     /// A table's rows (ADR 0079): its most rows. Its length is the
     /// current number of rows, and changes between steps.
     table: Option<usize>,
+    /// An edge table (ADR 0079 stage 2): the table whose rows its edges
+    /// join, by place among the axes.
+    ends_of: Option<usize>,
 }
 
 /// The most rows a table has unless it says (`table pts max 200`).
@@ -289,6 +316,7 @@ type CheckedRule<'a> = (
 /// A rule changing a table between steps (ADR 0079), as written.
 struct RuleLine {
     line: usize,
+    kind: RuleKind,
     table: String,
     /// `remove pts where cond`: `None`; `add pts [from s] [where c]: …`:
     /// the axis rows come from, if any, and the values given.
@@ -300,10 +328,16 @@ struct RuleLine {
 
 /// `remove pts where cond` or `add pts [from s] [where cond][: c = e, …]`.
 fn read_rule(text: &str, word: &str, rest: &str, line: usize) -> Result<RuleLine> {
-    let usage = if word == "remove" {
-        "write 'remove pts where condition'"
-    } else {
-        "write 'add pts: c = value', 'add pts where condition: …' or 'add pts from k where condition: c = value'"
+    let usage = match word {
+        "remove" => "write 'remove pts where condition'",
+        "split" | "merge" => "write 'split segs where condition' or 'merge segs where condition: c = mean' (each column mean, copy or a value)",
+        _ => "write 'add pts: c = value', 'add pts where condition: …' or 'add pts from k where condition: c = value'",
+    };
+    let kind = match word {
+        "remove" => RuleKind::Remove,
+        "split" => RuleKind::Split,
+        "merge" => RuleKind::Merge,
+        _ => RuleKind::Add,
     };
     let bad = |m: String| definition_error(line, 1, m);
     let parse_at = |src: &str| -> Result<(Ast, usize)> {
@@ -313,7 +347,7 @@ fn read_rule(text: &str, word: &str, rest: &str, line: usize) -> Result<RuleLine
             .map_err(|e| definition_error(line, col + e.column - 1, e.message))
     };
     let (head, assigns) = match (word, rest.split_once(':')) {
-        ("add", Some((h, a))) => (h, Some(a)),
+        ("add" | "split" | "merge", Some((h, a))) => (h, Some(a)),
         _ => (rest, None),
     };
     let (head, cond) = match head.split_once(" where ") {
@@ -326,14 +360,14 @@ fn read_rule(text: &str, word: &str, rest: &str, line: usize) -> Result<RuleLine
         ("add", [t, "from", s]) => (t.to_string(), Some(s.to_string())),
         _ => return Err(bad(usage.into())),
     };
-    if word == "remove" && cond.is_none() {
+    if word != "add" && cond.is_none() {
         return Err(bad(usage.into()));
     }
     let (cond, cond_column) = match cond {
         Some(c) => parse_at(c)?,
         None => (Ast::Num(1.0), 1),
     };
-    let add = if word == "add" {
+    let add = if word != "remove" {
         let mut values = Vec::new();
         for item in assigns.map(split_top).unwrap_or_default() {
             if item.trim().is_empty() {
@@ -342,6 +376,12 @@ fn read_rule(text: &str, word: &str, rest: &str, line: usize) -> Result<RuleLine
             let Some((n, e)) = item.split_once('=') else {
                 return Err(bad(usage.into()));
             };
+            // A transfer by name (ADR 0079 point 4), for split and merge.
+            if word != "add" && matches!(e.trim(), "mean" | "copy") {
+                let col = column_of(text, e.trim());
+                values.push((n.trim().to_string(), Ast::Name(e.trim().into(), col), col));
+                continue;
+            }
             let (ast, col) = parse_at(e)?;
             values.push((n.trim().to_string(), ast, col));
         }
@@ -351,6 +391,7 @@ fn read_rule(text: &str, word: &str, rest: &str, line: usize) -> Result<RuleLine
     };
     Ok(RuleLine {
         line,
+        kind,
         table,
         add,
         cond,
@@ -549,6 +590,7 @@ fn read_grid(text: &str, rest: &str, line: usize) -> Result<(Axis, Option<String
                         hi: Ast::Num(cells as f64 - 0.5),
                         cells,
                         table: None,
+                        ends_of: None,
                     },
                     None,
                 ))
@@ -599,6 +641,7 @@ fn read_grid(text: &str, rest: &str, line: usize) -> Result<(Axis, Option<String
             hi: end(hi)?,
             cells,
             table: None,
+            ends_of: None,
         },
         unit,
     ))
@@ -923,6 +966,25 @@ fn axes_of(
             };
             Ok(if name == "id" { vec![i] } else { Vec::new() })
         }
+        "from_end" | "to_end" => {
+            // T at each edge's end (ADR 0079 stage 2): over the edges.
+            let usage = format!("a quantity over a table and its edges, e.g. {name}(x, segs)");
+            count(args.len() == 2, &usage)?;
+            let a = of(&args[0])?;
+            let e = axis_named(&args[1]).filter(|&e| grid[e].ends_of.is_some());
+            match (e, &a[..]) {
+                (Some(e), [m]) if grid[e].ends_of == Some(*m) => Ok(vec![e]),
+                (Some(e), _) => Err((
+                    col,
+                    format!(
+                        "'{name}' takes a quantity over {}, whose rows {} joins",
+                        grid[grid[e].ends_of.expect("edges")].name,
+                        grid[e].name
+                    ),
+                )),
+                (None, _) => Err((col, format!("'{name}' takes an edge table second: {usage}"))),
+            }
+        }
         "of" => {
             // of(T, i): T's value in the row with id i, NaN if none.
             count(
@@ -1200,8 +1262,9 @@ fn lower(
     slot: &dyn Fn(&str) -> Option<usize>,
     stencil: &dyn Fn(&str, &[Ast]) -> Expr,
     ids: &[Option<usize>],
+    ends: &[Option<(usize, usize)>],
 ) -> std::result::Result<(Expr, Vec<usize>), simsandbox_expr::Error> {
-    let low = |a: &Ast| lower(a, grid, shapes, slot, stencil, ids);
+    let low = |a: &Ast| lower(a, grid, shapes, slot, stencil, ids, ends);
     Ok(match ast {
         Ast::Num(v) => (Expr::Num(*v), Vec::new()),
         Ast::Name(n, c) => match slot(n) {
@@ -1259,6 +1322,18 @@ fn lower(
                     Expr::Num(grid[axis_named(&args[0])].cells as f64),
                     Vec::new(),
                 ),
+                // T at each edge's end (ADR 0079 stage 2): T's cells at
+                // the places of the edges' `from` (or `to`) rows.
+                "from_end" | "to_end" => {
+                    let (t, _) = low(&args[0])?;
+                    let e = axis_named(&args[1]);
+                    let (from, to) = ends[e].expect("checked: an edge table");
+                    let places = if name == "from_end" { from } else { to };
+                    (
+                        Expr::Array(ArrayOp::Take, vec![t, Expr::Var(places)]),
+                        vec![e],
+                    )
+                }
                 "of" => {
                     // The cell whose id is i: at(T, k), k the first place
                     // where id(pts) is i, NaN if none.
@@ -1420,14 +1495,22 @@ impl EquationSet {
         let mut grid: Vec<Axis> = Vec::new();
         // Tables' starting rows (ADR 0079): `start pts = 5`.
         let mut starts: std::collections::HashMap<String, (usize, usize)> = Default::default();
+        // Edge tables starting as a chain (ADR 0079 stage 2): `start segs
+        // = chain`, an edge from each starting row to the next.
+        let mut chains: std::collections::HashMap<String, usize> = Default::default();
         for (k, text) in lines.iter().enumerate() {
             let Some(rest) = keyword(text.trim(), "start") else {
                 continue;
             };
-            let usage = "write a table's starting rows as 'start pts = 5'";
+            let usage =
+                "write a table's starting rows as 'start pts = 5' (edges: 'start segs = chain')";
             let Some((t, n)) = rest.split_once('=') else {
                 return Err(definition_error(k + 1, 1, usage));
             };
+            if n.trim() == "chain" {
+                chains.insert(t.trim().to_string(), k + 1);
+                continue;
+            }
             let Ok(n) = n.trim().parse::<usize>() else {
                 return Err(definition_error(k + 1, 1, usage));
             };
@@ -1453,6 +1536,60 @@ impl EquationSet {
                         hi: Ast::Num(cells as f64 - 0.5),
                         cells,
                         table: Some(max),
+                        ends_of: None,
+                    },
+                    None,
+                )
+            } else if let Some(rest) = keyword(text.trim(), "edges") {
+                // `edges segs of pts [max 200]` (ADR 0079 stage 2).
+                let usage =
+                    "write an edge table as 'edges segs of pts' or 'edges segs of pts max 200'";
+                let words: Vec<&str> = rest.split_whitespace().collect();
+                let (e, m, max) = match words[..] {
+                    [e, "of", m] => (e, m, DEFAULT_MAX_ROWS),
+                    [e, "of", m, "max", n] => match n.parse::<usize>() {
+                        Ok(x) if x >= 1 => (e, m, x),
+                        _ => return Err(definition_error(k + 1, 1, usage)),
+                    },
+                    _ => return Err(definition_error(k + 1, 1, usage)),
+                };
+                let (t, _) = read_table(e, k + 1)?;
+                let Some(m) = grid
+                    .iter()
+                    .position(|g| g.name == m && g.table.is_some() && g.ends_of.is_none())
+                else {
+                    return Err(definition_error(
+                        k + 1,
+                        1,
+                        format!(
+                            "'{m}' is not a table declared above: edges join the rows of one ('table {m}' first)"
+                        ),
+                    ));
+                };
+                if let Some(&(_, line)) = starts.get(&t) {
+                    return Err(definition_error(
+                        line,
+                        1,
+                        format!("edges start as a chain of their table's starting rows: 'start {t} = chain'"),
+                    ));
+                }
+                let start = match chains.get(&t) {
+                    Some(_) => starts
+                        .get(&grid[m].name)
+                        .map_or(0, |s| s.0)
+                        .saturating_sub(1),
+                    None => 0,
+                };
+                let cells = rows.get(&t).copied().unwrap_or(start);
+                (
+                    Axis {
+                        name: t,
+                        line: k + 1,
+                        lo: Ast::Num(-0.5),
+                        hi: Ast::Num(cells as f64 - 0.5),
+                        cells,
+                        table: Some(max),
+                        ends_of: Some(m),
                     },
                     None,
                 )
@@ -1481,6 +1618,16 @@ impl EquationSet {
             grid.push(a);
         }
         let axes: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
+        if let Some((t, line)) = chains
+            .iter()
+            .find(|(t, _)| !grid.iter().any(|a| &a.name == *t && a.ends_of.is_some()))
+        {
+            return Err(definition_error(
+                *line,
+                1,
+                format!("'{t}' is not an edge table: a chain joins the rows of one ('edges {t} of pts')"),
+            ));
+        }
         if let Some((t, (_, line))) = starts
             .iter()
             .find(|(t, _)| !grid.iter().any(|a| &a.name == *t && a.table.is_some()))
@@ -1520,14 +1667,14 @@ impl EquationSet {
             let trimmed = text.trim();
             if trimmed.is_empty()
                 || trimmed.starts_with('#')
-                || ["grid", "table", "start"]
+                || ["grid", "table", "edges", "start"]
                     .iter()
                     .any(|w| keyword(trimmed, w).is_some())
             {
                 continue;
             }
             // Rules that change a table between steps (ADR 0079).
-            if let Some(word) = ["remove", "add"]
+            if let Some(word) = ["remove", "add", "split", "merge"]
                 .into_iter()
                 .find(|w| keyword(trimmed, w).is_some())
             {
@@ -1895,30 +2042,27 @@ impl EquationSet {
         };
         // A table some input is over follows that input's rows (ADR 0079
         // stage 1b): its rows come from upstream, by id, not from rules.
+        // A table keeps its own rows when it has a start, rules (its own,
+        // or split and merge on its edges) or edges; an input over such a
+        // table is matched to its rows by id. A table with none of these
+        // that some input is over follows that input's rows (ADR 0079
+        // stages 1b and 2).
+        let owns = |a: usize| {
+            let name = &grid[a].name;
+            starts.contains_key(name)
+                || rule_lines.iter().any(|r| &r.table == name)
+                || grid.iter().any(|g| g.ends_of == Some(a))
+        };
         let followed: Vec<bool> = (0..grid.len())
             .map(|a| {
                 is_table(a)
+                    && grid[a].ends_of.is_none()
+                    && !owns(a)
                     && inputs
                         .iter()
                         .any(|i| shapes.get(i).is_some_and(|d| d.contains(&a)))
             })
             .collect();
-        for (a, t) in grid.iter().enumerate().filter(|(a, _)| followed[*a]) {
-            let input = inputs
-                .iter()
-                .find(|i| shapes.get(*i).is_some_and(|d| d.contains(&a)))
-                .expect("followed");
-            let why = format!(
-                "{} follows the rows of the input {input}, so its rows cannot also come from",
-                t.name
-            );
-            if let Some(&(_, line)) = starts.get(&t.name) {
-                return Err(definition_error(line, 1, format!("{why} 'start'")));
-            }
-            if let Some(r) = rule_lines.iter().find(|r| r.table == t.name) {
-                return Err(definition_error(r.line, 1, format!("{why} rules")));
-            }
-        }
         if let Some((_, t)) = grid
             .iter()
             .enumerate()
@@ -1939,7 +2083,17 @@ impl EquationSet {
             if axes.contains(&n.as_str()) || !dims.iter().any(|&a| is_table(a)) {
                 continue;
             }
-            let why = if dims.len() > 1 {
+            let on_edges = dims.iter().find(|&&a| grid[a].ends_of.is_some());
+            let why = if let (Some(&e), true) = (
+                on_edges,
+                states.iter().chain(&inputs).any(|s| s == n)
+                    || array_params.iter().any(|a| &a.0 == n),
+            ) {
+                format!(
+                    "edges hold no values of their own yet (ADR 0079 stage 2): define {n} from their ends, e.g. '{n} = to_end(x, {e}) - from_end(x, {e})'",
+                    e = grid[e].name
+                )
+            } else if dims.len() > 1 {
                 format!("{n} is over a table's rows and other axes: a quantity over rows has only them (for now)")
             } else if array_params.iter().any(|a| &a.0 == n) {
                 format!("a parameter has a value per cell, not per row: a value per row is a state, 'state {n}[{}]'", axes[dims[0]])
@@ -2160,6 +2314,71 @@ impl EquationSet {
                 }
                 Ok(())
             };
+            // Split and merge act on an edge table's edges, making and
+            // filling rows of the table it joins (ADR 0079 stage 2).
+            if matches!(r.kind, RuleKind::Split | RuleKind::Merge) {
+                let e = t;
+                let Some(m) = grid[e].ends_of else {
+                    return Err(bad(
+                        1,
+                        format!(
+                            "'{}' is not an edge table: split and merge act on edges ('edges {} of pts')",
+                            r.table, r.table
+                        ),
+                    ));
+                };
+                within(&r.cond, r.cond_column, &[e], "the condition")?;
+                let given = r.add.as_ref().map(|a| a.1.clone()).unwrap_or_default();
+                let columns: Vec<&String> =
+                    states.iter().filter(|s| row_table(s) == Some(m)).collect();
+                if let Some((n, _, c)) = given.iter().find(|g| !columns.contains(&&g.0)) {
+                    return Err(bad(*c, format!("'{n}' is not a state over {}", axes[m])));
+                }
+                // Transfers: `copy` (the edge's `from` row's value) or
+                // `mean` (of its two rows'); copy on split, mean on merge
+                // unless given (ADR 0079 point 4).
+                let end = |f: &str, col: &str| {
+                    Ast::Apply(
+                        f.into(),
+                        vec![Ast::Name(col.into(), 1), Ast::Name(r.table.clone(), 1)],
+                        1,
+                    )
+                };
+                let mut values = Vec::new();
+                for col in columns {
+                    let (ast, c) = match given.iter().find(|g| &g.0 == col) {
+                        Some((_, ast, c)) => (ast.clone(), *c),
+                        None if r.kind == RuleKind::Split => (Ast::Name("copy".into(), 1), 1),
+                        None => (Ast::Name("mean".into(), 1), 1),
+                    };
+                    let ast = match &ast {
+                        Ast::Name(n, _) if n == "copy" => end("from_end", col),
+                        Ast::Name(n, _) if n == "mean" => Ast::Bin(
+                            Op::Div,
+                            Box::new(Ast::Bin(
+                                Op::Add,
+                                Box::new(end("from_end", col)),
+                                Box::new(end("to_end", col)),
+                            )),
+                            Box::new(Ast::Num(2.0)),
+                        ),
+                        _ => ast,
+                    };
+                    within(&ast, c, &[e], &format!("{col}'s value"))?;
+                    values.push((col.clone(), ast, r.line, c));
+                }
+                rules.push((m, Some(e), r, values));
+                continue;
+            }
+            if r.kind == RuleKind::Add && grid[t].ends_of.is_some() {
+                return Err(bad(
+                    1,
+                    format!(
+                        "edges are made by 'start {} = chain' and by split, not added",
+                        r.table
+                    ),
+                ));
+            }
             match &r.add {
                 None => {
                     within(&r.cond, r.cond_column, &[t], "the condition")?;
@@ -2456,6 +2675,12 @@ impl EquationSet {
             .iter()
             .map(|a| a.table.map(|_| add(a.cells, 1.0)))
             .collect();
+        // Each edge table's ends, as places among its table's rows (ADR
+        // 0079 stage 2), given after the ids.
+        let ends_vars: Vec<Option<(usize, usize)>> = grid
+            .iter()
+            .map(|a| a.ends_of.map(|_| (add(a.cells, 1.0), add(a.cells, 1.0))))
+            .collect();
         let param_vars: Vec<usize> = params.iter().map(|n| add(1, unit_of(n).scale)).collect();
         let axis_scales: Vec<f64> = grid.iter().map(|a| unit_of(&a.name).scale).collect();
         // The outputs: defined quantities, then each axis's position of
@@ -2546,7 +2771,9 @@ impl EquationSet {
             inputs: input_vars
                 .iter()
                 .chain(ids_vars.iter().flatten())
-                .map(|&v| spans[v].len)
+                .copied()
+                .chain(ends_vars.iter().flatten().flat_map(|&(f, t)| [f, t]))
+                .map(|v| spans[v].len)
                 .sum(),
             params: params.len(),
             outputs_at: out_vars.first().map_or(0, |&v| spans[v].at),
@@ -2650,6 +2877,7 @@ impl EquationSet {
                 &|n| slot_of(n, visible),
                 &stencil,
                 &ids_vars,
+                &ends_vars,
             )
             .map_err(|e| {
                 let hint = if defined
@@ -2770,9 +2998,10 @@ impl EquationSet {
         let rule_runs: Vec<RuleRun> = rules
             .iter()
             .zip(&rule_vars)
-            .map(|((t, _, r, _), (cond, values))| RuleRun {
+            .map(|((t, src, r, _), (cond, values))| RuleRun {
                 table: *t,
-                remove: r.add.is_none(),
+                kind: r.kind,
+                edges: src.filter(|_| matches!(r.kind, RuleKind::Split | RuleKind::Merge)),
                 cond: spans[*cond],
                 values: values.iter().map(|&v| spans[v]).collect(),
             })
@@ -2786,7 +3015,15 @@ impl EquationSet {
                     axis: i,
                     name: a.name.clone(),
                     max,
-                    start: starts.get(&a.name).map_or(0, |s| s.0),
+                    start: match a.ends_of {
+                        // A chain: an edge from each starting row to the next.
+                        Some(m) if chains.contains_key(&a.name) => starts
+                            .get(&grid[m].name)
+                            .map_or(0, |s| s.0)
+                            .saturating_sub(1),
+                        Some(_) => 0,
+                        None => starts.get(&a.name).map_or(0, |s| s.0),
+                    },
                     rows: a.cells,
                     columns: states
                         .iter()
@@ -2796,7 +3033,12 @@ impl EquationSet {
                     follows: inputs
                         .iter()
                         .filter(|n| row_table(n).is_some())
-                        .position(|n| row_table(n) == Some(i)),
+                        .position(|n| row_table(n) == Some(i))
+                        .filter(|_| followed[i]),
+                    ends_of: a
+                        .ends_of
+                        .map(|m| grid[..m].iter().filter(|g| g.table.is_some()).count()),
+                    chain: chains.contains_key(&a.name),
                 })
             })
             .collect();
@@ -3075,7 +3317,10 @@ impl EquationSet {
                 tables: tables
                     .iter()
                     .map(|t| {
-                        let cols: Vec<&str> = t.columns.iter().map(String::as_str).collect();
+                        let cols: Vec<&str> = match t.ends_of {
+                            Some(_) => vec!["from", "to"],
+                            None => t.columns.iter().map(String::as_str).collect(),
+                        };
                         simsandbox_core::table::TableSpec::new(&t.name, &cols)
                     })
                     .collect(),
@@ -3124,9 +3369,40 @@ impl EquationSet {
         &self.rules
     }
 
-    /// The inputs the block's ports give (before the tables' row ids).
+    /// The inputs the block's ports give (before the tables' row ids and
+    /// the edges' ends).
     pub fn inputs_len(&self) -> usize {
-        self.layout.inputs - self.tables.iter().map(|t| t.rows).sum::<usize>()
+        let ends: usize = self
+            .tables
+            .iter()
+            .filter(|t| t.ends_of.is_some())
+            .map(|t| 2 * t.rows)
+            .sum();
+        self.layout.inputs - self.tables.iter().map(|t| t.rows).sum::<usize>() - ends
+    }
+
+    /// Each edge table's ends as places among its table's rows (ADR 0079
+    /// stage 2), `from` then `to`: given after the ids. NaN for an end
+    /// not among the rows.
+    fn ends_places(&self, tables: &[simsandbox_core::table::Table]) -> Vec<f64> {
+        let mut u = Vec::new();
+        for (t, spec) in tables.iter().zip(&self.tables) {
+            let Some(m) = spec.ends_of else { continue };
+            let place: std::collections::HashMap<u64, usize> = tables[m]
+                .ids()
+                .iter()
+                .enumerate()
+                .map(|(k, &i)| (i, k))
+                .collect();
+            for c in 0..2 {
+                u.extend(
+                    t.column(c)
+                        .iter()
+                        .map(|&id| place.get(&(id as u64)).map_or(f64::NAN, |&k| k as f64)),
+                );
+            }
+        }
+        u
     }
 
     /// The same equations compiled for these numbers of rows, one per
@@ -3166,6 +3442,7 @@ impl EquationSet {
             for t in tables {
                 u.extend(t.ids().iter().map(|&i| i as f64));
             }
+            u.extend(self.ends_places(tables));
             return u;
         }
         let mut u = Vec::with_capacity(self.layout.inputs);
@@ -3188,6 +3465,7 @@ impl EquationSet {
         for t in tables {
             u.extend(t.ids().iter().map(|&i| i as f64));
         }
+        u.extend(self.ends_places(tables));
         u
     }
 
@@ -3388,6 +3666,88 @@ pub struct ExplicitBlock {
 /// Compiled sets kept per numbers of rows, at most.
 const KEPT_ROW_COUNTS: usize = 64;
 
+/// Two different tables, both to change.
+fn two_mut(
+    tables: &mut [simsandbox_core::table::Table],
+    a: usize,
+    b: usize,
+) -> (
+    &mut simsandbox_core::table::Table,
+    &mut simsandbox_core::table::Table,
+) {
+    assert_ne!(a, b, "two different tables");
+    if a < b {
+        let (lo, hi) = tables.split_at_mut(b);
+        (&mut lo[a], &mut hi[0])
+    } else {
+        let (lo, hi) = tables.split_at_mut(a);
+        (&mut hi[0], &mut lo[b])
+    }
+}
+
+/// Remove the edges of edge table `et` that end at a row no longer in
+/// table `tb` (ADR 0079: edges go with the rows they join).
+fn drop_dangling(tables: &mut [simsandbox_core::table::Table], tb: usize, et: usize) {
+    let (members, edges) = two_mut(tables, tb, et);
+    let ids: std::collections::HashSet<u64> = members.ids().iter().copied().collect();
+    let (from, to) = (edges.column(0).to_vec(), edges.column(1).to_vec());
+    edges.retain(|k| ids.contains(&(from[k] as u64)) && ids.contains(&(to[k] as u64)));
+}
+
+/// Merge (ADR 0079 stage 2): for each edge where `holds(k)`, in edge
+/// order, its two rows become one, unless either was merged already by
+/// this rule. The `from` row stays, with the values `values(k)`; the `to`
+/// row goes, its edges moved to the `from` row; the merged edge goes,
+/// and so do edges that would join a row to itself or repeat an earlier
+/// edge between the same two rows.
+fn merge(
+    members: &mut simsandbox_core::table::Table,
+    edges: &mut simsandbox_core::table::Table,
+    holds: impl Fn(usize) -> bool,
+    values: impl Fn(usize) -> Vec<f64>,
+) {
+    let (from, to) = (edges.column(0).to_vec(), edges.column(1).to_vec());
+    let mut used = std::collections::HashSet::new();
+    let mut into: std::collections::HashMap<u64, u64> = Default::default();
+    let mut merged = vec![false; from.len()];
+    for k in 0..from.len() {
+        let (a, b) = (from[k] as u64, to[k] as u64);
+        if !holds(k) || a == b || used.contains(&a) || used.contains(&b) {
+            continue;
+        }
+        used.insert(a);
+        used.insert(b);
+        merged[k] = true;
+        into.insert(b, a);
+        if let Some(r) = members.ids().iter().position(|&i| i == a) {
+            for (c, v) in values(k).into_iter().enumerate() {
+                members.column_mut(c)[r] = v;
+            }
+        }
+    }
+    if into.is_empty() {
+        return;
+    }
+    let ids: Vec<u64> = members.ids().to_vec();
+    members.retain(|r| !into.contains_key(&ids[r]));
+    let moved = |id: f64| into.get(&(id as u64)).map_or(id, |&a| a as f64);
+    let (new_from, new_to): (Vec<f64>, Vec<f64>) = from
+        .iter()
+        .zip(&to)
+        .map(|(&f, &t)| (moved(f), moved(t)))
+        .unzip();
+    let mut seen = std::collections::HashSet::new();
+    let keep: Vec<bool> = (0..from.len())
+        .map(|k| {
+            let (f, t) = (new_from[k] as u64, new_to[k] as u64);
+            !merged[k] && f != t && seen.insert((f.min(t), f.max(t)))
+        })
+        .collect();
+    edges.column_mut(0).copy_from_slice(&new_from);
+    edges.column_mut(1).copy_from_slice(&new_to);
+    edges.retain(|k| keep[k]);
+}
+
 /// A frame's values for the rows `ids`, found by id: not a number for a
 /// row the frame lacks, or with no frame.
 fn by_id(frame: Option<&RowsFrame>, ids: &[u64]) -> Vec<f64> {
@@ -3528,6 +3888,7 @@ impl ExplicitBlock {
                 false => u.extend(t.ids().iter().map(|&i| i as f64)),
             }
         }
+        u.extend(set.ends_places(tables));
         let mut x0 = vec![0.0; set.states_len()];
         set.initial_state_with(params, &u, &mut x0);
         let mut columns = vec![Vec::new(); set.tables[tb].columns.len()];
@@ -3579,21 +3940,64 @@ impl ExplicitBlock {
                 .expect("a table of the block");
             let holds = |c: f64| c != 0.0 && !c.is_nan();
             let cond = &v[rule.cond.at..rule.cond.at + rule.cond.len];
-            let table = &mut io.tables[tb];
-            if rule.remove {
-                table.retain(|k| !holds(cond[k]));
-            } else {
-                let max = set.tables()[tb].max;
-                for (k, _) in cond.iter().enumerate().filter(|(_, &c)| holds(c)) {
-                    if table.len() >= max {
-                        break;
+            let row_at = |k: usize| -> Vec<f64> {
+                rule.values
+                    .iter()
+                    .map(|s| v[s.at + if s.len > 1 { k } else { 0 }])
+                    .collect()
+            };
+            let edges = rule.edges.map(|e| {
+                set.tables()
+                    .iter()
+                    .position(|tr| tr.axis == e)
+                    .expect("an edge table of the block")
+            });
+            let max = set.tables()[tb].max;
+            match rule.kind {
+                RuleKind::Remove => {
+                    io.tables[tb].retain(|k| !holds(cond[k]));
+                    // Edges go with the rows they join.
+                    for (et, spec) in set.tables().iter().enumerate() {
+                        if spec.ends_of == Some(tb) {
+                            drop_dangling(io.tables, tb, et);
+                        }
                     }
-                    let row: Vec<f64> = rule
-                        .values
-                        .iter()
-                        .map(|s| v[s.at + if s.len > 1 { k } else { 0 }])
-                        .collect();
-                    table.push(&row);
+                }
+                RuleKind::Add => {
+                    let table = &mut io.tables[tb];
+                    for (k, _) in cond.iter().enumerate().filter(|(_, &c)| holds(c)) {
+                        if table.len() >= max {
+                            break;
+                        }
+                        table.push(&row_at(k));
+                    }
+                }
+                RuleKind::Split => {
+                    let et = edges.expect("split acts on edges");
+                    let emax = set.tables()[et].max;
+                    let (members, edges) = two_mut(io.tables, tb, et);
+                    for (k, _) in cond.iter().enumerate().filter(|(_, &c)| holds(c)) {
+                        if members.len() >= max || edges.len() >= emax {
+                            break;
+                        }
+                        // A new row in the middle: the edge a→b becomes
+                        // a→m, and b's side a new edge m→b.
+                        let m = members.push(&row_at(k)) as f64;
+                        let b = edges.column(1)[k];
+                        edges.column_mut(1)[k] = m;
+                        edges.push(&[m, b]);
+                    }
+                }
+                RuleKind::Merge => {
+                    let et = edges.expect("merge acts on edges");
+                    let (members, edges) = two_mut(io.tables, tb, et);
+                    merge(members, edges, |k| holds(cond[k]), row_at);
+                    // Other edges of those rows go with the rows merged away.
+                    for (other, spec) in set.tables().iter().enumerate() {
+                        if other != et && spec.ends_of == Some(tb) {
+                            drop_dangling(io.tables, tb, other);
+                        }
+                    }
                 }
             }
         }
@@ -3607,6 +4011,11 @@ impl ExplicitBlock {
         let mut u = vec![0.0; set.inputs_len()];
         for t in &set.tables {
             u.extend((0..t.start).map(|i| i as f64));
+        }
+        // A chain's ends: row k to row k + 1, by place as by id.
+        for t in set.tables.iter().filter(|t| t.ends_of.is_some()) {
+            u.extend((0..t.start).map(|k| k as f64));
+            u.extend((0..t.start).map(|k| (k + 1) as f64));
         }
         let mut x0 = vec![0.0; set.states_len()];
         set.initial_state_with(params, &u, &mut x0);
@@ -3668,6 +4077,12 @@ impl Block for ExplicitBlock {
         }
         for ((table, t), cols) in tables.iter_mut().zip(&self.set.tables).zip(&columns) {
             table.reset();
+            if t.ends_of.is_some() {
+                for k in 0..t.start {
+                    table.push(&[k as f64, (k + 1) as f64]);
+                }
+                continue;
+            }
             for r in 0..t.start {
                 let row: Vec<f64> = cols.iter().map(|c| c[r]).collect();
                 table.push(&row);

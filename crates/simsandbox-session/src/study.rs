@@ -1039,6 +1039,90 @@ mod tests {
         assert!(e.contains("runs once"), "{e}");
     }
 
+    /// Refinement of a study over one parameter (ADR 0078 point 3, ADR
+    /// 0079 stage 2): a strategy keeps the points as a table with edges
+    /// between neighbours, a study runs one point per row, and each round
+    /// splits the intervals whose results jump, until they are shorter
+    /// than a tolerance. Only new points run.
+    #[test]
+    fn refinement_brackets_a_threshold_running_only_new_points() {
+        let r = registry();
+        let m = json!({"format": 1, "run": {"dt": 1, "t_end": 10},
+            "models": {"decay": decay()},
+            "blocks": [
+                {"name": "rate", "type": "input.value", "params": {"y": 1.0}},
+                {"name": "refine", "type": "eq.equations", "equations": [
+                    "table pts max 100",
+                    "start pts = 5",
+                    "state x0[pts] = id(pts)",
+                    "x0[n+1] = x0",
+                    "input reached[pts]",
+                    "param tol = 0.01",
+                    "edges segs of pts",
+                    "start segs = chain",
+                    "len = to_end(x0, segs) - from_end(x0, segs)",
+                    "jump = abs(to_end(reached, segs) - from_end(reached, segs))",
+                    "split segs where (jump > 0.5)*(len > tol): x0 = mean",
+                    "count = rows(pts)"]},
+                {"name": "runs", "type": "study", "model": "decay",
+                 "sample": {"design": "rows", "params": [{"param": "x.x0"}],
+                            "reduce": {"reached": "final(x.x) > 0.1"}}}],
+            "connections": [
+                {"from": "refine.x0", "to": "runs.x_x0"},
+                {"from": "rate.y", "to": "runs.k"},
+                {"from": "runs.reached", "to": "refine.reached"}]});
+        super::RUNS_MADE.with(|c| c.set(0));
+        let y = run(&m.to_string(), &r, None, None).unwrap();
+        // x(3) = x0 e^-3 passes 0.1 at x0 = 0.1 e^3. Halving [2, 3] seven
+        // times gives an interval of 1/128 around it: 7 new points.
+        let threshold = 0.1 * 3f64.exp();
+        let count = value(&y, "refine.count");
+        assert_eq!(*count.last().unwrap(), 12.0, "{count:?}");
+        assert_eq!(super::RUNS_MADE.with(std::cell::Cell::get), 12);
+        let rows = |n: &str| y.populations.iter().find(|p| p.name == n).unwrap();
+        let last = count.len() - 1;
+        let (_, _, jumps) = rows("refine.jump").rows_at(last).unwrap();
+        let (_, _, lens) = rows("refine.len").rows_at(last).unwrap();
+        let (_, ids, xs) = rows("refine.x0").rows_at(last).unwrap();
+        let (_, rids, reached) = rows("runs.reached").rows_at(last).unwrap();
+        assert_eq!(ids, rids);
+        // One interval jumps, shorter than the tolerance, around the
+        // threshold; every point's result is on the right side of it.
+        let across: Vec<usize> = (0..jumps.len()).filter(|&k| jumps[k] > 0.5).collect();
+        assert_eq!(across.len(), 1);
+        assert!(lens[across[0]] <= 0.01);
+        for (&x, &got) in xs.iter().zip(reached) {
+            assert_eq!(got, f64::from(u8::from(x > threshold)), "x0 {x}");
+        }
+        let below = xs
+            .iter()
+            .copied()
+            .filter(|&x| x < threshold)
+            .fold(f64::MIN, f64::max);
+        let above = xs
+            .iter()
+            .copied()
+            .filter(|&x| x > threshold)
+            .fold(f64::MAX, f64::min);
+        assert_eq!(above - below, 1.0 / 128.0);
+        // In the app it iterates and holds still once nothing splits.
+        let mut s = crate::session::Session::load("m", &m.to_string(), &r).unwrap();
+        assert!(s.iterates());
+        s.evaluate_later();
+        let mut rounds = 0;
+        while s.rounds_pending() {
+            s.step().unwrap();
+            rounds += 1;
+            assert!(rounds <= 10);
+        }
+        assert!(s.held_still(), "{rounds}");
+        let h = s.signals();
+        assert_eq!(
+            *h.values(h.resolve("refine.count").unwrap()).last().unwrap(),
+            12.0
+        );
+    }
+
     /// The pattern-search strategy (ADR 0078) as a model: a map wired to a
     /// study whose points come from its inputs finds a bowl's minimum, and
     /// once its step is below the tolerance nothing runs again.

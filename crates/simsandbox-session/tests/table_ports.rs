@@ -100,24 +100,42 @@ fn rows_ports_are_described_and_checked() {
     m["blocks"][2]["equations"] = json!(["input doubled", "total = doubled"]);
     let e = check(m).to_string();
     assert!(e.contains("rows"), "{e}");
-    // A followed table's rows come from its input only.
-    let mut m = model();
-    m["blocks"][1]["equations"][0] = json!("table q max 20");
-    m["blocks"][1]["equations"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!("start q = 2"));
-    assert!(check(m)
-        .to_string()
-        .contains("follows the rows of the input size"));
-    let mut m = model();
-    m["blocks"][1]["equations"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!("remove q where seen > 3"));
-    assert!(check(m)
-        .to_string()
-        .contains("follows the rows of the input size"));
+    // A table with its own start (or rules) keeps its rows: an input over
+    // it is matched to them by id, NaN for a row the input lacks.
+    let m = json!({"format": 1, "run": {"dt": 1, "t_end": 30},
+        "blocks": [
+            model()["blocks"][0].clone(),
+            {"name": "own", "type": "eq.equations", "equations": [
+                "table q", "start q = 4", "input size[q]",
+                "state seen[q] = 0", "seen[n+1] = seen + size",
+                "total = sum(size)", "count = rows(q)", "of_two = of(size, 2)"]}],
+        "connections": [{"from": "pop.size", "to": "own.size"}]});
+    let y = run(&m.to_string(), &r, None, None).unwrap();
+    let pop = y.populations.iter().find(|p| p.name == "pop.size").unwrap();
+    assert!(column(&y, "own.count").iter().all(|&c| c == 4.0));
+    let totals = column(&y, "own.total");
+    for (k, &t) in totals.iter().enumerate() {
+        let (_, ids, sizes) = pop.rows_at(k).unwrap();
+        let by_id = |i: f64| {
+            ids.iter()
+                .position(|&j| j == i)
+                .map_or(f64::NAN, |r| sizes[r])
+        };
+        let want: f64 = (0..4).map(|i| by_id(i as f64)).sum();
+        assert!(
+            t == want || (t.is_nan() && want.is_nan()),
+            "round {k}: {t} vs {want}"
+        );
+    }
+    let bits = |v: Vec<f64>| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(
+        bits(column(&y, "own.of_two")),
+        bits(column(&y, "pop.of_two"))
+    );
+    assert!(
+        totals.iter().any(|t| t.is_nan()),
+        "row 3 is never there: NaN"
+    );
 }
 
 #[test]

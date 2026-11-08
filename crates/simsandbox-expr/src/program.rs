@@ -129,6 +129,7 @@ fn longest(e: &Expr, vars: &[Span]) -> usize {
             ArrayOp::Along {
                 rank, dims, axis, ..
             } => (0..*rank).filter(|k| k != axis).map(|k| dims[k]).product(),
+            ArrayOp::Take => args.get(1).map_or(1, |a| longest(a, vars)),
             _ => args.first().map_or(1, |a| longest(a, vars)),
         },
     };
@@ -256,6 +257,15 @@ enum ArrIns {
         a: usize,
         n: usize,
         i: usize,
+    },
+    /// `r[d + k]` = cell `r[i + k]` (rounded) of the `n` cells at `a`, NaN
+    /// outside, for each of the `m` places at `i`.
+    Take {
+        d: usize,
+        a: usize,
+        n: usize,
+        i: usize,
+        m: usize,
     },
     /// [`ArrayOp::Gather`] from the array at `a` (`n` cells written).
     Gather {
@@ -638,6 +648,21 @@ impl ArrIns {
                     f64::NAN
                 };
             }
+            ArrIns::Take { d, a, n, i, m } => {
+                // Read every place first: the result may share registers
+                // with them.
+                let picked: Vec<f64> = (0..m)
+                    .map(|k| {
+                        let p = r[i + k].round();
+                        if p >= 0.0 && p < n as f64 {
+                            r[a + p as usize]
+                        } else {
+                            f64::NAN
+                        }
+                    })
+                    .collect();
+                r[d..d + m].copy_from_slice(&picked);
+            }
         }
     }
 }
@@ -739,6 +764,7 @@ impl ArrIns {
             }
             ArrIns::Reduce { d, a, n, .. } => vec![(d, 1), (a, n)],
             ArrIns::Pick { d, a, n, i } => vec![(d, 1), (a, n), (i, 1)],
+            ArrIns::Take { d, a, n, i, m } => vec![(d, m), (a, n), (i, m)],
             ArrIns::Gather {
                 d,
                 a,
@@ -1118,6 +1144,18 @@ impl ArrIns {
                 all.push(&deps[i]);
                 deps[d] = union(&all);
             }
+            ArrIns::Take { d, a, n, i, m } => {
+                let cells: Vec<Vec<usize>> = (0..m)
+                    .map(|k| {
+                        let mut all: Vec<&Vec<usize>> = deps[a..a + n].iter().collect();
+                        all.push(&deps[i + k]);
+                        union(&all)
+                    })
+                    .collect();
+                for (k, c) in cells.into_iter().enumerate() {
+                    deps[d + k] = c;
+                }
+            }
             ArrIns::Gather {
                 d,
                 a,
@@ -1252,6 +1290,7 @@ impl Builder<'_> {
                 }
                 ArrayOp::Gather { rank, ref dims, .. } => dims[..*rank].iter().product(),
                 ArrayOp::Solve { n, .. } => *n,
+                ArrayOp::Take => self.len(&args[1]),
                 ArrayOp::Along {
                     rank,
                     ref dims,
@@ -1444,6 +1483,17 @@ impl Builder<'_> {
                             };
                             self.array(ArrIns::Copy { d, a, n });
                         }
+                    }
+                    ArrayOp::Take => {
+                        let m = self.len(&args[1]);
+                        self.array(ArrIns::Take {
+                            d,
+                            a: one(0),
+                            n: len,
+                            i: one(1),
+                            m,
+                        });
+                        self.spread(d, m, n);
                     }
                     ArrayOp::Gather {
                         rank,

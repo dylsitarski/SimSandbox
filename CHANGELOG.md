@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- An input over a table that has its own `start`, rules or edges is now matched to its rows by id (NaN for a row the input lacks), instead of being refused; only a table with none of these follows its input's rows.
 - A recorded-data block, `at_times` and `at_samples` count a step whose time is within rounding of a sample's as at it. Before, steps summed from `dt` could fall a hair short (2.4999999999998 for 2500 steps of 0.001) and take the sample a step late. In models with data, a sample can now take effect one step earlier than before, so their results can change slightly (not only in the last digits); they stay exact within this version on any machine. Run files made earlier replay with that difference, and say so (below).
 - Run files and `run --format json` output record the SimSandbox that made them (`"made_with": "simsandbox 0.0.1"`). Replaying a run made by another version, or before this was recorded, warns that results can differ where the changelog says.
 
@@ -60,6 +61,9 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Subsystems are replaced by models defined in the file (ADR 0068): `subsystems` is refused with how to write it under `models`; "Make subsystem" is "Make model"; a model's inputs are input blocks and its outputs are offered from a block's menu ("Offer X as an output"); `render --diagram --inside PATH` (and Python `render(inside=)`) draws a used model's inside; Python `Model.group` makes a model. The Platoon example defines its follower once. Problems inside a used model are reported where they are written (`models.follower.blocks[0].equations`). "Edit…" on a block inside a used model opens its equations.
 
 ### Added
+
+- Edge tables in typed equations (ADR 0079 stage 2): `edges segs of pts` joins rows of a table, `start segs = chain` joins each starting row to the next, `from_end(x, segs)` and `to_end(x, segs)` read a quantity at each edge's ends, and the rules `split segs where …` (a new row in the middle of each edge) and `merge segs where …` (an edge's two rows into one) change them between steps, each column filled by `copy`, `mean` or an expression. Removing a row removes its edges.
+- With them, refinement of a study over one parameter: a model that splits the intervals where a study's results jump, the study running only the new points.
 
 - Studies over a table's rows (ADR 0079 stage 1d): a study with `"design": "rows"` runs one point per row arriving through its inputs, and gives each result as rows with the same ids. Each row's results are kept by id, so only new or changed rows run again. The app's study form offers it as "a point per row of a table".
 

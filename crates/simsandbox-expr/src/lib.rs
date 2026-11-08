@@ -194,7 +194,7 @@ pub fn is_reserved(name: &str) -> bool {
 /// ([`Ast::resolve_with`]).
 pub const ARRAY_OPS: &[&str] = &[
     "lap", "sum", "mean", "minof", "maxof", "argminof", "argmaxof", "at", "spacing", "prev",
-    "next", "on", "solve", "rcond", "id", "rows", "of", "dd",
+    "next", "on", "solve", "rcond", "id", "rows", "of", "dd", "from_end", "to_end",
 ];
 
 /// The most axes an array or an intermediate value has (ADR 0080).
@@ -294,6 +294,11 @@ pub enum ArrayOp {
     /// One element by a computed cell number (the second argument, in
     /// storage order, rounded); NaN outside the array (ADR 0070).
     Cell,
+    /// [`ArrayOp::Cell`] for each of the second argument's cells: an array
+    /// as long as the places, each the first argument's cell at that place
+    /// (rounded), NaN outside (ADR 0079 stage 2: a value at each edge's
+    /// end).
+    Take,
     /// An array over `rank` axes of `dims` cells (the first fastest), each
     /// cell read from the argument at the sum of its place along each axis
     /// times `strides` (0: the argument does not run along that axis). It
