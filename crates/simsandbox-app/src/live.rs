@@ -135,6 +135,9 @@ pub struct Status {
     pub round: u64,
     pub iterating: bool,
     pub held_still: bool,
+    /// What the recordings hold against the memory budget (ADR 0062
+    /// step 5).
+    pub memory: Option<simsandbox_session::session::MemoryUse>,
 }
 
 /// Something for the log.
@@ -387,6 +390,7 @@ fn status(s: &Session, running: bool, achieved: f64, limited: bool) -> Status {
         round: s.round(),
         iterating: s.rounds_pending(),
         held_still: s.held_still(),
+        memory: Some(s.memory_use()),
     }
 }
 

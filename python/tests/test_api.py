@@ -191,6 +191,20 @@ def test_strategy_helpers_write_models_that_search():
         ss.Model().minimize(None, {}, "final(x)")
 
 
+def test_probes_keep_their_share_of_the_memory_budget():
+    # ADR 0062 step 5: a quarter of the budget each, unless set.
+    m = ss.Model()
+    m.add_block("m", "eq.equations", "rk4",
+                equations=["grid x = 0 .. 1, 50", "state T[x] = x", "dT/dt = 0.01*lap(T)"])
+    m.set_run(dt=0.001, t_end=1.0)
+    m.add_probe("rod", ["m.T"])
+    full = m.run_probes()
+    assert len(full["rod"]) == 1001 and full.memory["budget"] == 1024 * 10**6
+    small = m.run_probes(memory=0.4)
+    assert 125 <= len(small["rod"]) <= 250
+    assert dict(small.memory["parts"])["probe rod"] >= 8 * 50 * len(small["rod"])
+
+
 def test_problems_are_reported_where_they_are():
     m = ss.Model().add_block("a", "eq.lorenz", "leapfrog")
     report = m.check()

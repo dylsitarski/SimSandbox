@@ -74,6 +74,9 @@ pub struct SimApp {
     session: Option<Live>,
     /// Requested speed, sent to the worker when changed.
     speed: f64,
+    /// The memory budget in MB (ADR 0062 step 5), an app setting kept
+    /// between launches.
+    memory_mb: f64,
     error: Option<String>,
     /// Success messages, e.g. "Saved to …".
     /// Notices, warnings and errors, shown in the status tile.
@@ -132,6 +135,23 @@ pub struct SimApp {
 
 impl SimApp {
     /// The app shared between the main window and popped-out ones.
+    /// The memory budget in MB (ADR 0062 step 5), kept between launches.
+    pub fn memory_budget(&self) -> f64 {
+        self.memory_mb
+    }
+
+    /// Set the memory budget in MB (ADR 0062 step 5), for the model
+    /// running and those opened later.
+    pub fn set_memory_budget(&mut self, mb: f64) {
+        if !(mb.is_finite() && mb > 0.0) || mb == self.memory_mb {
+            return;
+        }
+        self.memory_mb = mb;
+        if let Some(live) = &self.session {
+            live.send(Some("memory"), move |s, _| s.set_memory_budget(mb));
+        }
+    }
+
     pub fn shared(self) -> std::sync::Arc<std::sync::Mutex<SimApp>> {
         std::sync::Arc::new_cyclic(|this| {
             let mut app = self;
@@ -158,6 +178,7 @@ impl SimApp {
             registry: registry(),
             session: None,
             speed: 1.0,
+            memory_mb: simsandbox_session::session::DEFAULT_MEMORY_MB,
             error: None,
             log: Log::default(),
             logged_error: None,
@@ -459,6 +480,7 @@ impl SimApp {
         match loaded {
             Ok(mut s) => {
                 self.speed = s.file.controls.speed.unwrap_or(1.0);
+                s.set_memory_budget(self.memory_mb);
                 // Tabs shown in their own windows stay there when the model
                 // is rebuilt (canvas edits).
                 let popped = if announce {
@@ -782,6 +804,25 @@ impl SimApp {
                         "running at {:.2}× of the requested {:.2}×",
                         st.achieved, self.speed
                     ),
+                );
+            }
+            // Past the memory budget (ADR 0062 step 5): say so, and what
+            // holds most.
+            if let Some(mem) = st.memory.as_ref().filter(|m| m.over()) {
+                let most = mem
+                    .largest()
+                    .map(|(part, bytes)| format!("; most: {part}, {}", megabytes(*bytes)))
+                    .unwrap_or_default();
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!(
+                        "recordings hold {} of a {} memory budget{most}",
+                        megabytes(mem.held),
+                        megabytes(mem.budget)
+                    ),
+                )
+                .on_hover_text(
+                    "Raise the budget under Memory…, or give the largest probe a keep of its own (last samples, or a size)",
                 );
             }
             let study = live.study_runs();
@@ -1509,6 +1550,46 @@ impl SimApp {
         {
             self.signals_editor = Some(SignalsEditor::new(&m));
         }
+        drop(history);
+        self.memory_menu(ui);
+    }
+
+    /// "Memory…" (ADR 0062 step 5): what the recordings hold, part by
+    /// part, against the memory budget, which is set here and kept
+    /// between launches. Snapshots (unless the recorder sets its own),
+    /// the history, and each probe and filter that keeps what it records
+    /// by default thin past a quarter of it.
+    fn memory_menu(&mut self, ui: &mut egui::Ui) {
+        let memory = self.session.as_ref().and_then(|l| l.status().memory);
+        let mut mb = self.memory_mb;
+        ui.menu_button("Memory…", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Memory budget");
+                ui.add(
+                    egui::DragValue::new(&mut mb)
+                        .range(16.0..=1_048_576.0)
+                        .speed(8.0)
+                        .suffix(" MB"),
+                )
+                .on_hover_text(
+                    "Shared by rewind's snapshots and what probes, the history and filters keep in memory; each takes a quarter by default and thins past it",
+                );
+            });
+            if let Some(m) = &memory {
+                ui.separator();
+                ui.label(format!(
+                    "Held now: {} of {}",
+                    megabytes(m.held),
+                    megabytes(m.budget)
+                ));
+                for (part, bytes) in m.parts.iter().filter(|p| p.1 > 0) {
+                    ui.weak(format!("{part}: {}", megabytes(*bytes)));
+                }
+            }
+        })
+        .response
+        .on_hover_text("The memory recordings may use, and what they hold");
+        self.set_memory_budget(mb);
     }
 
     /// Views as tiles in an automatic grid, each with its slot pickers, a
@@ -4331,6 +4412,16 @@ fn search_fields(
             }
         });
     out
+}
+
+/// Bytes as megabytes for people (`12.5 MB`).
+fn megabytes(bytes: usize) -> String {
+    let mb = bytes as f64 / 1e6;
+    if mb < 10.0 {
+        format!("{mb:.1} MB")
+    } else {
+        format!("{mb:.0} MB")
+    }
 }
 
 /// How many runs a study's sample makes: points times replicates.

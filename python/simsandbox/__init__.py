@@ -441,18 +441,23 @@ class Model:
         inputs: "Iterable[tuple[float, str, float]] | Run | None" = None,
         probes: Iterable[str] | None = None,
         save: "str | os.PathLike | None" = None,
+        memory: float | None = None,
     ) -> "ProbeRun":
         """Run as the app does and return what the probes recorded
         (ADR 0062): all of them, or those named in ``probes``. ``t_end``,
         ``dt`` and ``inputs`` are as for :meth:`run`. With ``save``, the
-        probes that have a file (``to``) write it into that directory."""
+        probes that have a file (``to``) write it into that directory.
+        ``memory`` is the app's memory budget in MB (1024 by default):
+        probes that keep what they record by default thin past a quarter
+        of it (ADR 0062 step 5); ``ProbeRun.memory`` says what was held."""
         model, track = self._with_inputs(inputs)
         text = model.to_json()
         names = None if probes is None else list(probes)
         try:
             with _in_folder(self.folder):
                 raw = _native.run_probes(
-                    text, t_end, dt, track, names, None if save is None else os.fspath(save)
+                    text, t_end, dt, track, names, None if save is None else os.fspath(save),
+                    memory,
                 )
         except ModelError as e:
             with _in_folder(self.folder):
@@ -1123,12 +1128,14 @@ class Probe:
 
 class ProbeRun:
     """What a run's probes recorded: ``probes`` by name (see
-    :class:`Probe`), the ``files`` written, ``labels`` and ``warnings``.
-    ``run[name]`` is a probe."""
+    :class:`Probe`), the ``files`` written, ``labels``, ``warnings`` and
+    ``memory`` (bytes held at the end against the budget: ``budget``,
+    ``held``, ``parts`` as [name, bytes]). ``run[name]`` is a probe."""
 
     def __init__(self, raw: dict):
         self.probes: dict[str, Probe] = {p[0]: Probe(p) for p in raw["probes"]}
         self.files: list[str] = [str(f) for f in raw["files"]]
+        self.memory: dict = json.loads(raw["memory"])
         self.labels: dict | None = json.loads(raw["labels"])
         self.warnings: list[str] = raw["warnings"]
 

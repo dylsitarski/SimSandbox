@@ -2025,6 +2025,7 @@ mod tests {
                 Vec::new(),
                 &["rec".into()],
                 Some(&out),
+                None,
             )
             .unwrap();
             let (spec, h) = p.probes.iter().find(|(s, _)| s.name == "rec").unwrap();

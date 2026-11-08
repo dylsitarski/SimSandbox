@@ -209,7 +209,8 @@ fn run_composition<'py>(
 /// [(signal, bytes)], [(field, dims, bytes)], [(population, dim, [bytes
 /// per sample])]), `files` written, and `labels`, `warnings`.
 #[pyfunction]
-#[pyo3(signature = (text, t_end=None, dt=None, track=None, names=None, save=None))]
+#[pyo3(signature = (text, t_end=None, dt=None, track=None, names=None, save=None, memory=None))]
+#[allow(clippy::too_many_arguments)]
 fn run_probes<'py>(
     py: Python<'py>,
     text: &str,
@@ -218,6 +219,7 @@ fn run_probes<'py>(
     track: Option<Vec<(f64, String, f64)>>,
     names: Option<Vec<String>>,
     save: Option<std::path::PathBuf>,
+    memory: Option<f64>,
 ) -> PyResult<Bound<'py, PyDict>> {
     use simsandbox_views::history::FieldShape;
     let track: Vec<InputEvent> = track
@@ -228,7 +230,16 @@ fn run_probes<'py>(
     let names = names.unwrap_or_default();
     let (r, files) = py
         .detach(|| {
-            let r = run_model_probes(text, &registry(), t_end, dt, track, &names, save.as_deref())?;
+            let r = run_model_probes(
+                text,
+                &registry(),
+                t_end,
+                dt,
+                track,
+                &names,
+                save.as_deref(),
+                memory,
+            )?;
             let files = match &save {
                 Some(dir) => r
                     .write_files(dir)
@@ -295,6 +306,14 @@ fn run_probes<'py>(
     let d = PyDict::new(py);
     d.set_item("probes", probes)?;
     d.set_item("files", written)?;
+    d.set_item(
+        "memory",
+        json(&serde_json::json!({
+            "budget": r.memory.budget,
+            "held": r.memory.held,
+            "parts": r.memory.parts,
+        })),
+    )?;
     d.set_item(
         "labels",
         json(&serde_json::json!(r.labels.map(catalogue::labels))),

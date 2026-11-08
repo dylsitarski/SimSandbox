@@ -1145,6 +1145,9 @@ fn run_rows(
 pub struct ProbeRun {
     /// Each probe as set, with what it recorded, in file order.
     pub probes: Vec<(ProbeSpec, SharedHistory)>,
+    /// What the recordings held at the end against the memory budget
+    /// (ADR 0062 step 5).
+    pub memory: crate::session::MemoryUse,
     pub labels: Option<MethodLabels>,
     /// The model's warnings and notes on its algebraic loops.
     pub warnings: Vec<String>,
@@ -1173,6 +1176,7 @@ impl ProbeRun {
 /// `track` replayed as recorded input. `names` picks probes (all if
 /// empty). Probes that write as they record (ADR 0063) write into `dir`
 /// during the run, if given; [`ProbeRun::write_files`] writes the others.
+#[allow(clippy::too_many_arguments)]
 pub fn run_probes(
     text: &str,
     registry: &Registry,
@@ -1181,6 +1185,7 @@ pub fn run_probes(
     track: Vec<InputEvent>,
     names: &[String],
     dir: Option<&Path>,
+    memory_mb: Option<f64>,
 ) -> Result<ProbeRun, String> {
     for v in [t_end, dt].into_iter().flatten() {
         if !(v.is_finite() && v > 0.0) {
@@ -1199,6 +1204,13 @@ pub fn run_probes(
     }
     if let Some(dt) = dt {
         s.dt = dt;
+    }
+    // The app's memory budget, as the app would set it (ADR 0062 step 5).
+    if let Some(mb) = memory_mb {
+        if !(mb.is_finite() && mb > 0.0) {
+            return Err("the memory budget must be a positive number of MB".into());
+        }
+        s.set_memory_budget(mb);
     }
     let t_end = t_end.or(s.file.run.t_end).unwrap_or(DEFAULT_T_END);
     let steps = (t_end / s.dt).round() as usize;
@@ -1228,6 +1240,7 @@ pub fn run_probes(
         .collect();
     Ok(ProbeRun {
         probes,
+        memory: s.memory_use(),
         labels: s.labels(),
         warnings: s.warnings.clone(),
     })

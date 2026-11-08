@@ -13,7 +13,9 @@ pub const TIME: &str = "t";
 const MAX_SAMPLES: usize = 100_000;
 /// Field frames are large, so with fields the sample limit is lowered to
 /// keep about this many field values in memory: 256 MB (never below
-/// [`MIN_SAMPLES`] samples, so a very large grid can use more).
+/// [`MIN_SAMPLES`] samples, so a very large grid can use more). A session
+/// sets its own share of the app's memory budget instead
+/// ([`History::set_field_budget`], ADR 0062 step 5).
 const FIELD_VALUES: usize = 32_000_000;
 /// The fewest samples a history with fields keeps before thinning. Large
 /// grids reach it soon: a 128 × 128 grid of three fields keeps about 650.
@@ -320,6 +322,19 @@ pub struct History {
     last: Option<usize>,
     /// Values held in population frames, which vary in size.
     population_values: usize,
+    /// The field values it keeps before thinning, unless told otherwise.
+    field_budget: usize,
+    /// Whether a limit of its own was set (`keep_all`, `thin_past`,
+    /// `keep_last`), which the field budget leaves alone.
+    own_limit: bool,
+}
+
+/// Samples kept before thinning: `budget` field values over the fields'
+/// values a sample, within [`MIN_SAMPLES`] and [`MAX_SAMPLES`].
+fn samples_for(budget: usize, field_values: usize) -> usize {
+    budget
+        .checked_div(field_values)
+        .map_or(MAX_SAMPLES, |n| n.clamp(MIN_SAMPLES, MAX_SAMPLES))
 }
 
 impl History {
@@ -333,9 +348,7 @@ impl History {
     pub fn with_fields(index: &str, names: Vec<String>, fields: Vec<(String, FieldShape)>) -> Self {
         let points = names.iter().map(|_| Vec::new()).collect();
         let field_values: usize = fields.iter().map(|(_, s)| s.len()).sum();
-        let max_samples = FIELD_VALUES
-            .checked_div(field_values)
-            .map_or(MAX_SAMPLES, |n| n.clamp(MIN_SAMPLES, MAX_SAMPLES));
+        let max_samples = samples_for(FIELD_VALUES, field_values);
         Self {
             index: index.into(),
             coordinates: Vec::new(),
@@ -355,13 +368,39 @@ impl History {
             max_samples,
             last: None,
             population_values: 0,
+            field_budget: FIELD_VALUES,
+            own_limit: false,
         }
+    }
+
+    /// Keep about `bytes` of field values before thinning (ADR 0062 step
+    /// 5: its share of the app's memory budget), unless a limit of its
+    /// own was set. 256 MB by default.
+    pub fn set_field_budget(&mut self, bytes: usize) {
+        self.field_budget = (bytes / 8).max(1);
+        if !self.own_limit {
+            let per: usize = self.fields.iter().map(|f| f.shape.len()).sum();
+            self.max_samples = samples_for(self.field_budget, per);
+        }
+    }
+
+    /// The memory its samples hold, in bytes: times, signal points and
+    /// field frames.
+    pub fn bytes(&self) -> usize {
+        let points: usize = self.points.iter().map(Vec::len).sum();
+        let frames: usize = self
+            .fields
+            .iter()
+            .flat_map(|f| f.frames.iter().map(Vec::len))
+            .sum();
+        8 * self.times.len() + std::mem::size_of::<PlotPoint>() * points + 8 * frames
     }
 
     /// Keep every sample instead of thinning long histories.
     pub fn keep_all(&mut self) {
         self.max_samples = usize::MAX;
         self.last = None;
+        self.own_limit = true;
     }
 
     /// Thin when longer than `samples` (at least 2), instead of the limit
@@ -369,6 +408,7 @@ impl History {
     pub fn thin_past(&mut self, samples: usize) {
         self.max_samples = samples.max(2);
         self.last = None;
+        self.own_limit = true;
     }
 
     /// Keep only the newest `samples` (at least 1), forgetting the oldest,
@@ -376,6 +416,7 @@ impl History {
     pub fn keep_last(&mut self, samples: usize) {
         self.last = Some(samples.max(1));
         self.max_samples = usize::MAX;
+        self.own_limit = true;
     }
 
     /// Numbers recorded per sample: the signals and the fixed-size fields.
@@ -514,7 +555,7 @@ impl History {
             return;
         }
         // Populations count by the values they hold, like fixed fields.
-        let crowded = self.population_values > FIELD_VALUES && self.times.len() > MIN_SAMPLES;
+        let crowded = self.population_values > self.field_budget && self.times.len() > MIN_SAMPLES;
         if self.times.len() > self.max_samples || crowded {
             thin(&mut self.times);
             for p in &mut self.points {

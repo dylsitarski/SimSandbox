@@ -88,6 +88,16 @@ The owner accepted the proposal on 2026-10-29 with these choices: probes thin by
 - **Differences from the proposal:** sums are not split. They run in order on one core, as before, so their bits are unchanged; a fixed-chunk sum would be exact too, but would change results from those of earlier runs, and sums are a small share of a grid's time. Fast mode (step 4) is not built.
 - **Sums since 2026-11-06:** in fixed chunks, the same bits on any machine and core count ([ADR 0077](0077-sums-in-fixed-chunks.md)).
 
+
+**Step 4: not built** (the owner, 2026-11-08): the fast mode gave way to [ADR 0082](0082-exactness-is-labelled.md)'s labels.
+
+**Step 5 (2026-11-08): the memory budget.** One setting, default 1024 MB (`session::DEFAULT_MEMORY_MB`), shared by what a session keeps in memory: snapshots, the implicit history, each probe and each filter.
+- **The default split** is a quarter each: snapshots thin past a quarter unless the recorder sets its own `mb`; the history, and each probe and filter that keeps what it records by default, thin past a quarter of field values (`History::set_field_budget`; at least 100 samples, at most 100 000, as before). A probe with a `keep` of its own keeps it. At 1024 MB a quarter is 256 MB, today's safety nets (the history's 256 MB of field values and the recorder's 256 MB), so nothing changes at the default: every example, profiling case and probe gives the same output byte for byte.
+- **Not a hard limit:** the parts can together hold more than the budget (several probes, or the floor of 100 samples of a very large field). `Session::memory_use` reports each part (`snapshots`, `history`, `probe NAME`, `filter NAME`), what they hold and the budget; the app's toolbar says when they hold more than it, naming the largest part.
+- **App:** "Memory…" in the toolbar shows the parts and sets the budget, which applies to the running model at once and to every model opened after, and is kept between launches (eframe's storage, `memory_budget_mb`; window and egui state are not kept).
+- **Headless:** `run::run_probes(…, memory_mb)`, `simsandbox run --probe … --memory MB`, Python `Model.run_probes(memory=MB)`; `ProbeRun.memory` reports what was held. Plain `run` keeps every row and has no budget.
+- **Tested** (`crates/simsandbox-session/tests/memory.rs`, a Python test): a probe of a 50-cell field keeps all 1001 samples at the default and thins to 125–250 at 0.4 MB, its samples a subset of the full run's; snapshots thin to their share unless the recorder sets its own size; a budget below the history's floor is reported as over, naming the history.
+
 ## Options considered
 
 **How recording is declared**

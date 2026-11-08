@@ -27,7 +27,7 @@ Rewind needs replay state: snapshots of every Block's state (and the outputs tha
 ## Consequences
 
 - The examples showing replay after rewind ("Drag the bob", "Steer the car with keys") include a recorder; the others do not.
-- The memory budget of ADR 0062 step 5 is split: the recorder's `mb` for snapshots, probes' `keep` for their recordings.
+- The memory budget of ADR 0062 step 5 is split: the recorder's `mb` for snapshots, probes' `keep` for their recordings. (As built 2026-11-08: a recorder without `mb` takes a quarter of the app's budget, 256 MB at the default 1024 MB.)
 - Tests that rewind add a recorder.
 
 ## As built (2026-10-29)

@@ -5,12 +5,13 @@
 //!
 //! ```text
 //! simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json] [--inputs RUN]
-//!                 [--probe NAME] [--save-probes DIR] [--model NAME]
+//!                 [--probe NAME] [--save-probes DIR] [--memory MB] [--model NAME]
 //!                 [--signals NAMES] [--every N]
 //!                                   (default: the file's `run` section)
 //!                                   (--signals: only these outputs, comma-separated: block.port, block,
 //!                                    or in a model using models a model (`.` the top level) or path in it, ADR 0076)
 //!                                   (--every: every N-th step and the last, ADR 0076)
+//!                                   (--memory: with probes, the app's memory budget, ADR 0062 step 5)
 //!                                   (FILE a run file: replays it, ADR 0059)
 //!                                   (a model whose only runs are its studies: one row per run, ADR 0071)
 //!                                   (--probe: what that probe records, not every output, ADR 0062)
@@ -47,7 +48,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json] [--inputs RUN]
-                  [--probe NAME] [--save-probes DIR] [--model NAME] [--signals NAMES] [--every N]
+                  [--probe NAME] [--save-probes DIR] [--memory MB] [--model NAME] [--signals NAMES] [--every N]
   simsandbox check FILE
   simsandbox describe [TYPE | units]
   simsandbox schema [run]
@@ -235,6 +236,7 @@ fn run_file(args: &[String]) -> Result<(), String> {
             "--model",
             "--signals",
             "--every",
+            "--memory",
         ],
     )?;
     let mut keep = keep_of(&flags)?;
@@ -409,7 +411,15 @@ fn run_file_probes(
 ) -> Result<(), String> {
     let names: Vec<String> = flags.get("--probe").map(String::from).into_iter().collect();
     let dir = flags.get("--save-probes").map(std::path::Path::new);
-    let r = run_probes(text, &registry(), t_end, dt, track, &names, dir)
+    // The app's memory budget, in MB (ADR 0062 step 5).
+    let memory = match flags.get("--memory") {
+        None => None,
+        Some(v) => Some(
+            v.parse::<f64>()
+                .map_err(|_| format!("--memory takes megabytes, not '{v}'"))?,
+        ),
+    };
+    let r = run_probes(text, &registry(), t_end, dt, track, &names, dir, memory)
         .map_err(|e| format!("{path}: {e}"))?;
     for w in &r.warnings {
         eprintln!("warning: {path}: {w}");

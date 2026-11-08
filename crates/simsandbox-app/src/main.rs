@@ -88,6 +88,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
 /// on their own (ADR 0054).
 struct Shared(std::sync::Arc<std::sync::Mutex<SimApp>>);
 
+/// Where the app keeps its memory budget between launches (ADR 0062
+/// step 5), in eframe's storage.
+const MEMORY_KEY: &str = "memory_budget_mb";
+
 impl eframe::App for Shared {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let mut app = self
@@ -95,6 +99,19 @@ impl eframe::App for Shared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         eframe::App::ui(&mut *app, ui, frame);
+    }
+
+    /// Only the app's settings are kept, not egui's own state.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let app = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        storage.set_string(MEMORY_KEY, app.memory_budget().to_string());
+    }
+
+    fn persist_egui_memory(&self) -> bool {
+        false
     }
 }
 
@@ -118,18 +135,27 @@ fn main() -> ExitCode {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport,
+        // The window opens maximized each time; only settings are kept.
+        persist_window: false,
         ..Default::default()
     };
     let result = eframe::run_native(
         "SimSandbox",
         options,
-        Box::new(move |_cc| {
-            let app = SimApp::new(
+        Box::new(move |cc| {
+            let mut app = SimApp::new(
                 args.path,
                 args.view.as_deref(),
                 args.window.as_deref(),
                 args.screenshot,
             );
+            if let Some(mb) = cc
+                .storage
+                .and_then(|s| s.get_string(MEMORY_KEY))
+                .and_then(|v| v.parse::<f64>().ok())
+            {
+                app.set_memory_budget(mb);
+            }
             Ok(Box::new(Shared(app.shared())))
         }),
     );

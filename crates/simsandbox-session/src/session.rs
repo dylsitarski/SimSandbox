@@ -187,6 +187,31 @@ struct Pending {
 /// the default 256 MB keeps about 1 000.
 const MAX_SNAPSHOTS: usize = 10_000;
 
+/// The app's memory budget by default, in MB (ADR 0062 step 5): shared by
+/// snapshots, the history and probes, a quarter each by default.
+pub const DEFAULT_MEMORY_MB: f64 = 1024.0;
+
+/// What a session's recordings hold against its memory budget (ADR 0062
+/// step 5), in bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryUse {
+    pub budget: usize,
+    pub held: usize,
+    /// Each part: `snapshots`, `history`, `probe NAME`, `filter NAME`.
+    pub parts: Vec<(String, usize)>,
+}
+
+impl MemoryUse {
+    /// The part holding most, if any holds anything.
+    pub fn largest(&self) -> Option<&(String, usize)> {
+        self.parts.iter().filter(|p| p.1 > 0).max_by_key(|p| p.1)
+    }
+
+    pub fn over(&self) -> bool {
+        self.held > self.budget
+    }
+}
+
 /// Where a recorded signal comes from: an element of an output port.
 #[derive(Clone)]
 struct Source {
@@ -322,6 +347,8 @@ pub struct Session {
     stop_at: Option<f64>,
     sim: Simulator,
     snapshots: Vec<Snapshot>,
+    /// The app's memory budget in MB (ADR 0062 step 5).
+    memory_mb: f64,
     steps_since_snapshot: usize,
     /// Built without running its studies ([`crate::study::without_running_studies`]),
     /// or (evaluated later) changed since last evaluated: [`Session::evaluate`]
@@ -618,6 +645,7 @@ impl Session {
             points: Vec::new(),
             block_types,
             snapshots: vec![sim.snapshot()],
+            memory_mb: DEFAULT_MEMORY_MB,
             sim,
             steps_since_snapshot: 0,
             recorder: start_file.controls.recorder.clone(),
@@ -1160,6 +1188,7 @@ impl Session {
                 .collect(),
             kept_fields,
         );
+        h.set_field_budget(self.share());
         // Coordinates among what it records.
         let recorded = |n: &str| h.fields().iter().any(|f| f.name == n);
         let coordinates = self
@@ -1383,6 +1412,7 @@ impl Session {
                     .cloned()
                     .collect(),
             );
+            ph.set_field_budget(self.share());
             spec.keep.apply(&mut ph);
             built.push(Extra {
                 spec: spec.clone(),
@@ -1627,6 +1657,7 @@ impl Session {
         let fields: Vec<(String, FieldShape)> =
             d.filters.cuts.iter().flat_map(|c| c.fields()).collect();
         let mut h = History::with_fields("t", names, fields);
+        h.set_field_budget(self.share());
         let mut coordinates = Vec::new();
         for c in &d.filters.cuts {
             coordinates.extend(c.lines().into_iter().map(|l| Coordinate {
@@ -2488,12 +2519,68 @@ impl Session {
         let Some(r) = &self.recorder else {
             return;
         };
-        let budget = (r.mb() * 1e6 / 8.0) as usize;
+        // Its own budget, or its share of the app's.
+        let mb = r.mb.unwrap_or(self.memory_mb / 4.0);
+        let budget = (mb * 1e6 / 8.0) as usize;
         let held = |s: &[Snapshot]| s.iter().map(Snapshot::values).sum::<usize>();
         while self.snapshots.len() > 2
             && (self.snapshots.len() > MAX_SNAPSHOTS || held(&self.snapshots) > budget)
         {
             thin(&mut self.snapshots);
+        }
+    }
+
+    /// A quarter of the memory budget, in bytes: the default share of
+    /// snapshots, the history and each probe (ADR 0062 step 5).
+    fn share(&self) -> usize {
+        (self.memory_mb * 1e6 / 4.0) as usize
+    }
+
+    /// The app's memory budget in MB (ADR 0062 step 5).
+    pub fn memory_budget(&self) -> f64 {
+        self.memory_mb
+    }
+
+    /// Set the memory budget in MB (ADR 0062 step 5): snapshots (unless
+    /// the recorder sets its own), the history, each probe that keeps
+    /// what it records by default, and each filter thin past a quarter of
+    /// it. What is held now thins at the next sample.
+    pub fn set_memory_budget(&mut self, mb: f64) {
+        if !(mb.is_finite() && mb > 0.0) {
+            return;
+        }
+        self.memory_mb = mb;
+        let share = self.share();
+        self.history.write().set_field_budget(share);
+        for p in &self.probes {
+            p.history.write().set_field_budget(share);
+        }
+        for d in &self.derived {
+            d.history.write().set_field_budget(share);
+        }
+        self.fit_snapshots();
+    }
+
+    /// What the recordings hold against the memory budget (ADR 0062 step
+    /// 5): snapshots, the history, each probe and filter.
+    pub fn memory_use(&self) -> MemoryUse {
+        let mut parts = vec![
+            (
+                "snapshots".to_string(),
+                8 * self.snapshots.iter().map(Snapshot::values).sum::<usize>(),
+            ),
+            ("history".to_string(), self.history.read().bytes()),
+        ];
+        for p in &self.probes {
+            parts.push((format!("probe {}", p.spec.name), p.history.read().bytes()));
+        }
+        for d in &self.derived {
+            parts.push((format!("filter {}", d.entry.name), d.history.read().bytes()));
+        }
+        MemoryUse {
+            budget: (self.memory_mb * 1e6) as usize,
+            held: parts.iter().map(|p| p.1).sum(),
+            parts,
         }
     }
 
@@ -4021,8 +4108,17 @@ mod probe_tests {
             r#"[{"name": "speed", "record": ["car.v"], "every": {"steps": 10}, "keep": {"all": true},
                  "to": "speed.csv"}]"#,
         );
-        let r = crate::run::run_probes(&text, &registry(), Some(5.0), None, Vec::new(), &[], None)
-            .unwrap();
+        let r = crate::run::run_probes(
+            &text,
+            &registry(),
+            Some(5.0),
+            None,
+            Vec::new(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
         let (spec, h) = &r.probes[0];
         assert_eq!(spec.name, "speed");
         let h = h.read();
@@ -4045,6 +4141,7 @@ mod probe_tests {
             None,
             Vec::new(),
             &["x".into()],
+            None,
             None,
         );
         assert!(err.is_err_and(|e| e.contains("no probe 'x'")));
@@ -4538,6 +4635,7 @@ mod probe_tests {
             None,
             Vec::new(),
             &[],
+            None,
             None,
         )
         .unwrap();
