@@ -828,7 +828,10 @@ class Results:
       studies' (ADR 0071).
     - ``outputs``: every fixed-size output by ``"block.port"``: shape
       ``(rows,)`` for a scalar, ``(rows, n)`` for a vector,
-      ``(rows, ny, nx)`` for a grid, ``(rows, count, dim)`` for points.
+      ``(rows, ny, nx)`` for a grid, ``(rows, count, dim)`` for points,
+      ``(rows, nk, …, n1)`` for one over three or more axes (its first
+      axis varying fastest, so last in the array; ADR 0081).
+      :meth:`axes` names them.
     - ``populations``: every population output: a list over rows of
       ``(n, dim)`` arrays (n varies).
     - ``labels`` (speed and accuracy), ``notes`` (algebraic loops) and
@@ -861,6 +864,14 @@ class Results:
     def t(self) -> np.ndarray:
         """Times of a timed run."""
         return self.index["t"]
+
+    def axes(self, name: str) -> list[tuple[str | None, int | str]]:
+        """An output's axes after the rows, in the array's order: each as
+        (name, length), the name ``None`` where its block gives none and
+        the length ``"rows"`` for a table's rows (ADR 0081)."""
+        shape = self.shapes[name]
+        axes = [(a.get("name"), a["length"]) for a in shape.get("axes", [])]
+        return list(reversed(axes))
 
     def __getitem__(self, name: str):
         for d in (self.index, self.outputs, self.populations):
@@ -954,6 +965,9 @@ def _dims(shape: dict) -> tuple[int, ...]:
         return (shape["ny"], shape["nx"])
     if kind == "points":
         return (shape["count"], shape["dim"])
+    if kind == "axes":
+        # Three or more axes, the first fastest: numpy's last (ADR 0081).
+        return tuple(a["length"] for a in reversed(shape["axes"]))
     raise ValueError(f"unexpected shape {shape}")
 
 

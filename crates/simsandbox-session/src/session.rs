@@ -504,6 +504,7 @@ impl Session {
                     Shape::Grid { nx, ny } => Some(FieldShape::Grid { nx, ny }),
                     Shape::Points { count, dim } => Some(FieldShape::Points { count, dim }),
                     Shape::Population { dim } => Some(FieldShape::Population { dim }),
+                    Shape::Tensor { rank, dims } => Some(FieldShape::Tensor { rank, dims }),
                     Shape::Scalar | Shape::Vector(_) => None,
                 };
                 if let Some(shape) = field {
@@ -1119,9 +1120,17 @@ impl Session {
         }
         let index = "t";
         let all: Vec<&(String, FieldShape)> = fields.iter().collect();
+        // What views can draw: tensors are recorded, not drawn yet (ADR
+        // 0081 stage 3).
         let of_kind = |grid: bool| -> Vec<String> {
             all.iter()
-                .filter(|(_, s)| matches!(s, FieldShape::Grid { .. }) == grid)
+                .filter(|(_, s)| {
+                    if grid {
+                        matches!(s, FieldShape::Grid { .. })
+                    } else {
+                        matches!(s, FieldShape::Points { .. } | FieldShape::Population { .. })
+                    }
+                })
                 .map(|(n, _)| n.clone())
                 .collect()
         };

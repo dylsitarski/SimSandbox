@@ -207,9 +207,13 @@ pub fn write_files(h: &History, dir: &Path, to: &str) -> io::Result<(Vec<PathBuf
     written.push(csv);
     let stem = to.strip_suffix(".csv").unwrap_or(to);
     for (i, f) in h.fields().iter().enumerate() {
-        let shape = match f.shape {
-            FieldShape::Grid { nx, ny } => [h.len(), ny, nx],
-            FieldShape::Points { count, dim } => [h.len(), count, dim],
+        let shape: Vec<usize> = match f.shape {
+            FieldShape::Grid { nx, ny } => vec![h.len(), ny, nx],
+            FieldShape::Points { count, dim } => vec![h.len(), count, dim],
+            // The last axis fastest, as numpy stores it (ADR 0081).
+            FieldShape::Tensor { rank, dims } => std::iter::once(h.len())
+                .chain(dims[..rank].iter().rev().copied())
+                .collect(),
             FieldShape::Population { .. } => {
                 notes.push(format!(
                     "{} is a population (its size varies) and is not written",
@@ -265,6 +269,7 @@ pub fn to_json(h: &History) -> serde_json::Value {
                 FieldShape::Grid { nx, ny } => json!({"grid": [ny, nx]}),
                 FieldShape::Points { count, dim } => json!({"points": [count, dim]}),
                 FieldShape::Population { dim } => json!({"population": dim}),
+                FieldShape::Tensor { rank, dims } => json!({"axes": dims[..rank].to_vec()}),
             };
             let frames: Vec<Value> = (0..h.len()).map(|k| list(f.frame(k))).collect();
             (f.name.clone(), json!({"shape": shape, "frames": frames}))
@@ -297,16 +302,35 @@ pub(crate) struct Stream {
 struct Npy {
     file: io::BufWriter<std::fs::File>,
     /// The shape of one frame.
-    frame: [usize; 2],
+    frame: Vec<usize>,
 }
 
 /// The `.npy` header is written at this fixed size, so its sample count
 /// can be rewritten in place.
 const NPY_HEADER: usize = 128;
 
-fn npy_header(samples: usize, [a, b]: [usize; 2]) -> Vec<u8> {
-    let mut header =
-        format!("{{'descr': '<f8', 'fortran_order': False, 'shape': ({samples}, {a}, {b}), }}");
+/// A shape as numpy writes it: `(3, 4, 5)`, `(3,)` for one axis.
+fn npy_shape(dims: &[usize]) -> String {
+    match dims {
+        [one] => format!("({one},)"),
+        _ => format!(
+            "({})",
+            dims.iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn npy_header(samples: usize, frame: &[usize]) -> Vec<u8> {
+    let dims: Vec<usize> = std::iter::once(samples)
+        .chain(frame.iter().copied())
+        .collect();
+    let mut header = format!(
+        "{{'descr': '<f8', 'fortran_order': False, 'shape': {}, }}",
+        npy_shape(&dims)
+    );
     header.push_str(&" ".repeat(NPY_HEADER - 10 - header.len() - 1));
     header.push('\n');
     let mut out = b"\x93NUMPY\x01\x00".to_vec();
@@ -340,9 +364,10 @@ impl Stream {
         let mut npys = Vec::new();
         let mut notes = Vec::new();
         for (name, shape) in fields {
-            let frame = match *shape {
-                FieldShape::Grid { nx, ny } => [ny, nx],
-                FieldShape::Points { count, dim } => [count, dim],
+            let frame: Vec<usize> = match *shape {
+                FieldShape::Grid { nx, ny } => vec![ny, nx],
+                FieldShape::Points { count, dim } => vec![count, dim],
+                FieldShape::Tensor { rank, dims } => dims[..rank].iter().rev().copied().collect(),
                 FieldShape::Population { .. } => {
                     notes.push(format!(
                         "{name} is a population (its size varies) and is not written"
@@ -352,7 +377,7 @@ impl Stream {
             };
             let path = dir.join(format!("{stem}.{name}.npy"));
             let mut file = io::BufWriter::new(std::fs::File::create(&path)?);
-            file.write_all(&npy_header(0, frame))?;
+            file.write_all(&npy_header(0, &frame))?;
             file.seek(io::SeekFrom::End(0))?;
             npys.push(Npy { file, frame });
             paths.push(path);
@@ -398,7 +423,7 @@ impl Stream {
             .zip(frames)
             .filter(|((_, s), _)| !matches!(s, FieldShape::Population { .. }));
         for (npy, (_, frame)) in self.npys.iter_mut().zip(fixed) {
-            let len = npy.frame[0] * npy.frame[1];
+            let len: usize = npy.frame.iter().product();
             if frame.len() == len {
                 for v in frame.iter() {
                     npy.file.write_all(&v.to_le_bytes())?;
@@ -434,7 +459,7 @@ impl Stream {
             npy.file.flush()?;
             let f = npy.file.get_mut();
             f.seek(io::SeekFrom::Start(0))?;
-            f.write_all(&npy_header(self.samples, npy.frame))?;
+            f.write_all(&npy_header(self.samples, &npy.frame))?;
             f.seek(io::SeekFrom::End(0))?;
         }
         Ok(())
@@ -466,7 +491,7 @@ impl Stream {
         self.written = at;
         for npy in &mut self.npys {
             npy.file.flush()?;
-            let bytes = (NPY_HEADER + keep * npy.frame[0] * npy.frame[1] * 8) as u64;
+            let bytes = (NPY_HEADER + keep * npy.frame.iter().product::<usize>() * 8) as u64;
             let f = npy.file.get_mut();
             f.set_len(bytes)?;
             f.seek(io::SeekFrom::Start(bytes))?;
@@ -485,12 +510,12 @@ impl Drop for Stream {
 /// A NumPy `.npy` file (format 1.0) of `f64` values in C order.
 fn write_npy<'a>(
     out: &mut impl Write,
-    shape: [usize; 3],
+    shape: Vec<usize>,
     frames: impl Iterator<Item = &'a [f64]>,
 ) -> io::Result<()> {
     let mut header = format!(
-        "{{'descr': '<f8', 'fortran_order': False, 'shape': ({}, {}, {}), }}",
-        shape[0], shape[1], shape[2]
+        "{{'descr': '<f8', 'fortran_order': False, 'shape': {}, }}",
+        npy_shape(&shape)
     );
     // Magic (6), version (2), header length (2), header: a multiple of
     // 64 bytes, ending in a newline.
@@ -502,7 +527,7 @@ fn write_npy<'a>(
     out.write_all(header.as_bytes())?;
     // A frame not recorded (empty) is written as NaN, so every frame has
     // the field's shape.
-    let len = shape[1] * shape[2];
+    let len: usize = shape[1..].iter().product();
     for frame in frames {
         if frame.len() == len {
             for v in frame {

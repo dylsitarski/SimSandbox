@@ -521,3 +521,15 @@ def test_levenberg_marquardt_as_a_model_matches_scipy():
     assert abs(r["fit.c"][-1] - best.x[1]) < 1e-7
     assert r["fit.done"][-1] == 1.0
 
+
+def test_an_output_over_three_axes_is_an_array_with_named_axes():
+    # ADR 0081: q = x + 10y + 100z over axes of 2, 3 and 4 cells, the first
+    # fastest, so last in the array.
+    m = ss.Model()
+    m.add_block("m", "eq.equations", equations="grid x = 2\ngrid y = 3\ngrid z = 4\nq = x + 10*y + 100*z")
+    r = m.run(t_end=1.0)
+    q = r["m.q"]
+    assert q.shape == (r.rows, 4, 3, 2)
+    assert q[-1, 3, 2, 1] == 1 + 20 + 300
+    assert r.axes("m.q") == [("z", 4), ("y", 3), ("x", 2)]
+

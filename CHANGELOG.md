@@ -61,6 +61,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Ports of any number of axes (ADR 0081): a typed-equations quantity over three or more axes (up to 8) is a port, wired, recorded and written out; a study's vector result over a grid of two parameters is a port of three axes. Ports name their axes. `run --format json` describes every shape by its axes (name and length); CSV names a cell of three or more axes by its places (`q[1,2,3]`); Python returns `(rows, nk, …, n1)` arrays and `Results.axes(name)`.
+
 - Tables in typed equations (ADR 0079): `table pts`, `start pts = 5`, states with a value per row, and rules between steps (`remove pts where …`, `add pts from … where …: …`). Rows keep their ids (`id(pts)`, `of(T, i)`, `rows(pts)`), and rewind and run files keep them. In maps; their values are not ports yet.
 
 - Example "Following a branch through hysteresis": continuation written as a model. Each run starts where the last settled, at the next value of a parameter, so a bistable state follows its branch to the fold and jumps, tracing a hysteresis loop.

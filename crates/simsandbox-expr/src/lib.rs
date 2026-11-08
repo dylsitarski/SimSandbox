@@ -198,7 +198,7 @@ pub const ARRAY_OPS: &[&str] = &[
 ];
 
 /// The most axes an array or an intermediate value has (ADR 0080).
-pub const MAX_AXES: usize = 6;
+pub const MAX_AXES: usize = 8;
 
 /// A reduction along one axis (ADR 0080).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

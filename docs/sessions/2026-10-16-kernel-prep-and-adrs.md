@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-08: ADR 0081 stages 1–2: `Shape::Tensor`, `AxisLen`, `of_axes`/`axes`/`dims`, `PortSpec::axis_names`, `describe_shape`; typed-equation ports of any rank (`MAX_AXES` 8); study outputs named, vectors over two-parameter grids; `FieldShape::Tensor`, `.npy` of any rank; `Output::axes`, `describe::shape_with_axes`, CSV by places; Python `Results.axes`; `tests/axes.rs`
 - 2026-11-08: ADR 0079 stage 1a: `table`/`start` lines and table axes (`Axis::table`), `read_rule`, `id`/`rows`/`of` in `axes_of` and `lower`, `parse_with_rows`, layout with row ids as inputs and outputs from fixed quantities only (`Layout::fixed`), rule program (`rule_registers`), `ExplicitBlock` with compiled sets by rows, `init_tables`, rules after each step; session hold-still compares tables; `tests/tables.rs`
 - 2026-11-08: ADR 0078 step 3: `examples/bistable-continuation.ssbx.json` (registered), test against the cubic's extreme roots; screenshot under Xvfb of the loop
 - 2026-11-08: ADR 0084 (where typed equations stop) written as Proposed after discussing Modelica and models as compiled code

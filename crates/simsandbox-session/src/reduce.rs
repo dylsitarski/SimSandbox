@@ -256,6 +256,16 @@ impl Reducer {
         Ok(())
     }
 
+    /// The name of a vector result's own axis (ADR 0081): `sample` for
+    /// `at_samples`, `time` for `at_times`.
+    pub fn axis_name(&self) -> &'static str {
+        if self.parts.iter().any(|p| p.kind == Kind::AtSamples) {
+            "sample"
+        } else {
+            "time"
+        }
+    }
+
     /// `None` for one value per run; `Some(n)` for a vector of `n`
     /// (`at_times`, `at_samples`, ADR 0080).
     pub fn width(&self) -> Option<usize> {

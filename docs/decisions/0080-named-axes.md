@@ -101,3 +101,5 @@ Later: tables as axes whose length changes (ADR 0079 stage 1); ports of more tha
 - **Checked:** a decay model studied over two starting values, against `exp(-t)` at given times and against a data file's samples; the same results through points from inputs, bit for bit; a typed block summing `res*res` along `obs` per run; the mistakes (not recorded data, no such block, different lengths, times not numbers). Every example and profiling case unchanged. A study's default view shows a vector result as a heat map, samples across and runs up.
 
 **Stage 4 (2026-11-08): fitting, and `rcond`.** `rcond(A)` (`ArrayOp::Rcond`, `program::rcond`): `A` over two axes of one length, one value, `1/(‖A‖₁‖A⁻¹‖₁)` with `A⁻¹` from `solve_into` column by column; 0 when singular, NaN when a value is not finite; dimensionless. Tested: 1/22 for the 3 × 3 matrix of the `solve` test (numpy), 0 and 1. Levenberg–Marquardt as a model is ADR 0078 step 2 (its As built).
+
+**Later (2026-11-08):** ports of any number of axes ([ADR 0081](0081-shapes-are-lists-of-axes.md) stages 1–2) lift point 5's limit of two: declared and defined quantities over up to 8 axes are ports.

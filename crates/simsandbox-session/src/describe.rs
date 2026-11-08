@@ -21,7 +21,34 @@ pub fn shape(s: &Shape) -> Value {
         }
         Shape::Points { count, dim } => json!({"kind": "points", "count": count, "dim": dim}),
         Shape::Population { dim } => json!({"kind": "population", "dim": dim}),
+        Shape::Tensor { rank, dims } => {
+            json!({"kind": "axes", "axes": dims[..rank].to_vec(), "order": "first axis fastest"})
+        }
     }
+}
+
+/// A shape with its axes (ADR 0081): [`shape`], and `axes` as each axis's
+/// name (when given) and length (`"rows"` for a table's), the first
+/// varying fastest.
+pub fn shape_with_axes(s: &Shape, names: &[String]) -> Value {
+    let mut v = shape(s);
+    let axes: Vec<Value> = s
+        .axes()
+        .iter()
+        .enumerate()
+        .map(|(k, a)| {
+            let length = match a {
+                simsandbox_core::block::AxisLen::Cells(n) => json!(n),
+                simsandbox_core::block::AxisLen::Rows => json!("rows"),
+            };
+            match names.get(k) {
+                Some(n) => json!({"name": n, "length": length}),
+                None => json!({"length": length}),
+            }
+        })
+        .collect();
+    v["axes"] = Value::Array(axes);
+    v
 }
 
 fn port(p: &PortSpec) -> Value {
@@ -31,6 +58,9 @@ fn port(p: &PortSpec) -> Value {
         "unit": p.unit.to_string(),
         "shape": shape(&p.shape),
     });
+    if !p.axis_names.is_empty() {
+        v["axes"] = json!(p.axis_names);
+    }
     if !p.feedthrough.is_empty() {
         v["depends_on"] = json!(p.feedthrough);
     }

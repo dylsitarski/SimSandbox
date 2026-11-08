@@ -104,15 +104,84 @@ pub enum Shape {
     Population {
         dim: usize,
     },
+    /// Values over three or more axes, `dims` cells along each (the first
+    /// varying fastest), up to [`MAX_PORT_AXES`] (ADR 0081). Fewer axes
+    /// are a [`Shape::Grid`]: [`Shape::of_axes`] gives the canonical one.
+    Tensor {
+        rank: usize,
+        dims: [usize; MAX_PORT_AXES],
+    },
+}
+
+/// The most axes a port has (ADR 0081).
+pub const MAX_PORT_AXES: usize = 8;
+
+/// The length of one axis of a shape (ADR 0081): a number of cells, or a
+/// table's rows, whose number changes between steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisLen {
+    Cells(usize),
+    Rows,
 }
 
 impl Shape {
+    /// The canonical shape over axes of these lengths, the first varying
+    /// fastest (ADR 0081): none is a scalar, one or two a grid (a line
+    /// when one), more a tensor.
+    ///
+    /// # Panics
+    /// With more than [`MAX_PORT_AXES`] axes.
+    pub fn of_axes(dims: &[usize]) -> Self {
+        match *dims {
+            [] => Shape::Scalar,
+            [nx] => Shape::Grid { nx, ny: 1 },
+            [nx, ny] => Shape::Grid { nx, ny },
+            _ => {
+                assert!(dims.len() <= MAX_PORT_AXES, "at most {MAX_PORT_AXES} axes");
+                let mut d = [1; MAX_PORT_AXES];
+                d[..dims.len()].copy_from_slice(dims);
+                Shape::Tensor {
+                    rank: dims.len(),
+                    dims: d,
+                }
+            }
+        }
+    }
+
+    /// Its axes, the first varying fastest (ADR 0081): a vector's
+    /// components; a grid's x then y (one axis for a line); points' values
+    /// then the points; a population's values then its rows.
+    pub fn axes(&self) -> Vec<AxisLen> {
+        use AxisLen::{Cells, Rows};
+        match *self {
+            Shape::Scalar => Vec::new(),
+            Shape::Vector(n) => vec![Cells(n)],
+            Shape::Grid { nx, ny: 1 } => vec![Cells(nx)],
+            Shape::Grid { nx, ny } => vec![Cells(nx), Cells(ny)],
+            Shape::Points { count, dim } => vec![Cells(dim), Cells(count)],
+            Shape::Population { dim } => vec![Cells(dim), Rows],
+            Shape::Tensor { rank, dims } => dims[..rank].iter().map(|&n| Cells(n)).collect(),
+        }
+    }
+
+    /// The axes' lengths in cells, for a shape of fixed size.
+    pub fn dims(&self) -> Option<Vec<usize>> {
+        self.axes()
+            .into_iter()
+            .map(|a| match a {
+                AxisLen::Cells(n) => Some(n),
+                AxisLen::Rows => None,
+            })
+            .collect()
+    }
+
     pub fn len(&self) -> usize {
         match self {
             Shape::Scalar => 1,
             Shape::Vector(n) => *n,
             Shape::Grid { nx, ny } => nx * ny,
             Shape::Points { count, dim } => count * dim,
+            Shape::Tensor { rank, dims } => dims[..*rank].iter().product(),
             // Not in the fixed arrays.
             Shape::Population { .. } => 0,
         }
@@ -123,7 +192,10 @@ impl Shape {
     pub fn is_field(&self) -> bool {
         matches!(
             self,
-            Shape::Grid { .. } | Shape::Points { .. } | Shape::Population { .. }
+            Shape::Grid { .. }
+                | Shape::Points { .. }
+                | Shape::Population { .. }
+                | Shape::Tensor { .. }
         )
     }
 
@@ -137,6 +209,29 @@ impl Shape {
     }
 }
 
+/// A shape for messages: `scalar`, or its axes' lengths (`3 × 4`, `rows`),
+/// with what kind of shape it is.
+pub fn describe_shape(shape: &Shape) -> String {
+    let axes: Vec<String> = shape
+        .axes()
+        .iter()
+        .map(|a| match a {
+            AxisLen::Cells(n) => n.to_string(),
+            AxisLen::Rows => "rows".into(),
+        })
+        .collect();
+    let kind = match shape {
+        Shape::Scalar => return "scalar".into(),
+        Shape::Vector(_) => "vector",
+        Shape::Grid { ny: 1, .. } => "line",
+        Shape::Grid { .. } => "grid",
+        Shape::Points { .. } => "points",
+        Shape::Population { .. } => "population",
+        Shape::Tensor { .. } => "axes",
+    };
+    format!("{kind} {}", axes.join(" × "))
+}
+
 /// A typed, unit-aware port. Signal (causal) ports only in v0; physical
 /// (acausal) ports arrive with the equation-domain compiler.
 #[derive(Debug, Clone, PartialEq)]
@@ -145,6 +240,10 @@ pub struct PortSpec {
     pub causality: Causality,
     pub unit: Unit,
     pub shape: Shape,
+    /// Its axes' names, in [`Shape::axes`] order (ADR 0081), as its Block
+    /// calls them (`x`, `feature`, `run`); empty when the Block does not
+    /// name them. Names belong to the Block: wires do not compare them.
+    pub axis_names: Vec<String>,
     /// The outputs whose cells this output gives the positions of, along
     /// one grid axis (ADR 0024), e.g. a rod's `position` for its
     /// `temperature`; an axis of typed equations (ADR 0060) for every
@@ -180,11 +279,18 @@ impl PortSpec {
             causality: Causality::Input,
             unit,
             shape,
+            axis_names: Vec::new(),
             coordinate: Vec::new(),
             feedthrough: Vec::new(),
             param_feedthrough: None,
             state: None,
         }
+    }
+
+    /// Name its axes, in [`Shape::axes`] order (ADR 0081).
+    pub fn axes_named(mut self, names: &[&str]) -> Self {
+        self.axis_names = names.iter().map(|n| n.to_string()).collect();
+        self
     }
 
     /// Declare that this output depends on these inputs at the same
@@ -232,6 +338,7 @@ impl PortSpec {
             causality: Causality::Output,
             unit,
             shape,
+            axis_names: Vec::new(),
             coordinate: Vec::new(),
             feedthrough: Vec::new(),
             param_feedthrough: None,

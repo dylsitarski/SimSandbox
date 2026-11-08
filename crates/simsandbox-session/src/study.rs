@@ -310,31 +310,41 @@ impl StudyBlock {
         let mut from = Vec::new();
         let mut widths = Vec::new();
         let mut vectors = Vec::new();
-        let mut out = |name: String, unit: Unit, f: From, width: Option<usize>| -> Result<()> {
-            if ports.iter().any(|p| p.name == name) {
-                return Err(invalid(format!(
+        // The runs' axes (ADR 0081): over a grid of two parameters, each
+        // parameter's; else one, the runs.
+        let run_axes: Vec<String> = match grid2 {
+            Some(_) => plan.keys.iter().map(|k| port_name(k)).collect(),
+            None => vec!["run".into()],
+        };
+        let mut out =
+            |name: String, unit: Unit, f: From, vector: Option<(usize, &str)>| -> Result<()> {
+                let width = vector.map(|v| v.0);
+                if ports.iter().any(|p| p.name == name) {
+                    return Err(invalid(format!(
                     "two of its ports would be named '{name}': rename a result or an input block"
                 )));
-            }
-            // A line of cells, one per run, as array formulas read them
-            // (`grid k = runs`, `input a[k]`); a vector per run is over its
-            // own axis (fastest) and the runs (ADR 0080).
-            let shape = match (grid2, width) {
-                (Some((nx, ny)), None) => Shape::Grid { nx, ny },
-                (None, None) => Shape::Grid { nx: runs, ny: 1 },
-                (None, Some(n)) => Shape::Grid { nx: n, ny: runs },
-                (Some(_), Some(_)) => {
-                    return Err(invalid(format!(
-                        "sample.reduce.{name}: a vector per run over a grid of two parameters would have three axes; a port has at most two until ADR 0081 is built"
-                    )))
                 }
+                // A line of cells, one per run, as array formulas read them
+                // (`grid k = runs`, `input a[k]`); a vector per run is over its
+                // own axis (fastest) and the runs (ADR 0080).
+                let runs_dims: Vec<usize> = match grid2 {
+                    Some((nx, ny)) => vec![nx, ny],
+                    None => vec![runs],
+                };
+                let mut dims: Vec<usize> = width.into_iter().collect();
+                dims.extend(&runs_dims);
+                let mut names: Vec<&str> = vector.iter().map(|v| v.1).collect();
+                names.extend(run_axes.iter().map(String::as_str));
+                ports.push(
+                    PortSpec::output(&name, unit, Shape::of_axes(&dims))
+                        .axes_named(&names)
+                        .depends_on(&inputs),
+                );
+                from.push(f);
+                widths.push(width.unwrap_or(1));
+                vectors.push(width.is_some());
+                Ok(())
             };
-            ports.push(PortSpec::output(&name, unit, shape).depends_on(&inputs));
-            from.push(f);
-            widths.push(width.unwrap_or(1));
-            vectors.push(width.is_some());
-            Ok(())
-        };
         // Ids given by a points file, as the rows give them.
         if plan.ids.is_some() {
             out(
@@ -394,7 +404,12 @@ impl StudyBlock {
                     UnitOf::Signal(s) => signal_unit(&loaded, &fixed, &s),
                     UnitOf::Unknown => Unit::DIMENSIONLESS,
                 };
-                out(name.clone(), unit, From::Output(name.clone()), r.width())?;
+                out(
+                    name.clone(),
+                    unit,
+                    From::Output(name.clone()),
+                    r.width().map(|n| (n, r.axis_name())),
+                )?;
             }
         }
         // One parameter on a grid, run once each: its values are the
@@ -1144,6 +1159,46 @@ mod tests {
         assert!(at(65) < 0.0 && at(135) > 0.0 && (rs[65] - rs[135]).abs() < 1e-9);
         let s = crate::session::Session::load(e.name, e.text, &r).unwrap();
         assert!(s.iterates());
+    }
+
+    /// ADR 0081: a vector per run over a grid of two parameters is a port
+    /// of three axes, named, read by a typed-equation block over three.
+    #[test]
+    fn a_vector_per_run_over_a_grid_of_two_parameters_has_three_axes() {
+        let r = registry();
+        let file = json!({"format": 1, "models": {"decay": decay()},
+            "blocks": [
+                {"name": "s", "type": "study", "model": "decay",
+                 "sample": {"design": "grid",
+                            "params": [{"param": "x.x0", "range": [1.0, 2.0], "points": 2},
+                                       {"param": "k.y", "range": [1.0, 2.0], "points": 2}],
+                            "reduce": {"xs": "at_times(x.x, 0.5, 1)"}}},
+                {"name": "f", "type": "eq.equations", "equations": [
+                    "grid t3 = 2", "grid a = 2", "grid b = 2",
+                    "input xs[t3, a, b]", "late = at(xs, 1, 1, 1)", "both = sum(xs, t3)"]}],
+            "connections": [{"from": "s.xs", "to": "f.xs"}]});
+        let text = file.to_string();
+        let check = crate::describe::check(&text, &r);
+        assert_eq!(check["ok"], true, "{check}");
+        let loaded = simsandbox_file::load(&text, &r).unwrap();
+        let spec = loaded.model.block(loaded.ids["s"]).unwrap().spec().clone();
+        let xs = spec.ports.iter().find(|p| p.name == "xs").unwrap();
+        assert_eq!(xs.shape.dims(), Some(vec![2, 2, 2]));
+        assert_eq!(xs.axis_names, ["time", "x_x0", "k_y"]);
+        let sim = simsandbox_core::sim::Simulator::new(loaded.model, 0.0).unwrap();
+        let v = sim.output(loaded.ids["s"], "xs").unwrap().to_vec();
+        // Cell (time, x0, k), time fastest: x0·exp(-k·t).
+        for (k, kk) in [1.0f64, 2.0].iter().enumerate() {
+            for (j, x0) in [1.0, 2.0].iter().enumerate() {
+                for (i, t) in [0.5, 1.0].iter().enumerate() {
+                    let got = v[i + 2 * j + 4 * k];
+                    assert!((got - x0 * (-kk * t).exp()).abs() < 1e-9, "{got}");
+                }
+            }
+        }
+        let late = sim.output(loaded.ids["f"], "late").unwrap()[0];
+        assert!((late - 2.0 * (-2.0f64).exp()).abs() < 1e-9);
+        assert_eq!(sim.output(loaded.ids["f"], "both").unwrap().len(), 4);
     }
 
     #[test]

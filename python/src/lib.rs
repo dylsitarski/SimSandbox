@@ -141,7 +141,7 @@ fn results<'py>(
     }
     let outputs = PyList::empty(py);
     for o in &r.outputs {
-        let shape = catalogue::shape(&o.shape);
+        let shape = catalogue::shape_with_axes(&o.shape, &o.axes);
         outputs.append((&o.name, json(&shape), bytes(py, &o.values)))?;
     }
     let populations = PyList::empty(py);
@@ -258,6 +258,12 @@ fn run_probes<'py>(
                     &f.name,
                     dim,
                     frames.map(|v| bytes(py, v)).collect::<Vec<_>>(),
+                ))?,
+                // The last axis fastest, as numpy stores it (ADR 0081).
+                FieldShape::Tensor { rank, dims } => fields.append((
+                    &f.name,
+                    dims[..rank].iter().rev().copied().collect::<Vec<_>>(),
+                    bytes(py, &frames.flatten().copied().collect::<Vec<_>>()),
                 ))?,
             }
         }

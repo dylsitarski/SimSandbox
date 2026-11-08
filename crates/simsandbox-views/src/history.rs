@@ -40,6 +40,9 @@ pub enum FieldShape {
     /// Points of `dim` values whose number changes from sample to sample,
     /// such as a population's positions (ADR 0034).
     Population { dim: usize },
+    /// Values over three or more axes, the first fastest (ADR 0081):
+    /// recorded, not yet drawn by views.
+    Tensor { rank: usize, dims: [usize; 8] },
 }
 
 impl FieldShape {
@@ -49,6 +52,18 @@ impl FieldShape {
             FieldShape::Grid { nx, ny } => nx * ny,
             FieldShape::Points { count, dim } => count * dim,
             FieldShape::Population { .. } => 0,
+            FieldShape::Tensor { rank, dims } => dims[..rank].iter().product(),
+        }
+    }
+
+    /// Its axes' lengths, the first fastest, for a shape of fixed size.
+    pub fn dims(&self) -> Option<Vec<usize>> {
+        match *self {
+            FieldShape::Grid { nx, ny: 1 } => Some(vec![nx]),
+            FieldShape::Grid { nx, ny } => Some(vec![nx, ny]),
+            FieldShape::Points { count, dim } => Some(vec![dim, count]),
+            FieldShape::Population { .. } => None,
+            FieldShape::Tensor { rank, dims } => Some(dims[..rank].to_vec()),
         }
     }
 
@@ -64,7 +79,7 @@ impl FieldShape {
     pub fn point_dim(&self) -> Option<usize> {
         match *self {
             FieldShape::Points { dim, .. } | FieldShape::Population { dim } => Some(dim),
-            FieldShape::Grid { .. } => None,
+            FieldShape::Grid { .. } | FieldShape::Tensor { .. } => None,
         }
     }
 

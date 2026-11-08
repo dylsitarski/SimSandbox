@@ -960,6 +960,7 @@ fn start(c: &mut Composition, t_end: f64, keep: &Keep) -> Result<Vec<Running>, S
                     outputs.push(Output {
                         name,
                         shape: port.shape,
+                        axes: port.axis_names.clone(),
                         // Its rows, when it steps every `dt`: room from the
                         // start, not grown as they come.
                         values: Vec::with_capacity(

@@ -1833,16 +1833,7 @@ impl EquationSet {
             let (n, what) = match &line.lhs {
                 Lhs::State(n) => (n, format!("d{n}/dt")),
                 Lhs::Map(n) => (n, format!("{n}[n+1]")),
-                Lhs::Defined(n) => {
-                    if got.len() > 2 {
-                        return Err(definition_error(
-                            line.number,
-                            1,
-                            format!("{n} would be over {} axes ({}): a quantity has at most two; reduce along one with sum({n}, {})", got.len(), list(&got), axes[got[0]]),
-                        ));
-                    }
-                    continue;
-                }
+                Lhs::Defined(_) => continue,
             };
             let own = axes_of_name(n);
             if got.iter().any(|a| !own.contains(a)) {
@@ -1858,29 +1849,6 @@ impl EquationSet {
                     )
                 };
                 return Err(definition_error(line.number, line.offset + 1, how));
-            }
-        }
-        for (n, dims) in &shapes {
-            if dims.len() > 2 && !axes.contains(&n.as_str()) {
-                let line = state_decls
-                    .iter()
-                    .find(|d| &d.0 == n)
-                    .map(|d| d.1)
-                    .or_else(|| {
-                        declared
-                            .iter()
-                            .find(|d| d.0 == format!("{n}[0]"))
-                            .map(|d| d.2)
-                    })
-                    .unwrap_or(1);
-                return Err(definition_error(
-                    line,
-                    1,
-                    format!(
-                        "{n} is over {} axes: a quantity has at most two (ADR 0080)",
-                        dims.len()
-                    ),
-                ));
             }
         }
         // Tables (ADR 0079 stage 1a): in maps; a quantity over a table's
@@ -2859,27 +2827,26 @@ impl EquationSet {
         }
         // A port has its quantity's axes (ADR 0080): one is a line, two a
         // 2D field with the first along x.
-        let shape = |n: &str| match axes_of_name(n)[..] {
-            [] => Shape::Scalar,
-            [a] => Shape::Grid {
-                nx: grid[a].cells,
-                ny: 1,
-            },
-            [a, b, ..] => Shape::Grid {
-                nx: grid[a].cells,
-                ny: grid[b].cells,
-            },
+        // A port over its quantity's axes (ADR 0081): one is a line, two
+        // a 2D field with the first along x, more a tensor.
+        let shape = |n: &str| {
+            let dims: Vec<usize> = axes_of_name(n).iter().map(|&a| grid[a].cells).collect();
+            Shape::of_axes(&dims)
+        };
+        let named = |p: PortSpec, n: &str| -> PortSpec {
+            let names: Vec<&str> = axes_of_name(n).iter().map(|&a| axes[a]).collect();
+            p.axes_named(&names)
         };
         // A state's output is the state itself (ADR 0063), in state order.
         let mut state_at = 0;
         let mut ports: Vec<PortSpec> = inputs
             .iter()
-            .map(|n| PortSpec::input(n, unit_of(n), shape(n)))
+            .map(|n| named(PortSpec::input(n, unit_of(n), shape(n)), n))
             // Quantities over a table's rows are not ports (ADR 0079 1a).
             .chain(states.iter().filter(|n| row_table(n).is_none()).map(|n| {
                 let p = PortSpec::output(n, unit_of(n), shape(n)).from_state(state_at);
                 state_at += shape(n).len();
-                p
+                named(p, n)
             }))
             .chain(
                 defined
@@ -2889,7 +2856,7 @@ impl EquationSet {
                     .map(|(n, (u, r))| {
                         let u: Vec<&str> = u.iter().map(String::as_str).collect();
                         let r: Vec<&str> = r.iter().map(String::as_str).collect();
-                        PortSpec::output(n, unit_of(n), shape(n))
+                        named(PortSpec::output(n, unit_of(n), shape(n)), n)
                             .depends_on(&u)
                             .depends_on_params(&r)
                     }),
@@ -2903,8 +2870,11 @@ impl EquationSet {
                 .flat_map(|(n, _)| param_names(&n))
                 .collect();
             let bounds: Vec<&str> = bounds.iter().map(String::as_str).collect();
-            let mut x = PortSpec::output(&a.name, unit_of(&a.name), shape(&a.name))
-                .depends_on_params(&bounds);
+            let mut x = named(
+                PortSpec::output(&a.name, unit_of(&a.name), shape(&a.name)),
+                &a.name,
+            )
+            .depends_on_params(&bounds);
             for n in states.iter().chain(&defined) {
                 if let Some(k) = axes_of_name(n).iter().position(|&a| a == i) {
                     x = x.coordinate_of(n, k);
@@ -4045,16 +4015,19 @@ mod tests {
             m.contains("in the order of the grid lines: write u[x, y]"),
             "{m}"
         );
-        let m = with(&[
+        // Quantities over three axes are ports of three axes (ADR 0081).
+        let three = set(&[
+            "grid x = 4",
             "grid y = 3",
             "grid z = 2",
-            "dT/dt = k*T",
             "state u[x, y, z] = 0",
-            "du/dt = u",
-        ]);
-        assert!(m.contains("at most two"), "{m}");
-        let m = with(&["grid y = 3", "grid z = 2", "dT/dt = k*T", "q = T*y*z"]);
-        assert!(m.contains("q would be over 3 axes (x, y, z)"), "{m}");
+            "du/dt = 0*u",
+            "q = u*y*z",
+        ])
+        .unwrap();
+        let q = three.spec().ports.iter().find(|p| p.name == "q").unwrap();
+        assert_eq!(q.shape.dims(), Some(vec![4, 3, 2]));
+        assert_eq!(q.axis_names, ["x", "y", "z"]);
         let m = with(&["grid y = 3", "dT/dt = k*T", "q = sum(T, y)"]);
         assert!(m.contains("not y"), "{m}");
         let m = with(&["grid y = 3", "dT/dt = k*T", "q = on(T, x, y)"]);

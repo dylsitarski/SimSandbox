@@ -287,10 +287,12 @@ impl Model {
                 from.1, to.1
             )));
         }
+        // The same lengths along the same axes in order (ADR 0081); the
+        // axes' names belong to each block.
         if out.shape != inp.shape {
             return Err(SimError::ShapeMismatch {
-                from: format!("{:?}", out.shape),
-                to: format!("{:?}", inp.shape),
+                from: crate::block::describe_shape(&out.shape),
+                to: crate::block::describe_shape(&inp.shape),
             });
         }
         if !out.unit.same_as(&inp.unit) {

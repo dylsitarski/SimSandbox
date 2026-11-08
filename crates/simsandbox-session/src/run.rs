@@ -123,8 +123,23 @@ impl Thin {
 pub struct Output {
     pub name: String,
     pub shape: Shape,
+    /// Its axes' names, as its block names them (ADR 0081); may be empty.
+    pub axes: Vec<String>,
     /// Row by row, `shape.len()` values each.
     pub values: Vec<f64>,
+}
+
+/// The names of a port's axes (ADR 0081), as its block gives them.
+pub(crate) fn port_axes(
+    model: &simsandbox_core::graph::Model,
+    id: simsandbox_core::graph::BlockId,
+    port: &str,
+) -> Vec<String> {
+    model
+        .block(id)
+        .ok()
+        .and_then(|b| b.spec().ports.iter().find(|p| p.name == port))
+        .map_or_else(Vec::new, |p| p.axis_names.clone())
 }
 
 /// One population output at every row: its points, `dim` values each.
@@ -161,10 +176,25 @@ impl Results {
     pub fn write_csv(&self, out: &mut impl Write) -> io::Result<()> {
         let mut header: Vec<String> = self.index.iter().map(|(n, _)| n.clone()).collect();
         for o in &self.outputs {
-            if o.shape == Shape::Scalar {
-                header.push(o.name.clone());
-            } else {
-                header.extend((0..o.shape.len()).map(|i| format!("{}[{i}]", o.name)));
+            match o.shape {
+                Shape::Scalar => header.push(o.name.clone()),
+                // Over three or more axes, a cell by its places, the first
+                // fastest (ADR 0081): `T[3,2,0]`.
+                Shape::Tensor { rank, dims } => {
+                    let mut at = vec![0; rank];
+                    for _ in 0..o.shape.len() {
+                        let places: Vec<String> = at.iter().map(|p| p.to_string()).collect();
+                        header.push(format!("{}[{}]", o.name, places.join(",")));
+                        for (k, p) in at.iter_mut().enumerate() {
+                            *p += 1;
+                            if *p < dims[k] {
+                                break;
+                            }
+                            *p = 0;
+                        }
+                    }
+                }
+                _ => header.extend((0..o.shape.len()).map(|i| format!("{}[{i}]", o.name))),
             }
         }
         writeln!(out, "{}", header.join(","))?;
@@ -199,7 +229,7 @@ impl Results {
                 } else {
                     Value::Array(o.values.chunks(o.shape.len().max(1)).map(list).collect())
                 };
-                let shape = crate::describe::shape(&o.shape);
+                let shape = crate::describe::shape_with_axes(&o.shape, &o.axes);
                 (o.name.clone(), json!({"shape": shape, "values": values}))
             })
             .collect();
@@ -358,9 +388,10 @@ pub fn run_keeping(
         index: Vec::new(),
         outputs: fixed
             .iter()
-            .map(|(_, _, name, shape)| Output {
+            .map(|(id, port, name, shape)| Output {
                 name: name.clone(),
                 shape: *shape,
+                axes: port_axes(sim.model(), *id, port),
                 values: Vec::with_capacity(rows * shape.len()),
             })
             .collect(),
@@ -465,30 +496,19 @@ fn study_rows(loaded: simsandbox_file::Loaded) -> Result<Results, String> {
         let id = loaded.ids[&entry.name];
         let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
         let study = entry.type_name == crate::study::STUDY;
-        // A study's runs: a line of one value per run among its outputs,
-        // else the second axis of vectors per run when its points arrive
-        // as array inputs, else a grid over two parameters (ADR 0071,
-        // ADR 0080).
-        let grid = |s: Shape| match s {
-            Shape::Grid { nx, ny } => (nx, ny),
-            s => (s.len(), 1),
-        };
-        let line = spec
-            .outputs()
-            .map(|p| grid(p.shape))
-            .find(|&(_, ny)| ny == 1)
-            .map(|(nx, _)| nx);
-        let from_inputs = spec
-            .inputs()
-            .any(|p| matches!(p.shape, Shape::Grid { ny: 1, nx } if nx > 1));
         for port in spec.outputs() {
             let name = format!("{}.{}", entry.name, port.name);
             if study {
-                let (nx, ny) = grid(port.shape);
-                let (runs, width) = match line {
-                    Some(runs) => (runs, (nx * ny / runs.max(1)).max(1)),
-                    None if from_inputs => (ny, nx),
-                    None => (nx * ny, 1),
+                // A vector per run has its own axis first, named for its
+                // reduction (ADR 0080, ADR 0081); the rest are the runs.
+                let vector = matches!(
+                    port.axis_names.first().map(String::as_str),
+                    Some("sample" | "time")
+                );
+                let dims = port.shape.dims().unwrap_or_default();
+                let (runs, width) = match dims.split_first() {
+                    Some((&w, rest)) if vector => (rest.iter().product(), w),
+                    _ => (port.shape.len(), 1),
                 };
                 columns.push((id, port.name.clone(), name, runs, width));
             } else if !port.shape.is_variable() {
@@ -526,6 +546,14 @@ fn study_rows(loaded: simsandbox_file::Loaded) -> Result<Results, String> {
                     Shape::Vector(*width)
                 } else {
                     Shape::Scalar
+                },
+                axes: if *width > 1 {
+                    port_axes(sim.model(), *id, port)
+                        .into_iter()
+                        .take(1)
+                        .collect()
+                } else {
+                    Vec::new()
                 },
                 values: sim.output(*id, port).unwrap_or(&[]).to_vec(),
             })
@@ -752,9 +780,10 @@ pub(crate) fn run_study(
     let mut outputs: Vec<Output> = if reduced.is_empty() {
         first
             .iter()
-            .map(|(_, _, name, shape)| Output {
+            .map(|(id, port, name, shape)| Output {
                 name: name.clone(),
                 shape: *shape,
+                axes: port_axes(&loaded.model, *id, port),
                 values: Vec::new(),
             })
             .collect()
@@ -765,6 +794,9 @@ pub(crate) fn run_study(
                 name: r.name.clone(),
                 // A vector per run (ADR 0080).
                 shape: r.width().map_or(Shape::Scalar, Shape::Vector),
+                axes: r
+                    .width()
+                    .map_or_else(Vec::new, |_| vec![r.axis_name().into()]),
                 values: Vec::new(),
             })
             .collect()
