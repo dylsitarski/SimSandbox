@@ -299,7 +299,7 @@ fn run_file(args: &[String]) -> Result<(), String> {
             .map_err(io::Error::other)
             .and_then(|()| writeln!(out))
     } else {
-        for p in &r.populations {
+        for p in r.populations.iter().filter(|p| !p.rows) {
             eprintln!(
                 "note: {} is a population (variable length) and is not written \
                  (--format json includes it)",

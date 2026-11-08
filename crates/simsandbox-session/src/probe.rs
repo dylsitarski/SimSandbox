@@ -195,7 +195,9 @@ impl ProbeSpec {
 /// `to`, a CSV of `t` and its signals, and for each grid or point field
 /// `<stem>.<field>.npy` beside it (NumPy, little-endian `f64`), shaped
 /// `(samples, ny, nx)` for a grid and `(samples, count, dim)` for points.
-/// Populations, whose size varies, are not written: a note says so.
+/// Populations, whose size varies, are not written: a note says so. A
+/// table's rows (ADR 0079) go to `<stem>.<field>.csv`, a line per row per
+/// sample (`t,version,id,value`), so each row is followed by its id.
 /// Returns the files written and the notes.
 pub fn write_files(h: &History, dir: &Path, to: &str) -> io::Result<(Vec<PathBuf>, Vec<String>)> {
     let mut written = Vec::new();
@@ -221,6 +223,17 @@ pub fn write_files(h: &History, dir: &Path, to: &str) -> io::Result<(Vec<PathBuf
                 ));
                 continue;
             }
+            FieldShape::Rows { dim } => {
+                let path = dir.join(format!("{stem}.{}.csv", f.name));
+                let mut out = io::BufWriter::new(std::fs::File::create(&path)?);
+                out.write_all(rows_header(h.index(), dim).as_bytes())?;
+                for k in 0..h.len() {
+                    out.write_all(rows_lines(h.times()[k], f.frame(k), dim).as_bytes())?;
+                }
+                out.flush()?;
+                written.push(path);
+                continue;
+            }
         };
         let path = dir.join(format!("{stem}.{}.npy", f.name));
         let mut out = io::BufWriter::new(std::fs::File::create(&path)?);
@@ -233,6 +246,33 @@ pub fn write_files(h: &History, dir: &Path, to: &str) -> io::Result<(Vec<PathBuf
         written.push(path);
     }
     Ok((written, notes))
+}
+
+/// The header of a rows file (ADR 0079): the index, the table's
+/// version, the row's id, its value (`value[0]`, … for several).
+fn rows_header(index: &str, dim: usize) -> String {
+    let values: Vec<String> = match dim {
+        1 => vec!["value".into()],
+        _ => (0..dim).map(|c| format!("value[{c}]")).collect(),
+    };
+    format!("{index},version,id,{}\n", values.join(","))
+}
+
+/// One sample of a rows field as lines of its file: one per row, none
+/// when it has no rows or was not recorded.
+fn rows_lines(t: f64, frame: &[f64], dim: usize) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    if let Some((version, ids, values)) = simsandbox_views::history::rows_frame(frame, dim) {
+        for (r, id) in ids.iter().enumerate() {
+            let _ = write!(out, "{t},{version},{id}");
+            for v in &values[r * dim..(r + 1) * dim] {
+                let _ = write!(out, ",{v}");
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// CSV: `t`, then one column per signal, one row per sample.
@@ -270,8 +310,20 @@ pub fn to_json(h: &History) -> serde_json::Value {
                 FieldShape::Points { count, dim } => json!({"points": [count, dim]}),
                 FieldShape::Population { dim } => json!({"population": dim}),
                 FieldShape::Tensor { rank, dims } => json!({"axes": dims[..rank].to_vec()}),
+                FieldShape::Rows { dim } => json!({"rows": dim}),
             };
-            let frames: Vec<Value> = (0..h.len()).map(|k| list(f.frame(k))).collect();
+            let frames: Vec<Value> = (0..h.len())
+                .map(|k| match (f.shape, f.rows(k)) {
+                    // Rows by id (ADR 0079): null where not recorded.
+                    (FieldShape::Rows { .. }, Some((version, ids, values))) => json!({
+                        "version": version,
+                        "ids": ids.iter().map(|&i| i as u64).collect::<Vec<_>>(),
+                        "values": list(values),
+                    }),
+                    (FieldShape::Rows { .. }, None) => Value::Null,
+                    _ => list(f.frame(k)),
+                })
+                .collect();
             (f.name.clone(), json!({"shape": shape, "frames": frames}))
         })
         .collect();
@@ -290,12 +342,23 @@ pub(crate) struct Stream {
     /// Bytes of the CSV written so far.
     written: u64,
     npys: Vec<Npy>,
+    /// A file per table's rows (ADR 0079), a line per row per sample.
+    rows: Vec<RowsFile>,
     samples: usize,
     /// Each sample's time and where its CSV row starts.
     index: Option<Vec<(f64, u64)>>,
     last_flush: std::time::Instant,
     /// The files, for messages.
     pub paths: Vec<PathBuf>,
+}
+
+/// A rows file being appended to (ADR 0079): where each sample starts,
+/// while samples are indexed, so a rewind can cut it back.
+struct RowsFile {
+    file: io::BufWriter<std::fs::File>,
+    header: u64,
+    written: u64,
+    starts: Vec<u64>,
 }
 
 /// A `.npy` file being appended to.
@@ -362,9 +425,24 @@ impl Stream {
         csv.write_all(header.as_bytes())?;
         let stem = to.strip_suffix(".csv").unwrap_or(to);
         let mut npys = Vec::new();
+        let mut rows = Vec::new();
         let mut notes = Vec::new();
         for (name, shape) in fields {
             let frame: Vec<usize> = match *shape {
+                FieldShape::Rows { dim } => {
+                    let path = dir.join(format!("{stem}.{name}.csv"));
+                    let mut file = io::BufWriter::new(std::fs::File::create(&path)?);
+                    let header = rows_header("t", dim);
+                    file.write_all(header.as_bytes())?;
+                    rows.push(RowsFile {
+                        file,
+                        header: header.len() as u64,
+                        written: header.len() as u64,
+                        starts: Vec::new(),
+                    });
+                    paths.push(path);
+                    continue;
+                }
                 FieldShape::Grid { nx, ny } => vec![ny, nx],
                 FieldShape::Points { count, dim } => vec![count, dim],
                 FieldShape::Tensor { rank, dims } => dims[..rank].iter().rev().copied().collect(),
@@ -389,6 +467,7 @@ impl Stream {
                 header,
                 written: header,
                 npys,
+                rows,
                 samples: 0,
                 index: index.then(Vec::new),
                 last_flush: std::time::Instant::now(),
@@ -418,10 +497,19 @@ impl Stream {
         }
         self.csv.write_all(row.as_bytes())?;
         self.written += row.len() as u64;
-        let fixed = fields
-            .iter()
-            .zip(frames)
-            .filter(|((_, s), _)| !matches!(s, FieldShape::Population { .. }));
+        let mut rows = self.rows.iter_mut();
+        for ((_, s), frame) in fields.iter().zip(frames) {
+            if let FieldShape::Rows { dim } = *s {
+                let f = rows.next().expect("a file per rows field");
+                if self.index.is_some() {
+                    f.starts.push(f.written);
+                }
+                let lines = rows_lines(t, frame, dim);
+                f.file.write_all(lines.as_bytes())?;
+                f.written += lines.len() as u64;
+            }
+        }
+        let fixed = fields.iter().zip(frames).filter(|((_, s), _)| !s.varies());
         for (npy, (_, frame)) in self.npys.iter_mut().zip(fixed) {
             let len: usize = npy.frame.iter().product();
             if frame.len() == len {
@@ -446,7 +534,10 @@ impl Stream {
         match (on, self.index.is_some()) {
             (true, false) => self.index = Some(Vec::new()),
             (false, true) => self.index = None,
-            _ => {}
+            _ => return,
+        }
+        for f in &mut self.rows {
+            f.starts.clear();
         }
     }
 
@@ -455,6 +546,9 @@ impl Stream {
         use std::io::Seek;
         self.last_flush = std::time::Instant::now();
         self.csv.flush()?;
+        for f in &mut self.rows {
+            f.file.flush()?;
+        }
         for npy in &mut self.npys {
             npy.file.flush()?;
             let f = npy.file.get_mut();
@@ -489,6 +583,18 @@ impl Stream {
         f.set_len(at)?;
         f.seek(io::SeekFrom::Start(at))?;
         self.written = at;
+        for r in &mut self.rows {
+            let at = match t {
+                None => r.header,
+                Some(_) => r.starts.get(keep).copied().unwrap_or(r.written),
+            };
+            r.starts.truncate(keep);
+            r.file.flush()?;
+            let f = r.file.get_mut();
+            f.set_len(at)?;
+            f.seek(io::SeekFrom::Start(at))?;
+            r.written = at;
+        }
         for npy in &mut self.npys {
             npy.file.flush()?;
             let bytes = (NPY_HEADER + keep * npy.frame.iter().product::<usize>() * 8) as u64;

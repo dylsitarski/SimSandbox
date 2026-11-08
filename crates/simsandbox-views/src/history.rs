@@ -43,6 +43,19 @@ pub enum FieldShape {
     /// Values over three or more axes, the first fastest (ADR 0081):
     /// recorded, not yet drawn by views.
     Tensor { rank: usize, dims: [usize; 8] },
+    /// A table's rows (ADR 0079 stage 1c): each frame the table's
+    /// version, the number of rows, their ids, then `dim` values per row
+    /// (the kernel's `RowsFrame`). Recorded by id, not yet drawn.
+    Rows { dim: usize },
+}
+
+/// A rows frame's parts (ADR 0079): its version, the rows' ids and their
+/// values, `dim` per row; `None` if `v` is not one.
+pub fn rows_frame(v: &[f64], dim: usize) -> Option<(u64, &[f64], &[f64])> {
+    let (&version, rest) = v.split_first()?;
+    let (&n, rest) = rest.split_first()?;
+    let n = n as usize;
+    (rest.len() == n * (1 + dim)).then(|| (version as u64, &rest[..n], &rest[n..]))
 }
 
 impl FieldShape {
@@ -51,9 +64,17 @@ impl FieldShape {
         match *self {
             FieldShape::Grid { nx, ny } => nx * ny,
             FieldShape::Points { count, dim } => count * dim,
-            FieldShape::Population { .. } => 0,
+            FieldShape::Population { .. } | FieldShape::Rows { .. } => 0,
             FieldShape::Tensor { rank, dims } => dims[..rank].iter().product(),
         }
+    }
+
+    /// Whether its frames vary in length (populations, rows).
+    pub fn varies(&self) -> bool {
+        matches!(
+            self,
+            FieldShape::Population { .. } | FieldShape::Rows { .. }
+        )
     }
 
     /// Its axes' lengths, the first fastest, for a shape of fixed size.
@@ -62,7 +83,7 @@ impl FieldShape {
             FieldShape::Grid { nx, ny: 1 } => Some(vec![nx]),
             FieldShape::Grid { nx, ny } => Some(vec![nx, ny]),
             FieldShape::Points { count, dim } => Some(vec![dim, count]),
-            FieldShape::Population { .. } => None,
+            FieldShape::Population { .. } | FieldShape::Rows { .. } => None,
             FieldShape::Tensor { rank, dims } => Some(dims[..rank].to_vec()),
         }
     }
@@ -71,6 +92,7 @@ impl FieldShape {
     pub fn fits(&self, n: usize) -> bool {
         match *self {
             FieldShape::Population { dim } => dim > 0 && n.is_multiple_of(dim),
+            FieldShape::Rows { .. } => n >= 2,
             _ => n == self.len(),
         }
     }
@@ -79,7 +101,7 @@ impl FieldShape {
     pub fn point_dim(&self) -> Option<usize> {
         match *self {
             FieldShape::Points { dim, .. } | FieldShape::Population { dim } => Some(dim),
-            FieldShape::Grid { .. } | FieldShape::Tensor { .. } => None,
+            FieldShape::Grid { .. } | FieldShape::Tensor { .. } | FieldShape::Rows { .. } => None,
         }
     }
 
@@ -99,6 +121,46 @@ impl Field {
     /// The values at sample `k`.
     pub fn frame(&self, k: usize) -> &[f64] {
         &self.frames[k]
+    }
+
+    /// Rows at sample `k` (ADR 0079): version, ids, values; `None` for
+    /// another shape or a sample not recorded.
+    pub fn rows(&self, k: usize) -> Option<(u64, &[f64], &[f64])> {
+        match self.shape {
+            FieldShape::Rows { dim } => rows_frame(&self.frames[k], dim),
+            _ => None,
+        }
+    }
+
+    /// The row with `id` followed through the samples (ADR 0079): its
+    /// values at each (`dim` each), NaN where it is not there.
+    pub fn by_id(&self, id: u64) -> Vec<f64> {
+        let FieldShape::Rows { dim } = self.shape else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(self.frames.len() * dim);
+        for k in 0..self.frames.len() {
+            let at = self.rows(k).and_then(|(_, ids, values)| {
+                let r = ids.iter().position(|&i| i as u64 == id)?;
+                Some(&values[r * dim..(r + 1) * dim])
+            });
+            match at {
+                Some(v) => out.extend_from_slice(v),
+                None => out.extend(std::iter::repeat_n(f64::NAN, dim)),
+            }
+        }
+        out
+    }
+
+    /// Every id seen in any sample, in increasing order.
+    pub fn ids(&self) -> Vec<u64> {
+        let mut seen: Vec<u64> = (0..self.frames.len())
+            .filter_map(|k| self.rows(k))
+            .flat_map(|(_, ids, _)| ids.iter().map(|&i| i as u64))
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen
     }
 }
 
@@ -420,8 +482,12 @@ impl History {
             // A misshapen frame is recorded as NaN (empty for a population);
             // an empty one as not recorded (ADR 0063: a field wired after
             // the run started has no past), which views draw as nothing.
-            let population = matches!(f.shape, FieldShape::Population { .. });
-            f.frames.push(if f.shape.fits(frame.len()) {
+            let population = f.shape.varies();
+            let fits = match f.shape {
+                FieldShape::Rows { dim } => rows_frame(frame, dim).is_some(),
+                _ => f.shape.fits(frame.len()),
+            };
+            f.frames.push(if fits {
                 frame.to_vec()
             } else if population || frame.is_empty() {
                 Vec::new()
@@ -465,7 +531,7 @@ impl History {
         self.population_values = self
             .fields
             .iter()
-            .filter(|f| matches!(f.shape, FieldShape::Population { .. }))
+            .filter(|f| f.shape.varies())
             .flat_map(|f| f.frames.iter().map(Vec::len))
             .sum();
     }

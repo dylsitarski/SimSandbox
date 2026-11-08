@@ -2503,7 +2503,7 @@ impl ModelFile {
             .ok_or_else(|| format!("'{signal}' is not a block's output"))?;
         if out.shape.is_variable() {
             return Err(format!(
-                "'{signal}' is a population: a probe cannot hold it"
+                "'{signal}' varies in length (a population, or a table's rows): a probe records it but cannot pass it on to a block yet"
             ));
         }
         let hold = simsandbox_core::hold::SampleHold::new(

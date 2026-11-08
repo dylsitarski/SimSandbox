@@ -124,6 +124,40 @@ def test_populations_have_a_varying_number_of_points():
     assert np.array_equal(again["sheep.position"][-1], positions[-1])
 
 
+def test_rows_of_a_table_come_back_by_id():
+    # ADR 0079: rows with ids, passed between blocks and followed by id.
+    m = ss.Model()
+    m.add_block("pop", "eq.equations", "iterate", equations=[
+        "table pts max 8",
+        "start pts = 3",
+        "state age[pts] = id(pts)",
+        "state size[pts] = 1 + id(pts)",
+        "age[n+1] = age + 1",
+        "size[n+1] = size*2",
+        "remove pts where age > 4",
+        "add pts where rows(pts) < 4: age = 0, size = 1",
+        "of_two = of(size, 2)",
+    ])
+    m.add_block("acc", "eq.equations", "iterate", equations=[
+        "table q", "input size[q]", "state seen[q] = 0", "seen[n+1] = seen + size",
+    ])
+    m.connect("pop.size", "acc.size")
+    m.set_run(dt=1.0, t_end=8.0)
+    r = m.run()
+    size = r["pop.size"]
+    assert isinstance(size, ss.Rows) and len(size) == r.rows
+    assert list(size.ids[0]) == [0, 1, 2] and list(size.values[0]) == [1.0, 2.0, 3.0]
+    assert np.all(np.diff(size.versions) >= 0)
+    # Row 2 by id is what the model says it is, NaN once it is gone.
+    assert np.array_equal(size.of(2), r["pop.of_two"], equal_nan=True)
+    ids, table = size.by_id()
+    assert list(ids) == sorted(set(np.concatenate(size.ids)))
+    assert np.array_equal(table[:, list(ids).index(2)], r["pop.of_two"], equal_nan=True)
+    # Downstream follows the same rows.
+    seen = r["acc.seen"]
+    assert all(np.array_equal(a, b) for a, b in zip(seen.ids, size.ids))
+
+
 def test_problems_are_reported_where_they_are():
     m = ss.Model().add_block("a", "eq.lorenz", "leapfrog")
     report = m.check()

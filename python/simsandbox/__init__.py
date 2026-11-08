@@ -33,6 +33,7 @@ __all__ = [
     "Probe",
     "ProbeRun",
     "Results",
+    "Rows",
     "Composed",
     "Run",
     "ModelError",
@@ -812,13 +813,75 @@ class Composed:
 
     def __getitem__(self, name: str):
         for r in self.models.values():
-            if name in r.outputs or name in r.populations:
+            if name in r.outputs or name in r.populations or name in r.over_rows:
                 return r[name]
         raise KeyError(name)
 
     def __repr__(self) -> str:
         rows = ", ".join(f"{n}: {r.rows} rows" for n, r in self.models.items())
         return f"Composed({rows})"
+
+
+class Rows:
+    """A quantity over a table's rows, followed by id (ADR 0079), at each
+    row of the results (or sample of a probe).
+
+    - ``ids``: a list over rows of int arrays, the ids of the rows there.
+    - ``values``: a list over rows of arrays, ``(n,)`` (or ``(n, dim)``),
+      in the order of ``ids``.
+    - ``versions``: the table's structure version at each row (-1 where
+      nothing was recorded); equal versions mean the same rows.
+
+    :meth:`of` follows one row by its id; :meth:`by_id` gives every id
+    seen and a matrix over them, NaN where a row is not there.
+    """
+
+    def __init__(self, name: str, dim: int, frames: list):
+        self.name = name
+        self.dim = dim
+        self.ids: list[np.ndarray] = []
+        self.values: list[np.ndarray] = []
+        versions = []
+        for f in frames:
+            v = _array(f, (-1,))
+            if len(v) < 2:
+                versions.append(-1)
+                self.ids.append(np.zeros(0, dtype=np.int64))
+                self.values.append(np.zeros((0,) if dim == 1 else (0, dim)))
+                continue
+            n = int(v[1])
+            versions.append(int(v[0]))
+            self.ids.append(v[2 : 2 + n].astype(np.int64))
+            vals = v[2 + n :]
+            self.values.append(vals if dim == 1 else vals.reshape(n, dim))
+        self.versions = np.array(versions, dtype=np.int64)
+
+    def __len__(self) -> int:
+        return len(self.ids)
+
+    def of(self, id: int) -> np.ndarray:
+        """The row ``id`` at each row of the results, NaN where it is not
+        there: shape ``(rows,)`` (or ``(rows, dim)``)."""
+        out = np.full((len(self),) if self.dim == 1 else (len(self), self.dim), np.nan)
+        for k, (ids, vals) in enumerate(zip(self.ids, self.values)):
+            at = np.nonzero(ids == id)[0]
+            if len(at):
+                out[k] = vals[at[0]]
+        return out
+
+    def by_id(self) -> tuple[np.ndarray, np.ndarray]:
+        """Every id seen, increasing, and the values over them:
+        ``(rows, ids)`` (or ``(rows, ids, dim)``), NaN where a row is not
+        there."""
+        seen = np.unique(np.concatenate(self.ids)) if self.ids else np.zeros(0, np.int64)
+        shape = (len(self), len(seen)) + (() if self.dim == 1 else (self.dim,))
+        out = np.full(shape, np.nan)
+        for k, (ids, vals) in enumerate(zip(self.ids, self.values)):
+            out[k, np.searchsorted(seen, ids)] = vals
+        return seen, out
+
+    def __repr__(self) -> str:
+        return f"Rows({self.name!r}, rows={len(self)}, dim={self.dim})"
 
 
 class Results:
@@ -834,11 +897,13 @@ class Results:
       :meth:`axes` names them.
     - ``populations``: every population output: a list over rows of
       ``(n, dim)`` arrays (n varies).
+    - ``over_rows``: every quantity over a table's rows, as :class:`Rows`
+      (ids, values and versions at each row; ADR 0079).
     - ``labels`` (speed and accuracy), ``notes`` (algebraic loops) and
       ``warnings``.
 
-    ``results[name]`` looks in the index, then the outputs, then the
-    populations.
+    ``results[name]`` looks in the index, then the outputs, the
+    populations and the quantities over rows.
     """
 
     def __init__(self, raw: dict):
@@ -855,6 +920,9 @@ class Results:
         self.populations: dict[str, list[np.ndarray]] = {
             name: [_array(f, (-1, dim)) for f in frames]
             for name, dim, frames in raw["populations"]
+        }
+        self.over_rows: dict[str, Rows] = {
+            name: Rows(name, dim, frames) for name, dim, frames in raw.get("over_rows", [])
         }
         self.labels: dict | None = json.loads(raw["labels"])
         self.notes: list[str] = raw["notes"]
@@ -874,13 +942,15 @@ class Results:
         return list(reversed(axes))
 
     def __getitem__(self, name: str):
-        for d in (self.index, self.outputs, self.populations):
+        for d in (self.index, self.outputs, self.populations, self.over_rows):
             if name in d:
                 return d[name]
         raise KeyError(f"{name!r}; outputs: {list(self.outputs)}")
 
     def __contains__(self, name: str) -> bool:
-        return name in self.index or name in self.outputs or name in self.populations
+        return any(
+            name in d for d in (self.index, self.outputs, self.populations, self.over_rows)
+        )
 
     def __repr__(self) -> str:
         return (
@@ -898,13 +968,14 @@ class Probe:
       ``(samples, count, dim)``.
     - ``populations``: each population, a list over samples of
       ``(n, dim)`` arrays.
+    - ``over_rows``: each quantity over a table's rows, as :class:`Rows`.
 
-    ``probe[name]`` looks in ``t``, the signals, the fields, then the
-    populations.
+    ``probe[name]`` looks in ``t``, the signals, the fields, the
+    populations, then the quantities over rows.
     """
 
     def __init__(self, raw: tuple):
-        name, times, signals, fields, populations = raw
+        name, times, signals, fields, populations, over_rows = raw
         self.name: str = name
         self.t = _array(times, (-1,))
         n = len(self.t)
@@ -913,11 +984,12 @@ class Probe:
         self.populations = {
             p: [_array(f, (-1, dim)) for f in frames] for p, dim, frames in populations
         }
+        self.over_rows = {r: Rows(r, dim, frames) for r, dim, frames in over_rows}
 
     def __getitem__(self, name: str):
         if name == "t":
             return self.t
-        for d in (self.signals, self.fields, self.populations):
+        for d in (self.signals, self.fields, self.populations, self.over_rows):
             if name in d:
                 return d[name]
         raise KeyError(f"{name!r}; recorded: {list(self.signals) + list(self.fields)}")

@@ -103,6 +103,8 @@ fn keep(signals: Option<Vec<String>>, every: usize) -> simsandbox_session::run::
 
 /// Run a model file. Returns a dict: `index` and `outputs` as lists of
 /// (name, shape, bytes), `populations` as (name, dim, [bytes per row]),
+/// `over_rows` (a table's rows, ADR 0079) as (name, dim, [bytes per row],
+/// each frame `[version, n, ids…, values…]`),
 /// and `labels`, `notes`, `warnings` as JSON text. `signals` and `every`
 /// keep only those outputs and every so many steps (ADR 0076).
 #[pyfunction]
@@ -145,14 +147,19 @@ fn results<'py>(
         outputs.append((&o.name, json(&shape), bytes(py, &o.values)))?;
     }
     let populations = PyList::empty(py);
+    let over_rows = PyList::empty(py);
     for p in &r.populations {
         let frames: Vec<_> = p.frames.iter().map(|f| bytes(py, f)).collect();
-        populations.append((&p.name, p.dim, frames))?;
+        match p.rows {
+            true => over_rows.append((&p.name, p.dim, frames))?,
+            false => populations.append((&p.name, p.dim, frames))?,
+        }
     }
     d.set_item("rows", rows)?;
     d.set_item("index", index)?;
     d.set_item("outputs", outputs)?;
     d.set_item("populations", populations)?;
+    d.set_item("over_rows", over_rows)?;
     d.set_item(
         "labels",
         json(&serde_json::json!(r.labels.map(catalogue::labels))),
@@ -241,6 +248,7 @@ fn run_probes<'py>(
         }
         let fields = PyList::empty(py);
         let populations = PyList::empty(py);
+        let over_rows = PyList::empty(py);
         for f in h.fields().iter() {
             let frames = (0..h.len()).map(|k| f.frame(k));
             match f.shape {
@@ -259,6 +267,11 @@ fn run_probes<'py>(
                     dim,
                     frames.map(|v| bytes(py, v)).collect::<Vec<_>>(),
                 ))?,
+                FieldShape::Rows { dim } => over_rows.append((
+                    &f.name,
+                    dim,
+                    frames.map(|v| bytes(py, v)).collect::<Vec<_>>(),
+                ))?,
                 // The last axis fastest, as numpy stores it (ADR 0081).
                 FieldShape::Tensor { rank, dims } => fields.append((
                     &f.name,
@@ -273,6 +286,7 @@ fn run_probes<'py>(
             signals,
             fields,
             populations,
+            over_rows,
         ))?;
     }
     let (written, notes) = files;

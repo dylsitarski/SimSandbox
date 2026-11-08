@@ -142,12 +142,37 @@ pub(crate) fn port_axes(
         .map_or_else(Vec::new, |p| p.axis_names.clone())
 }
 
-/// One population output at every row: its points, `dim` values each.
+/// One output of varying length at every row: a population's points,
+/// `dim` values each, or a table's rows (`rows`, ADR 0079 stage 1c), each
+/// frame the table's version, the number of rows, their ids and then
+/// `dim` values per row (the kernel's `RowsFrame`).
 #[derive(Clone, Debug)]
 pub struct Population {
     pub name: String,
     pub dim: usize,
     pub frames: Vec<Vec<f64>>,
+    pub rows: bool,
+}
+
+impl Population {
+    /// A table's rows at row `k` of the results: version, ids, values.
+    pub fn rows_at(&self, k: usize) -> Option<(u64, &[f64], &[f64])> {
+        if !self.rows {
+            return None;
+        }
+        simsandbox_views::history::rows_frame(self.frames.get(k)?, self.dim)
+    }
+
+    /// Every id any row of the results has, in increasing order.
+    pub fn ids(&self) -> Vec<u64> {
+        let mut seen: Vec<u64> = (0..self.frames.len())
+            .filter_map(|k| self.rows_at(k))
+            .flat_map(|(_, ids, _)| ids.iter().map(|&i| i as u64))
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen
+    }
 }
 
 /// Everything a run produced.
@@ -171,8 +196,11 @@ impl Results {
     }
 
     /// CSV: the index, then one column per output element
-    /// (`block.port[i]` for vectors, grids and point sets). Populations,
-    /// whose length varies, are left out.
+    /// (`block.port[i]` for vectors, grids and point sets), then a table's
+    /// rows by id (ADR 0079): a column per id any row has
+    /// (`block.port#7`, `block.port#7[c]` for several values a row), NaN
+    /// where that row is not there. Populations, whose members have no
+    /// ids, are left out.
     pub fn write_csv(&self, out: &mut impl Write) -> io::Result<()> {
         let mut header: Vec<String> = self.index.iter().map(|(n, _)| n.clone()).collect();
         for o in &self.outputs {
@@ -197,12 +225,37 @@ impl Results {
                 _ => header.extend((0..o.shape.len()).map(|i| format!("{}[{i}]", o.name))),
             }
         }
+        let by_id: Vec<(&Population, Vec<u64>)> = self
+            .populations
+            .iter()
+            .filter(|p| p.rows)
+            .map(|p| (p, p.ids()))
+            .collect();
+        for (p, ids) in &by_id {
+            for id in ids {
+                match p.dim {
+                    1 => header.push(format!("{}#{id}", p.name)),
+                    d => header.extend((0..d).map(|c| format!("{}#{id}[{c}]", p.name))),
+                }
+            }
+        }
         writeln!(out, "{}", header.join(","))?;
         for r in 0..self.rows() {
             let mut cells: Vec<String> = self.index.iter().map(|(_, v)| v[r].to_string()).collect();
             for o in &self.outputs {
                 let n = o.shape.len();
                 cells.extend(o.values[r * n..(r + 1) * n].iter().map(f64::to_string));
+            }
+            for (p, ids) in &by_id {
+                let d = p.dim;
+                let mut row = vec![f64::NAN; ids.len() * d];
+                if let Some((_, rids, values)) = p.rows_at(r) {
+                    for (k, &id) in rids.iter().enumerate() {
+                        let at = ids.binary_search(&(id as u64)).expect("seen");
+                        row[at * d..(at + 1) * d].copy_from_slice(&values[k * d..(k + 1) * d]);
+                    }
+                }
+                cells.extend(row.iter().map(f64::to_string));
             }
             writeln!(out, "{}", cells.join(","))?;
         }
@@ -211,8 +264,9 @@ impl Results {
 
     /// JSON: the index as lists; each output as a list over rows of its
     /// value (a number for a scalar, else a list in the port's element
-    /// order); populations as a list over rows of points. JSON has no
-    /// infinities or NaN: they become null.
+    /// order); populations as a list over rows of points; a table's rows
+    /// (`over_rows`, ADR 0079) as lists over rows of the version, the ids
+    /// and the values. JSON has no infinities or NaN: they become null.
     pub fn to_json(&self) -> Value {
         let list = |v: &[f64]| Value::Array(v.iter().map(|&x| number(x)).collect());
         let index: serde_json::Map<String, Value> = self
@@ -233,9 +287,42 @@ impl Results {
                 (o.name.clone(), json!({"shape": shape, "values": values}))
             })
             .collect();
+        let over_rows: serde_json::Map<String, Value> = self
+            .populations
+            .iter()
+            .filter(|p| p.rows)
+            .map(|p| {
+                let parts: Vec<_> = (0..p.frames.len()).map(|k| p.rows_at(k)).collect();
+                let versions: Vec<Value> = parts
+                    .iter()
+                    .map(|f| f.map_or(Value::Null, |f| json!(f.0)))
+                    .collect();
+                let ids: Vec<Value> = parts
+                    .iter()
+                    .map(|f| {
+                        let ids = f.map_or(&[][..], |f| f.1);
+                        json!(ids.iter().map(|&i| i as u64).collect::<Vec<_>>())
+                    })
+                    .collect();
+                let values: Vec<Value> = parts
+                    .iter()
+                    .map(|f| {
+                        let v = f.map_or(&[][..], |f| f.2);
+                        match p.dim {
+                            1 => list(v),
+                            d => Value::Array(v.chunks(d).map(list).collect()),
+                        }
+                    })
+                    .collect();
+                let body =
+                    json!({"dim": p.dim, "versions": versions, "ids": ids, "values": values});
+                (p.name.clone(), body)
+            })
+            .collect();
         let populations: serde_json::Map<String, Value> = self
             .populations
             .iter()
+            .filter(|p| !p.rows)
             .map(|p| {
                 let frames: Vec<Value> = p
                     .frames
@@ -251,6 +338,7 @@ impl Results {
             "index": index,
             "outputs": outputs,
             "populations": populations,
+            "over_rows": over_rows,
             "labels": self.labels.map(crate::describe::labels),
             "notes": self.notes,
             "warnings": self.warnings,
@@ -365,9 +453,10 @@ pub fn run_keeping(
                 continue;
             }
             match port.shape {
-                Shape::Population { dim } => variable.push((id, port.name.clone(), name, dim)),
-                // Rows by id come with ADR 0079 stage 1c.
-                Shape::Rows { .. } => {}
+                Shape::Population { dim } => {
+                    variable.push((id, port.name.clone(), name, dim, false))
+                }
+                Shape::Rows { dim } => variable.push((id, port.name.clone(), name, dim, true)),
                 shape => fixed.push((id, port.name.clone(), name, shape)),
             }
         }
@@ -398,10 +487,11 @@ pub fn run_keeping(
             .collect(),
         populations: variable
             .iter()
-            .map(|(_, _, name, dim)| Population {
+            .map(|(_, _, name, dim, rows)| Population {
                 name: name.clone(),
                 dim: *dim,
                 frames: Vec::new(),
+                rows: *rows,
             })
             .collect(),
         labels: sim.labels(),
@@ -413,7 +503,7 @@ pub fn run_keeping(
             o.values
                 .extend_from_slice(sim.output(*id, port).unwrap_or(&[]));
         }
-        for (p, (id, port, _, _)) in r.populations.iter_mut().zip(&variable) {
+        for (p, (id, port, ..)) in r.populations.iter_mut().zip(&variable) {
             p.frames.push(sim.output(*id, port).unwrap_or(&[]).to_vec());
         }
     };

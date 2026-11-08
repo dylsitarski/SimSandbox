@@ -61,7 +61,9 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
-- Typed equations: a quantity over a table's rows is a port carrying the rows' values with their ids and the table's version (ADR 0079 stage 1b). Wire it to a block with `table q` and `input size[q]`: `q` follows those rows by id at the same instant, its states keeping each row's value by id and starting new rows from their starting values. Rows are not yet recorded or written by `run`.
+- A table's rows are recorded and written by id (ADR 0079 stage 1c): `run --format json` gives each quantity over rows under `over_rows` (versions, ids, values per row); CSV gives a column per id (`pop.size#7`), NaN where that row is not there; a probe writes `<stem>.<field>.csv` with a line per row per sample (`t,version,id,value`); Python gives `Results.over_rows` (and `Probe.over_rows`) as `Rows`, with `of(id)` and `by_id()`. JSON output has the new key `over_rows` in every run (empty without tables).
+
+- Typed equations: a quantity over a table's rows is a port carrying the rows' values with their ids and the table's version (ADR 0079 stage 1b). Wire it to a block with `table q` and `input size[q]`: `q` follows those rows by id at the same instant, its states keeping each row's value by id and starting new rows from their starting values. Rows are recorded by id (below).
 - Outputs of varying length (rows, populations) may depend on inputs at the same instant: the simulator computes them after their sources. A loop of such dependence through them is refused with an explanation.
 
 - Ports of any number of axes (ADR 0081): a typed-equations quantity over three or more axes (up to 8) is a port, wired, recorded and written out; a study's vector result over a grid of two parameters is a port of three axes. Ports name their axes. `run --format json` describes every shape by its axes (name and length); CSV names a cell of three or more axes by its places (`q[1,2,3]`); Python returns `(rows, nk, …, n1)` arrays and `Results.axes(name)`.
