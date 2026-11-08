@@ -1123,6 +1123,41 @@ mod tests {
         );
     }
 
+    /// The refinement example (ADR 0078 step 4): the boundary between a
+    /// bistable state's two basins is the middle root of x³ − x − r; the
+    /// bracket closes on it within the tolerance, each point run once.
+    #[test]
+    fn the_refinement_example_brackets_the_basin_boundary() {
+        let r = registry();
+        let text = include_str!("../../../examples/bistable-refinement.ssbx.json");
+        super::RUNS_MADE.with(|c| c.set(0));
+        let y = run(text, &r, None, None).unwrap();
+        // The middle root of x³ − x − 0.2, by Newton's method from 0.
+        let mut root = 0.0f64;
+        for _ in 0..50 {
+            root -= (root.powi(3) - root - 0.2) / (3.0 * root * root - 1.0);
+        }
+        assert!((root + 0.209_148_848).abs() < 1e-8, "{root}");
+        let (lo, hi) = (value(&y, "refine.lo"), value(&y, "refine.hi"));
+        let (lo, hi) = (*lo.last().unwrap(), *hi.last().unwrap());
+        assert!(lo < root && root < hi, "[{lo}, {hi}] misses {root}");
+        assert!(hi - lo <= 0.001);
+        // 9 starting points and one new point a round, each run once.
+        assert_eq!(*value(&y, "refine.points").last().unwrap(), 18.0);
+        assert_eq!(super::RUNS_MADE.with(std::cell::Cell::get), 18);
+        // In the app it iterates and holds still once nothing splits.
+        let mut s = crate::session::Session::load("refine", text, &r).unwrap();
+        assert!(s.iterates());
+        s.evaluate_later();
+        let mut rounds = 0;
+        while s.rounds_pending() {
+            s.step().unwrap();
+            rounds += 1;
+            assert!(rounds <= 15);
+        }
+        assert!(s.held_still() && rounds < 15, "{rounds}");
+    }
+
     /// The pattern-search strategy (ADR 0078) as a model: a map wired to a
     /// study whose points come from its inputs finds a bowl's minimum, and
     /// once its step is below the tolerance nothing runs again.

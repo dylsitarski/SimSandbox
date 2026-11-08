@@ -46,6 +46,10 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/bistable-continuation.ssbx.json"),
     },
     Example {
+        name: "Finding where a state's fate changes (refinement as a model)",
+        text: include_str!("../../../examples/bistable-refinement.ssbx.json"),
+    },
+    Example {
         name: "Units (a shaker in mm drives springs in m)",
         text: include_str!("../../../examples/units.ssbx.json"),
     },

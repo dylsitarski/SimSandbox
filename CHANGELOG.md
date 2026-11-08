@@ -62,6 +62,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Example "Finding where a state's fate changes (refinement as a model)": a study runs a bistable state from each of a table of starting values, and a refining block splits the intervals whose ends settle on different branches, bracketing the boundary between the two within 0.001 in 18 runs.
+
 - Edge tables in typed equations (ADR 0079 stage 2): `edges segs of pts` joins rows of a table, `start segs = chain` joins each starting row to the next, `from_end(x, segs)` and `to_end(x, segs)` read a quantity at each edge's ends, and the rules `split segs where …` (a new row in the middle of each edge) and `merge segs where …` (an edge's two rows into one) change them between steps, each column filled by `copy`, `mean` or an expression. Removing a row removes its edges.
 - With them, refinement of a study over one parameter: a model that splits the intervals where a study's results jump, the study running only the new points.
 

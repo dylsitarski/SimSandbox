@@ -1,0 +1,110 @@
+{
+  "format": 1,
+  "description": "Finding where a bistable state's fate changes, by refinement (ADR 0078 step 4). The state dx/dt = r + x - x^3 with r = 0.2 has two stable equilibria, -0.879 and 1.088, and between them an unstable one: a start above it ends on the upper branch, a start below it on the lower. A study runs the model once per starting value x0, one per row of the refining block's table, and reports whether the run ended on the upper branch. The refining block keeps the starting values as a table with an edge between each two neighbours, and each round splits every interval whose two ends ended on different branches, until it is narrower than tol. New points run in the next round; points already run are not run again. In 9 rounds lo and hi close in on the boundary, the unstable equilibrium at -0.20915 (the middle root of x^3 - x - 0.2), to within 0.001: 18 runs in all, where a uniform grid as fine would need about 4100.",
+  "models": {
+    "bistable": {
+      "description": "A bistable state, dx/dt = r + x - x^3: for |r| < 2/(3 sqrt 3) it has two stable equilibria and an unstable one between them.",
+      "run": {
+        "dt": 0.01,
+        "t_end": 30
+      },
+      "blocks": [
+        {
+          "name": "bi",
+          "type": "eq.equations",
+          "method": {
+            "name": "rk4"
+          },
+          "equations": [
+            "state x",
+            "dx/dt = r + x - x^3"
+          ],
+          "params": {
+            "r": 0.2,
+            "x0": 0
+          }
+        }
+      ]
+    }
+  },
+  "run": {
+    "dt": 1,
+    "t_end": 15
+  },
+  "blocks": [
+    {
+      "name": "refine",
+      "type": "eq.equations",
+      "equations": [
+        "# Refinement of a study over one parameter (ADR 0078 step 4, ADR 0079 stage 2)",
+        "# The starting values, one a row, from lo_end to hi_end; an edge joins each two neighbours",
+        "table pts max 200",
+        "start pts = 9",
+        "param lo_end = -2",
+        "param hi_end = 2",
+        "state x0[pts] = lo_end + id(pts)*(hi_end - lo_end)/(rows(pts) - 1)",
+        "x0[n+1] = x0",
+        "edges segs of pts",
+        "start segs = chain",
+        "# whether each run ended on the upper branch, by row id, from the study",
+        "input upper[pts]",
+        "param tol = 0.001",
+        "width = to_end(x0, segs) - from_end(x0, segs)",
+        "across = abs(to_end(upper, segs) - from_end(upper, segs)) > 0.5",
+        "# a new point in the middle of each interval whose ends ended apart, until it is narrower than tol",
+        "split segs where across*(width > tol): x0 = mean",
+        "lo = sum(across*from_end(x0, segs))",
+        "hi = sum(across*to_end(x0, segs))",
+        "bracket = hi - lo",
+        "points = rows(pts)"
+      ]
+    },
+    {
+      "name": "runs",
+      "type": "study",
+      "model": "bistable",
+      "sample": {
+        "design": "rows",
+        "params": [
+          {
+            "param": "bi.x0"
+          }
+        ],
+        "reduce": {
+          "upper": "final(bi.x) > 0"
+        }
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "refine.x0",
+      "to": "runs.bi_x0"
+    },
+    {
+      "from": "runs.upper",
+      "to": "refine.upper"
+    }
+  ],
+  "controls": {
+    "views": [
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": [
+            "refine.lo",
+            "refine.hi"
+          ]
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "refine.points"
+        }
+      }
+    ]
+  }
+}
