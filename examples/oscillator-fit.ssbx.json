@@ -1,0 +1,175 @@
+{
+  "format": 1,
+  "description": "Fitting a model to measured data (ADR 0078 step 2). A study runs the oscillator at four points that arrive through its inputs and gives each run's residuals at the data's samples, at_samples(osc.x - data.x, data): a vector per run. The fit block, a map whose rounds are its steps, is Levenberg-Marquardt: from the centre and a small step on each parameter it forms the Jacobian J, then solves (JTJ + lam diag JTJ) step = -JT r with solve, accepting the candidate when it lowers the cost and adjusting lam. It starts from k = 2, c = 1 and holds still at the least-squares fit (SciPy's least_squares gives k = 3.991282, c = 0.501779). The strategy is an ordinary model: open the fit block to change it.",
+  "models": {
+    "oscillator": {
+      "description": "A damped oscillator released from x = 1, and positions measured every 0.5 s for 10 s (written in the model: input.file's data).",
+      "run": {
+        "dt": 0.01,
+        "t_end": 10
+      },
+      "blocks": [
+        {
+          "name": "osc",
+          "type": "eq.equations",
+          "method": {
+            "name": "rk4"
+          },
+          "equations": [
+            "state x = 1",
+            "state v = 0",
+            "dx/dt = v",
+            "dv/dt = -k*x - c*v"
+          ],
+          "params": {
+            "k": 1,
+            "c": 1
+          }
+        },
+        {
+          "name": "data",
+          "type": "input.file",
+          "settings": {
+            "data": "t,x\n0.5,0.592\n1,-0.2292\n1.5,-0.669\n2,-0.4776\n2.5,0.0749\n3,0.4045\n3.5,0.3786\n4,0.008\n4.5,-0.263\n5,-0.2716\n5.5,-0.0378\n6,0.1384\n6.5,0.191\n7,0.0599\n7.5,-0.0785\n8,-0.1473\n8.5,-0.0633\n9,0.0379\n9.5,0.0935\n10,0.0593\n"
+          }
+        }
+      ]
+    }
+  },
+  "run": {
+    "dt": 1,
+    "t_end": 60
+  },
+  "blocks": [
+    {
+      "name": "trials",
+      "type": "study",
+      "model": "oscillator",
+      "sample": {
+        "design": "inputs",
+        "count": 4,
+        "params": [
+          {
+            "param": "osc.k"
+          },
+          {
+            "param": "osc.c"
+          }
+        ],
+        "reduce": {
+          "res": "at_samples(osc.x - data.x, data)"
+        }
+      }
+    },
+    {
+      "name": "fit",
+      "type": "eq.equations",
+      "equations": [
+        "# Levenberg-Marquardt fitting of k and c to the measured positions (ADR 0078 step 2)",
+        "# Each round the study runs four points: the centre (0), a small step on k (1) and on c (2) for a forward-difference Jacobian, and the candidate step (3)",
+        "grid r = 20",
+        "grid j = 4",
+        "grid p = 2",
+        "grid q = 2",
+        "input res[r, j]",
+        "state k",
+        "state c",
+        "state dk",
+        "state dc",
+        "state lam",
+        "state done",
+        "param rel = 1e-6",
+        "param tol = 1e-9",
+        "param up = 4",
+        "param down = 0.25",
+        "# the parameters as a vector over p, each point's offset, and the values sent",
+        "x = k*(p < 0.5) + c*(p > 0.5)",
+        "h = rel*max(abs(x), 1)",
+        "d = dk*(p < 0.5) + dc*(p > 0.5)",
+        "pick = abs(j - p - 1) < 0.5",
+        "cand = j > 2.5",
+        "tx = x + h*pick + d*cand",
+        "tk = sum(tx*(p < 0.5), p)",
+        "tc = sum(tx*(p > 0.5), p)",
+        "# residuals at the centre and the candidate, the Jacobian, the costs",
+        "r0 = sum(res*(j < 0.5), j)",
+        "rc = sum(res*cand, j)",
+        "J = (sum(res*pick, j) - r0)/h",
+        "cost = sum(r0*r0)",
+        "cost_cand = sum(rc*rc)",
+        "moved = dk*dk + dc*dc > 0",
+        "better = moved*(cost_cand < cost)",
+        "# from the better point, a damped Gauss-Newton step: (JTJ + lam diag JTJ) step = -JT r",
+        "base = rc*better + r0*(1 - better)",
+        "lam_next = lam*(1 + moved*(better*(down - 1) + (1 - better)*(up - 1)))",
+        "JTJ = sum(J*on(J, p, q), r)",
+        "A = JTJ*(1 + lam_next*(abs(p - q) < 0.5))",
+        "step = solve(A, -sum(J*base, r))",
+        "conditioning = rcond(A)",
+        "sk = at(step, 0)",
+        "sc = at(step, 1)",
+        "# done once the step is below the tolerance where nothing improves: then it holds still",
+        "small = (abs(sk) < tol*max(abs(k), 1))*(abs(sc) < tol*max(abs(c), 1))",
+        "stop = max(done, small*(1 - better))",
+        "k[n+1] = k + (1 - done)*better*dk",
+        "c[n+1] = c + (1 - done)*better*dc",
+        "dk[n+1] = (1 - stop)*sk",
+        "dc[n+1] = (1 - stop)*sc",
+        "lam[n+1] = lam + (1 - done)*(lam_next - lam)",
+        "done[n+1] = stop"
+      ],
+      "params": {
+        "k0": 2,
+        "c0": 1,
+        "dk0": 0,
+        "dc0": 0,
+        "lam0": 0.001,
+        "done0": 0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "fit.tk",
+      "to": "trials.osc_k"
+    },
+    {
+      "from": "fit.tc",
+      "to": "trials.osc_c"
+    },
+    {
+      "from": "trials.res",
+      "to": "fit.res"
+    }
+  ],
+  "controls": {
+    "views": [
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "fit.k",
+          "y": "fit.c"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "fit.cost"
+        }
+      },
+      {
+        "type": "plot.values",
+        "bind": {
+          "values": [
+            "fit.k",
+            "fit.c",
+            "fit.cost",
+            "fit.lam",
+            "fit.conditioning"
+          ]
+        }
+      }
+    ]
+  }
+}

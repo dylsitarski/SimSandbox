@@ -12,9 +12,8 @@
 //!   does: `first_time(abs(cruise.e) < 0.1)`.
 //!
 //! - `at_times(e, t1, t2, …)`: `e` at each given time, the first recorded
-//!   step at or after it (NaN past the run's end; a step summed from `dt`
-//!   may fall a hair short of a time, and then it is the next): a vector
-//!   (ADR 0080).
+//!   step at or after it, within rounding (NaN past the run's end): a
+//!   vector (ADR 0080).
 //! - `at_samples(e, data)`: `e` at each sample time of the recorded-data
 //!   block `data` (an `input.file`) within the run, the same way: a vector
 //!   of model-minus-data residuals, `at_samples(car.v - data.v, data)`.
@@ -292,16 +291,19 @@ fn reduce(part: &Part, t: &[f64], series: &[Vec<f64>]) -> Vec<f64> {
     let at = |k: usize| -> Vec<f64> { series.iter().map(|s| s[k]).collect() };
     let v: Vec<f64> = (0..t.len()).map(|k| part.expr.eval(&at(k))).collect();
     if matches!(part.kind, Kind::AtTimes | Kind::AtSamples) {
-        // The first recorded step at or after each time, as a data block
-        // takes a sample's value from the first step at or after its time:
-        // so `at_samples` pairs each sample with the model where the data
-        // shows it. Steps summed from `dt` can fall a hair short of a time
-        // (2.4999999999998 for 2500 steps of 0.001), and then it is the
-        // next step.
+        // The first recorded step at or after each time, within rounding:
+        // steps summed from `dt` can fall a hair short of a time
+        // (2.4999999999998 for 2500 steps of 0.001), and a data block takes
+        // that step for its sample too, so `at_samples` pairs each sample
+        // with the model at its time.
+        let rounding = simsandbox_eq::file_input::TIME_ROUNDING;
         return part
             .times
             .iter()
-            .map(|&ti| t.iter().position(|&tk| tk >= ti).map_or(f64::NAN, |k| v[k]))
+            .map(|&ti| {
+                let ti = ti - rounding * ti.abs().max(1.0);
+                t.iter().position(|&tk| tk >= ti).map_or(f64::NAN, |k| v[k])
+            })
             .collect();
     }
     vec![one(part.kind, t, &v)]

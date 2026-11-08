@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-08: ADR 0078 step 2 / ADR 0080 stage 4: `rcond` (`ArrayOp::Rcond`, `program::rcond`, typed equations), `input.file` `data` (`parse_csv`), `file_input::TIME_ROUNDING` in the data block and `at_samples`, `examples/oscillator-fit.ssbx.json` (registered), Rust test against recorded SciPy values, Python test against SciPy (`importorskip`)
 - 2026-11-08: study form: no from/to/points for `Design::Inputs` (`ranged`), cleared on switching to it; test `a_study_of_points_from_inputs_shows_no_ranges`
 - 2026-11-07: ADR 0083 written and built: `Block::reads_time`, `EquationSet::reads_time`, `Session::iterates`/`rounds_pending`/`held_still`/`round`/`stop_rounds`, the worker's unpaced rounds (`stepping_now`), the toolbar's round; screenshot under Xvfb of the search holding still at round 29
 - 2026-11-07: ADR 0080 stage 3: `Kind::AtTimes`/`AtSamples` in `reduce.rs` (`place`, `width`, `eval` to a vector), `run::sample_times`, `reducers` placing them, vector outputs in `run_study` and `study_rows`, `StudyBlock::widths` and 2D ports; `at_times`/`at_samples` in `REDUCTIONS`

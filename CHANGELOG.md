@@ -6,6 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- A recorded-data block, `at_times` and `at_samples` count a step whose time is within rounding of a sample's as at it. Before, steps summed from `dt` could fall a hair short (2.4999999999998 for 2500 steps of 0.001) and take the sample a step late. Models with data whose steps land on its samples may change in their last digits.
+
 - The study form in the app shows no "from", "to" or "points" for a study whose points arrive through its inputs, and switching a study to that design drops them from the file: another model sends its values.
 
 - In the app, a model whose steps are rounds (maps that never read time, with an end, such as the search example) runs its rounds as fast as it can instead of one per simulated second, stops when a round changes nothing, and starts again from round 0 when a value changes. Its toolbar shows the round in place of Run, Pause, the speed and the time. Block types can say they never read time (`Block::reads_time`).
@@ -57,6 +59,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 - Subsystems are replaced by models defined in the file (ADR 0068): `subsystems` is refused with how to write it under `models`; "Make subsystem" is "Make model"; a model's inputs are input blocks and its outputs are offered from a block's menu ("Offer X as an output"); `render --diagram --inside PATH` (and Python `render(inside=)`) draws a used model's inside; Python `Model.group` makes a model. The Platoon example defines its follower once. Problems inside a used model are reported where they are written (`models.follower.blocks[0].equations`). "Edit…" on a block inside a used model opens its equations.
 
 ### Added
+
+- Example "Fitting a model to measurements": Levenberg–Marquardt written as a model fits a damped oscillator's stiffness and damping to 20 measured positions, reaching the least-squares fit SciPy finds. `rcond(A)` in typed equations, how far a matrix is from singular. `input.file` takes its samples as CSV text in the model (`"data"`), so a small data set travels with the model.
 
 - Studies give a vector per run (ADR 0080): `at_times(e, t1, t2, …)` and `at_samples(e, data)` in `reduce`, the latter at each sample of a recorded-data block, for model-minus-data residuals. Such a result is over its own axis and the runs, read in typed equations as `input res[obs, run]`.
 

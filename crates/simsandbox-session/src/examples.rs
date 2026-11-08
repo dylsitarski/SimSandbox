@@ -38,6 +38,10 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/cruise-search.ssbx.json"),
     },
     Example {
+        name: "Fitting a model to measurements (Levenberg–Marquardt as a model)",
+        text: include_str!("../../../examples/oscillator-fit.ssbx.json"),
+    },
+    Example {
         name: "Units (a shaker in mm drives springs in m)",
         text: include_str!("../../../examples/units.ssbx.json"),
     },

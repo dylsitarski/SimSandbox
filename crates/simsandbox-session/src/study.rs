@@ -1023,11 +1023,11 @@ mod tests {
             assert!((row[0] - exact(*x0, 0.5)).abs() < 1e-9, "{row:?}");
             assert!((row[1] - exact(*x0, 1.0)).abs() < 1e-9, "{row:?}");
             assert!(row[2].is_nan(), "past the end: {row:?}");
-            // Each sample with the model at the step where the data shows
-            // it: 2500 steps of 0.001 s end a hair short of 2.5 s, so the
-            // data shows 0.1 from the step after.
+            // Each sample with the model at its time: 2500 steps of 0.001 s
+            // end a hair short of 2.5 s, which counts as 2.5 s for the data
+            // and for at_samples alike.
             let res = &value(&y, "s.res")[3 * run..3 * run + 3];
-            for (k, (t, obs)) in [(0.5, 0.6), (1.0, 0.4), (2.501, 0.1)].iter().enumerate() {
+            for (k, (t, obs)) in [(0.5, 0.6), (1.0, 0.4), (2.5, 0.1)].iter().enumerate() {
                 assert!((res[k] - (exact(*x0, *t) - obs)).abs() < 1e-9, "{res:?}");
             }
         }
@@ -1061,6 +1061,43 @@ mod tests {
         assert!(bad("at_times(x.x, 1) - at_samples(x.x, data)").contains("different lengths"));
         assert!(bad("at_times(x.x, k.y)").contains("times as numbers"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ADR 0078 step 2: Levenberg–Marquardt written as a model fits the
+    /// oscillator to its measurements, to the least-squares fit SciPy's
+    /// `least_squares` finds on the exact solution (k = 3.991282243118772,
+    /// c = 0.5017787333229418, cost 0.00235783971327998); the gap is RK4's
+    /// error at dt = 0.01. It holds still well within its 60 rounds.
+    #[test]
+    fn levenberg_marquardt_as_a_model_finds_the_least_squares_fit() {
+        let r = registry();
+        let e = crate::examples::EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Fitting"))
+            .unwrap();
+        let y = run(e.text, &r, None, None).unwrap();
+        let last = |n: &str| *value(&y, n).last().unwrap();
+        assert!(
+            (last("fit.k") - 3.991282243118772).abs() < 1e-7,
+            "{}",
+            last("fit.k")
+        );
+        assert!(
+            (last("fit.c") - 0.5017787333229418).abs() < 1e-7,
+            "{}",
+            last("fit.c")
+        );
+        assert!(
+            (last("fit.cost") / 0.00235783971327998 - 1.0).abs() < 1e-8,
+            "{}",
+            last("fit.cost")
+        );
+        let done = value(&y, "fit.done");
+        let first = done.iter().position(|&d| d == 1.0).expect("it finishes");
+        assert!(first < 40, "done at round {first}");
+        // The app iterates it (ADR 0083).
+        let s = crate::session::Session::load(e.name, e.text, &r).unwrap();
+        assert!(s.iterates());
     }
 
     #[test]

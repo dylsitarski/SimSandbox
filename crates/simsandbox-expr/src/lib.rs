@@ -194,7 +194,7 @@ pub fn is_reserved(name: &str) -> bool {
 /// ([`Ast::resolve_with`]).
 pub const ARRAY_OPS: &[&str] = &[
     "lap", "sum", "mean", "minof", "maxof", "argminof", "argmaxof", "at", "spacing", "prev",
-    "next", "on", "solve", "dd",
+    "next", "on", "solve", "rcond", "dd",
 ];
 
 /// The most axes an array or an intermediate value has (ADR 0080).
@@ -310,6 +310,15 @@ pub enum ArrayOp {
     /// order (the first of equal pivots); NaN throughout when `A` is
     /// singular or a value is not finite.
     Solve {
+        n: usize,
+        rows: usize,
+        cols: usize,
+    },
+    /// The reciprocal condition number of `A` (laid out as for
+    /// [`ArrayOp::Solve`]) in the 1-norm, `1/(‖A‖₁‖A⁻¹‖₁)`: near 1 for a
+    /// well-conditioned matrix, near 0 for a nearly singular one, 0 for a
+    /// singular one, NaN if a value is not finite (ADR 0080).
+    Rcond {
         n: usize,
         rows: usize,
         cols: usize,

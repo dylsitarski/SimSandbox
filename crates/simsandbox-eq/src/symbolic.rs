@@ -776,6 +776,25 @@ fn axes_of(
             }
             Ok(axes)
         }
+        "rcond" => {
+            // rcond(A): one value, how far A is from singular (ADR 0080).
+            count(args.len() == 1, "a matrix, e.g. rcond(A)")?;
+            let a = of(&args[0])?;
+            if a.len() != 2 || grid[a[0]].cells != grid[a[1]].cells {
+                return Err((
+                    col,
+                    format!(
+                        "rcond(A) needs A over two axes of the same length, not over {}",
+                        if a.is_empty() {
+                            "no axis".to_string()
+                        } else {
+                            list(&a)
+                        }
+                    ),
+                ));
+            }
+            Ok(Vec::new())
+        }
         "solve" => {
             // solve(A, b): A over two axes of one length, b over one of
             // them; the result over the other (ADR 0080).
@@ -1016,6 +1035,15 @@ fn lower(
                 }
                 d if d.starts_with("dd") => {
                     (stencil(name, args), shapes[ast_name(&args[0])].clone())
+                }
+                "rcond" => {
+                    let (ea, sa) = low(&args[0])?;
+                    let op = ArrayOp::Rcond {
+                        n: grid[sa[0]].cells,
+                        rows: line_of(&sa, sa[0], grid).stride,
+                        cols: line_of(&sa, sa[1], grid).stride,
+                    };
+                    (Expr::Array(op, vec![ea]), Vec::new())
                 }
                 "solve" => {
                     let ((ea, sa), (eb, sb)) = (low(&args[0])?, low(&args[1])?);
@@ -1786,6 +1814,8 @@ impl EquationSet {
                     Ast::Name(n, _) => axis_dim_of(n),
                     _ => NO_DIM,
                 },
+                // A pure number.
+                "rcond" => NO_DIM,
                 "solve" => {
                     // A x = b: x in b's unit over A's.
                     let b = args.get(1).map_or(NO_DIM, |a| a.1);
@@ -3378,6 +3408,9 @@ mod tests {
             "y = solve(A, c)",
             "res = sum(A*x, j) - b",
             "z = solve(0*A, b)",
+            "rc = rcond(A)",
+            "r0 = rcond(0*A)",
+            "r1 = rcond(abs(i - j) < 0.5)",
         ])
         .unwrap();
         // The first column is 0, 1, 4: row 2 is the first pivot.
@@ -3392,6 +3425,11 @@ mod tests {
             assert!(out[6 + k].abs() < 1e-14, "residual {:?}", &out[6..9]);
             assert!(out[9 + k].is_nan(), "singular gives NaN");
         }
+        // rcond: 1/22 for this A (numpy: 1/(‖A‖₁‖A⁻¹‖₁)), 0 when singular,
+        // 1 for the identity.
+        assert!((out[12] - 1.0 / 22.0).abs() < 1e-15, "{}", out[12]);
+        assert_eq!(out[13], 0.0);
+        assert_eq!(out[14], 1.0);
         // Units: x in b's unit over A's.
         let s = set(&[
             "grid i = 2",
@@ -3417,6 +3455,7 @@ mod tests {
         assert!(err("x = solve(w, b)").contains("same length, not over i, k"));
         assert!(err("x = solve(A, v)").contains("b over one of A's axes (i, j), not over k"));
         assert!(err("x = solve(A)").contains("a matrix and a vector"));
+        assert!(err("x = rcond(w)").contains("same length, not over i, k"));
     }
 
     #[test]

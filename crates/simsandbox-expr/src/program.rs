@@ -266,6 +266,14 @@ enum ArrIns {
         dims: [usize; MAX_AXES],
         strides: [usize; MAX_AXES],
     },
+    /// [`ArrayOp::Rcond`] of the matrix at `a` into `r[d]`.
+    Rcond {
+        d: usize,
+        a: usize,
+        n: usize,
+        rows: usize,
+        cols: usize,
+    },
     /// [`ArrayOp::Solve`] of the matrix at `a` and the vector at `b`.
     Solve {
         d: usize,
@@ -330,6 +338,41 @@ fn solve_into(n: usize, a: &mut [f64], b: &mut [f64], x: &mut [f64]) {
         }
         x[i] = s / a[i * n + i];
     }
+}
+
+/// The reciprocal condition number of `a` (row by row, `n` by `n`) in the
+/// 1-norm: `1/(‖a‖₁‖a⁻¹‖₁)`, `a⁻¹` column by column with [`solve_into`]
+/// (fine for the small systems of strategies). 0 when singular, NaN when a
+/// value is not finite.
+fn rcond(n: usize, a: &[f64]) -> f64 {
+    if a.iter().any(|v| !v.is_finite()) {
+        return f64::NAN;
+    }
+    let norm = |m: &dyn Fn(usize, usize) -> f64| -> f64 {
+        (0..n)
+            .map(|j| (0..n).map(|i| m(i, j).abs()).sum::<f64>())
+            .fold(0.0, f64::max)
+    };
+    let a_norm = norm(&|i, j| a[i * n + j]);
+    let mut inverse = vec![0.0; n * n];
+    for j in 0..n {
+        let mut m = a.to_vec();
+        let mut e = vec![0.0; n];
+        e[j] = 1.0;
+        let mut x = vec![0.0; n];
+        solve_into(n, &mut m, &mut e, &mut x);
+        if x.iter().any(|v| !v.is_finite()) {
+            return 0.0;
+        }
+        for i in 0..n {
+            inverse[i * n + j] = x[i];
+        }
+    }
+    let inv_norm = norm(&|i, j| inverse[i * n + j]);
+    if a_norm == 0.0 || inv_norm == 0.0 {
+        return 0.0;
+    }
+    1.0 / (a_norm * inv_norm)
 }
 
 /// The source place of each cell of a [`ArrayOp::Gather`], in order.
@@ -543,6 +586,18 @@ impl ArrIns {
                     r[d + k] = r[a + at];
                 }
             }
+            ArrIns::Rcond {
+                d,
+                a,
+                n,
+                rows,
+                cols,
+            } => {
+                let m: Vec<f64> = (0..n * n)
+                    .map(|k| r[a + (k / n) * rows + (k % n) * cols])
+                    .collect();
+                r[d] = rcond(n, &m);
+            }
             ArrIns::Solve {
                 d,
                 a,
@@ -715,6 +770,13 @@ impl ArrIns {
                 rows,
                 cols,
             } => vec![(d, n), (a, (n - 1) * (rows + cols) + 1), (b, n)],
+            ArrIns::Rcond {
+                d,
+                a,
+                n,
+                rows,
+                cols,
+            } => vec![(d, 1), (a, (n - 1) * (rows + cols) + 1)],
         }
     }
 }
@@ -1072,6 +1134,18 @@ impl ArrIns {
                     deps[d + k] = f;
                 }
             }
+            ArrIns::Rcond {
+                d,
+                a,
+                n,
+                rows,
+                cols,
+            } => {
+                let all: Vec<&Vec<usize>> = (0..n * n)
+                    .map(|k| &deps[a + (k / n) * rows + (k % n) * cols])
+                    .collect();
+                deps[d] = union(&all);
+            }
             ArrIns::Solve {
                 d,
                 a,
@@ -1386,6 +1460,16 @@ impl Builder<'_> {
                             strides,
                         });
                         self.spread(d, cells, n);
+                    }
+                    ArrayOp::Rcond { n: m, rows, cols } => {
+                        self.array(ArrIns::Rcond {
+                            d,
+                            a: one(0),
+                            n: m,
+                            rows,
+                            cols,
+                        });
+                        self.spread(d, 1, n);
                     }
                     ArrayOp::Solve {
                         n: cells,

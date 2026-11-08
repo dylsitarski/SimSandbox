@@ -75,6 +75,13 @@ struct Csv {
 fn read_csv(path: &Path, setting: &str) -> Result<Csv> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| setting_error(setting, format!("cannot read {}: {e}", path.display())))?;
+    parse_csv(&text, &path.display().to_string(), setting)
+}
+
+/// A CSV's header (names with their units) and rows; `label` names it in
+/// messages (its path, or "the data").
+fn parse_csv(text: &str, label: &str, setting: &str) -> Result<Csv> {
+    let path = std::path::Path::new(label);
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let header = lines
         .next()
@@ -183,8 +190,12 @@ pub fn read_npy(bytes: &[u8]) -> std::result::Result<(Vec<usize>, Vec<f64>), Str
     Ok((shape, values))
 }
 
+/// How close, relative to the time (at least 1 s), a step's time counts as
+/// a sample's: steps summed from `dt` drift by rounding.
+pub const TIME_ROUNDING: f64 = 1e-9;
+
 const SETTINGS: &str =
-    "'file', 'interpolate', 'unit', 'unit.COLUMN', and for a .npy 'times' or 'dt' and 'shape'";
+    "'file' (or 'data', the samples as CSV text), 'interpolate', 'unit', 'unit.COLUMN', and for a .npy 'times' or 'dt' and 'shape'";
 
 impl FileInput {
     /// Data in memory: `times` strictly increasing, each output's values
@@ -244,7 +255,7 @@ impl FileInput {
         if let Some(k) = c.settings.keys().find(|k| {
             !matches!(
                 k.as_str(),
-                "file" | "interpolate" | "unit" | "times" | "dt" | "shape"
+                "file" | "data" | "interpolate" | "unit" | "times" | "dt" | "shape"
             ) && !k.starts_with("unit.")
         }) {
             return Err(setting_error(
@@ -279,9 +290,24 @@ impl FileInput {
             Some(u) => unit(u, "unit")?,
             None => Unit::DIMENSIONLESS,
         };
-        let path = c
-            .file("file")
-            .ok_or_else(|| setting_error("file", "the file to read, a .csv or .npy"))??;
+        // The samples as CSV text in the model itself (ADR 0078 step 2), so
+        // a small data set travels with the model: an example, say.
+        let inline = c.settings.get("data");
+        if inline.is_some() && c.settings.contains_key("file") {
+            return Err(setting_error(
+                "data",
+                "the samples come from a file or from 'data' (CSV text), not both",
+            ));
+        }
+        let path = match inline {
+            Some(_) => std::path::PathBuf::from("data.csv"),
+            None => c.file("file").ok_or_else(|| {
+                setting_error(
+                    "file",
+                    "the file to read, a .csv or .npy, or 'data': the samples as CSV text",
+                )
+            })??,
+        };
         let is = |ext: &str| {
             path.extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case(ext))
@@ -294,7 +320,10 @@ impl FileInput {
                     "only for a .npy file; a CSV's first column is its time",
                 ));
             }
-            let csv = read_csv(&path, "file")?;
+            let csv = match inline {
+                Some(text) => parse_csv(text, "the data", "data")?,
+                None => read_csv(&path, "file")?,
+            };
             if csv.header.len() < 2 {
                 return Err(setting_error(
                     "file",
@@ -431,8 +460,12 @@ impl Block for FileInput {
     }
 
     fn compute_outputs(&self, t: f64, io: StepIo<'_>) -> Result<()> {
-        // The last sample at or before `t`, the first before them all.
-        let k = self.times.partition_point(|&s| s <= t).saturating_sub(1);
+        // The last sample at or before `t`, the first before them all. A
+        // time summed from steps can fall a hair short of a sample's
+        // (2.4999999999998 for 2500 steps of 0.001): within rounding, it is
+        // that sample's time.
+        let near = t + TIME_ROUNDING * t.abs().max(1.0);
+        let k = self.times.partition_point(|&s| s <= near).saturating_sub(1);
         let next = (k + 1 < self.times.len() && t > self.times[k]).then_some(k + 1);
         let mut at = 0;
         for (p, d) in self.spec.ports.iter().zip(&self.data) {
@@ -441,7 +474,8 @@ impl Block for FileInput {
             let out = &mut io.outputs[at..at + n];
             match next.filter(|_| self.linear) {
                 Some(j) => {
-                    let w = (t - self.times[k]) / (self.times[j] - self.times[k]);
+                    // From the sample itself when a hair short of it.
+                    let w = ((t - self.times[k]) / (self.times[j] - self.times[k])).max(0.0);
                     let b = &d[j * n..(j + 1) * n];
                     for ((o, &a), &b) in out.iter_mut().zip(a).zip(b) {
                         *o = a + (b - a) * w;
@@ -534,6 +568,29 @@ mod tests {
         .unwrap();
         let v: Vec<f64> = run(linear, 6, 0.5).iter().map(|o| o[0]).collect();
         assert_eq!(v, [1.0, 2.0, 3.0, 2.5, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn samples_may_be_written_in_the_model() {
+        // ADR 0078 step 2: `data` holds the CSV text, so the samples travel
+        // with the model; the same block as from a file.
+        let b = FileInput::from_config(
+            "d",
+            &config(&[
+                ("data", "t,x [m]\n0,1\n1,3\n2,2\n"),
+                ("interpolate", "linear"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(b.instants(), Some(&[0.0, 1.0, 2.0][..]));
+        assert_eq!(b.spec.ports[0].unit, Unit::parse("m").unwrap());
+        let v: Vec<f64> = run(b, 4, 0.5).iter().map(|o| o[0]).collect();
+        assert_eq!(v, [1.0, 2.0, 3.0, 2.5, 2.0]);
+        let both =
+            FileInput::from_config("d", &config(&[("data", "t,x\n0,1\n"), ("file", "a.csv")]));
+        assert!(both.err().unwrap().to_string().contains("not both"));
+        let bad = FileInput::from_config("d", &config(&[("data", "t,x\n0,one\n")]));
+        assert!(bad.err().unwrap().to_string().contains("not all numbers"));
     }
 
     #[test]

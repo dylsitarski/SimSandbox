@@ -485,3 +485,28 @@ def test_studying_a_used_model_as_on_the_canvas():
     v_max = r["car1_study.v_max"]
     assert v_max[-1].size == 2  # a line of cells, one per run
 
+
+def test_levenberg_marquardt_as_a_model_matches_scipy():
+    # ADR 0078 step 2: the fitting example, against SciPy's least_squares on
+    # the oscillator's exact solution and the example's own measurements.
+    optimize = pytest.importorskip("scipy.optimize")
+    m = ss.Model.example("Fitting a model")
+    data = m.data["models"]["oscillator"]["blocks"][1]["settings"]["data"]
+    rows = [line.split(",") for line in data.strip().splitlines()[1:]]
+    t = np.array([float(a) for a, _ in rows])
+    obs = np.array([float(b) for _, b in rows])
+
+    def x_of(p):
+        k, c = p
+        w = np.sqrt(k - c * c / 4)
+        return np.exp(-c * t / 2) * (np.cos(w * t) + c / (2 * w) * np.sin(w * t))
+
+    best = optimize.least_squares(
+        lambda p: x_of(p) - obs, [2.0, 1.0], xtol=1e-15, ftol=1e-15, gtol=1e-15
+    )
+    r = m.run()
+    # RK4 at dt = 0.01 against the exact solution: agreement to 1e-7.
+    assert abs(r["fit.k"][-1] - best.x[0]) < 1e-7
+    assert abs(r["fit.c"][-1] - best.x[1]) < 1e-7
+    assert r["fit.done"][-1] == 1.0
+
