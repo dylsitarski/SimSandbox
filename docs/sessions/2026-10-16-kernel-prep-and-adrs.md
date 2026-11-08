@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-08: ADR 0079 stage 1a: `table`/`start` lines and table axes (`Axis::table`), `read_rule`, `id`/`rows`/`of` in `axes_of` and `lower`, `parse_with_rows`, layout with row ids as inputs and outputs from fixed quantities only (`Layout::fixed`), rule program (`rule_registers`), `ExplicitBlock` with compiled sets by rows, `init_tables`, rules after each step; session hold-still compares tables; `tests/tables.rs`
 - 2026-11-08: ADR 0078 step 3: `examples/bistable-continuation.ssbx.json` (registered), test against the cubic's extreme roots; screenshot under Xvfb of the loop
 - 2026-11-08: ADR 0084 (where typed equations stop) written as Proposed after discussing Modelica and models as compiled code
 - 2026-11-08: `runs::MADE_WITH`, `RunFile::made_with` and `version_note`, schema, `Session::run_file`, JSON output (`Results::to_json`, compositions), CLI run and check, app `open_run`, Python `Run` (`_native.made_with`); tests in Rust and Python
@@ -176,6 +177,7 @@
 
 ## Decided
 
+- 2026-11-08 (owner): ADR 0079 stage 1 in parts: 1a (tables inside one typed block) first, then ADR 0081 stages 1–2, then 1b (rows ports), 1c (probes by id), 1d (studies over tables).
 - 2026-11-08 (owner): ADR 0084 accepted; Q54 resolved.
 - 2026-11-08 (owner): blocks must always be able to wrap anything, however far the language grows; the WebAssembly spike (ADR 0057 item 4) should also compare compiling our own program (Cranelift, and as WebAssembly), recorded in ADR 0084.
 - 2026-11-08 (owner): models with data stay exact within a version; results may change between versions where the changelog says, and run files record the version so replay can say so.

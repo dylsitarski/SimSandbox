@@ -105,12 +105,47 @@ pub struct EquationSet {
     /// its initial value (scalar states) or `None` (arrays, set by `init`).
     initial: Vec<(usize, Option<usize>)>,
     /// Register buffers of the programs: outputs, rates, initial values.
-    scratch: RefCell<[Vec<f64>; 3]>,
+    scratch: RefCell<[Vec<f64>; 4]>,
     /// What the outputs and rates programs need copied, the rest of their
     /// large arrays read from the states and written to the results where
     /// they are.
     outputs_copy: Copies,
     rates_copy: Copies,
+    /// Its tables (ADR 0079), in the order of their declarations.
+    tables: Vec<TableRows>,
+    /// For each state over rows, in state order after the fixed ones: its
+    /// table (place in `tables`) and column.
+    row_states: Vec<(usize, usize)>,
+    /// Its name and lines, to compile it again for other numbers of rows.
+    source: (String, Vec<String>),
+    /// Rules changing them between steps, in written order, and the
+    /// program computing their conditions and new rows' values.
+    rules: Vec<RuleRun>,
+    rules_program: Option<Program>,
+}
+
+/// A table of a typed-equations block (ADR 0079): its axis, name, most
+/// and starting rows, the rows it was compiled for, and its columns (the
+/// states over its rows, in state order).
+#[derive(Debug, Clone)]
+pub struct TableRows {
+    pub axis: usize,
+    pub name: String,
+    pub max: usize,
+    pub start: usize,
+    pub rows: usize,
+    pub columns: Vec<String>,
+}
+
+/// A rule as compiled: its table (by axis), whether it removes (else
+/// adds), and where its condition and new rows' values are in the
+/// registers (one value per column, in column order).
+#[derive(Debug, Clone)]
+pub struct RuleRun {
+    pub table: usize,
+    pub remove: bool,
+    pub cond: Span,
+    pub values: Vec<Span>,
 }
 
 /// The parts of the states a program needs copied into its registers and
@@ -125,6 +160,15 @@ struct Copies {
 }
 
 impl Copies {
+    /// Nothing placed: everything copied.
+    fn none() -> Self {
+        Self {
+            placed: false,
+            states: Vec::new(),
+            results: Vec::new(),
+        }
+    }
+
     /// Place what `program` can in place: it reads the `states` registers
     /// from 1, and its `len` results from `at`.
     fn place(program: &mut Program, states: usize, at: usize, len: usize) -> Self {
@@ -160,6 +204,9 @@ fn rest(len: usize, spans: &[Span], from: usize) -> Vec<std::ops::Range<usize>> 
 #[derive(Debug, Clone, Copy)]
 struct Layout {
     states: usize,
+    /// The states the block keeps in its fixed state, first; those over a
+    /// table's rows (ADR 0079) follow, kept in its tables.
+    fixed: usize,
     inputs: usize,
     params: usize,
     /// The outputs after the states: from here, this many registers.
@@ -176,6 +223,119 @@ struct Axis {
     lo: Ast,
     hi: Ast,
     cells: usize,
+    /// A table's rows (ADR 0079): its most rows. Its length is the
+    /// current number of rows, and changes between steps.
+    table: Option<usize>,
+}
+
+/// The most rows a table has unless it says (`table pts max 200`).
+pub const DEFAULT_MAX_ROWS: usize = 100_000;
+
+/// A `table pts` or `table pts max 200` line (ADR 0079), `rest` after
+/// `table`: its name and its most rows.
+fn read_table(rest: &str, line: usize) -> Result<(String, usize)> {
+    let usage = "write a table as 'table pts' or 'table pts max 200' (its most rows)";
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    let (name, max) = match words[..] {
+        [name] => (name, DEFAULT_MAX_ROWS),
+        [name, "max", n] => match n.parse::<usize>() {
+            Ok(m) if m >= 1 => (name, m),
+            _ => return Err(definition_error(line, 1, usage)),
+        },
+        _ => return Err(definition_error(line, 1, usage)),
+    };
+    if !is_name(name) || name == "t" || is_reserved(name) {
+        return Err(definition_error(
+            line,
+            1,
+            format!("'{name}' cannot be a table name"),
+        ));
+    }
+    Ok((name.to_string(), max))
+}
+
+/// A column's value in an `add` rule: its name, expression and column.
+type Given = (String, Ast, usize);
+
+/// A rule as checked: its table and source axes (by place), the rule, and
+/// each column's value (name, expression, line, column).
+type CheckedRule<'a> = (
+    usize,
+    Option<usize>,
+    &'a RuleLine,
+    Vec<(String, Ast, usize, usize)>,
+);
+
+/// A rule changing a table between steps (ADR 0079), as written.
+struct RuleLine {
+    line: usize,
+    table: String,
+    /// `remove pts where cond`: `None`; `add pts [from s] [where c]: …`:
+    /// the axis rows come from, if any, and the values given.
+    add: Option<(Option<String>, Vec<Given>)>,
+    /// The condition (`where`), 1 if none.
+    cond: Ast,
+    cond_column: usize,
+}
+
+/// `remove pts where cond` or `add pts [from s] [where cond][: c = e, …]`.
+fn read_rule(text: &str, word: &str, rest: &str, line: usize) -> Result<RuleLine> {
+    let usage = if word == "remove" {
+        "write 'remove pts where condition'"
+    } else {
+        "write 'add pts: c = value', 'add pts where condition: …' or 'add pts from k where condition: c = value'"
+    };
+    let bad = |m: String| definition_error(line, 1, m);
+    let parse_at = |src: &str| -> Result<(Ast, usize)> {
+        let col = column_of(text, src.trim());
+        parse(src)
+            .map(|a| (a, col))
+            .map_err(|e| definition_error(line, col + e.column - 1, e.message))
+    };
+    let (head, assigns) = match (word, rest.split_once(':')) {
+        ("add", Some((h, a))) => (h, Some(a)),
+        _ => (rest, None),
+    };
+    let (head, cond) = match head.split_once(" where ") {
+        Some((h, c)) => (h, Some(c)),
+        None => (head, None),
+    };
+    let words: Vec<&str> = head.split_whitespace().collect();
+    let (table, from) = match (word, &words[..]) {
+        (_, [t]) => (t.to_string(), None),
+        ("add", [t, "from", s]) => (t.to_string(), Some(s.to_string())),
+        _ => return Err(bad(usage.into())),
+    };
+    if word == "remove" && cond.is_none() {
+        return Err(bad(usage.into()));
+    }
+    let (cond, cond_column) = match cond {
+        Some(c) => parse_at(c)?,
+        None => (Ast::Num(1.0), 1),
+    };
+    let add = if word == "add" {
+        let mut values = Vec::new();
+        for item in assigns.map(split_top).unwrap_or_default() {
+            if item.trim().is_empty() {
+                continue;
+            }
+            let Some((n, e)) = item.split_once('=') else {
+                return Err(bad(usage.into()));
+            };
+            let (ast, col) = parse_at(e)?;
+            values.push((n.trim().to_string(), ast, col));
+        }
+        Some((from, values))
+    } else {
+        None
+    };
+    Ok(RuleLine {
+        line,
+        table,
+        add,
+        cond,
+        cond_column,
+    })
 }
 
 /// An expression as written: its text, line and column.
@@ -368,6 +528,7 @@ fn read_grid(text: &str, rest: &str, line: usize) -> Result<(Axis, Option<String
                         lo: Ast::Num(-0.5),
                         hi: Ast::Num(cells as f64 - 0.5),
                         cells,
+                        table: None,
                     },
                     None,
                 ))
@@ -417,6 +578,7 @@ fn read_grid(text: &str, rest: &str, line: usize) -> Result<(Axis, Option<String
             lo: end(lo)?,
             hi: end(hi)?,
             cells,
+            table: None,
         },
         unit,
     ))
@@ -716,14 +878,53 @@ fn axes_of(
             ),
         ))
     };
+    // Rows have no neighbours by place (ADR 0079: edges come with stage 2).
+    let no_rows = |axes: Vec<usize>| -> std::result::Result<Vec<usize>, (usize, String)> {
+        match axes.iter().find(|&&a| grid[a].table.is_some()) {
+            Some(&a) => Err((
+                col,
+                format!(
+                    "'{name}' works along a grid; {} is a table, whose rows have no neighbours by place",
+                    names[a]
+                ),
+            )),
+            None => Ok(axes),
+        }
+    };
+    let table_named = |a: &Ast| axis_named(a).filter(|&i| grid[i].table.is_some());
     match name.as_str() {
+        "id" | "rows" => {
+            let Some(i) = args
+                .first()
+                .and_then(table_named)
+                .filter(|_| args.len() == 1)
+            else {
+                return Err((col, format!("'{name}' takes a table, e.g. {name}(pts)")));
+            };
+            Ok(if name == "id" { vec![i] } else { Vec::new() })
+        }
+        "of" => {
+            // of(T, i): T's value in the row with id i, NaN if none.
+            count(
+                args.len() == 2,
+                "a quantity over a table and an id, e.g. of(kp, 3)",
+            )?;
+            let a = of(&args[0])?;
+            if !(a.len() == 1 && grid[a[0]].table.is_some()) {
+                return Err((col, "'of(T, i)' takes T over a table's rows".into()));
+            }
+            if !of(&args[1])?.is_empty() {
+                return Err((col, "'of(T, i)' takes one id, e.g. of(kp, 3)".into()));
+            }
+            Ok(Vec::new())
+        }
         "lap" => {
             count(args.len() == 1, "1 argument")?;
-            named_array()
+            no_rows(named_array()?)
         }
         "prev" | "next" => {
             count(matches!(args.len(), 1 | 2), "an array and an axis")?;
-            let axes = named_array()?;
+            let axes = no_rows(named_array()?)?;
             // Over two axes, which one is named (ADR 0080).
             if args.len() == 1 && axes.len() > 1 {
                 let ways: Vec<String> = axes
@@ -760,6 +961,7 @@ fn axes_of(
         "dd" => {
             // dd(T, x): the derivative along a named axis (ADR 0080).
             count(args.len() == 2, "an array and an axis, e.g. dd(T, x)")?;
+            no_rows(of(&args[0])?)?;
             let Some(i) = axis_named(&args[1]) else {
                 return Err((
                     col,
@@ -831,6 +1033,7 @@ fn axes_of(
         }
         d if d.starts_with("dd") => {
             count(args.len() == 1, "1 argument")?;
+            no_rows(of(&args[0])?)?;
             let Some(i) = names.iter().position(|n| *n == &d[2..]) else {
                 return Err((col, format!("'{d}' is a derivative along '{}', which is not an axis of the grid ({}): write dd{} or dd(T, {})", &d[2..], names.join(", "), names[0], names[0])));
             };
@@ -851,7 +1054,7 @@ fn axes_of(
         }
         "on" => {
             count(args.len() == 3, "a quantity and two axes, e.g. on(J, p, q)")?;
-            let axes = of(&args[0])?;
+            let axes = no_rows(of(&args[0])?)?;
             let (Some(a), Some(b)) = (axis_named(&args[1]), axis_named(&args[2])) else {
                 return Err((
                     col,
@@ -976,8 +1179,9 @@ fn lower(
     shapes: &Shapes,
     slot: &dyn Fn(&str) -> Option<usize>,
     stencil: &dyn Fn(&str, &[Ast]) -> Expr,
+    ids: &[Option<usize>],
 ) -> std::result::Result<(Expr, Vec<usize>), simsandbox_expr::Error> {
-    let low = |a: &Ast| lower(a, grid, shapes, slot, stencil);
+    let low = |a: &Ast| lower(a, grid, shapes, slot, stencil, ids);
     Ok(match ast {
         Ast::Num(v) => (Expr::Num(*v), Vec::new()),
         Ast::Name(n, c) => match slot(n) {
@@ -1026,6 +1230,48 @@ fn lower(
                 _ => unreachable!("checked: an axis"),
             };
             match name.as_str() {
+                // Each row's id, and the number of rows (ADR 0079).
+                "id" => {
+                    let i = axis_named(&args[0]);
+                    (Expr::Var(ids[i].expect("checked: a table")), vec![i])
+                }
+                "rows" => (
+                    Expr::Num(grid[axis_named(&args[0])].cells as f64),
+                    Vec::new(),
+                ),
+                "of" => {
+                    // The cell whose id is i: at(T, k), k the first place
+                    // where id(pts) is i, NaN if none.
+                    let (t, axes) = low(&args[0])?;
+                    let (i, _) = low(&args[1])?;
+                    let id = || Box::new(Expr::Var(ids[axes[0]].expect("checked: a table")));
+                    let near = |op: Op, by: f64| {
+                        Expr::Bin(
+                            op,
+                            id(),
+                            Box::new(Expr::Bin(
+                                Op::Add,
+                                Box::new(i.clone()),
+                                Box::new(Expr::Num(by)),
+                            )),
+                        )
+                    };
+                    let is = Expr::Bin(
+                        Op::Mul,
+                        Box::new(near(Op::Gt, -0.5)),
+                        Box::new(near(Op::Lt, 0.5)),
+                    );
+                    let place = Expr::Bin(
+                        Op::Add,
+                        Box::new(Expr::Array(ArrayOp::ArgMaxOf, vec![is.clone()])),
+                        Box::new(Expr::Bin(
+                            Op::Div,
+                            Box::new(Expr::Num(0.0)),
+                            Box::new(Expr::Array(ArrayOp::MaxOf, vec![is])),
+                        )),
+                    );
+                    (Expr::Array(ArrayOp::Cell, vec![t, place]), Vec::new())
+                }
                 "lap" | "prev" | "next" | "spacing" => {
                     let axes = match name.as_str() {
                         "spacing" => Vec::new(),
@@ -1130,6 +1376,17 @@ fn lower(
 impl EquationSet {
     /// Build from the lines of a definition, as a Block named `name`.
     pub fn parse(name: &str, lines: &[String]) -> Result<Self> {
+        Self::parse_with_rows(name, lines, &std::collections::BTreeMap::new())
+    }
+
+    /// As [`EquationSet::parse`], with each table (ADR 0079) at the given
+    /// number of rows instead of its starting number: tables change only
+    /// between steps, and the block compiles its equations again then.
+    pub fn parse_with_rows(
+        name: &str,
+        lines: &[String],
+        rows: &std::collections::BTreeMap<String, usize>,
+    ) -> Result<Self> {
         // `param = 2` and the like are equations defining such a name.
         let keyword = |line: &str, word: &str| -> Option<String> {
             let rest = line.strip_prefix(word)?.strip_prefix(' ')?;
@@ -1141,11 +1398,49 @@ impl EquationSet {
         // its axes wherever they are written. The first axis is x (the
         // fastest in the grid's cells), the second y.
         let mut grid: Vec<Axis> = Vec::new();
+        // Tables' starting rows (ADR 0079): `start pts = 5`.
+        let mut starts: std::collections::HashMap<String, (usize, usize)> = Default::default();
         for (k, text) in lines.iter().enumerate() {
-            let Some(rest) = keyword(text.trim(), "grid") else {
+            let Some(rest) = keyword(text.trim(), "start") else {
                 continue;
             };
-            let (a, unit) = read_grid(text, &rest, k + 1)?;
+            let usage = "write a table's starting rows as 'start pts = 5'";
+            let Some((t, n)) = rest.split_once('=') else {
+                return Err(definition_error(k + 1, 1, usage));
+            };
+            let Ok(n) = n.trim().parse::<usize>() else {
+                return Err(definition_error(k + 1, 1, usage));
+            };
+            starts.insert(t.trim().to_string(), (n, k + 1));
+        }
+        for (k, text) in lines.iter().enumerate() {
+            let (a, unit) = if let Some(rest) = keyword(text.trim(), "table") {
+                let (t, max) = read_table(&rest, k + 1)?;
+                let start = starts.get(&t).map_or(0, |s| s.0);
+                if start > max {
+                    return Err(definition_error(
+                        starts[&t].1,
+                        1,
+                        format!("{t} starts with {start} rows but has at most {max}"),
+                    ));
+                }
+                let cells = rows.get(&t).copied().unwrap_or(start);
+                (
+                    Axis {
+                        name: t,
+                        line: k + 1,
+                        lo: Ast::Num(-0.5),
+                        hi: Ast::Num(cells as f64 - 0.5),
+                        cells,
+                        table: Some(max),
+                    },
+                    None,
+                )
+            } else if let Some(rest) = keyword(text.trim(), "grid") {
+                read_grid(text, &rest, k + 1)?
+            } else {
+                continue;
+            };
             if grid.len() == MAX_AXES {
                 return Err(definition_error(
                     k + 1,
@@ -1166,6 +1461,17 @@ impl EquationSet {
             grid.push(a);
         }
         let axes: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
+        if let Some((t, (_, line))) = starts
+            .iter()
+            .find(|(t, _)| !grid.iter().any(|a| &a.name == *t && a.table.is_some()))
+        {
+            return Err(definition_error(
+                *line,
+                1,
+                format!("'{t}' is not a table: declare it with 'table {t}'"),
+            ));
+        }
+        let is_table = |i: usize| grid[i].table.is_some();
 
         // Then the left-hand sides, which decide the kind of block, and
         // the declarations.
@@ -1184,6 +1490,7 @@ impl EquationSet {
             .collect();
         let mut array_init: Vec<(String, Option<Written>)> = Vec::new();
         let mut edges: Vec<EdgeLine> = Vec::new();
+        let mut rule_lines: Vec<RuleLine> = Vec::new();
         // Array parameters (ADR 0069): name and number of cells.
         let mut array_params: Vec<(String, usize)> = Vec::new();
         // Units given for a rate, `dx/dt = … [m/s]`: unit, line, column.
@@ -1191,8 +1498,21 @@ impl EquationSet {
         for (k, text) in lines.iter().enumerate() {
             let number = k + 1;
             let trimmed = text.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || keyword(trimmed, "grid").is_some()
+            if trimmed.is_empty()
+                || trimmed.starts_with('#')
+                || ["grid", "table", "start"]
+                    .iter()
+                    .any(|w| keyword(trimmed, w).is_some())
             {
+                continue;
+            }
+            // Rules that change a table between steps (ADR 0079).
+            if let Some(word) = ["remove", "add"]
+                .into_iter()
+                .find(|w| keyword(trimmed, w).is_some())
+            {
+                let rest = keyword(trimmed, word).expect("found");
+                rule_lines.push(read_rule(text, word, &rest, number)?);
                 continue;
             }
             if let Some(rest) = keyword(trimmed, "edge") {
@@ -1563,6 +1883,55 @@ impl EquationSet {
                 ));
             }
         }
+        // Tables (ADR 0079 stage 1a): in maps; a quantity over a table's
+        // rows has no other axis; values per row are states or defined
+        // quantities (no parameters, inputs or edges over rows yet).
+        let line_of_name = |n: &str| -> usize {
+            state_decls
+                .iter()
+                .find(|d| d.0 == n)
+                .map(|d| d.1)
+                .or_else(|| {
+                    parsed.iter().find_map(|l| match &l.lhs {
+                        Lhs::Defined(d) | Lhs::State(d) | Lhs::Map(d) if d == n => Some(l.number),
+                        _ => None,
+                    })
+                })
+                .or_else(|| {
+                    declared
+                        .iter()
+                        .find(|d| d.0 == format!("{n}[0]"))
+                        .map(|d| d.2)
+                })
+                .unwrap_or(1)
+        };
+        if let Some(t) = grid.iter().find(|a| a.table.is_some()) {
+            if kind != Kind::Map {
+                return Err(definition_error(
+                    t.line,
+                    1,
+                    format!(
+                        "the table {} needs a map (x[n+1] = …): tables change between steps, and continuous states over rows come with ADR 0079 stage 4",
+                        t.name
+                    ),
+                ));
+            }
+        }
+        for (n, dims) in &shapes {
+            if axes.contains(&n.as_str()) || !dims.iter().any(|&a| is_table(a)) {
+                continue;
+            }
+            let why = if dims.len() > 1 {
+                format!("{n} is over a table's rows and other axes: a quantity over rows has only them (for now)")
+            } else if array_params.iter().any(|a| &a.0 == n) {
+                format!("a parameter has a value per cell, not per row: a value per row is a state, 'state {n}[{}]'", axes[dims[0]])
+            } else if inputs.iter().any(|i| i == n) {
+                format!("an input over a table's rows comes with ports that carry rows (ADR 0079 stage 1b); {n} cannot be one yet")
+            } else {
+                continue;
+            };
+            return Err(definition_error(line_of_name(n), 1, why));
+        }
         // Array states' initial values, edge values and the grid's ends.
         let mut inits: Vec<(String, Ast, usize, usize)> = Vec::new();
         for (n, init) in &array_init {
@@ -1574,6 +1943,13 @@ impl EquationSet {
         }
         for e in &edges {
             let own = axes_of_name(&e.array);
+            if is_table(e.axis) {
+                return Err(definition_error(
+                    e.line,
+                    e.column,
+                    format!("{} is a table: its rows have no ends", axes[e.axis]),
+                ));
+            }
             if own.is_empty() || axes.contains(&e.array.as_str()) {
                 return Err(definition_error(
                     e.line,
@@ -1725,6 +2101,99 @@ impl EquationSet {
                     1,
                     "'n' is the step number in maps and cannot be used in equations yet",
                 ));
+            }
+        }
+        // States over tables' rows after the others: the block keeps them
+        // in its tables, the rest in its fixed state (ADR 0079).
+        let row_table = |n: &str| -> Option<usize> {
+            shapes
+                .get(n)
+                .and_then(|d| d.first().copied())
+                .filter(|&a| is_table(a))
+        };
+        states.sort_by_key(|n| row_table(n).is_some());
+        // Rules, checked: the table, the axis new rows come from, and each
+        // column's value (its starting value where not given).
+        let mut rules: Vec<CheckedRule> = Vec::new();
+        for r in &rule_lines {
+            let bad = |c: usize, m: String| definition_error(r.line, c, m);
+            let Some(t) = axes
+                .iter()
+                .position(|a| *a == r.table)
+                .filter(|&i| is_table(i))
+            else {
+                return Err(bad(
+                    1,
+                    format!(
+                        "'{}' is not a table: declare it with 'table {}'",
+                        r.table, r.table
+                    ),
+                ));
+            };
+            let within = |ast: &Ast, col: usize, allowed: &[usize], what: &str| -> Result<()> {
+                let got = axes_of(ast, &grid, &shapes).map_err(|(c, m)| bad(col + c - 1, m))?;
+                if got.iter().any(|a| !allowed.contains(a)) {
+                    let names: Vec<&str> = got.iter().map(|&a| axes[a]).collect();
+                    return Err(bad(
+                        col,
+                        format!(
+                            "{what} is over {}, not the rows it adds or removes",
+                            names.join(", ")
+                        ),
+                    ));
+                }
+                Ok(())
+            };
+            match &r.add {
+                None => {
+                    within(&r.cond, r.cond_column, &[t], "the condition")?;
+                    rules.push((t, None, r, Vec::new()));
+                }
+                Some((from, given)) => {
+                    let src = match from {
+                        Some(f) => Some(axes.iter().position(|a| a == f).ok_or_else(|| {
+                            bad(1, format!("'{f}' is not an axis or table: new rows come from one, 'add {} from k'", r.table))
+                        })?),
+                        None => None,
+                    };
+                    let allowed: Vec<usize> = src.into_iter().collect();
+                    within(&r.cond, r.cond_column, &allowed, "the condition")?;
+                    let columns: Vec<&String> =
+                        states.iter().filter(|s| row_table(s) == Some(t)).collect();
+                    if let Some((n, _, c)) = given.iter().find(|g| !columns.contains(&&g.0)) {
+                        return Err(bad(
+                            *c,
+                            format!(
+                                "'{n}' is not a state over {}: its rows hold {}",
+                                r.table,
+                                columns
+                                    .iter()
+                                    .map(|s| s.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        ));
+                    }
+                    let mut values = Vec::new();
+                    for col in columns {
+                        let (ast, c) = match given.iter().find(|g| &g.0 == col) {
+                            Some((_, ast, c)) => (ast.clone(), *c),
+                            None => match inits.iter().find(|i| &i.0 == col) {
+                                // Its starting value, if that is one value.
+                                Some(i) if axes_of(&i.1, &grid, &shapes).is_ok_and(|a| a.is_empty()) => {
+                                    (i.1.clone(), i.3)
+                                }
+                                Some(_) => {
+                                    return Err(bad(1, format!("'add {}' must give {col}: its starting value depends on the rows", r.table)))
+                                }
+                                None => (Ast::Num(0.0), 1),
+                            },
+                        };
+                        within(&ast, c, &allowed, &format!("{col}'s value"))?;
+                        values.push((col.clone(), ast, r.line, c));
+                    }
+                    rules.push((t, src, r, values));
+                }
             }
         }
         // Scalar states start from a parameter `x0`; arrays from their
@@ -1966,19 +2435,36 @@ impl EquationSet {
             .iter()
             .map(|n| add(len_of(n), unit_of(n).scale))
             .collect();
+        // Each table's row ids, given with the inputs (ADR 0079).
+        let ids_vars: Vec<Option<usize>> = grid
+            .iter()
+            .map(|a| a.table.map(|_| add(a.cells, 1.0)))
+            .collect();
         let param_vars: Vec<usize> = params.iter().map(|n| add(1, unit_of(n).scale)).collect();
-        let defined_vars: Vec<usize> = defined
-            .iter()
-            .map(|n| add(len_of(n), unit_of(n).scale))
-            .collect();
         let axis_scales: Vec<f64> = grid.iter().map(|a| unit_of(&a.name).scale).collect();
-        // Each axis's position of every cell (read as outputs, after the
-        // defined quantities), then its ends and spacing, all in its unit.
-        let axis_vars: Vec<usize> = grid
-            .iter()
-            .zip(&axis_scales)
-            .map(|(a, &s)| add(a.cells, s))
-            .collect();
+        // The outputs: defined quantities, then each axis's position of
+        // every cell; those over a table's rows after them, not outputs.
+        let mut defined_vars = vec![0; defined.len()];
+        let mut axis_vars = vec![0; grid.len()];
+        let mut out_vars = Vec::new();
+        for rows in [false, true] {
+            for (k, n) in defined.iter().enumerate() {
+                if row_table(n).is_some() == rows {
+                    defined_vars[k] = add(len_of(n), unit_of(n).scale);
+                    if !rows {
+                        out_vars.push(defined_vars[k]);
+                    }
+                }
+            }
+            for (i, a) in grid.iter().enumerate() {
+                if a.table.is_some() == rows {
+                    axis_vars[i] = add(a.cells, axis_scales[i]);
+                    if !rows {
+                        out_vars.push(axis_vars[i]);
+                    }
+                }
+            }
+        }
         let grid_vars: Vec<(usize, usize, usize, usize)> = axis_vars
             .iter()
             .zip(&axis_scales)
@@ -1992,6 +2478,24 @@ impl EquationSet {
                 EdgeKind::Gradient(_) => {
                     Some(add(1, unit_of(&e.array).scale / axis_scales[e.axis]))
                 }
+            })
+            .collect();
+        // Each rule's condition and the values of the rows it adds, over
+        // the rows it removes or those it adds from (ADR 0079).
+        let rule_vars: Vec<(usize, Vec<usize>)> = rules
+            .iter()
+            .map(|(t, src, r, values)| {
+                let n = match (&r.add, src) {
+                    (None, _) => grid[*t].cells,
+                    (Some(_), Some(s)) => grid[*s].cells,
+                    (Some(_), None) => 1,
+                };
+                let cond = add(n, 1.0);
+                let vals = values
+                    .iter()
+                    .map(|(c, ..)| add(n, unit_of(c).scale))
+                    .collect();
+                (cond, vals)
             })
             .collect();
         let rate_vars: Vec<usize> = states
@@ -2017,17 +2521,20 @@ impl EquationSet {
             .collect();
         let layout = Layout {
             states: state_vars.iter().map(|&v| spans[v].len).sum(),
-            inputs: input_vars.iter().map(|&v| spans[v].len).sum(),
-            params: params.len(),
-            outputs_at: defined_vars
-                .first()
-                .or(axis_vars.first())
-                .map_or(0, |&v| spans[v].at),
-            outputs_len: defined_vars
+            fixed: states
                 .iter()
-                .chain(&axis_vars)
+                .zip(&state_vars)
+                .filter(|(n, _)| row_table(n).is_none())
+                .map(|(_, &v)| spans[v].len)
+                .sum(),
+            inputs: input_vars
+                .iter()
+                .chain(ids_vars.iter().flatten())
                 .map(|&v| spans[v].len)
-                .sum::<usize>(),
+                .sum(),
+            params: params.len(),
+            outputs_at: out_vars.first().map_or(0, |&v| spans[v].at),
+            outputs_len: out_vars.iter().map(|&v| spans[v].len).sum::<usize>(),
             rates_at: rate_vars.first().map_or(size, |&v| spans[v].at),
         };
         let slot_of = |n: &str, defined_so_far: usize| -> Option<usize> {
@@ -2120,18 +2627,25 @@ impl EquationSet {
                        line: usize,
                        offset: usize|
          -> Result<Expr> {
-            let (e, from) = lower(ast, &grid, &shapes, &|n| slot_of(n, visible), &stencil)
-                .map_err(|e| {
-                    let hint = if defined
-                        .iter()
-                        .any(|d| e.message == format!("unknown name '{d}'"))
-                    {
-                        " (it is defined further down; define it above this line)"
-                    } else {
-                        ""
-                    };
-                    definition_error(line, offset + e.column, format!("{}{hint}", e.message))
-                })?;
+            let (e, from) = lower(
+                ast,
+                &grid,
+                &shapes,
+                &|n| slot_of(n, visible),
+                &stencil,
+                &ids_vars,
+            )
+            .map_err(|e| {
+                let hint = if defined
+                    .iter()
+                    .any(|d| e.message == format!("unknown name '{d}'"))
+                {
+                    " (it is defined further down; define it above this line)"
+                } else {
+                    ""
+                };
+                definition_error(line, offset + e.column, format!("{}{hint}", e.message))
+            })?;
             Ok(match to {
                 Some(to) => fit(e, &from, to, None, &grid),
                 None => e,
@@ -2221,6 +2735,51 @@ impl EquationSet {
             init_steps.push((state_vars[i], x));
         }
 
+        // Rules' conditions and the values of new rows (ADR 0079), from the
+        // values after a step.
+        let mut rule_steps: Vec<(usize, Expr)> = Vec::new();
+        for ((t, src, r, values), (cond_var, value_vars)) in rules.iter().zip(&rule_vars) {
+            let to: Vec<usize> = match (&r.add, src) {
+                (None, _) => vec![*t],
+                (Some(_), Some(s)) => vec![*s],
+                (Some(_), None) => Vec::new(),
+            };
+            let e = resolve(&r.cond, defined.len(), Some(&to), r.line, r.cond_column - 1)?;
+            rule_steps.push((*cond_var, e));
+            for ((_, ast, line, c), &var) in values.iter().zip(value_vars) {
+                let e = resolve(ast, defined.len(), Some(&to), *line, c - 1)?;
+                rule_steps.push((var, stored(e, var)));
+            }
+        }
+        let rule_runs: Vec<RuleRun> = rules
+            .iter()
+            .zip(&rule_vars)
+            .map(|((t, _, r, _), (cond, values))| RuleRun {
+                table: *t,
+                remove: r.add.is_none(),
+                cond: spans[*cond],
+                values: values.iter().map(|&v| spans[v]).collect(),
+            })
+            .collect();
+        let tables: Vec<TableRows> = grid
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| {
+                let max = a.table?;
+                Some(TableRows {
+                    axis: i,
+                    name: a.name.clone(),
+                    max,
+                    start: starts.get(&a.name).map_or(0, |s| s.0),
+                    rows: a.cells,
+                    columns: states
+                        .iter()
+                        .filter(|s| row_table(s) == Some(i))
+                        .cloned()
+                        .collect(),
+                })
+            })
+            .collect();
         let mut param_specs: Vec<ParamSpec> = params
             .iter()
             .map(|p| ParamSpec {
@@ -2316,7 +2875,8 @@ impl EquationSet {
         let mut ports: Vec<PortSpec> = inputs
             .iter()
             .map(|n| PortSpec::input(n, unit_of(n), shape(n)))
-            .chain(states.iter().map(|n| {
+            // Quantities over a table's rows are not ports (ADR 0079 1a).
+            .chain(states.iter().filter(|n| row_table(n).is_none()).map(|n| {
                 let p = PortSpec::output(n, unit_of(n), shape(n)).from_state(state_at);
                 state_at += shape(n).len();
                 p
@@ -2325,6 +2885,7 @@ impl EquationSet {
                 defined
                     .iter()
                     .zip(uses.iter().zip(&reads))
+                    .filter(|(n, _)| row_table(n).is_none())
                     .map(|(n, (u, r))| {
                         let u: Vec<&str> = u.iter().map(String::as_str).collect();
                         let r: Vec<&str> = r.iter().map(String::as_str).collect();
@@ -2334,7 +2895,7 @@ impl EquationSet {
                     }),
             )
             .collect();
-        for (i, a) in grid.iter().enumerate() {
+        for (i, a) in grid.iter().enumerate().filter(|(_, a)| a.table.is_none()) {
             // Each axis is the coordinate of every output over it.
             let bounds: Vec<String> = [&a.lo, &a.hi]
                 .iter()
@@ -2370,13 +2931,26 @@ impl EquationSet {
         let rate_steps = needed(rate_steps, &rate_vars);
         let mut outputs = Program::with_layout(&spans, size, &output_steps);
         let mut rates = Program::with_layout(&spans, size, &rate_steps);
-        let outputs_copy = Copies::place(
-            &mut outputs,
-            layout.states,
-            layout.outputs_at,
-            layout.outputs_len,
-        );
-        let rates_copy = Copies::place(&mut rates, layout.states, layout.rates_at, layout.states);
+        let rules_program = (!rule_steps.is_empty()).then(|| {
+            let mut steps = output_steps.clone();
+            steps.extend(rule_steps.iter().map(|(v, e)| (*v, e)));
+            Program::with_layout(&spans, size, &steps)
+        });
+        // Tables' states are gathered for each evaluation: no arrays in
+        // place.
+        let (outputs_copy, rates_copy) = if tables.is_empty() {
+            (
+                Copies::place(
+                    &mut outputs,
+                    layout.states,
+                    layout.outputs_at,
+                    layout.outputs_len,
+                ),
+                Copies::place(&mut rates, layout.states, layout.rates_at, layout.states),
+            )
+        } else {
+            (Copies::none(), Copies::none())
+        };
         let init = (!array_init.is_empty()).then(|| {
             let steps: Vec<(usize, &Expr)> = init_steps.iter().map(|(v, e)| (*v, e)).collect();
             Program::with_layout(&spans, size, &steps)
@@ -2385,9 +2959,13 @@ impl EquationSet {
             outputs.registers(),
             rates.registers(),
             init.as_ref().map_or_else(Vec::new, Program::registers),
+            rules_program
+                .as_ref()
+                .map_or_else(Vec::new, Program::registers),
         ]);
         let state_names = states
             .iter()
+            .filter(|s| row_table(s).is_none())
             .flat_map(|s| {
                 if !axes_of_name(s).is_empty() {
                     (0..len_of(s))
@@ -2412,6 +2990,10 @@ impl EquationSet {
                 EdgeKind::Value(a) | EdgeKind::Gradient(a) => Some(a),
                 EdgeKind::Periodic => None,
             }))
+            .chain(rule_lines.iter().flat_map(|r| {
+                std::iter::once(&r.cond)
+                    .chain(r.add.iter().flat_map(|(_, v)| v.iter().map(|g| &g.1)))
+            }))
             .any(|a| a.names().iter().any(|(n, _)| n == "t"));
         Ok(Self {
             kind,
@@ -2422,7 +3004,13 @@ impl EquationSet {
                 ports,
                 params: param_specs,
                 states: state_names,
-                tables: Vec::new(),
+                tables: tables
+                    .iter()
+                    .map(|t| {
+                        let cols: Vec<&str> = t.columns.iter().map(String::as_str).collect();
+                        simsandbox_core::table::TableSpec::new(&t.name, &cols)
+                    })
+                    .collect(),
                 time: match kind {
                     Kind::Continuous => TimeSemantics::Continuous,
                     Kind::Map => TimeSemantics::DiscreteEvent,
@@ -2437,11 +3025,111 @@ impl EquationSet {
             scratch,
             outputs_copy,
             rates_copy,
+            row_states: states
+                .iter()
+                .filter_map(|s| {
+                    let a = row_table(s)?;
+                    let t = tables.iter().position(|t| t.axis == a)?;
+                    Some((t, tables[t].columns.iter().position(|c| c == s)?))
+                })
+                .collect(),
+            tables,
+            rules: rule_runs,
+            rules_program,
+            source: (name.to_string(), lines.to_vec()),
         })
     }
 
     pub fn kind(&self) -> Kind {
         self.kind
+    }
+
+    /// Its tables (ADR 0079).
+    pub fn tables(&self) -> &[TableRows] {
+        &self.tables
+    }
+
+    /// Its rules, in written order (ADR 0079).
+    pub fn rules(&self) -> &[RuleRun] {
+        &self.rules
+    }
+
+    /// The inputs the block's ports give (before the tables' row ids).
+    pub fn inputs_len(&self) -> usize {
+        self.layout.inputs - self.tables.iter().map(|t| t.rows).sum::<usize>()
+    }
+
+    /// The same equations compiled for these numbers of rows, one per
+    /// table (ADR 0079).
+    pub fn with_rows(&self, rows: &[usize]) -> Result<Self> {
+        let rows = self
+            .tables
+            .iter()
+            .zip(rows)
+            .map(|(t, &n)| (t.name.clone(), n))
+            .collect();
+        Self::parse_with_rows(&self.source.0, &self.source.1, &rows)
+    }
+
+    /// All states, from the fixed ones (`fixed`) and the tables' columns.
+    fn gather(&self, fixed: &[f64], tables: &[simsandbox_core::table::Table]) -> Vec<f64> {
+        let mut x = Vec::with_capacity(self.layout.states);
+        x.extend_from_slice(&fixed[..self.layout.fixed]);
+        for &(t, c) in &self.row_states {
+            x.extend_from_slice(tables[t].column(c));
+        }
+        x
+    }
+
+    /// The inputs with each table's row ids after them.
+    fn with_ids(&self, inputs: &[f64], tables: &[simsandbox_core::table::Table]) -> Vec<f64> {
+        let mut u = inputs.to_vec();
+        for t in tables {
+            u.extend(t.ids().iter().map(|&i| i as f64));
+        }
+        u
+    }
+
+    /// Every state value: the fixed ones, then those over rows.
+    pub fn states_len(&self) -> usize {
+        self.layout.states
+    }
+
+    /// The fixed state values (those the block keeps outside its tables).
+    pub fn fixed_len(&self) -> usize {
+        self.layout.fixed
+    }
+
+    /// The starting state, with `u` the inputs (the tables' row ids after
+    /// the block's own inputs).
+    pub fn initial_state_with(&self, p: &[f64], u: &[f64], x0: &mut [f64]) {
+        let mut scratch = self.scratch.borrow_mut();
+        if let Some(init) = &self.init {
+            let v = &mut scratch[2];
+            let zero = vec![0.0; self.layout.states];
+            self.fill(0.0, &zero, u, p, v);
+            init.run(v);
+            x0.copy_from_slice(&v[1..=self.layout.states]);
+        }
+        let mut at = 0;
+        for &(len, param) in &self.initial {
+            if let Some(i) = param {
+                x0[at] = p[i];
+            }
+            at += len;
+        }
+    }
+
+    /// Run the rules' program on `x` (after a step): the registers, from
+    /// which [`RuleRun`]'s spans read each rule's values.
+    pub fn rule_registers(&self, t: f64, x: &[f64], u: &[f64], p: &[f64]) -> Vec<f64> {
+        let Some(program) = &self.rules_program else {
+            return Vec::new();
+        };
+        let v = &mut self.scratch.borrow_mut()[3];
+        self.fill(t, x, u, p, v);
+        program.run(v);
+        v.clone()
     }
 
     /// Put time `t`, states `x`, inputs `u` and parameters `p` in the
@@ -2519,13 +3207,16 @@ impl Equations for EquationSet {
         let ns = self.layout.states;
         let (at, len) = (self.layout.outputs_at, self.layout.outputs_len);
         let copies = &self.outputs_copy;
-        y[..ns].copy_from_slice(&x[..ns]);
         if !copies.placed {
+            // The fixed states are outputs; states over rows are not.
+            let nf = self.layout.fixed;
+            y[..nf].copy_from_slice(&x[..nf]);
             self.fill(t, x, u, p, v);
             self.outputs.run(v);
-            y[ns..ns + len].copy_from_slice(&v[at..at + len]);
+            y[nf..nf + len].copy_from_slice(&v[at..at + len]);
             return;
         }
+        y[..ns].copy_from_slice(&x[..ns]);
         self.fill_parts(t, x, &copies.states, u, p, v);
         // Large arrays read from `x` and written to `y` where they are.
         let (_, rest) = y.split_at_mut(ns);
@@ -2558,21 +3249,7 @@ impl OdeSystem for EquationSet {
     }
 
     fn initial_state(&self, p: &[f64], x0: &mut [f64]) {
-        let mut scratch = self.scratch.borrow_mut();
-        if let Some(init) = &self.init {
-            let v = &mut scratch[2];
-            let zero = vec![0.0; self.layout.states];
-            self.fill(0.0, &zero, &[], p, v);
-            init.run(v);
-            x0.copy_from_slice(&v[1..=self.layout.states]);
-        }
-        let mut at = 0;
-        for &(len, param) in &self.initial {
-            if let Some(i) = param {
-                x0[at] = p[i];
-            }
-            at += len;
-        }
+        self.initial_state_with(p, &[], x0)
     }
 }
 
@@ -2583,7 +3260,13 @@ pub struct ExplicitBlock {
     set: EquationSet,
     method: MethodSpec,
     next: Vec<f64>,
+    /// With tables (ADR 0079): its equations compiled for each number of
+    /// rows met, one per table (rows change only between steps).
+    by_rows: RefCell<std::collections::HashMap<Vec<usize>, EquationSet>>,
 }
+
+/// Compiled sets kept per numbers of rows, at most.
+const KEPT_ROW_COUNTS: usize = 64;
 
 impl ExplicitBlock {
     /// Wrap a map or formula set; `method` must be `iterate` for maps and
@@ -2620,7 +3303,104 @@ impl ExplicitBlock {
                 },
             },
             next: vec![0.0; states],
+            by_rows: RefCell::new(Default::default()),
         })
+    }
+
+    /// The equations compiled for these tables' numbers of rows.
+    fn compiled(
+        &self,
+        tables: &[simsandbox_core::table::Table],
+    ) -> Result<std::cell::Ref<'_, EquationSet>> {
+        let rows: Vec<usize> = tables.iter().map(|t| t.len()).collect();
+        if !self.by_rows.borrow().contains_key(&rows) {
+            let set = self.set.with_rows(&rows)?;
+            let mut kept = self.by_rows.borrow_mut();
+            if kept.len() >= KEPT_ROW_COUNTS {
+                kept.clear();
+            }
+            kept.insert(rows.clone(), set);
+        }
+        Ok(std::cell::Ref::map(self.by_rows.borrow(), |kept| {
+            &kept[&rows]
+        }))
+    }
+
+    /// One step of a map with tables (ADR 0079): every state, fixed or
+    /// over rows, updates together; then the rules change the tables in
+    /// their written order; then the outputs.
+    fn step_with_tables(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
+        let (t, p) = (ctx.t, io.params);
+        let set = self.compiled(io.tables)?;
+        let x = set.gather(io.state, io.tables);
+        let u = set.with_ids(io.inputs, io.tables);
+        let mut next = vec![0.0; x.len()];
+        set.rhs(t, &x, &u, p, &mut next);
+        let nf = set.fixed_len();
+        io.state.copy_from_slice(&next[..nf]);
+        let mut at = nf;
+        for &(tb, c) in &set.row_states {
+            let n = io.tables[tb].len();
+            io.tables[tb]
+                .column_mut(c)
+                .copy_from_slice(&next[at..at + n]);
+            at += n;
+        }
+        let rules = set.rules().len();
+        drop(set);
+        for r in 0..rules {
+            let set = self.compiled(io.tables)?;
+            let x = set.gather(io.state, io.tables);
+            let u = set.with_ids(io.inputs, io.tables);
+            let v = set.rule_registers(t + ctx.dt, &x, &u, p);
+            let rule = &set.rules()[r];
+            let tb = set
+                .tables()
+                .iter()
+                .position(|tr| tr.axis == rule.table)
+                .expect("a table of the block");
+            let holds = |c: f64| c != 0.0 && !c.is_nan();
+            let cond = &v[rule.cond.at..rule.cond.at + rule.cond.len];
+            let table = &mut io.tables[tb];
+            if rule.remove {
+                table.retain(|k| !holds(cond[k]));
+            } else {
+                let max = set.tables()[tb].max;
+                for (k, _) in cond.iter().enumerate().filter(|(_, &c)| holds(c)) {
+                    if table.len() >= max {
+                        break;
+                    }
+                    let row: Vec<f64> = rule
+                        .values
+                        .iter()
+                        .map(|s| v[s.at + if s.len > 1 { k } else { 0 }])
+                        .collect();
+                    table.push(&row);
+                }
+            }
+        }
+        self.write_outputs(t + ctx.dt, io)
+    }
+
+    /// Every state's starting value, the tables at their starting rows
+    /// with ids from 0.
+    fn starting(&self, params: &[f64]) -> Vec<f64> {
+        let set = &self.set;
+        let mut u = vec![0.0; set.inputs_len()];
+        for t in &set.tables {
+            u.extend((0..t.start).map(|i| i as f64));
+        }
+        let mut x0 = vec![0.0; set.states_len()];
+        set.initial_state_with(params, &u, &mut x0);
+        x0
+    }
+
+    fn write_outputs(&self, t: f64, io: StepIo<'_>) -> Result<()> {
+        let set = self.compiled(io.tables)?;
+        let x = set.gather(io.state, io.tables);
+        let u = set.with_ids(io.inputs, io.tables);
+        set.outputs(t, &x, &u, io.params, io.outputs);
+        Ok(())
     }
 }
 
@@ -2634,17 +3414,62 @@ impl Block for ExplicitBlock {
     }
 
     fn init(&mut self, params: &[f64], state: &mut [f64]) -> Result<()> {
-        self.set.initial_state(params, state);
+        if self.set.tables.is_empty() {
+            self.set.initial_state(params, state);
+        } else {
+            let x0 = self.starting(params);
+            state.copy_from_slice(&x0[..self.set.fixed_len()]);
+        }
+        Ok(())
+    }
+
+    /// Each table's starting rows, with ids from 0 (ADR 0079).
+    fn init_tables(
+        &mut self,
+        params: &[f64],
+        _seed: u64,
+        tables: &mut [simsandbox_core::table::Table],
+    ) -> Result<()> {
+        if self.set.tables.is_empty() {
+            return Ok(());
+        }
+        let x0 = self.starting(params);
+        let mut at = self.set.fixed_len();
+        let mut columns: Vec<Vec<Vec<f64>>> = self
+            .set
+            .tables
+            .iter()
+            .map(|t| vec![Vec::new(); t.columns.len()])
+            .collect();
+        for &(tb, c) in &self.set.row_states {
+            let n = self.set.tables[tb].start;
+            columns[tb][c] = x0[at..at + n].to_vec();
+            at += n;
+        }
+        for ((table, t), cols) in tables.iter_mut().zip(&self.set.tables).zip(&columns) {
+            table.reset();
+            for r in 0..t.start {
+                let row: Vec<f64> = cols.iter().map(|c| c[r]).collect();
+                table.push(&row);
+            }
+        }
         Ok(())
     }
 
     fn initial_params(&self, state: &[f64], params: &[f64]) -> Option<Vec<f64>> {
+        // A table's rows are not parameters: not for blocks with tables.
+        if !self.set.tables.is_empty() {
+            return None;
+        }
         crate::ode::initial_params_by_name(&self.set.spec, state, params, |p, x| {
             self.set.initial_state(p, x)
         })
     }
 
     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
+        if !self.set.tables.is_empty() {
+            return self.step_with_tables(ctx, io);
+        }
         if self.set.kind == Kind::Map {
             // All states update together from the current values.
             self.set
@@ -2657,6 +3482,9 @@ impl Block for ExplicitBlock {
     }
 
     fn compute_outputs(&self, t: f64, io: StepIo<'_>) -> Result<()> {
+        if !self.set.tables.is_empty() {
+            return self.write_outputs(t, io);
+        }
         self.set
             .outputs(t, io.state, io.inputs, io.params, io.outputs);
         Ok(())

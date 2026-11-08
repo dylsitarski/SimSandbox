@@ -1,6 +1,6 @@
 # 0079 — Tables: members with stable ids whose structure changes between steps
 
-- **Status:** Accepted
+- **Status:** Accepted (stage 1a built 2026-11-08)
 - **Date:** 2026-11-06
 - **Builds on:** [ADR 0070](0070-studies-are-blocks.md) (point 4: models over sets of members), [ADR 0034](0034-agent-domain.md) (kernel-owned tables with stable ids), [ADR 0060](0060-arrays-in-typed-equations.md) and [ADR 0069](0069-repetition-in-blocks.md) (fixed grids, neighbours by index), [ADR 0077](0077-sums-in-fixed-chunks.md) (sums in a fixed order)
 - **Used by:** [ADR 0078](0078-adaptive-studies.md) (refinement in adaptive studies); adaptive mesh refinement; agents written as models (Q26)
@@ -69,3 +69,14 @@ Each change increments the table's **structure version**.
 - Typed equations grow table declarations and rule syntax: the start of Q26's rule language.
 - Views of tables beyond values and scatter (meshes drawn by cell, refined heat maps) come with stages 3 and 4.
 - **Concepts added:** none. This builds the existing **Members**: rows with ids, collapsed by array functions, with rules and transfers as labelled methods.
+
+## As built
+
+**Stage 1 is built in parts** (owner, 2026-11-08): 1a, tables inside one typed-equations block; then [ADR 0081](0081-shapes-are-lists-of-axes.md) stages 1–2 (shapes as axes, with a rows axis); then 1b, ports carrying rows with ids and a version; 1c, probes and history by id; 1d, studies over tables.
+
+**1a (2026-11-08): tables inside one block.**
+- **Declarations:** `table pts` or `table pts max 200` (default 100 000 rows), `start pts = 5` (default 0). A table is an axis whose length is the current number of rows. States over it hold a value per row (`state age[pts] = id(pts)`, a starting value that may read `id(pts)`); defined quantities over it follow. A quantity over rows has no other axis; parameters, inputs and edges over rows are refused (inputs come with 1b). Tables are for maps only: continuous states over rows are stage 4.
+- **Rules** run after each step's update, in written order, on the new values: `remove pts where cond` (cond over the rows); `add pts [from k] [where cond][: c = value, …]`, one new row for each place of `k` (another table, a grid axis, or none: one row) where the condition holds, in that order, until the table's `max`. A column not given takes its starting value if that is one value, else must be given. New rows get the next ids, never reused (the kernel's `Table`).
+- **Functions:** `id(pts)` (each row's id), `rows(pts)` (how many), `of(T, i)` (T in the row with id `i`, NaN if none). Reductions over rows work as over any axis; stencils, `on` and edges do not (rows have no neighbours by place until stage 2).
+- **How it runs:** a table is a kernel table (ADR 0034), its columns the states over its rows, so snapshots, rewind and run files keep rows, ids and the id counter. The block compiles its equations for the current numbers of rows (`EquationSet::parse_with_rows`), keeping each compiled set by numbers of rows (up to 64), and compiles again when a rule changes them: every step runs fixed-length loops, exact as before. States over rows come after the fixed ones in the program; row ids are extra inputs; quantities over rows are not ports (1b). Rules compile to a program of their own (`EquationSet::rule_registers`). `ExplicitBlock::init_tables` makes the starting rows. A model of maps with tables iterates in the app (ADR 0083): the hold-still check compares tables too.
+- **Tested** (`crates/simsandbox-session/tests/tables.rs`): 30 rounds of a population with ageing, deaths, births from young rows, a row budget and rows added from a grid axis, against the same rules written directly in Rust, bit for bit; ids never reused and `of` NaN once its row is gone; rewinding and running on gives the same rows; mistakes explained; a table that empties and refills; a map with tables holding still. Every example and profiling case is unchanged.

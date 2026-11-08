@@ -2154,12 +2154,20 @@ impl Session {
         self.sim.step_count()
     }
 
-    /// Every block's state, by its bits.
+    /// Every block's state and tables (rows, ids and values), by bits.
     fn state_bits(&self) -> Vec<u64> {
-        self.ids
-            .values()
-            .flat_map(|&id| self.sim.state(id).iter().map(|v| v.to_bits()))
-            .collect()
+        let mut bits = Vec::new();
+        for &id in self.ids.values() {
+            bits.extend(self.sim.state(id).iter().map(|v| v.to_bits()));
+            for t in self.sim.tables(id) {
+                bits.push(t.len() as u64);
+                bits.extend(t.ids());
+                for c in 0..t.columns() {
+                    bits.extend(t.column(c).iter().map(|v| v.to_bits()));
+                }
+            }
+        }
+        bits
     }
 
     fn only_rounds(&self) -> bool {
@@ -2171,8 +2179,9 @@ impl Session {
             && self.track.schedule.is_empty()
             && self.ids.values().all(|&id| {
                 model.block(id).is_ok_and(|b| {
+                    // Tables only of blocks that say they never read
+                    // time: rows that change by rules each round.
                     b.reads_time() == Some(false)
-                        && b.spec().tables.is_empty()
                         && b.instants().is_none()
                         && (b.spec().states.is_empty()
                             || b.spec().time == TimeSemantics::DiscreteEvent)

@@ -61,6 +61,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Tables in typed equations (ADR 0079): `table pts`, `start pts = 5`, states with a value per row, and rules between steps (`remove pts where …`, `add pts from … where …: …`). Rows keep their ids (`id(pts)`, `of(T, i)`, `rows(pts)`), and rewind and run files keep them. In maps; their values are not ports yet.
+
 - Example "Following a branch through hysteresis": continuation written as a model. Each run starts where the last settled, at the next value of a parameter, so a bistable state follows its branch to the fold and jumps, tracing a hysteresis loop.
 
 - Example "Fitting a model to measurements": Levenberg–Marquardt written as a model fits a damped oscillator's stiffness and damping to 20 measured positions, reaching the least-squares fit SciPy finds. `rcond(A)` in typed equations, how far a matrix is from singular. `input.file` takes its samples as CSV text in the model (`"data"`), so a small data set travels with the model.
