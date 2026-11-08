@@ -6,6 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- The study form in the app shows no "from", "to" or "points" for a study whose points arrive through its inputs, and switching a study to that design drops them from the file: another model sends its values.
+
 - In the app, a model whose steps are rounds (maps that never read time, with an end, such as the search example) runs its rounds as fast as it can instead of one per simulated second, stops when a round changes nothing, and starts again from round 0 when a value changes. Its toolbar shows the round in place of Run, Pause, the speed and the time. Block types can say they never read time (`Block::reads_time`).
 
 - Typed equations: `prev` and `next` of an array over two axes must name the axis (`prev(u, x)`); before, they ran along the first.

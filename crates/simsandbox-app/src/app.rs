@@ -3906,6 +3906,13 @@ fn study_fields(
                             if d == Design::Inputs && s.count.is_none() {
                                 s.count = Some(simsandbox_file::DEFAULT_SAMPLE_COUNT);
                             }
+                            // ... and have no ranges: their values arrive.
+                            if d == Design::Inputs {
+                                for p in &mut s.params {
+                                    p.range = None;
+                                    p.points = None;
+                                }
+                            }
                             changed = true;
                             commit = true;
                         }
@@ -3990,13 +3997,19 @@ fn study_fields(
             s.values.len()
         ));
     } else {
+        // Points from inputs have no range: another model sends the values
+        // (ADR 0078).
+        let ranged = s.design != Design::Inputs;
         ui.strong("varies");
+        if !ranged {
+            ui.weak("Each parameter's values arrive through the study's input of the same name, one per point.");
+        }
         let mut remove = None;
         egui::Grid::new(("study-params", &b.name))
             .num_columns(5)
             .spacing([6.0, 4.0])
             .show(ui, |ui| {
-                if !s.params.is_empty() {
+                if !s.params.is_empty() && ranged {
                     for h in ["parameter", "from", "to"] {
                         ui.weak(h);
                     }
@@ -4011,12 +4024,19 @@ fn study_fields(
                                 let l = if *ic { format!("{key} (start)") } else { key.clone() };
                                 if ui.selectable_label(*key == p.param, l).clicked() && *key != p.param {
                                     p.param = key.clone();
-                                    p.range = Some(*range);
+                                    p.range = ranged.then_some(*range);
                                     changed = true;
                                     commit = true;
                                 }
                             }
                         });
+                    if !ranged {
+                        if ui.small_button("×").on_hover_text("Stop varying it").clicked() {
+                            remove = Some(k);
+                        }
+                        ui.end_row();
+                        continue;
+                    }
                     let [mut lo, mut hi] = p.range.unwrap_or_else(|| range_of(&p.param));
                     let speed = ((hi - lo).abs() / 200.0).max(1e-6);
                     let a = ui.add(egui::DragValue::new(&mut lo).speed(speed)).on_hover_text("From");
@@ -4063,7 +4083,7 @@ fn study_fields(
             {
                 s.params.push(SweepControl {
                     param: key.clone(),
-                    range: Some(*range),
+                    range: ranged.then_some(*range),
                     points: None,
                 });
                 changed = true;
@@ -5631,6 +5651,37 @@ mod tests {
         }
         inspect(&mut app);
         assert_eq!(app.picked, [(None, "tuning".to_string())]);
+    }
+
+    #[test]
+    fn a_study_of_points_from_inputs_shows_no_ranges() {
+        // ADR 0078: its values arrive through its inputs; drawing its form
+        // writes no range into it.
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Searching"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        app.diagram.canvas.selected = Some(simsandbox_session::canvas::Selection::Block(
+            "trials".into(),
+        ));
+        let o = simsandbox_session::render::RenderOptions {
+            width: 520.0,
+            height: 900.0,
+            ..Default::default()
+        };
+        let image = simsandbox_session::render::paint(&o, |ui| app.param_panel(ui));
+        if let Ok(path) = std::env::var("SIMSANDBOX_SHOT_INPUTS") {
+            std::fs::write(path, simsandbox_session::render::png(&image).unwrap()).unwrap();
+        }
+        let file = app.session.as_ref().unwrap().model().file.clone();
+        let trials = file.blocks.iter().find(|b| b.name == "trials").unwrap();
+        let sample = trials.sample.as_ref().unwrap();
+        assert!(sample
+            .params
+            .iter()
+            .all(|p| p.range.is_none() && p.points.is_none()));
     }
 
     #[test]

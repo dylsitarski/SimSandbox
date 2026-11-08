@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-08: study form: no from/to/points for `Design::Inputs` (`ranged`), cleared on switching to it; test `a_study_of_points_from_inputs_shows_no_ranges`
 - 2026-11-07: ADR 0083 written and built: `Block::reads_time`, `EquationSet::reads_time`, `Session::iterates`/`rounds_pending`/`held_still`/`round`/`stop_rounds`, the worker's unpaced rounds (`stepping_now`), the toolbar's round; screenshot under Xvfb of the search holding still at round 29
 - 2026-11-07: ADR 0080 stage 3: `Kind::AtTimes`/`AtSamples` in `reduce.rs` (`place`, `width`, `eval` to a vector), `run::sample_times`, `reducers` placing them, vector outputs in `run_study` and `study_rows`, `StudyBlock::widths` and 2D ports; `at_times`/`at_samples` in `REDUCTIONS`
 - 2026-11-07: `examples/fused_speed.rs` (typed Gray–Scott against fused Rust, rewritten and FMA forms, default and native builds, one and four cores); results in `docs/design/performance.md`; ADR 0082 written as Proposed; Q54 opened
