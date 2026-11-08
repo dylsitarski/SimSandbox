@@ -175,6 +175,7 @@
 
 ## Decided
 
+- 2026-11-08 (owner): ADR 0084 accepted; Q54 resolved.
 - 2026-11-08 (owner): blocks must always be able to wrap anything, however far the language grows; the WebAssembly spike (ADR 0057 item 4) should also compare compiling our own program (Cranelift, and as WebAssembly), recorded in ADR 0084.
 - 2026-11-08 (owner): models with data stay exact within a version; results may change between versions where the changelog says, and run files record the version so replay can say so.
 - 2026-11-07 (owner): rounds are not seconds (ADR 0083): models that iterate run unpaced in the app and stop when they hold still. Decided while building (not yet seen by the owner): an open-ended map (no `t_end`, the logistic map) stays paced, since a chaotic map never holds still.

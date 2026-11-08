@@ -1,6 +1,6 @@
 # 0084 — Where typed equations stop: a causal language of primitives; blocks wrap anything
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-08)
 - **Date:** 2026-11-08
 - **Resolves:** [Q54](../open-questions.md) (where typed equations stop and wrapped libraries, FMI or other backends begin)
 - **Amends:** [ADR 0057](0057-phase-2-plan.md) (item 4's WebAssembly spike gains a comparison of execution routes; "physical (acausal) connections" after the gate become acausal physics through Modelica and FMI), [ADR 0017](0017-typed-equations.md) (scope restated)
