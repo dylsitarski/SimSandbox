@@ -1,6 +1,6 @@
 # 0081 — Shapes are lists of named axes
 
-- **Status:** Accepted (owner, 2026-11-07; stages 1 and 2 built 2026-11-08)
+- **Status:** Accepted (owner, 2026-11-07; stages 1 and 2 built 2026-11-08; stage 4's ports built with ADR 0079 stage 1b, 2026-11-08)
 - **Date:** 2026-11-07
 - **Amends:** [ADR 0080](0080-named-axes.md) point 5 (ports of one or two axes), [ADR 0015](0015-pluggable-views.md) and [ADR 0024](0024-heat-map-axes-and-coordinates.md) (views of fields and their coordinates)
 - **Builds on:** [ADR 0080](0080-named-axes.md) (named axes in typed equations), [ADR 0079](0079-tables-of-members.md) (tables: axes whose length changes)
@@ -74,7 +74,9 @@ The choice is saved with the view (`"pick": {"z": 0}`, `"reduce": {"run": "mean"
 - **Names:** `PortSpec::axis_names` (`axes_named`), in `axes()` order. Typed equations name each port's axes after its grid lines; a study names its results' axes (`run`, or each swept parameter's over a grid of two, after a vector's own axis, `sample` or `time`). Wires compare lengths in order, not names (`describe_shape` in messages).
 - **Typed equations:** declared and defined quantities over up to 8 axes are ports (the "at most two" limit of ADR 0080 point 5 is gone; `MAX_AXES` 6 → 8). A study's vector result over a grid of two parameters, refused before, is a port of three axes.
 - **Recording and output (stage 2):** the history records `FieldShape::Tensor`; probes write it to `.npy` (the last axis fastest, as numpy stores it). Run output: every shape in JSON gains `axes` (each axis's `name` and `length`), keeping `kind`, `nx` and `ny` for one or two axes (`kind: "axes"` for more); CSV names a cell of three or more axes by its places (`q[1,2,3]`, first fastest), and keeps flat indices for one or two, so existing CSV is unchanged. Python gives `(rows, nk, …, n1)` and `Results.axes(name)` names them in the array's order. `check` and `describe` name a port's axes (`axes`).
-- **Not yet:** views draw tensors in stage 3 (until then they are recorded but not offered to views); table axes (`AxisLen::Rows` on ports with ids) with ADR 0079 stage 1b.
+- **Not yet:** views draw tensors in stage 3 (until then they are recorded but not offered to views).
+
+**Stage 4, ports (2026-11-08, with ADR 0079 stage 1b).** `Shape::Rows { dim }` is the rows axis on a port: `axes()` gives `[Rows]` (or `[Cells(dim), Rows]`), and frames carry the rows' ids and the table's version. Recording rows comes with ADR 0079 stage 1c; populations move to tables with its stage 5.
 - **Checked:** every example and profiling case gives the same CSV byte for byte and the same JSON apart from the new `axes`, and every example renders to the same image. Tests: a three-axis output through JSON, CSV, the session's history and Python; a typed block reading a study's three-axis result.
 
 ## Consequences

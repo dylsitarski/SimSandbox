@@ -505,7 +505,8 @@ impl Session {
                     Shape::Points { count, dim } => Some(FieldShape::Points { count, dim }),
                     Shape::Population { dim } => Some(FieldShape::Population { dim }),
                     Shape::Tensor { rank, dims } => Some(FieldShape::Tensor { rank, dims }),
-                    Shape::Scalar | Shape::Vector(_) => None,
+                    // Rows are recorded by id with ADR 0079 stage 1c.
+                    Shape::Scalar | Shape::Vector(_) | Shape::Rows { .. } => None,
                 };
                 if let Some(shape) = field {
                     for c in &port.coordinate {

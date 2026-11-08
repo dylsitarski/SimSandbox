@@ -6,9 +6,9 @@
 //! resolved at every evaluation. Adaptive steps, iteration and rollback
 //! build on this; see the roadmap.
 
-use crate::block::{Block, Causality, MethodLabels, StepContext, StepIo};
+use crate::block::{Block, Causality, MethodLabels, Shape, StepContext, StepIo};
 use crate::graph::{population_index, port_offset, BlockId, Model};
-use crate::loops::{Link, LoopMethod, OutputPlan};
+use crate::loops::{Link, LoopMethod, OutputPlan, RowsLink};
 use crate::table::Table;
 use crate::{Result, SimError};
 use std::cell::RefCell;
@@ -60,6 +60,26 @@ struct PopulationRoute {
     to_block: usize,
     to_index: usize,
     factor: f64,
+    /// A table's rows (a `RowsFrame`), else a population.
+    rows: bool,
+}
+
+impl PopulationRoute {
+    /// Copy `from` to `to`, applying the unit's factor to the values only:
+    /// a rows frame's version and ids come first (`RowsFrame`).
+    fn copy(&self, from: &[f64], to: &mut Vec<f64>) {
+        to.clear();
+        let head = match self.rows {
+            true => from.get(1).map_or(0, |&n| 2 + n as usize).min(from.len()),
+            false => 0,
+        };
+        if self.factor == 1.0 {
+            to.extend_from_slice(from);
+        } else {
+            to.extend_from_slice(&from[..head]);
+            to.extend(from[head..].iter().map(|v| self.factor * v));
+        }
+    }
 }
 
 /// One resolved route from an output slice to an input slice.
@@ -135,7 +155,7 @@ impl GroupPlan {
             })
             .collect();
         let links: Vec<Link> = internal.iter().map(Route::link).collect();
-        let outputs = OutputPlan::new(&units, &links)?;
+        let outputs = OutputPlan::new(&units, &links, &[])?;
         drop(units);
         Ok(Self {
             members,
@@ -594,6 +614,7 @@ impl Simulator {
                         to_block: bi,
                         to_index: index(&spec.ports, Causality::Input, &p.name)?,
                         factor: conn.factor,
+                        rows: matches!(p.shape, Shape::Rows { .. }),
                     });
                     continue;
                 }
@@ -685,7 +706,16 @@ impl Simulator {
             .map(|(b, d)| (b.spec(), b.spec().name.as_str(), d.as_slice()))
             .collect();
         let links: Vec<Link> = routes.iter().map(Route::link).collect();
-        let outputs_plan = OutputPlan::new(&units, &links)?;
+        let rows_links: Vec<RowsLink> = population_routes
+            .iter()
+            .map(|r| RowsLink {
+                from: r.from_block,
+                from_index: r.from_index,
+                to: r.to_block,
+                to_index: r.to_index,
+            })
+            .collect();
+        let outputs_plan = OutputPlan::new(&units, &links, &rows_links)?;
         if model.loops == LoopMethod::Refuse {
             if let Some(l) = outputs_plan.loops().first() {
                 return Err(SimError::AlgebraicLoop(format!(
@@ -925,7 +955,8 @@ impl Simulator {
         let params = &mut self.model.params;
         let (n_in, driven) = (&self.n_in, &self.driven);
         let (states, tables) = (&mut self.states, &mut self.tables);
-        let (pin, pout) = (&self.population_inputs, &mut self.population_outputs);
+        let (pin, pout) = (&mut self.population_inputs, &mut self.population_outputs);
+        let rows_routes = &self.population_routes;
         let active = (!self.model.clocks.is_empty()).then_some(self.active.as_slice());
         // With several clocks a block computes at its own clock's time.
         let (clock_of, clock_t, clocks) = (&self.model.clock_of, &self.clock_t, &self.model.clocks);
@@ -941,6 +972,12 @@ impl Simulator {
                 // Driven parameters as the routes left them (ADR 0075).
                 for (j, &i) in driven[b].iter().enumerate() {
                     params[b][i] = u[n_in[b] + j];
+                }
+                // Rows and populations as their sources now hold them: the
+                // plan computes those sources first (ADR 0079 stage 1b).
+                for r in rows_routes.iter().filter(|r| r.to_block == b) {
+                    let (from, to) = (&pout[r.from_block][r.from_index], &mut pin[b][r.to_index]);
+                    r.copy(from, to);
                 }
                 blocks[b].compute_outputs(
                     time(b),
@@ -965,6 +1002,20 @@ impl Simulator {
         self.outputs_plan.loops()
     }
 
+    /// Copy population and rows outputs to connected inputs. A rows frame
+    /// carries its version and ids before its values (`RowsFrame`), which
+    /// a unit's factor must not scale.
+    fn route_populations(&mut self) {
+        let several = !self.model.clocks.is_empty();
+        for r in &self.population_routes {
+            if several && !self.active[r.to_block] {
+                continue;
+            }
+            let from = &self.population_outputs[r.from_block][r.from_index];
+            r.copy(from, &mut self.population_inputs[r.to_block][r.to_index]);
+        }
+    }
+
     /// Copy outputs to connected inputs, applying unit conversion.
     fn exchange(&mut self) {
         // With several clocks a block takes its inputs only at its own
@@ -983,15 +1034,7 @@ impl Simulator {
                 to.iter_mut().zip(from).for_each(|(t, f)| *t = r.factor * f);
             }
         }
-        for r in &self.population_routes {
-            if several && !self.active[r.to_block] {
-                continue;
-            }
-            let from = &self.population_outputs[r.from_block][r.from_index];
-            let to = &mut self.population_inputs[r.to_block][r.to_index];
-            to.clear();
-            to.extend(from.iter().map(|v| r.factor * v));
-        }
+        self.route_populations();
         // Driven parameters take the values routed to them (ADR 0075).
         for (b, driven) in self.driven.iter().enumerate() {
             for (j, &i) in driven.iter().enumerate() {

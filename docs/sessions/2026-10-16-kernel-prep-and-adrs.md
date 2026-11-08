@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-08: ADR 0079 stage 1b: `Shape::Rows { dim }`, `table::RowsFrame` (`[version, n, ids…, values…]`), `Table::version` and `Table::assign`; the output plan orders outputs along rows wires (`loops::RowsLink`) and refuses loops through them; `resolve` routes rows into a block just before computing it; a unit's factor scales values, not ids. Typed equations: quantities over rows are rows ports; `input u[q]` makes `q` follow those rows (`TableRows::follows`, `ExplicitBlock::follow`, new rows from `starting_rows`); outputs reading a followed table depend on its input. Tests `table_ports.rs`; every example byte-identical.
 - 2026-11-08: ADR 0081 stages 1–2: `Shape::Tensor`, `AxisLen`, `of_axes`/`axes`/`dims`, `PortSpec::axis_names`, `describe_shape`; typed-equation ports of any rank (`MAX_AXES` 8); study outputs named, vectors over two-parameter grids; `FieldShape::Tensor`, `.npy` of any rank; `Output::axes`, `describe::shape_with_axes`, CSV by places; Python `Results.axes`; `tests/axes.rs`
 - 2026-11-08: ADR 0079 stage 1a: `table`/`start` lines and table axes (`Axis::table`), `read_rule`, `id`/`rows`/`of` in `axes_of` and `lower`, `parse_with_rows`, layout with row ids as inputs and outputs from fixed quantities only (`Layout::fixed`), rule program (`rule_registers`), `ExplicitBlock` with compiled sets by rows, `init_tables`, rules after each step; session hold-still compares tables; `tests/tables.rs`
 - 2026-11-08: ADR 0078 step 3: `examples/bistable-continuation.ssbx.json` (registered), test against the cubic's extreme roots; screenshot under Xvfb of the loop
@@ -178,6 +179,8 @@
 
 ## Decided
 
+- 2026-11-08 (mine, ADR 0079 1b As built): an input over a table makes the table follow that input's rows (no `start` or rules on it), rather than a separate `follows` declaration: the fewest concepts. Other inputs over the same table join by id, NaN for a missing row.
+- 2026-11-08 (mine): rows pass at the same instant, not a step late: any output that reads a followed table depends on the input it follows, and the kernel orders outputs through rows wires; a loop through rows is refused rather than solved. Needed by 1d (studies over tables) and keeps a block's rows equal to its source's at every instant.
 - 2026-11-08 (owner): ADR 0079 stage 1 in parts: 1a (tables inside one typed block) first, then ADR 0081 stages 1–2, then 1b (rows ports), 1c (probes by id), 1d (studies over tables).
 - 2026-11-08 (owner): ADR 0084 accepted; Q54 resolved.
 - 2026-11-08 (owner): blocks must always be able to wrap anything, however far the language grows; the WebAssembly spike (ADR 0057 item 4) should also compare compiling our own program (Cranelift, and as WebAssembly), recorded in ADR 0084.

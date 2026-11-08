@@ -948,6 +948,10 @@ fn start(c: &mut Composition, t_end: f64, keep: &Keep) -> Result<Vec<Running>, S
                 if !keep.wants(&model, &name) {
                     continue;
                 }
+                // Rows by id come with ADR 0079 stage 1c.
+                if matches!(port.shape, Shape::Rows { .. }) {
+                    continue;
+                }
                 if let Shape::Population { dim } = port.shape {
                     variable.push((id, port.name.clone()));
                     populations.push(Population {

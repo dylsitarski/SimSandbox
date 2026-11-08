@@ -1898,6 +1898,8 @@ fn port_help(block: &str, p: &crate::diagram::Port, c: Causality) -> String {
         Shape::Grid { nx, ny } => format!("a {nx} × {ny} grid"),
         Shape::Points { count, dim } => format!("{count} points in {dim}D"),
         Shape::Population { dim } => format!("a population of points in {dim}D"),
+        Shape::Rows { dim: 1 } => "a value per row of a table".to_string(),
+        Shape::Rows { dim } => format!("{dim} values per row of a table"),
         Shape::Tensor { rank, dims } => {
             let d: Vec<String> = dims[..rank].iter().map(|n| n.to_string()).collect();
             format!("values over {rank} axes, {}", d.join(" × "))

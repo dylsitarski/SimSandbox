@@ -21,6 +21,9 @@ pub fn shape(s: &Shape) -> Value {
         }
         Shape::Points { count, dim } => json!({"kind": "points", "count": count, "dim": dim}),
         Shape::Population { dim } => json!({"kind": "population", "dim": dim}),
+        Shape::Rows { dim } => {
+            json!({"kind": "rows", "dim": dim, "with": "ids and a structure version"})
+        }
         Shape::Tensor { rank, dims } => {
             json!({"kind": "axes", "axes": dims[..rank].to_vec(), "order": "first axis fastest"})
         }

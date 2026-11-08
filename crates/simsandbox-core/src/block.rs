@@ -104,6 +104,13 @@ pub enum Shape {
     Population {
         dim: usize,
     },
+    /// A value (or `dim` values) per row of a table whose rows change
+    /// between steps (ADR 0079): its frames carry the rows' ids and the
+    /// table's structure version with the values ([`crate::table::RowsFrame`]).
+    /// Like a population it takes no room in the fixed arrays.
+    Rows {
+        dim: usize,
+    },
     /// Values over three or more axes, `dims` cells along each (the first
     /// varying fastest), up to [`MAX_PORT_AXES`] (ADR 0081). Fewer axes
     /// are a [`Shape::Grid`]: [`Shape::of_axes`] gives the canonical one.
@@ -160,6 +167,8 @@ impl Shape {
             Shape::Grid { nx, ny } => vec![Cells(nx), Cells(ny)],
             Shape::Points { count, dim } => vec![Cells(dim), Cells(count)],
             Shape::Population { dim } => vec![Cells(dim), Rows],
+            Shape::Rows { dim: 1 } => vec![Rows],
+            Shape::Rows { dim } => vec![Cells(dim), Rows],
             Shape::Tensor { rank, dims } => dims[..rank].iter().map(|&n| Cells(n)).collect(),
         }
     }
@@ -183,7 +192,7 @@ impl Shape {
             Shape::Points { count, dim } => count * dim,
             Shape::Tensor { rank, dims } => dims[..*rank].iter().product(),
             // Not in the fixed arrays.
-            Shape::Population { .. } => 0,
+            Shape::Population { .. } | Shape::Rows { .. } => 0,
         }
     }
 
@@ -195,13 +204,14 @@ impl Shape {
             Shape::Grid { .. }
                 | Shape::Points { .. }
                 | Shape::Population { .. }
+                | Shape::Rows { .. }
                 | Shape::Tensor { .. }
         )
     }
 
     /// The number of values changes from step to step.
     pub fn is_variable(&self) -> bool {
-        matches!(self, Shape::Population { .. })
+        matches!(self, Shape::Population { .. } | Shape::Rows { .. })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -227,6 +237,7 @@ pub fn describe_shape(shape: &Shape) -> String {
         Shape::Grid { .. } => "grid",
         Shape::Points { .. } => "points",
         Shape::Population { .. } => "population",
+        Shape::Rows { .. } => "rows",
         Shape::Tensor { .. } => "axes",
     };
     format!("{kind} {}", axes.join(" × "))

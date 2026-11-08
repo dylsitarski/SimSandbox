@@ -66,6 +66,17 @@ pub(crate) struct Link {
     pub factor: f64,
 }
 
+/// A route from a unit's output of varying length (a population, or a
+/// table's rows) to another's input: their places among the unit's ports
+/// of varying length.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RowsLink {
+    pub from: usize,
+    pub from_index: usize,
+    pub to: usize,
+    pub to_index: usize,
+}
+
 /// An output port of a unit: its index among the unit's outputs and where
 /// its values are.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +85,9 @@ struct Port {
     offset: usize,
     len: usize,
     name: String,
+    /// An output of varying length: its place among the unit's such
+    /// outputs (its values are not in the fixed arrays).
+    rows: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,12 +111,19 @@ impl OutputPlan {
     /// each, in the order given (ADR 0075). Fails if a feedthrough
     /// declaration names something that is not an input or parameter of
     /// its Block.
-    pub fn new(units: &[(&BlockSpec, &str, &[usize])], links: &[Link]) -> Result<Self> {
+    pub fn new(
+        units: &[(&BlockSpec, &str, &[usize])],
+        links: &[Link],
+        rows_links: &[RowsLink],
+    ) -> Result<Self> {
         // Nodes: outputs with feedthrough.
         let mut nodes: Vec<Port> = Vec::new();
         let mut depends: Vec<Vec<(usize, usize)>> = Vec::new(); // (unit, input offset..len) pairs
+                                                                // The inputs of varying length each node depends on, by place.
+        let mut depends_rows: Vec<Vec<usize>> = Vec::new();
         for (u, (spec, name, driven)) in units.iter().enumerate() {
             let mut offset = 0;
+            let mut varying = 0;
             for p in spec.outputs() {
                 if let Some(list) = &p.param_feedthrough {
                     if let Some(q) = list
@@ -127,15 +148,22 @@ impl OutputPlan {
                     })
                     .map(|(j, _)| (spec.input_len() + j, 1))
                     .collect();
+                let rows = p.shape.is_variable().then_some(varying);
+                if p.shape.is_variable() {
+                    varying += 1;
+                }
                 if !p.feedthrough.is_empty() || !params.is_empty() {
-                    if p.shape.is_variable() {
-                        return Err(SimError::InvalidDefinition(format!(
-                            "{name}.{}: populations cannot have direct feedthrough yet",
-                            p.name
-                        )));
-                    }
                     let mut deps = Vec::new();
+                    let mut deps_rows = Vec::new();
                     for i in &p.feedthrough {
+                        if let Some(k) = spec
+                            .inputs()
+                            .filter(|q| q.shape.is_variable())
+                            .position(|q| q.name == *i)
+                        {
+                            deps_rows.push(k);
+                            continue;
+                        }
                         let (off, n) = input_range(spec, i).ok_or_else(|| {
                             SimError::InvalidDefinition(format!(
                                 "{name}.{} depends on '{i}', which is not an input of '{name}'",
@@ -150,8 +178,10 @@ impl OutputPlan {
                         offset,
                         len,
                         name: format!("{name}.{}", p.name),
+                        rows,
                     });
                     depends.push(deps);
+                    depends_rows.push(deps_rows);
                 }
                 offset += len;
             }
@@ -167,8 +197,24 @@ impl OutputPlan {
                         continue;
                     }
                     for (p, src) in nodes.iter().enumerate() {
-                        if src.unit == l.from && overlaps(src.offset, src.len, l.from_offset, l.len)
+                        if src.rows.is_none()
+                            && src.unit == l.from
+                            && overlaps(src.offset, src.len, l.from_offset, l.len)
                         {
+                            edges[p].push(q);
+                        }
+                    }
+                }
+            }
+            // Through rows: from the output of varying length feeding an
+            // input this one depends on.
+            for &k in &depends_rows[q] {
+                for l in rows_links
+                    .iter()
+                    .filter(|l| l.to == node.unit && l.to_index == k)
+                {
+                    for (p, src) in nodes.iter().enumerate() {
+                        if src.unit == l.from && src.rows == Some(l.from_index) {
                             edges[p].push(q);
                         }
                     }
@@ -179,13 +225,20 @@ impl OutputPlan {
             .into_iter()
             .map(|c| {
                 let looped = c.len() > 1 || edges[c[0]].contains(&c[0]);
-                if looped {
+                if looped && c.iter().any(|&i| nodes[i].rows.is_some()) {
+                    let names: Vec<&str> = c.iter().map(|&i| nodes[i].name.as_str()).collect();
+                    return Err(SimError::AlgebraicLoop(format!(
+                        "{} form a loop through a table's rows (or a population), which cannot be solved; break it with a state",
+                        names.join(" → ")
+                    )));
+                }
+                Ok(if looped {
                     Item::Loop(c.into_iter().map(|i| nodes[i].clone()).collect())
                 } else {
                     Item::One(nodes[c[0]].clone())
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<Item>>>()?;
         let mut into = vec![Vec::new(); units.len()];
         for l in links {
             into[l.to].push(*l);
@@ -543,7 +596,7 @@ mod tests {
             tables: vec![],
             time: TimeSemantics::Stateless,
         };
-        let err = OutputPlan::new(&[(&spec, "b", &[])], &[]).unwrap_err();
+        let err = OutputPlan::new(&[(&spec, "b", &[])], &[], &[]).unwrap_err();
         assert!(err.to_string().contains("b.y depends on 'v'"), "{err}");
     }
 

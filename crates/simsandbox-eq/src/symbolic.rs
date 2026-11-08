@@ -45,6 +45,7 @@ use simsandbox_core::block::{
     PortSpec, Shape, SpeedClass, StepContext, StepIo, TimeSemantics,
 };
 use simsandbox_core::registry::MethodSettings;
+use simsandbox_core::table::RowsFrame;
 use simsandbox_core::units::Unit;
 use simsandbox_core::{Result, SimError};
 use simsandbox_expr::program::Span;
@@ -122,6 +123,21 @@ pub struct EquationSet {
     /// program computing their conditions and new rows' values.
     rules: Vec<RuleRun>,
     rules_program: Option<Program>,
+    /// Each input in declaration order: its values' number as compiled,
+    /// and for one over a table's rows, that table (place in `tables`).
+    inputs_in: Vec<(usize, Option<usize>)>,
+    /// Each output over a table's rows, in port order (ADR 0079 stage 1b):
+    /// its table (place in `tables`) and where its values are.
+    rows_out: Vec<(usize, RowsSource)>,
+}
+
+/// Where an output over a table's rows takes its values from.
+#[derive(Debug, Clone, Copy)]
+enum RowsSource {
+    /// A state over the rows: the table's column.
+    Column(usize),
+    /// A defined quantity: its registers in the outputs program.
+    Registers(Span),
 }
 
 /// A table of a typed-equations block (ADR 0079): its axis, name, most
@@ -135,6 +151,10 @@ pub struct TableRows {
     pub start: usize,
     pub rows: usize,
     pub columns: Vec<String>,
+    /// A table some input is over follows that input's rows by id (ADR
+    /// 0079 stage 1b): the first such input's place among the block's
+    /// inputs over rows.
+    pub follows: Option<usize>,
 }
 
 /// A rule as compiled: its table (by axis), whether it removes (else
@@ -1873,7 +1893,37 @@ impl EquationSet {
                 })
                 .unwrap_or(1)
         };
-        if let Some(t) = grid.iter().find(|a| a.table.is_some()) {
+        // A table some input is over follows that input's rows (ADR 0079
+        // stage 1b): its rows come from upstream, by id, not from rules.
+        let followed: Vec<bool> = (0..grid.len())
+            .map(|a| {
+                is_table(a)
+                    && inputs
+                        .iter()
+                        .any(|i| shapes.get(i).is_some_and(|d| d.contains(&a)))
+            })
+            .collect();
+        for (a, t) in grid.iter().enumerate().filter(|(a, _)| followed[*a]) {
+            let input = inputs
+                .iter()
+                .find(|i| shapes.get(*i).is_some_and(|d| d.contains(&a)))
+                .expect("followed");
+            let why = format!(
+                "{} follows the rows of the input {input}, so its rows cannot also come from",
+                t.name
+            );
+            if let Some(&(_, line)) = starts.get(&t.name) {
+                return Err(definition_error(line, 1, format!("{why} 'start'")));
+            }
+            if let Some(r) = rule_lines.iter().find(|r| r.table == t.name) {
+                return Err(definition_error(r.line, 1, format!("{why} rules")));
+            }
+        }
+        if let Some((_, t)) = grid
+            .iter()
+            .enumerate()
+            .find(|(a, t)| t.table.is_some() && !(kind == Kind::Formulas && followed[*a]))
+        {
             if kind != Kind::Map {
                 return Err(definition_error(
                     t.line,
@@ -1893,8 +1943,6 @@ impl EquationSet {
                 format!("{n} is over a table's rows and other axes: a quantity over rows has only them (for now)")
             } else if array_params.iter().any(|a| &a.0 == n) {
                 format!("a parameter has a value per cell, not per row: a value per row is a state, 'state {n}[{}]'", axes[dims[0]])
-            } else if inputs.iter().any(|i| i == n) {
-                format!("an input over a table's rows comes with ports that carry rows (ADR 0079 stage 1b); {n} cannot be one yet")
             } else {
                 continue;
             };
@@ -2745,6 +2793,10 @@ impl EquationSet {
                         .filter(|s| row_table(s) == Some(i))
                         .cloned()
                         .collect(),
+                    follows: inputs
+                        .iter()
+                        .filter(|n| row_table(n).is_some())
+                        .position(|n| row_table(n) == Some(i)),
                 })
             })
             .collect();
@@ -2795,12 +2847,31 @@ impl EquationSet {
                 None => Vec::new(),
             }
         };
+        // A table that follows an input holds that input's rows at each
+        // instant (ADR 0079 stage 1b): whatever reads its rows (a quantity
+        // over it, `id`, `rows`) depends on that input at the same instant.
+        let follower = |n: &str| -> Option<String> {
+            let a = axes
+                .iter()
+                .position(|a| *a == n)
+                .or_else(|| row_table(n))
+                .filter(|&a| followed[a])?;
+            inputs.iter().find(|i| row_table(i) == Some(a)).cloned()
+        };
         let mut uses: Vec<Vec<String>> = Vec::new();
         let mut reads: Vec<Vec<String>> = Vec::new();
         for line in parsed.iter().filter(|l| matches!(l.lhs, Lhs::Defined(_))) {
             let mut u: Vec<String> = Vec::new();
             let mut r: Vec<String> = Vec::new();
+            if let Lhs::Defined(d) = &line.lhs {
+                u.extend(follower(d));
+            }
             for (n, _) in line.ast.names() {
+                if let Some(i) = follower(&n) {
+                    if !u.contains(&i) {
+                        u.push(i);
+                    }
+                }
                 let (via, params): (Vec<String>, Vec<String>) =
                     match defined[..uses.len()].iter().position(|d| *d == n) {
                         Some(i) => (uses[i].clone(), reads[i].clone()),
@@ -2829,7 +2900,12 @@ impl EquationSet {
         // 2D field with the first along x.
         // A port over its quantity's axes (ADR 0081): one is a line, two
         // a 2D field with the first along x, more a tensor.
+        // A quantity over a table's rows carries them, with their ids and
+        // version (ADR 0079 stage 1b).
         let shape = |n: &str| {
+            if row_table(n).is_some() {
+                return Shape::Rows { dim: 1 };
+            }
             let dims: Vec<usize> = axes_of_name(n).iter().map(|&a| grid[a].cells).collect();
             Shape::of_axes(&dims)
         };
@@ -2842,9 +2918,14 @@ impl EquationSet {
         let mut ports: Vec<PortSpec> = inputs
             .iter()
             .map(|n| named(PortSpec::input(n, unit_of(n), shape(n)), n))
-            // Quantities over a table's rows are not ports (ADR 0079 1a).
-            .chain(states.iter().filter(|n| row_table(n).is_none()).map(|n| {
-                let p = PortSpec::output(n, unit_of(n), shape(n)).from_state(state_at);
+            .chain(states.iter().map(|n| {
+                let p = PortSpec::output(n, unit_of(n), shape(n));
+                if row_table(n).is_some() {
+                    let f: Vec<String> = follower(n).into_iter().collect();
+                    let f: Vec<&str> = f.iter().map(String::as_str).collect();
+                    return named(p.depends_on(&f), n);
+                }
+                let p = p.from_state(state_at);
                 state_at += shape(n).len();
                 named(p, n)
             }))
@@ -2852,7 +2933,6 @@ impl EquationSet {
                 defined
                     .iter()
                     .zip(uses.iter().zip(&reads))
-                    .filter(|(n, _)| row_table(n).is_none())
                     .map(|(n, (u, r))| {
                         let u: Vec<&str> = u.iter().map(String::as_str).collect();
                         let r: Vec<&str> = r.iter().map(String::as_str).collect();
@@ -2965,6 +3045,24 @@ impl EquationSet {
                     .chain(r.add.iter().flat_map(|(_, v)| v.iter().map(|g| &g.1)))
             }))
             .any(|a| a.names().iter().any(|(n, _)| n == "t"));
+        let table_of = |a: usize| tables.iter().position(|t| t.axis == a);
+        let inputs_in = inputs
+            .iter()
+            .map(|n| (len_of(n), row_table(n).and_then(table_of)))
+            .collect();
+        // In port order: states, then defined quantities.
+        let rows_out = states
+            .iter()
+            .filter_map(|n| {
+                let t = table_of(row_table(n)?)?;
+                let c = tables[t].columns.iter().position(|c| c == n)?;
+                Some((t, RowsSource::Column(c)))
+            })
+            .chain(defined.iter().enumerate().filter_map(|(k, n)| {
+                let t = table_of(row_table(n)?)?;
+                Some((t, RowsSource::Registers(spans[defined_vars[k]])))
+            }))
+            .collect();
         Ok(Self {
             kind,
             reads_time,
@@ -3006,6 +3104,8 @@ impl EquationSet {
             tables,
             rules: rule_runs,
             rules_program,
+            inputs_in,
+            rows_out,
             source: (name.to_string(), lines.to_vec()),
         })
     }
@@ -3051,13 +3151,63 @@ impl EquationSet {
         x
     }
 
-    /// The inputs with each table's row ids after them.
-    fn with_ids(&self, inputs: &[f64], tables: &[simsandbox_core::table::Table]) -> Vec<f64> {
-        let mut u = inputs.to_vec();
+    /// The inputs in declaration order, then each table's row ids: the
+    /// fixed ones from `inputs`, those over a table's rows from the frames
+    /// `rows_in` (ADR 0079 stage 1b), each row's value found by its id
+    /// (not a number where the frame has no such row).
+    fn with_ids(
+        &self,
+        inputs: &[f64],
+        rows_in: &[Vec<f64>],
+        tables: &[simsandbox_core::table::Table],
+    ) -> Vec<f64> {
+        if self.inputs_in.iter().all(|i| i.1.is_none()) {
+            let mut u = inputs.to_vec();
+            for t in tables {
+                u.extend(t.ids().iter().map(|&i| i as f64));
+            }
+            return u;
+        }
+        let mut u = Vec::with_capacity(self.layout.inputs);
+        let (mut fixed, mut k) = (0, 0);
+        for &(len, table) in &self.inputs_in {
+            match table {
+                None => {
+                    let end = (fixed + len).min(inputs.len());
+                    u.extend_from_slice(&inputs[fixed.min(end)..end]);
+                    u.resize(u.len() + (fixed + len - end), 0.0);
+                    fixed += len;
+                }
+                Some(t) => {
+                    let frame = rows_in.get(k).and_then(|f| RowsFrame::decode(f, 1));
+                    u.extend(by_id(frame.as_ref(), tables[t].ids()));
+                    k += 1;
+                }
+            }
+        }
         for t in tables {
             u.extend(t.ids().iter().map(|&i| i as f64));
         }
         u
+    }
+
+    /// Write each output over a table's rows as a frame: the table's
+    /// version and ids, and the values (ADR 0079 stage 1b). After
+    /// [`Equations::outputs`], whose registers hold the defined ones.
+    fn rows_outputs(&self, tables: &[simsandbox_core::table::Table], out: &mut [Vec<f64>]) {
+        let v = &self.scratch.borrow()[0];
+        for ((t, src), frame) in self.rows_out.iter().zip(out) {
+            let table = &tables[*t];
+            let values = match *src {
+                RowsSource::Column(c) => table.column(c),
+                RowsSource::Registers(s) => &v[s.at..s.at + s.len],
+            };
+            frame.clear();
+            frame.push(table.version() as f64);
+            frame.push(table.len() as f64);
+            frame.extend(table.ids().iter().map(|&i| i as f64));
+            frame.extend_from_slice(values);
+        }
     }
 
     /// Every state value: the fixed ones, then those over rows.
@@ -3238,6 +3388,22 @@ pub struct ExplicitBlock {
 /// Compiled sets kept per numbers of rows, at most.
 const KEPT_ROW_COUNTS: usize = 64;
 
+/// A frame's values for the rows `ids`, found by id: not a number for a
+/// row the frame lacks, or with no frame.
+fn by_id(frame: Option<&RowsFrame>, ids: &[u64]) -> Vec<f64> {
+    match frame {
+        Some(f) if f.ids == ids => f.values.clone(),
+        Some(f) => {
+            let at: std::collections::HashMap<u64, usize> =
+                f.ids.iter().enumerate().map(|(k, &i)| (i, k)).collect();
+            ids.iter()
+                .map(|i| at.get(i).map_or(f64::NAN, |&k| f.values[k]))
+                .collect()
+        }
+        None => vec![f64::NAN; ids.len()],
+    }
+}
+
 impl ExplicitBlock {
     /// Wrap a map or formula set; `method` must be `iterate` for maps and
     /// `evaluate` for formulas.
@@ -3283,6 +3449,11 @@ impl ExplicitBlock {
         tables: &[simsandbox_core::table::Table],
     ) -> Result<std::cell::Ref<'_, EquationSet>> {
         let rows: Vec<usize> = tables.iter().map(|t| t.len()).collect();
+        self.compiled_for(rows)
+    }
+
+    /// The equations compiled for these numbers of rows, one per table.
+    fn compiled_for(&self, rows: Vec<usize>) -> Result<std::cell::Ref<'_, EquationSet>> {
         if !self.by_rows.borrow().contains_key(&rows) {
             let set = self.set.with_rows(&rows)?;
             let mut kept = self.by_rows.borrow_mut();
@@ -3296,14 +3467,91 @@ impl ExplicitBlock {
         }))
     }
 
+    /// Make each table that follows an input's rows hold those rows, by id
+    /// (ADR 0079 stage 1b): rows kept keep their values; new rows take
+    /// their states' starting values.
+    fn follow(
+        &self,
+        params: &[f64],
+        rows_in: &[Vec<f64>],
+        tables: &mut [simsandbox_core::table::Table],
+    ) -> Result<()> {
+        for (tb, t) in self.set.tables.iter().enumerate() {
+            let Some(k) = t.follows else {
+                continue;
+            };
+            let ids = rows_in
+                .get(k)
+                .and_then(|f| RowsFrame::decode(f, 1))
+                .map(|f| f.ids)
+                .unwrap_or_default();
+            if ids == tables[tb].ids() {
+                continue;
+            }
+            let fresh: Vec<u64> = {
+                let old: std::collections::HashSet<u64> =
+                    tables[tb].ids().iter().copied().collect();
+                ids.iter().copied().filter(|i| !old.contains(i)).collect()
+            };
+            let starts = self.starting_rows(params, tb, &fresh, tables)?;
+            let mut next = starts.into_iter();
+            let table = &mut tables[tb];
+            let kept: Vec<Vec<f64>> = (0..table.len()).map(|r| table.row(r)).collect();
+            table.assign(&ids, |_, old| match old {
+                Some(r) => kept[r].clone(),
+                None => next.next().expect("a starting row per new id"),
+            });
+        }
+        Ok(())
+    }
+
+    /// The starting values of new rows `ids` of table `tb`, one row of
+    /// its columns each, as `state … = …` gives them (which may read
+    /// `id(…)` and parameters).
+    fn starting_rows(
+        &self,
+        params: &[f64],
+        tb: usize,
+        ids: &[u64],
+        tables: &[simsandbox_core::table::Table],
+    ) -> Result<Vec<Vec<f64>>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut rows: Vec<usize> = tables.iter().map(|t| t.len()).collect();
+        rows[tb] = ids.len();
+        let set = self.compiled_for(rows.clone())?;
+        let mut u = vec![0.0; set.inputs_len()];
+        for (k, t) in tables.iter().enumerate() {
+            match k == tb {
+                true => u.extend(ids.iter().map(|&i| i as f64)),
+                false => u.extend(t.ids().iter().map(|&i| i as f64)),
+            }
+        }
+        let mut x0 = vec![0.0; set.states_len()];
+        set.initial_state_with(params, &u, &mut x0);
+        let mut columns = vec![Vec::new(); set.tables[tb].columns.len()];
+        let mut at = set.fixed_len();
+        for &(t, c) in &set.row_states {
+            if t == tb {
+                columns[c] = x0[at..at + rows[t]].to_vec();
+            }
+            at += rows[t];
+        }
+        Ok((0..ids.len())
+            .map(|r| columns.iter().map(|c| c[r]).collect())
+            .collect())
+    }
+
     /// One step of a map with tables (ADR 0079): every state, fixed or
     /// over rows, updates together; then the rules change the tables in
     /// their written order; then the outputs.
     fn step_with_tables(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
         let (t, p) = (ctx.t, io.params);
+        self.follow(p, io.population_inputs, io.tables)?;
         let set = self.compiled(io.tables)?;
         let x = set.gather(io.state, io.tables);
-        let u = set.with_ids(io.inputs, io.tables);
+        let u = set.with_ids(io.inputs, io.population_inputs, io.tables);
         let mut next = vec![0.0; x.len()];
         set.rhs(t, &x, &u, p, &mut next);
         let nf = set.fixed_len();
@@ -3321,7 +3569,7 @@ impl ExplicitBlock {
         for r in 0..rules {
             let set = self.compiled(io.tables)?;
             let x = set.gather(io.state, io.tables);
-            let u = set.with_ids(io.inputs, io.tables);
+            let u = set.with_ids(io.inputs, io.population_inputs, io.tables);
             let v = set.rule_registers(t + ctx.dt, &x, &u, p);
             let rule = &set.rules()[r];
             let tb = set
@@ -3366,10 +3614,12 @@ impl ExplicitBlock {
     }
 
     fn write_outputs(&self, t: f64, io: StepIo<'_>) -> Result<()> {
+        self.follow(io.params, io.population_inputs, io.tables)?;
         let set = self.compiled(io.tables)?;
         let x = set.gather(io.state, io.tables);
-        let u = set.with_ids(io.inputs, io.tables);
+        let u = set.with_ids(io.inputs, io.population_inputs, io.tables);
         set.outputs(t, &x, &u, io.params, io.outputs);
+        set.rows_outputs(io.tables, io.population_outputs);
         Ok(())
     }
 }
@@ -3462,7 +3712,8 @@ impl Block for ExplicitBlock {
 
     /// Formulas can join a fused group (ADR 0051); maps step on their own.
     fn as_equations(&self) -> Option<&dyn Equations> {
-        (self.set.kind == Kind::Formulas).then_some(&self.set as &dyn Equations)
+        (self.set.kind == Kind::Formulas && self.set.tables.is_empty())
+            .then_some(&self.set as &dyn Equations)
     }
 
     fn reads_time(&self) -> Option<bool> {

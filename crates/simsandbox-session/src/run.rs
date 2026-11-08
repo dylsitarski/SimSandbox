@@ -364,10 +364,11 @@ pub fn run_keeping(
             if !keep.wants(".", &name) {
                 continue;
             }
-            if let Shape::Population { dim } = port.shape {
-                variable.push((id, port.name.clone(), name, dim));
-            } else {
-                fixed.push((id, port.name.clone(), name, port.shape));
+            match port.shape {
+                Shape::Population { dim } => variable.push((id, port.name.clone(), name, dim)),
+                // Rows by id come with ADR 0079 stage 1c.
+                Shape::Rows { .. } => {}
+                shape => fixed.push((id, port.name.clone(), name, shape)),
             }
         }
     }
@@ -916,7 +917,7 @@ pub(crate) fn loaded_outputs(loaded: &simsandbox_file::Loaded) -> Result<Outputs
         let id = loaded.ids[&entry.name];
         let spec = loaded.model.block(id).map_err(|e| e.to_string())?.spec();
         for port in spec.outputs() {
-            if !matches!(port.shape, Shape::Population { .. }) {
+            if !port.shape.is_variable() {
                 fixed.push((
                     id,
                     port.name.clone(),

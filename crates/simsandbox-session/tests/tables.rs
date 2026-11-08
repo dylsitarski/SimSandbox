@@ -193,7 +193,7 @@ fn table_mistakes_are_explained() {
     };
     assert!(check(&["table pts", "state a[pts] = 1", "da/dt = -a"]).contains("needs a map"));
     assert!(with(&["param m[pts] = 1"]).contains("a value per row is a state"));
-    assert!(with(&["input q[pts]"]).contains("ports that carry rows"));
+    assert!(with(&["input q[pts]"]).contains("follows the rows of the input q"));
     assert!(with(&["grid k = 2", "b = a*k"]).contains("rows and other axes"));
     assert!(
         with(&["d = ddx(a)"]).contains("not an axis")
