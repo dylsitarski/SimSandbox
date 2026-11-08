@@ -1,8 +1,8 @@
 # 0082 — Exactness is a labelled property; models need no outside compiler
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-08)
 - **Date:** 2026-11-07
-- **Amends:** [ADR 0059](0059-run-files.md) (run files replay bit for bit), [ADR 0077](0077-sums-in-fixed-chunks.md) (the same bits on any machine), [ADR 0078](0078-adaptive-studies.md) point 2 (runs remembered by point)
+- **Amends:** [ADR 0059](0059-run-files.md) (run files replay bit for bit), [ADR 0062](0062-probes-recording-and-replay.md) (its per-run exact or fast mode, `run.mode`, is not built: exactness is this ADR's label per method), [ADR 0077](0077-sums-in-fixed-chunks.md) (the same bits on any machine), [ADR 0078](0078-adaptive-studies.md) point 2 (runs remembered by point)
 - **Builds on:** the speed and accuracy labels of methods ([verification policy](../guides/verification-policy.md)), [ADR 0017](0017-typed-equations.md) (typed equations), [ADR 0057](0057-phase-2-plan.md) (ML, FMI 3.0 and GPU fluids after the Phase 2 gate)
 
 ## Context
@@ -61,6 +61,10 @@ Fused multiply-add and fast-math reassociation stay out of exact code: measured,
 1. The level as a label on methods and blocks, the model's level in `check`, `describe`, Python and the app.
 2. Run files record the level (and the machine for "exact here"); replay checks bits or a tolerance accordingly; remembered runs follow the table.
 3. Built when the first block that is not exact arrives (vendor linear algebra, ONNX, GPU fluids), not before.
+
+## As decided
+
+The owner accepted this ADR on 2026-11-08, choosing it over ADR 0062's step 4 (a per-run `run.mode`, exact or fast). Exact code already uses every core (cell-by-cell work, ADR 0062 step 3; sums in fixed chunks, ADR 0077), and the measurements of 2026-11-07 found little left on the CPU to gain by giving up exactness, so a fast mode would add a run setting that changes almost nothing. Non-exact speed arrives with the blocks that need it (GPU fluids, vendor linear algebra, ONNX), labelled by this ADR's levels; nothing is built until the first such block.
 
 ## Consequences
 

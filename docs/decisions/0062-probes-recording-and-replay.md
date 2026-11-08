@@ -48,6 +48,8 @@ A probe is a node on the canvas's data layer, beside filters and views ([ADR 005
 
 ### Exact or fast (Q39)
 
+> **Superseded in part (2026-11-08):** the fast mode and `run.mode` below are not built. [ADR 0082](0082-exactness-is-labelled.md), accepted by the owner, labels exactness per method instead, exact by default; non-exact code arrives with blocks that need it. Exact runs on several cores (step 3) stand.
+
 A run is either **exact** or **fast**, set with the model's run settings (`run.mode`), shown in the toolbar and recorded in run files.
 
 - **Exact** (default): replay, rewind and headless runs give the same bits on any computer. Cell-by-cell evaluation runs on several cores (identical in any split). Sums (`sum`, `mean`) and factorisations add in a fixed order that does not depend on the machine: work is cut into a fixed number of chunks, combined in the same order.
