@@ -61,6 +61,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Example "Following a branch through hysteresis": continuation written as a model. Each run starts where the last settled, at the next value of a parameter, so a bistable state follows its branch to the fold and jumps, tracing a hysteresis loop.
+
 - Example "Fitting a model to measurements": Levenberg–Marquardt written as a model fits a damped oscillator's stiffness and damping to 20 measured positions, reaching the least-squares fit SciPy finds. `rcond(A)` in typed equations, how far a matrix is from singular. `input.file` takes its samples as CSV text in the model (`"data"`), so a small data set travels with the model.
 
 - Studies give a vector per run (ADR 0080): `at_times(e, t1, t2, …)` and `at_samples(e, data)` in `reduce`, the latter at each sample of a recorded-data block, for model-minus-data residuals. Such a result is over its own axis and the runs, read in typed equations as `input res[obs, run]`.

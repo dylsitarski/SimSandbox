@@ -1100,6 +1100,52 @@ mod tests {
         assert!(s.iterates());
     }
 
+    /// ADR 0078 step 3: continuation as a model. Each run starts where the
+    /// last settled, so the state follows its branch of x' = r + x - x^3
+    /// up to the fold at r = 2/(3√3) and jumps there: on the way up the
+    /// lower equilibrium, on the way down the upper, each the extreme root
+    /// of x³ - x - r = 0.
+    #[test]
+    fn continuation_as_a_model_follows_each_branch_to_its_fold() {
+        let r = registry();
+        let e = crate::examples::EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Following a branch"))
+            .unwrap();
+        let y = run(e.text, &r, None, None).unwrap();
+        let (rs, xs) = (value(&y, "cont.r"), value(&y, "cont.settled"));
+        // The extreme root from one side, by Newton's method.
+        let root = |r: f64, from: f64| {
+            let mut x = from;
+            for _ in 0..100 {
+                x -= (x * x * x - x - r) / (3.0 * x * x - 1.0);
+            }
+            x
+        };
+        let fold = 2.0 / (3.0 * 3f64.sqrt());
+        let mut checked = 0;
+        for (k, (&rk, &xk)) in rs.iter().zip(&xs).enumerate().take(200) {
+            let up = k < 100;
+            // Near a fold the state settles slowly: left out.
+            if (rk.abs() - fold).abs() < 0.03 {
+                continue;
+            }
+            let lower = if up { rk < fold } else { rk < -fold };
+            let want = if lower { root(rk, -1.5) } else { root(rk, 1.5) };
+            assert!(
+                (xk - want).abs() < 1e-6,
+                "round {k}, r {rk}: {xk} vs {want}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 180, "{checked}");
+        // Hysteresis: at r = 0.3 the state is low going up, high coming down.
+        let at = |k: usize| xs[k];
+        assert!(at(65) < 0.0 && at(135) > 0.0 && (rs[65] - rs[135]).abs() < 1e-9);
+        let s = crate::session::Session::load(e.name, e.text, &r).unwrap();
+        assert!(s.iterates());
+    }
+
     #[test]
     fn a_study_gives_the_ids_its_points_file_gives() {
         let r = registry();

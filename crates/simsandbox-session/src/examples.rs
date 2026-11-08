@@ -42,6 +42,10 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../examples/oscillator-fit.ssbx.json"),
     },
     Example {
+        name: "Following a branch through hysteresis (continuation as a model)",
+        text: include_str!("../../../examples/bistable-continuation.ssbx.json"),
+    },
+    Example {
         name: "Units (a shaker in mm drives springs in m)",
         text: include_str!("../../../examples/units.ssbx.json"),
     },

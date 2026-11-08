@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-08: ADR 0078 step 3: `examples/bistable-continuation.ssbx.json` (registered), test against the cubic's extreme roots; screenshot under Xvfb of the loop
 - 2026-11-08: ADR 0084 (where typed equations stop) written as Proposed after discussing Modelica and models as compiled code
 - 2026-11-08: `runs::MADE_WITH`, `RunFile::made_with` and `version_note`, schema, `Session::run_file`, JSON output (`Results::to_json`, compositions), CLI run and check, app `open_run`, Python `Run` (`_native.made_with`); tests in Rust and Python
 - 2026-11-08: ADR 0078 step 2 / ADR 0080 stage 4: `rcond` (`ArrayOp::Rcond`, `program::rcond`, typed equations), `input.file` `data` (`parse_csv`), `file_input::TIME_ROUNDING` in the data block and `at_samples`, `examples/oscillator-fit.ssbx.json` (registered), Rust test against recorded SciPy values, Python test against SciPy (`importorskip`)
