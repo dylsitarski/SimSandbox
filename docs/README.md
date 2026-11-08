@@ -153,6 +153,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0081-shapes-are-lists-of-axes.md](decisions/0081-shapes-are-lists-of-axes.md) | Decision record | Shapes are lists of named axes |
 | [decisions/0082-exactness-is-labelled.md](decisions/0082-exactness-is-labelled.md) | Decision record | Exactness is a labelled property; models need no outside compiler |
 | [decisions/0083-rounds-are-not-seconds.md](decisions/0083-rounds-are-not-seconds.md) | Decision record | Rounds are not seconds: models that iterate run as fast as they can |
+| [decisions/0084-where-typed-equations-stop.md](decisions/0084-where-typed-equations-stop.md) | Decision record | Where typed equations stop: a causal language of primitives; blocks wrap anything |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 
