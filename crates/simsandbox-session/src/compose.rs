@@ -49,7 +49,7 @@ impl Composed {
             .iter()
             .map(|(n, r)| (n.clone(), r.to_json()))
             .collect();
-        json!({"models": models, "tick": self.tick, "warnings": self.warnings})
+        json!({"made_with": simsandbox_file::runs::MADE_WITH, "models": models, "tick": self.tick, "warnings": self.warnings})
     }
 }
 

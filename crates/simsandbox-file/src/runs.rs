@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+/// This build of SimSandbox, as run files and run output record it: results
+/// are exact within a version, and a new version may change them where its
+/// changelog says (ADR 0059, ADR 0082).
+pub const MADE_WITH: &str = concat!("simsandbox ", env!("CARGO_PKG_VERSION"));
+
 /// The run file format this build reads and writes.
 pub const RUN_FORMAT: u32 = 1;
 /// The run file's JSON Schema, for `simsandbox schema run`.
@@ -35,6 +40,10 @@ pub struct RunFile {
     pub model: String,
     /// [`model_hash`] of the model the run was made with.
     pub model_hash: String,
+    /// The SimSandbox that made it ([`MADE_WITH`]); empty in run files
+    /// written before it was recorded.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub made_with: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -129,6 +138,22 @@ impl RunFile {
     /// Whether `model` (loaded) is the model this run was made with.
     pub fn fits(&self, model: &Loaded) -> Result<bool, FileError> {
         Ok(self.model_hash == loaded_hash(model)?)
+    }
+
+    /// A note when this build is not the one that made the run: it then
+    /// replays exactly only where the versions between agree.
+    pub fn version_note(&self) -> Option<String> {
+        if self.made_with == MADE_WITH {
+            return None;
+        }
+        let made = if self.made_with.is_empty() {
+            "a SimSandbox that did not record its version"
+        } else {
+            &self.made_with
+        };
+        Some(format!(
+            "recorded with {made}, replayed with {MADE_WITH}: results can differ where the changelog says a version changed them"
+        ))
     }
 }
 
@@ -273,6 +298,7 @@ mod tests {
             format: RUN_FORMAT,
             model: "push.ssbx.json".into(),
             model_hash: model_hash(&model),
+            made_with: MADE_WITH.into(),
             name: "push test".into(),
             note: String::new(),
             created: "2026-10-26T14:03:00Z".into(),
@@ -290,6 +316,25 @@ mod tests {
         };
         let again = RunFile::from_json(&run.to_json()).unwrap();
         assert_eq!(again, run);
+        // It says which SimSandbox made it; another build says so on replay.
+        assert!(run.to_json().contains(MADE_WITH) && run.version_note().is_none());
+        let older = RunFile {
+            made_with: "simsandbox 0.0.0".into(),
+            ..run.clone()
+        };
+        let note = older.version_note().unwrap();
+        assert!(
+            note.contains("simsandbox 0.0.0") && note.contains(MADE_WITH),
+            "{note}"
+        );
+        let unknown = RunFile {
+            made_with: String::new(),
+            ..run.clone()
+        };
+        assert!(unknown
+            .version_note()
+            .unwrap()
+            .contains("did not record its version"));
         let fits = |m: &ModelFile| run.model_hash == model_hash(m);
         assert!(fits(&model));
         // Controls never change results: the hash ignores them.

@@ -765,6 +765,7 @@ impl Session {
             format: simsandbox_file::runs::RUN_FORMAT,
             model: model.into(),
             model_hash: simsandbox_file::runs::model_hash_with(&self.start_file, &self.data),
+            made_with: simsandbox_file::runs::MADE_WITH.into(),
             name: name.into(),
             note: note.into(),
             created: created.into(),

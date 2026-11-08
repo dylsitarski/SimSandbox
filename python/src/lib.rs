@@ -78,6 +78,12 @@ fn model_hash(text: &str) -> PyResult<String> {
     simsandbox_session::run::model_hash(text).map_err(ModelError::new_err)
 }
 
+/// This build of SimSandbox as run files record it: `simsandbox 0.0.1`.
+#[pyfunction]
+fn made_with() -> &'static str {
+    simsandbox_session::run::MADE_WITH
+}
+
 /// The run file's JSON Schema.
 #[pyfunction]
 fn run_schema() -> &'static str {
@@ -478,6 +484,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run, m)?)?;
     m.add_function(wrap_pyfunction!(run_probes, m)?)?;
     m.add_function(wrap_pyfunction!(model_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(made_with, m)?)?;
     m.add_function(wrap_pyfunction!(run_schema, m)?)?;
     m.add_function(wrap_pyfunction!(render, m)?)?;
     m.add_function(wrap_pyfunction!(render_diagram, m)?)?;

@@ -319,6 +319,17 @@ def test_inputs_schedules_and_runs_replay_the_same(tmp_path):
     heavy.save(tmp_path / "cart.ssbx.json")
     with pytest.warns(UserWarning, match="changed since"):
         assert ss.Run.load(tmp_path / "cart.push.run.json").stale
+    # A run says which SimSandbox made it; another version says so on load.
+    text = (tmp_path / "cart.push.run.json").read_text()
+    assert '"made_with": "simsandbox ' in text
+    import json as _json
+
+    data = _json.loads(text)
+    data["made_with"] = "simsandbox 0.0.0"
+    (tmp_path / "cart.old.run.json").write_text(_json.dumps(data))
+    with pytest.warns(UserWarning) as caught:
+        ss.Run.load(tmp_path / "cart.old.run.json")
+    assert any("recorded with simsandbox 0.0.0" in str(w.message) for w in caught)
     # A change to a parameter that does not exist is an error.
     with pytest.raises(ss.ModelError, match="no parameter .z."):
         m.run(inputs=[(0.5, "push.z", 1.0)])

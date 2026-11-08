@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-08: `runs::MADE_WITH`, `RunFile::made_with` and `version_note`, schema, `Session::run_file`, JSON output (`Results::to_json`, compositions), CLI run and check, app `open_run`, Python `Run` (`_native.made_with`); tests in Rust and Python
 - 2026-11-08: ADR 0078 step 2 / ADR 0080 stage 4: `rcond` (`ArrayOp::Rcond`, `program::rcond`, typed equations), `input.file` `data` (`parse_csv`), `file_input::TIME_ROUNDING` in the data block and `at_samples`, `examples/oscillator-fit.ssbx.json` (registered), Rust test against recorded SciPy values, Python test against SciPy (`importorskip`)
 - 2026-11-08: study form: no from/to/points for `Design::Inputs` (`ranged`), cleared on switching to it; test `a_study_of_points_from_inputs_shows_no_ranges`
 - 2026-11-07: ADR 0083 written and built: `Block::reads_time`, `EquationSet::reads_time`, `Session::iterates`/`rounds_pending`/`held_still`/`round`/`stop_rounds`, the worker's unpaced rounds (`stepping_now`), the toolbar's round; screenshot under Xvfb of the search holding still at round 29
@@ -173,6 +174,7 @@
 
 ## Decided
 
+- 2026-11-08 (owner): models with data stay exact within a version; results may change between versions where the changelog says, and run files record the version so replay can say so.
 - 2026-11-07 (owner): rounds are not seconds (ADR 0083): models that iterate run unpaced in the app and stop when they hold still. Decided while building (not yet seen by the owner): an open-ended map (no `t_end`, the logistic map) stays paced, since a chaotic map never holds still.
 - 2026-11-07 (owner): `solve` keeps one method for now; `rcond(A)` comes with Levenberg–Marquardt (ADR 0080 stage 4), `lstsq` when a fit shows conditioning trouble, `eig`/`svd` with ADR 0081's feature-space work.
 - 2026-11-07 (owner): ADR 0081 (shapes are lists of named axes) accepted; ADR 0080 stage 2 built the same day.

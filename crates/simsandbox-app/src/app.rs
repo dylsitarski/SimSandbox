@@ -2054,6 +2054,9 @@ impl SimApp {
                 path.display()
             ));
         }
+        if let Some(note) = run.version_note() {
+            self.log.warn(format!("{}: {note}", path.display()));
+        }
         let track: Vec<simsandbox_session::session::InputEvent> = run
             .track
             .iter()

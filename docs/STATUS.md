@@ -33,6 +33,7 @@ _Last updated: 2026-11-07_
 
 ## Done recently
 
+- 2026-11-08: run files and JSON run output record `made_with` (the SimSandbox version); replaying a run from another version warns (CLI, `check`, app, Python), as [ADR 0059](decisions/0059-run-files.md) asked; the CHANGELOG states the data-sampling change honestly (a sample can take effect a step earlier).
 - 2026-11-08: Levenberg–Marquardt fitting as a model ([ADR 0078](decisions/0078-adaptive-studies.md) step 2, ADR 0080 stage 4): `examples/oscillator-fit.ssbx.json` fits a damped oscillator to measurements written in the model (`input.file` `data`), reaching SciPy's least-squares fit; `rcond(A)`; a data block and `at_samples` count a step within rounding of a sample as at it.
 - 2026-11-08: the study form shows no range for points from inputs (owner's report); switching to that design drops the ranges.
 - 2026-11-07: rounds are not seconds ([ADR 0083](decisions/0083-rounds-are-not-seconds.md), asked by the owner): a model of maps that never read time, with a `t_end` and nothing at a time, iterates in the app as fast as it can and stops when a round changes nothing; a change starts it again from round 0. The search example holds still at round 29 at once instead of after about 22 s. `Block::reads_time`.

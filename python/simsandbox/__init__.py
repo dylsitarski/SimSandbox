@@ -666,6 +666,10 @@ class Run:
         self.name = name
         self.note = note
         self.created = ""
+        #: The SimSandbox that made it (``simsandbox 0.0.1``); this build's
+        #: for a new run, empty for a run file written before it was
+        #: recorded.
+        self.made_with = ""
         #: Where the model file is, if known; a saved run refers to it.
         self.model_path = os.fspath(model_path) if model_path is not None else None
         #: The model changed since the run was made (set by :meth:`load`).
@@ -694,6 +698,16 @@ class Run:
             model_path=model_path,
         )
         run.created = data.get("created", "")
+        run.made_with = data.get("made_with", "")
+        if run.made_with != _native.made_with():
+            import warnings as _w
+
+            made = run.made_with or "a SimSandbox that did not record its version"
+            _w.warn(
+                f"{os.fspath(path)}: recorded with {made}, replayed with {_native.made_with()}: "
+                "results can differ where the changelog says a version changed them",
+                stacklevel=2,
+            )
         with _in_folder(model.folder):
             run.stale = _native.model_hash(model.to_json()) != data["model_hash"]
         if run.stale:
@@ -727,6 +741,7 @@ class Run:
             "format": 1,
             "model": target,
             "model_hash": _model_hash(self.model),
+            "made_with": self.made_with or _native.made_with(),
         }
         if self.name:
             data["name"] = self.name

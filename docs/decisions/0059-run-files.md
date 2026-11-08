@@ -76,6 +76,10 @@ Results are not stored. A run is reproduced by replaying it: the same model, eve
   - `Model.run(inputs=...)` takes a list of events or a `Run`.
 - `simsandbox schema` includes the run file's schema.
 
+## As built: the version (2026-11-08)
+
+The Context asked that a run say which version it was made with; run files recorded the model's hash but not SimSandbox's version. Since 2026-11-08 a run file records `made_with` (`simsandbox 0.0.1`, `runs::MADE_WITH`), and run output (`run --format json`) carries it too. Results are exact within a version on any machine ([ADR 0082](0082-exactness-is-labelled.md)); a version may change them where its changelog says (ADR 0077's sums, the data samples of 2026-11-08). Replaying a run made by another version, or by one before this field, says so (CLI warning, `check` warning, app log, Python warning), beside the model-changed warning. Decided with the owner when a fix to data sampling changed results between versions.
+
 ## Consequences
 
 - ADR 0058's track file (`{"format": 1, "events": [...]}`) and "Save recording as schedule" are replaced by run files and "Save run…". Its input blocks, input track, replay after rewind and the default schedule stand.

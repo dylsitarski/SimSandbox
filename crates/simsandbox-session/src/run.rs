@@ -10,6 +10,8 @@ use serde_json::{json, Value};
 use simsandbox_core::block::{MethodLabels, Shape};
 use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::Simulator;
+/// The SimSandbox that makes a run, as its output and run files record it.
+pub use simsandbox_file::runs::MADE_WITH;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -214,6 +216,7 @@ impl Results {
             })
             .collect();
         json!({
+            "made_with": simsandbox_file::runs::MADE_WITH,
             "rows": self.rows(),
             "index": index,
             "outputs": outputs,

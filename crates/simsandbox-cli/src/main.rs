@@ -156,6 +156,9 @@ fn model_and_track(path: &str, inputs: Option<&str>) -> Result<(String, Vec<Inpu
                  replaying it anyway"
             );
         }
+        if let Some(note) = run.version_note() {
+            eprintln!("warning: {path}: {note}");
+        }
         return Ok((run.apply_to(&file).to_json(), events(&run.track)));
     }
     let text = read(path)?;
@@ -192,6 +195,9 @@ fn check_run(path: &str) -> Result<Value, String> {
             warnings.push(Value::from(format!(
                 "{model_path} has changed since this run was recorded"
             )));
+        }
+        if let Some(note) = run.version_note() {
+            warnings.push(Value::from(note));
         }
     }
     match Session::load(path, &replay, &registry()) {

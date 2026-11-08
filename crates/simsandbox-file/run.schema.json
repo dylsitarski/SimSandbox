@@ -10,6 +10,7 @@
     "format": {"const": 1},
     "model": {"type": "string", "description": "The model file, relative to the run file."},
     "model_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "SHA-256 of the model as saved, with controls left out; a different hash means the model changed since the run was made."},
+    "made_with": {"type": "string", "description": "The SimSandbox that made it, e.g. \"simsandbox 0.0.1\". Results are exact within a version; replaying with another says so."},
     "name": {"type": "string"},
     "note": {"type": "string"},
     "created": {"type": "string", "description": "When it was saved, RFC 3339 (UTC)."},

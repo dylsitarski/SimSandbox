@@ -6,7 +6,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
-- A recorded-data block, `at_times` and `at_samples` count a step whose time is within rounding of a sample's as at it. Before, steps summed from `dt` could fall a hair short (2.4999999999998 for 2500 steps of 0.001) and take the sample a step late. Models with data whose steps land on its samples may change in their last digits.
+- A recorded-data block, `at_times` and `at_samples` count a step whose time is within rounding of a sample's as at it. Before, steps summed from `dt` could fall a hair short (2.4999999999998 for 2500 steps of 0.001) and take the sample a step late. In models with data, a sample can now take effect one step earlier than before, so their results can change slightly (not only in the last digits); they stay exact within this version on any machine. Run files made earlier replay with that difference, and say so (below).
+- Run files and `run --format json` output record the SimSandbox that made them (`"made_with": "simsandbox 0.0.1"`). Replaying a run made by another version, or before this was recorded, warns that results can differ where the changelog says.
 
 - The study form in the app shows no "from", "to" or "points" for a study whose points arrive through its inputs, and switching a study to that design drops them from the file: another model sends its values.
 
