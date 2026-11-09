@@ -58,7 +58,7 @@ Each change increments the table's **structure version**.
 **Order of work** (each stage verified on a model that needs it):
 1. Tables of rows in typed equations (declaration, starting rows, `add` and `remove`, `id`, `of`), `rows` ports with ids and versions, probes by id, studies over tables remembering runs by id.
 2. Edge tables, `split` of edges and `merge`, with `copy` and `mean` transfers: refinement of a study over one parameter (ADR 0078).
-3. `split` of cells into 4, with `share` and `interpolate`: refinement over two parameters, and the data structure of AMR in two dimensions.
+3. `split` of cells into 4, with `share` and `interpolate`: refinement over two parameters, and the data structure of AMR in two dimensions. (Proposed to be replaced, 2026-11-09, by [ADR 0085](0085-meshes-are-tables-of-cells.md): cells of any shape over points, in any dimension.)
 4. Time on changing tables: operations along edges in rates, integrators across structure changes, conservative transfers. AMR on the heat equation and Gray–Scott, verified against a fine fixed grid; unstructured meshes from a file.
 5. Agents as models: neighbour queries (within a radius), birth and death as rules; today's population ports and `agents.grazers` move to tables (Q26).
 

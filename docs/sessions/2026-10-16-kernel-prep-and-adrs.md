@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-09: ADR 0085 written as Proposed (meshes as tables of cells over points, any shape and dimension), at the owner's request when stage 3 (quadrilateral split) was about to start; STATUS item 1 waits for it.
 - 2026-11-08: ADR 0062 step 5: `History::set_field_budget`/`bytes`, `Session::set_memory_budget`/`memory_use`/`MemoryUse`, the recorder's default share; `run_probes(…, memory_mb)` and `ProbeRun.memory`, CLI `--memory`, Python `run_probes(memory=)`; the app's "Memory…" menu, toolbar warning and eframe storage (`persistence` feature, window and egui state not kept). Tests `tests/memory.rs` and Python. Not tried in the window (menus need clicks). The disk filled up again; stale build outputs cleared.
 - 2026-11-08: ADR 0078 step 5: `strategies.rs` (`Strategy`, `Varied`, `write`; minimize, fit, refine, continuation generators reading the study's units; the whole model's run kept in its definition), `Edit::Search`, the app's "Search…" section, Python `_native.strategy` and `Model.minimize/fit/refine/continue_`; array parameters allowed in array states' starting values. Tests `tests/strategies.rs` (each generated strategy against its example, bit for bit) and a Python test. "Search…" not tried in the window (no xdotool here).
 - 2026-11-08: ADR 0078 step 4 example: `examples/bistable-refinement.ssbx.json` (registered), test against the middle root of x³ − x − 0.2 with runs counted and holding still in a session; render and a screenshot under Xvfb (round 10, holds still).
