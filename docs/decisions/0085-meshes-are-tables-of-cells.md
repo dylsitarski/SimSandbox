@@ -1,6 +1,6 @@
 # 0085 — Meshes are tables of cells over tables of points, in any dimension
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-09)
 - **Date:** 2026-11-09
 - **Amends:** [ADR 0079](0079-tables-of-members.md) stages 3 and 4 (cells split into four; AMR in two dimensions), [ADR 0078](0078-adaptive-studies.md) point 3 (refinement over two parameters by "the sides of cells")
 - **Builds on:** [ADR 0079](0079-tables-of-members.md) stages 1–2 (tables with ids, edge tables, `split` and `merge` with transfers), [ADR 0081](0081-shapes-are-lists-of-axes.md) (rows ports, views by axis roles)
@@ -64,10 +64,10 @@ Constraints: the same bits on any machine (ADR 0077, ADR 0082); stable ids; snap
 
 ## Decision
 
-Proposed: to be decided by the owner. Points to settle:
-- Whether cells as corner lists with derived sides (point 2–3) is general enough, or a full incidence structure (all dimensions stored) is wanted now.
-- Whether both refinement families come in the first build, or simplices first (they cover studies in any dimension and files of triangles and tetrahedra).
-- Whether box refinement keeps sides at most one level apart (2:1 balance, simpler fluxes), as proposed.
+Accepted by the owner on 2026-11-09, with these choices:
+- **Both refinement families** (simplices by bisection, boxes by 2^d split) in the first build.
+- **Boxes at most one level apart across a side** (2:1 balance).
+- **Still open:** whether to start with corner lists and derived sides (point 2–3) and add the full incidence structure later, or store every dimension's entities from the start; the owner asked what keeping that structure in step costs.
 
 ## Consequences
 
