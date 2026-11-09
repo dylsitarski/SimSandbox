@@ -19,6 +19,7 @@ pub mod group;
 pub mod implicit;
 pub mod input;
 pub mod integrators;
+pub mod mesh;
 pub mod ode;
 pub mod registry;
 pub mod symbolic;

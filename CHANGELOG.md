@@ -62,6 +62,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Meshes in typed equations (ADR 0085 step 1a): `cells c of pts: triangle` (segments, triangles, quads, tetrahedra, hexahedra, prisms, pyramids, d-simplices, d-boxes) over a table of points, `start c = grid x 0 .. 1 by 8, y 0 .. 1 by 8`, `sides f of c` kept with stable ids, and geometry: `corner`, `centre`, `measure`, `normal`, `inner`, `outer`, `boundary`. Cells, sides and edges may hold states.
+
 - A memory budget for recordings (ADR 0062 step 5): one app setting, 1024 MB by default and kept between launches, under "Memory…" in the toolbar, shared by rewind's snapshots, the history, probes and filters (a quarter each by default; a recorder or probe with a size of its own keeps it). The toolbar says when recordings hold more than the budget and which holds most. Headless: `simsandbox run --probe … --memory MB`, Python `Model.run_probes(memory=MB)` and `ProbeRun.memory`. Nothing changes at the default.
 
 - Strategy helpers (ADR 0078 step 5): Python's `Model.minimize`, `Model.fit`, `Model.refine` and `Model.continue_` write a study and a strategy model (pattern search, Levenberg–Marquardt, refinement, continuation) that drives it, for any number of parameters, from a study, a used model or the whole model; the app's study form does the same under "Search…". The strategy is an ordinary block that can be opened and changed.

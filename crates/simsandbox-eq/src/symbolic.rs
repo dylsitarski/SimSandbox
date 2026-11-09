@@ -161,6 +161,36 @@ pub struct TableRows {
     pub ends_of: Option<usize>,
     /// An edge table starting as a chain of its table's starting rows.
     pub chain: bool,
+    /// Cells' or sides' shape (ADR 0085); edges are segments.
+    pub shape: Option<crate::mesh::CellShape>,
+    /// Sides (ADR 0085): the cells (place in the block's tables) they lie
+    /// between. Their kernel table's columns are the corners, then the
+    /// inner and outer cells' ids (outer -1 on the boundary).
+    pub sides_of: Option<usize>,
+    /// Cells starting as a grid (ADR 0085).
+    pub grid: Option<crate::mesh::GridStart>,
+    /// Points made by a grid: each grid coordinate's column among its
+    /// states.
+    pub coords: Vec<usize>,
+}
+
+impl TableRows {
+    /// Its corners per row: 0 unless cells, sides or edges.
+    pub fn corners(&self) -> usize {
+        self.shape.map_or(0, |s| s.corners())
+    }
+
+    /// The kernel table's columns before its states: corners, and for
+    /// sides their two cells.
+    pub fn offset(&self) -> usize {
+        self.corners() + if self.sides_of.is_some() { 2 } else { 0 }
+    }
+
+    /// The place arrays given with the ids: one per corner, and for sides
+    /// the inner and outer cells' places and whether on the boundary.
+    fn places(&self) -> usize {
+        self.corners() + if self.sides_of.is_some() { 3 } else { 0 }
+    }
 }
 
 /// A rule as compiled: its table (by axis), whether it removes (else
@@ -270,9 +300,13 @@ struct Axis {
     /// A table's rows (ADR 0079): its most rows. Its length is the
     /// current number of rows, and changes between steps.
     table: Option<usize>,
-    /// An edge table (ADR 0079 stage 2): the table whose rows its edges
-    /// join, by place among the axes.
+    /// An edge table (ADR 0079 stage 2), cells or sides (ADR 0085): the
+    /// table of points whose rows its corners are, by place among the axes.
     ends_of: Option<usize>,
+    /// Cells' or sides' shape (edges are segments).
+    shape: Option<crate::mesh::CellShape>,
+    /// Sides (ADR 0085): the cells they lie between, by place.
+    sides_of: Option<usize>,
 }
 
 /// The most rows a table has unless it says (`table pts max 200`).
@@ -299,6 +333,66 @@ fn read_table(rest: &str, line: usize) -> Result<(String, usize)> {
         ));
     }
     Ok((name.to_string(), max))
+}
+
+/// A `cells tri of pts [max 200]: triangle` line (ADR 0085), `rest`
+/// after `cells`: its name, its points' table, its most rows and shape.
+fn read_cells(rest: &str, line: usize) -> Result<(String, String, usize, crate::mesh::CellShape)> {
+    let usage = "write cells as 'cells tri of pts: triangle' or 'cells tri of pts max 500: tetra' (segment, triangle, quad, tetra, hexa, prism, pyramid, simplex d, box d)";
+    let Some((head, shape)) = rest.split_once(':') else {
+        return Err(definition_error(line, 1, usage));
+    };
+    let Some(shape) = crate::mesh::CellShape::parse(shape) else {
+        return Err(definition_error(
+            line,
+            1,
+            format!("'{}' is not a shape: {usage}", shape.trim()),
+        ));
+    };
+    let words: Vec<&str> = head.split_whitespace().collect();
+    let (name, of, max) = match words[..] {
+        [c, "of", p] => (c, p, DEFAULT_MAX_ROWS),
+        [c, "of", p, "max", n] => match n.parse::<usize>() {
+            Ok(m) if m >= 1 => (c, p, m),
+            _ => return Err(definition_error(line, 1, usage)),
+        },
+        _ => return Err(definition_error(line, 1, usage)),
+    };
+    let (name, _) = read_table(name, line)?;
+    Ok((name, of.to_string(), max, shape))
+}
+
+/// How many sides the starting cells of axis `c` have (ADR 0085).
+fn starting_sides(
+    grid: &[Axis],
+    c: usize,
+    chains: &std::collections::HashMap<String, usize>,
+    grid_starts: &std::collections::HashMap<String, (crate::mesh::GridStart, usize)>,
+    starts: &std::collections::HashMap<String, (usize, usize)>,
+) -> Result<usize> {
+    let shape = grid[c].shape.expect("cells");
+    let corners: Vec<Vec<usize>> = match (grid_starts.get(&grid[c].name), chains.get(&grid[c].name))
+    {
+        (Some((g, line)), _) => g.cells(shape).map_err(|e| definition_error(*line, 1, e))?,
+        (_, Some(_)) => {
+            let n = grid[c]
+                .ends_of
+                .and_then(|p| starts.get(&grid[p].name))
+                .map_or(0, |s| s.0);
+            (1..n).map(|k| vec![k - 1, k]).collect()
+        }
+        _ => Vec::new(),
+    };
+    let (_, faces) = shape.sides().expect("checked: one shape of side");
+    let mut seen = std::collections::HashSet::new();
+    for cell in &corners {
+        for f in &faces {
+            let mut key: Vec<usize> = f.iter().map(|&k| cell[k]).collect();
+            key.sort_unstable();
+            seen.insert(key);
+        }
+    }
+    Ok(seen.len())
 }
 
 /// A column's value in an `add` rule: its name, expression and column.
@@ -591,6 +685,8 @@ fn read_grid(text: &str, rest: &str, line: usize) -> Result<(Axis, Option<String
                         cells,
                         table: None,
                         ends_of: None,
+                        shape: None,
+                        sides_of: None,
                     },
                     None,
                 ))
@@ -642,6 +738,8 @@ fn read_grid(text: &str, rest: &str, line: usize) -> Result<(Axis, Option<String
             cells,
             table: None,
             ends_of: None,
+            shape: None,
+            sides_of: None,
         },
         unit,
     ))
@@ -863,6 +961,67 @@ fn fit(
     )
 }
 
+/// `centre`, `measure` and `normal` (ADR 0085) as expressions of
+/// corners: `centre(T, c)`, `measure(c, x[, y[, z]])`, `normal(f, k, x[,
+/// y[, z]])`.
+fn mesh_expansion(name: &str, args: &[Ast], grid: &[Axis]) -> std::result::Result<Ast, String> {
+    let table = |a: &Ast| -> Option<usize> {
+        match a {
+            Ast::Name(n, _) => grid.iter().position(|g| &g.name == n && g.shape.is_some()),
+            _ => None,
+        }
+    };
+    match name {
+        "centre" => {
+            let (Some(t), Some(c)) = (args.first(), args.get(1).and_then(table)) else {
+                return Err("'centre' takes a quantity over points and cells over them, e.g. centre(x, tri)".into());
+            };
+            if args.len() != 2 {
+                return Err("'centre' takes 2 arguments, e.g. centre(x, tri)".into());
+            }
+            Ok(crate::mesh::centre(
+                t,
+                &grid[c].name,
+                grid[c].shape.expect("cells"),
+            ))
+        }
+        "measure" => {
+            let Some(c) = args.first().and_then(table) else {
+                return Err("'measure' takes cells or sides and their points' coordinates, e.g. measure(tri, x, y)".into());
+            };
+            if args.len() < 2 {
+                return Err(
+                    "'measure' takes the points' coordinates too, e.g. measure(tri, x, y)".into(),
+                );
+            }
+            crate::mesh::measure(&grid[c].name, grid[c].shape.expect("cells"), &args[1..])
+        }
+        _ => {
+            let Some(f) = args
+                .first()
+                .and_then(table)
+                .filter(|&f| grid[f].sides_of.is_some())
+            else {
+                return Err("'normal' takes sides, a component and the coordinates, e.g. normal(f, 0, x, y)".into());
+            };
+            let Some(Ast::Num(k)) = args.get(1) else {
+                return Err(
+                    "'normal' takes a component's number second, e.g. normal(f, 0, x, y)".into(),
+                );
+            };
+            let c = grid[f].sides_of.expect("sides");
+            crate::mesh::normal(
+                &grid[f].name,
+                grid[f].shape.expect("sides"),
+                &grid[c].name,
+                grid[c].shape.expect("cells"),
+                *k as usize,
+                &args[2..],
+            )
+        }
+    }
+}
+
 /// The axes of `ast`'s value (ADR 0080), checking every array operation:
 /// known, with the right arguments. Names not in `shapes` are scalars.
 fn axes_of(
@@ -966,15 +1125,41 @@ fn axes_of(
             };
             Ok(if name == "id" { vec![i] } else { Vec::new() })
         }
-        "from_end" | "to_end" => {
-            // T at each edge's end (ADR 0079 stage 2): over the edges.
-            let usage = format!("a quantity over a table and its edges, e.g. {name}(x, segs)");
-            count(args.len() == 2, &usage)?;
+        "from_end" | "to_end" | "corner" => {
+            // T at each cell's corner (ADR 0085; an edge's ends, ADR
+            // 0079 stage 2): over the cells.
+            let usage = match name.as_str() {
+                "corner" => "a quantity over a table of points, cells over it and a corner's number, e.g. corner(x, tri, 0)".to_string(),
+                _ => format!("a quantity over a table and its edges, e.g. {name}(x, segs)"),
+            };
+            count(args.len() == if name == "corner" { 3 } else { 2 }, &usage)?;
             let a = of(&args[0])?;
             let e = axis_named(&args[1]).filter(|&e| grid[e].ends_of.is_some());
-            match (e, &a[..]) {
-                (Some(e), [m]) if grid[e].ends_of == Some(*m) => Ok(vec![e]),
-                (Some(e), _) => Err((
+            let Some(e) = e else {
+                return Err((
+                    col,
+                    format!("'{name}' takes a table of cells, sides or edges second: {usage}"),
+                ));
+            };
+            let corners = grid[e].shape.map_or(2, |s| s.corners());
+            if name == "corner" {
+                match &args[2] {
+                    Ast::Num(k) if k.fract() == 0.0 && *k >= 0.0 && (*k as usize) < corners => {}
+                    _ => {
+                        return Err((
+                            col,
+                            format!(
+                                "{}'s corners are numbered 0 to {}: give one as a number",
+                                grid[e].name,
+                                corners - 1
+                            ),
+                        ))
+                    }
+                }
+            }
+            match &a[..] {
+                [m] if grid[e].ends_of == Some(*m) => Ok(vec![e]),
+                _ => Err((
                     col,
                     format!(
                         "'{name}' takes a quantity over {}, whose rows {} joins",
@@ -982,8 +1167,37 @@ fn axes_of(
                         grid[e].name
                     ),
                 )),
-                (None, _) => Err((col, format!("'{name}' takes an edge table second: {usage}"))),
             }
+        }
+        "inner" | "outer" | "boundary" => {
+            // A side's cells (ADR 0085): over the sides.
+            let n = if name == "boundary" { 1 } else { 2 };
+            let usage = match name.as_str() {
+                "boundary" => "a table of sides, e.g. boundary(f)".to_string(),
+                _ => format!("a quantity over cells and their sides, e.g. {name}(u, f)"),
+            };
+            count(args.len() == n, &usage)?;
+            let Some(f) = axis_named(&args[n - 1]).filter(|&f| grid[f].sides_of.is_some()) else {
+                return Err((col, format!("'{name}' takes {usage}")));
+            };
+            if n == 2 {
+                let a = of(&args[0])?;
+                let c = grid[f].sides_of.expect("sides");
+                if a != [c] {
+                    return Err((
+                        col,
+                        format!(
+                            "'{name}' takes a quantity over {}, the cells {} lie between",
+                            grid[c].name, grid[f].name
+                        ),
+                    ));
+                }
+            }
+            Ok(vec![f])
+        }
+        "centre" | "measure" | "normal" => {
+            let e = mesh_expansion(name, args, grid).map_err(|m| (col, m))?;
+            of(&e)
         }
         "of" => {
             // of(T, i): T's value in the row with id i, NaN if none.
@@ -1262,7 +1476,7 @@ fn lower(
     slot: &dyn Fn(&str) -> Option<usize>,
     stencil: &dyn Fn(&str, &[Ast]) -> Expr,
     ids: &[Option<usize>],
-    ends: &[Option<(usize, usize)>],
+    ends: &[Option<Vec<usize>>],
 ) -> std::result::Result<(Expr, Vec<usize>), simsandbox_expr::Error> {
     let low = |a: &Ast| lower(a, grid, shapes, slot, stencil, ids, ends);
     Ok(match ast {
@@ -1324,15 +1538,40 @@ fn lower(
                 ),
                 // T at each edge's end (ADR 0079 stage 2): T's cells at
                 // the places of the edges' `from` (or `to`) rows.
-                "from_end" | "to_end" => {
+                "from_end" | "to_end" | "corner" => {
                     let (t, _) = low(&args[0])?;
                     let e = axis_named(&args[1]);
-                    let (from, to) = ends[e].expect("checked: an edge table");
-                    let places = if name == "from_end" { from } else { to };
+                    let k = match name.as_str() {
+                        "from_end" => 0,
+                        "to_end" => 1,
+                        _ => match &args[2] {
+                            Ast::Num(k) => *k as usize,
+                            _ => unreachable!("checked: a corner's number"),
+                        },
+                    };
+                    let places = ends[e].as_ref().expect("checked: cells")[k];
                     (
                         Expr::Array(ArrayOp::Take, vec![t, Expr::Var(places)]),
                         vec![e],
                     )
+                }
+                // A side's cells' values, and whether on the boundary.
+                "inner" | "outer" | "boundary" => {
+                    let f = axis_named(args.last().expect("checked: a sides table"));
+                    let v = ends[f].as_ref().expect("checked: sides");
+                    let n = v.len() - 3;
+                    match name.as_str() {
+                        "boundary" => (Expr::Var(v[n + 2]), vec![f]),
+                        _ => {
+                            let (t, _) = low(&args[0])?;
+                            let at = v[n + usize::from(name == "outer")];
+                            (Expr::Array(ArrayOp::Take, vec![t, Expr::Var(at)]), vec![f])
+                        }
+                    }
+                }
+                "centre" | "measure" | "normal" => {
+                    let e = mesh_expansion(name, args, grid).expect("checked: expands");
+                    low(&e)?
                 }
                 "of" => {
                     // The cell whose id is i: at(T, k), k the first place
@@ -1498,17 +1737,37 @@ impl EquationSet {
         // Edge tables starting as a chain (ADR 0079 stage 2): `start segs
         // = chain`, an edge from each starting row to the next.
         let mut chains: std::collections::HashMap<String, usize> = Default::default();
+        // Cells starting as a grid (ADR 0085): `start tri = grid x 0 .. 1
+        // by 8, y 0 .. 1 by 8`, which also makes their points.
+        let mut grid_starts: std::collections::HashMap<String, (crate::mesh::GridStart, usize)> =
+            Default::default();
+        // Each cell table's points and shape, as declared (`cells tri of
+        // pts: triangle`), read first: a grid start makes the points too.
+        let mut cell_decls: std::collections::HashMap<String, (String, crate::mesh::CellShape)> =
+            Default::default();
+        for (k, text) in lines.iter().enumerate() {
+            if let Some(rest) = keyword(text.trim(), "cells") {
+                let (name, of, _, shape) = read_cells(&rest, k + 1)?;
+                cell_decls.insert(name, (of, shape));
+            }
+        }
         for (k, text) in lines.iter().enumerate() {
             let Some(rest) = keyword(text.trim(), "start") else {
                 continue;
             };
             let usage =
-                "write a table's starting rows as 'start pts = 5' (edges: 'start segs = chain')";
+                "write a table's starting rows as 'start pts = 5' (edges: 'start segs = chain'; cells: 'start tri = grid x 0 .. 1 by 8, y 0 .. 1 by 8')";
             let Some((t, n)) = rest.split_once('=') else {
                 return Err(definition_error(k + 1, 1, usage));
             };
             if n.trim() == "chain" {
                 chains.insert(t.trim().to_string(), k + 1);
+                continue;
+            }
+            if let Some(g) = n.trim().strip_prefix("grid ") {
+                let g =
+                    crate::mesh::GridStart::parse(g).map_err(|e| definition_error(k + 1, 1, e))?;
+                grid_starts.insert(t.trim().to_string(), (g, k + 1));
                 continue;
             }
             let Ok(n) = n.trim().parse::<usize>() else {
@@ -1519,7 +1778,29 @@ impl EquationSet {
         for (k, text) in lines.iter().enumerate() {
             let (a, unit) = if let Some(rest) = keyword(text.trim(), "table") {
                 let (t, max) = read_table(&rest, k + 1)?;
-                let start = starts.get(&t).map_or(0, |s| s.0);
+                // Its points made by a grid of cells over it (ADR 0085).
+                let made: Vec<(&String, &(crate::mesh::GridStart, usize))> = grid_starts
+                    .iter()
+                    .filter(|(c, _)| cell_decls.get(*c).is_some_and(|o| o.0 == t))
+                    .collect();
+                if made.len() > 1 {
+                    return Err(definition_error(
+                        made[1].1 .1,
+                        1,
+                        format!("{t}'s points come from one starting grid, not two"),
+                    ));
+                }
+                if let (Some(&(c, (_, line))), Some(_)) = (made.first(), starts.get(&t)) {
+                    return Err(definition_error(
+                        *line,
+                        1,
+                        format!("{t}'s rows come from {c}'s starting grid: give it no 'start {t}'"),
+                    ));
+                }
+                let start = match made.first() {
+                    Some((_, (g, _))) => g.points()[0].len(),
+                    None => starts.get(&t).map_or(0, |s| s.0),
+                };
                 if start > max {
                     return Err(definition_error(
                         starts[&t].1,
@@ -1537,48 +1818,91 @@ impl EquationSet {
                         cells,
                         table: Some(max),
                         ends_of: None,
+                        shape: None,
+                        sides_of: None,
                     },
                     None,
                 )
-            } else if let Some(rest) = keyword(text.trim(), "edges") {
-                // `edges segs of pts [max 200]` (ADR 0079 stage 2).
-                let usage =
-                    "write an edge table as 'edges segs of pts' or 'edges segs of pts max 200'";
-                let words: Vec<&str> = rest.split_whitespace().collect();
-                let (e, m, max) = match words[..] {
-                    [e, "of", m] => (e, m, DEFAULT_MAX_ROWS),
-                    [e, "of", m, "max", n] => match n.parse::<usize>() {
-                        Ok(x) if x >= 1 => (e, m, x),
-                        _ => return Err(definition_error(k + 1, 1, usage)),
-                    },
-                    _ => return Err(definition_error(k + 1, 1, usage)),
+            } else if let Some((word, rest)) = ["edges", "cells", "sides"]
+                .into_iter()
+                .find_map(|w| keyword(text.trim(), w).map(|r| (w, r)))
+            {
+                // `edges segs of pts [max 200]` (ADR 0079 stage 2), `cells
+                // tri of pts [max 200]: triangle` and `sides f of tri [max
+                // 200]` (ADR 0085).
+                let (t, of, max, shape) = match word {
+                    "cells" => read_cells(&rest, k + 1)?,
+                    _ => {
+                        let usage = format!(
+                            "write {word} as '{word} segs of pts' or '{word} segs of pts max 200'"
+                        );
+                        let words: Vec<&str> = rest.split_whitespace().collect();
+                        let (e, m, max) = match words[..] {
+                            [e, "of", m] => (e, m, DEFAULT_MAX_ROWS),
+                            [e, "of", m, "max", n] => match n.parse::<usize>() {
+                                Ok(x) if x >= 1 => (e, m, x),
+                                _ => return Err(definition_error(k + 1, 1, usage)),
+                            },
+                            _ => return Err(definition_error(k + 1, 1, usage)),
+                        };
+                        let (t, _) = read_table(e, k + 1)?;
+                        (t, m.to_string(), max, crate::mesh::CellShape::Segment)
+                    }
                 };
-                let (t, _) = read_table(e, k + 1)?;
-                let Some(m) = grid
-                    .iter()
-                    .position(|g| g.name == m && g.table.is_some() && g.ends_of.is_none())
-                else {
-                    return Err(definition_error(
-                        k + 1,
-                        1,
-                        format!(
-                            "'{m}' is not a table declared above: edges join the rows of one ('table {m}' first)"
-                        ),
-                    ));
+                let m = &of;
+                let found = grid.iter().position(|g| &g.name == m && g.table.is_some());
+                // Sides lie between cells; edges and cells join points.
+                let (ends, sides_of, shape) = if word == "sides" {
+                    let Some(c) = found.filter(|&c| {
+                        grid[c].shape.is_some() && grid[c].sides_of.is_none() && grid[c].name != t
+                    }) else {
+                        return Err(definition_error(k + 1, 1, format!(
+                            "'{m}' is not a table of cells declared above: sides lie between cells ('cells {m} of pts: triangle' first)"
+                        )));
+                    };
+                    let cs = grid[c].shape.expect("cells");
+                    let Some((side, _)) = cs.sides() else {
+                        return Err(definition_error(
+                            k + 1,
+                            1,
+                            format!(
+                                "the sides of {} come later: their sides are of two shapes",
+                                cs.name()
+                            ),
+                        ));
+                    };
+                    (grid[c].ends_of, Some(c), side)
+                } else {
+                    let Some(p) = found.filter(|&p| grid[p].ends_of.is_none()) else {
+                        return Err(definition_error(k + 1, 1, format!(
+                            "'{m}' is not a table declared above: {word} join the rows of one ('table {m}' first)"
+                        )));
+                    };
+                    (Some(p), None, shape)
                 };
                 if let Some(&(_, line)) = starts.get(&t) {
                     return Err(definition_error(
                         line,
                         1,
-                        format!("edges start as a chain of their table's starting rows: 'start {t} = chain'"),
+                        format!("{t} starts as a chain or a grid ('start {t} = chain', 'start {t} = grid …'), not a number of rows"),
                     ));
                 }
-                let start = match chains.get(&t) {
-                    Some(_) => starts
-                        .get(&grid[m].name)
-                        .map_or(0, |s| s.0)
-                        .saturating_sub(1),
-                    None => 0,
+                let start = match (chains.get(&t), grid_starts.get(&t)) {
+                    (Some(_), _) if shape == crate::mesh::CellShape::Segment && word != "sides" => {
+                        starts
+                            .get(&grid[ends.expect("points")].name)
+                            .map_or(0, |s| s.0)
+                            .saturating_sub(1)
+                    }
+                    (_, Some((g, line))) => g
+                        .cells(shape)
+                        .map_err(|e| definition_error(*line, 1, e))?
+                        .len(),
+                    _ => match sides_of {
+                        // Sides of starting cells, found as they will be.
+                        Some(c) => starting_sides(&grid, c, &chains, &grid_starts, &starts)?,
+                        None => 0,
+                    },
                 };
                 let cells = rows.get(&t).copied().unwrap_or(start);
                 (
@@ -1589,7 +1913,9 @@ impl EquationSet {
                         hi: Ast::Num(cells as f64 - 0.5),
                         cells,
                         table: Some(max),
-                        ends_of: Some(m),
+                        ends_of: ends,
+                        shape: Some(shape),
+                        sides_of,
                     },
                     None,
                 )
@@ -1618,10 +1944,24 @@ impl EquationSet {
             grid.push(a);
         }
         let axes: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
-        if let Some((t, line)) = chains
-            .iter()
-            .find(|(t, _)| !grid.iter().any(|a| &a.name == *t && a.ends_of.is_some()))
-        {
+        if let Some((t, (_, line))) = grid_starts.iter().find(|(t, _)| {
+            !grid
+                .iter()
+                .any(|a| &a.name == *t && a.shape.is_some() && a.sides_of.is_none())
+        }) {
+            return Err(definition_error(
+                *line,
+                1,
+                format!("'{t}' is not a table of cells: a grid starts cells ('cells {t} of pts: triangle')"),
+            ));
+        }
+        if let Some((t, line)) = chains.iter().find(|(t, _)| {
+            !grid.iter().any(|a| {
+                &a.name == *t
+                    && a.shape == Some(crate::mesh::CellShape::Segment)
+                    && a.sides_of.is_none()
+            })
+        }) {
             return Err(definition_error(
                 *line,
                 1,
@@ -1667,7 +2007,7 @@ impl EquationSet {
             let trimmed = text.trim();
             if trimmed.is_empty()
                 || trimmed.starts_with('#')
-                || ["grid", "table", "edges", "start"]
+                || ["grid", "table", "edges", "cells", "sides", "start"]
                     .iter()
                     .any(|w| keyword(trimmed, w).is_some())
             {
@@ -2063,11 +2403,12 @@ impl EquationSet {
                         .any(|i| shapes.get(i).is_some_and(|d| d.contains(&a)))
             })
             .collect();
-        if let Some((_, t)) = grid
-            .iter()
-            .enumerate()
-            .find(|(a, t)| t.table.is_some() && !(kind == Kind::Formulas && followed[*a]))
-        {
+        if let Some((_, t)) = grid.iter().enumerate().find(|(a, t)| {
+            // A table that never changes (no rules, and no states,
+            // which make a map) may be read by formulas (ADR 0085).
+            t.table.is_some()
+                && !(kind == Kind::Formulas && (followed[*a] || rule_lines.is_empty()))
+        }) {
             if kind != Kind::Map {
                 return Err(definition_error(
                     t.line,
@@ -2083,17 +2424,7 @@ impl EquationSet {
             if axes.contains(&n.as_str()) || !dims.iter().any(|&a| is_table(a)) {
                 continue;
             }
-            let on_edges = dims.iter().find(|&&a| grid[a].ends_of.is_some());
-            let why = if let (Some(&e), true) = (
-                on_edges,
-                states.iter().chain(&inputs).any(|s| s == n)
-                    || array_params.iter().any(|a| &a.0 == n),
-            ) {
-                format!(
-                    "edges hold no values of their own yet (ADR 0079 stage 2): define {n} from their ends, e.g. '{n} = to_end(x, {e}) - from_end(x, {e})'",
-                    e = grid[e].name
-                )
-            } else if dims.len() > 1 {
+            let why = if dims.len() > 1 {
                 format!("{n} is over a table's rows and other axes: a quantity over rows has only them (for now)")
             } else if array_params.iter().any(|a| &a.0 == n) {
                 format!("a parameter has a value per cell, not per row: a value per row is a state, 'state {n}[{}]'", axes[dims[0]])
@@ -2283,6 +2614,25 @@ impl EquationSet {
                 .filter(|&a| is_table(a))
         };
         states.sort_by_key(|n| row_table(n).is_some());
+        // A starting grid gives its points' coordinates: states over them
+        // (ADR 0085).
+        for (c, (g, line)) in &grid_starts {
+            let pts = cell_decls.get(c).map(|o| o.0.as_str()).unwrap_or("");
+            let p_axis = axes.iter().position(|a| *a == pts);
+            for (name, ..) in &g.axes {
+                let over =
+                    |s: &&String| *s == name && row_table(s).is_some() && row_table(s) == p_axis;
+                if !states.iter().any(|s| over(&s)) {
+                    return Err(definition_error(
+                        *line,
+                        1,
+                        format!(
+                            "the grid sets {name} at each point: declare 'state {name}[{pts}]'"
+                        ),
+                    ));
+                }
+            }
+        }
         // Rules, checked: the table, the axis new rows come from, and each
         // column's value (its starting value where not given).
         let mut rules: Vec<CheckedRule> = Vec::new();
@@ -2319,6 +2669,19 @@ impl EquationSet {
             // filling rows of the table it joins (ADR 0079 stage 2).
             if matches!(r.kind, RuleKind::Split | RuleKind::Merge) {
                 let e = t;
+                if grid[e].sides_of.is_some()
+                    || grid[e]
+                        .shape
+                        .is_some_and(|s| s != crate::mesh::CellShape::Segment)
+                {
+                    return Err(bad(
+                        1,
+                        format!(
+                            "{} cells are refined with ADR 0085 step 2; for now split and merge act on edges ('edges segs of pts')",
+                            r.table
+                        ),
+                    ));
+                }
                 let Some(m) = grid[e].ends_of else {
                     return Err(bad(
                         1,
@@ -2375,7 +2738,16 @@ impl EquationSet {
                 return Err(bad(
                     1,
                     format!(
-                        "edges are made by 'start {} = chain' and by split, not added",
+                        "edges and cells are made by their start ('= chain', '= grid …') and by split, not added: {}",
+                        r.table
+                    ),
+                ));
+            }
+            if grid[t].sides_of.is_some() {
+                return Err(bad(
+                    1,
+                    format!(
+                        "{} are kept by SimSandbox from their cells: change the cells instead",
                         r.table
                     ),
                 ));
@@ -2678,9 +3050,14 @@ impl EquationSet {
             .collect();
         // Each edge table's ends, as places among its table's rows (ADR
         // 0079 stage 2), given after the ids.
-        let ends_vars: Vec<Option<(usize, usize)>> = grid
+        // Places per corner, then for sides the inner and outer cells'
+        // places and the boundary flags (ADR 0085).
+        let ends_vars: Vec<Option<Vec<usize>>> = grid
             .iter()
-            .map(|a| a.ends_of.map(|_| (add(a.cells, 1.0), add(a.cells, 1.0))))
+            .map(|a| {
+                let n = a.shape?.corners() + if a.sides_of.is_some() { 3 } else { 0 };
+                Some((0..n).map(|_| add(a.cells, 1.0)).collect())
+            })
             .collect();
         let param_vars: Vec<usize> = params.iter().map(|n| add(1, unit_of(n).scale)).collect();
         let axis_scales: Vec<f64> = grid.iter().map(|a| unit_of(&a.name).scale).collect();
@@ -2773,7 +3150,7 @@ impl EquationSet {
                 .iter()
                 .chain(ids_vars.iter().flatten())
                 .copied()
-                .chain(ends_vars.iter().flatten().flat_map(|&(f, t)| [f, t]))
+                .chain(ends_vars.iter().flatten().flatten().copied())
                 .map(|v| spans[v].len)
                 .sum(),
             params: params.len(),
@@ -3016,14 +3393,27 @@ impl EquationSet {
                     axis: i,
                     name: a.name.clone(),
                     max,
-                    start: match a.ends_of {
+                    start: match (a.ends_of, a.sides_of, grid_starts.get(&a.name)) {
+                        (_, Some(c), _) => {
+                            starting_sides(&grid, c, &chains, &grid_starts, &starts).unwrap_or(0)
+                        }
+                        (_, _, Some((g, _))) => {
+                            g.cells(a.shape.expect("cells")).map_or(0, |c| c.len())
+                        }
                         // A chain: an edge from each starting row to the next.
-                        Some(m) if chains.contains_key(&a.name) => starts
+                        (Some(m), _, _) if chains.contains_key(&a.name) => starts
                             .get(&grid[m].name)
                             .map_or(0, |s| s.0)
                             .saturating_sub(1),
-                        Some(_) => 0,
-                        None => starts.get(&a.name).map_or(0, |s| s.0),
+                        (Some(_), _, _) => 0,
+                        // Points made by a grid of cells over them.
+                        (None, _, _) => grid_starts
+                            .iter()
+                            .find(|(c, _)| cell_decls.get(*c).is_some_and(|o| o.0 == a.name))
+                            .map_or_else(
+                                || starts.get(&a.name).map_or(0, |s| s.0),
+                                |(_, (g, _))| g.points()[0].len(),
+                            ),
                     },
                     rows: a.cells,
                     columns: states
@@ -3040,6 +3430,27 @@ impl EquationSet {
                         .ends_of
                         .map(|m| grid[..m].iter().filter(|g| g.table.is_some()).count()),
                     chain: chains.contains_key(&a.name),
+                    shape: a.shape,
+                    sides_of: a
+                        .sides_of
+                        .map(|m| grid[..m].iter().filter(|g| g.table.is_some()).count()),
+                    grid: grid_starts.get(&a.name).map(|g| g.0.clone()),
+                    coords: grid_starts
+                        .iter()
+                        .find(|(c, _)| cell_decls.get(*c).is_some_and(|o| o.0 == a.name))
+                        .map(|(_, (g, _))| {
+                            let cols: Vec<&String> =
+                                states.iter().filter(|s| row_table(s) == Some(i)).collect();
+                            g.axes
+                                .iter()
+                                .map(|ax| {
+                                    cols.iter()
+                                        .position(|c| **c == ax.0)
+                                        .expect("checked: a state")
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 })
             })
             .collect();
@@ -3318,10 +3729,20 @@ impl EquationSet {
                 tables: tables
                     .iter()
                     .map(|t| {
-                        let cols: Vec<&str> = match t.ends_of {
-                            Some(_) => vec!["from", "to"],
-                            None => t.columns.iter().map(String::as_str).collect(),
+                        // Edges: `from`, `to`; cells: their corners; sides:
+                        // corners, `inner`, `outer`; then states.
+                        let mut cols: Vec<String> = match (t.shape, t.sides_of) {
+                            (Some(crate::mesh::CellShape::Segment), None) => {
+                                vec!["from".into(), "to".into()]
+                            }
+                            (Some(s), _) => (0..s.corners()).map(|k| format!("c{k}")).collect(),
+                            (None, _) => Vec::new(),
                         };
+                        if t.sides_of.is_some() {
+                            cols.extend(["inner".to_string(), "outer".to_string()]);
+                        }
+                        cols.extend(t.columns.iter().cloned());
+                        let cols: Vec<&str> = cols.iter().map(String::as_str).collect();
                         simsandbox_core::table::TableSpec::new(&t.name, &cols)
                     })
                     .collect(),
@@ -3373,12 +3794,7 @@ impl EquationSet {
     /// The inputs the block's ports give (before the tables' row ids and
     /// the edges' ends).
     pub fn inputs_len(&self) -> usize {
-        let ends: usize = self
-            .tables
-            .iter()
-            .filter(|t| t.ends_of.is_some())
-            .map(|t| 2 * t.rows)
-            .sum();
+        let ends: usize = self.tables.iter().map(|t| t.places() * t.rows).sum();
         self.layout.inputs - self.tables.iter().map(|t| t.rows).sum::<usize>() - ends
     }
 
@@ -3387,19 +3803,36 @@ impl EquationSet {
     /// not among the rows.
     fn ends_places(&self, tables: &[simsandbox_core::table::Table]) -> Vec<f64> {
         let mut u = Vec::new();
-        for (t, spec) in tables.iter().zip(&self.tables) {
-            let Some(m) = spec.ends_of else { continue };
-            let place: std::collections::HashMap<u64, usize> = tables[m]
+        let place_in = |m: usize| -> std::collections::HashMap<u64, usize> {
+            tables[m]
                 .ids()
                 .iter()
                 .enumerate()
                 .map(|(k, &i)| (i, k))
-                .collect();
-            for c in 0..2 {
+                .collect()
+        };
+        for (t, spec) in tables.iter().zip(&self.tables) {
+            let Some(m) = spec.ends_of else { continue };
+            let place = place_in(m);
+            let at = |place: &std::collections::HashMap<u64, usize>, id: f64| {
+                if id < 0.0 {
+                    return f64::NAN;
+                }
+                place.get(&(id as u64)).map_or(f64::NAN, |&k| k as f64)
+            };
+            for c in 0..spec.corners() {
+                u.extend(t.column(c).iter().map(|&id| at(&place, id)));
+            }
+            // Sides: their cells' places, and the boundary.
+            if let Some(cells) = spec.sides_of {
+                let n = spec.corners();
+                let place = place_in(cells);
+                u.extend(t.column(n).iter().map(|&id| at(&place, id)));
+                u.extend(t.column(n + 1).iter().map(|&id| at(&place, id)));
                 u.extend(
-                    t.column(c)
+                    t.column(n + 1)
                         .iter()
-                        .map(|&id| place.get(&(id as u64)).map_or(f64::NAN, |&k| k as f64)),
+                        .map(|&id| f64::from(u8::from(id < 0.0))),
                 );
             }
         }
@@ -3423,7 +3856,7 @@ impl EquationSet {
         let mut x = Vec::with_capacity(self.layout.states);
         x.extend_from_slice(&fixed[..self.layout.fixed]);
         for &(t, c) in &self.row_states {
-            x.extend_from_slice(tables[t].column(c));
+            x.extend_from_slice(tables[t].column(self.tables[t].offset() + c));
         }
         x
     }
@@ -3486,6 +3919,18 @@ impl EquationSet {
             frame.push(table.len() as f64);
             frame.extend(table.ids().iter().map(|&i| i as f64));
             frame.extend_from_slice(values);
+        }
+    }
+
+    /// Keep every table of sides up to date with its cells (ADR 0085): a
+    /// side still there keeps its row and id.
+    fn refresh_sides(&self, tables: &mut [simsandbox_core::table::Table]) {
+        for (f, t) in self.tables.iter().enumerate() {
+            let Some(c) = t.sides_of else { continue };
+            let shape = self.tables[c].shape.expect("cells");
+            let (_, faces) = shape.sides().expect("checked: one shape of side");
+            let (cells, sides) = two_mut(tables, c, f);
+            crate::mesh::update_sides(cells, sides, shape.corners(), &faces);
         }
     }
 
@@ -3688,11 +4133,16 @@ fn two_mut(
 
 /// Remove the edges of edge table `et` that end at a row no longer in
 /// table `tb` (ADR 0079: edges go with the rows they join).
-fn drop_dangling(tables: &mut [simsandbox_core::table::Table], tb: usize, et: usize) {
+fn drop_dangling(
+    tables: &mut [simsandbox_core::table::Table],
+    tb: usize,
+    et: usize,
+    corners: usize,
+) {
     let (members, edges) = two_mut(tables, tb, et);
     let ids: std::collections::HashSet<u64> = members.ids().iter().copied().collect();
-    let (from, to) = (edges.column(0).to_vec(), edges.column(1).to_vec());
-    edges.retain(|k| ids.contains(&(from[k] as u64)) && ids.contains(&(to[k] as u64)));
+    let cols: Vec<Vec<f64>> = (0..corners).map(|c| edges.column(c).to_vec()).collect();
+    edges.retain(|k| cols.iter().all(|c| ids.contains(&(c[k] as u64))));
 }
 
 /// Merge (ADR 0079 stage 2): for each edge where `holds(k)`, in edge
@@ -3921,8 +4371,9 @@ impl ExplicitBlock {
         let mut at = nf;
         for &(tb, c) in &set.row_states {
             let n = io.tables[tb].len();
+            let off = set.tables()[tb].offset();
             io.tables[tb]
-                .column_mut(c)
+                .column_mut(off + c)
                 .copy_from_slice(&next[at..at + n]);
             at += n;
         }
@@ -3957,10 +4408,11 @@ impl ExplicitBlock {
             match rule.kind {
                 RuleKind::Remove => {
                     io.tables[tb].retain(|k| !holds(cond[k]));
-                    // Edges go with the rows they join.
+                    // Edges and cells go with the points they join (sides
+                    // are refreshed below).
                     for (et, spec) in set.tables().iter().enumerate() {
-                        if spec.ends_of == Some(tb) {
-                            drop_dangling(io.tables, tb, et);
+                        if spec.ends_of == Some(tb) && spec.sides_of.is_none() {
+                            drop_dangling(io.tables, tb, et, spec.corners());
                         }
                     }
                 }
@@ -3986,7 +4438,11 @@ impl ExplicitBlock {
                         let m = members.push(&row_at(k)) as f64;
                         let b = edges.column(1)[k];
                         edges.column_mut(1)[k] = m;
-                        edges.push(&[m, b]);
+                        // The new edge copies the split one's own values.
+                        let mut row = edges.row(k);
+                        row[0] = m;
+                        row[1] = b;
+                        edges.push(&row);
                     }
                 }
                 RuleKind::Merge => {
@@ -3995,13 +4451,15 @@ impl ExplicitBlock {
                     merge(members, edges, |k| holds(cond[k]), row_at);
                     // Other edges of those rows go with the rows merged away.
                     for (other, spec) in set.tables().iter().enumerate() {
-                        if other != et && spec.ends_of == Some(tb) {
-                            drop_dangling(io.tables, tb, other);
+                        if other != et && spec.ends_of == Some(tb) && spec.sides_of.is_none() {
+                            drop_dangling(io.tables, tb, other, spec.corners());
                         }
                     }
                 }
             }
         }
+        // Sides follow their cells (ADR 0085).
+        self.set.refresh_sides(io.tables);
         self.write_outputs(t + ctx.dt, io)
     }
 
@@ -4013,10 +4471,10 @@ impl ExplicitBlock {
         for t in &set.tables {
             u.extend((0..t.start).map(|i| i as f64));
         }
-        // A chain's ends: row k to row k + 1, by place as by id.
-        for t in set.tables.iter().filter(|t| t.ends_of.is_some()) {
-            u.extend((0..t.start).map(|k| k as f64));
-            u.extend((0..t.start).map(|k| (k + 1) as f64));
+        // Corners' places: starting values read parameters, ids and axes,
+        // never other rows' values, so these only fill their places.
+        for t in &set.tables {
+            u.extend(std::iter::repeat_n(0.0, t.places() * t.start));
         }
         let mut x0 = vec![0.0; set.states_len()];
         set.initial_state_with(params, &u, &mut x0);
@@ -4076,17 +4534,57 @@ impl Block for ExplicitBlock {
             columns[tb][c] = x0[at..at + n].to_vec();
             at += n;
         }
-        for ((table, t), cols) in tables.iter_mut().zip(&self.set.tables).zip(&columns) {
+        // Points made by a grid take its coordinates (ADR 0085).
+        for (tb, t) in self.set.tables.iter().enumerate() {
+            let Some(cells) = self
+                .set
+                .tables
+                .iter()
+                .find(|c| c.grid.is_some() && c.ends_of == Some(tb) && c.sides_of.is_none())
+            else {
+                continue;
+            };
+            let points = cells.grid.as_ref().expect("a grid").points();
+            for (axis, &col) in t.coords.iter().enumerate() {
+                columns[tb][col].clone_from(&points[axis]);
+            }
+        }
+        for (tb, t) in self.set.tables.iter().enumerate() {
+            let table = &mut tables[tb];
             table.reset();
-            if t.ends_of.is_some() {
-                for k in 0..t.start {
-                    table.push(&[k as f64, (k + 1) as f64]);
-                }
+            if t.sides_of.is_some() {
                 continue;
             }
-            for r in 0..t.start {
-                let row: Vec<f64> = cols.iter().map(|c| c[r]).collect();
+            // Each row's corners: a chain's ends, or a grid's cells (point
+            // ids are their places at the start).
+            let corners: Vec<Vec<f64>> = match (&t.grid, t.chain) {
+                (Some(g), _) => g
+                    .cells(t.shape.expect("cells"))
+                    .map_err(SimError::InvalidDefinition)?
+                    .into_iter()
+                    .map(|c| c.into_iter().map(|p| p as f64).collect())
+                    .collect(),
+                (None, true) => (0..t.start)
+                    .map(|k| vec![k as f64, (k + 1) as f64])
+                    .collect(),
+                (None, false) => vec![Vec::new(); t.start],
+            };
+            for (r, mut row) in corners.into_iter().enumerate().take(t.start) {
+                row.extend(columns[tb].iter().map(|c| c[r]));
                 table.push(&row);
+            }
+        }
+        // Sides of the starting cells, their values as they start.
+        self.set.refresh_sides(tables);
+        for (tb, t) in self.set.tables.iter().enumerate() {
+            if t.sides_of.is_none() {
+                continue;
+            }
+            let off = t.offset();
+            for (c, values) in columns[tb].iter().enumerate() {
+                let col = tables[tb].column_mut(off + c);
+                let n = col.len().min(values.len());
+                col[..n].copy_from_slice(&values[..n]);
             }
         }
         Ok(())

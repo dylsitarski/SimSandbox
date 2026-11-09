@@ -216,10 +216,34 @@ fn edge_mistakes_are_explained() {
     };
     assert!(with(&[]).contains("\"ok\":true"), "{}", with(&[]));
     assert!(check(&["edges segs of pts"]).contains("is not a table declared above"));
-    assert!(with(&["state w[segs] = 0", "w[n+1] = w"]).contains("edges hold no values"));
+    // Edges hold values of their own since ADR 0085 (as cells do).
+    assert!(with(&["state w[segs] = 0", "w[n+1] = w"]).contains("\"ok\":true"));
     assert!(with(&["add segs: x = 1"]).contains("not added"));
     assert!(with(&["split pts where x > 1"]).contains("is not an edge table"));
     assert!(with(&["grid k = 2", "d = from_end(k, segs)"]).contains("whose rows segs joins"));
     assert!(with(&["start other = chain"]).contains("is not an edge table"));
     assert!(with(&["split segs where 1: w = 2"]).contains("not a state over pts"));
+}
+
+#[test]
+fn a_split_edge_passes_its_own_values_to_both_halves() {
+    let r = registry();
+    let eqs = [
+        "table pts",
+        "start pts = 2",
+        "state x[pts] = id(pts)",
+        "x[n+1] = x",
+        "edges segs of pts",
+        "start segs = chain",
+        "state w[segs] = 7",
+        "w[n+1] = w",
+        "len = to_end(x, segs) - from_end(x, segs)",
+        "split segs where len > 0.3: x = mean",
+        "total = sum(w)",
+        "edges = rows(segs)",
+    ];
+    let y = run(&block(&eqs, 2.0), &r, None, None).unwrap();
+    // 1 edge, then 2, then 4: each half keeps 7.
+    assert_eq!(column(&y, "m.edges"), [1.0, 2.0, 4.0]);
+    assert_eq!(column(&y, "m.total"), [7.0, 14.0, 28.0]);
 }

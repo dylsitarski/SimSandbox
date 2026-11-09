@@ -194,7 +194,8 @@ pub fn is_reserved(name: &str) -> bool {
 /// ([`Ast::resolve_with`]).
 pub const ARRAY_OPS: &[&str] = &[
     "lap", "sum", "mean", "minof", "maxof", "argminof", "argmaxof", "at", "spacing", "prev",
-    "next", "on", "solve", "rcond", "id", "rows", "of", "dd", "from_end", "to_end",
+    "next", "on", "solve", "rcond", "id", "rows", "of", "dd", "from_end", "to_end", "corner",
+    "centre", "measure", "normal", "inner", "outer", "boundary",
 ];
 
 /// The most axes an array or an intermediate value has (ADR 0080).
