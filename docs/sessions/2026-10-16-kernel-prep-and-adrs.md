@@ -186,6 +186,7 @@
 
 ## Decided
 
+- 2026-11-09 (owner): ADR 0085's representation: cells as corner lists, sides kept incrementally with stable ids; other levels later as tables.
 - 2026-11-09 (owner): ADR 0085 accepted; both refinement families in the first build; boxes at most one level apart. Open: corner lists first or the full incidence structure from the start.
 - 2026-11-08 (owner): work order: ADR 0079 stage 3 next (finishing ADR 0078); the Phase 2 gate items (rigid bodies, plugins) in Next up; ADR 0079 stages 4–5 after the gate work unless a model needs them. The memory budget confirmed in the window.
 - 2026-11-08 (mine, ADR 0062 step 5 As built): the budget sets each part's default share (a quarter) and is reported against, not enforced as a hard cap: a hard cap would have to drop samples a probe's own `keep` promised. At the default the shares equal the old safety nets, so nothing changes.

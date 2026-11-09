@@ -40,7 +40,7 @@ Constraints: the same bits on any machine (ADR 0077, ADR 0082); stable ids; snap
 
 **2. Cells.** `cells tri of pts: triangle` declares a table whose rows are cells of one shape, each the ordered list of its corners (ids of `pts`), in the shape's reference order as Gmsh writes it. Shapes: `segment`, `triangle`, `quad`, `tetra`, `hexa`, `prism`, `pyramid`, and for parameter spaces of any dimension `simplex d` and `box d`. A model may have several cell tables (a mixed mesh is one per shape). ADR 0079's `edges segs of pts` is `cells segs of pts: segment`, kept as a spelling.
 
-**3. Sides, derived.** `sides f of tri` declares the faces between cells (the (d−1)-dimensional sides): SimSandbox finds them from the corner lists, keeps each side's one or two cells (`inner`, `outer`; one for a boundary side) and rebuilds them when cells change. Where a large box meets two small ones, each small side is its own row (a hanging side). Edges and faces are not stored otherwise.
+**3. Sides, kept with stable ids.** `sides f of tri` declares the faces between cells (the (d−1)-dimensional sides): SimSandbox finds them from the corner lists, keeps each side's one or two cells (`inner`, `outer`; one for a boundary side), and keeps them up to date incrementally when cells change: a side that is still there keeps its row and id, a side cut by a refinement becomes new rows, a side that is gone is removed (each change a new version). Where a large box meets two small ones, each small side is its own row (a hanging side). Other entities (edges of a 3D mesh, cells described by their faces for general polyhedra) are not stored yet; they come as further tables on the same incremental machinery when a model needs them, without changing model files.
 
 **4. Geometry**, from the points' coordinates, for any shape: `corner(x, tri, k)`, `centre(x, tri)` (mean of the corners), `measure(tri, x, y)` (length, area or volume), and for sides `normal(f, x, y)` and `across(T, f)` (a cell value on the other side). Exact in a fixed order (ADR 0077).
 
@@ -67,7 +67,7 @@ Constraints: the same bits on any machine (ADR 0077, ADR 0082); stable ids; snap
 Accepted by the owner on 2026-11-09, with these choices:
 - **Both refinement families** (simplices by bisection, boxes by 2^d split) in the first build.
 - **Boxes at most one level apart across a side** (2:1 balance).
-- **Still open:** whether to start with corner lists and derived sides (point 2–3) and add the full incidence structure later, or store every dimension's entities from the start; the owner asked what keeping that structure in step costs.
+- **Corner lists, with sides kept incrementally with stable ids** (point 3): the middle path between deriving sides afresh (new ids at every change) and storing every dimension's entities now (every split re-linking edges and faces of every shape). The owner asked what keeping a full incidence structure in step would cost: for one tetrahedron bisected, a new point, two cells, the cut edge in halves and a new interior edge, two faces into four and a new interior face, and the same for every neighbour sharing the cut edge, exact for every shape and both rules, with snapshots and memory growing by the edges and faces stored. Stable side ids are what cannot be added cheaply later, so they come now; the other levels come later as tables, without changing model files.
 
 ## Consequences
 
