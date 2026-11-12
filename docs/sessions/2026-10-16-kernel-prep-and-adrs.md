@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-12: ADR 0086 steps 4b–4c: rows as coordinates of each other (profile by id), `Available::rows`/`meshes`, `PortSpec::mesh` (`MeshOf`), `CellShape::drawn_faces`, `RowsSource::Corners`, `History::set_mesh`/`table`, `plot.mesh` (`mesh.rs`: `triangles`, 2D fill, 3D outer surface in depth order); fixed rows outputs of states over cells (offset past the corners); tests in `mesh.rs` and `render.rs`.
 - 2026-11-12: ADR 0086 written (owner chose wgpu now and views by axis roles with mesh views); step 4a: `slice.rs` (`Slicing`, `slice`, controls), `History::axes`, heat map/surface/contour/profile over any rank with facets, tensors offered as grids, file bindings to tensors and rows; render test `fields_of_any_rank_are_drawn_with_axes_left_over`.
 - 2026-11-12: ADR 0085 step 3: `ArrayOp::Scatter` and `Program::dependencies_at` (places read from registers), `outflow`, `across` (a fourth place array for sides), `ExplicitBlock::continuous` with an integrator and a workspace reset on table versions, `EquationSet::sparsity_at` and `initial_state_from` (starting values reading a mesh's coordinates); tests `finite_volumes.rs`.
 - 2026-11-12: ADR 0085 step 2: `refine.rs` (Maubach bisection with closure, 2^d box split with 2:1 balance and reused middles, merge, transfers), hidden `level`/`parent`/`child` columns and `c~parents` tables, `update_sides` with hanging sides, `CellTransfer` in `RuleRun`; tests `refinement.rs`, refine unit tests, studies over two and three parameters in `study.rs`.

@@ -136,6 +136,24 @@ impl CellShape {
         })
     }
 
+    /// What a view draws of each cell (ADR 0086): a 2D cell's polygon,
+    /// or a 3D cell's sides, each as its corners in order around. `None`
+    /// for shapes not drawn (segments, prisms, pyramids, more than three
+    /// dimensions).
+    pub fn drawn_faces(self) -> Option<Vec<Vec<usize>>> {
+        let around = |f: &[usize]| vec![f[0], f[1], f[3], f[2]];
+        match self {
+            CellShape::Triangle | CellShape::Simplex(2) => Some(vec![vec![0, 1, 2]]),
+            CellShape::Quad => Some(vec![vec![0, 1, 2, 3]]),
+            CellShape::Box(2) => Some(vec![vec![0, 1, 3, 2]]),
+            CellShape::Tetra | CellShape::Simplex(3) | CellShape::Hexa => self.sides().map(|s| s.1),
+            CellShape::Box(3) => self
+                .sides()
+                .map(|s| s.1.iter().map(|f| around(f)).collect()),
+            _ => None,
+        }
+    }
+
     /// Whether it is a simplex (refined by bisection), else a box.
     pub fn simplicial(self) -> bool {
         matches!(

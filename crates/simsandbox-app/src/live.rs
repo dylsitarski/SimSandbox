@@ -59,12 +59,16 @@ pub struct Model {
     grids: Vec<String>,
     points: Vec<String>,
     lines: Vec<String>,
+    /// Fields over a table's rows (ADR 0086).
+    rows: Vec<String>,
+    /// Meshes (ADR 0086).
+    meshes: Vec<simsandbox_views::MeshInfo>,
     block_types: Vec<String>,
 }
 
 impl Model {
     fn of(s: &Session) -> Self {
-        let [grids, points, lines, block_types] = s.bindable().map(<[String]>::to_vec);
+        let [grids, points, lines, block_types, rows] = s.bindable().map(<[String]>::to_vec);
         Self {
             title: s.title.clone(),
             description: s.description.clone(),
@@ -91,6 +95,8 @@ impl Model {
             derived_histories: s.derived_histories(),
             coordinates: s.all_coordinates().to_vec(),
             grids,
+            rows,
+            meshes: s.meshes().to_vec(),
             points,
             lines,
             block_types,
@@ -112,6 +118,8 @@ impl Model {
             points: &self.points,
             block_types: &self.block_types,
             lines: &self.lines,
+            rows: &self.rows,
+            meshes: &self.meshes,
             coordinates: &self.coordinates,
             derived: &self.derived,
         }

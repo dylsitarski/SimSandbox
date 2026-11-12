@@ -138,6 +138,8 @@ enum RowsSource {
     Column(usize),
     /// A defined quantity: its registers in the outputs program.
     Registers(Span),
+    /// A table of cells (ADR 0086): each row's `n` corners.
+    Corners(usize),
 }
 
 /// A table of a typed-equations block (ADR 0079): its axis, name, most
@@ -3909,6 +3911,40 @@ impl EquationSet {
             }
             ports.push(x);
         }
+        // Each table of cells with a starting mesh is an output of its own:
+        // each cell's corners, as ids of its points, for views (ADR 0086).
+        let mut mesh_tables = Vec::new();
+        for (i, a) in grid.iter().enumerate() {
+            let (Some(shape), None, Some(_)) = (a.shape, a.sides_of, a.ends_of) else {
+                continue;
+            };
+            let (Some(faces), Some((spec, _))) = (shape.drawn_faces(), grid_starts.get(&a.name))
+            else {
+                continue;
+            };
+            let coordinates = spec.names();
+            if !(2..=3).contains(&coordinates.len()) || states.iter().any(|s| s == &a.name) {
+                continue;
+            }
+            ports.push(
+                PortSpec::output(
+                    &a.name,
+                    Unit::DIMENSIONLESS,
+                    Shape::Rows {
+                        dim: shape.corners(),
+                    },
+                )
+                .axes_named(&[&a.name])
+                .depends_on_params(&[])
+                .mesh_of(simsandbox_core::block::MeshOf {
+                    shape: shape.name(),
+                    dim: coordinates.len(),
+                    faces,
+                    coordinates,
+                }),
+            );
+            mesh_tables.push((i, shape.corners()));
+        }
 
         let mut output_steps: Vec<(usize, &Expr)> =
             grid_steps.iter().map(|(v, e)| (*v, e)).collect();
@@ -4009,6 +4045,11 @@ impl EquationSet {
                 let t = table_of(row_table(n)?)?;
                 Some((t, RowsSource::Registers(spans[defined_vars[k]])))
             }))
+            .chain(
+                mesh_tables
+                    .iter()
+                    .filter_map(|&(i, n)| Some((table_of(i)?, RowsSource::Corners(n)))),
+            )
             .collect();
         Ok(Self {
             kind,
@@ -4229,15 +4270,24 @@ impl EquationSet {
         let v = &self.scratch.borrow()[0];
         for ((t, src), frame) in self.rows_out.iter().zip(out) {
             let table = &tables[*t];
-            let values = match *src {
-                RowsSource::Column(c) => table.column(c),
-                RowsSource::Registers(s) => &v[s.at..s.at + s.len],
-            };
             frame.clear();
             frame.push(table.version() as f64);
             frame.push(table.len() as f64);
             frame.extend(table.ids().iter().map(|&i| i as f64));
-            frame.extend_from_slice(values);
+            match *src {
+                // After a table's corners (and sides' cells, refinement's
+                // columns): its states.
+                RowsSource::Column(c) => {
+                    frame.extend_from_slice(table.column(self.tables[*t].offset() + c))
+                }
+                RowsSource::Registers(s) => frame.extend_from_slice(&v[s.at..s.at + s.len]),
+                // Row by row, each cell's corners.
+                RowsSource::Corners(n) => {
+                    for r in 0..table.len() {
+                        frame.extend((0..n).map(|k| table.column(k)[r]));
+                    }
+                }
+            }
         }
     }
 

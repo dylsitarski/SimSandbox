@@ -500,6 +500,102 @@ mod tests {
         );
     }
 
+    /// A quantity over a table's rows drawn by a profile against another
+    /// over the same table, paired by id (ADR 0086 step 4b).
+    #[test]
+    fn rows_are_drawn_against_rows_of_the_same_table() {
+        let model = serde_json::json!({"format": 1, "run": {"dt": 1, "t_end": 6},
+            "blocks": [{"name": "m", "type": "eq.equations", "equations": [
+                "table pts max 200", "start pts = 5", "state x[pts] = id(pts)/4",
+                "state y[pts] = (id(pts)/4)^2", "x[n+1] = x", "y[n+1] = x^2",
+                "edges segs of pts", "start segs = chain",
+                "len = to_end(x, segs) - from_end(x, segs)",
+                "split segs where len > 0.05: x = mean"]}],
+            "controls": {"views": [{"type": "plot.profile", "bind": {"y": ["m.y"], "x": "m.x"}}]}})
+        .to_string();
+        let mut s = Session::load("m", &model, &registry()).unwrap();
+        let h = s.signals();
+        let a = s.available(&h);
+        assert!(a.rows.contains(&"m.y".to_string()));
+        assert_eq!(a.axis_of("m.y", "m.x"), Ok(Some(0)));
+        drop(h);
+        s.run_until(6.0).unwrap();
+        let o = RenderOptions {
+            width: 400.0,
+            height: 300.0,
+            ..Default::default()
+        };
+        let (img, warnings) = render(&s, view_registry(), &o).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let drawn = img.rgba.chunks(4).filter(|p| p != &&img.rgba[..4]).count();
+        assert!(drawn > 2000, "{drawn}");
+    }
+
+    /// Meshes reach views through their ports (ADR 0086 step 4c): a
+    /// refining 2D mesh and a 3D mesh, each opened on a mesh view of the
+    /// value over its cells, which reads each cell's own state.
+    #[test]
+    fn meshes_are_drawn_from_their_ports() {
+        for (shape, grid, coords) in [
+            ("triangle", "x 0 .. 1 by 4, y 0 .. 1 by 4", "x, y"),
+            (
+                "hexa",
+                "x 0 .. 1 by 2, y 0 .. 1 by 2, z 0 .. 1 by 2",
+                "x, y, z",
+            ),
+        ] {
+            let names: Vec<&str> = coords.split(", ").collect();
+            let mut eqs = vec!["table pts max 10000".to_string()];
+            for n in &names {
+                eqs.push(format!("state {n}[pts]"));
+                eqs.push(format!("{n}[n+1] = {n}"));
+            }
+            eqs.extend([
+                format!("cells c of pts max 10000: {shape}"),
+                format!("start c = grid {grid}"),
+                "state u[c] = 1 + id(c)".into(),
+                "u[n+1] = u".into(),
+                "split c where id(c) < 1".into(),
+            ]);
+            let model = serde_json::json!({"format": 1, "run": {"dt": 1, "t_end": 2},
+                "blocks": [{"name": "m", "type": "eq.equations", "equations": eqs}]})
+            .to_string();
+            let mut s = Session::load("m", &model, &registry()).unwrap();
+            let h = s.signals();
+            let a = s.available(&h);
+            assert_eq!(a.meshes.len(), 1, "{shape}");
+            let m = &a.meshes[0];
+            assert_eq!(m.cells, "m.c");
+            assert_eq!(m.over_cells, ["m.u"]);
+            let want: Vec<String> = names.iter().map(|n| format!("m.{n}")).collect();
+            assert_eq!(m.coordinates, want);
+            drop(h);
+            s.run_until(2.0).unwrap();
+            // The cells' own values, not their corners (a fix with ADR
+            // 0086: rows outputs of states over cells read past the
+            // corners).
+            let h = s.signals();
+            let u = h.resolve("m.u");
+            let Some(simsandbox_views::SignalRef::Field(f)) = u else {
+                panic!("m.u recorded")
+            };
+            let (_, ids, values) = h.fields()[f].rows(h.len() - 1).unwrap();
+            for (i, v) in ids.iter().zip(values) {
+                assert!(*v == 1.0 + i || *i >= 8.0, "{shape}: cell {i} holds {v}");
+            }
+            drop(h);
+            let o = RenderOptions {
+                width: 400.0,
+                height: 300.0,
+                ..Default::default()
+            };
+            let (img, warnings) = render(&s, view_registry(), &o).unwrap();
+            assert!(warnings.is_empty(), "{warnings:?}");
+            let drawn = img.rgba.chunks(4).filter(|p| p != &&img.rgba[..4]).count();
+            assert!(drawn > 10000, "{shape}: {drawn}");
+        }
+    }
+
     #[test]
     fn the_arrangement_places_the_views_and_drops_the_rest() {
         let l: simsandbox_file::layout::Layout = serde_json::from_str(

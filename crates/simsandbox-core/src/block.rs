@@ -273,6 +273,25 @@ pub struct PortSpec {
     /// exactly, so rewind snapshots need not keep them (ADR 0063). The
     /// kernel checks it at every snapshot and keeps them if not.
     pub state: Option<usize>,
+    /// For an output of a mesh's cells (ADR 0085, ADR 0086): how to draw
+    /// it. Its rows are the cells, each its corners as ids of its points.
+    pub mesh: Option<MeshOf>,
+}
+
+/// How a mesh's cells are drawn (ADR 0086): structure only, no geometry
+/// beyond the corners' order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshOf {
+    /// The cells' shape as written (`triangle`, `hexa`, `box 3`).
+    pub shape: String,
+    /// 2: each cell drawn filled; 3: the mesh's outer surface.
+    pub dim: usize,
+    /// The polygons drawn of each cell, as places among its corners in
+    /// order around: the cell itself in 2D, each of its sides in 3D.
+    pub faces: Vec<Vec<usize>>,
+    /// The outputs of the same Block giving its points' coordinates, one
+    /// per dimension, each over the points' rows.
+    pub coordinates: Vec<String>,
 }
 
 /// What an output is a coordinate of: another output of the same Block, of
@@ -295,12 +314,19 @@ impl PortSpec {
             feedthrough: Vec::new(),
             param_feedthrough: None,
             state: None,
+            mesh: None,
         }
     }
 
     /// Name its axes, in [`Shape::axes`] order (ADR 0081).
     pub fn axes_named(mut self, names: &[&str]) -> Self {
         self.axis_names = names.iter().map(|n| n.to_string()).collect();
+        self
+    }
+
+    /// Declare this output a mesh's cells (ADR 0086).
+    pub fn mesh_of(mut self, mesh: MeshOf) -> Self {
+        self.mesh = Some(mesh);
         self
     }
 
@@ -354,6 +380,7 @@ impl PortSpec {
             feedthrough: Vec::new(),
             param_feedthrough: None,
             state: None,
+            mesh: None,
         }
     }
 }

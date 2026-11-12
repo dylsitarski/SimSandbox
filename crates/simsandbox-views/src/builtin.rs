@@ -178,7 +178,8 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
     })?;
     crate::fields::register(r)?;
     crate::surface::register(r)?;
-    crate::values::register(r)
+    crate::values::register(r)?;
+    crate::mesh::register(r)
 }
 
 /// A bound signal's label with its unit, as an axis shows it.

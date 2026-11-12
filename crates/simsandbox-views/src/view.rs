@@ -30,6 +30,10 @@ pub enum SlotKind {
     /// A coordinate of the field bound to the slot named in [`Slot::of`],
     /// never the index.
     Coordinate,
+    /// A field over a table's rows, one value a row (ADR 0086).
+    Rows,
+    /// A mesh's cells (ADR 0086).
+    Mesh,
 }
 
 /// What a slot or style property's applicability is judged on (ADR 0025).
@@ -205,6 +209,11 @@ pub struct Available<'a> {
     pub block_types: &'a [String],
     /// Grids with one row (lines of cells), which can be drawn over time.
     pub lines: &'a [String],
+    /// Fields over a table's rows, one value a row (ADR 0086), drawn by
+    /// id against another over the same table.
+    pub rows: &'a [String],
+    /// Meshes and the fields over them (ADR 0086).
+    pub meshes: &'a [crate::history::MeshInfo],
     /// Which fields place which others' cells (ADR 0024).
     pub coordinates: &'a [Coordinate],
     /// The outputs of filters with clocks of their own (ADR 0063): bound
@@ -231,12 +240,18 @@ impl Available<'_> {
             SlotKind::Points => self.points.iter().any(|s| s == name),
             // A line, or a field whose other axes are left over (ADR 0086).
             SlotKind::Line => {
-                self.lines.iter().any(|s| s == name) || self.grids.iter().any(|s| s == name)
+                self.lines.iter().any(|s| s == name)
+                    || self.grids.iter().any(|s| s == name)
+                    || self.rows.iter().any(|s| s == name)
             }
             // Whether it places the bound field is checked with the field,
             // so the reason can be given.
             SlotKind::Axis => name == TIME || self.grids.iter().any(|s| s == name),
-            SlotKind::Coordinate => self.grids.iter().any(|s| s == name),
+            SlotKind::Coordinate => {
+                self.grids.iter().any(|s| s == name) || self.rows.iter().any(|s| s == name)
+            }
+            SlotKind::Rows => self.rows.iter().any(|s| s == name),
+            SlotKind::Mesh => self.meshes.iter().any(|m| m.cells == name),
         }
     }
 
@@ -291,12 +306,15 @@ impl Available<'_> {
                 .lines
                 .iter()
                 .chain(self.grids.iter().filter(|g| !self.lines.contains(g)))
+                .chain(self.rows.iter())
                 .map(String::as_str)
                 .collect(),
             SlotKind::Axis => std::iter::once(TIME)
                 .chain(self.coordinates.iter().map(|c| c.name.as_str()))
                 .collect(),
             SlotKind::Coordinate => self.coordinates.iter().map(|c| c.name.as_str()).collect(),
+            SlotKind::Rows => self.rows.iter().map(String::as_str).collect(),
+            SlotKind::Mesh => self.meshes.iter().map(|m| m.cells.as_str()).collect(),
         }
     }
 }
@@ -692,7 +710,8 @@ mod tests {
                 "plot.scatter",
                 "plot.surface",
                 "plot.contour",
-                "plot.values"
+                "plot.values",
+                "plot.mesh",
             ]
         );
         assert!(crate::builtin::register(&mut r).is_err());

@@ -166,6 +166,26 @@ impl Field {
     }
 }
 
+/// How a mesh is drawn (ADR 0086): its dimension (2 filled cells, 3 an
+/// outer surface), each cell's polygons as places among its corners, and
+/// the fields giving its points' coordinates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshShape {
+    pub dim: usize,
+    pub faces: Vec<Vec<usize>>,
+    pub coordinates: Vec<String>,
+}
+
+/// A mesh views can draw (ADR 0086): its cells field, its coordinates, and
+/// the fields over its cells and over its points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshInfo {
+    pub cells: String,
+    pub coordinates: Vec<String>,
+    pub over_cells: Vec<String>,
+    pub over_points: Vec<String>,
+}
+
 /// A field that gives the positions of another field's cells along one
 /// grid axis (ADR 0024): `rod.position` for `rod.temperature` along axis 0,
 /// or a study's swept parameter for each of its results (ADR 0071).
@@ -313,6 +333,8 @@ pub struct History {
     units: std::collections::BTreeMap<String, String>,
     /// Fields' axis names, from their ports (ADR 0081, ADR 0086).
     axes: std::collections::BTreeMap<String, Vec<String>>,
+    /// Meshes' cells fields and how to draw them (ADR 0086).
+    meshes: std::collections::BTreeMap<String, MeshShape>,
     names: Vec<String>,
     times: Vec<f64>,
     /// Per signal, `(t, value)` points, ready to plot against time.
@@ -357,6 +379,7 @@ impl History {
             labels: Default::default(),
             units: Default::default(),
             axes: Default::default(),
+            meshes: Default::default(),
             names,
             times: Vec::new(),
             points,
@@ -461,6 +484,21 @@ impl History {
                 .collect(),
         };
         Some((names, dims))
+    }
+
+    /// Declare field `name` a mesh's cells (ADR 0086).
+    pub fn set_mesh(&mut self, name: &str, mesh: MeshShape) {
+        self.meshes.insert(name.into(), mesh);
+    }
+
+    /// How to draw the mesh whose cells field is `name`, if it is one.
+    pub fn mesh(&self, name: &str) -> Option<&MeshShape> {
+        self.meshes.get(name)
+    }
+
+    /// The table a field over rows is over, as its port names it.
+    pub fn table(&self, name: &str) -> Option<&str> {
+        self.axes.get(name)?.first().map(String::as_str)
     }
 
     /// The unit of a signal or field, if it has one.

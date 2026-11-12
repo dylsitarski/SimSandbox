@@ -803,7 +803,10 @@ impl View for Profile {
         for &y in ys {
             let SignalRef::Field(f) = y else { continue };
             for k in self.seen..n {
-                for &v in h.fields()[f].frame(k).iter().filter(|v| v.is_finite()) {
+                let field = &h.fields()[f];
+                // Rows: their values, not their version and ids.
+                let values = field.rows(k).map_or(field.frame(k), |r| r.2);
+                for &v in values.iter().filter(|v| v.is_finite()) {
                     let [lo, hi] = self.range.get_or_insert([v, v]);
                     *lo = lo.min(v);
                     *hi = hi.max(v);
@@ -833,6 +836,32 @@ impl View for Profile {
         let mut curves: Vec<(String, Vec<f64>, Option<Vec<f64>>)> = Vec::new();
         for &y in ys {
             let SignalRef::Field(f) = y else { continue };
+            // Rows: paired by id with the x field's, sorted along it.
+            if let Some((_, ids, values)) = h.fields()[f].rows(n - 1) {
+                let xs = match input.one("x") {
+                    Some(SignalRef::Field(x)) => h.fields()[x].rows(n - 1),
+                    _ => None,
+                };
+                let mut pts: Vec<[f64; 2]> = match xs {
+                    Some((_, xids, xv)) => {
+                        let at: std::collections::HashMap<u64, f64> =
+                            xids.iter().zip(xv).map(|(&i, &v)| (i as u64, v)).collect();
+                        ids.iter()
+                            .zip(values)
+                            .filter_map(|(&i, &v)| at.get(&(i as u64)).map(|&x| [x, v]))
+                            .collect()
+                    }
+                    None => values
+                        .iter()
+                        .enumerate()
+                        .map(|(k, &v)| [k as f64, v])
+                        .collect(),
+                };
+                pts.sort_by(|a, b| a[0].total_cmp(&b[0]));
+                let (xs, vs): (Vec<f64>, Vec<f64>) = pts.into_iter().map(|[a, b]| (a, b)).unzip();
+                curves.push((h.label(y).to_string(), vs, Some(xs)));
+                continue;
+            }
             let Some((names, dims)) = h.axes(f) else {
                 continue;
             };

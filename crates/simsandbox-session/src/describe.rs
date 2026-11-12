@@ -174,6 +174,8 @@ fn slot_kind(k: SlotKind) -> &'static str {
         SlotKind::Line => "line",
         SlotKind::Axis => "axis",
         SlotKind::Coordinate => "coordinate",
+        SlotKind::Rows => "rows",
+        SlotKind::Mesh => "mesh",
     }
 }
 
@@ -293,7 +295,7 @@ pub fn check(text: &str, r: &Registry) -> Value {
                 // records follows the views.
                 "recorded": {
                     "signals": s.bindable_scalars(),
-                    "fields": s.bindable()[..2].concat(),
+                    "fields": recorded_fields(&s),
                 },
                 "params": s.params().iter().map(|p| json!({
                     "key": p.key,
@@ -314,6 +316,12 @@ pub fn check(text: &str, r: &Registry) -> Value {
             })
         }
     }
+}
+
+/// The fields views and probes can take: grids, point sets and rows.
+fn recorded_fields(s: &Session) -> Vec<String> {
+    let b = s.bindable();
+    [b[0], b[1], b[4]].concat()
 }
 
 #[cfg(test)]

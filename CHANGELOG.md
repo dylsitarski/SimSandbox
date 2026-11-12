@@ -62,6 +62,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- `plot.mesh` (ADR 0086): a quantity over a mesh's cells or points drawn on the mesh, cells filled in 2D and the outer surface in 3D, turned with the mouse; a model with a mesh opens on it. Each table of cells is an output carrying its cells' corners. A profile draws a quantity over a table's rows against another over the same table, paired by id.
+
 - Views draw fields of any number of axes (ADR 0086, ADR 0081 stage 3): a heat map, surface or contour shows two of a field's axes and a profile one; each axis left over is picked at a place with a slider, reduced (mean, minof, maxof, sum) or shown as facets, and the choice is saved with the view. Views may bind fields over three or more axes and rows in model files.
 - Time on meshes (ADR 0085 step 3): continuous states over a table's rows (`du/dt = …` over cells, integrated by any method with the mesh fixed within a step and refined between steps); `outflow(F, f)`, each cell's net outflow of a flux written per side; `across(u, f)`, the value across a side (the cell's own on the boundary); implicit methods get a Jacobian as sparse as the mesh; starting values may read a starting mesh's coordinates.
 - Refinement of meshes (ADR 0085 step 2): `split c where cond` bisects simplices (triangles, tetrahedra, `simplex d`) without hanging points and splits boxes (quads, hexahedra, `box d`) into 2^d, neighbours at most one level apart; `merge c where cond` gives the parent back. Transfers: `copy` and `share` on split, `mean`, `sum` and `copy` on merge, `mean` for new points, or a value. A study's points can be refined over two or more parameters.
@@ -216,6 +218,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- Outputs of states over cells, sides or edges (ADR 0085) gave the cells' corner ids instead of the states' values, in views and in `run` output.
 - A block picked on the diagram inside a used model now shows its values in the Inspector's selection (it showed nothing).
 - Undo on the canvas kept parameter values moved since the edit only for parameters the file wrote; it now keeps them for parameters left at their defaults too, where the block's definition is unchanged.
 - A model file whose controls held only a layout, open nodes, input bindings, probes or a recorder lost them when saved.

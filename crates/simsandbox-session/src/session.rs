@@ -13,7 +13,9 @@ use simsandbox_file::runs::RunFile;
 use simsandbox_file::{FilterEntry, FusedGroup, ModelFile, ParamPlan, ProbeEntry, ViewEntry};
 use simsandbox_views::cut::Geometry;
 use simsandbox_views::history::thin;
-use simsandbox_views::{Available, Coordinate, FieldShape, History, SignalRef};
+use simsandbox_views::{
+    Available, Coordinate, FieldShape, History, MeshInfo, MeshShape, SignalRef,
+};
 use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -341,6 +343,11 @@ pub struct Session {
     /// types: what views can bind besides scalars.
     grids: Vec<String>,
     points: Vec<String>,
+    /// Fields over a table's rows, one value each (ADR 0086).
+    rows: Vec<String>,
+    /// Meshes views can draw, and how (ADR 0086).
+    meshes: Vec<MeshInfo>,
+    mesh_shapes: Vec<(String, MeshShape)>,
     block_types: Vec<String>,
     /// Where the app pauses (the file's `run.t_end`); cleared once reached so
     /// Run continues past it (ADR 0013).
@@ -514,6 +521,8 @@ impl Session {
         let mut sources = Vec::new();
         let mut fields = Vec::new();
         let mut field_sources = Vec::new();
+        let mut meshes: Vec<MeshInfo> = Vec::new();
+        let mut mesh_shapes: Vec<(String, MeshShape)> = Vec::new();
         let mut coordinates: Vec<Coordinate> = Vec::new();
         let mut block_types = Vec::new();
         for entry in &loaded.flat.blocks {
@@ -543,6 +552,65 @@ impl Session {
                             of: format!("{}.{}", entry.name, c.port),
                             axis: c.axis,
                         });
+                    }
+                    // A mesh's cells, with the fields over its cells and
+                    // points (ADR 0086).
+                    if let Some(m) = &port.mesh {
+                        let table = |o: &simsandbox_core::block::PortSpec| {
+                            o.axis_names
+                                .first()
+                                .cloned()
+                                .filter(|_| matches!(o.shape, Shape::Rows { dim: 1 }))
+                        };
+                        let points = spec
+                            .outputs()
+                            .find(|o| Some(&o.name) == m.coordinates.first())
+                            .and_then(table);
+                        let over = |t: Option<String>| -> Vec<String> {
+                            spec.outputs()
+                                .filter(|o| t.is_some() && table(o) == t)
+                                .map(|o| format!("{}.{}", entry.name, o.name))
+                                .collect()
+                        };
+                        let qualified: Vec<String> = m
+                            .coordinates
+                            .iter()
+                            .map(|c| format!("{}.{}", entry.name, c))
+                            .collect();
+                        meshes.push(MeshInfo {
+                            cells: key.clone(),
+                            coordinates: qualified.clone(),
+                            over_cells: over(port.axis_names.first().cloned()),
+                            over_points: over(points)
+                                .into_iter()
+                                .filter(|f| !qualified.contains(f))
+                                .collect(),
+                        });
+                        mesh_shapes.push((
+                            key.clone(),
+                            MeshShape {
+                                dim: m.dim,
+                                faces: m.faces.clone(),
+                                coordinates: qualified,
+                            },
+                        ));
+                    }
+                    // Rows of one table place each other, by id (ADR 0086):
+                    // any of its quantities can be the other's axis.
+                    if let (Shape::Rows { dim: 1 }, Some(table)) =
+                        (port.shape, port.axis_names.first())
+                    {
+                        for other in spec.outputs().filter(|o| {
+                            o.name != port.name
+                                && matches!(o.shape, Shape::Rows { dim: 1 })
+                                && o.axis_names.first() == Some(table)
+                        }) {
+                            coordinates.push(Coordinate {
+                                name: key.clone(),
+                                of: format!("{}.{}", entry.name, other.name),
+                                axis: 0,
+                            });
+                        }
                     }
                     fields.push((key, shape));
                     field_sources.push(FieldSource {
@@ -648,6 +716,9 @@ impl Session {
             field_sources,
             grids: Vec::new(),
             points: Vec::new(),
+            rows: Vec::new(),
+            meshes,
+            mesh_shapes,
             block_types,
             snapshots: vec![sim.snapshot()],
             memory_mb: DEFAULT_MEMORY_MB,
@@ -851,8 +922,19 @@ impl Session {
         &self.all_coordinates
     }
 
-    pub fn bindable(&self) -> [&[String]; 4] {
-        [&self.grids, &self.points, &self.lines, &self.block_types]
+    /// The meshes views can draw (ADR 0086).
+    pub fn meshes(&self) -> &[MeshInfo] {
+        &self.meshes
+    }
+
+    pub fn bindable(&self) -> [&[String]; 5] {
+        [
+            &self.grids,
+            &self.points,
+            &self.lines,
+            &self.block_types,
+            &self.rows,
+        ]
     }
 
     /// The recorded signals, for reading.
@@ -1099,6 +1181,8 @@ impl Session {
             points: &self.points,
             block_types: &self.block_types,
             lines: &self.lines,
+            rows: &self.rows,
+            meshes: &self.meshes,
             coordinates: &self.all_coordinates,
             derived: &self.derived_names,
         }
@@ -1177,6 +1261,11 @@ impl Session {
             .filter(|(_, s)| matches!(s, FieldShape::Grid { ny: 1, .. }))
             .map(|(n, _)| n.clone())
             .collect();
+        self.rows = all
+            .iter()
+            .filter(|(_, s)| matches!(s, FieldShape::Rows { dim: 1 }))
+            .map(|(n, _)| n.clone())
+            .collect();
         self.layout_scalars = scalars;
         self.layout_fields = fields;
         self.all_coordinates = coordinates;
@@ -1240,6 +1329,9 @@ impl Session {
             if !axes.is_empty() {
                 h.set_axes(name, axes);
             }
+        }
+        for (name, m) in &self.mesh_shapes {
+            h.set_mesh(name, m.clone());
         }
         // A cut's lines have its grid's unit; its coordinate, the unit of
         // the grid's coordinate along the cut.
