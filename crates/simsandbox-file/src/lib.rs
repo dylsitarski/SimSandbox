@@ -1937,6 +1937,21 @@ pub fn load_in(
     registry: &Registry,
     folder: Option<&std::path::Path>,
 ) -> Result<Loaded, FileError> {
+    // Blocks that read files while they are built (a mesh, ADR 0085) find
+    // them in the model's folder, as under the headless tools.
+    match folder {
+        Some(f) => simsandbox_core::registry::in_folder(Some(f), || {
+            load_in_folder(text, registry, Some(f))
+        }),
+        None => load_in_folder(text, registry, None),
+    }
+}
+
+fn load_in_folder(
+    text: &str,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+) -> Result<Loaded, FileError> {
     // What blocks that load models of their own report as they are built.
     let _reports = Reports::begin();
     let (mut file, mut warnings) = ModelFile::from_json(text)?;
@@ -2048,7 +2063,22 @@ pub fn load_in(
     })
 }
 
-/// The SHA-256 of each file a block reads, by `block.setting`.
+/// The mesh file a typed-equations line starts cells from, if it is one
+/// (`start c = file "part.msh" at x, y`, ADR 0085).
+fn mesh_file(line: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix("start ")?;
+    let (_, spec) = rest.split_once('=')?;
+    let quoted = spec
+        .trim()
+        .strip_prefix("file ")?
+        .trim()
+        .strip_prefix('"')?;
+    Some(quoted.split_once('"')?.0.to_string())
+}
+
+/// The SHA-256 of each file a block reads, by `block.setting`, and of
+/// each mesh file a typed-equations block starts from, by
+/// `block.mesh:path`.
 fn data_digests(
     flat: &ModelFile,
     registry: &Registry,
@@ -2056,7 +2086,30 @@ fn data_digests(
 ) -> BTreeMap<String, String> {
     use sha2::{Digest, Sha256};
     let mut data = BTreeMap::new();
+    let digest_of = |path: &std::path::Path| {
+        std::fs::read(path).map_or_else(
+            |_| "missing".to_string(),
+            |bytes| {
+                let d = Sha256::digest(&bytes);
+                let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
+                format!("sha256:{hex}")
+            },
+        )
+    };
     for b in &flat.blocks {
+        // Mesh files typed equations start from (ADR 0085): `start c =
+        // file "part.msh" at x, y`.
+        for line in &b.equations {
+            let Some(path) = mesh_file(line) else {
+                continue;
+            };
+            let file = std::path::PathBuf::from(&path);
+            let file = match (file.is_absolute(), folder) {
+                (false, Some(dir)) => dir.join(file),
+                _ => file,
+            };
+            data.insert(format!("{}.mesh:{path}", b.name), digest_of(&file));
+        }
         let Some(info) = registry.info(&b.type_name) else {
             continue;
         };

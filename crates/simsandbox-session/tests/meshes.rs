@@ -203,3 +203,78 @@ fn mesh_mistakes_are_explained() {
     let e = simsandbox_session::describe::check(&no_y.to_string(), &r).to_string();
     assert!(e.contains("declare 'state y[pts]'"), "{e}");
 }
+
+/// A unit cube as five tetrahedra (four corners cut off a central one),
+/// in Gmsh 4.1: independent of the Kuhn grids above.
+const CUBE_41: &str = "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n$Nodes\n1 8 1 8\n3 1 0 8\n1\n2\n3\n4\n5\n6\n7\n8\n0 0 0\n1 0 0\n1 1 0\n0 1 0\n0 0 1\n1 0 1\n1 1 1\n0 1 1\n$EndNodes\n$Elements\n1 5 1 5\n3 1 4 5\n1 2 4 5 7\n2 1 2 4 5\n3 3 2 4 7\n4 6 2 5 7\n5 8 4 5 7\n$EndElements\n";
+
+/// [0, 2] × [0, 1]: a quad on the left, two triangles on the right, in
+/// Gmsh 2.2, sharing the points on x = 1.
+const MIXED_22: &str = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n$Nodes\n6\n1 0 0 0\n2 1 0 0\n3 2 0 0\n4 0 1 0\n5 1 1 0\n6 2 1 0\n$EndNodes\n$Elements\n3\n1 3 2 1 1 1 2 5 4\n2 2 2 1 1 2 3 6\n3 2 2 1 1 2 6 5\n$EndElements\n";
+
+#[test]
+fn meshes_come_from_gmsh_files() {
+    let dir = std::env::temp_dir().join(format!("simsandbox-msh-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("cube.msh"), CUBE_41).unwrap();
+    std::fs::write(dir.join("mixed.msh"), MIXED_22).unwrap();
+    let r = registry();
+    // 3D: volume 1, 16 sides (12 on the boundary), the divergence theorem.
+    let cube = json!({"format": 1, "run": {"dt": 1, "t_end": 1},
+        "blocks": [{"name": "m", "type": "eq.equations", "equations": [
+            "table pts", "state x[pts]", "state y[pts]", "state z[pts]",
+            "x[n+1] = x", "y[n+1] = y", "z[n+1] = z",
+            "cells c of pts: tetra", "start c = file \"cube.msh\" at x, y, z",
+            "sides f of c",
+            "size = sum(measure(c, x, y, z))", "sides = rows(f)", "outside = sum(boundary(f))",
+            "div = sum(boundary(f)*centre(z, f)*normal(f, 2, x, y, z)*measure(f, x, y, z))"]}]})
+    .to_string();
+    let s = simsandbox_session::session::Session::load_in("cube", &cube, &r, Some(&dir)).unwrap();
+    let h = s.signals();
+    let at = |n: &str| *h.values(h.resolve(n).unwrap()).last().unwrap();
+    assert!((at("m.size") - 1.0).abs() < 1e-15);
+    assert_eq!((at("m.sides"), at("m.outside")), (16.0, 12.0));
+    assert!((at("m.div") - 1.0).abs() < 1e-15);
+    drop(h);
+    // The file's digest is part of the model's hash: a changed mesh is a
+    // changed model.
+    let hash = |s: &simsandbox_session::session::Session| s.run_file("m", "r", "", "").model_hash;
+    let before = hash(&s);
+    std::fs::write(
+        dir.join("cube.msh"),
+        CUBE_41.replace("1 1 1\n", "1 1 1.5\n"),
+    )
+    .unwrap();
+    let s2 = simsandbox_session::session::Session::load_in("cube", &cube, &r, Some(&dir)).unwrap();
+    assert_ne!(hash(&s2), before);
+    // 2D, two shapes over the same points from one file.
+    let mixed = json!({"format": 1, "run": {"dt": 1, "t_end": 1},
+        "blocks": [{"name": "m", "type": "eq.equations", "equations": [
+            "table pts", "state x[pts]", "state y[pts]", "x[n+1] = x", "y[n+1] = y",
+            "cells q of pts: quad", "start q = file \"mixed.msh\" at x, y",
+            "cells tri of pts: triangle", "start tri = file \"mixed.msh\" at x, y",
+            "points = rows(pts)",
+            "area = sum(measure(q, x, y)) + sum(measure(tri, x, y))",
+            "right = sum(centre(x, tri)*measure(tri, x, y))"]}]})
+    .to_string();
+    let s = simsandbox_session::session::Session::load_in("mixed", &mixed, &r, Some(&dir)).unwrap();
+    let h = s.signals();
+    let at = |n: &str| *h.values(h.resolve(n).unwrap()).last().unwrap();
+    assert_eq!(at("m.points"), 6.0);
+    assert!((at("m.area") - 2.0).abs() < 1e-15);
+    // ∫ x dA over [1, 2] × [0, 1] is 1.5.
+    assert!((at("m.right") - 1.5).abs() < 1e-15);
+    drop(h);
+    // A file without the shape, and a missing file, are explained.
+    let bad = mixed.replace("cells tri of pts: triangle", "cells tri of pts: tetra");
+    let e = simsandbox_session::session::Session::load_in("bad", &bad, &r, Some(&dir))
+        .err()
+        .unwrap();
+    assert!(e.contains("has no tetra cells"), "{e}");
+    let gone = mixed.replace("mixed.msh", "nothing.msh");
+    let e = simsandbox_session::session::Session::load_in("gone", &gone, &r, Some(&dir))
+        .err()
+        .unwrap();
+    assert!(e.contains("nothing.msh"), "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

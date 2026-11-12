@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-12: ADR 0085 step 1b: `mesh::{FileMesh, read_gmsh, load}` (4.1 and 2.2 ASCII, cached by path and bytes), `MeshSpec`, `start_meshes`, `TableRows::{start_cells, start_points}`; `simsandbox_file::load_in` builds in the model's folder; `block.mesh:PATH` data digests; tests in `meshes.rs`.
 - 2026-11-09: ADR 0085 step 1a: `mesh.rs` (`CellShape`, `GridStart` with Kuhn simplices, `update_sides`, geometry as `Ast`), `Axis::{shape, sides_of}`, `TableRows::{shape, sides_of, grid, coords, offset, places}`, corner and side place arrays, `corner`/`inner`/`outer`/`boundary` lowered to `Take`, `centre`/`measure`/`normal` expanded; values on cells, sides and edges; `refresh_sides` after rules; tests `meshes.rs`.
 - 2026-11-09: ADR 0085 written as Proposed (meshes as tables of cells over points, any shape and dimension), at the owner's request when stage 3 (quadrilateral split) was about to start; STATUS item 1 waits for it.
 - 2026-11-08: ADR 0062 step 5: `History::set_field_budget`/`bytes`, `Session::set_memory_budget`/`memory_use`/`MemoryUse`, the recorder's default share; `run_probes(…, memory_mb)` and `ProbeRun.memory`, CLI `--memory`, Python `run_probes(memory=)`; the app's "Memory…" menu, toolbar warning and eframe storage (`persistence` feature, window and egui state not kept). Tests `tests/memory.rs` and Python. Not tried in the window (menus need clicks). The disk filled up again; stale build outputs cleared.
@@ -187,6 +188,7 @@
 
 ## Decided
 
+- 2026-11-12 (mine, within ADR 0085): Gmsh ASCII 4.1 and 2.2 first, binary refused with the option to change; VTK when a model needs it. A mesh file is read only at the first build and hashed into the run; `load_in` with a folder builds blocks in that folder.
 - 2026-11-09 (owner): ADR 0085's representation: cells as corner lists, sides kept incrementally with stable ids; other levels later as tables.
 - 2026-11-09 (owner): ADR 0085 accepted; both refinement families in the first build; boxes at most one level apart. Open: corner lists first or the full incidence structure from the start.
 - 2026-11-08 (owner): work order: ADR 0079 stage 3 next (finishing ADR 0078); the Phase 2 gate items (rigid bodies, plugins) in Next up; ADR 0079 stages 4–5 after the gate work unless a model needs them. The memory budget confirmed in the window.

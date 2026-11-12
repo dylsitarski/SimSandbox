@@ -641,3 +641,220 @@ mod tests {
         assert!(g.cells(CellShape::Triangle).is_err());
     }
 }
+
+/// Cells as lists of corner rows.
+pub type Cells = Vec<Vec<usize>>;
+
+/// A starting mesh: coordinates by axis, and its cells.
+pub type Start = (Vec<Vec<f64>>, Cells);
+
+/// A mesh read from a Gmsh file (ADR 0085): its nodes (tag and
+/// coordinates) and first-order elements (shape and node tags), in file
+/// order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileMesh {
+    pub nodes: Vec<(u64, [f64; 3])>,
+    pub elements: Vec<(CellShape, Vec<u64>)>,
+}
+
+/// Gmsh's first-order element types as shapes (others are skipped).
+fn gmsh_shape(kind: u32) -> Option<CellShape> {
+    Some(match kind {
+        1 => CellShape::Segment,
+        2 => CellShape::Triangle,
+        3 => CellShape::Quad,
+        4 => CellShape::Tetra,
+        5 => CellShape::Hexa,
+        6 => CellShape::Prism,
+        7 => CellShape::Pyramid,
+        _ => return None,
+    })
+}
+
+impl FileMesh {
+    /// Read a Gmsh `.msh` file's text, format 4.1 or 2.2, ASCII.
+    pub fn read_gmsh(text: &str) -> Result<Self, String> {
+        let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+        let mut version = None;
+        let mut nodes = Vec::new();
+        let mut elements: Vec<(CellShape, Vec<u64>)> = Vec::new();
+        let bad = |what: &str| format!("not a Gmsh mesh this reads: {what}");
+        let nums = |l: &str| -> Result<Vec<f64>, String> {
+            l.split_whitespace()
+                .map(|w| {
+                    w.parse::<f64>()
+                        .map_err(|_| bad(&format!("'{w}' is not a number")))
+                })
+                .collect()
+        };
+        while let Some(line) = lines.next() {
+            match line {
+                "$MeshFormat" => {
+                    let f = nums(lines.next().ok_or_else(|| bad("no format line"))?)?;
+                    if f.get(1).copied() != Some(0.0) {
+                        return Err(bad("binary files are not read: save it as ASCII (Gmsh's option Mesh.Binary = 0)"));
+                    }
+                    version = f.first().copied();
+                }
+                "$Nodes" => {
+                    let v = version.ok_or_else(|| bad("$Nodes before $MeshFormat"))?;
+                    let head = nums(lines.next().ok_or_else(|| bad("no node count"))?)?;
+                    if v >= 4.0 {
+                        let blocks = head[0] as usize;
+                        for _ in 0..blocks {
+                            let b = nums(lines.next().ok_or_else(|| bad("a node block"))?)?;
+                            let n = *b.get(3).ok_or_else(|| bad("a node block's size"))? as usize;
+                            let mut tags = Vec::with_capacity(n);
+                            for _ in 0..n {
+                                tags.push(
+                                    nums(lines.next().ok_or_else(|| bad("a node tag"))?)?[0] as u64,
+                                );
+                            }
+                            for tag in tags {
+                                let c =
+                                    nums(lines.next().ok_or_else(|| bad("a node's coordinates"))?)?;
+                                nodes.push((
+                                    tag,
+                                    [c[0], *c.get(1).unwrap_or(&0.0), *c.get(2).unwrap_or(&0.0)],
+                                ));
+                            }
+                        }
+                    } else {
+                        for _ in 0..head[0] as usize {
+                            let c = nums(lines.next().ok_or_else(|| bad("a node"))?)?;
+                            nodes.push((c[0] as u64, [c[1], c[2], c[3]]));
+                        }
+                    }
+                }
+                "$Elements" => {
+                    let v = version.ok_or_else(|| bad("$Elements before $MeshFormat"))?;
+                    let head = nums(lines.next().ok_or_else(|| bad("no element count"))?)?;
+                    if v >= 4.0 {
+                        for _ in 0..head[0] as usize {
+                            let b = nums(lines.next().ok_or_else(|| bad("an element block"))?)?;
+                            let (kind, n) = (b[2] as u32, b[3] as usize);
+                            for _ in 0..n {
+                                let e = nums(lines.next().ok_or_else(|| bad("an element"))?)?;
+                                if let Some(s) = gmsh_shape(kind) {
+                                    elements.push((s, e[1..].iter().map(|&t| t as u64).collect()));
+                                }
+                            }
+                        }
+                    } else {
+                        for _ in 0..head[0] as usize {
+                            let e = nums(lines.next().ok_or_else(|| bad("an element"))?)?;
+                            let (kind, tags) = (e[1] as u32, e[2] as usize);
+                            if let Some(s) = gmsh_shape(kind) {
+                                elements
+                                    .push((s, e[3 + tags..].iter().map(|&t| t as u64).collect()));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if version.is_none() {
+            return Err(bad("no $MeshFormat section"));
+        }
+        for (s, tags) in &elements {
+            if tags.len() != s.corners() {
+                return Err(bad(&format!("a {} with {} nodes", s.name(), tags.len())));
+            }
+        }
+        Ok(Self { nodes, elements })
+    }
+
+    /// The points the elements of `shapes` use, in file order (their
+    /// places are the points' ids at the start), as one coordinate list
+    /// per axis, and the cells of each shape as places among them.
+    pub fn select(&self, shapes: &[CellShape]) -> Result<(Vec<Vec<f64>>, Vec<Cells>), String> {
+        let used: std::collections::HashSet<u64> = self
+            .elements
+            .iter()
+            .filter(|(s, _)| shapes.contains(s))
+            .flat_map(|(_, t)| t.iter().copied())
+            .collect();
+        let mut place = std::collections::HashMap::new();
+        let mut coords = vec![Vec::new(); 3];
+        for (tag, c) in &self.nodes {
+            if used.contains(tag) && !place.contains_key(tag) {
+                place.insert(*tag, coords[0].len());
+                for (k, v) in c.iter().enumerate() {
+                    coords[k].push(*v);
+                }
+            }
+        }
+        let cells = shapes
+            .iter()
+            .map(|s| {
+                self.elements
+                    .iter()
+                    .filter(|(e, _)| e == s)
+                    .map(|(_, t)| {
+                        t.iter()
+                            .map(|n| {
+                                place
+                                    .get(n)
+                                    .copied()
+                                    .ok_or_else(|| format!("node {n} is used but not given"))
+                            })
+                            .collect::<Result<Vec<usize>, String>>()
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok((coords, cells))
+    }
+
+    /// Read (once while it is unchanged) the Gmsh file at `path`.
+    pub fn load(path: &std::path::Path) -> Result<std::sync::Arc<Self>, String> {
+        type Cache =
+            std::collections::HashMap<std::path::PathBuf, (Vec<u8>, std::sync::Arc<FileMesh>)>;
+        static CACHE: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = cache.get_or_insert_with(Default::default);
+        if let Some((b, m)) = cache.get(path) {
+            if *b == bytes {
+                return Ok(m.clone());
+            }
+        }
+        let text = String::from_utf8(bytes.clone())
+            .map_err(|_| format!("{}: not a text (ASCII) Gmsh file", path.display()))?;
+        let mesh = std::sync::Arc::new(
+            Self::read_gmsh(&text).map_err(|e| format!("{}: {e}", path.display()))?,
+        );
+        cache.insert(path.to_path_buf(), (bytes, mesh.clone()));
+        Ok(mesh)
+    }
+}
+
+#[cfg(test)]
+mod gmsh_tests {
+    use super::*;
+
+    const SQUARE_41: &str = "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n$Nodes\n1 5 1 5\n2 1 0 5\n1\n2\n3\n4\n9\n0 0 0\n1 0 0\n1 1 0\n0 1 0\n7 7 7\n$EndNodes\n$Elements\n2 3 1 3\n1 1 1 1\n1 1 2\n2 1 2 2\n2 1 2 3\n3 1 3 4\n$EndElements\n";
+
+    #[test]
+    fn gmsh_files_give_points_and_cells() {
+        let m = FileMesh::read_gmsh(SQUARE_41).unwrap();
+        assert_eq!(m.nodes.len(), 5);
+        assert_eq!(m.elements.len(), 3);
+        // Only the triangles' nodes are points: node 9 is unused.
+        let (coords, cells) = m.select(&[CellShape::Triangle]).unwrap();
+        assert_eq!(coords[0], [0.0, 1.0, 1.0, 0.0]);
+        assert_eq!(cells[0], [vec![0, 1, 2], vec![0, 2, 3]]);
+        let v2 = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n$Nodes\n3\n1 0 0 0\n2 2 0 0\n3 0 1 0\n$EndNodes\n$Elements\n1\n1 2 2 0 1 1 2 3\n$EndElements\n";
+        let m = FileMesh::read_gmsh(v2).unwrap();
+        assert_eq!(
+            m.select(&[CellShape::Triangle]).unwrap().1[0],
+            [vec![0, 1, 2]]
+        );
+        assert!(
+            FileMesh::read_gmsh("$MeshFormat\n4.1 1 8\n$EndMeshFormat\n")
+                .unwrap_err()
+                .contains("binary")
+        );
+    }
+}

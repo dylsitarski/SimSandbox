@@ -167,10 +167,13 @@ pub struct TableRows {
     /// between. Their kernel table's columns are the corners, then the
     /// inner and outer cells' ids (outer -1 on the boundary).
     pub sides_of: Option<usize>,
-    /// Cells starting as a grid (ADR 0085).
-    pub grid: Option<crate::mesh::GridStart>,
-    /// Points made by a grid: each grid coordinate's column among its
-    /// states.
+    /// Cells starting from a grid or a file (ADR 0085): each cell's
+    /// corners as places among its points' starting rows (known when the
+    /// block is first compiled).
+    pub start_cells: Option<Vec<Vec<usize>>>,
+    /// Points made by such a start: their coordinates, one list per
+    /// coordinate, and each coordinate's column among its states.
+    pub start_points: Option<Vec<Vec<f64>>>,
     pub coords: Vec<usize>,
 }
 
@@ -362,18 +365,112 @@ fn read_cells(rest: &str, line: usize) -> Result<(String, String, usize, crate::
     Ok((name, of.to_string(), max, shape))
 }
 
+/// How cells start (ADR 0085): a grid, or a mesh file whose points'
+/// coordinates go to the states named `at`.
+#[derive(Debug, Clone, PartialEq)]
+enum MeshSpec {
+    Grid(crate::mesh::GridStart),
+    File { path: String, at: Vec<String> },
+}
+
+impl MeshSpec {
+    /// The coordinates it sets, by state name.
+    fn names(&self) -> Vec<String> {
+        match self {
+            MeshSpec::Grid(g) => g.axes.iter().map(|a| a.0.clone()).collect(),
+            MeshSpec::File { at, .. } => at.clone(),
+        }
+    }
+
+    /// `grid x 0 .. 1 by 8, …` or `file "mesh.msh" at x, y`.
+    fn parse(text: &str) -> Option<std::result::Result<Self, String>> {
+        if let Some(g) = text.strip_prefix("grid ") {
+            return Some(crate::mesh::GridStart::parse(g).map(MeshSpec::Grid));
+        }
+        let rest = text.strip_prefix("file ")?;
+        let usage = "write a mesh file's start as 'start tri = file \"part.msh\" at x, y' (the states its points' coordinates go to)";
+        let Some((path, at)) = rest
+            .trim()
+            .strip_prefix('"')
+            .and_then(|r| r.split_once('"'))
+        else {
+            return Some(Err(usage.into()));
+        };
+        let Some(at) = at.trim().strip_prefix("at ") else {
+            return Some(Err(usage.into()));
+        };
+        let at: Vec<String> = at.split(',').map(|n| n.trim().to_string()).collect();
+        if at.is_empty() || at.len() > 3 || at.iter().any(|n| !is_name(n)) {
+            return Some(Err(usage.into()));
+        }
+        Some(Ok(MeshSpec::File {
+            path: path.to_string(),
+            at,
+        }))
+    }
+}
+
+/// The starting points and cells of each table starting from a grid or a
+/// file (ADR 0085), by cell table: points (one list per coordinate the
+/// start sets) and corners as places among them. Cells over the same
+/// points from the same file share them.
+#[allow(clippy::type_complexity)]
+fn start_meshes(
+    specs: &std::collections::HashMap<String, (MeshSpec, usize)>,
+    cell_decls: &std::collections::HashMap<String, (String, crate::mesh::CellShape)>,
+) -> Result<std::collections::HashMap<String, crate::mesh::Start>> {
+    let mut out = std::collections::HashMap::new();
+    for (c, (spec, line)) in specs {
+        let Some((pts, shape)) = cell_decls.get(c) else {
+            continue;
+        };
+        let err = |m: String| definition_error(*line, 1, m);
+        match spec {
+            MeshSpec::Grid(g) => {
+                out.insert(c.clone(), (g.points(), g.cells(*shape).map_err(err)?));
+            }
+            MeshSpec::File { path, at } => {
+                let file = std::path::PathBuf::from(path);
+                let file = match (
+                    file.is_absolute(),
+                    simsandbox_core::registry::current_folder(),
+                ) {
+                    (false, Some(folder)) => folder.join(file),
+                    _ => file,
+                };
+                let mesh = crate::mesh::FileMesh::load(&file).map_err(err)?;
+                // Every table over these points starting from this file.
+                let group: Vec<(&String, crate::mesh::CellShape)> = specs
+                    .iter()
+                    .filter(|(_, (s, _))| s == spec)
+                    .filter_map(|(d, _)| {
+                        cell_decls.get(d).filter(|o| o.0 == *pts).map(|o| (d, o.1))
+                    })
+                    .collect();
+                let shapes: Vec<crate::mesh::CellShape> = group.iter().map(|g| g.1).collect();
+                let (coords, cells) = mesh.select(&shapes).map_err(err)?;
+                let k = group.iter().position(|g| g.0 == c).expect("in its group");
+                if cells[k].is_empty() {
+                    return Err(err(format!("{path} has no {} cells", shape.name())));
+                }
+                out.insert(c.clone(), (coords[..at.len()].to_vec(), cells[k].clone()));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// How many sides the starting cells of axis `c` have (ADR 0085).
 fn starting_sides(
     grid: &[Axis],
     c: usize,
     chains: &std::collections::HashMap<String, usize>,
-    grid_starts: &std::collections::HashMap<String, (crate::mesh::GridStart, usize)>,
+    meshes: &std::collections::HashMap<String, crate::mesh::Start>,
     starts: &std::collections::HashMap<String, (usize, usize)>,
 ) -> Result<usize> {
     let shape = grid[c].shape.expect("cells");
-    let corners: Vec<Vec<usize>> = match (grid_starts.get(&grid[c].name), chains.get(&grid[c].name))
-    {
-        (Some((g, line)), _) => g.cells(shape).map_err(|e| definition_error(*line, 1, e))?,
+    let corners: Vec<Vec<usize>> = match (meshes.get(&grid[c].name), chains.get(&grid[c].name)) {
+        (Some((_, cells)), _) => cells.clone(),
         (_, Some(_)) => {
             let n = grid[c]
                 .ends_of
@@ -1739,7 +1836,7 @@ impl EquationSet {
         let mut chains: std::collections::HashMap<String, usize> = Default::default();
         // Cells starting as a grid (ADR 0085): `start tri = grid x 0 .. 1
         // by 8, y 0 .. 1 by 8`, which also makes their points.
-        let mut grid_starts: std::collections::HashMap<String, (crate::mesh::GridStart, usize)> =
+        let mut grid_starts: std::collections::HashMap<String, (MeshSpec, usize)> =
             Default::default();
         // Each cell table's points and shape, as declared (`cells tri of
         // pts: triangle`), read first: a grid start makes the points too.
@@ -1764,10 +1861,9 @@ impl EquationSet {
                 chains.insert(t.trim().to_string(), k + 1);
                 continue;
             }
-            if let Some(g) = n.trim().strip_prefix("grid ") {
-                let g =
-                    crate::mesh::GridStart::parse(g).map_err(|e| definition_error(k + 1, 1, e))?;
-                grid_starts.insert(t.trim().to_string(), (g, k + 1));
+            if let Some(spec) = MeshSpec::parse(n.trim()) {
+                let spec = spec.map_err(|e| definition_error(k + 1, 1, e))?;
+                grid_starts.insert(t.trim().to_string(), (spec, k + 1));
                 continue;
             }
             let Ok(n) = n.trim().parse::<usize>() else {
@@ -1775,30 +1871,43 @@ impl EquationSet {
             };
             starts.insert(t.trim().to_string(), (n, k + 1));
         }
+        // Starting meshes, when first compiled (later the rows are known).
+        let fresh: std::collections::HashMap<String, (MeshSpec, usize)> = grid_starts
+            .iter()
+            .filter(|(c, _)| !rows.contains_key(*c))
+            .map(|(c, v)| (c.clone(), v.clone()))
+            .collect();
+        let meshes = start_meshes(&fresh, &cell_decls)?;
         for (k, text) in lines.iter().enumerate() {
             let (a, unit) = if let Some(rest) = keyword(text.trim(), "table") {
                 let (t, max) = read_table(&rest, k + 1)?;
                 // Its points made by a grid of cells over it (ADR 0085).
-                let made: Vec<(&String, &(crate::mesh::GridStart, usize))> = grid_starts
+                let made: Vec<(&String, &(MeshSpec, usize))> = grid_starts
                     .iter()
                     .filter(|(c, _)| cell_decls.get(*c).is_some_and(|o| o.0 == t))
                     .collect();
-                if made.len() > 1 {
+                // One grid, or cells of several shapes from one file.
+                let one_file = made
+                    .iter()
+                    .all(|m| matches!(m.1 .0, MeshSpec::File { .. }) && m.1 .0 == made[0].1 .0);
+                if made.len() > 1 && !one_file {
                     return Err(definition_error(
                         made[1].1 .1,
                         1,
-                        format!("{t}'s points come from one starting grid, not two"),
+                        format!("{t}'s points come from one starting grid or file, not two"),
                     ));
                 }
                 if let (Some(&(c, (_, line))), Some(_)) = (made.first(), starts.get(&t)) {
                     return Err(definition_error(
                         *line,
                         1,
-                        format!("{t}'s rows come from {c}'s starting grid: give it no 'start {t}'"),
+                        format!("{t}'s rows come from {c}'s starting mesh: give it no 'start {t}'"),
                     ));
                 }
                 let start = match made.first() {
-                    Some((_, (g, _))) => g.points()[0].len(),
+                    Some((c, _)) => meshes
+                        .get(*c)
+                        .map_or(0, |m| m.0.first().map_or(0, Vec::len)),
                     None => starts.get(&t).map_or(0, |s| s.0),
                 };
                 if start > max {
@@ -1894,13 +2003,10 @@ impl EquationSet {
                             .map_or(0, |s| s.0)
                             .saturating_sub(1)
                     }
-                    (_, Some((g, line))) => g
-                        .cells(shape)
-                        .map_err(|e| definition_error(*line, 1, e))?
-                        .len(),
+                    (_, Some(_)) => meshes.get(&t).map_or(0, |m| m.1.len()),
                     _ => match sides_of {
                         // Sides of starting cells, found as they will be.
-                        Some(c) => starting_sides(&grid, c, &chains, &grid_starts, &starts)?,
+                        Some(c) => starting_sides(&grid, c, &chains, &meshes, &starts)?,
                         None => 0,
                     },
                 };
@@ -2619,7 +2725,7 @@ impl EquationSet {
         for (c, (g, line)) in &grid_starts {
             let pts = cell_decls.get(c).map(|o| o.0.as_str()).unwrap_or("");
             let p_axis = axes.iter().position(|a| *a == pts);
-            for (name, ..) in &g.axes {
+            for name in &g.names() {
                 let over =
                     |s: &&String| *s == name && row_table(s).is_some() && row_table(s) == p_axis;
                 if !states.iter().any(|s| over(&s)) {
@@ -2627,7 +2733,7 @@ impl EquationSet {
                         *line,
                         1,
                         format!(
-                            "the grid sets {name} at each point: declare 'state {name}[{pts}]'"
+                            "the starting mesh sets {name} at each point: declare 'state {name}[{pts}]'"
                         ),
                     ));
                 }
@@ -3395,11 +3501,9 @@ impl EquationSet {
                     max,
                     start: match (a.ends_of, a.sides_of, grid_starts.get(&a.name)) {
                         (_, Some(c), _) => {
-                            starting_sides(&grid, c, &chains, &grid_starts, &starts).unwrap_or(0)
+                            starting_sides(&grid, c, &chains, &meshes, &starts).unwrap_or(0)
                         }
-                        (_, _, Some((g, _))) => {
-                            g.cells(a.shape.expect("cells")).map_or(0, |c| c.len())
-                        }
+                        (_, _, Some(_)) => meshes.get(&a.name).map_or(0, |m| m.1.len()),
                         // A chain: an edge from each starting row to the next.
                         (Some(m), _, _) if chains.contains_key(&a.name) => starts
                             .get(&grid[m].name)
@@ -3412,7 +3516,9 @@ impl EquationSet {
                             .find(|(c, _)| cell_decls.get(*c).is_some_and(|o| o.0 == a.name))
                             .map_or_else(
                                 || starts.get(&a.name).map_or(0, |s| s.0),
-                                |(_, (g, _))| g.points()[0].len(),
+                                |(c, _)| {
+                                    meshes.get(c).map_or(0, |m| m.0.first().map_or(0, Vec::len))
+                                },
                             ),
                     },
                     rows: a.cells,
@@ -3434,19 +3540,22 @@ impl EquationSet {
                     sides_of: a
                         .sides_of
                         .map(|m| grid[..m].iter().filter(|g| g.table.is_some()).count()),
-                    grid: grid_starts.get(&a.name).map(|g| g.0.clone()),
+                    start_cells: meshes.get(&a.name).map(|m| m.1.clone()),
+                    start_points: grid_starts
+                        .iter()
+                        .find(|(c, _)| cell_decls.get(*c).is_some_and(|o| o.0 == a.name))
+                        .and_then(|(c, _)| meshes.get(c))
+                        .map(|m| m.0.clone()),
                     coords: grid_starts
                         .iter()
                         .find(|(c, _)| cell_decls.get(*c).is_some_and(|o| o.0 == a.name))
                         .map(|(_, (g, _))| {
                             let cols: Vec<&String> =
                                 states.iter().filter(|s| row_table(s) == Some(i)).collect();
-                            g.axes
+                            g.names()
                                 .iter()
-                                .map(|ax| {
-                                    cols.iter()
-                                        .position(|c| **c == ax.0)
-                                        .expect("checked: a state")
+                                .map(|n| {
+                                    cols.iter().position(|c| *c == n).expect("checked: a state")
                                 })
                                 .collect()
                         })
@@ -4534,17 +4643,11 @@ impl Block for ExplicitBlock {
             columns[tb][c] = x0[at..at + n].to_vec();
             at += n;
         }
-        // Points made by a grid take its coordinates (ADR 0085).
+        // Points made by a grid or a file take its coordinates (ADR 0085).
         for (tb, t) in self.set.tables.iter().enumerate() {
-            let Some(cells) = self
-                .set
-                .tables
-                .iter()
-                .find(|c| c.grid.is_some() && c.ends_of == Some(tb) && c.sides_of.is_none())
-            else {
+            let Some(points) = &t.start_points else {
                 continue;
             };
-            let points = cells.grid.as_ref().expect("a grid").points();
             for (axis, &col) in t.coords.iter().enumerate() {
                 columns[tb][col].clone_from(&points[axis]);
             }
@@ -4557,12 +4660,10 @@ impl Block for ExplicitBlock {
             }
             // Each row's corners: a chain's ends, or a grid's cells (point
             // ids are their places at the start).
-            let corners: Vec<Vec<f64>> = match (&t.grid, t.chain) {
-                (Some(g), _) => g
-                    .cells(t.shape.expect("cells"))
-                    .map_err(SimError::InvalidDefinition)?
-                    .into_iter()
-                    .map(|c| c.into_iter().map(|p| p as f64).collect())
+            let corners: Vec<Vec<f64>> = match (&t.start_cells, t.chain) {
+                (Some(cells), _) => cells
+                    .iter()
+                    .map(|c| c.iter().map(|&p| p as f64).collect())
                     .collect(),
                 (None, true) => (0..t.start)
                     .map(|k| vec![k as f64, (k + 1) as f64])
