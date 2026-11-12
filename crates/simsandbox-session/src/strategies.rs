@@ -46,20 +46,14 @@ pub enum Strategy {
         #[serde(default = "default_budget")]
         budget: f64,
     },
-    /// Refinement over one parameter (`param`, `range`): `points` values
-    /// over `range`, an edge between neighbours, each round a new point in
-    /// the middle of every interval whose ends' `result` differs by more
-    /// than `change`, until intervals are narrower than `tol`, up to `max`
-    /// points. Over two or more (`params`, ADR 0085 point 7): a grid of
-    /// `points` a side cut into simplices, each round the cells whose
-    /// corners' results differ bisected, until each is narrower than its
-    /// parameter's `tol` along it.
+    /// Refinement of where `result` changes, over one parameter or more
+    /// (ADR 0078 point 3, ADR 0085 point 7): the points a mesh of
+    /// simplices over the parameters (segments over one), from `points`
+    /// values a side over each range; each round every cell whose
+    /// corners' results differ by more than `change` is bisected, until
+    /// it is narrower than its parameter's `tol` along each, up to `max`
+    /// points.
     Refine {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        param: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        range: Option<[f64; 2]>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         params: Vec<Ranged>,
         /// A reduce formula of each run (`final(bi.x) > 0`).
         result: String,
@@ -207,19 +201,10 @@ impl Strategy {
     /// A refinement's parameters, ranges and tolerances, in order.
     fn ranged(&self) -> Vec<(String, [f64; 2], f64)> {
         match self {
-            Strategy::Refine {
-                param,
-                range,
-                params,
-                tol,
-                ..
-            } => match (param, range) {
-                (Some(p), Some(r)) => vec![(p.clone(), *r, *tol)],
-                _ => params
-                    .iter()
-                    .map(|r| (r.param.clone(), r.range, r.tol.unwrap_or(*tol)))
-                    .collect(),
-            },
+            Strategy::Refine { params, tol, .. } => params
+                .iter()
+                .map(|r| (r.param.clone(), r.range, r.tol.unwrap_or(*tol)))
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -247,8 +232,6 @@ impl Strategy {
                 }
             }
             Strategy::Refine {
-                param,
-                range,
                 params,
                 points,
                 tol,
@@ -258,18 +241,8 @@ impl Strategy {
             } => {
                 positive(*tol, "tol")?;
                 positive(*change, "change")?;
-                let one = param.is_some() || range.is_some();
-                if one && !params.is_empty() || one && (param.is_none() || range.is_none()) {
-                    return Err(
-                        "give one parameter with 'param' and 'range', or two or more as 'params'"
-                            .into(),
-                    );
-                }
-                if !one && params.len() < 2 {
-                    return Err(
-                        "'params' refines two or more parameters; give one as 'param' and 'range'"
-                            .into(),
-                    );
+                if params.is_empty() {
+                    return Err("give at least one parameter to refine, with its range".into());
                 }
                 let ranged = self.ranged();
                 if ranged.len() > 6 {
@@ -463,10 +436,7 @@ fn write_into(
             change,
             max,
             ..
-        } => match strategy.ranged().as_slice() {
-            [(param, range, tol)] => refine(param, *range, *points, *change, *tol, *max, &unit),
-            ranged => refine_mesh(ranged, *points, *change, *max, &unit),
-        },
+        } => refine(&strategy.ranged(), *points, *change, *max, &unit),
         Strategy::Continue {
             param,
             range,
@@ -757,58 +727,14 @@ fn fit(params: &[Varied], tol: f64, width: usize, unit: &dyn Fn(&str) -> Unit) -
     (eq, values, sent, vec![("res".into(), "res".into())], views)
 }
 
+/// Refinement (ADR 0078 point 3, ADR 0085 point 7): the points a mesh of
+/// simplices over the parameters (segments over one, the edges of ADR
+/// 0079), from a grid of `points` a side cut by the Kuhn construction;
+/// each round every cell whose corners' results differ by more than
+/// `change` and that is wider than its parameter's tolerance along some
+/// parameter is bisected, its new point in the middle. Over one
+/// parameter, `lo` and `hi` bracket where the result changes.
 fn refine(
-    param: &str,
-    range: [f64; 2],
-    points: usize,
-    change: f64,
-    tol: f64,
-    max: usize,
-    unit: &dyn Fn(&str) -> Unit,
-) -> Written {
-    let name = port(param);
-    let (u, ru) = (bracket(&unit(&name)), bracket(&unit("result")));
-    let eq = vec![
-        format!("# Refinement over {param} (ADR 0078, ADR 0079 stage 2): its values one a row, an edge joining each two neighbours"),
-        format!("table pts max {max}"),
-        format!("start pts = {points}"),
-        format!("param lo_end{u} = {}", range[0]),
-        format!("param hi_end{u} = {}", range[1]),
-        format!("state {name}[pts]{u} = lo_end + id(pts)*(hi_end - lo_end)/(rows(pts) - 1)"),
-        format!("{name}[n+1] = {name}"),
-        "edges segs of pts".into(),
-        "start segs = chain".into(),
-        "# each run's result, by row id, from the study".into(),
-        format!("input result[pts]{ru}"),
-        format!("param change{ru} = {change}"),
-        format!("param tol{u} = {tol}"),
-        format!("width = to_end({name}, segs) - from_end({name}, segs)"),
-        "across = abs(to_end(result, segs) - from_end(result, segs)) > change".into(),
-        "# a new point in the middle of each interval whose ends' results differ by more than change, until it is narrower than tol".into(),
-        format!("split segs where across*(width > tol): {name} = mean"),
-        format!("lo = sum(across*from_end({name}, segs)){u}"),
-        format!("hi = sum(across*to_end({name}, segs)){u}"),
-        "points = rows(pts)".into(),
-    ];
-    let views = vec![
-        r#"{"type": "plot.xy", "bind": {"x": "t", "y": ["{s}.lo", "{s}.hi"]}}"#.to_string(),
-        r#"{"type": "plot.xy", "bind": {"x": "t", "y": "{s}.points"}}"#.to_string(),
-    ];
-    (
-        eq,
-        Vec::new(),
-        vec![(name.clone(), name)],
-        vec![("result".into(), "result".into())],
-        views,
-    )
-}
-
-/// Refinement over two or more parameters (ADR 0085 point 7): the points
-/// a mesh of simplices over parameter space, from a grid of `points` a
-/// side cut by the Kuhn construction; each round every cell whose
-/// corners' results differ by more than `change` and that is wider than
-/// its parameter's tolerance along some parameter is bisected.
-fn refine_mesh(
     ranged: &[(String, [f64; 2], f64)],
     points: usize,
     change: f64,
@@ -818,6 +744,7 @@ fn refine_mesh(
     let d = ranged.len();
     let names: Vec<String> = ranged.iter().map(|r| port(&r.0)).collect();
     let shape = match d {
+        1 => "segment".to_string(),
         2 => "triangle".to_string(),
         3 => "tetra".to_string(),
         d => format!("simplex {d}"),
@@ -870,13 +797,29 @@ fn refine_mesh(
         "# each cell whose corners' results differ, until it is narrow along every parameter"
             .into(),
     );
-    eq.push(format!("split c where across*(({}) > 0)", wide.join(" + ")));
+    let means: Vec<String> = names.iter().map(|n| format!("{n} = mean")).collect();
+    eq.push(format!(
+        "split c where across*(({}) > 0): {}",
+        wide.join(" + "),
+        means.join(", ")
+    ));
+    if d == 1 {
+        let (n, u) = (&names[0], bracket(&unit(&names[0])));
+        eq.push(format!("lo = sum(across*{}){u}", corner(n, 0)));
+        eq.push(format!("hi = sum(across*{}){u}", corner(n, 1)));
+    }
     eq.push("points = rows(pts)".into());
     eq.push("changing = sum(across)".into());
     let mut views = vec![
         r#"{"type": "plot.xy", "bind": {"x": "t", "y": ["{s}.points", "{s}.changing"]}}"#
             .to_string(),
     ];
+    if d == 1 {
+        views.insert(
+            0,
+            r#"{"type": "plot.xy", "bind": {"x": "t", "y": ["{s}.lo", "{s}.hi"]}}"#.to_string(),
+        );
+    }
     if d == 2 {
         views.push(format!(
             r#"{{"type": "plot.mesh", "bind": {{"value": "{{s}}.across", "mesh": "{{s}}.c", "x": "{{s}}.{}", "y": "{{s}}.{}"}}}}"#,

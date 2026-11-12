@@ -175,7 +175,7 @@ def test_strategy_helpers_write_models_that_search():
     b.add_block("bi", "eq.equations", "rk4", equations=["state x", "dx/dt = r + x - x^3"],
                 params={"r": 0.2, "x0": 0.0})
     b.set_run(dt=0.01, t_end=30.0)
-    b.refine(None, "bi.x0", (-2, 2), "final(bi.x) > 0", budget=15)
+    b.refine(None, {"bi.x0": (-2, 2)}, "final(bi.x) > 0", budget=15)
     r = b.run()
     root = sorted(np.roots([1, 0, -1, -0.2]).real)[1]
     lo, hi = r["refine.lo"][-1], r["refine.hi"][-1]
@@ -185,7 +185,7 @@ def test_strategy_helpers_write_models_that_search():
     c = ss.Model()
     c.add_block("f", "eq.equations", "evaluate", equations=["inside = (u^2 + v^2) < 0.25"],
                 params={"u": 0.0, "v": 0.0})
-    c.refine(None, ["f.u", "f.v"], [(-1, 1), (-1, 1)], "final(f.inside)", points=5, tol=0.05,
+    c.refine(None, {"f.u": (-1, 1), "f.v": (-1, 1)}, "final(f.inside)", points=5, tol=0.05,
              max=2000, budget=20)
     r = c.run()
     points = r["refine.points"]

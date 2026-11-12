@@ -606,8 +606,7 @@ class Model:
     def refine(
         self,
         target: str | None,
-        param: str | list[str],
-        range: tuple[float, float] | list[tuple[float, float]],
+        params: dict,
         result: str,
         points: int = 9,
         change: float = 0.5,
@@ -616,26 +615,27 @@ class Model:
         budget: float = 60,
     ) -> str:
         """Refinement (``examples/bistable-refinement.ssbx.json``) of where
-        ``result`` (a reduce formula) changes. Over one parameter:
-        ``points`` values over ``range``; each round a new point in the
-        middle of every interval whose ends' results differ by more than
-        ``change``, until intervals are narrower than ``tol``; read
-        ``refine.lo`` and ``refine.hi``. Over two or more (``param`` a list
-        of names, ``range`` a list of ranges): a grid of ``points`` a side
-        cut into simplices, each round the cells whose corners' results
-        differ bisected until narrower than ``tol`` along every parameter;
-        read ``refine.changing`` and the mesh. The points are rows
-        (``Results.over_rows``)."""
-        spec = {"kind": "refine", "result": result, "points": int(points), "change": change,
-                "tol": tol, "max": int(max), "budget": budget}
-        if isinstance(param, str):
-            spec["param"] = param
-            spec["range"] = [float(range[0]), float(range[1])]
-        else:
-            spec["params"] = [
-                {"param": p, "range": [float(r[0]), float(r[1])]} for p, r in zip(param, range)
-            ]
-        return self._strategy(target, spec)
+        ``result`` (a reduce formula) changes, over ``params``: each key
+        its range, ``{"bi.x0": (-2, 2)}``, or ``{"range": (-2, 2), "tol":
+        1e-4}``. The points are a mesh of simplices over the parameters
+        (segments over one), ``points`` a side to start; each round every
+        cell whose corners' results differ by more than ``change`` is
+        bisected, until it is narrower than ``tol`` along every parameter.
+        Read ``refine.changing`` (cells still changing), over one parameter
+        ``refine.lo`` and ``refine.hi`` (where it changes), and the points
+        as rows (``Results.over_rows``)."""
+        ranged = []
+        for key, v in params.items():
+            r = v if not isinstance(v, dict) else v["range"]
+            entry = {"param": key, "range": [float(r[0]), float(r[1])]}
+            if isinstance(v, dict) and "tol" in v:
+                entry["tol"] = float(v["tol"])
+            ranged.append(entry)
+        return self._strategy(
+            target,
+            {"kind": "refine", "params": ranged, "result": result, "points": int(points),
+             "change": change, "tol": tol, "max": int(max), "budget": budget},
+        )
 
     def continue_(
         self,

@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-12: refinement strategies in one form (owner's request): `Strategy::Refine { params }` only, one generator (`refine`, segments over one parameter) reproducing the example bit for bit; Python `refine(target, params: dict, result)`; the app always sends `params`.
 - 2026-11-12: refinement over two or more parameters in the helpers: `Strategy::Refine` takes `params` (`Ranged`), `refine_mesh` writes a simplex mesh strategy; Python `refine` takes lists; the app's "Search…" uses it for several parameters; test `refine_writes_a_mesh_over_two_or_three_parameters`. ADR 0078 complete; STATUS items 1 and 2 removed from Next up.
 - 2026-11-12: ADR 0086 step 4d: `gpu.rs` (feature `gpu`: pipelines for triangles and lines into an offscreen colour and depth texture, a blit into egui's pass, `MeshCallback`), installed by the app from eframe's wgpu render state; `plot.mesh` hands its projected triangles to it when installed; checked by app screenshots under Xvfb with a software driver.
 - 2026-11-12: ADR 0086 steps 4b–4c: rows as coordinates of each other (profile by id), `Available::rows`/`meshes`, `PortSpec::mesh` (`MeshOf`), `CellShape::drawn_faces`, `RowsSource::Corners`, `History::set_mesh`/`table`, `plot.mesh` (`mesh.rs`: `triangles`, 2D fill, 3D outer surface in depth order); fixed rows outputs of states over cells (offset past the corners); tests in `mesh.rs` and `render.rs`.
@@ -194,6 +195,7 @@
 
 ## Decided
 
+- 2026-11-12 (owner): refinement takes one form for any number of parameters (`params`), not `param`/`range` for one and `params` for more.
 - 2026-11-12 (owner): step 4 of ADR 0085 draws meshes with wgpu now (a CPU path headless), and builds ADR 0081 stage 3 (views by axis roles) together with it.
 - 2026-11-12 (mine, within ADR 0086): pick, reduce and facet are saved as the view's `selection` (existing plumbing); facets in a profile are curves; one- and two-axis fields keep their old labels and look.
 - 2026-11-12 (mine, within ADR 0085): step 3 puts continuous states over rows in the same block as maps over rows (one table machinery), names the side sum `outflow` (outward positive, like `normal`) and adds `across` (the cell's own value on the boundary, so fluxes are insulated by default, as grids' edges are); the two-point flux is left to the model (no built-in operator), consistent only where centres' joins are normal to sides.

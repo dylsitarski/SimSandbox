@@ -106,7 +106,7 @@ fn refine_writes_the_refinement_of_the_example() {
     let (text, _) = written(
         "bistable-refinement",
         "bistable",
-        json!({"kind": "refine", "param": "bi.x0", "range": [-2, 2],
+        json!({"kind": "refine", "params": [{"param": "bi.x0", "range": [-2, 2]}], 
             "result": "final(bi.x) > 0", "budget": 15}),
     );
     let mine = run(&text, &r, None, None).unwrap();
@@ -158,8 +158,10 @@ fn strategies_drive_a_used_model_or_a_study_and_refuse_mistakes() {
     )
     .unwrap()
     .0;
-    let s: Strategy = serde_json::from_value(json!({"kind": "refine", "param": "bi.x0",
-        "range": [-2, 2], "result": "final(bi.x) > 0", "budget": 12}))
+    let s: Strategy = serde_json::from_value(
+        json!({"kind": "refine", "params": [{"param": "bi.x0", "range": [-2, 2]}],
+         "result": "final(bi.x) > 0", "budget": 12}),
+    )
     .unwrap();
     write(&mut f, &r, Some("b"), &s).unwrap();
     assert!(f.blocks.iter().any(|b| b.name == "b"));
@@ -184,11 +186,11 @@ fn strategies_drive_a_used_model_or_a_study_and_refuse_mistakes() {
         bad(json!({"kind": "minimize", "objective": "final(bi.x)", "params": []}))
             .contains("at least one")
     );
-    assert!(
-        bad(json!({"kind": "refine", "param": "bi.x0", "range": [2, -2],
-        "result": "final(bi.x)"}))
-        .contains("must increase")
-    );
+    assert!(bad(
+        json!({"kind": "refine", "params": [{"param": "bi.x0", "range": [2, -2]}], 
+        "result": "final(bi.x)"})
+    )
+    .contains("must increase"));
     assert!(bad(json!({"kind": "fit", "residuals": "final(bi.x)",
         "params": [{"param": "bi.x0", "start": 1}]}))
     .contains("vector per run"));
@@ -211,7 +213,7 @@ fn the_search_edit_writes_a_strategy_for_a_study() {
     )
     .unwrap()
     .0;
-    let spec = json!({"kind": "refine", "param": "bi.x0", "range": [-2, 2],
+    let spec = json!({"kind": "refine", "params": [{"param": "bi.x0", "range": [-2, 2]}], 
         "result": "final(bi.x) > 0", "budget": 12});
     let note = apply_in(
         &mut f,
@@ -231,7 +233,8 @@ fn the_search_edit_writes_a_strategy_for_a_study() {
     assert!(last(&y, "refine.hi") - last(&y, "refine.lo") <= 1e-3);
 }
 
-/// Refinement over two and three parameters (ADR 0085 point 7): the
+/// Refinement over two and three parameters (ADR 0085 point 7), in the
+/// same form as over one: the
 /// strategy written for a whole model whose result is whether a point
 /// lies inside a circle (a sphere) settles with the cells across the
 /// boundary narrow, and every point's result right.
@@ -306,9 +309,8 @@ fn refine_writes_a_mesh_over_two_or_three_parameters() {
         let mut f = studied("bistable-refinement", "bistable");
         write(&mut f, &r, None, &s).unwrap_err()
     };
-    let one = json!({"param": "bi.x0", "range": [0.0, 1.0]});
     assert!(
-        refuse(json!({"kind": "refine", "result": "1", "params": [one]})).contains("two or more")
+        refuse(json!({"kind": "refine", "result": "1", "params": []})).contains("at least one")
     );
     let two =
         json!([{"param": "bi.x0", "range": [0.0, 1.0]}, {"param": "bi.r", "range": [0.0, 1.0]}]);
@@ -316,8 +318,7 @@ fn refine_writes_a_mesh_over_two_or_three_parameters() {
         refuse(json!({"kind": "refine", "result": "1", "params": two, "points": 30}))
             .contains("more than max")
     );
-    assert!(
-        refuse(json!({"kind": "refine", "result": "1", "param": "bi.x0"}))
-            .contains("'param' and 'range'")
-    );
+    // One form for any number of parameters: no `param` of its own.
+    let old = json!({"kind": "refine", "result": "1", "param": "bi.x0", "range": [0.0, 1.0]});
+    assert!(serde_json::from_value::<Strategy>(old).is_err());
 }
