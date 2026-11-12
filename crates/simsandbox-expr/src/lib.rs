@@ -195,7 +195,7 @@ pub fn is_reserved(name: &str) -> bool {
 pub const ARRAY_OPS: &[&str] = &[
     "lap", "sum", "mean", "minof", "maxof", "argminof", "argmaxof", "at", "spacing", "prev",
     "next", "on", "solve", "rcond", "id", "rows", "of", "dd", "from_end", "to_end", "corner",
-    "centre", "measure", "normal", "inner", "outer", "boundary",
+    "centre", "measure", "normal", "inner", "outer", "across", "boundary", "outflow",
 ];
 
 /// The most axes an array or an intermediate value has (ADR 0080).
@@ -300,6 +300,14 @@ pub enum ArrayOp {
     /// (rounded), NaN outside (ADR 0079 stage 2: a value at each edge's
     /// end).
     Take,
+    /// The reverse of [`ArrayOp::Take`]: an array of `cells` cells, each
+    /// the sum of the first argument's values whose place (the second
+    /// argument's cell, rounded) is that cell, added in order; places
+    /// outside are left out (ADR 0085 step 3: a sum over each cell's
+    /// sides).
+    Scatter {
+        cells: usize,
+    },
     /// An array over `rank` axes of `dims` cells (the first fastest), each
     /// cell read from the argument at the sum of its place along each axis
     /// times `strides` (0: the argument does not run along that axis). It

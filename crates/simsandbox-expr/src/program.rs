@@ -130,6 +130,7 @@ fn longest(e: &Expr, vars: &[Span]) -> usize {
                 rank, dims, axis, ..
             } => (0..*rank).filter(|k| k != axis).map(|k| dims[k]).product(),
             ArrayOp::Take => args.get(1).map_or(1, |a| longest(a, vars)),
+            ArrayOp::Scatter { cells } => *cells,
             _ => args.first().map_or(1, |a| longest(a, vars)),
         },
     };
@@ -266,6 +267,16 @@ enum ArrIns {
         n: usize,
         i: usize,
         m: usize,
+    },
+    /// [`ArrayOp::Scatter`]: `r[d..d + n]` the sums of the `m` values at
+    /// `a` (`al` of them: one is every place's) by their places at `i`.
+    Scatter {
+        d: usize,
+        a: usize,
+        al: usize,
+        i: usize,
+        m: usize,
+        n: usize,
     },
     /// [`ArrayOp::Gather`] from the array at `a` (`n` cells written).
     Gather {
@@ -663,6 +674,16 @@ impl ArrIns {
                     .collect();
                 r[d..d + m].copy_from_slice(&picked);
             }
+            ArrIns::Scatter { d, a, al, i, m, n } => {
+                let mut sums = vec![0.0; n];
+                for k in 0..m {
+                    let p = r[i + k].round();
+                    if p >= 0.0 && p < n as f64 {
+                        sums[p as usize] += r[a + if al > 1 { k } else { 0 }];
+                    }
+                }
+                r[d..d + n].copy_from_slice(&sums);
+            }
         }
     }
 }
@@ -765,6 +786,7 @@ impl ArrIns {
             ArrIns::Reduce { d, a, n, .. } => vec![(d, 1), (a, n)],
             ArrIns::Pick { d, a, n, i } => vec![(d, 1), (a, n), (i, 1)],
             ArrIns::Take { d, a, n, i, m } => vec![(d, m), (a, n), (i, m)],
+            ArrIns::Scatter { d, a, al, i, m, n } => vec![(d, n), (a, al), (i, m)],
             ArrIns::Gather {
                 d,
                 a,
@@ -1039,9 +1061,23 @@ fn union(sets: &[&Vec<usize>]) -> Vec<usize> {
     out
 }
 
+/// The place in register `at` (of `n` cells), if `regs` are given and it
+/// depends on no state: `Some(None)` outside the cells.
+fn known(regs: Option<&[f64]>, deps: &[Vec<usize>], at: usize, n: usize) -> Option<Option<usize>> {
+    let r = regs?;
+    if !deps[at].is_empty() {
+        return None;
+    }
+    let p = r[at].round();
+    Some((p >= 0.0 && p < n as f64).then_some(p as usize))
+}
+
 impl ArrIns {
-    /// As [`ArrIns::run`], on the dependencies of each register.
-    fn dependencies(&self, deps: &mut [Vec<usize>]) {
+    /// As [`ArrIns::run`], on the dependencies of each register. With
+    /// `regs`, the registers after a run, places that depend on no state
+    /// are read from them, so a value taken or scattered depends only on
+    /// what is at its place.
+    fn dependencies(&self, deps: &mut [Vec<usize>], regs: Option<&[f64]>) {
         let src = |deps: &[Vec<usize>], s: Src, k: usize| -> Vec<usize> {
             deps[if s.array { s.at + k } else { s.at }].clone()
         };
@@ -1146,14 +1182,34 @@ impl ArrIns {
             }
             ArrIns::Take { d, a, n, i, m } => {
                 let cells: Vec<Vec<usize>> = (0..m)
-                    .map(|k| {
-                        let mut all: Vec<&Vec<usize>> = deps[a..a + n].iter().collect();
-                        all.push(&deps[i + k]);
-                        union(&all)
+                    .map(|k| match known(regs, deps, i + k, n) {
+                        Some(Some(p)) => union(&[&deps[a + p], &deps[i + k]]),
+                        Some(None) => Vec::new(),
+                        None => {
+                            let mut all: Vec<&Vec<usize>> = deps[a..a + n].iter().collect();
+                            all.push(&deps[i + k]);
+                            union(&all)
+                        }
                     })
                     .collect();
                 for (k, c) in cells.into_iter().enumerate() {
                     deps[d + k] = c;
+                }
+            }
+            ArrIns::Scatter { d, a, al, i, m, n } => {
+                let value = |k: usize| a + if al > 1 { k } else { 0 };
+                let mut cells: Vec<Vec<usize>> = vec![Vec::new(); n];
+                let mut anywhere: Vec<usize> = Vec::new();
+                for k in 0..m {
+                    let both = union(&[&deps[value(k)], &deps[i + k]]);
+                    match known(regs, deps, i + k, n) {
+                        Some(Some(p)) => cells[p] = union(&[&cells[p], &both]),
+                        Some(None) => {}
+                        None => anywhere = union(&[&anywhere, &both]),
+                    }
+                }
+                for (j, c) in cells.into_iter().enumerate() {
+                    deps[d + j] = union(&[&c, &anywhere]);
                 }
             }
             ArrIns::Gather {
@@ -1291,6 +1347,7 @@ impl Builder<'_> {
                 ArrayOp::Gather { rank, ref dims, .. } => dims[..*rank].iter().product(),
                 ArrayOp::Solve { n, .. } => *n,
                 ArrayOp::Take => self.len(&args[1]),
+                ArrayOp::Scatter { cells } => *cells,
                 ArrayOp::Along {
                     rank,
                     ref dims,
@@ -1494,6 +1551,18 @@ impl Builder<'_> {
                             m,
                         });
                         self.spread(d, m, n);
+                    }
+                    ArrayOp::Scatter { cells } => {
+                        let m = self.len(&args[1]);
+                        self.array(ArrIns::Scatter {
+                            d,
+                            a: one(0),
+                            al: len,
+                            i: one(1),
+                            m,
+                            n: cells,
+                        });
+                        self.spread(d, cells, n);
                     }
                     ArrayOp::Gather {
                         rank,
@@ -1717,6 +1786,20 @@ impl Program {
         from: std::ops::Range<usize>,
         to: std::ops::Range<usize>,
     ) -> Vec<Vec<usize>> {
+        self.dependencies_at(None, from, to)
+    }
+
+    /// As [`Program::dependencies`], with `regs` the registers after a run
+    /// (ADR 0085 step 3): places that depend on no state (a mesh's
+    /// corners, a side's cells) are read from them, so each value taken or
+    /// scattered depends only on what is at its place, and a mesh's
+    /// Jacobian is as sparse as the mesh.
+    pub fn dependencies_at(
+        &self,
+        regs: Option<&[f64]>,
+        from: std::ops::Range<usize>,
+        to: std::ops::Range<usize>,
+    ) -> Vec<Vec<usize>> {
         let mut deps: Vec<Vec<usize>> = vec![Vec::new(); self.template.len()];
         for (k, r) in from.clone().enumerate() {
             deps[r] = vec![k];
@@ -1735,7 +1818,7 @@ impl Program {
                 | Ins::Call2(_, d, a, b) => {
                     deps[d as usize] = union(&[&deps[a as usize], &deps[b as usize]]);
                 }
-                Ins::Arr(k) => self.arrays[k as usize].dependencies(&mut deps),
+                Ins::Arr(k) => self.arrays[k as usize].dependencies(&mut deps, regs),
             }
         }
         to.map(|r| std::mem::take(&mut deps[r])).collect()
@@ -2069,6 +2152,35 @@ mod tests {
         assert_eq!(
             &r[12..16],
             [(2.0 - 6.0) / 1.0, 3.0, 6.0, (13.0 - 4.0) / 1.0]
+        );
+    }
+
+    /// A sum over each cell's sides (ADR 0085 step 3): three sides between
+    /// two cells (places 0 and 1; one outside), and what each sum depends
+    /// on, exactly once the places are known.
+    #[test]
+    fn scatter_adds_by_place_and_knows_its_dependencies() {
+        // Variables: f over three sides, their places, then the result.
+        let spans = vec![
+            Span { at: 0, len: 3 },
+            Span { at: 3, len: 3 },
+            Span { at: 6, len: 2 },
+        ];
+        let e = Expr::Array(
+            ArrayOp::Scatter { cells: 2 },
+            vec![Expr::Var(0), Expr::Var(1)],
+        );
+        let p = Program::with_layout(&spans, 8, &[(2, &e)]);
+        let mut r = p.registers();
+        r[..6].copy_from_slice(&[1.5, 2.0, 4.0, 1.0, f64::NAN, 1.0]);
+        p.run(&mut r);
+        assert_eq!(&r[6..8], [0.0, 5.5]);
+        // Without the places, each sum may read every side; with them,
+        // only its own (the states are f's three values).
+        assert_eq!(p.dependencies(0..3, 6..8), [vec![0, 1, 2], vec![0, 1, 2]]);
+        assert_eq!(
+            p.dependencies_at(Some(&r), 0..3, 6..8),
+            [Vec::<usize>::new(), vec![0, 2]]
         );
     }
 

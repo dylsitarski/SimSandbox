@@ -62,6 +62,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Time on meshes (ADR 0085 step 3): continuous states over a table's rows (`du/dt = …` over cells, integrated by any method with the mesh fixed within a step and refined between steps); `outflow(F, f)`, each cell's net outflow of a flux written per side; `across(u, f)`, the value across a side (the cell's own on the boundary); implicit methods get a Jacobian as sparse as the mesh; starting values may read a starting mesh's coordinates.
 - Refinement of meshes (ADR 0085 step 2): `split c where cond` bisects simplices (triangles, tetrahedra, `simplex d`) without hanging points and splits boxes (quads, hexahedra, `box d`) into 2^d, neighbours at most one level apart; `merge c where cond` gives the parent back. Transfers: `copy` and `share` on split, `mean`, `sum` and `copy` on merge, `mean` for new points, or a value. A study's points can be refined over two or more parameters.
 - Meshes from Gmsh files (ADR 0085 step 1b): `start c = file "part.msh" at x, y, z` reads an ASCII `.msh` (versions 4.1 and 2.2) into a table of points and cells; several cell tables of different shapes may start from one file. A relative path is from the model's folder, and the file is part of the run hash.
 - A model loaded with a folder (`Session::load_in`, the app) now builds its blocks in that folder, so a block that reads a file while it is built finds it as under the headless tools.

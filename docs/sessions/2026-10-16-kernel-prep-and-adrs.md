@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-12: ADR 0085 step 3: `ArrayOp::Scatter` and `Program::dependencies_at` (places read from registers), `outflow`, `across` (a fourth place array for sides), `ExplicitBlock::continuous` with an integrator and a workspace reset on table versions, `EquationSet::sparsity_at` and `initial_state_from` (starting values reading a mesh's coordinates); tests `finite_volumes.rs`.
 - 2026-11-12: ADR 0085 step 2: `refine.rs` (Maubach bisection with closure, 2^d box split with 2:1 balance and reused middles, merge, transfers), hidden `level`/`parent`/`child` columns and `c~parents` tables, `update_sides` with hanging sides, `CellTransfer` in `RuleRun`; tests `refinement.rs`, refine unit tests, studies over two and three parameters in `study.rs`.
 - 2026-11-12: ADR 0085 step 1b: `mesh::{FileMesh, read_gmsh, load}` (4.1 and 2.2 ASCII, cached by path and bytes), `MeshSpec`, `start_meshes`, `TableRows::{start_cells, start_points}`; `simsandbox_file::load_in` builds in the model's folder; `block.mesh:PATH` data digests; tests in `meshes.rs`.
 - 2026-11-09: ADR 0085 step 1a: `mesh.rs` (`CellShape`, `GridStart` with Kuhn simplices, `update_sides`, geometry as `Ast`), `Axis::{shape, sides_of}`, `TableRows::{shape, sides_of, grid, coords, offset, places}`, corner and side place arrays, `corner`/`inner`/`outer`/`boundary` lowered to `Take`, `centre`/`measure`/`normal` expanded; values on cells, sides and edges; `refresh_sides` after rules; tests `meshes.rs`.
@@ -189,6 +190,7 @@
 
 ## Decided
 
+- 2026-11-12 (mine, within ADR 0085): step 3 puts continuous states over rows in the same block as maps over rows (one table machinery), names the side sum `outflow` (outward positive, like `normal`) and adds `across` (the cell's own value on the boundary, so fluxes are insulated by default, as grids' edges are); the two-point flux is left to the model (no built-in operator), consistent only where centres' joins are normal to sides.
 - 2026-11-12 (mine, within ADR 0085): refinement keeps parents in a hidden table per refined cell table, the first child keeps the parent's id; `share` divides by the number of children (exact) rather than by computed measures; triangles from a file are labelled by their longest side and 3D simplices from a file are refused until a labelling is built; boxes are balanced across sides only; merge is one level per step.
 - 2026-11-12 (mine, within ADR 0085): Gmsh ASCII 4.1 and 2.2 first, binary refused with the option to change; VTK when a model needs it. A mesh file is read only at the first build and hashed into the run; `load_in` with a folder builds blocks in that folder.
 - 2026-11-09 (owner): ADR 0085's representation: cells as corner lists, sides kept incrementally with stable ids; other levels later as tables.

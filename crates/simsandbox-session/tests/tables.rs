@@ -191,7 +191,16 @@ fn table_mistakes_are_explained() {
         l.extend_from_slice(extra);
         check(&l)
     };
-    assert!(check(&["table pts", "state a[pts] = 1", "da/dt = -a"]).contains("needs a map"));
+    // Continuous states over rows (ADR 0085 step 3); formulas alone
+    // cannot change a table.
+    assert!(check(&[
+        "table pts",
+        "start pts = 2",
+        "state a[pts] = 1",
+        "da/dt = -a"
+    ])
+    .contains("\"ok\":true"));
+    assert!(check(&["table pts", "b = 1", "remove pts where 1"]).contains("needs states"));
     assert!(with(&["param m[pts] = 1"]).contains("a value per row is a state"));
     // An input over a table with its own rows is matched to them by id.
     let joined = with(&["input q[pts]", "c = sum(q)"]);

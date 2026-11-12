@@ -200,9 +200,10 @@ impl TableRows {
     }
 
     /// The place arrays given with the ids: one per corner, and for sides
-    /// the inner and outer cells' places and whether on the boundary.
+    /// the inner and outer cells' places, whether on the boundary, and the
+    /// cell across (the outer, or the inner on the boundary).
     fn places(&self) -> usize {
-        self.corners() + if self.sides_of.is_some() { 3 } else { 0 }
+        self.corners() + if self.sides_of.is_some() { 4 } else { 0 }
     }
 }
 
@@ -1292,7 +1293,7 @@ fn axes_of(
                 )),
             }
         }
-        "inner" | "outer" | "boundary" => {
+        "inner" | "outer" | "across" | "boundary" => {
             // A side's cells (ADR 0085): over the sides.
             let n = if name == "boundary" { 1 } else { 2 };
             let usage = match name.as_str() {
@@ -1321,6 +1322,22 @@ fn axes_of(
         "centre" | "measure" | "normal" => {
             let e = mesh_expansion(name, args, grid).map_err(|m| (col, m))?;
             of(&e)
+        }
+        "outflow" => {
+            // A sum over each cell's sides (ADR 0085 step 3): over the cells.
+            let usage = "a quantity over sides and the sides, e.g. outflow(F, f)";
+            count(args.len() == 2, usage)?;
+            let Some(f) = axis_named(&args[1]).filter(|&f| grid[f].sides_of.is_some()) else {
+                return Err((col, format!("'outflow' takes {usage}")));
+            };
+            let a = of(&args[0])?;
+            if !a.is_empty() && a != [f] {
+                return Err((
+                    col,
+                    format!("'outflow' takes a quantity over the sides {}", grid[f].name),
+                ));
+            }
+            Ok(vec![grid[f].sides_of.expect("sides")])
         }
         "of" => {
             // of(T, i): T's value in the row with id i, NaN if none.
@@ -1679,15 +1696,21 @@ fn lower(
                     )
                 }
                 // A side's cells' values, and whether on the boundary.
-                "inner" | "outer" | "boundary" => {
+                "inner" | "outer" | "across" | "boundary" => {
                     let f = axis_named(args.last().expect("checked: a sides table"));
                     let v = ends[f].as_ref().expect("checked: sides");
-                    let n = v.len() - 3;
+                    let n = v.len() - 4;
                     match name.as_str() {
                         "boundary" => (Expr::Var(v[n + 2]), vec![f]),
                         _ => {
                             let (t, _) = low(&args[0])?;
-                            let at = v[n + usize::from(name == "outer")];
+                            // Across: the outer cell, or on the boundary
+                            // the inner one (ADR 0085 step 3).
+                            let at = v[n + match name.as_str() {
+                                "inner" => 0,
+                                "outer" => 1,
+                                _ => 3,
+                            }];
                             (Expr::Array(ArrayOp::Take, vec![t, Expr::Var(at)]), vec![f])
                         }
                     }
@@ -1695,6 +1718,26 @@ fn lower(
                 "centre" | "measure" | "normal" => {
                     let e = mesh_expansion(name, args, grid).expect("checked: expands");
                     low(&e)?
+                }
+                // Each cell's sum over its sides of F, outwards: + where it
+                // is the inner cell, − where the outer (ADR 0085 step 3).
+                "outflow" => {
+                    let (t, _) = low(&args[0])?;
+                    let f = axis_named(&args[1]);
+                    let c = grid[f].sides_of.expect("checked: sides");
+                    let v = ends[f].as_ref().expect("checked: sides");
+                    let n = v.len() - 4;
+                    let cells = grid[c].cells;
+                    let to = |at: usize| {
+                        Expr::Array(
+                            ArrayOp::Scatter { cells },
+                            vec![t.clone(), Expr::Var(v[n + at])],
+                        )
+                    };
+                    (
+                        Expr::Bin(Op::Sub, Box::new(to(0)), Box::new(to(1))),
+                        vec![c],
+                    )
                 }
                 "of" => {
                     // The cell whose id is i: at(T, k), k the first place
@@ -2541,12 +2584,12 @@ impl EquationSet {
             t.table.is_some()
                 && !(kind == Kind::Formulas && (followed[*a] || rule_lines.is_empty()))
         }) {
-            if kind != Kind::Map {
+            if kind == Kind::Formulas {
                 return Err(definition_error(
                     t.line,
                     1,
                     format!(
-                        "the table {} needs a map (x[n+1] = …): tables change between steps, and continuous states over rows come with ADR 0079 stage 4",
+                        "the table {} needs states (x[n+1] = … or dx/dt = …): tables change between steps",
                         t.name
                     ),
                 ));
@@ -2706,8 +2749,14 @@ impl EquationSet {
                 *line,
                 *col,
                 // An array parameter too (`state x[p] = x_start`, ADR 0069).
-                &|n| is_param(n) || axes.contains(&n) || array_params.iter().any(|a| a.0 == n),
-                "an initial value is written with parameters and the axes",
+                // And a starting mesh's coordinates (ADR 0085 step 3).
+                &|n| {
+                    is_param(n)
+                        || axes.contains(&n)
+                        || array_params.iter().any(|a| a.0 == n)
+                        || grid_starts.values().any(|(m, _)| m.names().iter().any(|c| c == n))
+                },
+                "an initial value is written with parameters, the axes and a starting mesh's coordinates",
             )?;
         }
         for e in &edges {
@@ -3283,11 +3332,11 @@ impl EquationSet {
         // Each edge table's ends, as places among its table's rows (ADR
         // 0079 stage 2), given after the ids.
         // Places per corner, then for sides the inner and outer cells'
-        // places and the boundary flags (ADR 0085).
+        // places, the boundary flags and the cell across (ADR 0085).
         let ends_vars: Vec<Option<Vec<usize>>> = grid
             .iter()
             .map(|a| {
-                let n = a.shape?.corners() + if a.sides_of.is_some() { 3 } else { 0 };
+                let n = a.shape?.corners() + if a.sides_of.is_some() { 4 } else { 0 };
                 Some((0..n).map(|_| add(a.cells, 1.0)).collect())
             })
             .collect();
@@ -4035,6 +4084,11 @@ impl EquationSet {
         })
     }
 
+    /// Whether it has tables (ADR 0079).
+    pub fn has_tables(&self) -> bool {
+        !self.tables.is_empty()
+    }
+
     pub fn kind(&self) -> Kind {
         self.kind
     }
@@ -4091,6 +4145,13 @@ impl EquationSet {
                     t.column(n + 1)
                         .iter()
                         .map(|&id| f64::from(u8::from(id < 0.0))),
+                );
+                // Across: the outer cell, or the inner one on the boundary.
+                u.extend(
+                    t.column(n)
+                        .iter()
+                        .zip(t.column(n + 1))
+                        .map(|(&i, &o)| at(&place, if o < 0.0 { i } else { o })),
                 );
             }
         }
@@ -4224,11 +4285,17 @@ impl EquationSet {
     /// The starting state, with `u` the inputs (the tables' row ids after
     /// the block's own inputs).
     pub fn initial_state_with(&self, p: &[f64], u: &[f64], x0: &mut [f64]) {
+        let zero = vec![0.0; self.layout.states];
+        self.initial_state_from(p, &zero, u, x0)
+    }
+
+    /// As [`EquationSet::initial_state_with`], the starting values reading
+    /// the states `known` (a starting mesh's coordinates, ADR 0085).
+    pub fn initial_state_from(&self, p: &[f64], known: &[f64], u: &[f64], x0: &mut [f64]) {
         let mut scratch = self.scratch.borrow_mut();
         if let Some(init) = &self.init {
             let v = &mut scratch[2];
-            let zero = vec![0.0; self.layout.states];
-            self.fill(0.0, &zero, u, p, v);
+            self.fill(0.0, known, u, p, v);
             init.run(v);
             x0.copy_from_slice(&v[1..=self.layout.states]);
         }
@@ -4239,6 +4306,18 @@ impl EquationSet {
             }
             at += len;
         }
+    }
+
+    /// For each rate, the states it reads, with the places of a mesh's
+    /// corners and sides read from the inputs `u` (ADR 0085 step 3): as
+    /// sparse as the mesh.
+    pub fn sparsity_at(&self, t: f64, x: &[f64], u: &[f64], p: &[f64]) -> Vec<Vec<usize>> {
+        let ns = self.layout.states;
+        let at = self.layout.rates_at;
+        let mut v = self.scratch.borrow()[1].clone();
+        self.fill(t, x, u, p, &mut v);
+        self.rates.run(&mut v);
+        self.rates.dependencies_at(Some(&v), 1..1 + ns, at..at + ns)
     }
 
     /// Run the rules' program on `x` (after a step): the registers, from
@@ -4384,6 +4463,12 @@ pub struct ExplicitBlock {
     /// With tables (ADR 0079): its equations compiled for each number of
     /// rows met, one per table (rows change only between steps).
     by_rows: RefCell<std::collections::HashMap<Vec<usize>, EquationSet>>,
+    /// Continuous states over rows (ADR 0085 step 3): the method that
+    /// integrates them, its workspace, and the tables' versions it was
+    /// set up for (a new structure starts it afresh).
+    integrator: Option<crate::integrators::Integrator>,
+    workspace: crate::implicit::Workspace,
+    versions: Vec<u64>,
 }
 
 /// Compiled sets kept per numbers of rows, at most.
@@ -4607,7 +4692,26 @@ impl ExplicitBlock {
             },
             next: vec![0.0; states],
             by_rows: RefCell::new(Default::default()),
+            integrator: None,
+            workspace: Default::default(),
+            versions: Vec::new(),
         })
+    }
+
+    /// Continuous equations with tables (ADR 0085 step 3): states over
+    /// rows integrated by `integrator` with the tables fixed within each
+    /// step, and the rules applied between steps.
+    pub fn continuous(set: EquationSet, integrator: crate::integrators::Integrator) -> Self {
+        let states = set.spec.states.len();
+        Self {
+            method: integrator.method_spec(),
+            set,
+            next: vec![0.0; states],
+            by_rows: RefCell::new(Default::default()),
+            integrator: Some(integrator),
+            workspace: Default::default(),
+            versions: Vec::new(),
+        }
     }
 
     /// The equations compiled for these tables' numbers of rows.
@@ -4719,11 +4823,26 @@ impl ExplicitBlock {
     fn step_with_tables(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
         let (t, p) = (ctx.t, io.params);
         self.follow(p, io.population_inputs, io.tables)?;
+        // A new structure: an integrator learns it afresh.
+        let versions: Vec<u64> = io.tables.iter().map(|t| t.version()).collect();
+        if versions != self.versions {
+            self.workspace = Default::default();
+            self.versions = versions;
+        }
+        let mut ws = std::mem::take(&mut self.workspace);
         let set = self.compiled(io.tables)?;
         let x = set.gather(io.state, io.tables);
         let u = set.with_ids(io.inputs, io.population_inputs, io.tables);
         let mut next = vec![0.0; x.len()];
-        set.rhs(t, &x, &u, p, &mut next);
+        match &self.integrator {
+            None => set.rhs(t, &x, &u, p, &mut next),
+            Some(integrator) => {
+                next.copy_from_slice(&x);
+                let f = |t: f64, x: &[f64], dx: &mut [f64]| set.rhs(t, x, &u, p, dx);
+                let structure = || Some(set.sparsity_at(t, &x, &u, p));
+                integrator.advance_in(&f, t, ctx.dt, &mut next, &mut ws, Some(&structure))?;
+            }
+        }
         let nf = set.fixed_len();
         io.state.copy_from_slice(&next[..nf]);
         let mut at = nf;
@@ -4737,6 +4856,7 @@ impl ExplicitBlock {
         }
         let rules = set.rules().len();
         drop(set);
+        self.workspace = ws;
         for r in 0..rules {
             let set = self.compiled(io.tables)?;
             let x = set.gather(io.state, io.tables);
@@ -4835,13 +4955,44 @@ impl ExplicitBlock {
         for t in &set.tables {
             u.extend((0..t.start).map(|i| i as f64));
         }
-        // Corners' places: starting values read parameters, ids and axes,
-        // never other rows' values, so these only fill their places.
+        // Corners' places, from a starting mesh or chain: starting values
+        // may read a mesh's coordinates through its corners (ADR 0085).
         for t in &set.tables {
-            u.extend(std::iter::repeat_n(0.0, t.places() * t.start));
+            let n = t.start;
+            let mut places = vec![0.0; t.places() * n];
+            match (&t.start_cells, t.chain) {
+                (Some(cells), _) => {
+                    for (r, c) in cells.iter().enumerate().take(n) {
+                        for (k, &p) in c.iter().enumerate() {
+                            places[k * n + r] = p as f64;
+                        }
+                    }
+                }
+                (None, true) => {
+                    for r in 0..n {
+                        places[r] = r as f64;
+                        places[n + r] = (r + 1) as f64;
+                    }
+                }
+                _ => {}
+            }
+            u.extend(places);
+        }
+        // The coordinates a starting mesh sets.
+        let mut known = vec![0.0; set.states_len()];
+        let mut at = set.fixed_len();
+        for &(tb, c) in &set.row_states {
+            let t = &set.tables[tb];
+            if let Some(points) = &t.start_points {
+                if let Some(axis) = t.coords.iter().position(|&k| k == c) {
+                    let n = t.start.min(points[axis].len());
+                    known[at..at + n].copy_from_slice(&points[axis][..n]);
+                }
+            }
+            at += t.start;
         }
         let mut x0 = vec![0.0; set.states_len()];
-        set.initial_state_with(params, &u, &mut x0);
+        set.initial_state_from(params, &known, &u, &mut x0);
         x0
     }
 

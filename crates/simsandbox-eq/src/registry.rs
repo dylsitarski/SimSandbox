@@ -70,6 +70,11 @@ pub fn register(registry: &mut Registry) -> Result<()> {
             ..c.clone()
         };
         match set.kind() {
+            // States over a table's rows (ADR 0085 step 3).
+            Kind::Continuous if set.has_tables() => Ok(Box::new(ExplicitBlock::continuous(
+                set,
+                Integrator::from_settings(&c.method)?,
+            ))),
             Kind::Continuous => ode_block(set, c),
             Kind::Map | Kind::Formulas => Ok(Box::new(ExplicitBlock::new(set, &c.method)?)),
         }
