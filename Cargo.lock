@@ -3269,7 +3269,9 @@ dependencies = [
 name = "simsandbox-views"
 version = "0.0.1"
 dependencies = [
+ "bytemuck",
  "egui",
+ "egui-wgpu",
  "egui_plot",
  "serde",
  "serde_json",

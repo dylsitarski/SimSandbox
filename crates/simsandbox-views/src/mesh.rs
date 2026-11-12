@@ -359,6 +359,35 @@ fn draw_2d(ui: &mut egui::Ui, tri: &Triangles, colour: &[Color32], outline: Opti
         )
     };
     let painter = ui.painter_at(rect);
+    #[cfg(feature = "gpu")]
+    if crate::gpu::installed() {
+        let corners: Vec<(Pos2, f32, Color32)> = tri
+            .positions
+            .iter()
+            .zip(colour)
+            .map(|(p, &c)| (at(p), 0.5, c))
+            .collect();
+        let mut lines = Vec::new();
+        if let Some(stroke) = outline {
+            for p in 0..tri.polygons.len() {
+                let c = tri.corners(p);
+                for e in 0..c.len() {
+                    for q in [&c[e], &c[(e + 1) % c.len()]] {
+                        lines.push((at(q), 0.4, stroke.color));
+                    }
+                }
+            }
+        }
+        on_gpu(
+            ui,
+            &painter,
+            rect,
+            &corners,
+            &lines,
+            ui.visuals().panel_fill,
+        );
+        return;
+    }
     let mut mesh = Mesh::default();
     for (p, &c) in tri.positions.iter().zip(colour) {
         mesh.colored_vertex(at(p), c);
@@ -415,6 +444,42 @@ fn draw_3d(
         .iter()
         .map(|&p| frame.to_screen(norm.apply(p)))
         .collect();
+    #[cfg(feature = "gpu")]
+    if crate::gpu::installed() {
+        // Depth from the eye: the GPU keeps the nearest.
+        let z = |d: f32| (0.5 + d / 8.0).clamp(0.0, 1.0);
+        let corners: Vec<(Pos2, f32, Color32)> = (0..screen.len())
+            .map(|v| {
+                (
+                    screen[v],
+                    z(projected[v][2]),
+                    shade(colour[v], light(v / 3)),
+                )
+            })
+            .collect();
+        let mut lines = Vec::new();
+        if let Some(stroke) = outline {
+            for &(first, n) in &tri.polygons {
+                let mut c: Vec<usize> = vec![3 * first, 3 * first + 1];
+                c.extend((0..n).map(|t| 3 * (first + t) + 2));
+                for e in 0..c.len() {
+                    for v in [c[e], c[(e + 1) % c.len()]] {
+                        lines.push((screen[v], z(projected[v][2]) - 2e-3, stroke.color));
+                    }
+                }
+            }
+        }
+        on_gpu(
+            ui,
+            &frame.painter,
+            frame.rect,
+            &corners,
+            &lines,
+            ui.visuals().extreme_bg_color,
+        );
+        frame.hint(ui.visuals());
+        return;
+    }
     // Polygons furthest first, each with its outline, so nearer ones
     // cover them (the painter's algorithm).
     let depth = |&(first, n): &(usize, usize)| {
@@ -445,6 +510,39 @@ fn draw_3d(
     }
     frame.painter.add(Shape::mesh(mesh));
     frame.hint(ui.visuals());
+}
+
+/// Draw triangles (corners in threes) and line segments (in twos), placed
+/// on screen with their depth, by wgpu over `rect` (ADR 0086).
+#[cfg(feature = "gpu")]
+fn on_gpu(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    triangles: &[(Pos2, f32, Color32)],
+    lines: &[(Pos2, f32, Color32)],
+    background: Color32,
+) {
+    let c = rect.center();
+    let (hw, hh) = (rect.width() / 2.0, rect.height() / 2.0);
+    let vertex = |&(p, z, colour): &(Pos2, f32, Color32)| {
+        crate::gpu::Vertex::new([(p.x - c.x) / hw, (c.y - p.y) / hh, z], colour)
+    };
+    let ppp = ui.ctx().pixels_per_point();
+    crate::gpu::paint(
+        painter,
+        rect,
+        crate::gpu::MeshCallback {
+            id: ui.id().value(),
+            size: [
+                (rect.width() * ppp).round() as u32,
+                (rect.height() * ppp).round() as u32,
+            ],
+            background,
+            triangles: triangles.iter().map(vertex).collect(),
+            lines: lines.iter().map(vertex).collect(),
+        },
+    );
 }
 
 fn shade(c: Color32, light: f32) -> Color32 {

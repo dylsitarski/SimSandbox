@@ -62,6 +62,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- In the app, meshes are drawn by the GPU (wgpu) with a depth buffer; headless renders draw the same triangles with egui.
 - `plot.mesh` (ADR 0086): a quantity over a mesh's cells or points drawn on the mesh, cells filled in 2D and the outer surface in 3D, turned with the mouse; a model with a mesh opens on it. Each table of cells is an output carrying its cells' corners. A profile draws a quantity over a table's rows against another over the same table, paired by id.
 
 - Views draw fields of any number of axes (ADR 0086, ADR 0081 stage 3): a heat map, surface or contour shows two of a field's axes and a profile one; each axis left over is picked at a place with a slider, reduced (mean, minof, maxof, sum) or shown as facets, and the choice is saved with the view. Views may bind fields over three or more axes and rows in model files.

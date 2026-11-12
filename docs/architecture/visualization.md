@@ -69,7 +69,7 @@ Fields of any number of axes are drawn by role ([ADR 0086](../decisions/0086-vie
 
 Meshes reach views through their ports ([ADR 0086](../decisions/0086-views-by-axis-roles-and-mesh-views.md)): a table of cells is an output of each cell's corners declaring `PortSpec::mesh`, the history knows each mesh's polygons and coordinates (`History::mesh`), and `plot.mesh` (`crates/simsandbox-views/src/mesh.rs`) builds triangles on the CPU from the newest frame and fills 2D cells or draws a 3D mesh's outer surface. Fields over a table's rows are coordinates of each other, paired by id.
 
-Rendering technology follows the data size: egui_plot and the egui painter for lines up to tens of thousands of points; wgpu paint callbacks ([ADR 0008](../decisions/0008-native-egui-ui.md)) for meshes, fields and large point sets. GPU views are tested on software drivers ([development setup](../guides/development-setup.md#testing-gpu-code-without-a-gpu)).
+Rendering technology follows the data size: egui_plot and the egui painter for lines up to tens of thousands of points; wgpu paint callbacks ([ADR 0008](../decisions/0008-native-egui-ui.md)) for meshes, fields and large point sets. Meshes are the first ([ADR 0086](../decisions/0086-views-by-axis-roles-and-mesh-views.md) step 4d): `simsandbox-views`' `gpu` feature (enabled by the app, installed at start with `gpu::install`) renders `plot.mesh`'s triangles into a texture of its own with a depth buffer and puts it on screen; without it (headless renders, Python) the same triangles are drawn by egui, sorted furthest first. GPU views are tested on software drivers ([development setup](../guides/development-setup.md#testing-gpu-code-without-a-gpu)).
 
 ## Style
 

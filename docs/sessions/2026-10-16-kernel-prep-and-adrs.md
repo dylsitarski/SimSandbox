@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-12: ADR 0086 step 4d: `gpu.rs` (feature `gpu`: pipelines for triangles and lines into an offscreen colour and depth texture, a blit into egui's pass, `MeshCallback`), installed by the app from eframe's wgpu render state; `plot.mesh` hands its projected triangles to it when installed; checked by app screenshots under Xvfb with a software driver.
 - 2026-11-12: ADR 0086 steps 4b–4c: rows as coordinates of each other (profile by id), `Available::rows`/`meshes`, `PortSpec::mesh` (`MeshOf`), `CellShape::drawn_faces`, `RowsSource::Corners`, `History::set_mesh`/`table`, `plot.mesh` (`mesh.rs`: `triangles`, 2D fill, 3D outer surface in depth order); fixed rows outputs of states over cells (offset past the corners); tests in `mesh.rs` and `render.rs`.
 - 2026-11-12: ADR 0086 written (owner chose wgpu now and views by axis roles with mesh views); step 4a: `slice.rs` (`Slicing`, `slice`, controls), `History::axes`, heat map/surface/contour/profile over any rank with facets, tensors offered as grids, file bindings to tensors and rows; render test `fields_of_any_rank_are_drawn_with_axes_left_over`.
 - 2026-11-12: ADR 0085 step 3: `ArrayOp::Scatter` and `Program::dependencies_at` (places read from registers), `outflow`, `across` (a fourth place array for sides), `ExplicitBlock::continuous` with an integrator and a workspace reset on table versions, `EquationSet::sparsity_at` and `initial_state_from` (starting values reading a mesh's coordinates); tests `finite_volumes.rs`.

@@ -143,6 +143,11 @@ fn main() -> ExitCode {
         "SimSandbox",
         options,
         Box::new(move |cc| {
+            // Meshes on the GPU (ADR 0086); without it they draw with
+            // egui's painter.
+            if let Some(rs) = cc.wgpu_render_state.as_ref() {
+                simsandbox_views::gpu::install(rs);
+            }
             let mut app = SimApp::new(
                 args.path,
                 args.view.as_deref(),

@@ -20,6 +20,8 @@ pub mod builtin;
 pub mod colour;
 pub mod cut;
 pub mod fields;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod history;
 pub mod mesh;
 pub mod slice;

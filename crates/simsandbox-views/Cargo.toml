@@ -16,6 +16,13 @@ egui_plot = "=0.37.0"
 # View selections (e.g. profile cuts) are saved as JSON with the view.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Meshes drawn by wgpu in the app's window (ADR 0086); headless builds
+# leave it out and draw with egui's painter.
+egui-wgpu = { version = "=0.36.2", default-features = false, optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+
+[features]
+gpu = ["dep:egui-wgpu", "dep:bytemuck"]
 
 [lints]
 workspace = true
