@@ -1123,6 +1123,131 @@ mod tests {
         );
     }
 
+    /// Refinement of a study over two and three parameters (ADR 0085
+    /// point 7): the strategy holds its points as a mesh of simplices over
+    /// parameter space, a study runs each point once, and cells whose
+    /// corners' results differ are bisected until they are small. The
+    /// boundary here is a circle or a sphere of radius 0.6.
+    fn refine_around_a_sphere(names: &[&str], boxes: usize, tol: f64) -> (Results, usize) {
+        let r = registry();
+        let centre = [0.1, 0.05, -0.07];
+        let dist: Vec<String> = names
+            .iter()
+            .zip(centre)
+            .map(|(n, c)| format!("({n} - {c})^2"))
+            .collect();
+        let mut model = vec![];
+        for n in names {
+            model.push(format!("param {n} = 0"));
+        }
+        model.push(format!("inside = ({}) < 0.36", dist.join(" + ")));
+        let shape = if names.len() == 2 {
+            "triangle"
+        } else {
+            "tetra"
+        };
+        let grid: Vec<String> = names
+            .iter()
+            .map(|n| format!("{n} -1 .. 1 by {boxes}"))
+            .collect();
+        let corners: Vec<String> = (0..=names.len())
+            .map(|k| format!("corner(hit, c, {k})"))
+            .collect();
+        let mut eqs = vec!["table pts max 20000".to_string()];
+        for n in names {
+            eqs.push(format!("state {n}[pts]"));
+            eqs.push(format!("{n}[n+1] = {n}"));
+        }
+        eqs.extend([
+            "input hit[pts]".to_string(),
+            format!("cells c of pts max 40000: {shape}"),
+            format!("start c = grid {}", grid.join(", ")),
+            // Whether the corners' results differ (each 0 or 1).
+            format!(
+                "jump = {}",
+                corners[1..]
+                    .iter()
+                    .map(|c| format!("abs({c} - {})", corners[0]))
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            ),
+            format!("small = measure(c, {}) < {tol}", names.join(", ")),
+            "split c where (jump > 0.5)*(1 - small)".into(),
+            "count = rows(pts)".into(),
+        ]);
+        let params: Vec<Value> = names
+            .iter()
+            .map(|n| json!({"param": format!("f.{n}")}))
+            .collect();
+        let mut connections: Vec<Value> = names
+            .iter()
+            .map(|n| json!({"from": format!("refine.{n}"), "to": format!("runs.f_{n}")}))
+            .collect();
+        connections.push(json!({"from": "runs.hit", "to": "refine.hit"}));
+        let m = json!({"format": 1, "run": {"dt": 1, "t_end": 40},
+            "models": {"ball": {"blocks": [{"name": "f", "type": "eq.equations", "equations": model}],
+                                "run": {"dt": 1, "t_end": 1}}},
+            "blocks": [
+                {"name": "refine", "type": "eq.equations", "equations": eqs},
+                {"name": "runs", "type": "study", "model": "ball",
+                 "sample": {"design": "rows", "params": params,
+                            "reduce": {"hit": "final(f.inside)"}}}],
+            "connections": connections});
+        super::RUNS_MADE.with(|c| c.set(0));
+        let y = run(&m.to_string(), &r, None, None).unwrap();
+        (y, super::RUNS_MADE.with(std::cell::Cell::get))
+    }
+
+    fn check_sphere(names: &[&str], y: &Results, runs: usize) {
+        let count = value(y, "refine.count");
+        let n = *count.last().unwrap();
+        // It settles, and every point ran once.
+        assert_eq!(count[count.len() - 2], n, "{count:?}");
+        assert_eq!(runs as f64, n);
+        let rows = |name: &str| y.populations.iter().find(|p| p.name == name).unwrap();
+        let last = count.len() - 1;
+        let coords: Vec<Vec<f64>> = names
+            .iter()
+            .map(|n| {
+                rows(&format!("refine.{n}"))
+                    .rows_at(last)
+                    .unwrap()
+                    .2
+                    .to_vec()
+            })
+            .collect();
+        let (_, _, hits) = rows("runs.hit").rows_at(last).unwrap();
+        let centre = [0.1, 0.05, -0.07];
+        for (k, &hit) in hits.iter().enumerate() {
+            let d2: f64 = (0..names.len())
+                .map(|i| (coords[i][k] - centre[i]).powi(2))
+                .sum();
+            assert_eq!(hit, f64::from(u8::from(d2 < 0.36)));
+        }
+        // Every cell across the boundary is small, and near it.
+        let (_, _, jumps) = rows("refine.jump").rows_at(last).unwrap();
+        let (_, _, small) = rows("refine.small").rows_at(last).unwrap();
+        let across = jumps.iter().filter(|&&j| j > 0.5).count();
+        assert!(across > 20, "{across}");
+        for (j, s) in jumps.iter().zip(small) {
+            assert!(*j < 0.5 || *s == 1.0);
+        }
+    }
+
+    #[test]
+    fn refinement_over_two_parameters_finds_a_circle() {
+        let tol = 1e-3;
+        let (y, runs) = refine_around_a_sphere(&["u", "v"], 4, tol);
+        check_sphere(&["u", "v"], &y, runs);
+    }
+
+    #[test]
+    fn refinement_over_three_parameters_finds_a_sphere() {
+        let tol = 2e-4;
+        let (y, runs) = refine_around_a_sphere(&["u", "v", "w"], 2, tol);
+        check_sphere(&["u", "v", "w"], &y, runs);
+    }
+
     /// The refinement example (ADR 0078 step 4): the boundary between a
     /// bistable state's two basins is the middle root of x³ − x − r; the
     /// bracket closes on it within the tolerance, each point run once.

@@ -21,6 +21,7 @@ pub mod input;
 pub mod integrators;
 pub mod mesh;
 pub mod ode;
+pub mod refine;
 pub mod registry;
 pub mod symbolic;
 pub mod systems;

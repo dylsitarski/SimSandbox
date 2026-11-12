@@ -317,15 +317,79 @@ fn permutations(d: usize) -> Vec<Vec<usize>> {
 /// cell's sides in its shape's order; a side still there keeps its row
 /// and id (its cells updated), one gone is removed, a new one added.
 /// `cell_corners` is the cells' corner count, `faces` their sides.
-pub fn update_sides(cells: &Table, sides: &mut Table, cell_corners: usize, faces: &[Vec<usize>]) {
+///
+/// Refined boxes (ADR 0085 step 2) give `hanging`: their parents' table
+/// and each side's axis and end. A small cell's side on a large cell's
+/// side is then a side of its own (inner the small cell, outer the large
+/// one), and the large cell's whole side is not a side.
+pub fn update_sides(
+    cells: &Table,
+    sides: &mut Table,
+    cell_corners: usize,
+    faces: &[Vec<usize>],
+    hanging: Option<(&Table, &[(usize, usize)])>,
+) {
     let k = faces.first().map_or(0, Vec::len);
+    let key_of = |corners: &[f64]| -> Vec<u64> {
+        let mut key: Vec<u64> = corners.iter().map(|&c| c as u64).collect();
+        key.sort_unstable();
+        key
+    };
+    let face_at = |t: &Table, r: usize, face: &[usize]| -> Vec<f64> {
+        face.iter().map(|&c| t.column(c)[r]).collect()
+    };
+    // Small sides on large ones, by (cell row, side), and the large sides
+    // they cover.
+    let mut small: std::collections::HashMap<(usize, usize), f64> = Default::default();
+    let mut covered: std::collections::HashSet<Vec<u64>> = Default::default();
+    if let Some((parents, axes)) = hanging {
+        let mut owners: std::collections::HashMap<Vec<u64>, (f64, usize)> = Default::default();
+        for (r, &id) in cells.ids().iter().enumerate() {
+            for face in faces {
+                let e = owners
+                    .entry(key_of(&face_at(cells, r, face)))
+                    .or_insert((id as f64, 0));
+                e.1 += 1;
+            }
+        }
+        let parent_row: std::collections::HashMap<u64, usize> = parents
+            .ids()
+            .iter()
+            .enumerate()
+            .map(|(k, &i)| (i, k))
+            .collect();
+        for r in 0..cells.len() {
+            let p = cells.column(cell_corners + 1)[r];
+            let Some(&pr) = (p >= 0.0).then(|| parent_row.get(&(p as u64))).flatten() else {
+                continue;
+            };
+            let b = cells.column(cell_corners + 2)[r] as usize;
+            for (f, (face, &(i, s))) in faces.iter().zip(axes).enumerate() {
+                if (b >> i) & 1 != s || owners[&key_of(&face_at(cells, r, face))].1 > 1 {
+                    continue;
+                }
+                let large = key_of(&face_at(parents, pr, face));
+                if let Some(&(n, 1)) = owners.get(&large) {
+                    small.insert((r, f), n);
+                    covered.insert(large);
+                }
+            }
+        }
+    }
     let mut found: Vec<(Vec<u64>, Vec<f64>, f64, f64)> = Vec::new();
     let mut at: std::collections::HashMap<Vec<u64>, usize> = Default::default();
     for (r, &id) in cells.ids().iter().enumerate() {
-        for face in faces {
-            let corners: Vec<f64> = face.iter().map(|&c| cells.column(c)[r]).collect();
-            let mut key: Vec<u64> = corners.iter().map(|&c| c as u64).collect();
-            key.sort_unstable();
+        for (f, face) in faces.iter().enumerate() {
+            let corners = face_at(cells, r, face);
+            let key = key_of(&corners);
+            if covered.contains(&key) {
+                continue;
+            }
+            if let Some(&n) = small.get(&(r, f)) {
+                at.insert(key.clone(), found.len());
+                found.push((key, corners, id as f64, n));
+                continue;
+            }
             match at.get(&key) {
                 Some(&s) if found[s].3 < 0.0 => found[s].3 = id as f64,
                 Some(_) => {}
@@ -339,16 +403,17 @@ pub fn update_sides(cells: &Table, sides: &mut Table, cell_corners: usize, faces
     // The rows there, by their corners.
     let old: std::collections::HashMap<Vec<u64>, usize> = (0..sides.len())
         .map(|r| {
-            let mut key: Vec<u64> = (0..k).map(|c| sides.column(c)[r] as u64).collect();
-            key.sort_unstable();
-            (key, r)
+            (
+                key_of(&(0..k).map(|c| sides.column(c)[r]).collect::<Vec<_>>()),
+                r,
+            )
         })
         .collect();
     let keep: Vec<bool> = (0..sides.len())
         .map(|r| {
-            let mut key: Vec<u64> = (0..k).map(|c| sides.column(c)[r] as u64).collect();
-            key.sort_unstable();
-            at.contains_key(&key)
+            at.contains_key(&key_of(
+                &(0..k).map(|c| sides.column(c)[r]).collect::<Vec<_>>(),
+            ))
         })
         .collect();
     // Cells of sides kept, as found now.
@@ -370,7 +435,6 @@ pub fn update_sides(cells: &Table, sides: &mut Table, cell_corners: usize, faces
         row.resize(columns, 0.0);
         sides.push(&row);
     }
-    let _ = cell_corners;
 }
 
 /// `corner(t, cells, k)` as written.

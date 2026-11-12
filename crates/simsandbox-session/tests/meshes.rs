@@ -194,7 +194,9 @@ fn mesh_mistakes_are_explained() {
     assert!(check(&["k = corner(x, c, 3)"]).contains("numbered 0 to 2"));
     assert!(check(&["k = inner(x, f)"]).contains("the cells f lie between"));
     assert!(check(&["k = normal(c, 0, x, y)"]).contains("takes sides"));
-    assert!(check(&["split c where 1"]).contains("ADR 0085 step 2"));
+    // Refinement (step 2) is for simplices and boxes.
+    assert!(check(&["split c where 1"]).contains("\"ok\":true"));
+    assert!(check(&["cells d of pts: prism", "split d where 1"]).contains("not refined yet"));
     assert!(check(&["add c: x = 1"]).contains("not added"));
     assert!(check(&["remove f where 1"]).contains("kept by SimSandbox"));
     let no_y = json!({"format": 1, "blocks": [{"name": "m", "type": "eq.equations", "equations": [

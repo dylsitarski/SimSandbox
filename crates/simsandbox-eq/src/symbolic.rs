@@ -175,6 +175,14 @@ pub struct TableRows {
     /// coordinate, and each coordinate's column among its states.
     pub start_points: Option<Vec<Vec<f64>>>,
     pub coords: Vec<usize>,
+    /// Cells split or merged by a rule (ADR 0085 step 2): after their
+    /// corners they hold `level`, `parent` and `child`, and their parents
+    /// are kept in a table of the block's own, after the declared ones
+    /// (its place among the block's tables).
+    pub parents: Option<usize>,
+    /// Cells starting from a file (simplices are labelled for bisection
+    /// by their longest edge).
+    pub from_file: bool,
 }
 
 impl TableRows {
@@ -186,7 +194,9 @@ impl TableRows {
     /// The kernel table's columns before its states: corners, and for
     /// sides their two cells.
     pub fn offset(&self) -> usize {
-        self.corners() + if self.sides_of.is_some() { 2 } else { 0 }
+        self.corners()
+            + if self.sides_of.is_some() { 2 } else { 0 }
+            + if self.parents.is_some() { 3 } else { 0 }
     }
 
     /// The place arrays given with the ids: one per corner, and for sides
@@ -208,6 +218,21 @@ pub struct RuleRun {
     pub edges: Option<usize>,
     pub cond: Span,
     pub values: Vec<Span>,
+    /// `split` and `merge` of cells (ADR 0085 step 2): for each state over
+    /// the points (false) and over the cells (true), by column, how its
+    /// value passes on; a given value is one of `values`.
+    pub transfers: Vec<(bool, usize, CellTransfer)>,
+}
+
+/// How a value passes to the rows a refinement makes (ADR 0085 point 5):
+/// see [`crate::refine::Transfer`]; `Given` is a place in the rule's values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellTransfer {
+    Copy,
+    Share,
+    Mean,
+    Sum,
+    Given(usize),
 }
 
 /// What a rule does (ADR 0079).
@@ -502,6 +527,7 @@ type CheckedRule<'a> = (
     Option<usize>,
     &'a RuleLine,
     Vec<(String, Ast, usize, usize)>,
+    Vec<(bool, usize, CellTransfer)>,
 );
 
 /// A rule changing a table between steps (ADR 0079), as written.
@@ -521,7 +547,7 @@ struct RuleLine {
 fn read_rule(text: &str, word: &str, rest: &str, line: usize) -> Result<RuleLine> {
     let usage = match word {
         "remove" => "write 'remove pts where condition'",
-        "split" | "merge" => "write 'split segs where condition' or 'merge segs where condition: c = mean' (each column mean, copy or a value)",
+        "split" | "merge" => "write 'split segs where condition' or 'merge segs where condition: c = mean' (each column mean, copy, share, sum or a value)",
         _ => "write 'add pts: c = value', 'add pts where condition: …' or 'add pts from k where condition: c = value'",
     };
     let kind = match word {
@@ -568,7 +594,7 @@ fn read_rule(text: &str, word: &str, rest: &str, line: usize) -> Result<RuleLine
                 return Err(bad(usage.into()));
             };
             // A transfer by name (ADR 0079 point 4), for split and merge.
-            if word != "add" && matches!(e.trim(), "mean" | "copy") {
+            if word != "add" && matches!(e.trim(), "mean" | "copy" | "share" | "sum") {
                 let col = column_of(text, e.trim());
                 values.push((n.trim().to_string(), Ast::Name(e.trim().into(), col), col));
                 continue;
@@ -2742,6 +2768,7 @@ impl EquationSet {
         // Rules, checked: the table, the axis new rows come from, and each
         // column's value (its starting value where not given).
         let mut rules: Vec<CheckedRule> = Vec::new();
+        let mut refined: std::collections::HashSet<usize> = Default::default();
         for r in &rule_lines {
             let bad = |c: usize, m: String| definition_error(r.line, c, m);
             let Some(t) = axes
@@ -2771,19 +2798,113 @@ impl EquationSet {
                 }
                 Ok(())
             };
-            // Split and merge act on an edge table's edges, making and
-            // filling rows of the table it joins (ADR 0079 stage 2).
-            if matches!(r.kind, RuleKind::Split | RuleKind::Merge) {
+            // Cells are refined by their shape's rule (ADR 0085 step 2).
+            if matches!(r.kind, RuleKind::Split | RuleKind::Merge)
+                && grid[t].sides_of.is_none()
+                && grid[t]
+                    .shape
+                    .is_some_and(|s| s != crate::mesh::CellShape::Segment)
+            {
                 let e = t;
-                if grid[e].sides_of.is_some()
-                    || grid[e]
-                        .shape
-                        .is_some_and(|s| s != crate::mesh::CellShape::Segment)
+                let shape = grid[e].shape.expect("cells");
+                if !shape.simplicial() && crate::refine::box_codes(shape).is_none() {
+                    return Err(bad(
+                        1,
+                        format!(
+                            "{} cells are not refined yet: simplices and boxes are",
+                            shape.name()
+                        ),
+                    ));
+                }
+                if shape.simplicial()
+                    && shape.dim() >= 3
+                    && matches!(grid_starts.get(&r.table), Some((MeshSpec::File { .. }, _)))
                 {
                     return Err(bad(
                         1,
                         format!(
-                            "{} cells are refined with ADR 0085 step 2; for now split and merge act on edges ('edges segs of pts')",
+                            "{} read from a file are not refined yet (their bisection needs a labelling): start them from a grid",
+                            shape.name()
+                        ),
+                    ));
+                }
+                let m = grid[e].ends_of.expect("cells have points");
+                within(&r.cond, r.cond_column, &[e], "the condition")?;
+                let given = r.add.as_ref().map(|a| a.1.clone()).unwrap_or_default();
+                let point_cols: Vec<&String> =
+                    states.iter().filter(|s| row_table(s) == Some(m)).collect();
+                let cell_cols: Vec<&String> =
+                    states.iter().filter(|s| row_table(s) == Some(e)).collect();
+                if let Some((n, _, c)) = given
+                    .iter()
+                    .find(|g| !point_cols.contains(&&g.0) && !cell_cols.contains(&&g.0))
+                {
+                    return Err(bad(
+                        *c,
+                        format!("'{n}' is not a state over {} or {}", axes[m], axes[e]),
+                    ));
+                }
+                let split = r.kind == RuleKind::Split;
+                let mut values = Vec::new();
+                let mut transfers = Vec::new();
+                for (on_cells, cols) in [(false, &point_cols), (true, &cell_cols)] {
+                    for (k, col) in cols.iter().enumerate() {
+                        let g = given.iter().find(|g| &g.0 == *col);
+                        let kind = match g {
+                            None if on_cells && split => CellTransfer::Copy,
+                            None => CellTransfer::Mean,
+                            Some((_, Ast::Name(n, _), c))
+                                if matches!(n.as_str(), "copy" | "share" | "mean" | "sum") =>
+                            {
+                                let ok: &[&str] = match (on_cells, split) {
+                                    (false, true) => &["mean"],
+                                    (false, false) => &[],
+                                    (true, true) => &["copy", "share"],
+                                    (true, false) => &["mean", "sum", "copy"],
+                                };
+                                if !ok.contains(&n.as_str()) {
+                                    let what = if split { "split" } else { "merge" };
+                                    let owner = if on_cells { "a cell" } else { "a new point" };
+                                    return Err(bad(
+                                        *c,
+                                        match ok {
+                                            [] => format!("merge leaves the points' values as they are: {col} is not given"),
+                                            _ => format!("on {what}, {owner}'s {col} is {} or a value, not {n}", ok.join(", ")),
+                                        },
+                                    ));
+                                }
+                                match n.as_str() {
+                                    "copy" => CellTransfer::Copy,
+                                    "share" => CellTransfer::Share,
+                                    "sum" => CellTransfer::Sum,
+                                    _ => CellTransfer::Mean,
+                                }
+                            }
+                            Some((_, ast, c)) => {
+                                if !on_cells && !split {
+                                    return Err(bad(*c, format!("merge leaves the points' values as they are: {col} is not given")));
+                                }
+                                within(ast, *c, &[e], &format!("{col}'s value"))?;
+                                values.push(((*col).clone(), ast.clone(), r.line, *c));
+                                CellTransfer::Given(values.len() - 1)
+                            }
+                        };
+                        transfers.push((on_cells, k, kind));
+                    }
+                }
+                refined.insert(e);
+                rules.push((m, Some(e), r, values, transfers));
+                continue;
+            }
+            // Split and merge act on an edge table's edges, making and
+            // filling rows of the table it joins (ADR 0079 stage 2).
+            if matches!(r.kind, RuleKind::Split | RuleKind::Merge) {
+                let e = t;
+                if grid[e].sides_of.is_some() {
+                    return Err(bad(
+                        1,
+                        format!(
+                            "{} are kept by SimSandbox from their cells: split or merge the cells instead",
                             r.table
                         ),
                     ));
@@ -2821,6 +2942,11 @@ impl EquationSet {
                         None if r.kind == RuleKind::Split => (Ast::Name("copy".into(), 1), 1),
                         None => (Ast::Name("mean".into(), 1), 1),
                     };
+                    if let Ast::Name(n, _) = &ast {
+                        if n == "share" || n == "sum" {
+                            return Err(bad(c, format!("{n} is for cells' values; an edge's rows take mean, copy or a value")));
+                        }
+                    }
                     let ast = match &ast {
                         Ast::Name(n, _) if n == "copy" => end("from_end", col),
                         Ast::Name(n, _) if n == "mean" => Ast::Bin(
@@ -2837,7 +2963,7 @@ impl EquationSet {
                     within(&ast, c, &[e], &format!("{col}'s value"))?;
                     values.push((col.clone(), ast, r.line, c));
                 }
-                rules.push((m, Some(e), r, values));
+                rules.push((m, Some(e), r, values, Vec::new()));
                 continue;
             }
             if r.kind == RuleKind::Add && grid[t].ends_of.is_some() {
@@ -2861,7 +2987,7 @@ impl EquationSet {
             match &r.add {
                 None => {
                     within(&r.cond, r.cond_column, &[t], "the condition")?;
-                    rules.push((t, None, r, Vec::new()));
+                    rules.push((t, None, r, Vec::new(), Vec::new()));
                 }
                 Some((from, given)) => {
                     let src = match from {
@@ -2906,7 +3032,7 @@ impl EquationSet {
                         within(&ast, c, &allowed, &format!("{col}'s value"))?;
                         values.push((col.clone(), ast, r.line, c));
                     }
-                    rules.push((t, src, r, values));
+                    rules.push((t, src, r, values, Vec::new()));
                 }
             }
         }
@@ -3209,7 +3335,7 @@ impl EquationSet {
         // the rows it removes or those it adds from (ADR 0079).
         let rule_vars: Vec<(usize, Vec<usize>)> = rules
             .iter()
-            .map(|(t, src, r, values)| {
+            .map(|(t, src, r, values, _)| {
                 let n = match (&r.add, src) {
                     (None, _) => grid[*t].cells,
                     (Some(_), Some(s)) => grid[*s].cells,
@@ -3466,7 +3592,7 @@ impl EquationSet {
         // Rules' conditions and the values of new rows (ADR 0079), from the
         // values after a step.
         let mut rule_steps: Vec<(usize, Expr)> = Vec::new();
-        for ((t, src, r, values), (cond_var, value_vars)) in rules.iter().zip(&rule_vars) {
+        for ((t, src, r, values, _), (cond_var, value_vars)) in rules.iter().zip(&rule_vars) {
             let to: Vec<usize> = match (&r.add, src) {
                 (None, _) => vec![*t],
                 (Some(_), Some(s)) => vec![*s],
@@ -3482,12 +3608,13 @@ impl EquationSet {
         let rule_runs: Vec<RuleRun> = rules
             .iter()
             .zip(&rule_vars)
-            .map(|((t, src, r, _), (cond, values))| RuleRun {
+            .map(|((t, src, r, _, transfers), (cond, values))| RuleRun {
                 table: *t,
                 kind: r.kind,
                 edges: src.filter(|_| matches!(r.kind, RuleKind::Split | RuleKind::Merge)),
                 cond: spans[*cond],
                 values: values.iter().map(|&v| spans[v]).collect(),
+                transfers: transfers.clone(),
             })
             .collect();
         let tables: Vec<TableRows> = grid
@@ -3560,9 +3687,17 @@ impl EquationSet {
                                 .collect()
                         })
                         .unwrap_or_default(),
+                    parents: refined.contains(&i).then_some(0),
+                    from_file: matches!(grid_starts.get(&a.name), Some((MeshSpec::File { .. }, _))),
                 })
             })
             .collect();
+        // Parents' tables after the declared ones.
+        let mut tables = tables;
+        let n = tables.len();
+        for (next, t) in (n..).zip(tables.iter_mut().filter(|t| t.parents.is_some())) {
+            t.parents = Some(next);
+        }
         let mut param_specs: Vec<ParamSpec> = params
             .iter()
             .map(|p| ParamSpec {
@@ -3850,10 +3985,24 @@ impl EquationSet {
                         if t.sides_of.is_some() {
                             cols.extend(["inner".to_string(), "outer".to_string()]);
                         }
+                        if t.parents.is_some() {
+                            cols.extend(["level", "parent", "child"].map(String::from));
+                        }
                         cols.extend(t.columns.iter().cloned());
                         let cols: Vec<&str> = cols.iter().map(String::as_str).collect();
                         simsandbox_core::table::TableSpec::new(&t.name, &cols)
                     })
+                    // The cells split and not merged back (ADR 0085 step 2).
+                    .chain(tables.iter().filter(|t| t.parents.is_some()).map(|t| {
+                        let mut cols: Vec<String> =
+                            (0..t.corners()).map(|k| format!("c{k}")).collect();
+                        cols.extend(["level", "parent", "child"].map(String::from));
+                        let cols: Vec<&str> = cols.iter().map(String::as_str).collect();
+                        simsandbox_core::table::TableSpec::new(
+                            &format!("{}~parents", t.name),
+                            &cols,
+                        )
+                    }))
                     .collect(),
                 time: match kind {
                     Kind::Continuous => TimeSemantics::Continuous,
@@ -3982,7 +4131,7 @@ impl EquationSet {
     ) -> Vec<f64> {
         if self.inputs_in.iter().all(|i| i.1.is_none()) {
             let mut u = inputs.to_vec();
-            for t in tables {
+            for t in &tables[..self.tables.len()] {
                 u.extend(t.ids().iter().map(|&i| i as f64));
             }
             u.extend(self.ends_places(tables));
@@ -4005,7 +4154,7 @@ impl EquationSet {
                 }
             }
         }
-        for t in tables {
+        for t in &tables[..self.tables.len()] {
             u.extend(t.ids().iter().map(|&i| i as f64));
         }
         u.extend(self.ends_places(tables));
@@ -4038,8 +4187,27 @@ impl EquationSet {
             let Some(c) = t.sides_of else { continue };
             let shape = self.tables[c].shape.expect("cells");
             let (_, faces) = shape.sides().expect("checked: one shape of side");
+            // Refined boxes have small sides on large ones (ADR 0085).
+            let hanging = self.tables[c]
+                .parents
+                .filter(|_| !shape.simplicial())
+                .map(|p| {
+                    (
+                        std::mem::take(&mut tables[p]),
+                        crate::refine::box_side_axes(shape).expect("a box"),
+                    )
+                });
             let (cells, sides) = two_mut(tables, c, f);
-            crate::mesh::update_sides(cells, sides, shape.corners(), &faces);
+            crate::mesh::update_sides(
+                cells,
+                sides,
+                shape.corners(),
+                &faces,
+                hanging.as_ref().map(|(p, a)| (p, a.as_slice())),
+            );
+            if let (Some((p, _)), Some(at)) = (hanging, self.tables[c].parents) {
+                tables[at] = p;
+            }
         }
     }
 
@@ -4254,6 +4422,85 @@ fn drop_dangling(
     edges.retain(|k| cols.iter().all(|c| ids.contains(&(c[k] as u64))));
 }
 
+/// Split or merge cells `et` over points `tb` where `cond` holds (ADR
+/// 0085 step 2), with the rule's transfers; a merge removes the points
+/// it frees that no cells or edges use.
+fn refine_cells(
+    set: &EquationSet,
+    rule: &RuleRun,
+    et: usize,
+    tb: usize,
+    v: &[f64],
+    cond: &[f64],
+    tables: &mut [simsandbox_core::table::Table],
+) -> Result<()> {
+    use crate::refine::{Mesh, Transfer, Transfers};
+    let spec = &set.tables()[et];
+    let n = tables[et].len();
+    let marked: Vec<bool> = cond.iter().map(|&c| c != 0.0 && !c.is_nan()).collect();
+    let given = |k: usize| -> Vec<f64> {
+        let s = rule.values[k];
+        if s.len == n {
+            v[s.at..s.at + s.len].to_vec()
+        } else {
+            vec![v[s.at]; n]
+        }
+    };
+    let to = |t: CellTransfer| match t {
+        CellTransfer::Copy => Transfer::Copy,
+        CellTransfer::Share => Transfer::Share,
+        CellTransfer::Mean => Transfer::Mean,
+        CellTransfer::Sum => Transfer::Sum,
+        CellTransfer::Given(k) => Transfer::Given(given(k)),
+    };
+    let mut transfers = Transfers {
+        cells: vec![Transfer::Copy; spec.columns.len()],
+        points: vec![Transfer::Mean; set.tables()[tb].columns.len()],
+    };
+    for &(on_cells, k, t) in &rule.transfers {
+        match on_cells {
+            true => transfers.cells[k] = to(t),
+            false => transfers.points[k] = to(t),
+        }
+    }
+    let pi = spec.parents.expect("refined cells");
+    let mut cells = std::mem::take(&mut tables[et]);
+    let mut points = std::mem::take(&mut tables[tb]);
+    let mut parents = std::mem::take(&mut tables[pi]);
+    let mut mesh = Mesh {
+        shape: spec.shape.expect("cells"),
+        cells: &mut cells,
+        parents: &mut parents,
+        points: &mut points,
+        point_at: set.tables()[tb].offset(),
+        max_cells: spec.max,
+        max_points: set.tables()[tb].max,
+    };
+    let result = match rule.kind {
+        RuleKind::Split => crate::refine::split(&mut mesh, &marked, &transfers).map(|_| Vec::new()),
+        _ => Ok(crate::refine::merge(&mut mesh, &marked, &transfers)),
+    };
+    tables[et] = cells;
+    tables[tb] = points;
+    tables[pi] = parents;
+    let freed = result.map_err(|e| SimError::Block(format!("{}: {e}", spec.name)))?;
+    if freed.is_empty() {
+        return Ok(());
+    }
+    // Points no cells or edges use any more go.
+    let mut used = std::collections::HashSet::new();
+    for (other, o) in set.tables().iter().enumerate() {
+        if o.ends_of == Some(tb) && o.sides_of.is_none() {
+            for c in 0..o.corners() {
+                used.extend(tables[other].column(c).iter().map(|&p| p as u64));
+            }
+        }
+    }
+    let ids = tables[tb].ids().to_vec();
+    tables[tb].retain(|r| !freed.contains(&ids[r]) || used.contains(&ids[r]));
+    Ok(())
+}
+
 /// Merge (ADR 0079 stage 2): for each edge where `holds(k)`, in edge
 /// order, its two rows become one, unless either was merged already by
 /// this rule. The `from` row stays, with the values `values(k)`; the `to`
@@ -4368,7 +4615,8 @@ impl ExplicitBlock {
         &self,
         tables: &[simsandbox_core::table::Table],
     ) -> Result<std::cell::Ref<'_, EquationSet>> {
-        let rows: Vec<usize> = tables.iter().map(|t| t.len()).collect();
+        let n = self.set.tables.len();
+        let rows: Vec<usize> = tables[..n].iter().map(|t| t.len()).collect();
         self.compiled_for(rows)
     }
 
@@ -4438,11 +4686,12 @@ impl ExplicitBlock {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut rows: Vec<usize> = tables.iter().map(|t| t.len()).collect();
+        let n = self.set.tables.len();
+        let mut rows: Vec<usize> = tables[..n].iter().map(|t| t.len()).collect();
         rows[tb] = ids.len();
         let set = self.compiled_for(rows.clone())?;
         let mut u = vec![0.0; set.inputs_len()];
-        for (k, t) in tables.iter().enumerate() {
+        for (k, t) in tables[..n].iter().enumerate() {
             match k == tb {
                 true => u.extend(ids.iter().map(|&i| i as f64)),
                 false => u.extend(t.ids().iter().map(|&i| i as f64)),
@@ -4533,6 +4782,12 @@ impl ExplicitBlock {
                         }
                         table.push(&row_at(k));
                     }
+                }
+                RuleKind::Split | RuleKind::Merge
+                    if edges.is_some_and(|e| set.tables()[e].parents.is_some()) =>
+                {
+                    let et = edges.expect("cells");
+                    refine_cells(&set, rule, et, tb, &v, cond, io.tables)?;
                 }
                 RuleKind::Split => {
                     let et = edges.expect("split acts on edges");
@@ -4670,9 +4925,40 @@ impl Block for ExplicitBlock {
                     .collect(),
                 (None, false) => vec![Vec::new(); t.start],
             };
-            for (r, mut row) in corners.into_iter().enumerate().take(t.start) {
+            // Triangles from a file are labelled for bisection: the longest
+            // side joins corners 0 and 2 (ADR 0085 step 2).
+            let label = |mut c: Vec<f64>| -> Vec<f64> {
+                let pts = t
+                    .ends_of
+                    .and_then(|m| self.set.tables[m].start_points.as_ref());
+                let (Some(x), true, Some(crate::mesh::CellShape::Triangle)) =
+                    (pts, t.from_file && t.parents.is_some(), t.shape)
+                else {
+                    return c;
+                };
+                let len = |a: usize, b: usize| -> f64 {
+                    x.iter()
+                        .map(|axis| (axis[c[a] as usize] - axis[c[b] as usize]).powi(2))
+                        .sum()
+                };
+                let (l01, l12, l20) = (len(0, 1), len(1, 2), len(2, 0));
+                if l01 > l12 && l01 > l20 {
+                    c.swap(1, 2);
+                } else if l12 > l20 {
+                    c.swap(0, 1);
+                }
+                c
+            };
+            for (r, row) in corners.into_iter().enumerate().take(t.start) {
+                let mut row = label(row);
+                if t.parents.is_some() {
+                    row.extend([0.0, -1.0, -1.0]);
+                }
                 row.extend(columns[tb].iter().map(|c| c[r]));
                 table.push(&row);
+            }
+            if let Some(p) = t.parents {
+                tables[p].reset();
             }
         }
         // Sides of the starting cells, their values as they start.
