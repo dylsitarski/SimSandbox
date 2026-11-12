@@ -4373,6 +4373,10 @@ fn search_fields(
             });
             edits.insert(format!("search-budget:{}", b.name), budget.to_string());
             ui.weak(match kind.as_str() {
+                "refine" if params.len() > 1 => format!(
+                    "Over {}, each across its range: a mesh of simplices refined where the result changes.",
+                    params.iter().map(|p| p.0.as_str()).collect::<Vec<_>>().join(", ")
+                ),
                 "refine" | "continue" => format!(
                     "Over {} from {} to {}.",
                     params.first().map_or("(no parameter)", |p| p.0.as_str()),
@@ -4392,6 +4396,12 @@ fn search_fields(
                 "fit" => serde_json::json!({"kind": "fit", "residuals": formula, "budget": budget,
                     "params": params.iter().map(|(k, r)| serde_json::json!(
                         {"param": k, "start": mid(*r)})).collect::<Vec<_>>()}),
+                // Over two or more parameters, a mesh of simplices (ADR
+                // 0085 point 7).
+                "refine" if params.len() > 1 => serde_json::json!({"kind": "refine", "result": formula,
+                    "budget": budget, "points": 5, "max": 2000,
+                    "params": params.iter().map(|(k, r)| serde_json::json!(
+                        {"param": k, "range": r, "tol": (r[1] - r[0]) * 1e-3})).collect::<Vec<_>>()}),
                 "refine" => serde_json::json!({"kind": "refine", "result": formula, "budget": budget,
                     "param": params.first().map(|p| p.0.clone()).unwrap_or_default(),
                     "range": params.first().map_or([0.0, 1.0], |p| p.1)}),

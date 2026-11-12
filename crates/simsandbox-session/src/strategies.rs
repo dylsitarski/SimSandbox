@@ -46,13 +46,21 @@ pub enum Strategy {
         #[serde(default = "default_budget")]
         budget: f64,
     },
-    /// Refinement over one parameter: `points` values over `range`, an
-    /// edge between neighbours, each round a new point in the middle of
-    /// every interval whose ends' `result` differs by more than `change`,
-    /// until intervals are narrower than `tol`, up to `max` points.
+    /// Refinement over one parameter (`param`, `range`): `points` values
+    /// over `range`, an edge between neighbours, each round a new point in
+    /// the middle of every interval whose ends' `result` differs by more
+    /// than `change`, until intervals are narrower than `tol`, up to `max`
+    /// points. Over two or more (`params`, ADR 0085 point 7): a grid of
+    /// `points` a side cut into simplices, each round the cells whose
+    /// corners' results differ bisected, until each is narrower than its
+    /// parameter's `tol` along it.
     Refine {
-        param: String,
-        range: [f64; 2],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        param: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        range: Option<[f64; 2]>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        params: Vec<Ranged>,
         /// A reduce formula of each run (`final(bi.x) > 0`).
         result: String,
         #[serde(default = "default_points")]
@@ -95,6 +103,17 @@ pub struct Varied {
     pub span: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<[f64; 2]>,
+}
+
+/// A parameter refined over a range (ADR 0085 point 7), with its own
+/// tolerance or the strategy's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ranged {
+    pub param: String,
+    pub range: [f64; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tol: Option<f64>,
 }
 
 fn default_search_tol() -> f64 {
@@ -144,7 +163,7 @@ impl Strategy {
             Strategy::Minimize { params, .. } | Strategy::Fit { params, .. } => {
                 params.iter().map(|p| p.param.clone()).collect()
             }
-            Strategy::Refine { param, .. } => vec![param.clone()],
+            Strategy::Refine { .. } => self.ranged().into_iter().map(|r| r.0).collect(),
             Strategy::Continue { param, state, .. } => vec![param.clone(), state.clone()],
         }
     }
@@ -185,6 +204,26 @@ impl Strategy {
         }
     }
 
+    /// A refinement's parameters, ranges and tolerances, in order.
+    fn ranged(&self) -> Vec<(String, [f64; 2], f64)> {
+        match self {
+            Strategy::Refine {
+                param,
+                range,
+                params,
+                tol,
+                ..
+            } => match (param, range) {
+                (Some(p), Some(r)) => vec![(p.clone(), *r, *tol)],
+                _ => params
+                    .iter()
+                    .map(|r| (r.param.clone(), r.range, r.tol.unwrap_or(*tol)))
+                    .collect(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
     fn check(&self) -> Result<(), String> {
         let positive = |v: f64, what: &str| {
             (v.is_finite() && v > 0.0)
@@ -208,7 +247,9 @@ impl Strategy {
                 }
             }
             Strategy::Refine {
+                param,
                 range,
+                params,
                 points,
                 tol,
                 max,
@@ -217,11 +258,39 @@ impl Strategy {
             } => {
                 positive(*tol, "tol")?;
                 positive(*change, "change")?;
-                if range[0].partial_cmp(&range[1]) != Some(std::cmp::Ordering::Less) {
-                    return Err(format!("range [{}, {}] must increase", range[0], range[1]));
+                let one = param.is_some() || range.is_some();
+                if one && !params.is_empty() || one && (param.is_none() || range.is_none()) {
+                    return Err(
+                        "give one parameter with 'param' and 'range', or two or more as 'params'"
+                            .into(),
+                    );
                 }
-                if *points < 2 || points > max {
-                    return Err(format!("points must be 2 to max ({max}), not {points}"));
+                if !one && params.len() < 2 {
+                    return Err(
+                        "'params' refines two or more parameters; give one as 'param' and 'range'"
+                            .into(),
+                    );
+                }
+                let ranged = self.ranged();
+                if ranged.len() > 6 {
+                    return Err("refinement takes at most six parameters".into());
+                }
+                for (p, r, t) in &ranged {
+                    positive(*t, &format!("{p}'s tol"))?;
+                    if r[0].partial_cmp(&r[1]) != Some(std::cmp::Ordering::Less) {
+                        return Err(format!("{p}'s range [{}, {}] must increase", r[0], r[1]));
+                    }
+                }
+                let start = points
+                    .checked_pow(ranged.len() as u32)
+                    .unwrap_or(usize::MAX);
+                if *points < 2 || start > *max {
+                    return Err(match ranged.len() {
+                        1 => format!("points must be 2 to max ({max}), not {points}"),
+                        d => format!(
+                            "{points} points a side over {d} parameters start {start} points, more than max ({max}): give fewer points or a larger max"
+                        ),
+                    });
                 }
             }
             Strategy::Continue { range, step, .. } => {
@@ -390,14 +459,14 @@ fn write_into(
             fit(params, *tol, width, &unit)
         }
         Strategy::Refine {
-            param,
-            range,
             points,
             change,
-            tol,
             max,
             ..
-        } => refine(param, *range, *points, *change, *tol, *max, &unit),
+        } => match strategy.ranged().as_slice() {
+            [(param, range, tol)] => refine(param, *range, *points, *change, *tol, *max, &unit),
+            ranged => refine_mesh(ranged, *points, *change, *max, &unit),
+        },
         Strategy::Continue {
             param,
             range,
@@ -729,6 +798,95 @@ fn refine(
         eq,
         Vec::new(),
         vec![(name.clone(), name)],
+        vec![("result".into(), "result".into())],
+        views,
+    )
+}
+
+/// Refinement over two or more parameters (ADR 0085 point 7): the points
+/// a mesh of simplices over parameter space, from a grid of `points` a
+/// side cut by the Kuhn construction; each round every cell whose
+/// corners' results differ by more than `change` and that is wider than
+/// its parameter's tolerance along some parameter is bisected.
+fn refine_mesh(
+    ranged: &[(String, [f64; 2], f64)],
+    points: usize,
+    change: f64,
+    max: usize,
+    unit: &dyn Fn(&str) -> Unit,
+) -> Written {
+    let d = ranged.len();
+    let names: Vec<String> = ranged.iter().map(|r| port(&r.0)).collect();
+    let shape = match d {
+        2 => "triangle".to_string(),
+        3 => "tetra".to_string(),
+        d => format!("simplex {d}"),
+    };
+    let ru = bracket(&unit("result"));
+    let listed: Vec<&str> = ranged.iter().map(|r| r.0.as_str()).collect();
+    let mut eq = vec![
+        format!(
+            "# Refinement over {} (ADR 0078, ADR 0085): the points a mesh of simplices over them",
+            listed.join(", ")
+        ),
+        format!("table pts max {max}"),
+    ];
+    for n in &names {
+        eq.push(format!("state {n}[pts]{}", bracket(&unit(n))));
+        eq.push(format!("{n}[n+1] = {n}"));
+    }
+    // Cells: a grid's d! simplices a box, and a few times the points as
+    // they are bisected.
+    let boxes = (points - 1).pow(d as u32);
+    let cells = (1..=d).product::<usize>() * boxes + 8 * d * max;
+    eq.push(format!("cells c of pts max {cells}: {shape}"));
+    let grid: Vec<String> = names
+        .iter()
+        .zip(ranged)
+        .map(|(n, r)| format!("{n} {} .. {} by {}", r.1[0], r.1[1], points - 1))
+        .collect();
+    eq.push(format!("start c = grid {}", grid.join(", ")));
+    eq.push("# each run's result, by row id, from the study".into());
+    eq.push(format!("input result[pts]{ru}"));
+    eq.push(format!("param change{ru} = {change}"));
+    let corner = |q: &str, k: usize| format!("corner({q}, c, {k})");
+    let jumps: Vec<String> = (1..=d)
+        .map(|k| format!("abs({} - {})", corner("result", k), corner("result", 0)))
+        .collect();
+    eq.push(format!("across = {} > change", jumps.join(" + ")));
+    let mut wide = Vec::new();
+    for (n, r) in names.iter().zip(ranged) {
+        let u = bracket(&unit(n));
+        eq.push(format!("param tol_{n}{u} = {}", r.2));
+        let fold = |f: &str| {
+            (1..=d).fold(corner(n, 0), |acc, k| {
+                format!("{f}({acc}, {})", corner(n, k))
+            })
+        };
+        eq.push(format!("width_{n} = {} - {}{u}", fold("max"), fold("min")));
+        wide.push(format!("(width_{n} > tol_{n})"));
+    }
+    eq.push(
+        "# each cell whose corners' results differ, until it is narrow along every parameter"
+            .into(),
+    );
+    eq.push(format!("split c where across*(({}) > 0)", wide.join(" + ")));
+    eq.push("points = rows(pts)".into());
+    eq.push("changing = sum(across)".into());
+    let mut views = vec![
+        r#"{"type": "plot.xy", "bind": {"x": "t", "y": ["{s}.points", "{s}.changing"]}}"#
+            .to_string(),
+    ];
+    if d == 2 {
+        views.push(format!(
+            r#"{{"type": "plot.mesh", "bind": {{"value": "{{s}}.across", "mesh": "{{s}}.c", "x": "{{s}}.{}", "y": "{{s}}.{}"}}}}"#,
+            names[0], names[1]
+        ));
+    }
+    (
+        eq,
+        Vec::new(),
+        names.iter().map(|n| (n.clone(), n.clone())).collect(),
         vec![("result".into(), "result".into())],
         views,
     )

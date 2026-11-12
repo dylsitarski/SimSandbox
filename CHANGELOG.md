@@ -62,6 +62,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Strategy helpers write refinement over two or more parameters: `{"kind": "refine", "params": [...]}`, Python `Model.refine(target, ["f.u", "f.v"], [(-1, 1), (-1, 1)], result)`, and the app's "Search…" on a study over several parameters write a mesh of simplices refined where the result changes.
 - In the app, meshes are drawn by the GPU (wgpu) with a depth buffer; headless renders draw the same triangles with egui.
 - `plot.mesh` (ADR 0086): a quantity over a mesh's cells or points drawn on the mesh, cells filled in 2D and the outer surface in 3D, turned with the mouse; a model with a mesh opens on it. Each table of cells is an output carrying its cells' corners. A profile draws a quantity over a table's rows against another over the same table, paired by id.
 

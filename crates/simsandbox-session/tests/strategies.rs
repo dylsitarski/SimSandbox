@@ -230,3 +230,94 @@ fn the_search_edit_writes_a_strategy_for_a_study() {
     let y = run(&f.to_json(), &r, None, None).unwrap();
     assert!(last(&y, "refine.hi") - last(&y, "refine.lo") <= 1e-3);
 }
+
+/// Refinement over two and three parameters (ADR 0085 point 7): the
+/// strategy written for a whole model whose result is whether a point
+/// lies inside a circle (a sphere) settles with the cells across the
+/// boundary narrow, and every point's result right.
+#[test]
+fn refine_writes_a_mesh_over_two_or_three_parameters() {
+    let r = registry();
+    for (names, points, tol) in [(vec!["u", "v"], 5, 0.02), (vec!["u", "v", "w"], 3, 0.15)] {
+        let centre = [0.1, 0.05, -0.07];
+        let dist: Vec<String> = names
+            .iter()
+            .zip(centre)
+            .map(|(n, c)| format!("({n} - {c})^2"))
+            .collect();
+        let mut eqs: Vec<String> = names.iter().map(|n| format!("param {n} = 0")).collect();
+        eqs.push(format!("inside = ({}) < 0.36", dist.join(" + ")));
+        let model = json!({"format": 1, "run": {"dt": 1, "t_end": 1},
+            "blocks": [{"name": "f", "type": "eq.equations", "equations": eqs}]});
+        let mut f = ModelFile::from_json(&model.to_string()).unwrap().0;
+        let params: Vec<Value> = names
+            .iter()
+            .map(|n| json!({"param": format!("f.{n}"), "range": [-1.0, 1.0]}))
+            .collect();
+        let s: Strategy = serde_json::from_value(json!({"kind": "refine", "params": params,
+            "result": "final(f.inside)", "points": points, "tol": tol, "max": 5000, "budget": 40}))
+        .unwrap();
+        let note = write(&mut f, &r, None, &s).unwrap();
+        assert!(note.contains("refinement"), "{note}");
+        let y = run(&f.to_json(), &r, None, None).unwrap();
+        let count: Vec<f64> = y
+            .outputs
+            .iter()
+            .find(|o| o.name == "refine.points")
+            .unwrap()
+            .values
+            .clone();
+        let n = *count.last().unwrap();
+        assert!(
+            n > count[0] && count[count.len() - 2] == n,
+            "{names:?}: {count:?}"
+        );
+        // Every point's result as the circle (sphere) has it.
+        let rows = |name: &str| y.populations.iter().find(|p| p.name == name).unwrap();
+        let at = count.len() - 1;
+        let coords: Vec<Vec<f64>> = names
+            .iter()
+            .map(|nm| {
+                rows(&format!("refine.f_{nm}"))
+                    .rows_at(at)
+                    .unwrap()
+                    .2
+                    .to_vec()
+            })
+            .collect();
+        let study = y
+            .populations
+            .iter()
+            .find(|p| p.name.ends_with(".result") && !p.name.starts_with("refine"))
+            .unwrap();
+        let (_, _, results) = study.rows_at(at).unwrap();
+        assert_eq!(results.len() as f64, n);
+        for (k, &got) in results.iter().enumerate() {
+            let d2: f64 = (0..names.len())
+                .map(|i| (coords[i][k] - centre[i]).powi(2))
+                .sum();
+            assert_eq!(got, f64::from(u8::from(d2 < 0.36)));
+        }
+        assert!(last(&y, "refine.changing") > 0.0);
+    }
+    // Mistakes are explained.
+    let refuse = |s: Value| {
+        let s: Strategy = serde_json::from_value(s).unwrap();
+        let mut f = studied("bistable-refinement", "bistable");
+        write(&mut f, &r, None, &s).unwrap_err()
+    };
+    let one = json!({"param": "bi.x0", "range": [0.0, 1.0]});
+    assert!(
+        refuse(json!({"kind": "refine", "result": "1", "params": [one]})).contains("two or more")
+    );
+    let two =
+        json!([{"param": "bi.x0", "range": [0.0, 1.0]}, {"param": "bi.r", "range": [0.0, 1.0]}]);
+    assert!(
+        refuse(json!({"kind": "refine", "result": "1", "params": two, "points": 30}))
+            .contains("more than max")
+    );
+    assert!(
+        refuse(json!({"kind": "refine", "result": "1", "param": "bi.x0"}))
+            .contains("'param' and 'range'")
+    );
+}

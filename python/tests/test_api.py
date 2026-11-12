@@ -181,6 +181,17 @@ def test_strategy_helpers_write_models_that_search():
     lo, hi = r["refine.lo"][-1], r["refine.hi"][-1]
     assert lo < root < hi and hi - lo <= 1e-3
     assert len(r["refine.bi_x0"].ids[-1]) == 18
+    # Over two parameters: a mesh refined around a circle.
+    c = ss.Model()
+    c.add_block("f", "eq.equations", "evaluate", equations=["inside = (u^2 + v^2) < 0.25"],
+                params={"u": 0.0, "v": 0.0})
+    c.refine(None, ["f.u", "f.v"], [(-1, 1), (-1, 1)], "final(f.inside)", points=5, tol=0.05,
+             max=2000, budget=20)
+    r = c.run()
+    points = r["refine.points"]
+    assert points[-1] > points[0] and points[-1] == points[-2]
+    us, vs = r["refine.f_u"].values[-1], r["refine.f_v"].values[-1]
+    assert len(us) == points[-1] and len(vs) == len(us)
     # A study as the target: the fitting example refit by a new strategy.
     f = ss.Model.example("Fitting a model")
     f.fit("trials", {"osc.k": 2.0, "osc.c": 1.0}, "at_samples(osc.x - data.x, data)")
