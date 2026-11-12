@@ -21,6 +21,7 @@ pub mod colour;
 pub mod cut;
 pub mod fields;
 pub mod history;
+pub mod slice;
 pub mod surface;
 pub mod values;
 pub mod view;

@@ -65,6 +65,8 @@ Sweeps are studies ([ADR 0071](../decisions/0071-sweeps-are-studies.md)): every 
 
 A view type lists the block types it applies to (`applies_to`, empty for generic views). A view that does not apply is neither offered under "More views…" nor restored from a file ([ADR 0016](../decisions/0016-model-curated-views.md)). What a model offers views is passed as `Available`: its scalar signals, grids, point sets and block types.
 
+Fields of any number of axes are drawn by role ([ADR 0086](../decisions/0086-views-by-axis-roles-and-mesh-views.md), ADR 0081 stage 3): a heat map, surface or contour draws two of a field's axes (chosen by its `x` and `y` coordinates, else the first two) and a profile one; each axis left over is picked at a place (a slider in the tile), reduced (`mean`, `minof`, `maxof`, `sum`) or shown as facets (small panels on one colour scale; curves in a profile), saved as the view's `selection` (`crates/simsandbox-views/src/slice.rs`). Axis names come from the ports (`History::axes`).
+
 Rendering technology follows the data size: egui_plot and the egui painter for lines up to tens of thousands of points; wgpu paint callbacks ([ADR 0008](../decisions/0008-native-egui-ui.md)) for meshes, fields and large point sets. GPU views are tested on software drivers ([development setup](../guides/development-setup.md#testing-gpu-code-without-a-gpu)).
 
 ## Style

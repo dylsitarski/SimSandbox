@@ -311,6 +311,8 @@ pub struct History {
     labels: std::collections::BTreeMap<String, String>,
     /// Units of signals and fields, as written (`m/s`), where they have one.
     units: std::collections::BTreeMap<String, String>,
+    /// Fields' axis names, from their ports (ADR 0081, ADR 0086).
+    axes: std::collections::BTreeMap<String, Vec<String>>,
     names: Vec<String>,
     times: Vec<f64>,
     /// Per signal, `(t, value)` points, ready to plot against time.
@@ -354,6 +356,7 @@ impl History {
             coordinates: Vec::new(),
             labels: Default::default(),
             units: Default::default(),
+            axes: Default::default(),
             names,
             times: Vec::new(),
             points,
@@ -432,6 +435,32 @@ impl History {
     /// Give signal or field `name` its unit, as written (`m/s`).
     pub fn set_unit(&mut self, name: &str, unit: &str) {
         self.units.insert(name.into(), unit.into());
+    }
+
+    /// Name the axes of field `name` (the first fastest), as its port does.
+    pub fn set_axes(&mut self, name: &str, axes: Vec<String>) {
+        self.axes.insert(name.into(), axes);
+    }
+
+    /// A field's axes' names and lengths, the first fastest, for a field
+    /// of fixed size (ADR 0086): as its port names them, else `x`, `y`,
+    /// `z`, then `a3`, ….
+    pub fn axes(&self, field: usize) -> Option<(Vec<String>, Vec<usize>)> {
+        let f = self.fields.get(field)?;
+        let dims = f.shape.dims()?;
+        let given = self.axes.get(&f.name).filter(|a| a.len() == dims.len());
+        let names = match given {
+            Some(a) => a.clone(),
+            None => (0..dims.len())
+                .map(|i| match i {
+                    0 => "x".to_string(),
+                    1 => "y".to_string(),
+                    2 => "z".to_string(),
+                    i => format!("a{i}"),
+                })
+                .collect(),
+        };
+        Some((names, dims))
     }
 
     /// The unit of a signal or field, if it has one.

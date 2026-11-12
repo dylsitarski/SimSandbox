@@ -432,6 +432,74 @@ mod tests {
             .contains("no view 99"));
     }
 
+    /// A field over three axes drawn by a heat map, a surface and a
+    /// contour (two kept, the third picked, reduced or faceted), and a
+    /// profile of a 2D grid along one axis (ADR 0086).
+    #[test]
+    fn fields_of_any_rank_are_drawn_with_axes_left_over() {
+        let model = |views: serde_json::Value| {
+            serde_json::json!({"format": 1, "run": {"dt": 1, "t_end": 2},
+                "blocks": [{"name": "m", "type": "eq.equations", "equations": [
+                    "grid i = 4", "grid j = 3", "grid k = 5", "state c = 0", "c[n+1] = c + 1",
+                    "q = i + 10*j + 100*k + c", "p = i + 10*j"]}],
+                "controls": {"views": views}})
+            .to_string()
+        };
+        let draw = |views: serde_json::Value| {
+            let mut s = Session::load("m", &model(views), &registry()).unwrap();
+            s.run_until(2.0).unwrap();
+            let o = RenderOptions {
+                width: 400.0,
+                height: 300.0,
+                ..Default::default()
+            };
+            let (img, warnings) = render(&s, view_registry(), &o).unwrap();
+            assert!(warnings.is_empty(), "{warnings:?}");
+            img.rgba
+        };
+        let heat = |sel: serde_json::Value| {
+            draw(
+                serde_json::json!([{"type": "plot.heatmap", "bind": {"field": "m.q"}, "selection": sel}]),
+            )
+        };
+        let first = heat(serde_json::json!({}));
+        let picked = heat(serde_json::json!({"pick": {"k": 3}}));
+        let reduced = heat(serde_json::json!({"reduce": {"k": "mean"}}));
+        let faceted = heat(serde_json::json!({"facet": "k"}));
+        let differ =
+            |a: &[u8], b: &[u8]| a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p != q).count();
+        let drawn = |a: &[u8]| a.chunks(4).filter(|p| p != &&a[..4]).count();
+        eprintln!(
+            "drawn {} {} {} {}",
+            drawn(&first),
+            drawn(&picked),
+            drawn(&reduced),
+            drawn(&faceted)
+        );
+        assert!(differ(&first, &picked) > 0, "picked");
+        assert!(differ(&first, &faceted) > 1000, "faceted");
+        assert!(differ(&picked, &reduced) > 0, "reduced");
+        for t in ["plot.surface", "plot.contour"] {
+            draw(
+                serde_json::json!([{"type": t, "bind": {"field": "m.q"}, "selection": {"pick": {"k": 4}}}]),
+            );
+        }
+        let profile = |sel: serde_json::Value| {
+            draw(
+                serde_json::json!([{"type": "plot.profile", "bind": {"y": ["m.p"]}, "selection": sel}]),
+            )
+        };
+        let plain = profile(serde_json::json!({}));
+        assert!(
+            differ(&plain, &profile(serde_json::json!({"pick": {"j": 2}}))) > 0,
+            "profile pick"
+        );
+        assert!(
+            differ(&plain, &profile(serde_json::json!({"facet": "j"}))) > 0,
+            "profile facets"
+        );
+    }
+
     #[test]
     fn the_arrangement_places_the_views_and_drops_the_rest() {
         let l: simsandbox_file::layout::Layout = serde_json::from_str(

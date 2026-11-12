@@ -16,11 +16,13 @@ pub enum SlotKind {
     /// A scalar signal, `t`, or a line of cells, which a view draws cell
     /// by cell (a study's runs, ADR 0071).
     Values,
-    /// A grid field.
+    /// A field drawn over two axes: a grid, or a field of more axes whose
+    /// others are left over (ADR 0086).
     Grid,
     /// A point set.
     Points,
-    /// A grid with one row (a line of cells).
+    /// A field drawn along one axis: a line of cells, or a field of more
+    /// axes whose others are left over (ADR 0086).
     Line,
     /// An axis of a field picture: the index (`t`) or a coordinate of the
     /// field bound to the slot named in [`Slot::of`] (ADR 0024).
@@ -227,7 +229,10 @@ impl Available<'_> {
             }
             SlotKind::Grid => self.grids.iter().any(|s| s == name),
             SlotKind::Points => self.points.iter().any(|s| s == name),
-            SlotKind::Line => self.lines.iter().any(|s| s == name),
+            // A line, or a field whose other axes are left over (ADR 0086).
+            SlotKind::Line => {
+                self.lines.iter().any(|s| s == name) || self.grids.iter().any(|s| s == name)
+            }
             // Whether it places the bound field is checked with the field,
             // so the reason can be given.
             SlotKind::Axis => name == TIME || self.grids.iter().any(|s| s == name),
@@ -282,7 +287,12 @@ impl Available<'_> {
                 .collect(),
             SlotKind::Grid => self.grids.iter().map(String::as_str).collect(),
             SlotKind::Points => self.points.iter().map(String::as_str).collect(),
-            SlotKind::Line => self.lines.iter().map(String::as_str).collect(),
+            SlotKind::Line => self
+                .lines
+                .iter()
+                .chain(self.grids.iter().filter(|g| !self.lines.contains(g)))
+                .map(String::as_str)
+                .collect(),
             SlotKind::Axis => std::iter::once(TIME)
                 .chain(self.coordinates.iter().map(|c| c.name.as_str()))
                 .collect(),

@@ -585,6 +585,11 @@ impl Session {
                 (Some(FieldShape::Grid { nx: n, ny: 1 }), Some(FieldShape::Grid { nx, ny })) => {
                     n == if c.axis == 0 { nx } else { ny }
                 }
+                // Along one axis of a field of more (ADR 0086).
+                (
+                    Some(FieldShape::Grid { nx: n, ny: 1 }),
+                    Some(FieldShape::Tensor { rank, dims }),
+                ) => c.axis < rank && dims[c.axis] == n,
                 _ => false,
             }
         });
@@ -1150,13 +1155,14 @@ impl Session {
         }
         let index = "t";
         let all: Vec<&(String, FieldShape)> = fields.iter().collect();
-        // What views can draw: tensors are recorded, not drawn yet (ADR
-        // 0081 stage 3).
+        // What views can draw: grids and tensors, points and populations.
         let of_kind = |grid: bool| -> Vec<String> {
             all.iter()
                 .filter(|(_, s)| {
                     if grid {
-                        matches!(s, FieldShape::Grid { .. })
+                        // Fields of more axes too: views leave the others
+                        // over (ADR 0086).
+                        matches!(s, FieldShape::Grid { .. } | FieldShape::Tensor { .. })
                     } else {
                         matches!(s, FieldShape::Points { .. } | FieldShape::Population { .. })
                     }
@@ -1219,6 +1225,20 @@ impl Session {
         for ((name, _), f) in self.base_fields.iter().zip(&self.field_sources) {
             if let Some(u) = unit(f.block, &f.port) {
                 h.set_unit(name, &u);
+            }
+            // Its axes' names, for views that leave some over (ADR 0086).
+            let axes = model
+                .block(f.block)
+                .ok()
+                .and_then(|b| {
+                    b.spec()
+                        .outputs()
+                        .find(|p| p.name == f.port)
+                        .map(|p| p.axis_names.clone())
+                })
+                .unwrap_or_default();
+            if !axes.is_empty() {
+                h.set_axes(name, axes);
             }
         }
         // A cut's lines have its grid's unit; its coordinate, the unit of

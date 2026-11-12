@@ -5,6 +5,7 @@
 use crate::builtin::{bindings, finite_runs, scroll_to_zoom, series_colour, widened};
 use crate::colour::{sequential, trail_start};
 use crate::history::{FieldShape, History, SignalRef, TIME};
+use crate::slice::{slice, Slicing, MAX_FACETS};
 use crate::view::{
     always, Available, Bindings, Context, Preset, Slot, SlotKind, StyleProperty, Swap, View,
     ViewInput, ViewRegistry, ViewType,
@@ -173,7 +174,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
                 applies: always,
                 many: true,
                 required: true,
-                description: "The line fields drawn, one curve each (cuts through 2D grids come from cut filters)",
+                description: "The fields drawn, one curve each, along their first axis (or the one x places); other axes picked, reduced or one curve per place",
             },
         ],
         style: &[],
@@ -293,58 +294,80 @@ fn axis_map(centres: &[f64]) -> Option<([f64; 2], Vec<usize>)> {
 /// the extent `[x0, x1, y0, y1]`.
 type HeatImage = ([usize; 2], Vec<f64>, [f64; 4]);
 
-/// Build the picture of field `field` over screen axes `x` and `y`.
-/// `samples` are the history samples a time axis runs over.
-fn heat_image(
-    h: &History,
-    field: usize,
-    samples: &[usize],
-    x: &Axis,
-    y: &Axis,
-) -> Option<HeatImage> {
-    let f = &h.fields()[field];
-    let FieldShape::Grid { nx, .. } = f.shape else {
-        return None;
-    };
+/// The values a picture of a field shows (ADR 0086): its slice over the
+/// grid axes drawn, the newest or at each sample of a time axis.
+struct Frames {
+    /// One slice per sample along a time axis, else one (the newest).
+    slices: Vec<Vec<f64>>,
+    /// Cells along the first grid axis drawn (the slice's fastest).
+    fast: usize,
+}
+
+impl Frames {
+    /// The slices of `field` over the grid axes of `x` and `y` (in that
+    /// order), the axes left over as `slicing` says (`facet_at` along a
+    /// facet axis).
+    fn of(
+        h: &History,
+        field: usize,
+        samples: &[usize],
+        x: &Axis,
+        y: &Axis,
+        slicing: &Slicing,
+        facet_at: usize,
+    ) -> Option<Self> {
+        let (names, dims) = h.axes(field)?;
+        let keep: Vec<usize> = [x.dim, y.dim]
+            .iter()
+            .filter_map(|d| match d {
+                Dim::Grid(a) => Some(*a),
+                Dim::Time => None,
+            })
+            .collect();
+        let time = x.dim == Dim::Time || y.dim == Dim::Time;
+        let at: Vec<usize> = if time {
+            samples.to_vec()
+        } else {
+            vec![h.len().checked_sub(1)?]
+        };
+        let f = &h.fields()[field];
+        let slices = at
+            .iter()
+            .map(|&k| slice(f.frame(k), &dims, &names, &keep, slicing, facet_at))
+            .collect();
+        Some(Self {
+            slices,
+            fast: keep.first().map_or(1, |&a| dims[a]),
+        })
+    }
+
+    /// The value at positions `a` along `x` and `b` along `y`.
+    fn value(&self, x: &Axis, y: &Axis, a: usize, b: usize) -> f64 {
+        let (s, cell) = match (x.dim, y.dim) {
+            (Dim::Time, _) => (a, b),
+            (_, Dim::Time) => (b, a),
+            _ => (0, b * self.fast + a),
+        };
+        self.slices
+            .get(s)
+            .and_then(|f| f.get(cell))
+            .copied()
+            .unwrap_or(f64::NAN)
+    }
+}
+
+/// Build the picture of `frames` over screen axes `x` and `y`.
+fn heat_image(frames: &Frames, x: &Axis, y: &Axis) -> Option<HeatImage> {
     let (ex, mx) = axis_map(&x.centres)?;
     let (ey, my) = axis_map(&y.centres)?;
-    let value = |a: usize, b: usize| cell_value(h, field, nx, samples, x, y, a, b);
     let (w, hgt) = (mx.len(), my.len());
     let mut values = Vec::with_capacity(w * hgt);
     for ty in (0..hgt).rev() {
         for &cx in &mx {
-            values.push(value(cx, my[ty]));
+            values.push(frames.value(x, y, cx, my[ty]));
         }
     }
     Some(([w, hgt], values, [ex[0], ex[1], ey[0], ey[1]]))
-}
-
-/// The value a pair of positions along screen axes `x` and `y` shows: a
-/// sample (along a time axis, else the newest) and a cell.
-#[allow(clippy::too_many_arguments)]
-fn cell_value(
-    h: &History,
-    field: usize,
-    nx: usize,
-    samples: &[usize],
-    x: &Axis,
-    y: &Axis,
-    a: usize,
-    b: usize,
-) -> f64 {
-    let (mut k, mut i, mut j) = (h.len() - 1, 0, 0);
-    for (dim, pos) in [(x.dim, a), (y.dim, b)] {
-        match dim {
-            Dim::Time => k = samples[pos],
-            Dim::Grid(0) => i = pos,
-            Dim::Grid(_) => j = pos,
-        }
-    }
-    h.fields()[field]
-        .frame(k)
-        .get(j * nx + i)
-        .copied()
-        .unwrap_or(f64::NAN)
 }
 
 /// A grid field laid over two screen axes, as a heat map shows it, for
@@ -358,27 +381,32 @@ pub(crate) struct Sheet {
     pub labels: [String; 3],
 }
 
+/// The samples a time axis runs over: at most `max` within the trail.
+fn time_samples(input: &ViewInput<'_>, max: usize) -> Vec<usize> {
+    let h = input.history;
+    let first = trail_start(h.times(), input.style("trail_length")).min(h.len() - 1);
+    let stride = (h.len() - first).div_ceil(max).max(1);
+    (first..h.len()).step_by(stride).collect()
+}
+
 /// The sheet of the bound field: at most `max_samples` samples along a
-/// time axis, within the trail length.
-pub(crate) fn sheet(input: &ViewInput<'_>, max_samples: usize) -> Option<Sheet> {
+/// time axis, within the trail length; the axes left over as `slicing`
+/// says (ADR 0086).
+pub(crate) fn sheet(input: &ViewInput<'_>, max_samples: usize, slicing: &Slicing) -> Option<Sheet> {
     let h = input.history;
     let Some(SignalRef::Field(field)) = input.one("field") else {
-        return None;
-    };
-    let FieldShape::Grid { nx, .. } = h.fields()[field].shape else {
         return None;
     };
     if h.is_empty() {
         return None;
     }
-    let first = trail_start(h.times(), input.style("trail_length")).min(h.len() - 1);
-    let stride = (h.len() - first).div_ceil(max_samples).max(1);
-    let samples: Vec<usize> = (first..h.len()).step_by(stride).collect();
+    let samples = time_samples(input, max_samples);
     let (x, y) = heat_axes(input, field, &samples)?;
+    let frames = Frames::of(h, field, &samples, &x, &y, slicing, 0)?;
     let mut z = Vec::with_capacity(x.centres.len() * y.centres.len());
     for b in 0..y.centres.len() {
         for a in 0..x.centres.len() {
-            z.push(cell_value(h, field, nx, &samples, &x, &y, a, b));
+            z.push(frames.value(&x, &y, a, b));
         }
     }
     let labels = [
@@ -394,33 +422,79 @@ pub(crate) fn sheet(input: &ViewInput<'_>, max_samples: usize) -> Option<Sheet> 
     })
 }
 
-/// The name of a screen axis: time, the coordinate's label, or cells.
+/// The field's axes a picture keeps, with the controls for those left
+/// over (ADR 0086); whether anything changed.
+pub(crate) fn leftover_controls(
+    ui: &mut egui::Ui,
+    input: &ViewInput<'_>,
+    slicing: &mut Slicing,
+    facets: bool,
+) -> bool {
+    let h = input.history;
+    let Some(SignalRef::Field(field)) = input.one("field") else {
+        return false;
+    };
+    if h.is_empty() {
+        return false;
+    }
+    let Some((names, dims)) = h.axes(field) else {
+        return false;
+    };
+    let Some((x, y)) = heat_axes(input, field, &[h.len() - 1]) else {
+        return false;
+    };
+    let keep: Vec<usize> = [x.dim, y.dim]
+        .iter()
+        .filter_map(|d| match d {
+            Dim::Grid(a) => Some(*a),
+            Dim::Time => None,
+        })
+        .collect();
+    if !facets {
+        slicing.facet = None;
+    }
+    crate::slice::controls(ui, slicing, &names, &dims, &keep, facets)
+}
+
+/// The name of a screen axis: time, the coordinate's label, or the axis's
+/// own name.
 fn axis_label(h: &History, field: usize, a: &Axis) -> String {
-    let line = matches!(h.fields()[field].shape, FieldShape::Grid { ny: 1, .. });
+    let names = h.axes(field).map(|a| a.0).unwrap_or_default();
     match (a.dim, a.coord) {
         (Dim::Time, _) if h.over_time() => "t [s]".to_string(),
         (Dim::Time, _) => h.index().to_string(),
         (_, Some(c)) => h.labelled(SignalRef::Field(c)),
-        (Dim::Grid(_), None) if line => "cell".to_string(),
-        (Dim::Grid(0), None) => "column".to_string(),
-        (Dim::Grid(_), None) => "row".to_string(),
+        // One or two axes keep their labels as before (ADR 0024).
+        (Dim::Grid(_), None) if names.len() == 1 => "cell".to_string(),
+        (Dim::Grid(0), None) if names.len() == 2 => "column".to_string(),
+        (Dim::Grid(_), None) if names.len() == 2 => "row".to_string(),
+        (Dim::Grid(i), None) => names.get(i).cloned().unwrap_or_default(),
     }
 }
 
-/// Colour each value on the sequential scale between the smallest and
-/// largest finite value; non-finite values are transparent. With `log`,
-/// colours follow the logarithm, so fields spanning orders of magnitude stay
-/// readable; values that are not positive are then transparent. The range
-/// returned is in the values' own units.
-fn colour_image(size: [usize; 2], values: &[f64], log: bool) -> (egui::ColorImage, f64, f64) {
+/// The smallest and largest finite value, on the logarithm with `log`.
+fn scale_range(values: &[f64], log: bool) -> (f64, f64) {
     let scale = |v: f64| if log { v.ln() } else { v };
-    let (lo, hi) = values
+    values
         .iter()
         .map(|&v| scale(v))
         .filter(|v| v.is_finite())
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
             (a.min(v), b.max(v))
-        });
+        })
+}
+
+/// Colour each value on the sequential scale between `lo` and `hi` (on
+/// the logarithm with `log`); non-finite values are transparent, and with
+/// `log` so are values that are not positive.
+fn colour_scaled(
+    size: [usize; 2],
+    values: &[f64],
+    log: bool,
+    lo: f64,
+    hi: f64,
+) -> egui::ColorImage {
+    let scale = |v: f64| if log { v.ln() } else { v };
     let span = (hi - lo).max(1e-300);
     let pixels = values
         .iter()
@@ -433,28 +507,22 @@ fn colour_image(size: [usize; 2], values: &[f64], log: bool) -> (egui::ColorImag
             }
         })
         .collect();
-    let (lo, hi) = if log { (lo.exp(), hi.exp()) } else { (lo, hi) };
-    (
-        egui::ColorImage {
-            size,
-            source_size: egui::Vec2::new(size[0] as f32, size[1] as f32),
-            pixels,
-        },
-        lo,
-        hi,
-    )
+    egui::ColorImage {
+        size,
+        source_size: egui::Vec2::new(size[0] as f32, size[1] as f32),
+        pixels,
+    }
 }
 
 /// The screen axes of a heat map from its bindings (ADR 0024): each of `x`
-/// and `y` claims time or a grid axis; unbound ones take the directions
-/// left, in order, numbered by cell.
+/// and `y` claims time or one of the field's axes; unbound ones take the
+/// field's axes left, in order, numbered by cell (ADR 0086: any others are
+/// left over, picked, reduced or faceted).
 fn heat_axes(input: &ViewInput<'_>, field: usize, samples: &[usize]) -> Option<(Axis, Axis)> {
     let h = input.history;
     let f = &h.fields()[field];
-    let FieldShape::Grid { nx, ny } = f.shape else {
-        return None;
-    };
-    let line = ny == 1;
+    let (_, dims) = h.axes(field)?;
+    let line = dims.len() == 1;
     let claim = |slot: &str| -> Option<(Dim, Option<usize>)> {
         let name = input.bound(slot)?;
         if name == TIME {
@@ -462,9 +530,7 @@ fn heat_axes(input: &ViewInput<'_>, field: usize, samples: &[usize]) -> Option<(
         }
         let axis = h.coordinate_axis(name, &f.name)?;
         match input.one(slot) {
-            Some(SignalRef::Field(c)) if axis < 2 && !(line && axis > 0) => {
-                Some((Dim::Grid(axis), Some(c)))
-            }
+            Some(SignalRef::Field(c)) if axis < dims.len() => Some((Dim::Grid(axis), Some(c))),
             _ => None,
         }
     };
@@ -473,10 +539,10 @@ fn heat_axes(input: &ViewInput<'_>, field: usize, samples: &[usize]) -> Option<(
     if x.is_some() && x.map(|c| c.0) == y.map(|c| c.0) {
         y = None;
     }
-    let needed = if line {
-        [Dim::Time, Dim::Grid(0)]
+    let needed: Vec<Dim> = if line {
+        vec![Dim::Time, Dim::Grid(0)]
     } else {
-        [Dim::Grid(0), Dim::Grid(1)]
+        (0..dims.len()).map(Dim::Grid).collect()
     };
     let (cx, cy) = (x.map(|c| c.0), y.map(|c| c.0));
     let mut free = needed
@@ -484,23 +550,25 @@ fn heat_axes(input: &ViewInput<'_>, field: usize, samples: &[usize]) -> Option<(
         .filter(|d| Some(*d) != cx && Some(*d) != cy);
     let x = x.or_else(|| free.next().map(|d| (d, None)));
     let y = y.or_else(|| free.next().map(|d| (d, None)));
+    let strides: Vec<usize> = (0..dims.len())
+        .map(|i| dims[..i].iter().product())
+        .collect();
     let axis = |(dim, coord): (Dim, Option<usize>)| {
         let cells = match dim {
             Dim::Time => 0,
-            Dim::Grid(0) => nx,
-            Dim::Grid(_) => ny,
+            Dim::Grid(a) => dims[a],
         };
         let cell_centres = || (0..cells).map(|i| i as f64 + 0.5).collect::<Vec<_>>();
         let centres = match (dim, coord) {
             (Dim::Time, _) => samples.iter().map(|&k| h.times()[k]).collect(),
             (Dim::Grid(a), Some(c)) => {
                 let frame = h.fields()[c].frame(h.len() - 1);
-                // Over its axis alone (ADR 0080) or over the whole grid.
+                // Over its axis alone (ADR 0080) or over the whole field.
                 let alone = frame.len() == cells;
                 let along: Vec<f64> = (0..cells)
                     .map(|i| {
                         frame
-                            .get(if a == 0 || alone { i } else { i * nx })
+                            .get(if alone { i } else { i * strides[a] })
                             .copied()
                             .unwrap_or(f64::NAN)
                     })
@@ -527,9 +595,12 @@ fn heat_axes(input: &ViewInput<'_>, field: usize, samples: &[usize]) -> Option<(
     Some((axis(x?), axis(y?)))
 }
 
+/// A heat map: its texture per facet, and what it does with the field's
+/// axes left over (ADR 0086), saved as its selection.
 #[derive(Default)]
 struct Heatmap {
-    texture: Option<egui::TextureHandle>,
+    textures: Vec<egui::TextureHandle>,
+    slicing: Slicing,
 }
 
 impl View for Heatmap {
@@ -541,41 +612,76 @@ impl View for Heatmap {
         if h.is_empty() {
             return;
         }
-        let first = trail_start(h.times(), input.style("trail_length")).min(h.len() - 1);
-        let stride = (h.len() - first).div_ceil(MAX_COLUMNS).max(1);
-        let samples: Vec<usize> = (first..h.len()).step_by(stride).collect();
+        leftover_controls(ui, input, &mut self.slicing, true);
+        let samples = time_samples(input, MAX_COLUMNS);
         let Some((x, y)) = heat_axes(input, field, &samples) else {
             return;
         };
-        let Some((size, values, [x0, x1, y0, y1])) = heat_image(h, field, &samples, &x, &y) else {
-            return;
-        };
+        let (names, dims) = h.axes(field).unwrap_or_default();
+        let keep: Vec<usize> = [x.dim, y.dim]
+            .iter()
+            .filter_map(|d| match d {
+                Dim::Grid(a) => Some(*a),
+                Dim::Time => None,
+            })
+            .collect();
+        let facet = self.slicing.facet_axis(&names, &keep);
+        let places = facet.map_or(1, |a| dims[a].min(MAX_FACETS));
         let log = input.style("log_colour") != 0.0;
-        let (image, lo, hi) = colour_image(size, &values, log);
-        let options = egui::TextureOptions::NEAREST;
-        let texture = match &mut self.texture {
-            Some(t) => {
-                t.set(image, options);
-                t.clone()
-            }
-            None => {
-                let t = ui.ctx().load_texture("plot.heatmap", image, options);
-                self.texture = Some(t.clone());
-                t
-            }
-        };
+        // Each facet's picture, coloured on one scale.
+        let mut pictures = Vec::new();
+        for p in 0..places {
+            let Some(frames) = Frames::of(h, field, &samples, &x, &y, &self.slicing, p) else {
+                return;
+            };
+            let Some(image) = heat_image(&frames, &x, &y) else {
+                return;
+            };
+            pictures.push(image);
+        }
+        let all: Vec<f64> = pictures.iter().flat_map(|p| p.1.iter().copied()).collect();
+        let (lo, hi) = scale_range(&all, log);
+        let shown = |v: f64| if log { v.exp() } else { v };
         ui.weak(format!(
             "{}: {} (dark) to {} (bright){}",
             h.labelled(SignalRef::Field(field)),
-            fmt(lo),
-            fmt(hi),
+            fmt(shown(lo)),
+            fmt(shown(hi)),
             if log { ", log scale" } else { "" }
         ));
-        Plot::new("plot.heatmap")
-            .x_axis_label(axis_label(h, field, &x))
-            .y_axis_label(axis_label(h, field, &y))
-            .allow_scroll(false)
-            .show(ui, |plot| {
+        self.textures.truncate(places);
+        let columns = (places as f64).sqrt().ceil() as usize;
+        let size = ui.available_size();
+        let rows = places.div_ceil(columns);
+        let cell = egui::vec2(
+            size.x / columns as f32 - 4.0,
+            (size.y / rows as f32 - if places > 1 { 18.0 } else { 0.0 }).max(40.0),
+        );
+        let mut draw = |ui: &mut egui::Ui, p: usize| {
+            let (size, values, [x0, x1, y0, y1]) = &pictures[p];
+            let image = colour_scaled(*size, values, log, lo, hi);
+            let options = egui::TextureOptions::NEAREST;
+            let texture = match self.textures.get_mut(p) {
+                Some(t) => {
+                    t.set(image, options);
+                    t.clone()
+                }
+                None => {
+                    let t = ui
+                        .ctx()
+                        .load_texture(format!("plot.heatmap{p}"), image, options);
+                    self.textures.push(t.clone());
+                    t
+                }
+            };
+            let mut plot = Plot::new(("plot.heatmap", p))
+                .x_axis_label(axis_label(h, field, &x))
+                .y_axis_label(axis_label(h, field, &y))
+                .allow_scroll(false);
+            if places > 1 {
+                plot = plot.width(cell.x).height(cell.y);
+            }
+            plot.show(ui, |plot| {
                 scroll_to_zoom(plot);
                 plot.image(PlotImage::new(
                     "field",
@@ -591,6 +697,32 @@ impl View for Heatmap {
                     );
                 }
             });
+        };
+        match facet {
+            None => draw(ui, 0),
+            Some(a) => {
+                egui::Grid::new("plot.heatmap.facets").show(ui, |ui| {
+                    for p in 0..places {
+                        ui.vertical(|ui| {
+                            ui.weak(format!("{} = {p}", names[a]));
+                            draw(ui, p);
+                        });
+                        if (p + 1) % columns == 0 {
+                            ui.end_row();
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    fn selection(&self) -> Option<serde_json::Value> {
+        (!self.slicing.is_empty()).then(|| serde_json::to_value(&self.slicing).expect("plain data"))
+    }
+
+    fn set_selection(&mut self, selection: &serde_json::Value) -> Result<(), String> {
+        self.slicing = serde_json::from_value(selection.clone()).map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
@@ -635,6 +767,21 @@ struct Profile {
     range: Option<[f64; 2]>,
     /// The bindings `range` was computed for.
     key: Vec<SignalRef>,
+    /// The fields' axes left over (ADR 0086).
+    slicing: Slicing,
+}
+
+impl Profile {
+    /// The axis of field `f` a curve runs along: the one coordinate `x`
+    /// places, else the first.
+    fn along(h: &History, f: usize, x: Option<SignalRef>) -> usize {
+        match x {
+            Some(SignalRef::Field(c)) => h
+                .coordinate_axis(&h.fields()[c].name, &h.fields()[f].name)
+                .unwrap_or(0),
+            _ => 0,
+        }
+    }
 }
 
 impl View for Profile {
@@ -649,6 +796,7 @@ impl View for Profile {
         if n < self.seen || self.key != ys {
             *self = Self {
                 key: ys.to_vec(),
+                slicing: std::mem::take(&mut self.slicing),
                 ..Self::default()
             };
         }
@@ -663,10 +811,14 @@ impl View for Profile {
             }
         }
         self.seen = n;
-        let coords = match input.one("x") {
-            Some(SignalRef::Field(x)) => Some(h.fields()[x].frame(n - 1)),
-            _ => None,
-        };
+        // The first field's axes left over: picked, reduced or a curve each
+        // place (ADR 0086).
+        if let SignalRef::Field(f) = ys[0] {
+            if let Some((names, dims)) = h.axes(f) {
+                let keep = [Self::along(h, f, input.one("x"))];
+                crate::slice::controls(ui, &mut self.slicing, &names, &dims, &keep, true);
+            }
+        }
         let x_label = match input.one("x") {
             Some(x) => h.labelled(x),
             None => "cell".to_string(),
@@ -677,26 +829,71 @@ impl View for Profile {
         if let Some([lo, hi]) = self.range.map(|r| widened(r).unwrap_or(r)) {
             plot = plot.include_y(lo).include_y(hi);
         }
-        if ys.len() == 1 {
+        // Curves: each field, or each place along a facet axis.
+        let mut curves: Vec<(String, Vec<f64>, Option<Vec<f64>>)> = Vec::new();
+        for &y in ys {
+            let SignalRef::Field(f) = y else { continue };
+            let Some((names, dims)) = h.axes(f) else {
+                continue;
+            };
+            let keep = [Self::along(h, f, input.one("x"))];
+            let facet = self.slicing.facet_axis(&names, &keep);
+            let places = facet.map_or(1, |a| dims[a].min(MAX_FACETS));
+            let coord = match input.one("x") {
+                Some(SignalRef::Field(x)) => Some(h.fields()[x].frame(n - 1)),
+                _ => None,
+            };
+            for p in 0..places {
+                let values = slice(
+                    h.fields()[f].frame(n - 1),
+                    &dims,
+                    &names,
+                    &keep,
+                    &self.slicing,
+                    p,
+                );
+                // A coordinate over the whole field is sliced the same way.
+                let xs = coord.map(|c| {
+                    if c.len() == values.len() {
+                        c.to_vec()
+                    } else {
+                        slice(c, &dims, &names, &keep, &self.slicing, p)
+                    }
+                });
+                let label = match facet {
+                    Some(a) => format!("{}, {} = {p}", h.label(y), names[a]),
+                    None => h.label(y).to_string(),
+                };
+                curves.push((label, values, xs));
+            }
+        }
+        if curves.len() == 1 {
             plot = plot.y_axis_label(h.labelled(ys[0]));
         } else {
             plot = plot.legend(Legend::default());
         }
         plot.show(ui, |plot| {
             scroll_to_zoom(plot);
-            for (k, &y) in ys.iter().enumerate() {
-                let SignalRef::Field(f) = y else { continue };
-                let values = h.fields()[f].frame(n - 1);
-                let x_of = |i: usize| match coords {
+            for (k, (label, values, xs)) in curves.iter().enumerate() {
+                let x_of = |i: usize| match xs {
                     Some(c) if c.len() == values.len() => c[i],
                     _ => i as f64,
                 };
                 let colour = series_colour(k);
                 for run in finite_runs((0..values.len()).map(|i| [x_of(i), values[i]])) {
-                    plot.line(Line::new(h.label(y).to_string(), run).color(colour));
+                    plot.line(Line::new(label.clone(), run).color(colour));
                 }
             }
         });
+    }
+
+    fn selection(&self) -> Option<serde_json::Value> {
+        (!self.slicing.is_empty()).then(|| serde_json::to_value(&self.slicing).expect("plain data"))
+    }
+
+    fn set_selection(&mut self, selection: &serde_json::Value) -> Result<(), String> {
+        self.slicing = serde_json::from_value(selection.clone()).map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
@@ -770,6 +967,54 @@ mod tests {
         assert_eq!(axis_map(&[0.0, f64::NAN]), None);
     }
 
+    /// The picture of field 0 over `x` and `y`, nothing left over.
+    fn pic(h: &History, samples: &[usize], x: &Axis, y: &Axis) -> Option<HeatImage> {
+        heat_image(
+            &Frames::of(h, 0, samples, x, y, &Slicing::default(), 0)?,
+            x,
+            y,
+        )
+    }
+
+    /// Colour as the heat map does: the range of the values shown.
+    fn colour_image(size: [usize; 2], v: &[f64], log: bool) -> (egui::ColorImage, f64, f64) {
+        let (lo, hi) = scale_range(v, log);
+        let shown = |x: f64| if log { x.exp() } else { x };
+        (colour_scaled(size, v, log, lo, hi), shown(lo), shown(hi))
+    }
+
+    /// A field over three axes drawn over two: the third picked or reduced
+    /// (ADR 0086).
+    #[test]
+    fn a_third_axis_is_picked_or_reduced() {
+        let shape = FieldShape::Tensor {
+            rank: 3,
+            dims: [2, 2, 3, 0, 0, 0, 0, 0],
+        };
+        let mut h = History::with_fields("t", vec![], vec![("q".into(), shape)]);
+        h.set_axes("q", vec!["i".into(), "j".into(), "k".into()]);
+        // q[i, j, k] = i + 10 j + 100 k.
+        let v: Vec<f64> = (0..12)
+            .map(|n| (n % 2) as f64 + 10.0 * ((n / 2) % 2) as f64 + 100.0 * (n / 4) as f64)
+            .collect();
+        h.push_sample(0.0, &[], &[&v]);
+        let (i, j) = (
+            axis(Dim::Grid(0), &[0.5, 1.5]),
+            axis(Dim::Grid(1), &[0.5, 1.5]),
+        );
+        let mut s = Slicing::default();
+        s.pick.insert("k".into(), 2);
+        let frames = Frames::of(&h, 0, &[0], &i, &j, &s, 0).unwrap();
+        assert_eq!(frames.value(&i, &j, 1, 1), 211.0);
+        s.reduce.insert("k".into(), crate::slice::Reduce::Mean);
+        let frames = Frames::of(&h, 0, &[0], &i, &j, &s, 0).unwrap();
+        assert_eq!(frames.value(&i, &j, 0, 1), 110.0);
+        // Over k and i, j left over at its first place.
+        let k = axis(Dim::Grid(2), &[0.5, 1.5, 2.5]);
+        let frames = Frames::of(&h, 0, &[0], &k, &i, &Slicing::default(), 0).unwrap();
+        assert_eq!(frames.value(&k, &i, 2, 1), 201.0);
+    }
+
     fn line_history() -> History {
         let shape = FieldShape::Grid { nx: 3, ny: 1 };
         let mut h = History::with_fields("t", vec![], vec![("rod.T".into(), shape)]);
@@ -787,13 +1032,13 @@ mod tests {
         let time = axis(Dim::Time, &[0.0, 1.0, 2.0, 3.0]);
         let cells = axis(Dim::Grid(0), &[0.5, 1.5, 2.5]);
         // Time across, cell 0 at the bottom.
-        let (size, v, extent) = heat_image(&h, 0, &samples, &time, &cells).unwrap();
+        let (size, v, extent) = pic(&h, &samples, &time, &cells).unwrap();
         assert_eq!(size, [4, 3]);
         assert_eq!(&v[0..4], &[20.0, 21.0, 22.0, 23.0]);
         assert_eq!(&v[8..12], &[0.0, 1.0, 2.0, 3.0]);
         assert_eq!(extent, [-0.5, 3.5, 0.0, 3.0]);
         // Swapped: time upwards, newest sample on top, cell 0 on the left.
-        let (size, v, _) = heat_image(&h, 0, &samples, &cells, &time).unwrap();
+        let (size, v, _) = pic(&h, &samples, &cells, &time).unwrap();
         assert_eq!(size, [3, 4]);
         assert_eq!(&v[0..3], &[3.0, 13.0, 23.0]);
         assert_eq!(&v[9..12], &[0.0, 10.0, 20.0]);
@@ -807,11 +1052,11 @@ mod tests {
         // a = 0, 1, 2 along x; b = 10, 20 along y.
         let a = axis(Dim::Grid(0), &[0.0, 1.0, 2.0]);
         let b = axis(Dim::Grid(1), &[10.0, 20.0]);
-        let (size, v, extent) = heat_image(&h, 0, &[0], &a, &b).unwrap();
+        let (size, v, extent) = pic(&h, &[0], &a, &b).unwrap();
         assert_eq!(size, [3, 2]);
         assert_eq!(v, [4.0, 5.0, 6.0, 1.0, 2.0, 3.0]);
         assert_eq!(extent, [-0.5, 2.5, 5.0, 25.0]);
-        let (size, v, extent) = heat_image(&h, 0, &[0], &b, &a).unwrap();
+        let (size, v, extent) = pic(&h, &[0], &b, &a).unwrap();
         assert_eq!(size, [2, 3]);
         assert_eq!(v, [3.0, 6.0, 2.0, 5.0, 1.0, 4.0]);
         assert_eq!(extent, [5.0, 25.0, -0.5, 2.5]);

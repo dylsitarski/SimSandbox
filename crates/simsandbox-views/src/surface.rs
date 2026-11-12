@@ -8,6 +8,7 @@
 use crate::builtin::scroll_to_zoom;
 use crate::colour::sequential;
 use crate::fields::{fmt, grid_bindings, sheet, FIELD, HEAT_TRAIL, MAX_COLUMNS, X_AXIS, Y_AXIS};
+use crate::slice::Slicing;
 use crate::view::{always, Preset, StyleProperty, Swap, View, ViewInput, ViewRegistry, ViewType};
 use crate::view3d::{Camera, Frame};
 use egui::{Color32, Mesh, Pos2, Shape, Stroke};
@@ -73,7 +74,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             description: "Lines of equal value through a grid field",
             bindings: grid_bindings,
         }],
-        create: || Box::new(Contour),
+        create: || Box::new(Contour::default()),
     })
 }
 
@@ -226,11 +227,14 @@ fn surface_quads(
 #[derive(Default)]
 struct Surface {
     camera: Camera,
+    /// The field's axes left over (ADR 0086).
+    slicing: Slicing,
 }
 
 impl View for Surface {
     fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>) {
-        let Some(sh) = sheet(input, MAX_COLUMNS) else {
+        crate::fields::leftover_controls(ui, input, &mut self.slicing, false);
+        let Some(sh) = sheet(input, MAX_COLUMNS, &self.slicing) else {
             return;
         };
         let log = input.style("log_scale") != 0.0;
@@ -307,6 +311,15 @@ impl View for Surface {
             pitch: pitch as f32,
             zoom: zoom as f32,
         };
+    }
+
+    fn selection(&self) -> Option<serde_json::Value> {
+        (!self.slicing.is_empty()).then(|| serde_json::to_value(&self.slicing).expect("plain data"))
+    }
+
+    fn set_selection(&mut self, selection: &serde_json::Value) -> Result<(), String> {
+        self.slicing = serde_json::from_value(selection.clone()).map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
@@ -417,11 +430,16 @@ fn chain(segments: &[[usize; 2]]) -> Vec<Vec<usize>> {
 
 /// Lines of equal value over the field's two axes, coloured from low to
 /// high like the heat map.
-struct Contour;
+#[derive(Default)]
+struct Contour {
+    /// The field's axes left over (ADR 0086).
+    slicing: Slicing,
+}
 
 impl View for Contour {
     fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>) {
-        let Some(sh) = sheet(input, MAX_COLUMNS) else {
+        crate::fields::leftover_controls(ui, input, &mut self.slicing, false);
+        let Some(sh) = sheet(input, MAX_COLUMNS, &self.slicing) else {
             return;
         };
         let log = input.style("log_scale") != 0.0;
@@ -455,6 +473,15 @@ impl View for Contour {
                 }
             }
         });
+    }
+
+    fn selection(&self) -> Option<serde_json::Value> {
+        (!self.slicing.is_empty()).then(|| serde_json::to_value(&self.slicing).expect("plain data"))
+    }
+
+    fn set_selection(&mut self, selection: &serde_json::Value) -> Result<(), String> {
+        self.slicing = serde_json::from_value(selection.clone()).map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 

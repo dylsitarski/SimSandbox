@@ -3009,9 +3009,14 @@ fn output_element_exists(key: &str, model: &Model, ids: &BTreeMap<String, BlockI
                 && match (p.shape, index) {
                     (Shape::Scalar, None) => true,
                     (Shape::Vector(n), Some(i)) => i < n,
-                    // Fields and point sets are bound as a whole.
+                    // Fields and point sets are bound as a whole, of any
+                    // rank, and rows (ADR 0086).
                     (
-                        Shape::Grid { .. } | Shape::Points { .. } | Shape::Population { .. },
+                        Shape::Grid { .. }
+                        | Shape::Points { .. }
+                        | Shape::Population { .. }
+                        | Shape::Tensor { .. }
+                        | Shape::Rows { .. },
                         None,
                     ) => true,
                     _ => false,
