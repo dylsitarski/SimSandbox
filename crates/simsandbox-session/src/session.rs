@@ -2369,9 +2369,12 @@ impl Session {
             && self.ids.values().all(|&id| {
                 model.block(id).is_ok_and(|b| {
                     // Tables only of blocks that say they never read
-                    // time: rows that change by rules each round.
+                    // time: rows that change by rules each round. A block
+                    // integrated in time runs in time, whatever holds its
+                    // states (rows of tables, ADR 0085 step 3).
                     b.reads_time() == Some(false)
                         && b.instants().is_none()
+                        && b.spec().time != TimeSemantics::Continuous
                         && (b.spec().states.is_empty()
                             || b.spec().time == TimeSemantics::DiscreteEvent)
                 })

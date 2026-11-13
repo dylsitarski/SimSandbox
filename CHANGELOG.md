@@ -66,7 +66,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 - Networks from files in typed equations: `start nodes = file "nodes.csv"` starts a table from a CSV file (an `id` column, and a column per quantity, with units in the header if wanted); an edge table's file has `from` and `to` (node ids); `param g[wires] [S] = 0.001` is a value per row; `outflow(I, wires)` sums a flow along edges onto their ends; `param m[k] [kg] = file "masses.csv"` reads an array parameter's values. The files count in the model hash. Example: `examples/networks/bridge.ssbx.json`, a Wheatstone bridge.
 - `dx/dt = 0` (a right side of exactly zero) balances in any unit.
-- Built-in examples may read files: the app opens such an example from a folder holding them, and Save as writes them beside the saved model. "A Wheatstone bridge (a network from files)" is in the Examples menu.
+- Built-in examples may read files: the app opens such an example from a folder holding them, and Save as writes them beside the saved model. "A Wheatstone bridge (a network from files)" is in the Examples menu, with the supply voltage and capacitance as sliders.
 - **Fill the past** in the run bar: something wired to a view during a run, which had no past until Restart, is filled by running again from a snapshot with the input as recorded, giving the same numbers as a run that recorded it from the start; the run then carries on from where it was. Needs the recorder. Rust: `Session::has_gaps` and `Session::recompute`.
 - `plot.mesh` cuts a 3D mesh by a plane in any direction (along x, y or z, or any normal, with a slider), drawing the section flat; the cut is saved with the view as `{"cut": {"normal": […], "at": …}}`. `plot.xy` draws quantities over a table's rows against each other, cell by cell, paired by id.
 - Strategy helpers write refinement over any number of parameters, in one form: `{"kind": "refine", "params": [{"param": "f.u", "range": [-1, 1]}, …], "result": …}`, Python `Model.refine(target, {"f.u": (-1, 1), "f.v": (-1, 1)}, result)`, and the app's "Search…": a mesh of simplices over the parameters (segments over one) refined where the result changes. `param` and `range` alone, and Python's `refine(target, param, range, result)`, are replaced by it.
@@ -227,6 +227,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- A model's diagram and Inspector could not build typed equations that start a table or mesh from a file ("cannot be built"); they now read the files from the model's folder.
+- A model integrating states over table rows in time (meshes, networks) with an end time was run as an iteration in rounds; it runs in time.
 - Outputs of states over cells, sides or edges (ADR 0085) gave the cells' corner ids instead of the states' values, in views and in `run` output.
 - A block picked on the diagram inside a used model now shows its values in the Inspector's selection (it showed nothing).
 - Undo on the canvas kept parameter values moved since the edit only for parameters the file wrote; it now keeps them for parameters left at their defaults too, where the block's definition is unchanged.

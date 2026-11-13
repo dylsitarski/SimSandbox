@@ -1486,6 +1486,8 @@ fn edit_level(
                 .iter_mut()
                 .find(|b| &b.name == block)
                 .ok_or_else(|| format!("no block '{block}'"))?;
+            // Files the equations start from are read from the thread's
+            // folder: the app applies edits in the model's.
             let set =
                 simsandbox_eq::EquationSet::parse(block, equations).map_err(|e| e.to_string())?;
             let keep: Vec<String> = simsandbox_eq::OdeSystem::spec(&set)

@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "description": "An unbalanced Wheatstone bridge read from two files: nodes.csv (each node's id, starting voltage and whether it is held) and wires.csv (each wire's ends and conductance). A current flows along each wire from its higher end; every free node charges a small capacitance until the currents into it balance, which is Kirchhoff's solution: then the power the held nodes supply equals the power the wires dissipate.",
+  "description": "An unbalanced Wheatstone bridge read from two files: nodes.csv (each node's id, whether it is held, and the share of the supply it is held at) and wires.csv (each wire's ends and conductance). A current flows along each wire from its higher end; every free node charges a capacitance C until the currents into it balance, which is Kirchhoff's solution: then the power the held nodes supply equals the power the wires dissipate. Change the supply or C while it runs.",
   "run": {
     "dt": 0.05,
     "t_end": 30
@@ -15,15 +15,18 @@
       "equations": [
         "table nodes",
         "start nodes = file \"nodes.csv\"",
-        "state v[nodes] [V] = 0",
         "param fixed[nodes] = 0",
-        "param C[nodes] [F] = 0.001",
+        "param share[nodes] = 0",
+        "state v[nodes] [V] = 0",
+        "param supply [V] = 10",
+        "param C [F] = 0.001",
+        "u = fixed*share*supply + (1 - fixed)*v",
         "edges wires of nodes",
         "start wires = file \"wires.csv\"",
         "param g[wires] [S] = 0.001",
-        "I = g*(from_end(v, wires) - to_end(v, wires))",
+        "I = g*(from_end(u, wires) - to_end(u, wires))",
         "dv/dt = -(1 - fixed)*outflow(I, wires)/C",
-        "supplied = sum(fixed*outflow(I, wires)*v)",
+        "supplied = sum(fixed*outflow(I, wires)*u)",
         "dissipated = sum(I*I/g)"
       ]
     }
@@ -44,6 +47,24 @@
           "y": "bridge.dissipated"
         }
       }
-    ]
+    ],
+    "params": {
+      "bridge.supply": {
+        "slider": true,
+        "range": [
+          0,
+          20
+        ],
+        "pin": true
+      },
+      "bridge.C": {
+        "slider": true,
+        "range": [
+          0.0001,
+          0.01
+        ],
+        "pin": true
+      }
+    }
   }
 }

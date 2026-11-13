@@ -65,18 +65,18 @@ fn the_bridge_settles_at_kirchhoffs_solution() {
     let v2 = 230.0 / 74.0;
     let v1 = (10.0 + 5.0 * v2) / 9.0;
     assert!(
-        (last(&y, "bridge.v#11") - v1).abs() < 1e-9,
+        (last(&y, "bridge.u#11") - v1).abs() < 1e-9,
         "{}",
-        last(&y, "bridge.v#11")
+        last(&y, "bridge.u#11")
     );
     assert!(
-        (last(&y, "bridge.v#12") - v2).abs() < 1e-9,
+        (last(&y, "bridge.u#12") - v2).abs() < 1e-9,
         "{}",
-        last(&y, "bridge.v#12")
+        last(&y, "bridge.u#12")
     );
     // The file's ids, and held nodes held exactly.
-    assert_eq!(last(&y, "bridge.v#10"), 10.0);
-    assert_eq!(last(&y, "bridge.v#13"), 0.0);
+    assert_eq!(last(&y, "bridge.u#10"), 10.0);
+    assert_eq!(last(&y, "bridge.u#13"), 0.0);
     // Conductances given in mS, read in S.
     assert_eq!(last(&y, "bridge.g#2"), 0.005);
     // The power the held nodes supply is what the wires dissipate.
@@ -99,6 +99,11 @@ fn the_files_are_part_of_the_model() {
         s.run_file("b.json", "", "", "").model_hash
     };
     let before = hash();
+    // States over rows integrated in time: it runs in time, not in rounds.
+    let s =
+        simsandbox_session::session::Session::load_in("b", &text, &registry(), Some(&dir)).unwrap();
+    assert!(!s.rounds_pending());
+    drop(s);
     let wires = std::fs::read_to_string(dir.join("wires.csv")).unwrap();
     std::fs::write(dir.join("wires.csv"), wires.replace("11,12,5", "11,12,6")).unwrap();
     let after = hash();
@@ -120,7 +125,7 @@ fn bad_files_are_refused_with_reasons() {
             .map(|_| ())
             .expect_err("refused")
     };
-    let nodes = "id,v [V],fixed\n10,10,1\n11,0,0\n12,0,0\n13,0,1\n";
+    let nodes = "id,fixed,share\n10,1,1\n11,0,0\n12,0,0\n13,1,0\n";
     let wires = "from,to,g [mS]\n10,11,1\n10,12,2\n11,12,5\n11,13,3\n12,13,4\n";
     let e = error(&nodes.replace("fixed", "held"), wires);
     assert!(e.contains("'held' is not a quantity over nodes"), "{e}");
@@ -131,8 +136,8 @@ fn bad_files_are_refused_with_reasons() {
     );
     let e = error(nodes, &wires.replace("from,to", "a,b"));
     assert!(e.contains("'from' and 'to'"), "{e}");
-    let e = error(&nodes.replace("v [V]", "v [s]"), wires);
-    assert!(e.contains("the column 'v' is in s"), "{e}");
+    let e = error(nodes, &wires.replace("g [mS]", "g [s]"));
+    assert!(e.contains("the column 'g' is in s"), "{e}");
     let e = error(&nodes.replace("11,0,0", "11,0"), wires);
     assert!(e.contains("2 values for 3 columns"), "{e}");
     let e = error(&nodes.replace("12,0,0", "11,0,0"), wires);

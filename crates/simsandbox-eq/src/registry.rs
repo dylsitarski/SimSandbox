@@ -59,7 +59,16 @@ pub fn register(registry: &mut Registry) -> Result<()> {
     })?;
     registry.register(EQUATIONS, |name, c| {
         no_update(c)?;
-        let set = EquationSet::parse(name, &c.definition)?;
+        // Files the equations start tables from (a mesh, a CSV: ADR 0085,
+        // ADR 0069 step 3) are read from the block's folder when its
+        // configuration gives one (the diagram's, the Inspector's), else
+        // from the thread's (`registry::in_folder`).
+        let set = match &c.folder {
+            Some(f) => simsandbox_core::registry::in_folder(Some(f), || {
+                EquationSet::parse(name, &c.definition)
+            })?,
+            None => EquationSet::parse(name, &c.definition)?,
+        };
         // No method given: the one the equations call for.
         let c = &BlockConfig {
             method: if c.method.name.is_empty() {

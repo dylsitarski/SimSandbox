@@ -501,6 +501,10 @@ impl SimApp {
             .and_then(Path::parent)
             .or(self.example_folder.as_ref().map(|e| e.0.as_path()));
         self.diagram.folder = folder.map(Path::to_path_buf);
+        // Blocks the window builds (the diagram's nodes, the Inspector,
+        // equation edits) read their files from the model's folder, as the
+        // session's do (ADR 0063, ADR 0069 step 3).
+        simsandbox_core::registry::set_folder(folder.map(Path::to_path_buf));
         // Its studies run on the worker, which shows their progress
         // (ADR 0071): the window never waits for them.
         let loaded = simsandbox_session::study::without_running_studies(|| {
@@ -1921,6 +1925,8 @@ impl SimApp {
                 self.log.info(format!("Saved to {}", path.display()));
                 self.path = Some(path.to_path_buf());
                 self.example_folder = None;
+                self.diagram.folder = path.parent().map(Path::to_path_buf);
+                simsandbox_core::registry::set_folder(self.diagram.folder.clone());
                 self.mark_saved();
             }
             Err(e) => self.error = Some(format!("{}: {e}", path.display())),
@@ -7206,6 +7212,22 @@ mod tests {
         app.open_example(k);
         assert!(app.error.is_none(), "{:?}", app.error);
         assert!(app.path.is_none(), "an example has no path until saved");
+        // The window's own builds (the diagram's nodes, the Inspector) read
+        // the files too.
+        let m = app.session.as_ref().unwrap().model();
+        let d = simsandbox_session::diagram::Diagram::new(&m.file, &app.registry);
+        let n = &d.nodes[d.node("bridge").unwrap()];
+        assert!(n.error.is_none(), "{:?}", n.error);
+        assert!(
+            n.values.iter().any(|v| v.name == "supply"),
+            "its parameters"
+        );
+        for p in ["bridge.supply", "bridge.C"] {
+            assert!(
+                m.params.iter().any(|r| r.key.ends_with(p)),
+                "{p} in the Inspector"
+            );
+        }
         let live = app.session.as_ref().unwrap();
         assert!(live
             .call(|s, _| s.run_until(1.0).map_err(|e| e.to_string()))
