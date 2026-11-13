@@ -185,6 +185,8 @@ pub struct TableRows {
     /// Cells starting from a file (simplices are labelled for bisection
     /// by their longest edge).
     pub from_file: bool,
+    /// Rows starting from a CSV file (ADR 0069 step 3).
+    pub start_file: Option<std::sync::Arc<StartCsv>>,
 }
 
 impl TableRows {
@@ -340,6 +342,68 @@ struct Axis {
     sides_of: Option<usize>,
 }
 
+/// Parameters over a table's rows (ADR 0069, ADR 0079 point 2), `param
+/// g[pipes] [S] = 2`: a value per row that does not change, kept with
+/// the row through rules and set by the table's starting file. Written as
+/// a state over the rows that holds (`dg/dt = 0`, or `g[n+1] = g` in a
+/// block of maps), so it is stored, rewound and passed on as states are.
+/// Lines are kept in place, so errors keep their line numbers.
+fn row_params(lines: &[String]) -> Vec<String> {
+    let tables: Vec<&str> = lines
+        .iter()
+        .filter_map(|l| {
+            let l = l.trim();
+            ["table ", "edges ", "cells ", "sides "]
+                .iter()
+                .find_map(|w| l.strip_prefix(w))
+                .and_then(|r| r.split_whitespace().next())
+        })
+        .collect();
+    let lhs = |l: &str| l.split_once('=').map(|(a, _)| a.trim().to_string());
+    let continuous = lines
+        .iter()
+        .filter_map(|l| lhs(l))
+        .any(|a| a.starts_with('d') && a.ends_with("/dt"));
+    let maps = lines
+        .iter()
+        .filter_map(|l| lhs(l))
+        .any(|a| a.ends_with("[n+1]"));
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut held = Vec::new();
+    for l in lines {
+        let t = l.trim();
+        let over_rows = t.strip_prefix("param ").and_then(|rest| {
+            let head = rest.split_once('=').map_or(rest, |(h, _)| h);
+            let (n, dims) = head.split_once('[')?;
+            let (dims, _) = dims.split_once(']')?;
+            dims.split(',')
+                .any(|d| tables.contains(&d.trim()))
+                .then(|| n.trim().to_string())
+        });
+        match over_rows {
+            Some(n) if continuous || maps => {
+                let rest = t.strip_prefix("param ").expect("checked");
+                let line = if rest.contains('=') {
+                    format!("state {rest}")
+                } else {
+                    format!("state {rest} = 1")
+                };
+                out.push(line);
+                held.push(n);
+            }
+            _ => out.push(l.clone()),
+        }
+    }
+    for n in held {
+        out.push(if continuous {
+            format!("d{n}/dt = 0")
+        } else {
+            format!("{n}[n+1] = {n}")
+        });
+    }
+    out
+}
+
 /// The most rows a table has unless it says (`table pts max 200`).
 pub const DEFAULT_MAX_ROWS: usize = 100_000;
 
@@ -364,6 +428,151 @@ fn read_table(rest: &str, line: usize) -> Result<(String, usize)> {
         ));
     }
     Ok((name.to_string(), max))
+}
+
+/// A table's starting rows read from a CSV file (ADR 0069 step 3):
+/// `start pts = file "nodes.csv"`. Each line a row; an `id` column gives
+/// the rows' ids, an edge table's `from` and `to` columns the ids of the
+/// rows each edge joins, and every other column the starting values of
+/// the quantity over the table it names (a header may give a unit,
+/// `g [mS]`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartCsv {
+    pub path: String,
+    pub rows: usize,
+    pub ids: Option<Vec<u64>>,
+    /// Name, unit as written, values.
+    pub columns: Vec<(String, Option<String>, Vec<f64>)>,
+}
+
+impl StartCsv {
+    /// A column's values by name.
+    pub fn column(&self, name: &str) -> Option<&[f64]> {
+        self.columns
+            .iter()
+            .find(|c| c.0 == name)
+            .map(|c| c.2.as_slice())
+    }
+
+    /// Read `path` (relative to the model's folder), cached by its bytes.
+    fn load(path: &str) -> std::result::Result<std::sync::Arc<Self>, String> {
+        type Cache =
+            std::collections::HashMap<std::path::PathBuf, (Vec<u8>, std::sync::Arc<StartCsv>)>;
+        static CACHE: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
+        let file = std::path::PathBuf::from(path);
+        let file = match (file.is_absolute(), simsandbox_core::registry::current_folder()) {
+            (false, Some(folder)) => folder.join(file),
+            (false, None) => {
+                return Err(format!(
+                    "{path} is relative to the model's folder: save the model first, or give a full path"
+                ))
+            }
+            _ => file,
+        };
+        let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = cache.get_or_insert_with(Default::default);
+        if let Some((b, c)) = cache.get(&file) {
+            if *b == bytes {
+                return Ok(c.clone());
+            }
+        }
+        let text =
+            String::from_utf8(bytes.clone()).map_err(|_| format!("{path}: not a text file"))?;
+        let csv = std::sync::Arc::new(Self::parse(path, &text)?);
+        cache.insert(file, (bytes, csv.clone()));
+        Ok(csv)
+    }
+
+    fn parse(path: &str, text: &str) -> std::result::Result<Self, String> {
+        let mut lines = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#'));
+        let Some((_, header)) = lines.next() else {
+            return Err(format!("{path} is empty: its first line names the columns"));
+        };
+        let mut columns: Vec<(String, Option<String>, Vec<f64>)> = Vec::new();
+        for h in header.split(',') {
+            let h = h.trim();
+            let (name, unit) = match h.strip_suffix(']').and_then(|r| r.rsplit_once('[')) {
+                Some((n, u)) => (n.trim().to_string(), Some(u.trim().to_string())),
+                None => (h.to_string(), None),
+            };
+            if !is_name(&name) || columns.iter().any(|c| c.0 == name) {
+                return Err(format!(
+                    "{path}: the column '{name}' is not a name, or comes twice"
+                ));
+            }
+            columns.push((name, unit, Vec::new()));
+        }
+        let mut rows = 0;
+        for (k, line) in lines {
+            let cells: Vec<&str> = line.split(',').collect();
+            if cells.len() != columns.len() {
+                return Err(format!(
+                    "{path}, line {}: {} values for {} columns",
+                    k + 1,
+                    cells.len(),
+                    columns.len()
+                ));
+            }
+            for (c, v) in columns.iter_mut().zip(cells) {
+                let v: f64 = v.trim().parse().map_err(|_| {
+                    format!("{path}, line {}: '{}' is not a number", k + 1, v.trim())
+                })?;
+                c.2.push(v);
+            }
+            rows += 1;
+        }
+        let whole = |name: &str| -> std::result::Result<Option<Vec<u64>>, String> {
+            let Some(c) = columns.iter().find(|c| c.0 == name) else {
+                return Ok(None);
+            };
+            c.2.iter()
+                .map(|&v| {
+                    (v >= 0.0 && v.fract() == 0.0 && v < 2f64.powi(53))
+                        .then_some(v as u64)
+                        .ok_or_else(|| format!("{path}: {name} {v} is not a whole number from 0"))
+                })
+                .collect::<std::result::Result<Vec<u64>, String>>()
+                .map(Some)
+        };
+        let ids = whole("id")?;
+        if let Some(ids) = &ids {
+            let mut seen = std::collections::HashSet::new();
+            if let Some(d) = ids.iter().find(|i| !seen.insert(**i)) {
+                return Err(format!("{path}: the id {d} comes twice"));
+            }
+        }
+        whole("from")?;
+        whole("to")?;
+        Ok(Self {
+            path: path.to_string(),
+            rows,
+            ids,
+            columns: columns.into_iter().filter(|c| c.0 != "id").collect(),
+        })
+    }
+
+    /// The rows' ids: from the file, else 0, 1, ….
+    pub fn row_ids(&self) -> Vec<u64> {
+        self.ids
+            .clone()
+            .unwrap_or_else(|| (0..self.rows as u64).collect())
+    }
+}
+
+/// A start of the form `file "nodes.csv"`: the path.
+fn quoted_file(spec: &str) -> Option<std::result::Result<String, ()>> {
+    let rest = spec.trim().strip_prefix("file ")?.trim();
+    let Some(inner) = rest.strip_prefix('"') else {
+        return Some(Err(()));
+    };
+    Some(match inner.split_once('"') {
+        Some((p, after)) if after.trim().is_empty() => Ok(p.to_string()),
+        _ => Err(()),
+    })
 }
 
 /// A `cells tri of pts [max 200]: triangle` line (ADR 0085), `rest`
@@ -1326,20 +1535,40 @@ fn axes_of(
             of(&e)
         }
         "outflow" => {
-            // A sum over each cell's sides (ADR 0085 step 3): over the cells.
-            let usage = "a quantity over sides and the sides, e.g. outflow(F, f)";
+            // A sum over each cell's sides (ADR 0085 step 3): over the
+            // cells; or over each row's edges, from `from` to `to` (ADR
+            // 0069 step 3): over the rows they join.
+            let usage =
+                "a quantity over sides or edges and those, e.g. outflow(F, f) or outflow(Q, pipes)";
             count(args.len() == 2, usage)?;
-            let Some(f) = axis_named(&args[1]).filter(|&f| grid[f].sides_of.is_some()) else {
+            let edges = |f: usize| {
+                grid[f].sides_of.is_none()
+                    && grid[f].ends_of.is_some()
+                    && grid[f].shape == Some(crate::mesh::CellShape::Segment)
+            };
+            let Some(f) = axis_named(&args[1]).filter(|&f| grid[f].sides_of.is_some() || edges(f))
+            else {
                 return Err((col, format!("'outflow' takes {usage}")));
             };
             let a = of(&args[0])?;
             if !a.is_empty() && a != [f] {
                 return Err((
                     col,
-                    format!("'outflow' takes a quantity over the sides {}", grid[f].name),
+                    format!(
+                        "'outflow' takes a quantity over the {} {}",
+                        if grid[f].sides_of.is_some() {
+                            "sides"
+                        } else {
+                            "edges"
+                        },
+                        grid[f].name
+                    ),
                 ));
             }
-            Ok(vec![grid[f].sides_of.expect("sides")])
+            Ok(vec![grid[f]
+                .sides_of
+                .or(grid[f].ends_of)
+                .expect("sides or edges")])
         }
         "of" => {
             // of(T, i): T's value in the row with id i, NaN if none.
@@ -1726,9 +1955,15 @@ fn lower(
                 "outflow" => {
                     let (t, _) = low(&args[0])?;
                     let f = axis_named(&args[1]);
-                    let c = grid[f].sides_of.expect("checked: sides");
-                    let v = ends[f].as_ref().expect("checked: sides");
-                    let n = v.len() - 4;
+                    let c = grid[f].sides_of.or(grid[f].ends_of).expect("checked");
+                    let v = ends[f].as_ref().expect("checked: sides or edges");
+                    // Edges: + at `from`, − at `to` (their first and second
+                    // places); sides: at the inner and the outer cell.
+                    let n = if grid[f].sides_of.is_some() {
+                        v.len() - 4
+                    } else {
+                        0
+                    };
                     let cells = grid[c].cells;
                     let to = |at: usize| {
                         Expr::Array(
@@ -1889,6 +2124,7 @@ impl EquationSet {
         lines: &[String],
         rows: &std::collections::BTreeMap<String, usize>,
     ) -> Result<Self> {
+        let lines = &row_params(lines);
         // `param = 2` and the like are equations defining such a name.
         let keyword = |line: &str, word: &str| -> Option<String> {
             let rest = line.strip_prefix(word)?.strip_prefix(' ')?;
@@ -1905,6 +2141,9 @@ impl EquationSet {
         // Edge tables starting as a chain (ADR 0079 stage 2): `start segs
         // = chain`, an edge from each starting row to the next.
         let mut chains: std::collections::HashMap<String, usize> = Default::default();
+        // Tables starting from a CSV file (ADR 0069 step 3).
+        let mut csv_starts: std::collections::HashMap<String, (std::sync::Arc<StartCsv>, usize)> =
+            Default::default();
         // Cells starting as a grid (ADR 0085): `start tri = grid x 0 .. 1
         // by 8, y 0 .. 1 by 8`, which also makes their points.
         let mut grid_starts: std::collections::HashMap<String, (MeshSpec, usize)> =
@@ -1930,6 +2169,38 @@ impl EquationSet {
             };
             if n.trim() == "chain" {
                 chains.insert(t.trim().to_string(), k + 1);
+                continue;
+            }
+            // Rows from a CSV file (ADR 0069 step 3); cells from a mesh
+            // file are below.
+            if let (Some(file), false) = (quoted_file(n), cell_decls.contains_key(t.trim())) {
+                let path = file.map_err(|()| {
+                    definition_error(
+                        k + 1,
+                        1,
+                        "write a table's file as 'start pts = file \"nodes.csv\"'",
+                    )
+                })?;
+                let t = t.trim().to_string();
+                let is_edges = lines.iter().any(|l| {
+                    l.trim()
+                        .strip_prefix("edges ")
+                        .and_then(|r| r.split_whitespace().next())
+                        == Some(t.as_str())
+                });
+                // Compiled again for the rows a run has (the file is read
+                // when first compiled, in the model's folder, as a mesh is).
+                if let Some(&n) = rows.get(&t) {
+                    if !is_edges {
+                        starts.insert(t, (n, k + 1));
+                    }
+                    continue;
+                }
+                let csv = StartCsv::load(&path).map_err(|e| definition_error(k + 1, 1, e))?;
+                if !is_edges {
+                    starts.insert(t.clone(), (csv.rows, k + 1));
+                }
+                csv_starts.insert(t, (csv, k + 1));
                 continue;
             }
             if let Some(spec) = MeshSpec::parse(n.trim()) {
@@ -2067,7 +2338,18 @@ impl EquationSet {
                         format!("{t} starts as a chain or a grid ('start {t} = chain', 'start {t} = grid …'), not a number of rows"),
                     ));
                 }
+                if let (Some((_, line)), true) = (
+                    csv_starts.get(&t),
+                    shape != crate::mesh::CellShape::Segment || word == "sides" || word == "cells",
+                ) {
+                    return Err(definition_error(
+                        *line,
+                        1,
+                        format!("{t} starts from a mesh file ('start {t} = file \"part.msh\" at x, y'): a CSV file starts tables and edges"),
+                    ));
+                }
                 let start = match (chains.get(&t), grid_starts.get(&t)) {
+                    _ if csv_starts.contains_key(&t) => csv_starts[&t].0.rows,
                     (Some(_), _) if shape == crate::mesh::CellShape::Segment && word != "sides" => {
                         starts
                             .get(&grid[ends.expect("points")].name)
@@ -2252,8 +2534,24 @@ impl EquationSet {
             }
             if let Some(rest) = keyword(trimmed, "param") {
                 let rest = rest.as_str();
-                // `param k [N/m] = 4`, `param k [N/m]`, `param k = 4`.
+                // `param k [N/m] = 4`, `param k [N/m]`, `param k = 4`; an
+                // array's values from a file, `param m[k] [kg] = file
+                // "masses.csv"` (ADR 0069 step 3).
+                let mut from_file = None;
                 let (head, value) = match rest.split_once('=') {
+                    Some((h, v)) if quoted_file(v).is_some() => {
+                        let path = quoted_file(v).expect("checked").map_err(|()| {
+                            definition_error(
+                                number,
+                                1,
+                                "write an array's file as 'param m[k] = file \"m.csv\"'",
+                            )
+                        })?;
+                        let csv =
+                            StartCsv::load(&path).map_err(|e| definition_error(number, 1, e))?;
+                        from_file = Some(csv);
+                        (h, 1.0)
+                    }
                     Some((h, v)) => {
                         let v = v.trim().parse::<f64>().map_err(|_| {
                             definition_error(number, 1, format!("'{}' is not a number", v.trim()))
@@ -2290,14 +2588,74 @@ impl EquationSet {
                 if let Some(u) = unit {
                     units.insert(n.clone(), read_unit(&u, number, 1)?);
                 }
+                if from_file.is_some() && array.is_none() {
+                    return Err(definition_error(
+                        number,
+                        1,
+                        format!("'{n}' is one value: a file gives an array's values ('param {n}[k] = file …')"),
+                    ));
+                }
                 if let Some(dims) = array {
                     let cells = cells_of(&dims, &grid);
+                    // From a file: the column named after it, or its only
+                    // column; a value per cell, in the cells' order.
+                    let values: Option<Vec<f64>> = match &from_file {
+                        None => None,
+                        Some(csv) => {
+                            let col = csv
+                                .columns
+                                .iter()
+                                .find(|c| c.0 == n)
+                                .or(if csv.columns.len() == 1 {
+                                    csv.columns.first()
+                                } else {
+                                    None
+                                })
+                                .ok_or_else(|| {
+                                    definition_error(
+                                        number,
+                                        1,
+                                        format!("{} has no column '{n}'", csv.path),
+                                    )
+                                })?;
+                            if col.2.len() != cells {
+                                return Err(definition_error(
+                                    number,
+                                    1,
+                                    format!(
+                                        "{} has {} values of {n}, for {cells} cells",
+                                        csv.path,
+                                        col.2.len()
+                                    ),
+                                ));
+                            }
+                            let f = match (&col.1, units.get(&n)) {
+                                (Some(u), Some(want)) => {
+                                    let given = read_unit(u, number, 1)?;
+                                    if given.dim != want.dim {
+                                        return Err(definition_error(
+                                            number,
+                                            1,
+                                            format!(
+                                                "{}: '{n}' is in {u}, which is not {n}'s unit",
+                                                csv.path
+                                            ),
+                                        ));
+                                    }
+                                    given.scale / want.scale
+                                }
+                                _ => 1.0,
+                            };
+                            Some(col.2.iter().map(|v| v * f).collect())
+                        }
+                    };
                     for k in 0..cells {
                         let e = format!("{n}[{k}]");
                         if let Some(u) = units.get(&n).copied() {
                             units.insert(e.clone(), u);
                         }
-                        declared.push((e, value, number));
+                        let v = values.as_ref().map_or(value, |v| v[k]);
+                        declared.push((e, v, number));
                     }
                     array_params.push((n.clone(), cells));
                     shapes.insert(n, dims);
@@ -3232,6 +3590,10 @@ impl EquationSet {
             let of = |m: &str| unit_of(m).dim.0;
             let balance =
                 |ast: &Ast, want: Dim, what: &str, line: usize, col: usize| -> Result<()> {
+                    // Zero is zero in every unit: `dx/dt = 0` holds x.
+                    if matches!(ast, Ast::Num(v) if *v == 0.0) {
+                        return Ok(());
+                    }
                     let got = dimension_with(ast, &of, &apply_dim)
                         .map_err(|(c, m)| definition_error(line, col + c - 1, m))?;
                     if got != want {
@@ -3682,6 +4044,9 @@ impl EquationSet {
                             starting_sides(&grid, c, &chains, &meshes, &starts).unwrap_or(0)
                         }
                         (_, _, Some(_)) => meshes.get(&a.name).map_or(0, |m| m.1.len()),
+                        (Some(_), _, _) if csv_starts.contains_key(&a.name) => {
+                            csv_starts[&a.name].0.rows
+                        }
                         // A chain: an edge from each starting row to the next.
                         (Some(m), _, _) if chains.contains_key(&a.name) => starts
                             .get(&grid[m].name)
@@ -3740,11 +4105,83 @@ impl EquationSet {
                         .unwrap_or_default(),
                     parents: refined.contains(&i).then_some(0),
                     from_file: matches!(grid_starts.get(&a.name), Some((MeshSpec::File { .. }, _))),
+                    start_file: csv_starts.get(&a.name).map(|c| c.0.clone()),
                 })
             })
             .collect();
         // Parents' tables after the declared ones.
         let mut tables = tables;
+        // Rows from CSV files (ADR 0069 step 3): each column names one of
+        // the table's quantities (converted to its unit), an edge file has
+        // `from` and `to`, joining rows of its table by id.
+        for k in 0..tables.len() {
+            let Some(csv) = tables[k].start_file.clone() else {
+                continue;
+            };
+            let line = csv_starts[&tables[k].name].1;
+            let err = |m: String| definition_error(line, 1, m);
+            let edges = tables[k].ends_of.is_some();
+            let mut csv = (*csv).clone();
+            if edges && (csv.column("from").is_none() || csv.column("to").is_none()) {
+                return Err(err(format!(
+                    "{}: an edge table's file has 'from' and 'to' columns (the ids of the rows each edge joins)",
+                    csv.path
+                )));
+            }
+            for (name, unit, values) in &mut csv.columns {
+                if edges && (name == "from" || name == "to") {
+                    continue;
+                }
+                if !tables[k].columns.contains(name) {
+                    return Err(err(format!(
+                        "{}: the column '{name}' is not a quantity over {} (it has {})",
+                        csv.path,
+                        tables[k].name,
+                        if tables[k].columns.is_empty() {
+                            "none".to_string()
+                        } else {
+                            tables[k].columns.join(", ")
+                        }
+                    )));
+                }
+                if let Some(u) = unit {
+                    let given = read_unit(u, line, 1)?;
+                    let want = units
+                        .get(name.as_str())
+                        .copied()
+                        .unwrap_or(Unit::DIMENSIONLESS);
+                    if given.dim != want.dim {
+                        return Err(err(format!(
+                            "{}: the column '{name}' is in {u}, but {name} is not",
+                            csv.path
+                        )));
+                    }
+                    let f = given.scale / want.scale;
+                    for v in values.iter_mut() {
+                        *v *= f;
+                    }
+                }
+            }
+            if let Some(m) = tables[k].ends_of {
+                let (Some(from), Some(to)) = (csv.column("from"), csv.column("to")) else {
+                    return Err(err(format!(
+                        "{}: an edge table's file has 'from' and 'to' columns (the ids of the rows each edge joins)",
+                        csv.path
+                    )));
+                };
+                let ids: std::collections::HashSet<u64> = match &tables[m].start_file {
+                    Some(c) => c.row_ids().into_iter().collect(),
+                    None => (0..tables[m].start as u64).collect(),
+                };
+                if let Some(v) = from.iter().chain(to).find(|v| !ids.contains(&(**v as u64))) {
+                    return Err(err(format!(
+                        "{}: {v} is not the id of a starting row of {}",
+                        csv.path, tables[m].name
+                    )));
+                }
+            }
+            tables[k].start_file = Some(std::sync::Arc::new(csv));
+        }
         let n = tables.len();
         for (next, t) in (n..).zip(tables.iter_mut().filter(|t| t.parents.is_some())) {
             t.parents = Some(next);
@@ -5003,7 +5440,10 @@ impl ExplicitBlock {
         let set = &self.set;
         let mut u = vec![0.0; set.inputs_len()];
         for t in &set.tables {
-            u.extend((0..t.start).map(|i| i as f64));
+            match &t.start_file {
+                Some(f) => u.extend(f.row_ids().iter().map(|&i| i as f64)),
+                None => u.extend((0..t.start).map(|i| i as f64)),
+            }
         }
         // Corners' places, from a starting mesh or chain: starting values
         // may read a mesh's coordinates through its corners (ADR 0085).
@@ -5026,6 +5466,19 @@ impl ExplicitBlock {
                 }
                 _ => {}
             }
+            // Edges from a file: their ends' places among their table's
+            // starting rows, by id.
+            if let (Some(f), Some(m)) = (&t.start_file, t.ends_of) {
+                let place: std::collections::HashMap<u64, usize> = match &set.tables[m].start_file {
+                    Some(nodes) => nodes.row_ids().into_iter().zip(0..).collect(),
+                    None => (0..set.tables[m].start as u64).zip(0..).collect(),
+                };
+                for (k, end) in ["from", "to"].into_iter().enumerate() {
+                    for (r, id) in f.column(end).expect("checked").iter().enumerate() {
+                        places[k * n + r] = place[&(*id as u64)] as f64;
+                    }
+                }
+            }
             u.extend(places);
         }
         // The coordinates a starting mesh sets.
@@ -5043,6 +5496,16 @@ impl ExplicitBlock {
         }
         let mut x0 = vec![0.0; set.states_len()];
         set.initial_state_from(params, &known, &u, &mut x0);
+        // Values from a table's starting file (ADR 0069 step 3).
+        let mut at = set.fixed_len();
+        for &(tb, c) in &set.row_states {
+            let t = &set.tables[tb];
+            if let Some(v) = t.start_file.as_ref().and_then(|f| f.column(&t.columns[c])) {
+                let n = t.start.min(v.len());
+                x0[at..at + n].copy_from_slice(&v[..n]);
+            }
+            at += t.start;
+        }
         x0
     }
 
@@ -5117,6 +5580,15 @@ impl Block for ExplicitBlock {
             // Each row's corners: a chain's ends, or a grid's cells (point
             // ids are their places at the start).
             let corners: Vec<Vec<f64>> = match (&t.start_cells, t.chain) {
+                // Edges from a file: the ids they join.
+                _ if t.start_file.is_some() && t.ends_of.is_some() => {
+                    let f = t.start_file.as_ref().expect("checked");
+                    let (from, to) = (
+                        f.column("from").expect("checked"),
+                        f.column("to").expect("checked"),
+                    );
+                    from.iter().zip(to).map(|(&a, &b)| vec![a, b]).collect()
+                }
                 (Some(cells), _) => cells
                     .iter()
                     .map(|c| c.iter().map(|&p| p as f64).collect())
@@ -5157,6 +5629,14 @@ impl Block for ExplicitBlock {
                 }
                 row.extend(columns[tb].iter().map(|c| c[r]));
                 table.push(&row);
+            }
+            // Ids from a file: the rows as pushed, under those ids.
+            if let Some(ids) = t.start_file.as_ref().and_then(|f| f.ids.clone()) {
+                let rows: Vec<Vec<f64>> = (0..table.len()).map(|r| table.row(r)).collect();
+                let place: std::collections::HashMap<u64, usize> =
+                    ids.iter().copied().zip(0..).collect();
+                table.reset();
+                table.assign(&ids, |id, _| rows[place[&id]].clone());
             }
             if let Some(p) = t.parents {
                 tables[p].reset();

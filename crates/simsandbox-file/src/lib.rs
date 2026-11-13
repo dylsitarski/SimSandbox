@@ -2063,10 +2063,23 @@ fn load_in_folder(
     })
 }
 
-/// The mesh file a typed-equations line starts cells from, if it is one
-/// (`start c = file "part.msh" at x, y`, ADR 0085).
+/// The file a typed-equations line starts a table from, if it is one
+/// (`start c = file "part.msh" at x, y`, ADR 0085; `start pts = file
+/// "nodes.csv"`, ADR 0069 step 3).
 fn mesh_file(line: &str) -> Option<String> {
     let rest = line.trim().strip_prefix("start ")?;
+    file_of(rest)
+}
+
+/// The file a typed-equations line reads an array parameter's values
+/// from, if it is one (`param m[k] = file "masses.csv"`, ADR 0069 step 3).
+fn param_file(line: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix("param ")?;
+    file_of(rest)
+}
+
+/// The quoted path after `= file` in `rest`, if any.
+fn file_of(rest: &str) -> Option<String> {
     let (_, spec) = rest.split_once('=')?;
     let quoted = spec
         .trim()
@@ -2076,9 +2089,10 @@ fn mesh_file(line: &str) -> Option<String> {
     Some(quoted.split_once('"')?.0.to_string())
 }
 
-/// The SHA-256 of each file a block reads, by `block.setting`, and of
-/// each mesh file a typed-equations block starts from, by
-/// `block.mesh:path`.
+/// The SHA-256 of each file a block reads, by `block.setting`, of each
+/// file a typed-equations block starts a table from, by `block.mesh:path`
+/// (meshes and CSV tables alike), and of each file it reads an array
+/// parameter from, by `block.param:path`.
 fn data_digests(
     flat: &ModelFile,
     registry: &Registry,
@@ -2100,15 +2114,17 @@ fn data_digests(
         // Mesh files typed equations start from (ADR 0085): `start c =
         // file "part.msh" at x, y`.
         for line in &b.equations {
-            let Some(path) = mesh_file(line) else {
-                continue;
+            let (key, path) = match (mesh_file(line), param_file(line)) {
+                (Some(p), _) => ("mesh", p),
+                (_, Some(p)) => ("param", p),
+                _ => continue,
             };
             let file = std::path::PathBuf::from(&path);
             let file = match (file.is_absolute(), folder) {
                 (false, Some(dir)) => dir.join(file),
                 _ => file,
             };
-            data.insert(format!("{}.mesh:{path}", b.name), digest_of(&file));
+            data.insert(format!("{}.{key}:{path}", b.name), digest_of(&file));
         }
         let Some(info) = registry.info(&b.type_name) else {
             continue;

@@ -201,7 +201,8 @@ fn table_mistakes_are_explained() {
     ])
     .contains("\"ok\":true"));
     assert!(check(&["table pts", "b = 1", "remove pts where 1"]).contains("needs states"));
-    assert!(with(&["param m[pts] = 1"]).contains("a value per row is a state"));
+    // A parameter over rows holds its value per row (ADR 0069 step 3).
+    assert!(with(&["param m[pts] = 1"]).contains("\"ok\":true"));
     // An input over a table with its own rows is matched to them by id.
     let joined = with(&["input q[pts]", "c = sum(q)"]);
     assert!(joined.contains("'m.q' is not connected"), "{joined}");
