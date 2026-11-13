@@ -71,6 +71,23 @@ struct Cell<'a> {
     call: FuncRef,
     /// 0, 0.5, 1, 2.
     consts: [Value; 4],
+    /// The scalars, reciprocals and 2, splat over two lanes.
+    vscalars: &'a [Value],
+    vinverse: &'a [Option<Value>],
+    vtwo: Value,
+}
+
+/// Two cells at once.
+const V: types::Type = types::F64X2;
+
+/// Vector accesses: cells need not lie on 16 bytes.
+fn vflags() -> MemFlagsData {
+    MemFlagsData::new().with_notrap()
+}
+
+fn vload(b: &mut FunctionBuilder, base: Value, index: Value, offset: i64) -> Value {
+    let addr = at(b, base, index);
+    b.ins().load(V, vflags(), addr, (8 * offset) as i32)
 }
 
 const FLAGS: fn() -> MemFlagsData = MemFlagsData::trusted;
@@ -234,6 +251,154 @@ impl Cell<'_> {
         current
     }
 
+    /// The operations of cells `i` and `i + 1` (`k = lo + i`), both inside
+    /// every line, two lanes at once: each lane computes as the scalar
+    /// code does, so the bits are the same. Powers, comparisons, functions
+    /// and axes go lane by lane.
+    fn emit_vec(
+        &self,
+        b: &mut FunctionBuilder,
+        i: Value,
+        k: Value,
+        j: &[Value],
+    ) -> Vec<Option<Value>> {
+        let [zero, half, one, _] = self.consts;
+        let mut current: Vec<Option<Value>> = vec![None; self.view.written];
+        for (n, op) in self.view.ops.iter().enumerate() {
+            let get = |b: &mut FunctionBuilder, a: Arg, current: &mut Vec<Option<Value>>| match a {
+                Arg::Written(w) => {
+                    *current[w].get_or_insert_with(|| vload(b, self.written[w], i, 0))
+                }
+                Arg::Read(r) => vload(b, self.read[r], k, 0),
+                Arg::Scalar(s) => self.vscalars[s],
+            };
+            // Lane by lane: `f(b, x, y, lane)` on each lane's values.
+            let lanes =
+                |b: &mut FunctionBuilder,
+                 x: Value,
+                 y: Value,
+                 f: &dyn Fn(&mut FunctionBuilder, Value, Value, u8) -> Value| {
+                    let mut out = None;
+                    for lane in 0..2u8 {
+                        let xl = b.ins().extractlane(x, lane);
+                        let yl = b.ins().extractlane(y, lane);
+                        let v = f(b, xl, yl, lane);
+                        out = Some(match out {
+                            None => b.ins().splat(V, v),
+                            Some(o) => b.ins().insertlane(o, v, lane),
+                        });
+                    }
+                    out.expect("two lanes")
+                };
+            let value = match op.kind {
+                OpKind::Copy => get(b, op.a, &mut current),
+                OpKind::Neg => {
+                    let x = get(b, op.a, &mut current);
+                    b.ins().fneg(x)
+                }
+                OpKind::Bin(o) => {
+                    let x = get(b, op.a, &mut current);
+                    let y = get(b, op.b, &mut current);
+                    match o {
+                        Op::Add => b.ins().fadd(x, y),
+                        Op::Sub => b.ins().fsub(x, y),
+                        Op::Mul => b.ins().fmul(x, y),
+                        Op::Div => b.ins().fdiv(x, y),
+                        Op::Pow => lanes(b, x, y, &|b, x, y, _| {
+                            let code = b.ins().iconst(types::I64, POW);
+                            let c = b.ins().call(self.call, &[code, x, y]);
+                            b.inst_results(c)[0]
+                        }),
+                        Op::Lt | Op::Le | Op::Gt | Op::Ge => {
+                            let cc = match o {
+                                Op::Lt => FloatCC::LessThan,
+                                Op::Le => FloatCC::LessThanOrEqual,
+                                Op::Gt => FloatCC::GreaterThan,
+                                _ => FloatCC::GreaterThanOrEqual,
+                            };
+                            lanes(b, x, y, &|b, x, y, _| {
+                                let holds = b.ins().fcmp(cc, x, y);
+                                b.ins().select(holds, one, zero)
+                            })
+                        }
+                    }
+                }
+                OpKind::Call1(f) | OpKind::Call2(f) => {
+                    let x = get(b, op.a, &mut current);
+                    let y = match op.kind {
+                        OpKind::Call2(_) => get(b, op.b, &mut current),
+                        _ => b.ins().splat(V, zero),
+                    };
+                    lanes(b, x, y, &|b, x, y, _| {
+                        let code = b.ins().iconst(types::I64, func_code(f));
+                        let c = b.ins().call(self.call, &[code, x, y]);
+                        b.inst_results(c)[0]
+                    })
+                }
+                OpKind::Axis { stride, count } => {
+                    let l = self
+                        .lines
+                        .iter()
+                        .position(|&l| l == (stride, count))
+                        .expect("a line");
+                    let x = get(b, op.a, &mut current);
+                    let y = get(b, op.b, &mut current);
+                    let jl = j[l];
+                    lanes(b, x, y, &|b, x, y, lane| {
+                        // Along a line of stride 1 the second cell is one on.
+                        let jj = if stride == 1 && lane == 1 {
+                            b.ins().iadd_imm_s(jl, 1)
+                        } else {
+                            jl
+                        };
+                        let jf = b.ins().fcvt_from_uint(types::F64, jj);
+                        let jh = b.ins().fadd(jf, half);
+                        let off = b.ins().fmul(jh, y);
+                        b.ins().fadd(x, off)
+                    })
+                }
+                OpKind::Stencil { stride, second, .. } => {
+                    let Arg::Read(r) = op.a else {
+                        unreachable!("a stencil reads a whole array")
+                    };
+                    let (src, s) = (self.read[r], stride as i64);
+                    let below = vload(b, src, k, -s);
+                    let above = vload(b, src, k, s);
+                    let inv = self.vinverse[n].expect("a stencil's reciprocal");
+                    if second {
+                        let here = vload(b, src, k, 0);
+                        let twice = b.ins().fmul(self.vtwo, here);
+                        let d = b.ins().fsub(below, twice);
+                        let d = b.ins().fadd(d, above);
+                        b.ins().fmul(d, inv)
+                    } else {
+                        let d = b.ins().fsub(above, below);
+                        b.ins().fmul(d, inv)
+                    }
+                }
+                OpKind::Shift { stride, up, .. } => {
+                    let Arg::Read(r) = op.a else {
+                        unreachable!("a shift reads a whole array")
+                    };
+                    let s = stride as i64;
+                    vload(b, self.read[r], k, if up { s } else { -s })
+                }
+            };
+            current[op.d] = Some(value);
+        }
+        current
+    }
+
+    /// Store two cells' values.
+    fn store_vec(&self, b: &mut FunctionBuilder, i: Value, values: &[Option<Value>]) {
+        for (w, v) in values.iter().enumerate() {
+            if let (Some(v), true) = (v, self.view.kept[w]) {
+                let addr = at(b, self.written[w], i);
+                b.ins().store(vflags(), *v, addr, 0);
+            }
+        }
+    }
+
     /// Store a cell's values.
     fn store(&self, b: &mut FunctionBuilder, i: Value, values: &[Option<Value>]) {
         for (w, v) in values.iter().enumerate() {
@@ -293,6 +458,8 @@ pub fn compile(view: &PhaseView) -> Arc<dyn PhaseKernel> {
         let inner_header = b.create_block();
         let inner = b.create_block();
         let run_done = b.create_block();
+        let vec_header = b.create_block();
+        let vec_body = b.create_block();
         let exit = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
@@ -360,7 +527,17 @@ pub fn compile(view: &PhaseView) -> Arc<dyn PhaseKernel> {
         // Within a run, the place along each line of stride 1 moves with
         // every cell; along the others it stays.
         let run_j: Vec<Variable> = lines.iter().map(|_| b.declare_var(types::I64)).collect();
+        let vscalars: Vec<Value> = scalars.iter().map(|&s| b.ins().splat(V, s)).collect();
+        let vinverse: Vec<Option<Value>> = inverse
+            .iter()
+            .map(|v| v.map(|v| b.ins().splat(V, v)))
+            .collect();
+        let vtwo = b.ins().splat(V, two);
+        let simd = std::env::var("SPIKE_NO_SIMD").is_err();
         let cell = Cell {
+            vscalars: &vscalars,
+            vinverse: &vinverse,
+            vtwo,
             view,
             lines: &lines,
             written: &written,
@@ -436,7 +613,32 @@ pub fn compile(view: &PhaseView) -> Arc<dyn PhaseKernel> {
         }
         let stop = b.ins().iadd(iv, count);
         b.def_var(end, stop);
-        b.ins().jump(inner_header, &[]);
+        b.ins()
+            .jump(if simd { vec_header } else { inner_header }, &[]);
+
+        // Two cells at a time while two are left in the run.
+        b.switch_to_block(vec_header);
+        let iv = b.use_var(i);
+        let stop = b.use_var(end);
+        let two_on = b.ins().iadd_imm_s(iv, 2);
+        let more = b.ins().icmp(IntCC::SignedLessThanOrEqual, two_on, stop);
+        b.ins().brif(more, vec_body, &[], inner_header, &[]);
+
+        b.switch_to_block(vec_body);
+        let iv = b.use_var(i);
+        let k = b.ins().iadd(lo, iv);
+        let js: Vec<Value> = run_j.iter().map(|&j| b.use_var(j)).collect();
+        let values = cell.emit_vec(&mut b, iv, k, &js);
+        cell.store_vec(&mut b, iv, &values);
+        for (l, &(s, _)) in lines.iter().enumerate() {
+            if s == 1 {
+                let j = b.ins().iadd_imm_s(js[l], 2);
+                b.def_var(run_j[l], j);
+            }
+        }
+        let next = b.ins().iadd_imm_s(iv, 2);
+        b.def_var(i, next);
+        b.ins().jump(vec_header, &[]);
 
         b.switch_to_block(inner_header);
         let iv = b.use_var(i);

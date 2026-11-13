@@ -137,7 +137,61 @@ fn fused(c: &Consts, x: &[f64], dx: &mut [f64]) {
     }
 }
 
+/// A model whose rates use what Gray–Scott does not: value, gradient and
+/// periodic edges, a first derivative, shifts, a comparison, a power, a
+/// function and an axis.
+fn mixed(cells: usize) -> Vec<String> {
+    [
+        format!("grid x [m] = 0 .. 1, {cells}"),
+        format!("grid y [m] = 0 .. 1, {cells}"),
+        "param D [m^2/s] = 0.01".into(),
+        "param vel [m/s] = 0.2".into(),
+        "param T0 [K] = 1".into(),
+        "param left [K] = 1".into(),
+        "param hot [K] = 1.2".into(),
+        "param a [1/s] = 0.3".into(),
+        "param g [K/(m*s)] = 0.1".into(),
+        "param kx [1/m] = 6".into(),
+        "param ky [1/m] = 4".into(),
+        "state T[x, y] [K] = T0 + 0.5*T0*sin(kx*x)*cos(ky*y)".into(),
+        "edge T: x- = left, x+ gradient = 0, y periodic".into(),
+        "dT/dt = D*lap(T) - vel*ddx(T) + a*T0*(T > hot) + a*T0*(T/T0)^1.5 - a*T0*sin(T/T0) + a*(prev(T, y) - next(T, x)) + g*x".into(),
+    ]
+    .into()
+}
+
+/// Whether each compiled route gives the interpreter's bits on `mixed`.
+fn check_mixed() {
+    let n = 64;
+    let set = EquationSet::parse("m", &mixed(n)).expect("valid");
+    let p: Vec<f64> = set.spec().params.iter().map(|q| q.default).collect();
+    let mut x = vec![0.0; n * n];
+    set.initial_state(&p, &mut x);
+    let mut want = vec![0.0; n * n];
+    set.rhs(0.0, &x, &[], &p, &mut want);
+    let mut out = String::from("every operation kind (64 × 64):");
+    #[cfg(feature = "cranelift")]
+    {
+        let mut set = EquationSet::parse("m", &mixed(n)).expect("valid");
+        let phases = set.compile_phases(&mut |v| Some(jit::compile(v)));
+        let mut got = vec![0.0; n * n];
+        set.rhs(0.0, &x, &[], &p, &mut got);
+        out += &format!(" Cranelift {phases} phases [{}]", same(&got, &want));
+    }
+    #[cfg(feature = "wasm")]
+    {
+        let engine = wasmtime::Engine::default();
+        let mut set = EquationSet::parse("m", &mixed(n)).expect("valid");
+        let phases = set.compile_phases(&mut |v| Some(wasm::compile(&engine, v)));
+        let mut got = vec![0.0; n * n];
+        set.rhs(0.0, &x, &[], &p, &mut got);
+        out += &format!(" Wasmtime {phases} phases [{}]", same(&got, &want));
+    }
+    println!("{out}");
+}
+
 fn main() {
+    check_mixed();
     let sizes: Vec<usize> = std::env::var("SPIKE_SIZES")
         .ok()
         .map(|v| v.split(',').map(|n| n.parse().unwrap()).collect())

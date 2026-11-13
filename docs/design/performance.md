@@ -238,6 +238,16 @@ Microseconds per evaluation, one core (`taskset -c 0`), best of five; for WebAss
 - **Route 4, a block written by hand, runs inside WebAssembly at 2.3–2.4× fused Rust's time**; with its state copied in and rates out at each call, 1.1–1.2× the interpreter's. That is the measure for user blocks as WebAssembly plugins ([Q28](../open-questions.md)): fine for blocks whose work is large against their inputs and outputs.
 - **By ADR 0084's rule** (route 3 close to route 2, else route 2 for typed equations), typed equations' compiled route is Cranelift in the process. Whether it goes into the build now, for 1.3–1.7× and 5 MB, is the owner's ([Q55](../open-questions.md)).
 
+**Then vector code (2026-11-13, asked by the owner: why can fused Rust not be matched?).** Cranelift does not vectorise by itself; LLVM does, which was most of the gap. Route 2 now emits two-lane code (`f64x2`) for runs of cells inside every line: each lane does exactly the scalar operations, so the bits are the same; powers, comparisons, functions and axes go lane by lane through the scalar code. One core, µs per evaluation (the same run):
+
+| Grid | Interpreter | Cranelift, one lane | Cranelift, two lanes | Fused Rust | Two lanes against fused |
+|---|---|---|---|---|---|
+| 128 × 128 | 78 | 56 | 39 | 29 | 1.34× |
+| 256 × 256 | 481 | 230 | 172 | 131 | 1.31× |
+| 512 × 512 | 1339 | 937 | 586 | 434 | 1.35× |
+
+Two lanes are 1.3–1.6× one lane and 2.0–2.8× the interpreter; compile time is unchanged (6–10 ms). A second model using every kind of operation (value, gradient and periodic edges, a first derivative, both shifts, a comparison, a power, a function, an axis) gives the interpreter's bits through both routes, with and without vector code. What remains is LLVM's scheduling and unrolling, and wider vectors: Cranelift's x86 back end has 128-bit vectors only, where fused Rust built for this CPU (`-C target-cpu=native`) uses AVX's four lanes (5–20% more, 2026-11-07). Matching fused Rust exactly needs LLVM: [ADR 0089](../decisions/0089-native-code-for-typed-equations.md) proposes generating Rust and compiling it where a toolchain is installed.
+
 ## Implicit methods on 2D grids (2026-11-13)
 
 TR-BDF2 on Gray–Scott at 128 × 128 (`grid_cost` on a copy of the example with `"method": {"name": "trbdf2"}`) cost 520 ms a step, 300–330 ms of it in `faer`'s sparse LU with partial pivoting. A better ordering for that LU gained at most 28% (its fill is bounded by AᵀA's structure, which COLAMD already orders for). [ADR 0087](../decisions/0087-implicit-lu-on-the-matrix-pattern.md): our own multifrontal LU on the pattern of A + Aᵀ, pivots on the diagonal, nested dissection: 165 ms a step (factorising 75 ms, solves 5 ms each). `crates/simsandbox-eq/examples/lu_speed.rs` compares the two LUs on a 2D grid, a chain and a ring; 1D systems cost the same as before (`typed_speed`).

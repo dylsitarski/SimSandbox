@@ -12,13 +12,14 @@ This crate is not part of the workspace, so its compilers stay out of SimSandbox
 | 4. A WebAssembly block written by hand | `src/gray_scott.wat` |
 | 5. Native fused Rust | `fused` in `src/main.rs` |
 
-Routes 2 and 3 compile each phase from its view alone: runs of cells inside every line in a tight loop, neighbours a stride away; cells at a line's end one at a time with their edges; temporaries no later step reads kept in registers. Functions and powers call the interpreter's own (`routes::host_call`), so every route gives the same bits.
+Routes 2 and 3 compile each phase from its view alone: runs of cells inside every line in a tight loop, neighbours a stride away; cells at a line's end one at a time with their edges; temporaries no later step reads kept in registers. Route 2 does its runs two cells at a time (`f64x2`; `SPIKE_NO_SIMD=1` for one), each lane as the scalar code. Functions and powers call the interpreter's own (`routes::host_call`), so every route gives the same bits. Before the timings, a second model using every kind of operation (edges of each kind, a first derivative, shifts, a comparison, a power, a function, an axis) is checked through both compiled routes.
 
 ```sh
 cd spikes/compiled-routes
 cargo build --release                      # both compilers
 taskset -c 0 target/release/compiled-routes
 SPIKE_SIZES=128,256 SPIKE_EVALS=50 target/release/compiled-routes
+SPIKE_NO_SIMD=1 target/release/compiled-routes   # route 2 one cell at a time
 cargo build --release --no-default-features --features cranelift   # one route, for its size
 ```
 

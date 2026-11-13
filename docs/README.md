@@ -159,6 +159,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0086-views-by-axis-roles-and-mesh-views.md](decisions/0086-views-by-axis-roles-and-mesh-views.md) | Decision record | Views by axis roles (pick, reduce, facet); mesh views on wgpu with an egui path headless |
 | [decisions/0087-implicit-lu-on-the-matrix-pattern.md](decisions/0087-implicit-lu-on-the-matrix-pattern.md) | Decision record | Implicit methods' own sparse LU on the matrix's pattern, faer's as fallback |
 | [decisions/0088-activation.md](decisions/0088-activation.md) | Decision record | Activation of used models and studies: `activate` modes and `restart` |
+| [decisions/0089-native-code-for-typed-equations.md](decisions/0089-native-code-for-typed-equations.md) | Decision record | Native code for typed equations: generated Rust compiled where a toolchain exists (proposed) |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 
