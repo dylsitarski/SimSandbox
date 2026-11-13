@@ -630,8 +630,8 @@ mod tests {
         let differ =
             |a: &[u8], b: &[u8]| a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p != q).count();
         let whole = mesh(serde_json::json!({}));
-        let low = mesh(serde_json::json!({"cut": {"axis": "z", "at": 0.25}}));
-        let high = mesh(serde_json::json!({"cut": {"axis": "z", "at": 0.75}}));
+        let low = mesh(serde_json::json!({"cut": {"normal": [0, 0, 1], "at": 0.25}}));
+        let high = mesh(serde_json::json!({"cut": {"normal": [0, 0, 1], "at": 0.75}}));
         assert!(differ(&whole, &low) > 1000 && differ(&low, &high) > 1000);
         let scatter =
             draw(serde_json::json!([{"type": "plot.xy", "bind": {"x": "m.x", "y": ["m.w"]}}]));

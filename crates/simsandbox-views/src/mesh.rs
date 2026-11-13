@@ -261,34 +261,58 @@ struct MeshView {
     cut: Option<Cut>,
 }
 
-/// A plane through a 3D mesh at one coordinate (ADR 0086): saved as the
-/// view's selection, `{"cut": {"axis": "z", "at": 0.5}}`.
+/// A plane through a 3D mesh (ADR 0086): the points `p` with
+/// `n̂·p = at`, `n̂` the normal made unit length. Saved as the view's
+/// selection, `{"cut": {"normal": [0, 0, 1], "at": 0.5}}` (a plane at z =
+/// 0.5); a normal along an axis cuts at that coordinate exactly.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Cut {
-    #[serde(with = "axis_name")]
-    pub axis: usize,
+    pub normal: [f64; 3],
     pub at: f64,
+}
+
+impl Cut {
+    /// The unit normal, or none for a zero or non-finite one.
+    fn unit(&self) -> Option<[f64; 3]> {
+        let n = self.normal;
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        (len.is_finite() && len > 0.0).then(|| n.map(|v| v / len))
+    }
+
+    /// Two unit directions in the plane, the picture's across and up: the
+    /// coordinate axis least along the normal (the first if several), made
+    /// perpendicular to it, and the normal across that, turned to point up
+    /// the coordinates. A normal along z gives x and y.
+    fn basis(n: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+        let i = (0..3)
+            .min_by(|&a, &b| n[a].abs().total_cmp(&n[b].abs()))
+            .unwrap_or(0);
+        let mut u = [0.0; 3];
+        u[i] = 1.0;
+        let along = n[i];
+        let u = [0, 1, 2].map(|k| u[k] - along * n[k]);
+        let len = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt();
+        let u = u.map(|c| c / len);
+        let mut v = [
+            n[1] * u[2] - n[2] * u[1],
+            n[2] * u[0] - n[0] * u[2],
+            n[0] * u[1] - n[1] * u[0],
+        ];
+        if v[0] + v[1] + v[2] < 0.0 {
+            v = v.map(|c| -c);
+        }
+        (u, v)
+    }
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Selection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cut: Option<Cut>,
-}
-
-/// The coordinate slots' names for a cut's axis.
-mod axis_name {
-    const NAMES: [&str; 3] = ["x", "y", "z"];
-    pub fn serialize<S: serde::Serializer>(a: &usize, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(NAMES[(*a).min(2)])
-    }
-    pub fn deserialize<'d, D: serde::Deserializer<'d>>(d: D) -> Result<usize, D::Error> {
-        let n = <String as serde::Deserialize>::deserialize(d)?;
-        NAMES
-            .iter()
-            .position(|m| *m == n)
-            .ok_or_else(|| serde::de::Error::custom(format!("a cut runs along x, y or z, not {n}")))
-    }
 }
 
 impl MeshView {
@@ -301,43 +325,72 @@ impl MeshView {
 }
 
 impl MeshView {
-    /// A cut's axis and place, the place over the coordinate's range.
+    /// A cut's direction (along x, y or z, or any normal) and place, the
+    /// place over the points' extent along the normal.
     fn cut_controls(&mut self, ui: &mut egui::Ui, h: &History, coords: &[usize], k: usize) {
-        let names = ["x", "y", "z"];
+        let axes = [
+            ("x", [1.0, 0.0, 0.0]),
+            ("y", [0.0, 1.0, 0.0]),
+            ("z", [0.0, 0.0, 1.0]),
+        ];
+        let range = |c: &Cut| extent(h, coords, k, c);
         ui.horizontal(|ui| {
-            let now = self.cut.map_or("none", |c| names[c.axis]);
+            let now = match self.cut {
+                None => "none",
+                Some(c) => axes
+                    .iter()
+                    .find(|a| c.unit() == Some(a.1))
+                    .map_or("any", |a| a.0),
+            };
             egui::ComboBox::from_id_salt("plot.mesh.cut")
                 .selected_text(format!("cut: {now}"))
                 .show_ui(ui, |ui| {
-                    if ui.selectable_label(self.cut.is_none(), "none").clicked() {
+                    if ui.selectable_label(now == "none", "none").clicked() {
                         self.cut = None;
                     }
-                    for (a, n) in names.iter().enumerate() {
-                        let picked = self.cut.is_some_and(|c| c.axis == a);
-                        if ui.selectable_label(picked, *n).clicked() && !picked {
-                            let r = coordinate_range(h, coords[a], k);
-                            self.cut = Some(Cut {
-                                axis: a,
-                                at: 0.5 * (r[0] + r[1]),
-                            });
+                    let mut choose = |normal: [f64; 3]| {
+                        let mut c = Cut { normal, at: 0.0 };
+                        let r = range(&c);
+                        c.at = 0.5 * (r[0] + r[1]);
+                        self.cut = Some(c);
+                    };
+                    for (name, normal) in axes {
+                        if ui.selectable_label(now == name, name).clicked() && now != name {
+                            choose(normal);
                         }
+                    }
+                    if ui.selectable_label(now == "any", "any").clicked() && now != "any" {
+                        choose([1.0, 1.0, 1.0]);
                     }
                 });
             if let Some(c) = &mut self.cut {
-                let r = coordinate_range(h, coords[c.axis], k);
+                if now == "any" {
+                    ui.label("normal");
+                    for v in &mut c.normal {
+                        ui.add(egui::DragValue::new(v).speed(0.01).max_decimals(3));
+                    }
+                }
+                let r = range(c);
                 ui.add(egui::Slider::new(&mut c.at, r[0]..=r[1]));
             }
         });
     }
 }
 
-/// The smallest and largest value of a coordinate over the points.
-fn coordinate_range(h: &History, f: usize, k: usize) -> [f64; 2] {
-    let values = h.fields()[f].rows(k).map(|r| r.2).unwrap_or(&[]);
-    let (lo, hi) = values
+/// The points' extent along a cut's normal: where the plane can be.
+fn extent(h: &History, coords: &[usize], k: usize, c: &Cut) -> [f64; 2] {
+    let Some(n) = c.unit() else {
+        return [0.0, 1.0];
+    };
+    let rows: Vec<&[f64]> = coords
         .iter()
+        .map(|&f| h.fields()[f].rows(k).map_or(&[][..], |r| r.2))
+        .collect();
+    let len = rows.iter().map(|r| r.len()).min().unwrap_or(0);
+    let (lo, hi) = (0..len)
+        .map(|i| dot(n, [rows[0][i], rows[1][i], rows[2][i]]))
         .filter(|v| v.is_finite())
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| {
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
             (a.min(v), b.max(v))
         });
     if lo <= hi {
@@ -350,8 +403,8 @@ fn coordinate_range(h: &History, f: usize, k: usize) -> [f64; 2] {
 /// A 3D mesh cut by the plane `cut` (ADR 0086): each cell it crosses as
 /// the polygon where it does, in the other two coordinates (in order), a
 /// value over the cells filling it, one over the points interpolated
-/// along its edges. A corner on the plane counts as above it, so a plane
-/// along cells' sides draws each side once.
+/// along its edges. A corner on the plane (to within rounding) counts as
+/// above it, so a plane along cells' sides draws each side once.
 pub fn section(
     h: &History,
     mesh: usize,
@@ -388,11 +441,8 @@ pub fn section(
             }
         }
     }
-    let (u, v) = match cut.axis {
-        0 => (1, 2),
-        1 => (0, 2),
-        _ => (0, 1),
-    };
+    let n = cut.unit()?;
+    let (u, v) = Cut::basis(n);
     let mut out = Triangles {
         dim: 2,
         ..Triangles::default()
@@ -402,7 +452,17 @@ pub fn section(
         let Some(pts) = ids.iter().map(|&i| point(i)).collect::<Option<Vec<_>>>() else {
             continue;
         };
-        let d: Vec<f64> = pts.iter().map(|p| p[cut.axis] - cut.at).collect();
+        // On the plane to within rounding (a normal off the axes rounds
+        // the distance): on it, so above it.
+        let scale = pts
+            .iter()
+            .flat_map(|p| p.iter())
+            .fold(cut.at.abs(), |m, &c| m.max(c.abs()));
+        let d: Vec<f64> = pts
+            .iter()
+            .map(|&p| dot(n, p) - cut.at)
+            .map(|d| if d.abs() <= 1e-12 * scale { 0.0 } else { d })
+            .collect();
         let cell_value = values
             .get(&(cell_ids[r] as u64))
             .copied()
@@ -414,7 +474,8 @@ pub fn section(
             }
             let t = d[a] / (d[a] - d[b]);
             let at = |i: usize| pts[a][i] + t * (pts[b][i] - pts[a][i]);
-            let q = [at(u), at(v)];
+            let p = [at(0), at(1), at(2)];
+            let q = [dot(p, u), dot(p, v)];
             let val = if over_cells {
                 cell_value
             } else {
@@ -900,7 +961,11 @@ mod tests {
                 .collect()
         };
         let h = history(shape, &[hex(0), hex(1)], &pts, &[1.0, 2.0]);
-        let cut = |axis, at| section(&h, 0, &[1, 2, 3], 4, 0, Cut { axis, at }).unwrap();
+        let cut = |axis: usize, at| {
+            let mut normal = [0.0; 3];
+            normal[axis] = 1.0;
+            section(&h, 0, &[1, 2, 3], 4, 0, Cut { normal, at }).unwrap()
+        };
         // Across both cubes: two squares, each its cube's value.
         let z = cut(2, 0.3);
         assert_eq!((z.polygons.len(), area(&z)), (2, 2.0));
@@ -911,6 +976,26 @@ mod tests {
         assert_eq!((shared.polygons.len(), area(&shared)), (1, 1.0));
         // Outside the mesh: nothing.
         assert!(cut(1, 3.0).polygons.is_empty());
+        // Any normal: x + y = 1 cuts the first cube along its diagonal, a
+        // rectangle 1 by √2, and only touches the second along an edge.
+        let diagonal = Cut {
+            normal: [1.0, 1.0, 0.0],
+            at: std::f64::consts::FRAC_1_SQRT_2,
+        };
+        let d = section(&h, 0, &[1, 2, 3], 4, 0, diagonal).unwrap();
+        assert_eq!(d.polygons.len(), 1);
+        assert!((area(&d) - 2f64.sqrt()).abs() < 1e-12, "{}", area(&d));
+        // Saved as written; a zero normal draws nothing.
+        let json = serde_json::to_value(Selection {
+            cut: Some(diagonal),
+        })
+        .unwrap();
+        assert_eq!(json["cut"]["normal"], serde_json::json!([1.0, 1.0, 0.0]));
+        let zero = Cut {
+            normal: [0.0; 3],
+            at: 0.0,
+        };
+        assert!(section(&h, 0, &[1, 2, 3], 4, 0, zero).is_none());
     }
 
     #[test]
@@ -947,7 +1032,11 @@ mod tests {
         // table unless named otherwise.
         let mut h = history(shape, &cells, &pts, &heights);
         h.set_axes("m.u", vec!["pts".into()]);
-        let s = section(&h, 0, &[1, 2, 3], 4, 0, Cut { axis: 2, at: 0.3 }).unwrap();
+        let z = Cut {
+            normal: [0.0, 0.0, 1.0],
+            at: 0.3,
+        };
+        let s = section(&h, 0, &[1, 2, 3], 4, 0, z).unwrap();
         assert!((area(&s) - 1.0).abs() < 1e-12, "{}", area(&s));
         assert_eq!(s.polygons.len(), 6);
         assert!(s.values.iter().all(|&v| (v - 0.3).abs() < 1e-12));

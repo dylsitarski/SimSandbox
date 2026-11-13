@@ -62,7 +62,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
-- `plot.mesh` cuts a 3D mesh by a plane at one coordinate (x, y or z, with a slider), drawing the section flat; the cut is saved with the view. `plot.xy` draws quantities over a table's rows against each other, cell by cell, paired by id.
+- `plot.mesh` cuts a 3D mesh by a plane in any direction (along x, y or z, or any normal, with a slider), drawing the section flat; the cut is saved with the view as `{"cut": {"normal": […], "at": …}}`. `plot.xy` draws quantities over a table's rows against each other, cell by cell, paired by id.
 - Strategy helpers write refinement over any number of parameters, in one form: `{"kind": "refine", "params": [{"param": "f.u", "range": [-1, 1]}, …], "result": …}`, Python `Model.refine(target, {"f.u": (-1, 1), "f.v": (-1, 1)}, result)`, and the app's "Search…": a mesh of simplices over the parameters (segments over one) refined where the result changes. `param` and `range` alone, and Python's `refine(target, param, range, result)`, are replaced by it.
 - In the app, meshes are drawn by the GPU (wgpu) with a depth buffer; headless renders draw the same triangles with egui.
 - `plot.mesh` (ADR 0086): a quantity over a mesh's cells or points drawn on the mesh, cells filled in 2D and the outer surface in 3D, turned with the mouse; a model with a mesh opens on it. Each table of cells is an output carrying its cells' corners. A profile draws a quantity over a table's rows against another over the same table, paired by id.

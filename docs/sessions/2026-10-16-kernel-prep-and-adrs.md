@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-13: cuts by planes in any direction (owner's request): `Cut { normal, at }`, the picture's directions from the axis least along the normal, a tolerance of 1e-12 of the cell's size for corners on the plane; tests of a diagonal plane.
 - 2026-11-13: cuts and scatters (owner: do these two and record the rest): `mesh::section` and `Cut` (saved selection) in `plot.mesh`; rows in `plot.xy` paired by id; STATUS Known limitations updated (views, GPU, tables, axes) and a Meshes entry listing what is deferred and why; tests in `mesh.rs` and `render.rs`.
 - 2026-11-12: refinement strategies in one form (owner's request): `Strategy::Refine { params }` only, one generator (`refine`, segments over one parameter) reproducing the example bit for bit; Python `refine(target, params: dict, result)`; the app always sends `params`.
 - 2026-11-12: refinement over two or more parameters in the helpers: `Strategy::Refine` takes `params` (`Ranged`), `refine_mesh` writes a simplex mesh strategy; Python `refine` takes lists; the app's "Search…" uses it for several parameters; test `refine_writes_a_mesh_over_two_or_three_parameters`. ADR 0078 complete; STATUS items 1 and 2 removed from Next up.
@@ -196,6 +197,7 @@
 
 ## Decided
 
+- 2026-11-13 (owner): cuts through 3D meshes by planes in any direction (a normal and a place along it), not only at one coordinate.
 - 2026-11-13 (owner): of the deferred mesh items, build cuts through 3D meshes and `plot.xy` over rows now; the heat map, surface and 3D view on the GPU, VTK files, refining prisms and pyramids, and refining 3D simplices from files wait until a model needs them (recorded in STATUS Known limitations).
 - 2026-11-12 (owner): refinement takes one form for any number of parameters (`params`), not `param`/`range` for one and `params` for more.
 - 2026-11-12 (owner): step 4 of ADR 0085 draws meshes with wgpu now (a CPU path headless), and builds ADR 0081 stage 3 (views by axis roles) together with it.
