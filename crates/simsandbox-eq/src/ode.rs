@@ -18,6 +18,11 @@ pub trait OdeSystem: Equations + Send {
     fn sparsity(&self) -> Option<Vec<Vec<usize>>> {
         None
     }
+
+    /// How its equations run ([`Block::code`]).
+    fn code(&self) -> Option<String> {
+        None
+    }
 }
 
 /// An [`OdeSystem`] computed by a chosen [`Integrator`]: a kernel Block.
@@ -99,6 +104,10 @@ impl Block for OdeBlock {
 
     fn as_equations(&self) -> Option<&dyn Equations> {
         Some(self.system.as_ref())
+    }
+
+    fn code(&self) -> Option<String> {
+        self.system.code()
     }
 }
 

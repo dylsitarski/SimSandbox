@@ -359,6 +359,19 @@ impl Switching {
 }
 
 impl PhaseKernel for Switching {
+    /// `native` once its library is loaded (checked against Cranelift's
+    /// code on its first call); `compiled` and why not, otherwise.
+    fn describe(&self) -> String {
+        if self.checked.load(Ordering::Relaxed) == 2 {
+            return "compiled (native code differed)".into();
+        }
+        match self.lib.loaded.get() {
+            None => "compiled (native code building)".into(),
+            Some(Ok(_)) => "native".into(),
+            Some(Err(e)) => format!("compiled (native code not built: {e})"),
+        }
+    }
+
     fn run(&self, lo: usize, written: &mut [&mut [f64]], read: &[&[f64]], scalars: &[f64]) {
         let f = match self.lib.loaded.get() {
             Some(Ok(l)) => l.fns[self.phase],

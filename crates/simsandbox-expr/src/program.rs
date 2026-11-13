@@ -1989,6 +1989,23 @@ impl Program {
             .count()
     }
 
+    /// What runs each of its phases of cells: a kernel's description, or
+    /// `interpreted`. Empty for a program without phases (small arrays,
+    /// interpreted).
+    pub fn codes(&self) -> Vec<String> {
+        self.steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Cells(p) => Some(
+                    p.compiled
+                        .as_ref()
+                        .map_or_else(|| "interpreted".to_string(), |c| c.kernel.describe()),
+                ),
+                Step::One(_) => None,
+            })
+            .collect()
+    }
+
     /// Drop compiled code: every phase back on the interpreter.
     pub fn interpret(&mut self) {
         for step in &mut self.steps {

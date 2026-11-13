@@ -94,6 +94,8 @@ pub fn check(text: &str, registry: &Registry) -> Value {
                 "declared_outputs": d.declared.iter().map(|o| json!({"name": o.name, "from": o.from})).collect::<Vec<_>>(),
                 "outputs": outputs,
                 "inputs": inputs,
+                // How its blocks made from equations run (ADR 0084, 0089).
+                "code": crate::describe::code(&d.loaded.model, &d.loaded.ids, |n| d.full(n)),
                 // Parameters driven by wires (ADR 0075), by full name.
                 "driven": crate::session::drives(&d.loaded.model)
                     .into_iter()

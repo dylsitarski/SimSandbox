@@ -2125,6 +2125,41 @@ impl EquationSet {
         .sum()
     }
 
+    /// How its programs run, as `check` reports it: `interpreted` (small
+    /// arrays, or `SIMSANDBOX_INTERPRET`), `compiled` (Cranelift), `native`
+    /// (a library built from them), or `compiled (why not native)`; when
+    /// its programs differ, each named (`rates: native, outputs: compiled`).
+    pub fn code(&self) -> String {
+        let programs = [
+            ("rates", Some(&self.rates)),
+            ("outputs", Some(&self.outputs)),
+            ("starting values", self.init.as_ref()),
+            ("rules", self.rules_program.as_ref()),
+        ];
+        // Each program's code, its phases said once.
+        let each: Vec<(&str, String)> = programs
+            .iter()
+            .filter_map(|&(name, p)| {
+                let mut codes: Vec<String> = Vec::new();
+                for c in p?.codes() {
+                    if !codes.contains(&c) {
+                        codes.push(c);
+                    }
+                }
+                (!codes.is_empty()).then(|| (name, codes.join(" and ")))
+            })
+            .collect();
+        match each.first() {
+            None => "interpreted".into(),
+            Some((_, first)) if each.iter().all(|(_, c)| c == first) => first.clone(),
+            Some(_) => each
+                .iter()
+                .map(|(name, c)| format!("{name}: {c}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+    }
+
     /// Run every phase on the interpreter, for comparing with the
     /// compiled code.
     pub fn interpret(&mut self) {
@@ -4992,6 +5027,10 @@ impl OdeSystem for EquationSet {
         &self.spec
     }
 
+    fn code(&self) -> Option<String> {
+        Some(EquationSet::code(self))
+    }
+
     /// Exact: each rate's dependencies on the states, read from the
     /// instructions that compute it (ADR 0060).
     fn sparsity(&self) -> Option<Vec<Vec<usize>>> {
@@ -5765,6 +5804,10 @@ impl Block for ExplicitBlock {
 
     fn reads_time(&self) -> Option<bool> {
         Some(self.set.reads_time)
+    }
+
+    fn code(&self) -> Option<String> {
+        Some(self.set.code())
     }
 }
 

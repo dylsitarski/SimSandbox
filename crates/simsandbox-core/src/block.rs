@@ -538,6 +538,13 @@ pub trait Block: Send {
     fn reads_time(&self) -> Option<bool> {
         None
     }
+
+    /// How its equations run, for blocks whose code SimSandbox makes from
+    /// them (typed equations: `interpreted`, `compiled`, `native`; ADR
+    /// 0084, 0089). `None` for blocks written in Rust.
+    fn code(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Capability: the Block can expose its equations, so the equation domain can

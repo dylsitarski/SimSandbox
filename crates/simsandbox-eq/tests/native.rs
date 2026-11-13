@@ -99,6 +99,10 @@ fn native_code_gives_the_interpreters_bits() {
             assert_eq!(bits(&a), bits(&b), "{name}: rates");
         }
     }
+    // `check` says so (ADR 0089).
+    for (set, (name, _)) in sets.iter().zip(&models) {
+        assert_eq!(set.code(), "native", "{name}");
+    }
     let (ready, building, failed) = simsandbox_compiled::native::summary();
     assert!(ready >= 2, "libraries in use: {ready}");
     assert_eq!((building, failed), (0, 0));

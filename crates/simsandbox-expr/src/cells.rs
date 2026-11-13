@@ -219,12 +219,17 @@ pub enum EdgeView {
 /// length), `read[k]` read array `k` whole, `scalars` in the view's order.
 pub trait PhaseKernel: Send + Sync {
     fn run(&self, lo: usize, written: &mut [&mut [f64]], read: &[&[f64]], scalars: &[f64]);
+
+    /// What runs, as `check` reports it: `compiled` unless said otherwise.
+    fn describe(&self) -> String {
+        "compiled".into()
+    }
 }
 
 /// A phase's kernel and the registers its scalars are read from.
 #[derive(Clone)]
 pub(crate) struct Compiled {
-    kernel: std::sync::Arc<dyn PhaseKernel>,
+    pub(crate) kernel: std::sync::Arc<dyn PhaseKernel>,
     scalars: Vec<usize>,
 }
 

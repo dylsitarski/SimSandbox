@@ -311,11 +311,29 @@ pub fn check(text: &str, r: &Registry) -> Value {
                 "driven": crate::session::drives(s.sim_model()).into_iter().map(|(to, from)| json!({"param": to, "from": from})).collect::<Vec<_>>(),
                 "definitions": crate::compose::definitions(&s.file),
                 "blocks": s.flat.blocks.iter().map(|b| &b.name).collect::<Vec<_>>(),
+                // How each block made from equations runs (ADR 0084, 0089).
+                "code": code(s.sim_model(), &s.ids, |n| n.to_string()),
                 "filters": s.filters().iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
                 "views": s.file.controls.views.iter().map(|v| v.type_name.clone()).collect::<Vec<_>>(),
             })
         }
     }
+}
+
+/// How each block whose code SimSandbox makes from equations runs, by
+/// name as `full` gives it: `interpreted`, `compiled`, `native`, or
+/// `compiled` and why not native ([`simsandbox_core::block::Block::code`]).
+pub(crate) fn code(
+    model: &simsandbox_core::graph::Model,
+    ids: &std::collections::BTreeMap<String, simsandbox_core::graph::BlockId>,
+    full: impl Fn(&str) -> String,
+) -> serde_json::Map<String, Value> {
+    ids.iter()
+        .filter_map(|(name, &id)| {
+            let code = model.block(id).ok()?.code()?;
+            Some((full(name), Value::String(code)))
+        })
+        .collect()
 }
 
 /// The fields views and probes can take: grids, point sets and rows.
@@ -389,6 +407,22 @@ mod tests {
         assert_eq!(bad["errors"][0]["path"], "blocks[0].type");
         let syntax = check("{\n  \"format\": 1,,\n}", &r);
         assert_eq!(syntax["errors"][0]["line"], 2);
+        // How blocks made from equations run (ADR 0084, 0089): a large grid
+        // compiled (native where a library was built before), a small one
+        // interpreted, built-in blocks not listed.
+        let text = |name: &str| {
+            EXAMPLES
+                .iter()
+                .find(|e| e.name.starts_with(name))
+                .unwrap()
+                .text
+        };
+        let gs = check(text("Gray–Scott"), &r);
+        let code = gs["code"]["gs"].as_str().unwrap();
+        assert!(code == "compiled" || code == "native", "{code}");
+        let rod = check(text("Typed heat equation"), &r);
+        assert_eq!(rod["code"]["rod"], "interpreted");
+        assert_eq!(ok["code"], json!({}), "Lorenz is built in");
     }
 
     #[test]

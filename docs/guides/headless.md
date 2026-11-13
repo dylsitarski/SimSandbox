@@ -42,6 +42,7 @@ Notes, warnings and labels go to standard error; data to standard output.
 | `definitions`, `blocks` | Each model defined in the file, with its input blocks, declared outputs and uses ([ADR 0068](../decisions/0068-one-kind-of-nested-model.md)); every block after flattening, as signals and sliders name them |
 | `labels` | Speed and accuracy of the model's methods |
 | `recorded` | `signals` (scalars) and `fields` (grids, point sets, populations) that views and probes can take, recorded now or not |
+| `code` | How each block made from equations runs, by name: `interpreted` (small arrays, or `SIMSANDBOX_INTERPRET`), `compiled` (Cranelift), `native` (a library built from it), or `compiled (native code building)`, `compiled (native code not built: …)`, `compiled (native code differed)`; when its programs differ, each named (`rates: native, outputs: compiled`). Blocks written in Rust are not listed. A model that uses models gives each model's under `models[].code` ([speed of typed equations](#speed-of-typed-equations)) |
 | `fused_groups`, `swept`, `filters`, `views` | How blocks are solved together, the swept parameters, filter and view names |
 
 ### `run --format json`
@@ -69,7 +70,7 @@ Large grids in typed equations run compiled, with the same results bit for bit w
 | `SIMSANDBOX_NATIVE=build` | Missing libraries are built in the background with the installed Rust toolchain (the app's default); a run uses one once it is built and has given the same bits |
 | `SIMSANDBOX_CACHE=DIR` | Where native libraries are kept (default: the platform's cache folder, under `simsandbox/native`) |
 
-Moving parameters (sliders, `--set`, driven parameters) never compiles anything; editing an equation, a grid's cells or an edge kind does (milliseconds for Cranelift; for a native library, in the background while the run goes on).
+`check` reports how each block runs (`code`). Moving parameters (sliders, `--set`, driven parameters) never compiles anything; editing an equation, a grid's cells or an edge kind does (milliseconds for Cranelift; for a native library, in the background while the run goes on).
 
 ## Probes
 
