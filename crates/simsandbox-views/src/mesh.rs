@@ -257,6 +257,38 @@ pub fn colours(values: &[f64], log: bool, [lo, hi]: [f64; 2]) -> Vec<Color32> {
 #[derive(Default)]
 struct MeshView {
     camera: Camera,
+    /// A plane through a 3D mesh, drawn flat instead of its surface.
+    cut: Option<Cut>,
+}
+
+/// A plane through a 3D mesh at one coordinate (ADR 0086): saved as the
+/// view's selection, `{"cut": {"axis": "z", "at": 0.5}}`.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Cut {
+    #[serde(with = "axis_name")]
+    pub axis: usize,
+    pub at: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Selection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cut: Option<Cut>,
+}
+
+/// The coordinate slots' names for a cut's axis.
+mod axis_name {
+    const NAMES: [&str; 3] = ["x", "y", "z"];
+    pub fn serialize<S: serde::Serializer>(a: &usize, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(NAMES[(*a).min(2)])
+    }
+    pub fn deserialize<'d, D: serde::Deserializer<'d>>(d: D) -> Result<usize, D::Error> {
+        let n = <String as serde::Deserialize>::deserialize(d)?;
+        NAMES
+            .iter()
+            .position(|m| *m == n)
+            .ok_or_else(|| serde::de::Error::custom(format!("a cut runs along x, y or z, not {n}")))
+    }
 }
 
 impl MeshView {
@@ -266,6 +298,157 @@ impl MeshView {
             _ => None,
         }
     }
+}
+
+impl MeshView {
+    /// A cut's axis and place, the place over the coordinate's range.
+    fn cut_controls(&mut self, ui: &mut egui::Ui, h: &History, coords: &[usize], k: usize) {
+        let names = ["x", "y", "z"];
+        ui.horizontal(|ui| {
+            let now = self.cut.map_or("none", |c| names[c.axis]);
+            egui::ComboBox::from_id_salt("plot.mesh.cut")
+                .selected_text(format!("cut: {now}"))
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(self.cut.is_none(), "none").clicked() {
+                        self.cut = None;
+                    }
+                    for (a, n) in names.iter().enumerate() {
+                        let picked = self.cut.is_some_and(|c| c.axis == a);
+                        if ui.selectable_label(picked, *n).clicked() && !picked {
+                            let r = coordinate_range(h, coords[a], k);
+                            self.cut = Some(Cut {
+                                axis: a,
+                                at: 0.5 * (r[0] + r[1]),
+                            });
+                        }
+                    }
+                });
+            if let Some(c) = &mut self.cut {
+                let r = coordinate_range(h, coords[c.axis], k);
+                ui.add(egui::Slider::new(&mut c.at, r[0]..=r[1]));
+            }
+        });
+    }
+}
+
+/// The smallest and largest value of a coordinate over the points.
+fn coordinate_range(h: &History, f: usize, k: usize) -> [f64; 2] {
+    let values = h.fields()[f].rows(k).map(|r| r.2).unwrap_or(&[]);
+    let (lo, hi) = values
+        .iter()
+        .filter(|v| v.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| {
+            (a.min(v), b.max(v))
+        });
+    if lo <= hi {
+        [lo, hi]
+    } else {
+        [0.0, 1.0]
+    }
+}
+
+/// A 3D mesh cut by the plane `cut` (ADR 0086): each cell it crosses as
+/// the polygon where it does, in the other two coordinates (in order), a
+/// value over the cells filling it, one over the points interpolated
+/// along its edges. A corner on the plane counts as above it, so a plane
+/// along cells' sides draws each side once.
+pub fn section(
+    h: &History,
+    mesh: usize,
+    coords: &[usize],
+    value: usize,
+    k: usize,
+    cut: Cut,
+) -> Option<Triangles> {
+    let shape = h.mesh(&h.fields()[mesh].name)?.clone();
+    let (_, cell_ids, corners) = h.fields()[mesh].rows(k)?;
+    let nc = corners.len().checked_div(cell_ids.len().max(1))?;
+    let xyz: Vec<HashMap<u64, f64>> = coords
+        .iter()
+        .map(|&c| by_id(h, c, k))
+        .collect::<Option<_>>()?;
+    let point = |id: u64| -> Option<[f64; 3]> {
+        let mut p = [0.0; 3];
+        for (a, m) in xyz.iter().enumerate() {
+            p[a] = *m.get(&id)?;
+        }
+        Some(p)
+    };
+    let values = by_id(h, value, k)?;
+    let field = &h.fields()[value].name;
+    let over_cells = h.table(field).is_some() && h.table(field) == h.table(&h.fields()[mesh].name);
+    // The cells' edges, as pairs of corner places, from their sides.
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for f in &shape.faces {
+        for e in 0..f.len() {
+            let (a, b) = (f[e], f[(e + 1) % f.len()]);
+            let pair = (a.min(b), a.max(b));
+            if !edges.contains(&pair) {
+                edges.push(pair);
+            }
+        }
+    }
+    let (u, v) = match cut.axis {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    let mut out = Triangles {
+        dim: 2,
+        ..Triangles::default()
+    };
+    for (r, c) in corners.chunks_exact(nc).enumerate() {
+        let ids: Vec<u64> = c.iter().map(|&p| p as u64).collect();
+        let Some(pts) = ids.iter().map(|&i| point(i)).collect::<Option<Vec<_>>>() else {
+            continue;
+        };
+        let d: Vec<f64> = pts.iter().map(|p| p[cut.axis] - cut.at).collect();
+        let cell_value = values
+            .get(&(cell_ids[r] as u64))
+            .copied()
+            .unwrap_or(f64::NAN);
+        let mut hits: Vec<([f64; 2], f64)> = Vec::new();
+        for &(a, b) in &edges {
+            if (d[a] < 0.0) == (d[b] < 0.0) {
+                continue;
+            }
+            let t = d[a] / (d[a] - d[b]);
+            let at = |i: usize| pts[a][i] + t * (pts[b][i] - pts[a][i]);
+            let q = [at(u), at(v)];
+            let val = if over_cells {
+                cell_value
+            } else {
+                let va = values.get(&ids[a]).copied().unwrap_or(f64::NAN);
+                let vb = values.get(&ids[b]).copied().unwrap_or(f64::NAN);
+                va + t * (vb - va)
+            };
+            if !hits.iter().any(|(p, _)| *p == q) {
+                hits.push((q, val));
+            }
+        }
+        if hits.len() < 3 {
+            continue;
+        }
+        // Around their centre: a cell is convex, so is its section.
+        let n = hits.len() as f64;
+        let m = [
+            hits.iter().map(|h| h.0[0]).sum::<f64>() / n,
+            hits.iter().map(|h| h.0[1]).sum::<f64>() / n,
+        ];
+        hits.sort_by(|a, b| {
+            let ang = |p: &[f64; 2]| (p[1] - m[1]).atan2(p[0] - m[0]);
+            ang(&a.0).total_cmp(&ang(&b.0))
+        });
+        out.cells += 1;
+        out.polygons.push((out.positions.len() / 3, hits.len() - 2));
+        for t in 1..hits.len() - 1 {
+            for i in [0, t, t + 1] {
+                out.positions.push([hits[i].0[0], hits[i].0[1], 0.0]);
+                out.values.push(hits[i].1);
+            }
+        }
+    }
+    Some(out)
 }
 
 impl View for MeshView {
@@ -284,7 +467,17 @@ impl View for MeshView {
         };
         let mut coords = vec![x, y];
         coords.extend(Self::bound(input, "z"));
-        let Some(tri) = triangles(h, mesh, &coords, value, k) else {
+        // A 3D mesh may be cut by a plane at one coordinate.
+        if coords.len() == 3 && h.mesh(&h.fields()[mesh].name).is_some_and(|m| m.dim == 3) {
+            self.cut_controls(ui, h, &coords, k);
+        } else {
+            self.cut = None;
+        }
+        let built = match self.cut {
+            Some(c) => section(h, mesh, &coords, value, k, c),
+            None => triangles(h, mesh, &coords, value, k),
+        };
+        let Some(tri) = built else {
             ui.weak("nothing to draw yet");
             return;
         };
@@ -308,7 +501,7 @@ impl View for MeshView {
         let colour = colours(&tri.values, log, r);
         let edges = input.style("edges") != 0.0 && tri.cells < OUTLINE_BELOW;
         let outline = Stroke::new(0.5, ui.visuals().extreme_bg_color.gamma_multiply(0.7));
-        if tri.dim == 3 && coords.len() == 3 {
+        if self.cut.is_none() && tri.dim == 3 && coords.len() == 3 {
             draw_3d(
                 ui,
                 &mut self.camera,
@@ -332,6 +525,17 @@ impl View for MeshView {
             pitch: pitch as f32,
             zoom: zoom as f32,
         };
+    }
+
+    fn selection(&self) -> Option<serde_json::Value> {
+        self.cut
+            .map(|cut| serde_json::to_value(Selection { cut: Some(cut) }).expect("plain data"))
+    }
+
+    fn set_selection(&mut self, selection: &serde_json::Value) -> Result<(), String> {
+        let s: Selection = serde_json::from_value(selection.clone()).map_err(|e| e.to_string())?;
+        self.cut = s.cut;
+        Ok(())
     }
 }
 
@@ -652,5 +856,100 @@ mod tests {
         let t = triangles(&h, 0, &[1, 2, 3], 4, 0).unwrap();
         assert_eq!(t.polygons.len(), 10);
         assert_eq!(t.positions.len(), 10 * 2 * 3);
+    }
+
+    /// The area of a section's polygons (shoelace).
+    fn area(t: &Triangles) -> f64 {
+        (0..t.polygons.len())
+            .map(|p| {
+                let c = t.corners(p);
+                let n = c.len();
+                0.5 * (0..n)
+                    .map(|k| c[k][0] * c[(k + 1) % n][1] - c[(k + 1) % n][0] * c[k][1])
+                    .sum::<f64>()
+                    .abs()
+            })
+            .sum()
+    }
+
+    fn hexa_faces() -> Vec<Vec<usize>> {
+        vec![
+            vec![0, 3, 2, 1],
+            vec![0, 1, 5, 4],
+            vec![1, 2, 6, 5],
+            vec![2, 3, 7, 6],
+            vec![3, 0, 4, 7],
+            vec![4, 5, 6, 7],
+        ]
+    }
+
+    #[test]
+    fn a_plane_cuts_each_cell_once() {
+        let shape = MeshShape {
+            dim: 3,
+            faces: hexa_faces(),
+            coordinates: vec!["m.x".into(), "m.y".into(), "m.z".into()],
+        };
+        let pts: Vec<[f64; 3]> = (0..12)
+            .map(|i| [(i % 3) as f64, ((i / 3) % 2) as f64, (i / 6) as f64])
+            .collect();
+        let hex = |o: usize| -> Vec<f64> {
+            [0, 1, 4, 3, 6, 7, 10, 9]
+                .iter()
+                .map(|&k| (o + k) as f64)
+                .collect()
+        };
+        let h = history(shape, &[hex(0), hex(1)], &pts, &[1.0, 2.0]);
+        let cut = |axis, at| section(&h, 0, &[1, 2, 3], 4, 0, Cut { axis, at }).unwrap();
+        // Across both cubes: two squares, each its cube's value.
+        let z = cut(2, 0.3);
+        assert_eq!((z.polygons.len(), area(&z)), (2, 2.0));
+        assert!(z.values[..6].iter().all(|&v| v == 1.0) && z.values[6..].iter().all(|&v| v == 2.0));
+        // Through one cube, and along the side they share: once.
+        assert_eq!(area(&cut(0, 0.5)), 1.0);
+        let shared = cut(0, 1.0);
+        assert_eq!((shared.polygons.len(), area(&shared)), (1, 1.0));
+        // Outside the mesh: nothing.
+        assert!(cut(1, 3.0).polygons.is_empty());
+    }
+
+    #[test]
+    fn a_plane_through_tetrahedra_fills_the_cube_section() {
+        // The unit cube as six tetrahedra about its diagonal (Kuhn), and a
+        // value over the points: their height.
+        let shape = MeshShape {
+            dim: 3,
+            faces: vec![vec![0, 2, 1], vec![0, 1, 3], vec![0, 3, 2], vec![1, 2, 3]],
+            coordinates: vec!["m.x".into(), "m.y".into(), "m.z".into()],
+        };
+        let pts: Vec<[f64; 3]> = (0..8)
+            .map(|i| [(i & 1) as f64, ((i >> 1) & 1) as f64, ((i >> 2) & 1) as f64])
+            .collect();
+        let mut cells = Vec::new();
+        for p in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let mut at = 0usize;
+            let mut c = vec![0.0];
+            for a in p {
+                at |= 1 << a;
+                c.push(at as f64);
+            }
+            cells.push(c);
+        }
+        let heights: Vec<f64> = pts.iter().map(|p| p[2]).collect();
+        // The value over the points: the history's `u` is over the cells'
+        // table unless named otherwise.
+        let mut h = history(shape, &cells, &pts, &heights);
+        h.set_axes("m.u", vec!["pts".into()]);
+        let s = section(&h, 0, &[1, 2, 3], 4, 0, Cut { axis: 2, at: 0.3 }).unwrap();
+        assert!((area(&s) - 1.0).abs() < 1e-12, "{}", area(&s));
+        assert_eq!(s.polygons.len(), 6);
+        assert!(s.values.iter().all(|&v| (v - 0.3).abs() < 1e-12));
     }
 }

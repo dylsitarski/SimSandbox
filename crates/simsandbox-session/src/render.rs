@@ -596,6 +596,49 @@ mod tests {
         }
     }
 
+    /// A cut through a 3D mesh (its section drawn flat) and a scatter of
+    /// rows against rows by id, saved with their views (ADR 0086).
+    #[test]
+    fn cuts_and_rows_scatters_render_from_their_selections() {
+        let model = |views: serde_json::Value| {
+            serde_json::json!({"format": 1, "run": {"dt": 1, "t_end": 2},
+                "blocks": [{"name": "m", "type": "eq.equations", "equations": [
+                    "table pts max 10000", "state x[pts]", "state y[pts]", "state z[pts]",
+                    "x[n+1] = x", "y[n+1] = y", "z[n+1] = z",
+                    "cells c of pts max 10000: hexa",
+                    "start c = grid x 0 .. 1 by 2, y 0 .. 1 by 2, z 0 .. 1 by 2",
+                    "state u[c] = (id(c) - 2.5)^2", "u[n+1] = u", "w = x*y"]}],
+                "controls": {"views": views}})
+            .to_string()
+        };
+        let draw = |views: serde_json::Value| {
+            let mut s = Session::load("m", &model(views), &registry()).unwrap();
+            s.run_until(2.0).unwrap();
+            let o = RenderOptions {
+                width: 400.0,
+                height: 300.0,
+                ..Default::default()
+            };
+            let (img, warnings) = render(&s, view_registry(), &o).unwrap();
+            assert!(warnings.is_empty(), "{warnings:?}");
+            img.rgba
+        };
+        let mesh = |sel: serde_json::Value| {
+            draw(serde_json::json!([{"type": "plot.mesh", "selection": sel,
+                "bind": {"value": "m.u", "mesh": "m.c", "x": "m.x", "y": "m.y", "z": "m.z"}}]))
+        };
+        let differ =
+            |a: &[u8], b: &[u8]| a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p != q).count();
+        let whole = mesh(serde_json::json!({}));
+        let low = mesh(serde_json::json!({"cut": {"axis": "z", "at": 0.25}}));
+        let high = mesh(serde_json::json!({"cut": {"axis": "z", "at": 0.75}}));
+        assert!(differ(&whole, &low) > 1000 && differ(&low, &high) > 1000);
+        let scatter =
+            draw(serde_json::json!([{"type": "plot.xy", "bind": {"x": "m.x", "y": ["m.w"]}}]));
+        let drawn = scatter.chunks(4).filter(|p| p != &&scatter[..4]).count();
+        assert!(drawn > 2000, "{drawn}");
+    }
+
     #[test]
     fn the_arrangement_places_the_views_and_drops_the_rest() {
         let l: simsandbox_file::layout::Layout = serde_json::from_str(

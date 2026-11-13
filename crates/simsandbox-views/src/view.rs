@@ -235,6 +235,7 @@ impl Available<'_> {
                 name == TIME
                     || self.scalars.iter().any(|s| s == name)
                     || self.lines.iter().any(|s| s == name)
+                    || self.rows.iter().any(|s| s == name)
             }
             SlotKind::Grid => self.grids.iter().any(|s| s == name),
             SlotKind::Points => self.points.iter().any(|s| s == name),
@@ -299,6 +300,7 @@ impl Available<'_> {
             SlotKind::Values => std::iter::once(TIME)
                 .chain(self.scalars.iter().map(String::as_str))
                 .chain(self.lines.iter().map(String::as_str))
+                .chain(self.rows.iter().map(String::as_str))
                 .collect(),
             SlotKind::Grid => self.grids.iter().map(String::as_str).collect(),
             SlotKind::Points => self.points.iter().map(String::as_str).collect(),

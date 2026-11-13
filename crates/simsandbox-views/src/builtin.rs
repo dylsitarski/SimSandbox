@@ -114,7 +114,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
                 label: "Cell by cell",
                 description: "One line of cells against another, a point per cell, coloured by a third: a study's runs",
                 bindings: |a| {
-                    let [x, y, rest @ ..] = a.lines else {
+                        let [x, y, rest @ ..] = a.lines else {
                         return None;
                     };
                     let mut b = bindings(&[("x", x), ("y", y)]);
@@ -328,12 +328,33 @@ impl Xy {
         fx: usize,
         colour: Option<Bound<'_>>,
     ) {
+        // Over a table's rows (ADR 0086), each value paired with x's row
+        // of the same id; NaN where it has none.
+        let x_ids: Option<Vec<u64>> = (!x.history.is_empty())
+            .then(|| x.history.fields()[fx].rows(x.history.len() - 1))
+            .flatten()
+            .map(|(_, ids, _)| ids.iter().map(|&i| i as u64).collect());
         let latest = |b: Bound<'_>, f: usize| -> Vec<f64> {
             let h = b.history;
             if h.is_empty() {
                 return Vec::new();
             }
-            h.fields()[f].frame(h.len() - 1).to_vec()
+            let field = &h.fields()[f];
+            match (field.rows(h.len() - 1), &x_ids) {
+                (Some((_, ids, values)), Some(order)) => {
+                    let at: std::collections::HashMap<u64, f64> = ids
+                        .iter()
+                        .zip(values)
+                        .map(|(&i, &v)| (i as u64, v))
+                        .collect();
+                    order
+                        .iter()
+                        .map(|i| at.get(i).copied().unwrap_or(f64::NAN))
+                        .collect()
+                }
+                (Some((_, _, values)), None) => values.to_vec(),
+                _ => field.frame(h.len() - 1).to_vec(),
+            }
         };
         let xs = latest(x, fx);
         let key = match colour {
