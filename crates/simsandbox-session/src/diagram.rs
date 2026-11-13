@@ -558,8 +558,18 @@ fn use_node(
             return n;
         }
     };
-    // Its exposed inputs are ports, as input blocks are (ADR 0074).
+    // Its exposed inputs are ports, as input blocks are (ADR 0074); so
+    // are its activation signals (ADR 0088).
     simsandbox_file::compose::expose_inputs(&mut model);
+    for (name, on) in [("activate", b.activate.is_some()), ("restart", b.restart)] {
+        if on {
+            model.blocks.push(BlockEntry {
+                name: name.into(),
+                type_name: simsandbox_eq::input::VALUE.into(),
+                ..Default::default()
+            });
+        }
+    }
     let mut has_states = false;
     // Every input and output it has, by path; the node shows its
     // interface and keeps the rest reachable (ADR 0066 step 4b).
@@ -985,10 +995,13 @@ pub enum Edit {
     StudyModel,
     /// A study's `sample` (ADR 0070), as JSON.
     SetSample { block: String, sample: String },
-    /// When a study runs (ADR 0088): a mode (`rise`, `fall`, `change`,
-    /// `while`), or none. Without one, its `activate` input and the wire
-    /// into it go.
+    /// When a study runs or a used model acts (ADR 0088): a mode (`rise`,
+    /// `fall`, `change`, `while`), or none. Without one, its `activate`
+    /// input and the wire into it go.
     SetActivate { block: String, mode: Option<String> },
+    /// Whether a used model has a `restart` input (ADR 0088); without one,
+    /// the wire into it goes too.
+    SetRestart { block: String, on: bool },
     /// A strategy driving a study (ADR 0078 point 7, "Search…"): the
     /// strategy as JSON (`crate::strategies::Strategy`), written by
     /// `crate::strategies::write`.
@@ -1445,16 +1458,34 @@ fn edit_level(
             let b = l
                 .blocks
                 .iter_mut()
-                .find(|b| b.name == *block && b.type_name == simsandbox_file::STUDY)
-                .ok_or_else(|| format!("no study '{block}'"))?;
+                .find(|b| b.name == *block && (b.type_name == simsandbox_file::STUDY || b.is_use()))
+                .ok_or_else(|| format!("no study or used model '{block}'"))?;
             b.activate.clone_from(mode);
             if mode.is_none() {
-                let port = format!("{block}.activate");
-                l.connections.retain(|c| c.to != port);
+                // A study's input, or a used model's (a path).
+                let ports = [format!("{block}.activate"), format!("{block}/activate")];
+                l.connections.retain(|c| !ports.contains(&c.to));
             }
             Ok(match mode {
                 Some(m) => format!("{block} runs on its activate input ({m})"),
                 None => format!("{block} runs when its inputs change"),
+            })
+        }
+        Edit::SetRestart { block, on } => {
+            let b = l
+                .blocks
+                .iter_mut()
+                .find(|b| b.name == *block && b.is_use())
+                .ok_or_else(|| format!("no used model '{block}'"))?;
+            b.restart = *on;
+            if !on {
+                let port = format!("{block}/restart");
+                l.connections.retain(|c| c.to != port);
+            }
+            Ok(if *on {
+                format!("{block} starts again when its restart input rises")
+            } else {
+                format!("{block} has no restart input")
             })
         }
         Edit::SetSetting { block, key, text } => {

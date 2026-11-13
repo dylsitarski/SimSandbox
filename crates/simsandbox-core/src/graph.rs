@@ -48,6 +48,57 @@ pub struct Model {
     /// Per Block, its random stream when not the model's seed and its
     /// name: a block of a used model draws as it would there.
     pub(crate) streams: Vec<Option<u64>>,
+    /// Parts of the model activated by signals (ADR 0088).
+    pub(crate) activations: Vec<Activation>,
+}
+
+/// When an activated part acts on its `activate` signal (ADR 0088): the
+/// signal is high above 0.5, read at the part's communication instants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationMode {
+    /// Starts again when the signal goes high.
+    Rise,
+    /// Starts again when it goes low.
+    Fall,
+    /// Starts again at each change.
+    Change,
+    /// Steps only while high; held (states and outputs) while low.
+    While,
+}
+
+impl ActivationMode {
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "rise" => Self::Rise,
+            "fall" => Self::Fall,
+            "change" => Self::Change,
+            "while" => Self::While,
+            _ => return None,
+        })
+    }
+
+    /// Whether an edge mode acts, the level having gone from `before`
+    /// (`None` at the start: nothing is an edge) to `now`.
+    pub fn edge(self, before: Option<bool>, now: bool) -> bool {
+        match (self, before) {
+            (Self::While, _) | (_, None) => false,
+            (Self::Rise, Some(b)) => !b && now,
+            (Self::Fall, Some(b)) => b && !now,
+            (Self::Change, Some(b)) => b != now,
+        }
+    }
+}
+
+/// A part of the model activated by signals (ADR 0088): its blocks, the
+/// block whose first output is its `activate` signal (with the mode), and
+/// the one whose first output is its `restart` signal (starts it again on
+/// a rise).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Activation {
+    pub name: String,
+    pub members: Vec<BlockId>,
+    pub activate: Option<(BlockId, ActivationMode)>,
+    pub restart: Option<BlockId>,
 }
 
 /// A clock some blocks of a model step on (ADR 0066 step 4b): every `dt`,
@@ -98,6 +149,7 @@ impl Default for Model {
             clocks: Vec::new(),
             clock_of: Vec::new(),
             streams: Vec::new(),
+            activations: Vec::new(),
         }
     }
 }
@@ -121,6 +173,46 @@ impl Model {
     /// each Block's clock in `clocks`. `Simulator::step` then advances to
     /// the next instant of any clock; blocks step at their clock's instants
     /// only, and take their inputs only then.
+    /// Activate a part of the model by signals (ADR 0088). Its blocks may
+    /// not share a fused group with blocks outside it, since a group steps
+    /// whole; its signals' blocks are outside it.
+    pub fn activate(&mut self, a: Activation) -> Result<()> {
+        let fail = |reason: String| SimError::InvalidSetting {
+            setting: format!("{}.activate", a.name),
+            reason,
+        };
+        for &id in &a.members {
+            self.block(id)?;
+            if let Some(g) = self.group_of(id) {
+                if self.groups[g]
+                    .members
+                    .iter()
+                    .any(|m| !a.members.contains(m))
+                {
+                    return Err(fail(
+                        "its blocks share a fused group with blocks outside it".into(),
+                    ));
+                }
+            }
+        }
+        let signals = a.activate.map(|x| x.0).into_iter().chain(a.restart);
+        for id in signals {
+            self.block(id)?;
+            if a.members.contains(&id) {
+                return Err(fail(
+                    "its signals come from outside the part it activates".into(),
+                ));
+            }
+        }
+        if a.activate.is_none() && a.restart.is_none() {
+            return Err(fail(
+                "it has neither an activate nor a restart signal".into(),
+            ));
+        }
+        self.activations.push(a);
+        Ok(())
+    }
+
     pub fn set_clocks(&mut self, clocks: Vec<Clock>, clock_of: Vec<usize>) -> Result<()> {
         if clock_of.len() != self.blocks.len() || clock_of.iter().any(|&c| c >= clocks.len()) {
             return Err(SimError::InvalidSetting {

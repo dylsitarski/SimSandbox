@@ -1018,10 +1018,13 @@ pub struct BlockEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample: Option<Sampling>,
     /// When it acts, by its `activate` input (ADR 0088): `rise`, `fall`,
-    /// `change` or `while`. A study only, for now (used models with ADR
-    /// 0088 step 2).
+    /// `change` or `while`. A study or a use of a model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activate: Option<String>,
+    /// A use of a model with a `restart` input: it starts again when the
+    /// input rises (ADR 0088).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restart: bool,
     /// A study's model when `model` names a definition: its text,
     /// with the definitions in scope; found as the file was read, never
     /// written.
@@ -2512,7 +2515,13 @@ impl ModelFile {
             if entry.activate.is_some() && entry.type_name != STUDY {
                 return Err(invalid(
                     format!("{path}.activate"),
-                    "only a study is activated, for now; used models come with ADR 0088 step 2",
+                    "only a study or a use of a model is activated (ADR 0088)",
+                ));
+            }
+            if entry.restart {
+                return Err(invalid(
+                    format!("{path}.restart"),
+                    "only a use of a model starts again on a restart input (ADR 0088)",
                 ));
             }
             let config = entry.config(folder);
@@ -2748,6 +2757,13 @@ impl ModelFile {
                     .ok()
             };
             if a == b || !candidate(a) || !candidate(b) || domain(a) != domain(b) {
+                continue;
+            }
+            // Not across the edge of an activated part (ADR 0088), which
+            // steps or holds apart from the rest.
+            if crate::compose::activated_part(&self.blocks[a].name)
+                != crate::compose::activated_part(&self.blocks[b].name)
+            {
                 continue;
             }
             let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));

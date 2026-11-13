@@ -33,6 +33,10 @@ pub struct Snapshot {
     /// since inputs are taken only at their block's instants.
     clocks: Vec<(f64, u128)>,
     inputs: Vec<Vec<f64>>,
+    /// Activated parts' signals as last read, and which blocks are held
+    /// (ADR 0088).
+    gates: Vec<[f64; 2]>,
+    held: Vec<bool>,
 }
 
 /// Whether two runs of numbers are the same, bit for bit.
@@ -446,6 +450,10 @@ pub struct Simulator {
     /// plan computes every output of it from its inputs, outside loops.
     /// A study, for one, would run every point on inputs of zero.
     late: Vec<bool>,
+    /// Activated parts (ADR 0088): each one's signals as last read (NaN
+    /// before the first instant), and per Block whether it is held now.
+    gates: Vec<[f64; 2]>,
+    held: Vec<bool>,
 }
 
 /// Stands in for a Block lent to a thread of the pool for one instant;
@@ -788,7 +796,10 @@ impl Simulator {
             scratch: (0..groups).map(|_| GroupScratch::default()).collect(),
             pool: None,
             late: Vec::new(),
+            gates: Vec::new(),
+            held: vec![false; blocks],
         };
+        sim.gates = vec![[f64::NAN; 2]; sim.model.activations.len()];
         sim.late = (0..sim.model.blocks.len())
             .map(|b| {
                 let spec = sim.model.blocks[b].spec();
@@ -833,6 +844,8 @@ impl Simulator {
             self.clock_taken[c] = clock.times.partition_point(|&(_, t)| t <= t0) as u128;
         }
         self.active.fill(true);
+        self.gates.fill([f64::NAN; 2]);
+        self.held.fill(false);
         self.resolve(t0)?;
         self.exchange();
         // Driven starting values (ADR 0075): blocks start again from their
@@ -957,7 +970,8 @@ impl Simulator {
         let (states, tables) = (&mut self.states, &mut self.tables);
         let (pin, pout) = (&mut self.population_inputs, &mut self.population_outputs);
         let rows_routes = &self.population_routes;
-        let active = (!self.model.clocks.is_empty()).then_some(self.active.as_slice());
+        let active = (!self.model.clocks.is_empty() || self.held.contains(&true))
+            .then_some(self.active.as_slice());
         // With several clocks a block computes at its own clock's time.
         let (clock_of, clock_t, clocks) = (&self.model.clock_of, &self.clock_t, &self.model.clocks);
         let time = |b: usize| match clocks.get(clock_of[b]) {
@@ -1053,6 +1067,7 @@ impl Simulator {
         if !self.changed.is_empty() {
             self.refresh_changed()?;
         }
+        self.gate(&|_| true)?;
         let base = StepContext {
             t: self.t,
             dt,
@@ -1060,11 +1075,12 @@ impl Simulator {
             seed: 0,
         };
         for (bi, block) in self.model.blocks.iter_mut().enumerate() {
-            if self
-                .model
-                .groups
-                .iter()
-                .any(|g| g.members.contains(&BlockId(bi)))
+            if self.held[bi]
+                || self
+                    .model
+                    .groups
+                    .iter()
+                    .any(|g| g.members.contains(&BlockId(bi)))
             {
                 continue;
             }
@@ -1090,6 +1106,10 @@ impl Simulator {
             .zip(&mut self.model.groups)
             .zip(&mut self.scratch)
         {
+            // A held part's group stays as it is (ADR 0088).
+            if plan.members.first().is_some_and(|&(b, _)| self.held[b]) {
+                continue;
+            }
             let mut x = Vec::with_capacity(plan.len);
             for &(b, _) in &plan.members {
                 x.extend_from_slice(&self.states[b]);
@@ -1134,6 +1154,10 @@ impl Simulator {
         }
         self.t += dt;
         self.step += 1;
+        // Held blocks keep their outputs (ADR 0088).
+        for (a, h) in self.active.iter_mut().zip(&self.held) {
+            *a = !h;
+        }
         self.resolve(self.t)?;
         self.exchange();
         Ok(())
@@ -1255,8 +1279,11 @@ impl Simulator {
                 }
             })
             .collect();
+        // Activated parts (ADR 0088) at this instant of their clocks.
+        let clock_steps = |c: usize| reaching[c] && (!clocks[c].on_data || listed[c]);
+        self.gate(&clock_steps)?;
         for (b, a) in self.active.iter_mut().enumerate() {
-            *a = reaching[self.model.clock_of[b]];
+            *a = reaching[self.model.clock_of[b]] && !self.held[b];
         }
         // On new data, blocks step only to their own listed instants: their
         // data's samples, which only a step brings (ADR 0067 step 4).
@@ -1265,8 +1292,9 @@ impl Simulator {
         // which touch nothing of another clock's, their inputs held. Units
         // run on several cores when worth it, with the same bits (ADR 0066
         // step 6).
+        // Held blocks (ADR 0088) are not stepped either.
         let in_group: Vec<bool> = (0..self.model.blocks.len())
-            .map(|b| self.model.group_of(BlockId(b)).is_some())
+            .map(|b| self.model.group_of(BlockId(b)).is_some() || self.held[b])
             .collect();
         let clocks_now: Vec<usize> = (0..clocks.len()).filter(|&c| stepping(c)).collect();
         let parallel = self.costs.worth(self.parallel, &clocks_now);
@@ -1291,6 +1319,65 @@ impl Simulator {
         self.step += 1;
         self.resolve(self.t)?;
         self.exchange();
+        Ok(())
+    }
+
+    /// Activated parts (ADR 0088) at the instant a step starts, on clocks
+    /// for which `stepping` is true: each reads its signals (as the last
+    /// exchange left them), starts its blocks again on an edge of its mode
+    /// or a rise of its restart signal, and is held under `while` while
+    /// its signal is low. After starting any again, outputs are made
+    /// consistent at this instant before the step.
+    fn gate(&mut self, stepping: &dyn Fn(usize) -> bool) -> Result<()> {
+        if self.model.activations.is_empty() {
+            return Ok(());
+        }
+        let mut started = false;
+        for k in 0..self.model.activations.len() {
+            let a = self.model.activations[k].clone();
+            let signal = a
+                .activate
+                .map(|x| x.0)
+                .or(a.restart)
+                .expect("checked: a signal");
+            if !self.model.clocks.is_empty() && !stepping(self.model.clock_of[signal.0]) {
+                continue;
+            }
+            let level = |b: BlockId| self.outputs[b.0].first().is_some_and(|v| *v > 0.5);
+            let before = |v: f64| (!v.is_nan()).then_some(v > 0.5);
+            let last = self.gates[k];
+            let mut now = [f64::NAN; 2];
+            let (mut start, mut hold) = (false, false);
+            if let Some((b, mode)) = a.activate {
+                let l = level(b);
+                now[0] = f64::from(u8::from(l));
+                start |= mode.edge(before(last[0]), l);
+                hold = mode == crate::graph::ActivationMode::While && !l;
+            }
+            if let Some(b) = a.restart {
+                let l = level(b);
+                now[1] = f64::from(u8::from(l));
+                start |= crate::graph::ActivationMode::Rise.edge(before(last[1]), l);
+            }
+            self.gates[k] = now;
+            for m in &a.members {
+                self.held[m.0] = hold;
+            }
+            if start {
+                for m in &a.members {
+                    let t = match self.model.clocks.get(self.model.clock_of[m.0]) {
+                        Some(c) if !c.on_data => self.clock_t[self.model.clock_of[m.0]],
+                        _ => self.t,
+                    };
+                    self.start_block(m.0, t, false)?;
+                }
+                started = true;
+            }
+        }
+        if started {
+            self.resolve(self.t)?;
+            self.exchange();
+        }
         Ok(())
     }
 
@@ -1356,6 +1443,9 @@ impl Simulator {
             let Some(&(first, _)) = plan.members.first() else {
                 continue;
             };
+            if self.held[first] {
+                continue;
+            }
             let Some(u) = units.iter().position(|u| u.clock == clock_of[first]) else {
                 continue;
             };
@@ -1417,6 +1507,9 @@ impl Simulator {
             let Some(&(first, _)) = plan.members.first() else {
                 continue;
             };
+            if self.held[first] {
+                continue;
+            }
             let Some(u) = unit_of(&units, self.model.clock_of[first]) else {
                 continue;
             };
@@ -1592,6 +1685,8 @@ impl Simulator {
             } else {
                 self.inputs.clone()
             },
+            gates: self.gates.clone(),
+            held: self.held.clone(),
         }
     }
 
@@ -1629,6 +1724,8 @@ impl Simulator {
             self.clock_taken[c] = n;
         }
         self.step = snap.step;
+        self.gates.clone_from(&snap.gates);
+        self.held.clone_from(&snap.held);
         self.states.clone_from(&snap.states);
         self.tables.clone_from(&snap.tables);
         self.model.params.clone_from(&snap.params);

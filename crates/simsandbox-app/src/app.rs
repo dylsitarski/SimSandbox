@@ -2813,6 +2813,12 @@ impl SimApp {
                                 canvas_edits.push((Scope::Model, e));
                             }
                         }
+                        // When a used model acts (ADR 0088).
+                        if let Some(b) = entry.filter(|b| b.is_use() && studied.is_none()) {
+                            for e in use_activation(ui, b) {
+                                canvas_edits.push((Scope::Model, e));
+                            }
+                        }
                         // Starting values come last, each marked ↻; a used
                         // model's parameters nest by path (ADR 0066).
                         // A study's model, nested: its blocks' values as
@@ -4001,6 +4007,60 @@ type StudyKey = (String, [f64; 2], bool);
 /// its named results, and the whole sample as JSON. Changes are kept as a
 /// draft while typed or dragged and applied when a field is left, a
 /// choice made or a button pressed. Nothing for other blocks.
+/// When a used model acts (ADR 0088): always, or on its `activate` input
+/// in a mode; and whether a `restart` input starts it again.
+fn use_activation(ui: &mut egui::Ui, b: &simsandbox_file::BlockEntry) -> Vec<Edit> {
+    let mut out = Vec::new();
+    ui.horizontal(|ui| {
+        let now = b.activate.clone();
+        let label = |m: &Option<String>| match m.as_deref() {
+            None => "always".to_string(),
+            Some("while") => "while 'activate' is high".to_string(),
+            Some(m) => format!("starting again on 'activate' ({m})"),
+        };
+        ui.label("Runs");
+        egui::ComboBox::from_id_salt(("use-activate", &b.name))
+            .selected_text(label(&now))
+            .show_ui(ui, |ui| {
+                for m in [
+                    None,
+                    Some("rise"),
+                    Some("fall"),
+                    Some("change"),
+                    Some("while"),
+                ] {
+                    let m = m.map(String::from);
+                    if ui.selectable_label(now == m, label(&m)).clicked() && now != m {
+                        out.push(Edit::SetActivate {
+                            block: b.name.clone(),
+                            mode: m,
+                        });
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Activated, it gets an 'activate' input: it starts again from its starting \
+                 values when the input rises, falls or changes, or runs only while it is high \
+                 and holds otherwise",
+            );
+        let mut restart = b.restart;
+        if ui
+            .checkbox(&mut restart, "restart input")
+            .on_hover_text(
+                "A 'restart' input: it starts again from its starting values when the input rises",
+            )
+            .changed()
+        {
+            out.push(Edit::SetRestart {
+                block: b.name.clone(),
+                on: restart,
+            });
+        }
+    });
+    out
+}
+
 fn study_fields(
     ui: &mut egui::Ui,
     b: &simsandbox_file::BlockEntry,

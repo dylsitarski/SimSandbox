@@ -1182,7 +1182,10 @@ mod tests {
         let mut v: Value = serde_json::from_str(&model(None)).unwrap();
         v["blocks"][0]["activate"] = json!("rise");
         let e = run(&v.to_string(), &r, None, None).unwrap_err();
-        assert!(e.contains("only a study is activated"), "{e}");
+        assert!(
+            e.contains("only a study or a use of a model is activated"),
+            "{e}"
+        );
     }
 
     #[test]

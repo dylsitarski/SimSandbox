@@ -515,6 +515,128 @@ struct Loader<'a> {
     /// model is written and its blocks' names as written, to report
     /// problems inside it where they are written (ADR 0068).
     inlined: BTreeMap<String, Written>,
+    /// Uses activated by signals (ADR 0088), by full path: the mode of
+    /// their `activate` input, and whether they have a `restart` one.
+    activations: Vec<Activation>,
+}
+
+thread_local! {
+    /// The activated parts of the model being built (ADR 0088), by path:
+    /// fusion stops at their edges.
+    static ACTIVATED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The activated part (ADR 0088) block `name` is in, if any: the longest
+/// activated path it lies under, its signals' input blocks apart.
+pub(crate) fn activated_part(name: &str) -> Option<String> {
+    ACTIVATED.with(|a| {
+        a.borrow()
+            .iter()
+            .filter(|p| {
+                name.strip_prefix(p.as_str())
+                    .and_then(|r| r.strip_prefix('/'))
+                    .is_some_and(|r| !matches!(r, "activate" | "restart"))
+            })
+            .max_by_key(|p| p.len())
+            .cloned()
+    })
+}
+
+/// `f` with the parts activated under `base` (ADR 0088) as the build sees
+/// them: fusion stops at their edges.
+fn with_activated<R>(acts: &[Activation], base: &str, f: impl FnOnce() -> R) -> R {
+    let parts: Vec<String> = acts
+        .iter()
+        .filter_map(|a| local_to(&a.0, base))
+        .filter(|p| !p.is_empty())
+        .collect();
+    let before = ACTIVATED.with(|a| a.replace(parts));
+    let r = f();
+    ACTIVATED.with(|a| a.replace(before));
+    r
+}
+
+/// An activated use's path, `path`, as names run in the domain at `base`:
+/// `""` when it is that domain, `None` when outside it.
+fn local_to(path: &str, base: &str) -> Option<String> {
+    if base.is_empty() {
+        return Some(path.to_string());
+    }
+    if path == base {
+        return Some(String::new());
+    }
+    path.strip_prefix(base)?.strip_prefix('/').map(String::from)
+}
+
+/// An activated use (ADR 0088): its full path, the mode of its `activate`
+/// input, whether it has a `restart` one.
+type Activation = (String, Option<String>, bool);
+
+/// Register in `loaded` (the domain at `base`) the uses activated in it
+/// (ADR 0088): their blocks, those of their signals' input blocks. A use on
+/// a clock of its own is its whole domain. Those whose signals are in
+/// another domain are left to it.
+fn register_activations(
+    loaded: &mut Loaded,
+    acts: &[Activation],
+    base: &str,
+) -> Result<(), FileError> {
+    for (path, mode, restart) in acts {
+        let Some(local) = local_to(path, base) else {
+            continue;
+        };
+        let under = |name: &str| -> Option<String> {
+            if local.is_empty() {
+                Some(name.to_string())
+            } else {
+                name.strip_prefix(local.as_str())?
+                    .strip_prefix('/')
+                    .map(String::from)
+            }
+        };
+        let id = |name: &str| {
+            loaded
+                .ids
+                .iter()
+                .find(|(n, _)| under(n).as_deref() == Some(name))
+                .map(|(_, &b)| b)
+        };
+        let signal_ids = (
+            mode.as_ref().map(|_| id("activate")),
+            restart.then(|| id("restart")),
+        );
+        // Its signals are in another domain: it is that domain's.
+        if matches!(signal_ids, (Some(None), _) | (_, Some(None))) {
+            continue;
+        }
+        let members: Vec<simsandbox_core::graph::BlockId> = loaded
+            .ids
+            .iter()
+            .filter(|(n, _)| {
+                !n.starts_with("probe:")
+                    && under(n).is_some_and(|r| !matches!(r.as_str(), "activate" | "restart"))
+            })
+            .map(|(_, &b)| b)
+            .collect();
+        let activate = match (mode, signal_ids.0) {
+            (Some(m), Some(Some(b))) => Some((
+                b,
+                simsandbox_core::graph::ActivationMode::parse(m)
+                    .ok_or_else(|| invalid(path, format!("'{m}' is not a mode")))?,
+            )),
+            _ => None,
+        };
+        loaded
+            .model
+            .activate(simsandbox_core::graph::Activation {
+                name: path.clone(),
+                members,
+                activate,
+                restart: signal_ids.1.flatten(),
+            })
+            .map_err(|e| invalid(path, e))?;
+    }
+    Ok(())
 }
 
 /// Where a model put in place as a subsystem is written.
@@ -559,6 +681,7 @@ pub fn load_composition(
         listed: None,
         merge: false,
         inlined: BTreeMap::new(),
+        activations: Vec::new(),
     };
     l.level(&file, "", folder.as_deref(), None, file.run.dt, false)?;
     let mut clocks = Vec::new();
@@ -640,6 +763,7 @@ pub fn load_merged(
         listed: None,
         merge: true,
         inlined: BTreeMap::new(),
+        activations: Vec::new(),
     };
     let mut merged = file.clone();
     let (_, _, mut aliases) = l.inline_shared(&mut merged, "", folder.as_deref())?;
@@ -681,7 +805,11 @@ pub fn load_merged(
     if shortest.is_finite() {
         merged.run.dt = shortest;
     }
-    let mut loaded = with_subsystems(|| load_in(&merged.to_json(), registry, folder.as_deref()))?;
+    // Activated parts (ADR 0088): fusion stops at their edges.
+    let mut loaded = with_activated(&l.activations, "", || {
+        with_subsystems(|| load_in(&merged.to_json(), registry, folder.as_deref()))
+    })?;
+    register_activations(&mut loaded, &l.activations, "")?;
     let mut clocks: Vec<simsandbox_core::graph::Clock> = c
         .domains
         .iter()
@@ -1309,6 +1437,20 @@ fn expose_input(
     if def.params.contains_key(inner) {
         return Ok(inner.into());
     }
+    // An activated use's signal (ADR 0088): its input block made a
+    // pass-through and kept, since the kernel reads it.
+    if let Some(b) = def.blocks.iter_mut().find(|b| {
+        matches!(inner, "activate" | "restart") && b.name == inner && b.type_name == INPUT_VALUE
+    }) {
+        pass_through(b);
+        def.inputs.push(crate::InputPort {
+            unit: String::new(),
+            name: inner.into(),
+            to: vec![format!("{inner}.u")],
+            canvas: None,
+        });
+        return Ok(inner.into());
+    }
     if !def
         .blocks
         .iter()
@@ -1625,10 +1767,14 @@ impl Loader<'_> {
             if !path.is_empty() {
                 f.run.seed = Some(seed_for(self.seed, path));
             }
-            let loaded = match with_subsystems(|| load_in(&f.to_json(), self.registry, folder)) {
+            let built = with_activated(&self.activations, path, || {
+                with_subsystems(|| load_in(&f.to_json(), self.registry, folder))
+            });
+            let mut loaded = match built {
                 Ok(l) => l,
                 Err(e) => return Err(self.inside_error(written_at(e, &own, &inside), &f)),
             };
+            register_activations(&mut loaded, &self.activations, path)?;
             // A model without states runs on new data, unless its use
             // gives it a clock: then it is evaluated at each step. Its
             // recorded data's samples are new data too (ADR 0067 step 4).
@@ -1703,7 +1849,38 @@ impl Loader<'_> {
     ) -> Result<(ModelFile, PathBuf, PathBuf), FileError> {
         let (mut model, found, canonical) = self.read_use_file(u, path, folder)?;
         // Its exposed inputs are wired here, or it cannot run (ADR 0074).
-        let inputs = expose_inputs(&mut model);
+        let mut inputs = expose_inputs(&mut model);
+        // Activated (ADR 0088): its signals come in through input blocks
+        // of their own, `activate` and `restart`.
+        if let Some(m) = &u.activate {
+            if simsandbox_core::graph::ActivationMode::parse(m).is_none() {
+                return Err(invalid(
+                    "activate",
+                    format!("'{m}' is not a mode: rise, fall, change or while (ADR 0088)"),
+                ));
+            }
+        }
+        let signals = [("activate", u.activate.is_some()), ("restart", u.restart)];
+        for (name, _) in signals.iter().filter(|s| s.1) {
+            if model.blocks.iter().any(|b| b.name == *name) || inputs.iter().any(|i| i == name) {
+                return Err(invalid(
+                    "",
+                    format!("the model has a block or input named '{name}', which its {name} signal needs; rename it"),
+                ));
+            }
+            // An input block the kernel reads (kept as a pass-through when
+            // a wire feeds it in place).
+            model.blocks.push(BlockEntry {
+                name: (*name).to_string(),
+                type_name: INPUT_VALUE.into(),
+                ..Default::default()
+            });
+            inputs.push((*name).to_string());
+        }
+        if u.activate.is_some() || u.restart {
+            self.activations
+                .push((path.to_string(), u.activate.clone(), u.restart));
+        }
         if let Some(i) = unwired(&inputs, &u.name, parent) {
             return Err(invalid(
                 "",
