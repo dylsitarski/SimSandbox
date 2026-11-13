@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Implicit methods (`backward_euler`, `trbdf2`) factorise with an LU of their own on the matrix's symmetric pattern (ADR 0087): about 3× faster per step on 2D grids (Gray–Scott at 128 × 128 with TR-BDF2: 165 ms a step, from 520), the same in 1D. Their results change in the last bits.
 - Wiring a view while paused or before running records the current sample of what it reads, instead of leaving it empty.
 - An input over a table that has its own `start`, rules or edges is now matched to its rows by id (NaN for a row the input lacks), instead of being refused; only a table with none of these follows its input's rows.
 - A recorded-data block, `at_times` and `at_samples` count a step whose time is within rounding of a sample's as at it. Before, steps summed from `dt` could fall a hair short (2.4999999999998 for 2500 steps of 0.001) and take the sample a step late. In models with data, a sample can now take effect one step earlier than before, so their results can change slightly (not only in the last digits); they stay exact within this version on any machine. Run files made earlier replay with that difference, and say so (below).

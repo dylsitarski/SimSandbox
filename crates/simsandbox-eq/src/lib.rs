@@ -23,6 +23,7 @@ pub mod mesh;
 pub mod ode;
 pub mod refine;
 pub mod registry;
+pub mod sparse_lu;
 pub mod symbolic;
 pub mod systems;
 #[cfg(feature = "views")]

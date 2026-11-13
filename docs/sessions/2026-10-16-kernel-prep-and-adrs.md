@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-13: STATUS item 1, implicit methods on large 2D grids: measured faer's LU with COLAMD, AMD, nested dissection on A and on AᵀA (at most −28%), and Cholesky on the same pattern (65 ms); ADR 0087 written; `sparse_lu.rs` (nested dissection by level sets, AMD via faer, elimination tree, supernodes relaxed to 32 columns, multifrontal factorisation in blocks of 32 with faer matmul above 4096 multiplications, single-column solve path), used by `implicit.rs` with faer's LU as fallback (`Factor`); `examples/lu_speed.rs`; TR-BDF2 Gray–Scott 520 → 165 ms a step, 1D unchanged (checked against `typed_speed` old and new alternately); tests: grids and chains to 1e-12, same bits twice, refusal and fallback, ordering choice
 - 2026-11-13: recompute on demand (STATUS item 1, probes): `Session::has_gaps`/`recompute`, `gaps_until` noted by `set_view_reads` (which now takes the sample at the current time again from the model), `replay_history` with filled samples, `sample_now`; the app's `Status::gaps` and **Fill the past** button on the worker; tests in the session (cruise control and the heat rod, bit for bit against recording from the start, a live parameter change replayed, refused without a recorder) and on the app's worker (Lorenz); ADR 0063 As built, ADR 0062 note, STATUS (item 1 now the implicit-methods follow-up), CHANGELOG
 - 2026-11-13: cuts by planes in any direction (owner's request): `Cut { normal, at }`, the picture's directions from the axis least along the normal, a tolerance of 1e-12 of the cell's size for corners on the plane; tests of a diagonal plane.
 - 2026-11-13: cuts and scatters (owner: do these two and record the rest): `mesh::section` and `Cut` (saved selection) in `plot.mesh`; rows in `plot.xy` paired by id; STATUS Known limitations updated (views, GPU, tables, axes) and a Meshes entry listing what is deferred and why; tests in `mesh.rs` and `render.rs`.
@@ -198,6 +199,8 @@
 
 ## Decided
 
+- 2026-11-13 (owner): implicit methods get our own LU without row interchanges (of: ordering only; own LU; record and move on).
+- 2026-11-13 (mine, ADR 0087): pivot threshold 1/100 of the column, falling back to faer's LU for the step; nested dissection only when minimum degree needs over 32 operations a column and it saves a tenth (so chains keep minimum degree's forward order); supernodes relaxed to 32 columns with zeros under a fifth.
 - 2026-11-13 (mine, within ADR 0063 point 2): recompute fills the implicit history only (probes and clocked filters keep what they recorded); it is offered as a run-bar button while there are gaps, never run by itself; it replays from the snapshot at or before the history's first sample and replaces whole samples, which equal the old ones bit for bit; the sample at the time a view is wired is taken from the model then, so wiring while paused leaves no gap.
 - 2026-11-13 (owner): cuts through 3D meshes by planes in any direction (a normal and a place along it), not only at one coordinate.
 - 2026-11-13 (owner): of the deferred mesh items, build cuts through 3D meshes and `plot.xy` over rows now; the heat map, surface and 3D view on the GPU, VTK files, refining prisms and pyramids, and refining 3D simplices from files wait until a model needs them (recorded in STATUS Known limitations).
