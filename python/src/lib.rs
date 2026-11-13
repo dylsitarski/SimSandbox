@@ -10,7 +10,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use simsandbox_session::examples::{registry, view_registry, EXAMPLES};
 use simsandbox_session::render::{png, render as render_views, RenderOptions};
-use simsandbox_session::run::run as run_model;
+use simsandbox_session::run::{run_keeping as run_model, run_probes as run_model_probes};
+use simsandbox_session::session::InputEvent;
 use simsandbox_session::{describe as catalogue, Session};
 
 create_exception!(
@@ -69,26 +70,79 @@ fn check(py: Python<'_>, text: &str) -> String {
     py.detach(|| json(&catalogue::check(text, &registry())))
 }
 
-/// The built-in examples as (name, model file) pairs.
+/// The hash a run file records of its model (ADR 0059): SHA-256 of the
+/// model with every parameter written out, leaving out `controls` and the
+/// settings a run records itself.
 #[pyfunction]
-fn examples() -> Vec<(&'static str, &'static str)> {
-    EXAMPLES.iter().map(|e| (e.name, e.text)).collect()
+fn model_hash(text: &str) -> PyResult<String> {
+    simsandbox_session::run::model_hash(text).map_err(ModelError::new_err)
+}
+
+/// This build of SimSandbox as run files record it: `simsandbox 0.0.1`.
+#[pyfunction]
+fn made_with() -> &'static str {
+    simsandbox_session::run::MADE_WITH
+}
+
+/// The run file's JSON Schema.
+#[pyfunction]
+fn run_schema() -> &'static str {
+    simsandbox_session::run::RUN_SCHEMA
+}
+
+/// The built-in examples as (name, model file, folder) triples: the
+/// folder holds the files an example reads (ADR 0069 step 3), unpacked
+/// once; `None` for the others.
+#[pyfunction]
+fn examples() -> Vec<(&'static str, &'static str, Option<String>)> {
+    EXAMPLES
+        .iter()
+        .map(|e| {
+            let folder = e.folder().map(|d| d.to_string_lossy().into_owned());
+            (e.name, e.text, folder)
+        })
+        .collect()
+}
+
+/// What a run keeps (ADR 0076): the outputs named, every `every`-th step.
+fn keep(signals: Option<Vec<String>>, every: usize) -> simsandbox_session::run::Keep {
+    simsandbox_session::run::Keep { signals, every }
 }
 
 /// Run a model file. Returns a dict: `index` and `outputs` as lists of
 /// (name, shape, bytes), `populations` as (name, dim, [bytes per row]),
-/// and `labels`, `notes`, `warnings` as JSON text.
+/// `over_rows` (a table's rows, ADR 0079) as (name, dim, [bytes per row],
+/// each frame `[version, n, ids…, values…]`),
+/// and `labels`, `notes`, `warnings` as JSON text. `signals` and `every`
+/// keep only those outputs and every so many steps (ADR 0076).
 #[pyfunction]
-#[pyo3(signature = (text, t_end=None, dt=None))]
+#[pyo3(signature = (text, t_end=None, dt=None, track=None, signals=None, every=1))]
 fn run<'py>(
     py: Python<'py>,
     text: &str,
     t_end: Option<f64>,
     dt: Option<f64>,
+    track: Option<Vec<(f64, String, f64)>>,
+    signals: Option<Vec<String>>,
+    every: usize,
 ) -> PyResult<Bound<'py, PyDict>> {
+    // Recorded input (ADR 0058), applied with the file's schedule.
+    let track: Vec<InputEvent> = track
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(t, key, value)| InputEvent { t, key, value })
+        .collect();
     let r = py
-        .detach(|| run_model(text, &registry(), t_end, dt))
+        .detach(|| run_model(text, &registry(), t_end, dt, track, &keep(signals, every)))
         .map_err(ModelError::new_err)?;
+    results(py, &r)
+}
+
+/// A run's results as the dict [`run`] returns.
+fn results<'py>(
+    py: Python<'py>,
+    r: &simsandbox_session::run::Results,
+) -> PyResult<Bound<'py, PyDict>> {
     let rows = r.rows();
     let d = PyDict::new(py);
     let index = PyList::empty(py);
@@ -97,24 +151,182 @@ fn run<'py>(
     }
     let outputs = PyList::empty(py);
     for o in &r.outputs {
-        let shape = catalogue::shape(&o.shape);
+        let shape = catalogue::shape_with_axes(&o.shape, &o.axes);
         outputs.append((&o.name, json(&shape), bytes(py, &o.values)))?;
     }
     let populations = PyList::empty(py);
+    let over_rows = PyList::empty(py);
     for p in &r.populations {
         let frames: Vec<_> = p.frames.iter().map(|f| bytes(py, f)).collect();
-        populations.append((&p.name, p.dim, frames))?;
+        match p.rows {
+            true => over_rows.append((&p.name, p.dim, frames))?,
+            false => populations.append((&p.name, p.dim, frames))?,
+        }
     }
     d.set_item("rows", rows)?;
     d.set_item("index", index)?;
     d.set_item("outputs", outputs)?;
     d.set_item("populations", populations)?;
+    d.set_item("over_rows", over_rows)?;
     d.set_item(
         "labels",
         json(&serde_json::json!(r.labels.map(catalogue::labels))),
     )?;
     d.set_item("notes", r.notes.clone())?;
     d.set_item("warnings", r.warnings.clone())?;
+    Ok(d)
+}
+
+/// Run a composition (ADR 0065) to `t_end` (the file's, if not given):
+/// a dict of each model's results, as [`run`] gives one model's, under
+/// `models` (in written order), with `tick` and `warnings`.
+#[pyfunction]
+#[pyo3(signature = (text, t_end=None, signals=None, every=1))]
+fn run_composition<'py>(
+    py: Python<'py>,
+    text: &str,
+    t_end: Option<f64>,
+    signals: Option<Vec<String>>,
+    every: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let c = py
+        .detach(|| {
+            simsandbox_session::compose::run_composition_keeping(
+                text,
+                &registry(),
+                t_end,
+                simsandbox_core::parallel::Parallel::Auto,
+                &keep(signals, every),
+            )
+        })
+        .map_err(ModelError::new_err)?;
+    let models = PyList::empty(py);
+    for (name, r) in &c.models {
+        models.append((name, results(py, r)?))?;
+    }
+    let d = PyDict::new(py);
+    d.set_item("models", models)?;
+    d.set_item("tick", c.tick)?;
+    d.set_item("warnings", c.warnings.clone())?;
+    Ok(d)
+}
+
+/// Run a model file with its probes (ADR 0062), all of them or those in
+/// `names`, writing the files of those that have one into `save` if
+/// given. Returns a dict: `probes` as a list of (name, times bytes,
+/// [(signal, bytes)], [(field, dims, bytes)], [(population, dim, [bytes
+/// per sample])]), `files` written, and `labels`, `warnings`.
+#[pyfunction]
+#[pyo3(signature = (text, t_end=None, dt=None, track=None, names=None, save=None, memory=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_probes<'py>(
+    py: Python<'py>,
+    text: &str,
+    t_end: Option<f64>,
+    dt: Option<f64>,
+    track: Option<Vec<(f64, String, f64)>>,
+    names: Option<Vec<String>>,
+    save: Option<std::path::PathBuf>,
+    memory: Option<f64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    use simsandbox_views::history::FieldShape;
+    let track: Vec<InputEvent> = track
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(t, key, value)| InputEvent { t, key, value })
+        .collect();
+    let names = names.unwrap_or_default();
+    let (r, files) = py
+        .detach(|| {
+            let r = run_model_probes(
+                text,
+                &registry(),
+                t_end,
+                dt,
+                track,
+                &names,
+                save.as_deref(),
+                memory,
+            )?;
+            let files = match &save {
+                Some(dir) => r
+                    .write_files(dir)
+                    .map_err(|e| format!("{}: {e}", dir.display()))?,
+                None => Default::default(),
+            };
+            Ok::<_, String>((r, files))
+        })
+        .map_err(ModelError::new_err)?;
+    let probes = PyList::empty(py);
+    for (spec, h) in &r.probes {
+        let h = h.read();
+        let signals = PyList::empty(py);
+        for (i, n) in h.names().iter().enumerate() {
+            let values = h.values(simsandbox_views::history::SignalRef::Signal(i));
+            signals.append((n, bytes(py, &values)))?;
+        }
+        let fields = PyList::empty(py);
+        let populations = PyList::empty(py);
+        let over_rows = PyList::empty(py);
+        for f in h.fields().iter() {
+            let frames = (0..h.len()).map(|k| f.frame(k));
+            match f.shape {
+                FieldShape::Grid { nx, ny } => fields.append((
+                    &f.name,
+                    vec![ny, nx],
+                    bytes(py, &frames.flatten().copied().collect::<Vec<_>>()),
+                ))?,
+                FieldShape::Points { count, dim } => fields.append((
+                    &f.name,
+                    vec![count, dim],
+                    bytes(py, &frames.flatten().copied().collect::<Vec<_>>()),
+                ))?,
+                FieldShape::Population { dim } => populations.append((
+                    &f.name,
+                    dim,
+                    frames.map(|v| bytes(py, v)).collect::<Vec<_>>(),
+                ))?,
+                FieldShape::Rows { dim } => over_rows.append((
+                    &f.name,
+                    dim,
+                    frames.map(|v| bytes(py, v)).collect::<Vec<_>>(),
+                ))?,
+                // The last axis fastest, as numpy stores it (ADR 0081).
+                FieldShape::Tensor { rank, dims } => fields.append((
+                    &f.name,
+                    dims[..rank].iter().rev().copied().collect::<Vec<_>>(),
+                    bytes(py, &frames.flatten().copied().collect::<Vec<_>>()),
+                ))?,
+            }
+        }
+        probes.append((
+            &spec.name,
+            bytes(py, h.times()),
+            signals,
+            fields,
+            populations,
+            over_rows,
+        ))?;
+    }
+    let (written, notes) = files;
+    let mut warnings = r.warnings.clone();
+    warnings.extend(notes);
+    let d = PyDict::new(py);
+    d.set_item("probes", probes)?;
+    d.set_item("files", written)?;
+    d.set_item(
+        "memory",
+        json(&serde_json::json!({
+            "budget": r.memory.budget,
+            "held": r.memory.held,
+            "parts": r.memory.parts,
+        })),
+    )?;
+    d.set_item(
+        "labels",
+        json(&serde_json::json!(r.labels.map(catalogue::labels))),
+    )?;
+    d.set_item("warnings", warnings)?;
     Ok(d)
 }
 
@@ -146,7 +358,8 @@ fn render<'py>(
                 scale,
                 view,
                 light,
-                subsystem: None,
+                inside: None,
+                expand: Vec::new(),
                 data: false,
                 values: false,
             };
@@ -161,7 +374,7 @@ fn render<'py>(
 /// The block diagram of a model file as a PNG, as the node canvas shows
 /// it (ADR 0042); drawn even if the model cannot run.
 #[pyfunction]
-#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, subsystem=None, data=true, values=false))]
+#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, inside=None, data=true, values=false, expand=Vec::new()))]
 #[allow(clippy::too_many_arguments)]
 fn render_diagram<'py>(
     py: Python<'py>,
@@ -170,9 +383,10 @@ fn render_diagram<'py>(
     height: f32,
     scale: f32,
     light: bool,
-    subsystem: Option<String>,
+    inside: Option<String>,
     data: bool,
     values: bool,
+    expand: Vec<String>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let image = py
         .detach(|| -> Result<_, String> {
@@ -184,7 +398,8 @@ fn render_diagram<'py>(
                 scale,
                 view: None,
                 light,
-                subsystem,
+                inside,
+                expand,
                 data,
                 values,
             };
@@ -206,16 +421,82 @@ fn start_from(py: Python<'_>, text: &str, t: f64) -> PyResult<(String, Vec<Strin
         .map_err(ModelError::new_err)
 }
 
-/// Group blocks into a new subsystem, as "Make subsystem" on the canvas
-/// does (ADR 0043). Returns the changed model file and a note.
+/// Move blocks into a new model defined in the file, as "Make model" on
+/// the canvas does (ADR 0068). Returns the changed model file and a note.
 #[pyfunction]
-#[pyo3(signature = (text, blocks, subsystem=None))]
-fn group(text: &str, blocks: Vec<String>, subsystem: Option<String>) -> PyResult<(String, String)> {
+fn group(text: &str, blocks: Vec<String>) -> PyResult<(String, String)> {
     use simsandbox_session::diagram::{apply_in, Edit, Scope};
     let (mut file, _) = simsandbox_session::ModelFile::from_json(text)
         .map_err(|e| ModelError::new_err(e.to_string()))?;
-    let scope = subsystem.map_or(Scope::Model, Scope::Subsystem);
-    let note = apply_in(&mut file, &scope, &registry(), &Edit::Group { blocks })
+    let note = apply_in(
+        &mut file,
+        &Scope::Model,
+        &registry(),
+        &Edit::GroupModel { blocks },
+    )
+    .map_err(ModelError::new_err)?;
+    Ok((file.to_json(), note))
+}
+
+/// Copy blocks or uses beside themselves, with their values and the wires
+/// among them, as "Duplicate" on the canvas does (ADR 0069). Returns the
+/// changed model file and a note.
+#[pyfunction]
+fn duplicate(text: &str, blocks: Vec<String>) -> PyResult<(String, String)> {
+    use simsandbox_session::diagram::{apply_in, Edit, Scope};
+    let (mut file, _) = simsandbox_session::ModelFile::from_json(text)
+        .map_err(|e| ModelError::new_err(e.to_string()))?;
+    let note = apply_in(
+        &mut file,
+        &Scope::Model,
+        &registry(),
+        &Edit::Duplicate { blocks },
+    )
+    .map_err(ModelError::new_err)?;
+    Ok((file.to_json(), note))
+}
+
+/// A study of a used model beside it (ADR 0070), as "Study this model"
+/// does on the canvas. Returns the changed model file and a note.
+#[pyfunction]
+fn study(text: &str, block: String) -> PyResult<(String, String)> {
+    use simsandbox_session::diagram::{apply_in, Edit, Scope};
+    let (mut file, _) = simsandbox_session::ModelFile::from_json(text)
+        .map_err(|e| ModelError::new_err(e.to_string()))?;
+    let note = apply_in(
+        &mut file,
+        &Scope::Model,
+        &registry(),
+        &Edit::Study { block },
+    )
+    .map_err(ModelError::new_err)?;
+    Ok((file.to_json(), note))
+}
+
+/// Write a strategy model (ADR 0078 point 7): `spec` is the strategy as
+/// JSON (`{"kind": "minimize", …}`), `target` a study, a used model or
+/// none (the whole model). Returns the changed model file and a note.
+#[pyfunction]
+#[pyo3(signature = (text, spec, target=None))]
+fn strategy(text: &str, spec: &str, target: Option<String>) -> PyResult<(String, String)> {
+    let (mut file, _) = simsandbox_session::ModelFile::from_json(text)
+        .map_err(|e| ModelError::new_err(e.to_string()))?;
+    let spec: simsandbox_session::strategies::Strategy =
+        serde_json::from_str(spec).map_err(|e| ModelError::new_err(e.to_string()))?;
+    let note =
+        simsandbox_session::strategies::write(&mut file, &registry(), target.as_deref(), &spec)
+            .map_err(ModelError::new_err)?;
+    Ok((file.to_json(), note))
+}
+
+/// Study the whole model (ADR 0071), as "Study this model" does on the
+/// canvas background. Returns the changed model file and a note.
+#[pyfunction]
+fn study_model(text: &str) -> PyResult<(String, String)> {
+    use simsandbox_session::diagram::{apply_in, Edit, Scope};
+    let (mut file, _) = simsandbox_session::ModelFile::from_json(text)
+        .map_err(|e| ModelError::new_err(e.to_string()))?;
+    let note = apply_in(&mut file, &Scope::Model, &registry(), &Edit::StudyModel)
         .map_err(ModelError::new_err)?;
     Ok((file.to_json(), note))
 }
@@ -237,6 +518,15 @@ fn promote(text: &str, filter: String, to: Option<String>) -> PyResult<(String, 
     Ok((file.to_json(), note))
 }
 
+/// Set the folder blocks on this thread read the files their settings
+/// name from (ADR 0063): the model file's. Returns the folder it replaces,
+/// to set back.
+#[pyfunction]
+#[pyo3(signature = (folder=None))]
+fn set_folder(folder: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    simsandbox_core::registry::set_folder(folder)
+}
+
 /// A model file in the current form (ADR 0044): the text, the older forms
 /// converted, and what was dropped as unusable.
 #[pyfunction]
@@ -249,14 +539,24 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ModelError", m.py().get_type::<ModelError>())?;
     m.add_function(wrap_pyfunction!(describe, m)?)?;
     m.add_function(wrap_pyfunction!(promote, m)?)?;
+    m.add_function(wrap_pyfunction!(set_folder, m)?)?;
+    m.add_function(wrap_pyfunction!(run_composition, m)?)?;
     m.add_function(wrap_pyfunction!(schema, m)?)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(examples, m)?)?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
+    m.add_function(wrap_pyfunction!(run_probes, m)?)?;
+    m.add_function(wrap_pyfunction!(model_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(made_with, m)?)?;
+    m.add_function(wrap_pyfunction!(run_schema, m)?)?;
     m.add_function(wrap_pyfunction!(render, m)?)?;
     m.add_function(wrap_pyfunction!(render_diagram, m)?)?;
     m.add_function(wrap_pyfunction!(start_from, m)?)?;
     m.add_function(wrap_pyfunction!(group, m)?)?;
+    m.add_function(wrap_pyfunction!(duplicate, m)?)?;
+    m.add_function(wrap_pyfunction!(study, m)?)?;
+    m.add_function(wrap_pyfunction!(study_model, m)?)?;
+    m.add_function(wrap_pyfunction!(strategy, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

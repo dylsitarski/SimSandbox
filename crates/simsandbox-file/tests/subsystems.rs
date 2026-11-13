@@ -1,6 +1,7 @@
-//! Subsystems and declared parameters (ADR 0043): files with them load as
-//! the flat model a person would write by hand, report problems where they
-//! are written, and save back what changed.
+//! Models defined in the file and used on their user's clock (ADR 0068,
+//! which replaced ADR 0043's subsystems), and declared parameters: files
+//! with them load as the flat model a person would write by hand, report
+//! problems where they are written, and save back what changed.
 
 use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::Simulator;
@@ -13,8 +14,17 @@ fn registry() -> Registry {
     r
 }
 
+/// Load as the app does: merged, when the model uses models.
+fn load_any(text: &str) -> Result<simsandbox_file::Loaded, FileError> {
+    if simsandbox_file::compose::is_composition(text) {
+        simsandbox_file::compose::load_merged(text, &registry(), None)
+    } else {
+        load(text, &registry())
+    }
+}
+
 fn invalid_path(text: &str) -> String {
-    match load(text, &registry()) {
+    match load_any(text) {
         Err(FileError::Invalid { path, .. }) => path,
         Err(e) => panic!("expected an Invalid error, got {e}"),
         Ok(_) => panic!("expected an error"),
@@ -27,29 +37,30 @@ const LAGS: &str = r#"{
   "format": 1,
   "run": {"dt": 0.01},
   "params": {"slow": {"value": 1.5, "description": "How slow b is"}},
-  "subsystems": {
+  "models": {
     "lag": {
       "params": {"tau": {"value": 1.0, "unit": "s"}},
-      "inputs": [{"name": "u", "to": ["f.u"]}],
       "outputs": [{"name": "y", "from": "f.x"}],
       "blocks": [
         {"name": "f", "type": "eq.equations", "method": {"name": "rk4"},
-         "equations": ["input u", "dx/dt = (u - x)/T"], "params": {"T": "tau"}}
-      ]
+         "equations": ["input u", "dx/dt = (u - x)/T"], "params": {"T": "tau"}},
+        {"name": "u", "type": "input.value"}
+      ],
+      "connections": [{"from": "u.y", "to": "f.u"}]
     }
   },
   "blocks": [
     {"name": "ramp", "type": "eq.equations", "method": {"name": "rk4"}, "equations": ["dr/dt = 1"]},
-    {"name": "a", "type": "lag"},
-    {"name": "b", "type": "lag", "params": {"tau": "2*slow"}}
+    {"name": "a", "model": "lag"},
+    {"name": "b", "model": "lag", "params": {"tau": "2*slow"}}
   ],
   "connections": [
-    {"from": "ramp.r", "to": "a.u"},
-    {"from": "a.y", "to": "b.u"}
+    {"from": "ramp.r", "to": "a/u"},
+    {"from": "a/y", "to": "b/u"}
   ]
 }"#;
 
-/// The same model written by hand without subsystems.
+/// The same model written by hand without uses.
 const LAGS_FLAT: &str = r#"{
   "format": 1,
   "run": {"dt": 0.01},
@@ -67,7 +78,7 @@ const LAGS_FLAT: &str = r#"{
 }"#;
 
 fn run_to(text: &str, port: &str, steps: usize) -> f64 {
-    let loaded = load(text, &registry()).unwrap();
+    let loaded = load_any(text).unwrap();
     let (b, p) = port.rsplit_once('.').unwrap();
     let id = loaded.ids[b];
     let mut sim = Simulator::new(loaded.model, 0.0).unwrap();
@@ -78,8 +89,8 @@ fn run_to(text: &str, port: &str, steps: usize) -> f64 {
 }
 
 #[test]
-fn instances_flatten_into_the_model_written_by_hand() {
-    let loaded = load(LAGS, &registry()).unwrap();
+fn uses_flatten_into_the_model_written_by_hand() {
+    let loaded = load_any(LAGS).unwrap();
     let names: Vec<&str> = loaded.flat.blocks.iter().map(|b| b.name.as_str()).collect();
     assert_eq!(names, ["ramp", "a/f", "b/f"]);
     let wires: Vec<(&str, &str)> = loaded
@@ -100,7 +111,7 @@ fn instances_flatten_into_the_model_written_by_hand() {
 
 #[test]
 fn declared_parameters_feed_formulas_and_can_be_changed() {
-    let mut plan = load(LAGS, &registry()).unwrap().params;
+    let mut plan = load_any(LAGS).unwrap().params;
     let keys: Vec<&str> = plan.declared.iter().map(|d| d.key.as_str()).collect();
     assert_eq!(keys, ["slow", "a.tau", "b.tau"]);
     assert!(plan.declared("a.tau").unwrap().editable);
@@ -142,26 +153,26 @@ fn shared_model_parameters_set_several_blocks() {
 }
 
 #[test]
-fn subsystems_nest() {
+fn models_nest() {
     let text = LAGS
         .replace(
             r#""lag": {"#,
             r#""pair": {
       "params": {"tau": {"value": 2.0}},
-      "inputs": [{"name": "u", "to": ["p.u"]}],
-      "outputs": [{"name": "y", "from": "q.y"}],
-      "blocks": [{"name": "p", "type": "lag", "params": {"tau": "tau"}}, {"name": "q", "type": "lag", "params": {"tau": "tau/2"}}],
-      "connections": [{"from": "p.y", "to": "q.u"}]
+      "outputs": [{"name": "y", "from": "q/y"}],
+      "blocks": [{"name": "p", "model": "lag", "params": {"tau": "tau"}}, {"name": "q", "model": "lag", "params": {"tau": "tau/2"}},
+                 {"name": "u", "type": "input.value"}],
+      "connections": [{"from": "u.y", "to": "p/u"}, {"from": "p/y", "to": "q/u"}]
     },
     "lag": {"#,
         )
-        .replace(r#"{"name": "b", "type": "lag", "params": {"tau": "2*slow"}}"#, r#"{"name": "b", "type": "pair"}"#);
-    let loaded = load(&text, &registry()).unwrap();
+        .replace(r#"{"name": "b", "model": "lag", "params": {"tau": "2*slow"}}"#, r#"{"name": "b", "model": "pair"}"#);
+    let loaded = load_any(&text).unwrap();
     let names: Vec<&str> = loaded.flat.blocks.iter().map(|b| b.name.as_str()).collect();
     assert_eq!(names, ["ramp", "a/f", "b/p/f", "b/q/f"]);
     assert_eq!(loaded.model.param(loaded.ids["b/q/f"], "T").unwrap(), 1.0);
     let d = loaded.params.declared("b/q.tau").unwrap();
-    assert!(!d.editable, "inside another subsystem");
+    assert!(!d.editable, "inside another model, set by a formula");
     assert!(loaded
         .flat
         .connections
@@ -181,66 +192,42 @@ fn problems_are_reported_where_they_are_written() {
         "blocks[2].params.tau"
     );
     // A port the inner block lacks.
-    assert_eq!(
-        bad(r#""from": "f.x""#, r#""from": "f.z""#),
-        "subsystems.lag.outputs[0].from"
-    );
+    // A declared output naming no block.
     assert_eq!(
         bad(r#""from": "f.x""#, r#""from": "g.x""#),
-        "subsystems.lag.outputs[0].from"
+        "models.lag.outputs[0].from"
     );
     assert_eq!(
         bad(r#""dx/dt = (u - x)/T""#, r#""dx/dt = (u - x/T""#),
-        "subsystems.lag.blocks[0].equations"
-    );
-    assert_eq!(
-        bad(
-            r#"{"from": "a.y", "to": "b.u"}"#,
-            r#"{"from": "a.y", "to": "b.v"}"#
-        ),
-        "connections[1].to"
+        "models.lag.blocks[0].equations"
     );
     assert_eq!(
         bad(r#""T": "tau""#, r#""T": "tau*k""#),
-        "subsystems.lag.blocks[0].params.T"
+        "models.lag.blocks[0].params.T"
     );
     assert_eq!(
         bad(
-            r#"{"name": "a", "type": "lag"}"#,
-            r#"{"name": "a", "type": "lag", "method": {"name": "rk4"}}"#
+            r#"{"name": "a", "model": "lag"}"#,
+            r#"{"name": "a", "model": "lag", "method": {"name": "rk4"}}"#
         ),
         "blocks[1].method"
     );
-    // A subsystem that contains itself.
+    // A model that uses itself.
     let looped = LAGS.replacen(
-        r#""type": "eq.equations", "method": {"name": "rk4"},
-         "equations""#,
-        r#""type": "lag", "equations""#,
+        r#"{"name": "u", "type": "input.value"}"#,
+        r#"{"name": "u", "model": "lag"}"#,
         1,
     );
     assert!(
-        invalid_path(&looped).ends_with(".type") || invalid_path(&looped).contains("equations")
+        invalid_path(&looped).contains("model"),
+        "{}",
+        invalid_path(&looped)
     );
-    // Unused subsystems are still checked.
-    let unused = LAGS
-        .replace(
-            r#"{"name": "b", "type": "lag", "params": {"tau": "2*slow"}}"#,
-            r#"{"name": "b", "type": "eq.lorenz", "method": {"name": "rk4"}}"#,
-        )
-        .replace(
-            r#"{"from": "a.y", "to": "b.u"}"#,
-            r#"{"from": "a.y", "to": "a.u"}"#,
-        )
-        .replace(r#"{"from": "ramp.r", "to": "a.u"},"#, "")
-        .replace(r#"{"name": "a", "type": "lag"},"#, "")
-        .replace(r#"{"from": "a.y", "to": "a.u"}"#, "");
-    let unused = unused.replace(r#""from": "f.x""#, r#""from": "f.nope""#);
-    assert!(load(&unused, &registry()).is_err());
 }
 
 #[test]
 fn saving_writes_back_only_what_changed() {
-    let mut loaded = load(LAGS, &registry()).unwrap();
+    let mut loaded = load_any(LAGS).unwrap();
     // Running values: a's tau, an inner value of b, the model's slow.
     for (b, p, v) in loaded.params.set("a.tau", 0.25).unwrap() {
         loaded.model.set_param(loaded.ids[&b], &p, v).unwrap();
@@ -261,7 +248,7 @@ fn saving_writes_back_only_what_changed() {
     assert_eq!(b.len(), 1, "{b:?}");
     assert_eq!(file.blocks[0].params["r0"], ParamValue::Number(5.0));
     // And it loads to the same values.
-    let again = load(&file.to_json(), &registry()).unwrap();
+    let again = load_any(&file.to_json()).unwrap();
     assert_eq!(again.model.param(again.ids["a/f"], "T").unwrap(), 0.25);
     assert_eq!(again.model.param(again.ids["b/f"], "T").unwrap(), 2.0);
 }

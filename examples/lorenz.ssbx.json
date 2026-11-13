@@ -8,10 +8,6 @@
     {
       "name": "lorenz",
       "type": "eq.lorenz",
-      "method": {
-        "name": "rk4",
-        "substeps": 1.0
-      },
       "params": {
         "beta": 2.6666666666666665,
         "rho": 28.0,
@@ -38,9 +34,6 @@
       }
     },
     "speed": 1.0,
-    "plots": [
-      "lorenz.xyz"
-    ],
     "views": [
       {
         "type": "plot.3d",

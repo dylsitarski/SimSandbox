@@ -59,10 +59,33 @@ fn every_older_form_converts_to_its_current_form() {
 #[test]
 fn the_examples_are_in_the_current_form() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-    for e in std::fs::read_dir(dir).unwrap() {
+    // Models in the folder and in folders of their own, with their data
+    // (ADR 0069 step 3).
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for e in std::fs::read_dir(&dir).unwrap() {
         let path = e.unwrap().path();
+        if path.is_dir() {
+            paths.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+        } else {
+            paths.push(path);
+        }
+    }
+    for path in paths {
+        if !path.to_string_lossy().ends_with(".ssbx.json") {
+            continue;
+        }
         let text = std::fs::read_to_string(&path).unwrap();
-        let loaded = load(&text, &registry()).unwrap();
+        let folder = path.parent();
+        // Study blocks are registered by the session crate, which checks
+        // those examples (`every_example_is_current_and_runs`).
+        if text.contains(r#""type": "study""#) {
+            continue;
+        }
+        let loaded = if simsandbox_file::compose::is_composition(&text) {
+            simsandbox_file::compose::load_merged(&text, &registry(), folder).unwrap()
+        } else {
+            simsandbox_file::load_in(&text, &registry(), folder).unwrap()
+        };
         assert!(
             loaded.conversions.is_empty(),
             "{}: {:?}",

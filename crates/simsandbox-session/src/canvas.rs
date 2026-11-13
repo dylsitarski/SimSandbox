@@ -53,6 +53,10 @@ pub enum Request {
     EditData(String),
     /// Show a view's tile, by its place among the views.
     ShowView(usize),
+    /// Edit a probe's settings (ADR 0062), by its name.
+    EditProbe(String),
+    /// Edit the recorder's settings (ADR 0064).
+    EditRecorder,
     /// A value typed on a node (ADR 0053): `"block.param"` and the value.
     SetValue { key: String, value: f64 },
     /// `= expression` typed on a node (ADR 0056): `"block.param"` and the
@@ -68,6 +72,17 @@ pub enum Request {
         key: String,
         text: String,
     },
+    /// Choose a model file to use here, at this place (ADR 0066 step 4c).
+    AddModel([f64; 2]),
+    /// Write the model defined in the file that this use names to a file
+    /// of its own (ADR 0068).
+    MoveToFile(String),
+    /// Make the model file this use reads a model defined in the file.
+    PutInFile(String),
+    /// Show the use at this path expanded in place (ADR 0066 step 4d).
+    Expand(String),
+    /// Show it as a node again.
+    Collapse(String),
 }
 
 /// Values show on nodes from this zoom up, and can be edited from this one.
@@ -227,6 +242,31 @@ impl Canvas {
             self.input(ui, &response, d, origin, pointer, &mut edits, &mut requests);
         }
 
+        // Expanded uses under everything (ADR 0066 step 4d): an outline
+        // coloured by its clock, titled with its path, model and clock.
+        let z = self.zoom;
+        for o in &d.outlines {
+            let r = Rect::from_min_max(
+                self.to_screen(origin, [o.rect[0], o.rect[1]]),
+                self.to_screen(origin, [o.rect[2], o.rect[3]]),
+            );
+            let tint = clock_colour(&o.clock, &visuals);
+            painter.rect_filled(r, 6.0 * z, tint.gamma_multiply(0.08));
+            painter.rect_stroke(
+                r,
+                6.0 * z,
+                Stroke::new(1.5, tint.gamma_multiply(0.8)),
+                StrokeKind::Inside,
+            );
+            painter.text(
+                r.min + Vec2::new(8.0 * z, 6.0 * z),
+                egui::Align2::LEFT_TOP,
+                format!("{} · {} · {}", o.path, o.label, o.clock),
+                egui::FontId::proportional(12.0 * z),
+                visuals.text_color(),
+            );
+        }
+
         // Wires under nodes.
         for w in &d.wires {
             let lifted = self
@@ -276,7 +316,7 @@ impl Canvas {
         }
         for (i, n) in d.nodes.iter().enumerate() {
             let selected = self.is_selected(&n.name);
-            self.node(&painter, &visuals, origin, n, selected);
+            self.node(&painter, &visuals, origin, d, i, selected);
             if interactive {
                 // Hover help: the error, or a port's unit and shape.
                 let r = self.node_rect(origin, n);
@@ -293,7 +333,19 @@ impl Canvas {
                         })
                     } else if let Some((_, k)) = value {
                         let v = &n.values[k];
-                        let mut tip = if self.zoom >= EDIT_VALUES {
+                        let mut tip = if let Some(from) = &v.driven {
+                            format!(
+                                "{}: driven by {from}, whose value it takes (ADR 0075); drag \
+                                 the wire off its dot to set it again",
+                                v.key
+                            )
+                        } else if let Some(e) = &v.exposed {
+                            format!(
+                                "{}: the model's parameter {e}, set by each model or study \
+                                 using this one; its own value is changed in the Inspector",
+                                v.key
+                            )
+                        } else if self.zoom >= EDIT_VALUES {
                             format!(
                                 "{}: double-click to change it (a number, or '= expression' \
                                  of the parameters)",
@@ -302,6 +354,13 @@ impl Canvas {
                         } else {
                             format!("{}: zoom in to change it here", v.key)
                         };
+                        if d.exposable(i) {
+                            tip.push_str(if v.exposed.is_some() {
+                                "\nClick the ring to make it the block's own again"
+                            } else {
+                                "\nClick the ring to expose it: models using this one set it"
+                            });
+                        }
                         if d.scope != Scope::Model {
                             tip.push_str(
                                 "\nThe default of every use of this subsystem; changing it \
@@ -332,7 +391,23 @@ impl Canvas {
                                     Causality::Input => &d.nodes[k].inputs[port],
                                     Causality::Output => &d.nodes[k].outputs[port],
                                 };
-                                port_help(&n.name, q, c)
+                                let mut tip = port_help(&n.name, q, c);
+                                if d.exposable(k) {
+                                    let kind = match c {
+                                        Causality::Input => "in",
+                                        Causality::Output => "out",
+                                    };
+                                    tip.push_str(&match d.exposed_as(k, kind, &q.name) {
+                                        Some(e) => format!(
+                                            "\nExposed as {e} to models using this one: \
+                                             click to hide it"
+                                        ),
+                                        None => "\nClick to expose it to models using this \
+                                                 one; drag to wire it"
+                                            .to_string(),
+                                    });
+                                }
+                                tip
                             })
                     };
                     if let Some(tip) = tip {
@@ -356,12 +431,7 @@ impl Canvas {
             );
         }
         if d.nodes.is_empty() {
-            let empty = match d.scope {
-                Scope::Model => "Empty model: right-click to add a block",
-                Scope::Subsystem(_) => {
-                    "Empty subsystem: right-click to add blocks, inputs and outputs"
-                }
-            };
+            let empty = "Empty model: right-click to add a block";
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -416,20 +486,39 @@ impl Canvas {
         painter: &egui::Painter,
         visuals: &egui::Visuals,
         origin: Pos2,
-        n: &Node,
+        d: &Diagram,
+        i: usize,
         selected: bool,
     ) {
+        let n = &d.nodes[i];
         let z = self.zoom;
         let r = self.node_rect(origin, n);
         let radius = CornerRadius::same((6.0 * z).round().clamp(0.0, 255.0) as u8);
+        // A study runs its model many times: drawn as a stack of cards
+        // (ADR 0070).
+        let study = n.kind == NodeKind::Block && n.type_name == simsandbox_file::STUDY;
+        if study {
+            // Below the node and narrower, clear of the ports at its sides.
+            for k in [2.0, 1.0] {
+                let card = r
+                    .translate(Vec2::new(0.0, 4.0 * k * z))
+                    .shrink2(Vec2::new(8.0 * k * z, 0.0));
+                painter.rect_filled(card, radius, visuals.window_fill);
+                painter.rect_stroke(card, radius, visuals.window_stroke, StrokeKind::Inside);
+            }
+        }
         painter.rect_filled(r, radius, visuals.window_fill);
         let header = Rect::from_min_size(r.min, Vec2::new(r.width(), HEADER as f32 * z));
         let header_fill = match n.kind {
+            NodeKind::Block if study => {
+                STUDY_HEADER.gamma_multiply(if visuals.dark_mode { 0.55 } else { 0.3 })
+            }
             NodeKind::Block => visuals.widgets.inactive.bg_fill,
-            NodeKind::Subsystem => visuals.selection.bg_fill.gamma_multiply(0.45),
-            NodeKind::Input | NodeKind::Output => visuals.warn_fg_color.gamma_multiply(0.25),
+            NodeKind::Use => visuals.selection.bg_fill.gamma_multiply(0.7),
             NodeKind::Filter => visuals.hyperlink_color.gamma_multiply(0.3),
             NodeKind::View => visuals.hyperlink_color.gamma_multiply(0.15),
+            NodeKind::Probe => visuals.warn_fg_color.gamma_multiply(0.18),
+            NodeKind::Recorder => visuals.error_fg_color.gamma_multiply(0.18),
         };
         painter.rect_filled(
             header,
@@ -448,7 +537,8 @@ impl Canvas {
         } else {
             visuals.window_stroke
         };
-        if n.is_observer() {
+        // A probe feeding a block is part of the model: drawn solid.
+        if n.is_observer() && !n.settings.contains_key("feeds") {
             // Dashed: on the data layer, not part of the model.
             let colour = if n.error.is_some() || selected {
                 border.color
@@ -471,8 +561,8 @@ impl Canvas {
         } else {
             painter.rect_stroke(r, radius, border, StrokeKind::Inside);
         }
-        if n.kind == NodeKind::Subsystem {
-            // A second outline: there is more inside.
+        if n.kind == NodeKind::Use || study {
+            // A second outline: there is a model inside, to open.
             painter.rect_stroke(
                 r.shrink(3.0 * z),
                 radius,
@@ -495,13 +585,20 @@ impl Canvas {
             "cannot be built (hover)".to_string()
         } else {
             match n.kind {
+                NodeKind::Block if study => format!("study {}", n.method),
                 NodeKind::Block => format!("{} · {}", n.type_name, n.method),
-                NodeKind::Subsystem => format!("{} · subsystem", n.type_name),
-                NodeKind::Input => "subsystem input".into(),
-                NodeKind::Output => "subsystem output".into(),
+                // A model file used here: its file and its clock.
+                NodeKind::Use => format!("{} · {}", n.method, n.type_name),
                 NodeKind::Filter => format!("filter · {}", n.method),
                 NodeKind::View => format!("view · {}", n.method),
+                NodeKind::Probe => n.method.clone(),
+                NodeKind::Recorder => format!("rewind · {}", n.method),
             }
+        };
+        // What the run says of it now first: held, started again (ADR 0088).
+        let kind = match &n.status {
+            Some(status) => format!("{status} · {kind}"),
+            None => kind,
         };
         painter.text(
             r.min + Vec2::new(pad, 22.0 * z),
@@ -532,6 +629,22 @@ impl Canvas {
                 } else {
                     painter.circle_filled(at, DOT * z, colour);
                 }
+                // Exposed to the models using this one: ringed (ADR 0074),
+                // wherever the model is drawn.
+                let kind = match c {
+                    Causality::Input => "in",
+                    Causality::Output => "out",
+                };
+                let ringed = d.exposed_as(i, kind, &p.name).is_some();
+                if ringed {
+                    painter.circle_stroke(
+                        at,
+                        (DOT + 3.5) * z,
+                        Stroke::new(1.5 * z, visuals.selection.stroke.color),
+                    );
+                }
+                // Clear of the ring.
+                let pad = if ringed { pad + 4.0 * z } else { pad };
                 let (offset, align) = match c {
                     Causality::Input => (Vec2::new(pad, 0.0), egui::Align2::LEFT_CENTER),
                     Causality::Output => (Vec2::new(-pad, 0.0), egui::Align2::RIGHT_CENTER),
@@ -557,6 +670,18 @@ impl Canvas {
                             format!("{} · {}", p.name, more.join(", "))
                         }
                     }
+                    // An activated part's mode beside its port (ADR 0088).
+                    _ if c == Causality::Input && p.name == "activate" => {
+                        match n.settings.get("activate") {
+                            Some(mode) => format!("activate · {mode}"),
+                            None => p.name.clone(),
+                        }
+                    }
+                    // A probe names its file beside its input.
+                    NodeKind::Probe => match (c, n.settings.get("to")) {
+                        (Causality::Input, Some(to)) => format!("{} · {to}", p.name),
+                        _ => p.name.clone(),
+                    },
                     // A conversion shows its units (ADR 0045).
                     _ => match unit_setting(n, c).filter(|_| k == 0) {
                         Some(setting) => {
@@ -615,7 +740,7 @@ impl Canvas {
                 );
             }
         }
-        self.values(painter, visuals, origin, n);
+        self.values(painter, visuals, origin, d, i);
     }
 
     /// Where a node's values are opened and closed: the top-right corner
@@ -672,8 +797,17 @@ impl Canvas {
     }
 
     /// A node's parameter values, below its ports (ADR 0053).
-    fn values(&self, painter: &egui::Painter, visuals: &egui::Visuals, origin: Pos2, n: &Node) {
-        if !n.open || self.zoom < SHOW_VALUES {
+    fn values(
+        &self,
+        painter: &egui::Painter,
+        visuals: &egui::Visuals,
+        origin: Pos2,
+        d: &Diagram,
+        i: usize,
+    ) {
+        let n = &d.nodes[i];
+        let exposable = d.exposable(i);
+        if n.value_rows() == 0 || self.zoom < SHOW_VALUES {
             return;
         }
         let z = self.zoom;
@@ -687,17 +821,52 @@ impl Canvas {
             Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
         );
         let font = FontId::proportional(11.0 * z);
-        for (k, v) in n.values.iter().enumerate() {
+        // While a wire is drawn from an output, every value is a place to
+        // drop it (ADR 0075).
+        let wiring = self
+            .wiring
+            .as_ref()
+            .is_some_and(|g| g.causality == Causality::Output && g.lifted.is_none());
+        for (k, v) in n.values.iter().enumerate().take(n.value_rows()) {
+            let port = self.to_screen(origin, n.value_port(k));
+            if v.driven.is_some() {
+                painter.circle_filled(port, DOT * z * 0.8, visuals.widgets.active.fg_stroke.color);
+            } else if wiring && n.is_block() {
+                painter.circle_stroke(
+                    port,
+                    DOT * z * 0.8,
+                    Stroke::new(1.0 * z, visuals.weak_text_color()),
+                );
+            }
             if self.editing.as_ref().is_some_and(|(key, _)| *key == v.key) {
                 continue;
             }
             let y = self.to_screen(origin, n.value_at(k)).y + VALUE_ROW as f32 * z / 2.0;
-            let left = Pos2::new(top.x + pad, y);
-            let name = if v.initial {
+            let mut left = Pos2::new(top.x + pad, y);
+            // Its toggle (ADR 0074): a ring, filled while it is exposed.
+            if exposable {
+                let at = self.toggle_at(origin, n, k);
+                let colour = visuals.selection.stroke.color;
+                if v.exposed.is_some() {
+                    painter.circle_filled(at, 2.5 * z, colour);
+                    painter.circle_stroke(at, 4.5 * z, Stroke::new(1.5 * z, colour));
+                } else {
+                    painter.circle_stroke(
+                        at,
+                        4.5 * z,
+                        Stroke::new(1.0 * z, visuals.weak_text_color()),
+                    );
+                }
+                left.x = at.x + 8.0 * z;
+            }
+            let mut name = if v.initial {
                 format!("{} ↻", v.name)
             } else {
                 v.name.clone()
             };
+            if let Some(e) = v.exposed.as_ref().filter(|e| **e != v.name) {
+                name = format!("{name} as {e}");
+            }
             painter.text(
                 left,
                 egui::Align2::LEFT_CENTER,
@@ -707,7 +876,11 @@ impl Canvas {
             );
             // `*`: some uses of the subsystem set their own.
             let mark = if v.overridden.is_empty() { "" } else { " *" };
-            let shown = format!("{} {}{mark}", format_number(v.value), v.unit);
+            // Driven: its source, not a number to change (ADR 0075).
+            let shown = match &v.driven {
+                Some(from) => format!("from {from}"),
+                None => format!("{} {}{mark}", format_number(v.value), v.unit),
+            };
             painter.text(
                 Pos2::new(top.x + NODE_WIDTH as f32 * z - pad, y),
                 egui::Align2::RIGHT_CENTER,
@@ -716,6 +889,32 @@ impl Canvas {
                 visuals.text_color(),
             );
         }
+    }
+
+    /// The centre of the toggle exposing value `k` of `n` (ADR 0074): at
+    /// the left of its row.
+    fn toggle_at(&self, origin: Pos2, n: &Node, k: usize) -> Pos2 {
+        let z = self.zoom;
+        let row = self.to_screen(origin, n.value_at(k));
+        row + Vec2::new(14.0 * z, VALUE_ROW as f32 * z / 2.0)
+    }
+
+    /// The exposure toggle under `p` (ADR 0074): the port itself, or a
+    /// value's ring, on a node inside a model. Node, kind and item.
+    fn toggle_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, &str, String)> {
+        if let Some((i, k, c)) = self.port_under(d, origin, p) {
+            if !d.exposable(i) {
+                return None;
+            }
+            return Some(match c {
+                Causality::Input => (i, "in", d.nodes[i].inputs[k].name.clone()),
+                Causality::Output => (i, "out", d.nodes[i].outputs[k].name.clone()),
+            });
+        }
+        let (i, k) = self.value_under(d, origin, p)?;
+        let n = &d.nodes[i];
+        (d.exposable(i) && self.toggle_at(origin, n, k).distance(p) <= 7.0 * self.zoom)
+            .then(|| (i, "par", n.values[k].name.clone()))
     }
 
     /// The value row under `p`: node and value.
@@ -872,13 +1071,52 @@ impl Canvas {
             origin,
             d.nodes[w.from.0].port_at(Causality::Output, w.from.1),
         );
-        let b = self.to_screen(origin, d.nodes[w.to.0].port_at(Causality::Input, w.to.1));
+        let b = self.to_screen(origin, self.wire_end(d, w));
         let below = self
             .node_rect(origin, &d.nodes[w.from.0])
             .max
             .y
             .max(self.node_rect(origin, &d.nodes[w.to.0]).max.y);
         route(a, b, below, self.zoom)
+    }
+
+    /// Where a wire ends, in canvas units: its input, or the value it
+    /// drives (ADR 0075), at the node's side when values are not drawn.
+    fn wire_end(&self, d: &Diagram, w: &crate::diagram::Wire) -> [f64; 2] {
+        let n = &d.nodes[w.to.0];
+        if !w.param {
+            return n.port_at(Causality::Input, w.to.1);
+        }
+        if self.zoom >= SHOW_VALUES && w.to.1 < n.value_rows() {
+            n.value_port(w.to.1)
+        } else {
+            [n.at[0], n.at[1] + crate::diagram::HEADER / 2.0]
+        }
+    }
+
+    /// The name a wire into value `k` of node `i` ends at (ADR 0075),
+    /// `node.param` as the canvas names ports (a used model's becomes
+    /// `use/param` in the file).
+    fn value_key(d: &Diagram, i: usize, k: usize) -> String {
+        let n = &d.nodes[i];
+        format!("{}.{}", n.name, n.values[k].name)
+    }
+
+    /// The value row whose port is under `p` (ADR 0075): node and value.
+    fn value_port_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, usize)> {
+        if self.zoom < SHOW_VALUES {
+            return None;
+        }
+        let reach = REACH * self.zoom.max(0.7);
+        d.nodes.iter().enumerate().rev().find_map(|(i, n)| {
+            (n.is_block() && !n.is_observer())
+                .then(|| {
+                    (0..n.value_rows())
+                        .find(|&k| self.to_screen(origin, n.value_port(k)).distance(p) <= reach)
+                })
+                .flatten()
+                .map(|k| (i, k))
+        })
     }
 
     fn wire_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<String> {
@@ -920,14 +1158,29 @@ impl Canvas {
             // pointer has moved.
             let start = ui.input(|i| i.pointer.press_origin());
             if let Some(p) = start.or(response.interact_pointer_pos()) {
-                if let Some((node, port, c)) = self.port_under(d, origin, p) {
+                // A driven value's wire is lifted from its source end
+                // (ADR 0075).
+                let driven = self.value_port_under(d, origin, p).and_then(|(i, k)| {
+                    d.wires
+                        .iter()
+                        .find(|w| w.param && w.to == (i, k))
+                        .map(|w| (w, Self::value_key(d, i, k)))
+                });
+                if let Some((w, key)) = driven {
+                    self.wiring = Some(Dragging {
+                        node: w.from.0,
+                        port: w.from.1,
+                        causality: Causality::Output,
+                        lifted: Some(key),
+                    });
+                } else if let Some((node, port, c)) = self.port_under(d, origin, p) {
                     let key = |n: usize, q: &str| format!("{}.{}", d.nodes[n].name, q);
                     // Dragging a connected input lifts its wire from the
                     // source end.
                     // A data-layer input may read several signals: dragging
                     // from it starts a new wire instead.
                     let fed = (c == Causality::Input && !d.nodes[node].is_observer())
-                        .then(|| d.wires.iter().find(|w| w.to == (node, port)))
+                        .then(|| d.wires.iter().find(|w| !w.param && w.to == (node, port)))
                         .flatten();
                     self.wiring = Some(match fed {
                         Some(w) => Dragging {
@@ -1007,14 +1260,19 @@ impl Canvas {
                     format!("{}.{}", d.nodes[n].name, ports[k].name)
                 };
                 let here = key(g.node, g.causality, g.port);
-                let new = match target {
-                    Some((n, k, c)) if c != g.causality => {
+                // From an output onto a value: the wire drives it (ADR 0075).
+                let onto_value = (g.causality == Causality::Output)
+                    .then(|| pointer.and_then(|p| self.value_port_under(d, origin, p)))
+                    .flatten();
+                let new = match (target, onto_value) {
+                    (Some((n, k, c)), _) if c != g.causality => {
                         let there = key(n, c, k);
                         Some(match c {
                             Causality::Input => (here.clone(), there),
                             Causality::Output => (there, here.clone()),
                         })
                     }
+                    (_, Some((i, k))) => Some((here.clone(), Self::value_key(d, i, k))),
                     _ => None,
                 };
                 match (g.lifted, new) {
@@ -1037,6 +1295,12 @@ impl Canvas {
                             // A view's slot shows the signal.
                             (_, Some(NodeKind::View)) => edits.push(Edit::Bind {
                                 many: d.many.contains(&to),
+                                from,
+                                to,
+                            }),
+                            // A probe records it too.
+                            (_, Some(NodeKind::Probe)) => edits.push(Edit::Bind {
+                                many: true,
                                 from,
                                 to,
                             }),
@@ -1072,6 +1336,14 @@ impl Canvas {
             }
         }
         if response.clicked() {
+            // Exposing a port or parameter inside a model (ADR 0074).
+            let toggle = response
+                .interact_pointer_pos()
+                .and_then(|p| self.toggle_under(d, origin, p));
+            if let Some((i, kind, item)) = toggle {
+                edits.push(d.toggle_exposed(i, kind, &item));
+                return;
+            }
             if let Some(p) = response.interact_pointer_pos() {
                 let shift = ui.input(|i| i.modifiers.shift);
                 self.selected = match self.node_under(d, origin, p) {
@@ -1105,7 +1377,9 @@ impl Canvas {
             if let Some((i, k)) = p.and_then(|p| self.value_under(d, origin, p)) {
                 // A value: typed in place when zoomed in (ADR 0053).
                 let v = &d.nodes[i].values[k];
-                if self.zoom >= EDIT_VALUES {
+                // An exposed value is the model's parameter: changed in the
+                // Inspector, not over the block's own (ADR 0074).
+                if self.zoom >= EDIT_VALUES && v.exposed.is_none() && v.driven.is_none() {
                     self.editing = Some((v.key.clone(), format_number(v.value)));
                 }
             } else if let Some((i, c)) = p.and_then(|p| self.unit_under(d, origin, p)) {
@@ -1135,6 +1409,25 @@ impl Canvas {
         let delete =
             ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
         let typing = ui.ctx().egui_wants_keyboard_input();
+        // Ctrl+D duplicates the selected blocks (ADR 0069).
+        let duplicate = ui.input_mut(|i| {
+            i.consume_shortcut(&egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND,
+                egui::Key::D,
+            ))
+        });
+        if duplicate && !typing && response.hovered() {
+            if let Some(s) = &self.selected {
+                let blocks: Vec<String> = s
+                    .blocks()
+                    .into_iter()
+                    .filter(|b| d.node(b).is_some_and(|k| d.nodes[k].is_block()))
+                    .collect();
+                if !blocks.is_empty() {
+                    edits.push(Edit::Duplicate { blocks });
+                }
+            }
+        }
         if delete && !typing && response.hovered() {
             match self.selected.take() {
                 Some(Selection::Wire(key)) => edits.push(match key.split_once('<') {
@@ -1177,23 +1470,76 @@ impl Canvas {
                 let shown = name[name.find(':').map_or(0, |k| k + 1)..].to_string();
                 ui.label(egui::RichText::new(&shown).strong());
                 match n.kind {
-                    NodeKind::Subsystem => {
-                        if ui.button("Open").on_hover_text("Edit what is inside (every use changes)").clicked() {
-                            requests.push(Request::Open(name.clone()));
-                            ui.close();
-                        }
-                    }
                     NodeKind::Block => {
                         if ui.button("Edit…").on_hover_text("Its equations or settings").clicked() {
                             requests.push(Request::Open(name.clone()));
                             ui.close();
                         }
                     }
-                    NodeKind::Input | NodeKind::Output => {}
+                    NodeKind::Use => {
+                        ui.weak(format!("Uses {}, {}", n.type_name, n.method));
+                        if ui.button("Open").on_hover_text("See inside the model it uses").clicked() {
+                            requests.push(Request::Open(name.clone()));
+                            ui.close();
+                        }
+                        if ui
+                            .button("Expand in place")
+                            .on_hover_text("Show its blocks here, in an outline; edits there change the model it uses")
+                            .clicked()
+                        {
+                            requests.push(Request::Expand(name.clone()));
+                            ui.close();
+                        }
+                        // A study of the same model beside it (ADR 0070).
+                        if ui
+                            .button("Study this model")
+                            .on_hover_text("Add a study block that runs this model at 20 values of its first parameter; edit its sample in the Inspector")
+                            .clicked()
+                        {
+                            edits.push(Edit::Study { block: name.clone() });
+                            ui.close();
+                        }
+                        // A definition goes to a file and back (ADR 0068).
+                        if n.type_name.starts_with("model ") {
+                            if ui
+                                .button("Move to its own file…")
+                                .on_hover_text("Write this model to a model file; every use here uses the file")
+                                .clicked()
+                            {
+                                requests.push(Request::MoveToFile(name.clone()));
+                                ui.close();
+                            }
+                        } else if ui
+                            .button("Put in this file")
+                            .on_hover_text("Copy the model file into this model as a model defined here; the file stays as it is")
+                            .clicked()
+                        {
+                            requests.push(Request::PutInFile(name.clone()));
+                            ui.close();
+                        }
+                    }
                     NodeKind::Filter => {
                         if ui.button("Edit in Data…").on_hover_text("Its formula or cuts").clicked() {
                             requests.push(open_request(n));
                             ui.close();
+                        }
+                        if n.settings.contains_key("clock") {
+                            let mut any = n.method.ends_with(" · on any");
+                            if ui
+                                .checkbox(&mut any, "Run when any input records")
+                                .on_hover_text(
+                                    "Off: it runs where all its inputs' sources recorded at the \
+                                     same time. On: whenever one of them records, with the \
+                                     others' latest values (ADR 0063)",
+                                )
+                                .changed()
+                            {
+                                edits.push(Edit::SetFilterWhen {
+                                    filter: name.clone(),
+                                    any,
+                                });
+                                ui.close();
+                            }
                         }
                         if n.type_name == "expression"
                             && ui
@@ -1216,8 +1562,28 @@ impl Canvas {
                             ui.close();
                         }
                     }
+                    NodeKind::Probe => {
+                        if ui
+                            .button("Settings…")
+                            .on_hover_text("When it records, how long it keeps samples, its file")
+                            .clicked()
+                        {
+                            requests.push(open_request(n));
+                            ui.close();
+                        }
+                    }
+                    NodeKind::Recorder => {
+                        if ui
+                            .button("Settings…")
+                            .on_hover_text("How often it saves the model's state, and how much memory it may use")
+                            .clicked()
+                        {
+                            requests.push(open_request(n));
+                            ui.close();
+                        }
+                    }
                 }
-                ui.add_enabled_ui(n.kind != NodeKind::View, |ui| ui.horizontal(|ui| {
+                ui.add_enabled_ui(!matches!(n.kind, NodeKind::View | NodeKind::Recorder), |ui| ui.horizontal(|ui| {
                     let field = ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(110.0));
                     let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (ui.button("Rename").clicked() || enter) && self.rename != shown {
@@ -1238,16 +1604,40 @@ impl Canvas {
                     } else {
                         vec![name.clone()]
                     };
+                    // A model defined in the file (ADR 0068).
                     let label = match group.len() {
-                        1 => "Make subsystem".to_string(),
-                        k => format!("Make subsystem of {k} blocks"),
+                        1 => "Make model".to_string(),
+                        k => format!("Make model of {k} blocks"),
                     };
                     if ui
                         .button(label)
-                        .on_hover_text("Move into a new subsystem; wires that cross become its ports (Shift-click or Shift-drag to select several)")
+                        .on_hover_text("Move into a new model defined in this file; wires that cross become its input blocks and outputs (Shift-click or Shift-drag to select several)")
                         .clicked()
                     {
-                        edits.push(Edit::Group { blocks: group });
+                        edits.push(Edit::GroupModel { blocks: group });
+                        ui.close();
+                    }
+                }
+                // A study opens to the model it studies (ADR 0070).
+                if n.type_name == simsandbox_file::STUDY
+                    && ui
+                        .button("Open")
+                        .on_hover_text("See inside the model it studies, and edit it")
+                        .clicked()
+                {
+                    requests.push(Request::Open(name.clone()));
+                    ui.close();
+                }
+                if n.is_block() {
+                    let many = selection.len() > 1 && selection.contains(&name);
+                    let label = if many {
+                        format!("Duplicate {} blocks", selection.len())
+                    } else {
+                        "Duplicate".to_string()
+                    };
+                    if ui.button(label).on_hover_text("Copies beside it, with its values (Ctrl+D)").clicked() {
+                        let blocks = if many { selection.clone() } else { vec![name.clone()] };
+                        edits.push(Edit::Duplicate { blocks });
                         ui.close();
                     }
                 }
@@ -1267,9 +1657,36 @@ impl Canvas {
                 }
             }
             None => {
+                // Inside an expanded use: collapse it (ADR 0066 step 4d).
+                for o in d.outlines.iter().filter(|o| {
+                    at[0] >= o.rect[0] && at[0] <= o.rect[2] && at[1] >= o.rect[1] && at[1] <= o.rect[3]
+                }) {
+                    if ui.button(format!("Collapse {}", o.path)).clicked() {
+                        requests.push(Request::Collapse(o.path.clone()));
+                        ui.close();
+                    }
+                }
                 ui.label("Add block");
                 if let Some(type_name) = type_menu(ui, registry, &d.subsystems) {
                     edits.push(Edit::Add { type_name, at });
+                    ui.close();
+                }
+                if ui
+                    .button("Add model…")
+                    .on_hover_text("Use a model file here, on its own clock (ADR 0066)")
+                    .clicked()
+                {
+                    requests.push(Request::AddModel(at));
+                    ui.close();
+                }
+                // Run the whole model at many points (ADR 0071).
+                if !d.nodes.iter().all(|n| n.is_observer())
+                    && ui
+                        .button("Study this model")
+                        .on_hover_text("Move every block into a model defined in this file, used in their place, with a study of it beside: it runs the model at many values of a parameter")
+                        .clicked()
+                {
+                    edits.push(Edit::StudyModel);
                     ui.close();
                 }
                 if !d.view_types.is_empty() {
@@ -1280,6 +1697,29 @@ impl Canvas {
                         .clicked()
                     {
                         edits.push(Edit::AddFilter { at });
+                        ui.close();
+                    }
+                    if ui
+                        .button("Add probe")
+                        .on_hover_text(
+                            "Records the signals and fields wired into it, when and for as long \
+                             as you choose, and can save them to a file (ADR 0062)",
+                        )
+                        .clicked()
+                    {
+                        edits.push(Edit::AddProbe { at });
+                        ui.close();
+                    }
+                    if d.node(crate::observers::RECORDER).is_none()
+                        && ui
+                            .button("Add recorder")
+                            .on_hover_text(
+                                "Saves the model's state as it runs, so it can be rewound \
+                                 (ADR 0064); without one the rewind bar is hidden",
+                            )
+                            .clicked()
+                    {
+                        edits.push(Edit::AddRecorder { at });
                         ui.close();
                     }
                     ui.menu_button("Add view", |ui| {
@@ -1293,17 +1733,6 @@ impl Canvas {
                             }
                         }
                     });
-                }
-                if matches!(d.scope, Scope::Subsystem(_)) {
-                    ui.separator();
-                    if ui.button("Add input").clicked() {
-                        edits.push(Edit::AddPort { input: true, at });
-                        ui.close();
-                    }
-                    if ui.button("Add output").clicked() {
-                        edits.push(Edit::AddPort { input: false, at });
-                        ui.close();
-                    }
                 }
             }
         });
@@ -1391,17 +1820,36 @@ impl Canvas {
     }
 }
 
+/// The header colour of a study's node (ADR 0070): apart from blocks,
+/// used models and the data layer.
+const STUDY_HEADER: Color32 = Color32::from_rgb(150, 90, 200);
+
+/// A colour for a clock: the same clock, the same colour; a shared clock
+/// in the selection colour.
+fn clock_colour(clock: &str, visuals: &egui::Visuals) -> Color32 {
+    if clock.contains("shared") {
+        return visuals.selection.bg_fill;
+    }
+    let h = clock.bytes().fold(2166136261u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(16777619)
+    });
+    let hue = (h % 360) as f32 / 360.0;
+    egui::ecolor::Hsva::new(hue, 0.55, 0.85, 1.0).into()
+}
+
 /// What a node is called on the canvas.
 fn title(n: &Node) -> String {
     match n.kind {
-        NodeKind::Input | NodeKind::Output | NodeKind::Filter => {
+        NodeKind::Recorder => "Recorder".into(),
+        NodeKind::Filter | NodeKind::Probe => {
             n.name[n.name.find(':').map_or(0, |i| i + 1)..].to_string()
         }
         NodeKind::View => {
             let k = n.name["view:".len()..].parse::<usize>().unwrap_or(0);
             format!("View {}", k + 1)
         }
-        _ => n.name.clone(),
+        // Inside an expanded use its own name; the outline gives the path.
+        _ => n.name.rsplit('/').next().unwrap_or(&n.name).to_string(),
     }
 }
 
@@ -1410,6 +1858,8 @@ fn open_request(n: &Node) -> Request {
     match n.kind {
         NodeKind::Filter => Request::EditData(title(n)),
         NodeKind::View => Request::ShowView(n.name["view:".len()..].parse().unwrap_or(0)),
+        NodeKind::Probe => Request::EditProbe(title(n)),
+        NodeKind::Recorder => Request::EditRecorder,
         _ => Request::Open(n.name.clone()),
     }
 }
@@ -1422,6 +1872,17 @@ fn observer_help(n: &Node) -> String {
             "Filter {} ({}): computed from recorded data after each step; it cannot feed the \
              model. Double-click to edit it in Data…",
             title(n),
+            n.method
+        ),
+        NodeKind::Probe => format!(
+            "Probe {} ({}): records the signals and fields wired into it, without changing \
+             results. Drop more on it; double-click for its settings.",
+            title(n),
+            n.method
+        ),
+        NodeKind::Recorder => format!(
+            "Recorder ({}): saves the whole model's state as it runs, so it can be rewound. \
+             Double-click for its settings; delete it to stop.",
             n.method
         ),
         _ => format!(
@@ -1449,6 +1910,12 @@ fn port_help(block: &str, p: &crate::diagram::Port, c: Causality) -> String {
         Shape::Grid { nx, ny } => format!("a {nx} × {ny} grid"),
         Shape::Points { count, dim } => format!("{count} points in {dim}D"),
         Shape::Population { dim } => format!("a population of points in {dim}D"),
+        Shape::Rows { dim: 1 } => "a value per row of a table".to_string(),
+        Shape::Rows { dim } => format!("{dim} values per row of a table"),
+        Shape::Tensor { rank, dims } => {
+            let d: Vec<String> = dims[..rank].iter().map(|n| n.to_string()).collect();
+            format!("values over {rank} axes, {}", d.join(" × "))
+        }
     };
     let unit = if p.unit.is_empty() || p.unit == "1" {
         "no unit".to_string()
@@ -1476,7 +1943,6 @@ fn unit_setting(n: &Node, c: Causality) -> Option<&'static str> {
 pub fn open_key(scope: &Scope, name: &str) -> String {
     match scope {
         Scope::Model => name.to_string(),
-        Scope::Subsystem(s) => format!("{s}::{name}"),
     }
 }
 
@@ -1654,6 +2120,48 @@ mod tests {
         }
         .unwrap();
         c.to_screen(Pos2::ZERO, n.port_at(causality, k))
+    }
+
+    #[test]
+    fn a_wire_dropped_on_a_value_drives_it_and_is_lifted_off_it() {
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Forced spring"))
+            .unwrap();
+        let (f, _) = ModelFile::from_json(e.text).unwrap();
+        let mut d = Diagram::new(&f, &registry());
+        let ctx = egui::Context::default();
+        let mut c = Canvas::all_open();
+        frame(&ctx, &mut c, &mut d.clone(), vec![]);
+        // Zoomed in enough to show values (ADR 0053).
+        c.zoom = c.zoom.max(SHOW_VALUES);
+        frame(&ctx, &mut c, &mut d.clone(), vec![]);
+        let value = |c: &Canvas, d: &Diagram, node: &str, name: &str| {
+            let n = &d.nodes[d.node(node).unwrap()];
+            let k = n.values.iter().position(|v| v.name == name).unwrap();
+            c.to_screen(Pos2::ZERO, n.value_port(k))
+        };
+        // push.F onto held's value F: a wire that drives it (ADR 0075).
+        let a = screen(&c, &d, "push", Causality::Output, "F");
+        let b = value(&c, &d, "held", "F");
+        let edits = drag(&ctx, &mut c, &mut d, a, b);
+        assert_eq!(
+            edits,
+            [Edit::Connect {
+                from: "push.F".into(),
+                to: "held.F".into()
+            }]
+        );
+        // Off shaken's driven F onto empty canvas: the wire goes.
+        let mut d = Diagram::new(&f, &registry());
+        let from = value(&c, &d, "shaken", "F");
+        let edits = drag(&ctx, &mut c, &mut d, from, Pos2::new(5.0, 590.0));
+        assert_eq!(
+            edits,
+            [Edit::Disconnect {
+                to: "shaken.F".into()
+            }]
+        );
     }
 
     #[test]

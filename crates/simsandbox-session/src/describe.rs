@@ -21,7 +21,37 @@ pub fn shape(s: &Shape) -> Value {
         }
         Shape::Points { count, dim } => json!({"kind": "points", "count": count, "dim": dim}),
         Shape::Population { dim } => json!({"kind": "population", "dim": dim}),
+        Shape::Rows { dim } => {
+            json!({"kind": "rows", "dim": dim, "with": "ids and a structure version"})
+        }
+        Shape::Tensor { rank, dims } => {
+            json!({"kind": "axes", "axes": dims[..rank].to_vec(), "order": "first axis fastest"})
+        }
     }
+}
+
+/// A shape with its axes (ADR 0081): [`shape`], and `axes` as each axis's
+/// name (when given) and length (`"rows"` for a table's), the first
+/// varying fastest.
+pub fn shape_with_axes(s: &Shape, names: &[String]) -> Value {
+    let mut v = shape(s);
+    let axes: Vec<Value> = s
+        .axes()
+        .iter()
+        .enumerate()
+        .map(|(k, a)| {
+            let length = match a {
+                simsandbox_core::block::AxisLen::Cells(n) => json!(n),
+                simsandbox_core::block::AxisLen::Rows => json!("rows"),
+            };
+            match names.get(k) {
+                Some(n) => json!({"name": n, "length": length}),
+                None => json!({"length": length}),
+            }
+        })
+        .collect();
+    v["axes"] = Value::Array(axes);
+    v
 }
 
 fn port(p: &PortSpec) -> Value {
@@ -31,11 +61,19 @@ fn port(p: &PortSpec) -> Value {
         "unit": p.unit.to_string(),
         "shape": shape(&p.shape),
     });
+    if !p.axis_names.is_empty() {
+        v["axes"] = json!(p.axis_names);
+    }
     if !p.feedthrough.is_empty() {
         v["depends_on"] = json!(p.feedthrough);
     }
-    if let Some(c) = &p.coordinate {
-        v["coordinate_of"] = json!({"port": c.port, "axis": c.axis});
+    if !p.coordinate.is_empty() {
+        let of: Vec<Value> = p
+            .coordinate
+            .iter()
+            .map(|c| json!({"port": c.port, "axis": c.axis}))
+            .collect();
+        v["coordinate_of"] = json!(of);
     }
     v
 }
@@ -62,6 +100,19 @@ pub fn block(b: &dyn Block) -> Value {
         "states": s.states.len(),
         "tables": s.tables.iter().map(|t| json!({"name": t.name, "columns": t.columns})).collect::<Vec<_>>(),
     })
+}
+
+/// A file error as `check` reports it: where it is and what.
+pub fn file_error(e: &FileError) -> Value {
+    match e {
+        FileError::Syntax {
+            line,
+            column,
+            message,
+        } => json!({"line": line, "column": column, "message": message}),
+        FileError::Invalid { path, message } => json!({"path": path, "message": message}),
+        FileError::UnsupportedFormat(_) => json!({"path": "format", "message": e.to_string()}),
+    }
 }
 
 /// One block type: what it is, its methods (with their labels), settings
@@ -102,6 +153,12 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
         v["note"] =
             json!("Defined by its 'equations' lines: the interface below is the example's.");
     }
+    if !info.files.is_empty() {
+        v["files"] = json!(info.files);
+        v["note"] = json!(
+            "Reads the files these settings name, from the model's folder: its outputs come from the file."
+        );
+    }
     if let Ok(b) = r.example(name) {
         v["interface"] = block(b.as_ref());
     }
@@ -111,11 +168,14 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
 fn slot_kind(k: SlotKind) -> &'static str {
     match k {
         SlotKind::Scalar => "scalar",
+        SlotKind::Values => "scalar or line",
         SlotKind::Grid => "grid",
         SlotKind::Points => "points",
         SlotKind::Line => "line",
         SlotKind::Axis => "axis",
         SlotKind::Coordinate => "coordinate",
+        SlotKind::Rows => "rows",
+        SlotKind::Mesh => "mesh",
     }
 }
 
@@ -211,23 +271,16 @@ pub fn upgrade(text: &str, r: &Registry) -> Result<(String, Vec<String>, Vec<Str
 /// evaluating its sweep) and report every problem found. `ok` is false
 /// when it cannot run.
 pub fn check(text: &str, r: &Registry) -> Value {
+    if simsandbox_file::compose::is_composition(text) {
+        return crate::compose::check(text, r);
+    }
     // File errors carry where they are.
     if let Err(e) = simsandbox_file::load(text, r) {
-        let error = match &e {
-            FileError::Syntax {
-                line,
-                column,
-                message,
-            } => json!({"line": line, "column": column, "message": message}),
-            FileError::Invalid { path, message } => json!({"path": path, "message": message}),
-            FileError::UnsupportedFormat(_) => json!({"path": "format", "message": e.to_string()}),
-        };
-        return json!({"ok": false, "errors": [error], "warnings": []});
+        return json!({"ok": false, "errors": [file_error(&e)], "warnings": []});
     }
     match Session::load("check", text, r) {
         Err(e) => json!({"ok": false, "errors": [{"message": e}], "warnings": []}),
         Ok(s) => {
-            let h = s.signals();
             let labels = s.labels();
             json!({
                 "ok": true,
@@ -235,11 +288,14 @@ pub fn check(text: &str, r: &Registry) -> Value {
                 "warnings": s.warnings,
                 "conversions": s.conversions,
                 "labels": labels.map(self::labels),
-                "swept": s.sweep().map(|sw| sw.keys().to_vec()),
+                // What it offers to models that use it (ADR 0066 step 4b).
+                "declared_outputs": s.file.outputs.iter().map(|o| json!({"name": o.name, "from": o.from})).collect::<Vec<_>>(),
                 "fused_groups": s.groups.iter().map(|g| json!({"blocks": g.blocks, "method": g.method.to_string()})).collect::<Vec<_>>(),
+                // What views and probes can take (ADR 0063); what the history
+                // records follows the views.
                 "recorded": {
-                    "signals": h.names(),
-                    "fields": h.fields().iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
+                    "signals": s.bindable_scalars(),
+                    "fields": recorded_fields(&s),
                 },
                 "params": s.params().iter().map(|p| json!({
                     "key": p.key,
@@ -249,21 +305,41 @@ pub fn check(text: &str, r: &Registry) -> Value {
                     "suggested": p.suggested,
                     "initial_condition": p.initial_condition,
                     "description": p.description,
+                    "driven_by": p.driven,
                 })).collect::<Vec<_>>(),
-                "subsystems": s.file.subsystems.iter().map(|(name, d)| json!({
-                    "name": name,
-                    "description": d.description,
-                    "params": d.params.keys().collect::<Vec<_>>(),
-                    "inputs": d.inputs.iter().map(|p| &p.name).collect::<Vec<_>>(),
-                    "outputs": d.outputs.iter().map(|p| &p.name).collect::<Vec<_>>(),
-                    "used_by": crate::diagram::uses(&s.file, name),
-                })).collect::<Vec<_>>(),
+                // Parameters driven by wires (ADR 0075).
+                "driven": crate::session::drives(s.sim_model()).into_iter().map(|(to, from)| json!({"param": to, "from": from})).collect::<Vec<_>>(),
+                "definitions": crate::compose::definitions(&s.file),
                 "blocks": s.flat.blocks.iter().map(|b| &b.name).collect::<Vec<_>>(),
+                // How each block made from equations runs (ADR 0084, 0089).
+                "code": code(s.sim_model(), &s.ids, |n| n.to_string()),
                 "filters": s.filters().iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
                 "views": s.file.controls.views.iter().map(|v| v.type_name.clone()).collect::<Vec<_>>(),
             })
         }
     }
+}
+
+/// How each block whose code SimSandbox makes from equations runs, by
+/// name as `full` gives it: `interpreted`, `compiled`, `native`, or
+/// `compiled` and why not native ([`simsandbox_core::block::Block::code`]).
+pub(crate) fn code(
+    model: &simsandbox_core::graph::Model,
+    ids: &std::collections::BTreeMap<String, simsandbox_core::graph::BlockId>,
+    full: impl Fn(&str) -> String,
+) -> serde_json::Map<String, Value> {
+    ids.iter()
+        .filter_map(|(name, &id)| {
+            let code = model.block(id).ok()?.code()?;
+            Some((full(name), Value::String(code)))
+        })
+        .collect()
+}
+
+/// The fields views and probes can take: grids, point sets and rows.
+fn recorded_fields(s: &Session) -> Vec<String> {
+    let b = s.bindable();
+    [b[0], b[1], b[4]].concat()
 }
 
 #[cfg(test)]
@@ -277,6 +353,10 @@ mod tests {
         for name in r.type_names() {
             let v = block_type(&r, name);
             assert_ne!(v["summary"], "(not described)", "{name}");
+            // A type reading a file has its ports from the file.
+            if v["files"].is_array() {
+                continue;
+            }
             assert!(v["interface"].is_object(), "{name}: no example");
             for m in v["methods"].as_array().unwrap() {
                 // Every listed method builds (formulas need the example to
@@ -290,7 +370,7 @@ mod tests {
         let ports = grass["interface"]["ports"].as_array().unwrap();
         assert!(ports
             .iter()
-            .any(|p| p["name"] == "x" && p["coordinate_of"]["axis"] == 0));
+            .any(|p| p["name"] == "x" && p["coordinate_of"][0]["axis"] == 0));
         let typed = block_type(&r, "eq.equations");
         let e = typed["interface"]["ports"]
             .as_array()
@@ -327,6 +407,22 @@ mod tests {
         assert_eq!(bad["errors"][0]["path"], "blocks[0].type");
         let syntax = check("{\n  \"format\": 1,,\n}", &r);
         assert_eq!(syntax["errors"][0]["line"], 2);
+        // How blocks made from equations run (ADR 0084, 0089): a large grid
+        // compiled (native where a library was built before), a small one
+        // interpreted, built-in blocks not listed.
+        let text = |name: &str| {
+            EXAMPLES
+                .iter()
+                .find(|e| e.name.starts_with(name))
+                .unwrap()
+                .text
+        };
+        let gs = check(text("Gray–Scott"), &r);
+        let code = gs["code"]["gs"].as_str().unwrap();
+        assert!(code == "compiled" || code == "native", "{code}");
+        let rod = check(text("Typed heat equation"), &r);
+        assert_eq!(rod["code"]["rod"], "interpreted");
+        assert_eq!(ok["code"], json!({}), "Lorenz is built in");
     }
 
     #[test]

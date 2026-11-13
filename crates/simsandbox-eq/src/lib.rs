@@ -14,10 +14,16 @@
 
 pub mod convert;
 pub mod fields;
+pub mod file_input;
 pub mod group;
+pub mod implicit;
+pub mod input;
 pub mod integrators;
+pub mod mesh;
 pub mod ode;
+pub mod refine;
 pub mod registry;
+pub mod sparse_lu;
 pub mod symbolic;
 pub mod systems;
 #[cfg(feature = "views")]

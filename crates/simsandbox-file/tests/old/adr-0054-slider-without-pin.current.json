@@ -38,9 +38,6 @@
       }
     },
     "speed": 1.0,
-    "plots": [
-      "lorenz.xyz"
-    ],
     "views": [
       {
         "type": "plot.3d",

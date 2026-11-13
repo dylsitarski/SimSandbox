@@ -15,7 +15,12 @@
 //!   names to slots in a value buffer and gives an [`Expr`] that evaluates
 //!   quickly. Errors carry a 1-based column.
 
+mod cells;
+pub mod program;
 pub mod units;
+
+pub use cells::{Arg, EdgeView, OpKind, OpView, Outside, PhaseKernel, PhaseView};
+pub use program::Program;
 
 use std::fmt;
 
@@ -49,6 +54,33 @@ pub enum Op {
     Mul,
     Div,
     Pow,
+    /// Comparisons (ADR 0070): 1 if they hold, else 0 (NaN never holds).
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl Op {
+    /// `a op b`.
+    pub fn apply(self, a: f64, b: f64) -> f64 {
+        match self {
+            Op::Add => a + b,
+            Op::Sub => a - b,
+            Op::Mul => a * b,
+            Op::Div => a / b,
+            Op::Pow => a.powf(b),
+            Op::Lt => f64::from(u8::from(a < b)),
+            Op::Le => f64::from(u8::from(a <= b)),
+            Op::Gt => f64::from(u8::from(a > b)),
+            Op::Ge => f64::from(u8::from(a >= b)),
+        }
+    }
+
+    /// Whether it compares, giving 1 or 0.
+    pub fn compares(self) -> bool {
+        matches!(self, Op::Lt | Op::Le | Op::Gt | Op::Ge)
+    }
 }
 
 /// Built-in functions.
@@ -115,7 +147,8 @@ impl Func {
         }
     }
 
-    fn apply(self, a: f64, b: f64) -> f64 {
+    /// The function of `a` (and `b`, for those of two arguments).
+    pub fn apply(self, a: f64, b: f64) -> f64 {
         match self {
             Func::Sin => a.sin(),
             Func::Cos => a.cos(),
@@ -155,6 +188,166 @@ pub fn is_reserved(name: &str) -> bool {
     name == "pi" || Func::by_name(name).is_some()
 }
 
+/// Operations on arrays (ADR 0060), written like functions: stencils,
+/// reductions, one element, an axis's spacing, relabelling and a linear
+/// solve. A derivative along an axis is `dd` and the axis name (`ddx`),
+/// or `dd(T, x)`. Only typed equations with a grid give them a meaning
+/// ([`Ast::resolve_with`]).
+pub const ARRAY_OPS: &[&str] = &[
+    "lap", "sum", "mean", "minof", "maxof", "argminof", "argmaxof", "at", "spacing", "prev",
+    "next", "on", "solve", "rcond", "id", "rows", "of", "dd", "from_end", "to_end", "corner",
+    "centre", "measure", "normal", "inner", "outer", "across", "boundary", "outflow",
+];
+
+/// The most axes an array or an intermediate value has (ADR 0080).
+pub const MAX_AXES: usize = 8;
+
+/// A reduction along one axis (ADR 0080).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Along {
+    Sum,
+    Mean,
+    MinOf,
+    MaxOf,
+    /// The place along the axis of the least or greatest value.
+    ArgMinOf,
+    ArgMaxOf,
+}
+
+/// Whether `name(...)` is an array operation: one of [`ARRAY_OPS`] or
+/// `dd` followed by a name.
+pub fn is_array_op(name: &str) -> bool {
+    ARRAY_OPS.contains(&name)
+        || name
+            .strip_prefix("dd")
+            .is_some_and(|a| a.starts_with(|c: char| c.is_alphabetic() || c == '_'))
+}
+
+/// How a stencil finds the values beyond an end of a grid (ADR 0060).
+/// Registers are variables of the program.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Edge {
+    /// Held at a value (Dirichlet), at the face of the end cell.
+    Value(usize),
+    /// The outward derivative (Neumann); `None` is 0 (insulated).
+    Gradient(Option<usize>),
+    /// The far end continues the near one.
+    Periodic,
+}
+
+/// How one axis runs through the cells of a grid stored row by row
+/// (x fastest): cell `k` lies at place `(k / stride) % count` along it.
+/// The x axis of an `nx` by `ny` grid is `{stride: 1, count: nx}`, its y
+/// axis `{stride: nx, count: ny}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Line {
+    pub stride: usize,
+    pub count: usize,
+}
+
+impl Line {
+    /// A line of `count` cells, the only axis of its grid.
+    pub fn along(count: usize) -> Self {
+        Self { stride: 1, count }
+    }
+}
+
+/// An array operation in an [`Expr`], resolved by typed equations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ArrayOp {
+    /// The cell centres along an axis, for each of `cells` cells;
+    /// arguments the axis's low end and spacing.
+    Axis {
+        line: Line,
+        cells: usize,
+    },
+    /// The second derivative along an axis (central differences);
+    /// arguments the array and the spacing; edges at the low and high
+    /// ends. The Laplacian is their sum over the axes.
+    Second {
+        line: Line,
+        edges: [Edge; 2],
+    },
+    /// The first derivative along an axis (central differences);
+    /// arguments as for `Second`.
+    First {
+        line: Line,
+        edges: [Edge; 2],
+    },
+    /// The neighbour along an axis (ADR 0069): the cell before (`up`
+    /// false, `prev`) or after (`next`); arguments as for `Second`. Beyond
+    /// an end: the held value itself, the end cell plus gradient times
+    /// spacing, or the far end (periodic).
+    Shift {
+        line: Line,
+        edges: [Edge; 2],
+        up: bool,
+    },
+    Sum,
+    Mean,
+    MinOf,
+    MaxOf,
+    /// The cell (0-based, in storage order) holding the least or greatest
+    /// value, the first if several do; NaN if every cell is NaN (ADR 0070).
+    ArgMinOf,
+    ArgMaxOf,
+    /// One element, 0-based.
+    At(usize),
+    /// One element by a computed cell number (the second argument, in
+    /// storage order, rounded); NaN outside the array (ADR 0070).
+    Cell,
+    /// [`ArrayOp::Cell`] for each of the second argument's cells: an array
+    /// as long as the places, each the first argument's cell at that place
+    /// (rounded), NaN outside (ADR 0079 stage 2: a value at each edge's
+    /// end).
+    Take,
+    /// The reverse of [`ArrayOp::Take`]: an array of `cells` cells, each
+    /// the sum of the first argument's values whose place (the second
+    /// argument's cell, rounded) is that cell, added in order; places
+    /// outside are left out (ADR 0085 step 3: a sum over each cell's
+    /// sides).
+    Scatter {
+        cells: usize,
+    },
+    /// An array over `rank` axes of `dims` cells (the first fastest), each
+    /// cell read from the argument at the sum of its place along each axis
+    /// times `strides` (0: the argument does not run along that axis). It
+    /// spreads an array over more axes, or puts its axes in another order
+    /// (ADR 0080).
+    Gather {
+        rank: usize,
+        dims: [usize; MAX_AXES],
+        strides: [usize; MAX_AXES],
+    },
+    /// The solution `x` of `A x = b` (ADR 0080): `A` the first argument,
+    /// `n` by `n` with element (i, j) at `i*rows + j*cols`, `b` the second
+    /// (`n` cells). Gaussian elimination with partial pivoting in a fixed
+    /// order (the first of equal pivots); NaN throughout when `A` is
+    /// singular or a value is not finite.
+    Solve {
+        n: usize,
+        rows: usize,
+        cols: usize,
+    },
+    /// The reciprocal condition number of `A` (laid out as for
+    /// [`ArrayOp::Solve`]) in the 1-norm, `1/(‖A‖₁‖A⁻¹‖₁)`: near 1 for a
+    /// well-conditioned matrix, near 0 for a nearly singular one, 0 for a
+    /// singular one, NaN if a value is not finite (ADR 0080).
+    Rcond {
+        n: usize,
+        rows: usize,
+        cols: usize,
+    },
+    /// A reduction of the argument, over `rank` axes of `dims` cells,
+    /// along axis `axis`, leaving the others in order (ADR 0080).
+    Along {
+        of: Along,
+        rank: usize,
+        dims: [usize; MAX_AXES],
+        axis: usize,
+    },
+}
+
 /// A parsed expression that still refers to variables by name.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ast {
@@ -164,10 +357,17 @@ pub enum Ast {
     Neg(Box<Ast>),
     Bin(Op, Box<Ast>, Box<Ast>),
     Call(Func, Vec<Ast>),
+    /// An array operation ([`is_array_op`]) by name, with its arguments
+    /// and the column of its name.
+    Apply(String, Vec<Ast>, usize),
 }
 
+/// What an array operation means ([`Ast::resolve_with`]): from its name,
+/// its arguments as written and resolved, and its column.
+pub type ApplyOp<'a> = &'a dyn Fn(&str, &[Ast], Vec<Expr>, usize) -> Result<Expr, Error>;
+
 /// An expression with variables resolved to slots; evaluate with
-/// [`Expr::eval`].
+/// [`Expr::eval`], or as part of a [`Program`] when it uses arrays.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Num(f64),
@@ -175,6 +375,7 @@ pub enum Expr {
     Neg(Box<Expr>),
     Bin(Op, Box<Expr>, Box<Expr>),
     Call(Func, Vec<Expr>),
+    Array(ArrayOp, Vec<Expr>),
 }
 
 impl Ast {
@@ -198,29 +399,57 @@ impl Ast {
                 a.collect_names(out);
                 b.collect_names(out);
             }
-            Ast::Call(_, args) => args.iter().for_each(|a| a.collect_names(out)),
+            Ast::Call(_, args) | Ast::Apply(_, args, _) => {
+                args.iter().for_each(|a| a.collect_names(out))
+            }
         }
     }
 
     /// Map each name to a slot with `slot`; a name it does not know is an
-    /// error at that name's column.
+    /// error at that name's column. Array operations are an error: only
+    /// typed equations with a grid have arrays.
     pub fn resolve(&self, slot: &impl Fn(&str) -> Option<usize>) -> Result<Expr, Error> {
+        self.resolve_with(slot, &|name, _, _, column| {
+            err(
+                column,
+                format!("'{name}' works on arrays, which only typed equations with a grid have"),
+            )
+        })
+    }
+
+    /// As [`Ast::resolve`], with `apply` giving the meaning of an array
+    /// operation: its name, its arguments as written and resolved, and its
+    /// column.
+    pub fn resolve_with(
+        &self,
+        slot: &impl Fn(&str) -> Option<usize>,
+        apply: ApplyOp<'_>,
+    ) -> Result<Expr, Error> {
         Ok(match self {
             Ast::Num(v) => Expr::Num(*v),
             Ast::Name(n, c) => match slot(n) {
                 Some(i) => Expr::Var(i),
                 None => return err(*c, format!("unknown name '{n}'")),
             },
-            Ast::Neg(a) => Expr::Neg(Box::new(a.resolve(slot)?)),
-            Ast::Bin(op, a, b) => {
-                Expr::Bin(*op, Box::new(a.resolve(slot)?), Box::new(b.resolve(slot)?))
-            }
+            Ast::Neg(a) => Expr::Neg(Box::new(a.resolve_with(slot, apply)?)),
+            Ast::Bin(op, a, b) => Expr::Bin(
+                *op,
+                Box::new(a.resolve_with(slot, apply)?),
+                Box::new(b.resolve_with(slot, apply)?),
+            ),
             Ast::Call(f, args) => Expr::Call(
                 *f,
                 args.iter()
-                    .map(|a| a.resolve(slot))
+                    .map(|a| a.resolve_with(slot, apply))
                     .collect::<Result<_, _>>()?,
             ),
+            Ast::Apply(name, args, column) => {
+                let resolved = args
+                    .iter()
+                    .map(|a| a.resolve_with(slot, apply))
+                    .collect::<Result<_, _>>()?;
+                apply(name, args, resolved, *column)?
+            }
         })
     }
 }
@@ -232,21 +461,14 @@ impl Expr {
             Expr::Num(v) => *v,
             Expr::Var(i) => vars[*i],
             Expr::Neg(a) => -a.eval(vars),
-            Expr::Bin(op, a, b) => {
-                let (a, b) = (a.eval(vars), b.eval(vars));
-                match op {
-                    Op::Add => a + b,
-                    Op::Sub => a - b,
-                    Op::Mul => a * b,
-                    Op::Div => a / b,
-                    Op::Pow => a.powf(b),
-                }
-            }
+            Expr::Bin(op, a, b) => op.apply(a.eval(vars), b.eval(vars)),
             Expr::Call(f, args) => {
                 let a = args[0].eval(vars);
                 let b = args.get(1).map_or(0.0, |x| x.eval(vars));
                 f.apply(a, b)
             }
+            // Arrays are evaluated by programs only.
+            Expr::Array(..) => f64::NAN,
         }
     }
 }
@@ -256,6 +478,8 @@ enum Tok {
     Num(f64),
     Name(String),
     Sym(char),
+    /// `<`, `<=`, `>`, `>=`.
+    Cmp(Op),
     End,
 }
 
@@ -303,6 +527,25 @@ fn lex(src: &str, dotted: bool) -> Result<Vec<(Tok, usize)>, Error> {
             if dotted {
                 let starts_name =
                     |j: usize| chars.get(j).is_some_and(|c| c.is_alphabetic() || *c == '_');
+                // A path through used models (ADR 0066), `plant/car.v`: a
+                // use's name has no dot and is not `t`, so `car.v/car.m`
+                // and `t/tau` stay divisions.
+                loop {
+                    let segment: String = chars[start..i].iter().collect();
+                    let last = segment.rsplit('/').next().unwrap_or(&segment);
+                    if chars.get(i) == Some(&'/')
+                        && starts_name(i + 1)
+                        && segment != "t"
+                        && !last.contains('.')
+                    {
+                        i += 1;
+                        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                            i += 1;
+                        }
+                    } else {
+                        break;
+                    }
+                }
                 while chars.get(i) == Some(&'.') && starts_name(i + 1) {
                     i += 1;
                     while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
@@ -324,6 +567,16 @@ fn lex(src: &str, dotted: bool) -> Result<Vec<(Tok, usize)>, Error> {
         } else if "+-*/^(),".contains(c) {
             out.push((Tok::Sym(c), col));
             i += 1;
+        } else if c == '<' || c == '>' {
+            let eq = chars.get(i + 1) == Some(&'=');
+            let op = match (c, eq) {
+                ('<', false) => Op::Lt,
+                ('<', true) => Op::Le,
+                (_, false) => Op::Gt,
+                (_, true) => Op::Ge,
+            };
+            out.push((Tok::Cmp(op), col));
+            i += 1 + usize::from(eq);
         } else {
             return err(col, format!("unexpected '{c}'"));
         }
@@ -335,7 +588,24 @@ fn lex(src: &str, dotted: bool) -> Result<Vec<(Tok, usize)>, Error> {
 struct Parser {
     toks: Vec<(Tok, usize)>,
     pos: usize,
+    /// Read [`REDUCTIONS`] as calls ([`parse_reductions`]).
+    reductions: bool,
 }
+
+/// Reductions of a run over time (ADR 0067, ADR 0070), calls in
+/// [`parse_reductions`]: `min` and `max` with one argument, the others
+/// by name.
+pub const REDUCTIONS: &[&str] = &[
+    "final",
+    "mean",
+    "min",
+    "max",
+    "amplitude",
+    "period",
+    "first_time",
+    "at_times",
+    "at_samples",
+];
 
 impl Parser {
     fn peek(&self) -> &Tok {
@@ -359,6 +629,23 @@ impl Parser {
             (Tok::Sym(s), _) if s == c => Ok(()),
             (t, col) => err(col, format!("expected '{c}', found {}", describe(&t))),
         }
+    }
+
+    /// A comparison: sum (('<' | '<=' | '>' | '>=') sum)?, one at most.
+    fn compare(&mut self) -> Result<Ast, Error> {
+        let lhs = self.expr()?;
+        let Tok::Cmp(op) = *self.peek() else {
+            return Ok(lhs);
+        };
+        self.next();
+        let rhs = self.expr()?;
+        if let Tok::Cmp(_) = self.peek() {
+            return err(
+                self.col(),
+                "one comparison at a time: write (a < b)*(b < c) for both",
+            );
+        }
+        Ok(Ast::Bin(op, Box::new(lhs), Box::new(rhs)))
     }
 
     /// Sums: term (('+' | '-') term)*
@@ -423,20 +710,47 @@ impl Parser {
         match self.next() {
             (Tok::Num(v), _) => Ok(Ast::Num(v)),
             (Tok::Sym('('), _) => {
-                let inner = self.expr()?;
+                let inner = self.compare()?;
                 self.expect(')')?;
                 Ok(inner)
             }
             (Tok::Name(n), col) => {
+                if self.reductions
+                    && *self.peek() == Tok::Sym('(')
+                    && REDUCTIONS.contains(&n.as_str())
+                {
+                    self.next();
+                    let mut args = vec![self.compare()?];
+                    while *self.peek() == Tok::Sym(',') {
+                        self.next();
+                        args.push(self.compare()?);
+                    }
+                    self.expect(')')?;
+                    // min(a, b) and max(a, b) stay functions.
+                    return Ok(match Func::by_name(&n) {
+                        Some(f) if args.len() == f.arity() => Ast::Call(f, args),
+                        _ => Ast::Apply(n, args, col),
+                    });
+                }
+                if *self.peek() == Tok::Sym('(') && Func::by_name(&n).is_none() && is_array_op(&n) {
+                    self.next();
+                    let mut args = vec![self.compare()?];
+                    while *self.peek() == Tok::Sym(',') {
+                        self.next();
+                        args.push(self.compare()?);
+                    }
+                    self.expect(')')?;
+                    return Ok(Ast::Apply(n, args, col));
+                }
                 if *self.peek() == Tok::Sym('(') {
                     let Some(f) = Func::by_name(&n) else {
                         return err(col, format!("unknown function '{n}'"));
                     };
                     self.next();
-                    let mut args = vec![self.expr()?];
+                    let mut args = vec![self.compare()?];
                     while *self.peek() == Tok::Sym(',') {
                         self.next();
-                        args.push(self.expr()?);
+                        args.push(self.compare()?);
                     }
                     self.expect(')')?;
                     if args.len() != f.arity() {
@@ -467,31 +781,41 @@ fn describe(t: &Tok) -> String {
         Tok::Num(v) => format!("number {v}"),
         Tok::Name(n) => format!("'{n}'"),
         Tok::Sym(c) => format!("'{c}'"),
+        Tok::Cmp(_) => "a comparison".into(),
         Tok::End => "the end".into(),
     }
 }
 
 /// Parse one expression.
 pub fn parse(src: &str) -> Result<Ast, Error> {
-    parse_with(src, false)
+    parse_with(src, false, false)
 }
 
 /// Parse an expression over signal names, which may be dotted and indexed:
 /// `0.5*(a.v^2 + b.v^2)`, `lorenz.xyz[0] - lorenz.xyz[1]`. Used for derived
 /// signals (ADR 0015).
 pub fn parse_signals(src: &str) -> Result<Ast, Error> {
-    parse_with(src, true)
+    parse_with(src, true, false)
 }
 
-fn parse_with(src: &str, dotted: bool) -> Result<Ast, Error> {
+/// Parse an expression over signal names, as [`parse_signals`], in which
+/// the [`REDUCTIONS`] of a run are calls ([`Ast::Apply`]):
+/// `max(car.v) - min(car.v)`, `first_time(abs(e) < 0.1)`. Used for the
+/// `reduce` formulas of studies (ADR 0070).
+pub fn parse_reductions(src: &str) -> Result<Ast, Error> {
+    parse_with(src, true, true)
+}
+
+fn parse_with(src: &str, dotted: bool, reductions: bool) -> Result<Ast, Error> {
     let mut p = Parser {
         toks: lex(src, dotted)?,
         pos: 0,
+        reductions,
     };
     if p.peek() == &Tok::End {
         return err(1, "empty expression");
     }
-    let ast = p.expr()?;
+    let ast = p.compare()?;
     match p.next() {
         (Tok::End, _) => Ok(ast),
         (Tok::Sym(')'), col) => err(col, "unmatched ')'"),
@@ -515,6 +839,50 @@ mod tests {
 
     fn error(src: &str) -> Error {
         parse(src).unwrap_err()
+    }
+
+    #[test]
+    fn comparisons_give_one_or_zero() {
+        // With x = 2, y = 3 (ADR 0070).
+        assert_eq!(eval("x < y"), 1.0);
+        assert_eq!(eval("x > y"), 0.0);
+        assert_eq!(eval("x <= 2"), 1.0);
+        assert_eq!(eval("y >= 4"), 0.0);
+        // Below sums: both sides are whole sums.
+        assert_eq!(eval("x + 2 > y + 1"), 0.0);
+        assert_eq!(eval("(x < y)*10 + 1"), 11.0);
+        assert_eq!(eval("max(x > 1, 0)"), 1.0);
+        // NaN never holds.
+        assert_eq!(eval("0/0 < 1") + eval("0/0 >= 1"), 0.0);
+        assert!(error("x < y < 4")
+            .message
+            .contains("one comparison at a time"));
+        assert!(error("x <").message.contains("expected"));
+        // In a program, scalars and arrays alike.
+        let ast = parse("(a > 1)*a").unwrap();
+        let e = ast.resolve(&|n| (n == "a").then_some(0)).unwrap();
+        let p = crate::program::Program::new(2, &[(1, &e)]);
+        let mut r = p.registers();
+        r[0] = 3.0;
+        p.run(&mut r);
+        assert_eq!(r[1], 3.0);
+        r[0] = 0.5;
+        p.run(&mut r);
+        assert_eq!(r[1], 0.0);
+        // Units: the same on both sides, none on the result.
+        let of = |n: &str| {
+            if n == "x" {
+                [1, 0, 0, 0, 0, 0, 0]
+            } else {
+                units::NO_DIM
+            }
+        };
+        assert_eq!(
+            units::dimension(&parse("x > x").unwrap(), &of),
+            Ok(units::NO_DIM)
+        );
+        let e = units::dimension(&parse("x > 1").unwrap(), &of).unwrap_err();
+        assert!(e.1.contains("cannot compare"), "{e:?}");
     }
 
     #[test]
@@ -578,5 +946,25 @@ mod tests {
         let names: Vec<_> = ast.names().into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, ["sigma", "y", "x"]);
         assert!(is_reserved("pi") && is_reserved("sin") && !is_reserved("x"));
+    }
+
+    #[test]
+    fn array_operations_parse_and_need_typed_equations() {
+        let ast = parse("alpha*lap(T) - ddx(T) + at(T, 0)/sum(T)").unwrap();
+        let names: Vec<_> = ast.names().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["alpha", "T"]);
+        assert!(matches!(&ast, Ast::Bin(..)));
+        assert!(is_array_op("ddr") && is_array_op("spacing"));
+        // `dd(T, x)` names its axis as an argument (ADR 0080).
+        assert!(is_array_op("dd") && is_array_op("solve") && !is_array_op("d"));
+        // Elsewhere (parameter formulas, filters) they are an error.
+        let e = parse("2*lap(T)")
+            .unwrap()
+            .resolve(&|_| Some(0))
+            .unwrap_err();
+        assert_eq!(e.column, 3);
+        assert!(e.message.contains("only typed equations with a grid"));
+        // Unknown functions are still refused when parsing.
+        assert!(error("foo(x)").message.contains("unknown function"));
     }
 }

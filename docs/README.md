@@ -42,6 +42,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Guide | Branches, commits, pull requests, definition of done |
 | [CHANGELOG.md](../CHANGELOG.md) | Changelog | User-visible changes |
 | [python/README.md](../python/README.md) | Guide | The Python package's layout and checks |
+| [spikes/compiled-routes/README.md](../spikes/compiled-routes/README.md) | Guide | The compiled-route comparison of ADR 0084: how to build and run it |
 
 ### Project
 
@@ -64,6 +65,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [architecture/solver-backends.md](architecture/solver-backends.md) | Architecture | Planned domains and the engines each wraps |
 | [architecture/visualization.md](architecture/visualization.md) | Architecture | Signals, pluggable views, slots, style layers, file representation, migration steps |
 | [design/interaction.md](design/interaction.md) | Design | Interaction, parameters, visualization, ways to build |
+| [design/performance.md](design/performance.md) | Design | Where run time goes, how to measure it, what was done and what is left |
 
 ### Decisions
 
@@ -127,6 +129,39 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0054-controls-pane-pins-and-node-toggles.md](decisions/0054-controls-pane-pins-and-node-toggles.md) | Decision record | Controls pane and pins; multi-selection and drafts in the inspector; values opened per node; unit display |
 | [decisions/0055-open-nodes-subsystem-values-deferred-windows.md](decisions/0055-open-nodes-subsystem-values-deferred-windows.md) | Decision record | Open nodes saved; values inside subsystems; popped-out windows drawn on their own |
 | [decisions/0056-formulas-and-parameters-in-the-app.md](decisions/0056-formulas-and-parameters-in-the-app.md) | Decision record | Formulas typed as `= expression`; declaring and removing model parameters in the inspector |
+| [decisions/0057-phase-2-plan.md](decisions/0057-phase-2-plan.md) | Decision record | Phase 2 order, scope and gate |
+| [decisions/0058-inputs-live-scheduled-replayed.md](decisions/0058-inputs-live-scheduled-replayed.md) | Decision record | Input blocks, the input track, replay after rewind, scheduled changes |
+| [decisions/0059-run-files.md](decisions/0059-run-files.md) | Decision record | Run files: recordings and scenarios beside the model, with the model hash |
+| [decisions/0060-arrays-in-typed-equations.md](decisions/0060-arrays-in-typed-equations.md) | Decision record | Arrays, grids, stencils and implicit methods in typed equations |
+| [decisions/0061-verified-is-earned-per-case.md](decisions/0061-verified-is-earned-per-case.md) | Decision record | Verified only from a case's convergence check; exact methods are Quantitative |
+| [decisions/0064-recorder-node.md](decisions/0064-recorder-node.md) | Decision record | Rewind off by default; the recorder node |
+| [decisions/0065-several-models-with-own-clocks.md](decisions/0065-several-models-with-own-clocks.md) | Decision record | Compositions of model files with their own clocks, linked by probes |
+| [decisions/0066-models-nest-as-blocks.md](decisions/0066-models-nest-as-blocks.md) | Decision record | Models nest as uses of model files with their own or shared clocks |
+| [decisions/0067-experiments-and-time-from-data.md](decisions/0067-experiments-and-time-from-data.md) | Decision record | Experiments over whole models; time from data |
+| [decisions/0068-one-kind-of-nested-model.md](decisions/0068-one-kind-of-nested-model.md) | Decision record | One kind of nested model: subsystems become models defined in the file |
+| [decisions/0069-repetition-in-blocks.md](decisions/0069-repetition-in-blocks.md) | Decision record | Repetition and recursion of structure belong in blocks |
+| [decisions/0070-studies-are-blocks.md](decisions/0070-studies-are-blocks.md) | Decision record | A study is a block; models over sets of members; the concept list |
+| [decisions/0071-sweeps-are-studies.md](decisions/0071-sweeps-are-studies.md) | Decision record | Sweeps and experiments are studies; the sample section and the app's sweep removed |
+| [decisions/0072-models-with-nothing-in-time.md](decisions/0072-models-with-nothing-in-time.md) | Decision record | Models with nothing in time are evaluated in the app, not run |
+| [decisions/0073-ports-and-offered-outputs.md](decisions/0073-ports-and-offered-outputs.md) | Decision record | One place to offer outputs; one list of a used model's ports |
+| [decisions/0074-model-interfaces.md](decisions/0074-model-interfaces.md) | Decision record | A model's interface: parameters, inputs and outputs, exposed where they are |
+| [decisions/0075-parameters-are-inputs-with-defaults.md](decisions/0075-parameters-are-inputs-with-defaults.md) | Decision record | Parameters are inputs with defaults |
+| [decisions/0076-headless-runs-keep-what-is-asked.md](decisions/0076-headless-runs-keep-what-is-asked.md) | Decision record | Headless runs keep what is asked for |
+| [decisions/0077-sums-in-fixed-chunks.md](decisions/0077-sums-in-fixed-chunks.md) | Decision record | Sums in fixed chunks |
+| [decisions/0078-adaptive-studies.md](decisions/0078-adaptive-studies.md) | Decision record | Adaptive studies |
+| [decisions/0079-tables-of-members.md](decisions/0079-tables-of-members.md) | Decision record | Tables of members |
+| [decisions/0080-named-axes.md](decisions/0080-named-axes.md) | Decision record | Named axes |
+| [decisions/0081-shapes-are-lists-of-axes.md](decisions/0081-shapes-are-lists-of-axes.md) | Decision record | Shapes are lists of named axes |
+| [decisions/0082-exactness-is-labelled.md](decisions/0082-exactness-is-labelled.md) | Decision record | Exactness is a labelled property; models need no outside compiler |
+| [decisions/0083-rounds-are-not-seconds.md](decisions/0083-rounds-are-not-seconds.md) | Decision record | Rounds are not seconds: models that iterate run as fast as they can |
+| [decisions/0084-where-typed-equations-stop.md](decisions/0084-where-typed-equations-stop.md) | Decision record | Where typed equations stop: a causal language of primitives; blocks wrap anything |
+| [decisions/0085-meshes-are-tables-of-cells.md](decisions/0085-meshes-are-tables-of-cells.md) | Decision record | Meshes as tables of cells over points, any shape and dimension; refinement by bisection or 2^d split |
+| [decisions/0086-views-by-axis-roles-and-mesh-views.md](decisions/0086-views-by-axis-roles-and-mesh-views.md) | Decision record | Views by axis roles (pick, reduce, facet); mesh views on wgpu with an egui path headless |
+| [decisions/0087-implicit-lu-on-the-matrix-pattern.md](decisions/0087-implicit-lu-on-the-matrix-pattern.md) | Decision record | Implicit methods' own sparse LU on the matrix's pattern, faer's as fallback |
+| [decisions/0088-activation.md](decisions/0088-activation.md) | Decision record | Activation of used models and studies: `activate` modes and `restart` |
+| [decisions/0089-native-code-for-typed-equations.md](decisions/0089-native-code-for-typed-equations.md) | Decision record | Native code for typed equations: generated Rust compiled where a toolchain exists |
+| [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
+| [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 
 ### Guides
 

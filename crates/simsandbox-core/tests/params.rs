@@ -147,3 +147,92 @@ fn restart_reinitialises_from_current_parameters() {
     assert_eq!(sim.state(id), &[1.0]);
     assert_eq!(sim.param(id, "k").unwrap(), 1.0);
 }
+
+#[test]
+fn a_snapshot_knows_its_size() {
+    // What the session's memory budget for rewind counts (ADR 0060):
+    // states, outputs and parameters, one number each here.
+    let mut model = Model::new();
+    let id = model.add(Box::new(Decay::new()));
+    let sim = Simulator::new(model, 0.0).unwrap();
+    let spec = sim.model().block(id).unwrap().spec();
+    let outputs: usize = spec.outputs().map(|p| p.shape.len()).sum();
+    let expected = spec.states.len() + outputs + spec.params.len();
+    assert_eq!(sim.snapshot().values(), expected);
+}
+
+/// `y = 2·g` from a parameter, declaring what it reads or not (ADR 0075).
+struct Gain {
+    spec: BlockSpec,
+    method: MethodSpec,
+}
+
+impl Gain {
+    fn new(name: &str, declared: Option<&[&str]>) -> Self {
+        use simsandbox_core::block::{PortSpec, Shape};
+        let mut y = PortSpec::output("y", Unit::DIMENSIONLESS, Shape::Scalar);
+        if let Some(d) = declared {
+            y = y.depends_on_params(d);
+        }
+        let param = |n: &str| ParamSpec {
+            name: n.into(),
+            unit: Unit::DIMENSIONLESS,
+            default: 1.0,
+            suggested_min: 0.0,
+            suggested_max: 10.0,
+            description: String::new(),
+            initial_condition: false,
+        };
+        Self {
+            spec: BlockSpec {
+                name: name.into(),
+                domain: Domain::Equations,
+                ports: vec![y],
+                params: vec![param("g"), param("h")],
+                states: vec![],
+                tables: Vec::new(),
+                time: TimeSemantics::Stateless,
+            },
+            method: Decay::new().method,
+        }
+    }
+}
+
+impl Block for Gain {
+    fn spec(&self) -> &BlockSpec {
+        &self.spec
+    }
+    fn method(&self) -> &MethodSpec {
+        &self.method
+    }
+    fn init(&mut self, _params: &[f64], _state: &mut [f64]) -> Result<()> {
+        Ok(())
+    }
+    fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
+        self.compute_outputs(ctx.t + ctx.dt, io)
+    }
+    fn compute_outputs(&self, _t: f64, io: StepIo<'_>) -> Result<()> {
+        io.outputs[0] = 2.0 * io.params[0];
+        Ok(())
+    }
+}
+
+#[test]
+fn an_undeclared_output_reads_every_driven_parameter() {
+    // Not declared: driving h from y is counted as a loop, to be safe.
+    let mut model = Model::new();
+    let b = model.add(Box::new(Gain::new("b", None)));
+    model.drive((b, "y"), (b, "h")).unwrap();
+    let sim = Simulator::new(model, 0.0).unwrap();
+    assert_eq!(sim.loops(), vec![vec!["b.y".to_string()]]);
+    // Declared as reading g only: no loop.
+    let mut model = Model::new();
+    let b = model.add(Box::new(Gain::new("b", Some(&["g"]))));
+    model.drive((b, "y"), (b, "h")).unwrap();
+    let sim = Simulator::new(model, 0.0).unwrap();
+    assert!(sim.loops().is_empty());
+    // A declaration naming no parameter of the block is refused.
+    let mut model = Model::new();
+    model.add(Box::new(Gain::new("b", Some(&["nope"]))));
+    assert!(Simulator::new(model, 0.0).is_err());
+}

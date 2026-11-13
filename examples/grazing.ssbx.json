@@ -31,9 +31,6 @@
     {
       "name": "sheep",
       "type": "agents.grazers",
-      "method": {
-        "name": "rules"
-      },
       "update": "random_order",
       "params": {
         "size": "size"
@@ -94,15 +91,6 @@
       }
     },
     "speed": 4.0,
-    "plots": [
-      "grass.grass",
-      "grass.x",
-      "grass.y",
-      "grass.total",
-      "sheep.position",
-      "sheep.count",
-      "sheep.mean_energy"
-    ],
     "views": [
       {
         "type": "plot.heatmap",

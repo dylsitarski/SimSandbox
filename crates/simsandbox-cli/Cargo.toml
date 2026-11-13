@@ -3,8 +3,7 @@ name = "simsandbox-cli"
 description = "Headless command-line runner for SimSandbox models"
 version.workspace = true
 edition.workspace = true
-# Rendering views (simsandbox-session) needs egui 0.36, so Rust 1.95.
-rust-version = "1.95"
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

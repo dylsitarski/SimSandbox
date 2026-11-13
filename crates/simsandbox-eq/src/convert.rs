@@ -51,7 +51,8 @@ impl Convert {
                 name: EXACT.into(),
                 labels: MethodLabels {
                     speed: SpeedClass::RealTime,
-                    accuracy: AccuracyClass::Verified,
+                    // Exact, but Verified is earned per case (ADR 0061).
+                    accuracy: AccuracyClass::Quantitative,
                 },
             },
             factor,
@@ -112,6 +113,10 @@ impl Block for Convert {
     fn compute_outputs(&self, _t: f64, io: StepIo<'_>) -> Result<()> {
         io.outputs[0] = self.factor * io.inputs[0];
         Ok(())
+    }
+
+    fn reads_time(&self) -> Option<bool> {
+        Some(false)
     }
 
     /// A conversion joins a fused group it sits in (ADR 0051).

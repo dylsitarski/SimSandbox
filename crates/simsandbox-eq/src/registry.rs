@@ -59,7 +59,16 @@ pub fn register(registry: &mut Registry) -> Result<()> {
     })?;
     registry.register(EQUATIONS, |name, c| {
         no_update(c)?;
-        let set = EquationSet::parse(name, &c.definition)?;
+        // Files the equations start tables from (a mesh, a CSV: ADR 0085,
+        // ADR 0069 step 3) are read from the block's folder when its
+        // configuration gives one (the diagram's, the Inspector's), else
+        // from the thread's (`registry::in_folder`).
+        let set = match &c.folder {
+            Some(f) => simsandbox_core::registry::in_folder(Some(f), || {
+                EquationSet::parse(name, &c.definition)
+            })?,
+            None => EquationSet::parse(name, &c.definition)?,
+        };
         // No method given: the one the equations call for.
         let c = &BlockConfig {
             method: if c.method.name.is_empty() {
@@ -70,12 +79,30 @@ pub fn register(registry: &mut Registry) -> Result<()> {
             ..c.clone()
         };
         match set.kind() {
+            // States over a table's rows (ADR 0085 step 3).
+            Kind::Continuous if set.has_tables() => Ok(Box::new(ExplicitBlock::continuous(
+                set,
+                Integrator::from_settings(&c.method)?,
+            ))),
             Kind::Continuous => ode_block(set, c),
             Kind::Map | Kind::Formulas => Ok(Box::new(ExplicitBlock::new(set, &c.method)?)),
         }
     })?;
     registry.register(crate::convert::CONVERT, |name, c| {
         Ok(Box::new(crate::convert::Convert::from_config(name, c)?))
+    })?;
+    registry.register(crate::input::VALUE, |name, c| {
+        let ty = crate::input::VALUE;
+        Ok(Box::new(crate::input::Input::from_config(ty, name, c)?))
+    })?;
+    registry.register(crate::file_input::FILE, |name, c| {
+        Ok(Box::new(crate::file_input::FileInput::from_config(
+            name, c,
+        )?))
+    })?;
+    registry.register(crate::input::POINTER, |name, c| {
+        let ty = crate::input::POINTER;
+        Ok(Box::new(crate::input::Input::from_config(ty, name, c)?))
     })?;
     describe(registry)
 }
@@ -86,6 +113,8 @@ fn ode(summary: &str) -> TypeInfo {
         .method("rk4", &["substeps"])
         .method("euler", &["substeps"])
         .method("dopri5", &["rtol", "atol"])
+        .method("backward_euler", &["substeps"])
+        .method("trbdf2", &["substeps"])
 }
 
 /// What each type is, for discovery (ADR 0039).
@@ -124,11 +153,25 @@ fn describe(r: &mut Registry) -> Result<()> {
              parameter. Units in brackets where a name appears ('input F [N]', 'param m [kg] = \
              2', 'state x [m]') or at the end of a line for its left side ('E = m*v^2/2 [J]', \
              'dv/dt = F/m [m/s^2]') make every line checked (ADR 0045); names without one are \
-             dimensionless. The method may be left out.",
+             dimensionless. Arrays (ADR 0060): 'grid x [m] = 0 .. length, 50' declares a line of \
+             cells, 'grid k = 5' five cells numbered 0 to 4 (as a study's runs); \
+             'state T[x] [K] = expression' and 'input q[x]' have a value per cell; \
+             'edge T: x- = value, x+ gradient = 0' (or 'x periodic') sets the ends, insulated \
+             if not given; 'lap(T)' and 'ddx(T)' are stencils, 'sum', 'mean', 'minof', \
+             'maxof' and 'at(T, i)' give one value, 'argmaxof' and 'argminof' the cell \
+             of the greatest or least, 'at(T, argmaxof(A))' a cell found so (ADR 0070), \
+             'spacing(x)' the cell width; comparisons ('v > 20') give 1 or 0; \
+             'prev(v)' and 'next(v)' are the neighbours along an axis, beyond the ends \
+             the edge's value (ADR 0069); 'param m[k] [kg] = 1000' is a value per cell, \
+             each its own parameter 'm[0]', 'm[1]', …. Stiff \
+             systems (diffusion on fine grids) take long steps with 'trbdf2' or \
+             'backward_euler'. The method may be left out.",
         )
         .method("rk4", &["substeps"])
         .method("euler", &["substeps"])
         .method("dopri5", &["rtol", "atol"])
+        .method("backward_euler", &["substeps"])
+        .method("trbdf2", &["substeps"])
         .method(crate::symbolic::ITERATE, &[])
         .method(crate::symbolic::EVALUATE, &[])
         .definition(&["input u", "dx/dt = -k*x + u", "E = x^2/2"]),
@@ -143,6 +186,53 @@ fn describe(r: &mut Registry) -> Result<()> {
         .method(crate::convert::EXACT, &[])
         .setting("from", &[])
         .setting("to", &[]),
+    )?;
+    r.describe(
+        crate::input::VALUE,
+        TypeInfo::new(
+            "A value set from outside the running model (ADR 0058): output y, its parameter, \
+             in the unit of the setting 'unit' (dimensionless if absent), suggested between \
+             'min' and 'max' (-1 and 1 if absent). Driven by a slider, keys (controls.inputs), \
+             a schedule (run.inputs) or a recorded run.",
+        )
+        .method(crate::input::HELD, &[])
+        .setting("unit", &[])
+        .setting("min", &[])
+        .setting("max", &[]),
+    )?;
+    r.describe(
+        crate::input::POINTER,
+        TypeInfo::new(
+            "A pointer in a view's coordinates (ADR 0058): outputs x and y in the setting \
+             'unit' (m if absent), and down (1 while pressed). A view that sends input feeds \
+             it (controls.inputs); the model turns it into what it does, e.g. a spring force \
+             towards the pointer.",
+        )
+        .method(crate::input::HELD, &[])
+        .setting("unit", &[])
+        .setting("min", &[])
+        .setting("max", &[]),
+    )?;
+    r.describe(
+        crate::file_input::FILE,
+        TypeInfo::new(
+            "Recorded data as an input over time (ADR 0063): a probe's file or any CSV or .npy, \
+             read from the model's folder. A CSV's first column is the time and each other \
+             column an output named by its header ('car.v' gives car_v), its unit from \
+             'name [unit]' in the header, 'unit.COLUMN' or 'unit'. A .npy is one output y \
+             (scalar, vector, grid or, with shape: points, a point set) with its times from \
+             'times' (a CSV's first column) or every 'dt' seconds. Values are held between \
+             samples or interpolated (interpolate: linear); outside them, the first or last.",
+        )
+        .method(crate::file_input::READ, &[])
+        .setting("file", &[])
+        .setting("interpolate", &["hold", "linear"])
+        .setting("unit", &[])
+        .setting("times", &[])
+        .setting("dt", &[])
+        .setting("shape", &["grid", "points"])
+        .file("file")
+        .file("times"),
     )
 }
 

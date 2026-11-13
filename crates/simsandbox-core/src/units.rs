@@ -34,11 +34,34 @@ impl Dimension {
     }
 }
 
-/// A unit: a dimension and the factor that converts a value in this unit to SI.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A unit: a dimension and the factor that converts a value in this unit to SI,
+/// and the name it was written with (`V`, `N*s/m`), which it is shown by.
+/// Units are equal by dimension and scale alone: `J` and `N*m` are the same.
+#[derive(Debug, Clone, Copy)]
 pub struct Unit {
     pub dim: Dimension,
     pub scale: f64,
+    /// As written, when parsed from text; `None` when computed.
+    pub name: Option<&'static str>,
+}
+
+impl PartialEq for Unit {
+    fn eq(&self, other: &Self) -> bool {
+        self.dim == other.dim && self.scale == other.scale
+    }
+}
+
+/// One copy of each unit name ever parsed, kept for the program's life
+/// (a model names a handful), so units stay `Copy`.
+fn interned(text: &str) -> &'static str {
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(n) = names.iter().find(|n| **n == text) {
+        return n;
+    }
+    let n: &'static str = Box::leak(text.to_string().into_boxed_str());
+    names.push(n);
+    n
 }
 
 impl Unit {
@@ -46,7 +69,14 @@ impl Unit {
         Unit {
             dim: Dimension(dim),
             scale,
+            name: None,
         }
+    }
+
+    /// The same unit without the name it was written with: shown in SI
+    /// base units, or by a named unit's symbol when scaled (`km/h`).
+    pub fn unnamed(self) -> Unit {
+        Unit { name: None, ..self }
     }
 
     pub const DIMENSIONLESS: Unit = Unit::new([0, 0, 0, 0, 0, 0, 0], 1.0);
@@ -85,7 +115,9 @@ impl Unit {
         if at < chars.len() {
             return Err(fail(format!("unexpected '{}'", chars[at])));
         }
-        Ok(unit)
+        // Shown as written (without spaces); `1` is shown as nothing.
+        let name = (cleaned != "1").then(|| interned(&cleaned));
+        Ok(Unit { name, ..unit })
     }
 
     /// True when values in `self` can be converted to `other`.
@@ -107,6 +139,7 @@ impl Unit {
         Unit {
             dim: self.dim.pow(n),
             scale: self.scale.powi(n as i32),
+            name: None,
         }
     }
 }
@@ -216,6 +249,7 @@ fn lookup(symbol: &str) -> Option<Unit> {
         Some(Unit {
             dim: s.unit.dim,
             scale: factor * s.unit.scale,
+            name: None,
         })
     })
 }
@@ -434,6 +468,7 @@ impl Mul for Unit {
         Unit {
             dim: self.dim.combine(rhs.dim, 1),
             scale: self.scale * rhs.scale,
+            name: None,
         }
     }
 }
@@ -444,6 +479,7 @@ impl Div for Unit {
         Unit {
             dim: self.dim.combine(rhs.dim, -1),
             scale: self.scale / rhs.scale,
+            name: None,
         }
     }
 }
@@ -488,6 +524,9 @@ impl fmt::Display for Unit {
     /// powers first and negative ones after a slash (`m/s^2`,
     /// `kg/(m·s^2)`), which [`Unit::parse`] reads back.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(name) = self.name {
+            return write!(f, "{name}");
+        }
         if self.scale != 1.0 {
             if let Some((name, _)) = names().iter().find(|(_, u)| u.same_as(self)) {
                 return write!(f, "{name}");
@@ -544,6 +583,27 @@ mod tests {
     }
 
     #[test]
+    fn units_are_shown_as_written_and_equal_by_value() {
+        // Written names are kept (the owner, 2026-11-13).
+        for text in ["V", "N*s/m", "mS", "kg*m/s^2", "km/h", "F"] {
+            assert_eq!(Unit::parse(text).unwrap().to_string(), text);
+        }
+        // Spaces dropped; equal whatever the name.
+        assert_eq!(Unit::parse("N * s / m").unwrap().to_string(), "N*s/m");
+        assert_eq!(Unit::parse("J").unwrap(), Unit::parse("N*m").unwrap());
+        assert_eq!(Unit::parse("V").unwrap(), Unit::VOLT);
+        // Computed units have no name: SI base units, or a scaled named
+        // unit's symbol.
+        let v = Unit::parse("m").unwrap() / Unit::parse("s").unwrap();
+        assert_eq!(v.to_string(), "m/s");
+        assert_eq!(
+            Unit::parse("V").unwrap().unnamed().to_string(),
+            "kg·m^2/(s^3·A)"
+        );
+        assert_eq!(Unit::parse("1").unwrap().to_string(), "1");
+    }
+
+    #[test]
     fn converts_scaled_units() {
         let kmh = Unit::parse("km/h").unwrap();
         let ms = Unit::parse("m/s").unwrap();
@@ -582,8 +642,10 @@ mod tests {
             ("kg*m^2", "kg·m^2"),
             ("N*s/m", "kg/s"),
         ] {
+            // Shown as written; without its name, in SI base units.
             let u = Unit::parse(text).unwrap();
-            assert_eq!(u.to_string(), shown);
+            assert_eq!(u.to_string(), text);
+            assert_eq!(u.unnamed().to_string(), shown);
             assert!(Unit::parse(shown).unwrap().same_as(&u));
         }
         assert!((kmh.conversion_to(&ms).unwrap() - 1.0 / 3.6).abs() < 1e-15);

@@ -31,3 +31,8 @@ Typed equations ([ADR 0017](0017-typed-equations.md)) were dimensionless: their 
 - Equation errors now include unit mistakes, including `sin(t)` (time has units); a frequency parameter in `Hz` fixes it.
 - Declared model and subsystem parameters ([ADR 0043](0043-subsystems.md)) and their formulas still carry descriptive units only.
 - Displaying in other units means a conversion block per signal; a display-only unit choice on views can come later if that gets tedious.
+
+## Units keep the name they were written with (owner, 2026-11-13)
+
+Units were shown in SI base units unless scaled (`km/h`), so `param supply [V]` appeared as kg·m^2/(s^3·A) and `kp [N*s/m]` as kg/s. **Decided by the owner:** a unit is shown as it was written. `Unit` keeps the text it was parsed from (without spaces; `Unit::name`, interned so units stay `Copy`) and `Display` prints it; units are still equal by dimension and scale alone (`J` equals `N*m`), so checks and conversions are unchanged. A unit computed from others (a product, a quotient, a defined quantity's unit found from its right side) has no name and is shown as before: SI base units, or a named unit's symbol when scaled; `Unit::unnamed` drops a name. Where units are written into files (`describe`, `check`, rendered axis labels) they now read as written. Checked against the version before: every example's `run` output (CSV and JSON) is unchanged byte for byte; six rendered examples differ only in axis labels (`cruise.F [kg·m/s^2]` is now `cruise.F [N]`, `curve.w [1/s]` is `curve.w [rad/s]`).
+

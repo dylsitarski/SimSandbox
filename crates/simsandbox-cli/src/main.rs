@@ -4,15 +4,24 @@
 //! prints CSV or JSON, `render` writes PNG.
 //!
 //! ```text
-//! simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json]
+//! simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json] [--inputs RUN]
+//!                 [--probe NAME] [--save-probes DIR] [--memory MB] [--model NAME]
+//!                 [--signals NAMES] [--every N]
 //!                                   (default: the file's `run` section)
-//!                                   (a model with no states: one row per sample of its sweep)
+//!                                   (--signals: only these outputs, comma-separated: block.port, block,
+//!                                    or in a model using models a model (`.` the top level) or path in it, ADR 0076)
+//!                                   (--every: every N-th step and the last, ADR 0076)
+//!                                   (--memory: with probes, the app's memory budget, ADR 0062 step 5)
+//!                                   (FILE a run file: replays it, ADR 0059)
+//!                                   (a model whose only runs are its studies: one row per run, ADR 0071)
+//!                                   (--probe: what that probe records, not every output, ADR 0062)
+//!                                   (--save-probes: the probes' files (`to`) written into DIR)
 //! simsandbox check FILE             (JSON; exit status 1 if the model cannot run)
 //! simsandbox describe [TYPE]        (JSON: every block, view and filter type and the units, or one; TYPE "units" lists the units)
-//! simsandbox schema                 (the model file's JSON Schema)
-//! simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N]
+//! simsandbox schema [run]           (the model file's, or a run file's, JSON Schema)
+//! simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--inputs RUN]
 //!                   [--width POINTS] [--height POINTS] [--scale S] [--light]
-//!                   [--diagram [--subsystem NAME] [--no-data] [--values]]  (the block diagram instead of the views)
+//!                   [--diagram [--inside PATH] [--expand PATHS] [--no-data] [--values]]  (the block diagram instead of the views; --inside: a used model's inside)
 //! simsandbox start-from FILE --t SECONDS [--out NEW.json]
 //!                                   (the model file that starts from the state at t)
 //! simsandbox upgrade FILE [--out NEW.json]
@@ -26,20 +35,24 @@ use simsandbox_core::graph::Model;
 use simsandbox_core::sim::Simulator;
 use simsandbox_eq::systems::Lorenz;
 use simsandbox_eq::{Integrator, OdeBlock};
+use simsandbox_file::runs::RunFile;
+use simsandbox_file::ModelFile;
 use simsandbox_session::examples::{registry, view_registry};
 use simsandbox_session::render::{png, render, render_diagram, RenderOptions};
-use simsandbox_session::run::{run, start_from, DEFAULT_T_END};
-use simsandbox_session::{describe, Session};
+use simsandbox_session::run::{run_keeping, run_probes, start_from, Keep, DEFAULT_T_END};
+use simsandbox_session::session::InputEvent;
+use simsandbox_session::{describe, probe, Session};
 use std::collections::BTreeMap;
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
-  simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json]
+  simsandbox run FILE [--t-end SECONDS] [--dt SECONDS] [--format csv|json] [--inputs RUN]
+                  [--probe NAME] [--save-probes DIR] [--memory MB] [--model NAME] [--signals NAMES] [--every N]
   simsandbox check FILE
   simsandbox describe [TYPE | units]
-  simsandbox schema
-  simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--width POINTS] [--height POINTS] [--scale S] [--light] [--diagram [--subsystem NAME] [--no-data] [--values]]
+  simsandbox schema [run]
+  simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--inputs RUN] [--width POINTS] [--height POINTS] [--scale S] [--light] [--diagram [--inside PATH] [--expand PATHS] [--no-data] [--values]]
   simsandbox start-from FILE --t SECONDS [--out NEW.json]
   simsandbox upgrade FILE [--out NEW.json]
   simsandbox lorenz [--t-end SECONDS] [--dt SECONDS] [--method euler|rk4|dopri5] [--rho VALUE]";
@@ -96,6 +109,111 @@ fn read(path: &str) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))
 }
 
+/// Whether `path` names a run file (ADR 0059).
+fn is_run_file(path: &str) -> bool {
+    path.ends_with(".run.json")
+}
+
+/// A run file and the text of the model it names (relative to it).
+fn read_run(path: &str) -> Result<(RunFile, String, String), String> {
+    let run = RunFile::from_json(&read(path)?).map_err(|e| format!("{path}: {e}"))?;
+    let model_path = std::path::Path::new(path)
+        .parent()
+        .unwrap_or(std::path::Path::new(""))
+        .join(&run.model);
+    let model_path = model_path.to_string_lossy().into_owned();
+    let model = read(&model_path).map_err(|e| format!("{path}: its model: {e}"))?;
+    Ok((run, model_path, model))
+}
+
+fn events(track: &[(f64, String, f64)]) -> Vec<InputEvent> {
+    track
+        .iter()
+        .map(|(t, key, value)| InputEvent {
+            t: *t,
+            key: key.clone(),
+            value: *value,
+        })
+        .collect()
+}
+
+/// The model text to run and the recorded input to replay with it
+/// (ADR 0059): a run file's model with the run's seed, settings and
+/// schedule (warning if the model changed since the run was made); or a
+/// model file, with `--inputs RUN` applying that run's schedule and track.
+fn model_and_track(path: &str, inputs: Option<&str>) -> Result<(String, Vec<InputEvent>), String> {
+    if is_run_file(path) {
+        if inputs.is_some() {
+            return Err("--inputs applies a run to a model file; this is a run file".into());
+        }
+        let (run, model_path, text) = read_run(path)?;
+        let (file, _) = ModelFile::from_json(&text).map_err(|e| format!("{model_path}: {e}"))?;
+        let folder = std::path::Path::new(&model_path).parent();
+        let loaded = simsandbox_file::load_any(&text, &registry(), folder)
+            .map_err(|e| format!("{model_path}: {e}"))?;
+        if !run.fits(&loaded).map_err(|e| e.to_string())? {
+            eprintln!(
+                "warning: {path}: {model_path} has changed since this run was recorded; \
+                 replaying it anyway"
+            );
+        }
+        if let Some(note) = run.version_note() {
+            eprintln!("warning: {path}: {note}");
+        }
+        return Ok((run.apply_to(&file).to_json(), events(&run.track)));
+    }
+    let text = read(path)?;
+    let Some(run_path) = inputs else {
+        return Ok((text, Vec::new()));
+    };
+    let run = RunFile::from_json(&read(run_path)?).map_err(|e| format!("{run_path}: {e}"))?;
+    let (mut file, _) = ModelFile::from_json(&text).map_err(|e| format!("{path}: {e}"))?;
+    file.run.inputs = run.inputs.clone();
+    Ok((file.to_json(), events(&run.track)))
+}
+
+/// Check a run file (ADR 0059): its model is found and checked with the
+/// run's settings and schedule, the recorded input names parameters that
+/// can be set, and a model changed since the run was made is a warning.
+fn check_run(path: &str) -> Result<Value, String> {
+    let fail = |message: String| serde_json::json!({"ok": false, "errors": [{"message": message}], "warnings": []});
+    let (run, model_path, text) = match read_run(path) {
+        Ok(r) => r,
+        Err(e) => return Ok(fail(e)),
+    };
+    let (file, _) = match ModelFile::from_json(&text) {
+        Ok(f) => f,
+        Err(e) => return Ok(fail(format!("{model_path}: {e}"))),
+    };
+    let replay = run.apply_to(&file).to_json();
+    let mut report = describe::check(&replay, &registry());
+    if report["ok"] != true {
+        return Ok(report);
+    }
+    let mut warnings: Vec<Value> = report["warnings"].as_array().cloned().unwrap_or_default();
+    if let Ok(loaded) = simsandbox_file::load_any(&text, &registry(), None) {
+        if !run.fits(&loaded).unwrap_or(false) {
+            warnings.push(Value::from(format!(
+                "{model_path} has changed since this run was recorded"
+            )));
+        }
+        if let Some(note) = run.version_note() {
+            warnings.push(Value::from(note));
+        }
+    }
+    match Session::load(path, &replay, &registry()) {
+        Ok(mut s) => {
+            if let Err(e) = s.replay(events(&run.track)) {
+                return Ok(fail(e));
+            }
+            warnings.extend(s.warnings.iter().cloned().map(Value::from));
+        }
+        Err(e) => return Ok(fail(e)),
+    }
+    report["warnings"] = Value::from(warnings);
+    Ok(report)
+}
+
 fn print_json(v: &Value) -> Result<(), String> {
     let text = serde_json::to_string_pretty(v).map_err(|e| e.to_string())?;
     println!("{text}");
@@ -106,14 +224,68 @@ fn print_json(v: &Value) -> Result<(), String> {
 /// [`simsandbox_session::run`]) as CSV (without populations) or JSON.
 fn run_file(args: &[String]) -> Result<(), String> {
     let (path, rest) = args.split_first().ok_or(USAGE)?;
-    let flags = Flags::parse(rest, &["--t-end", "--dt", "--format"])?;
+    let flags = Flags::parse(
+        rest,
+        &[
+            "--t-end",
+            "--dt",
+            "--format",
+            "--inputs",
+            "--probe",
+            "--save-probes",
+            "--model",
+            "--signals",
+            "--every",
+            "--memory",
+        ],
+    )?;
+    let mut keep = keep_of(&flags)?;
     let json = match flags.get("--format") {
         None | Some("csv") => false,
         Some("json") => true,
         Some(other) => return Err(format!("unknown format '{other}': csv or json")),
     };
     let (t_end, dt) = (flags.positive("--t-end")?, flags.positive("--dt")?);
-    let r = run(&read(path)?, &registry(), t_end, dt).map_err(|e| format!("{path}: {e}"))?;
+    // A model using models (ADR 0066): each model at its own times; with
+    // inputs or probes, as one model on several clocks, as the app runs it
+    // (step 5).
+    let composed = if is_run_file(path) {
+        read_run(path).is_ok_and(|(_, _, t)| simsandbox_file::compose::is_composition(&t))
+    } else {
+        simsandbox_file::compose::is_composition(&read(path)?)
+    };
+    if composed && flags.has("--dt") {
+        return Err("--dt does not apply to a model using models: each keeps its own clock".into());
+    }
+    let merged = flags.has("--inputs") || flags.has("--probe") || flags.has("--save-probes");
+    if composed && !merged && !is_run_file(path) {
+        // One model printed: only it recorded, unless signals say what.
+        if let (Some(m), None) = (flags.get("--model"), &keep.signals) {
+            keep.signals = Some(vec![m.to_string()]);
+        }
+        return run_composition_file(path, &read(path)?, t_end, &flags, json, &keep);
+    }
+    if composed && flags.has("--model") {
+        return Err("--model picks one model's own times; with inputs, probes or a run file the models run as one: drop --model".into());
+    }
+    if flags.has("--model") && !composed {
+        return Err(
+            "--model picks a model on its own clock (ADR 0066); this model uses no model files"
+                .into(),
+        );
+    }
+    let (text, track) = model_and_track(path, flags.get("--inputs"))?;
+    if flags.has("--probe") || flags.has("--save-probes") {
+        if flags.has("--signals") || flags.has("--every") {
+            return Err(
+                "--signals and --every choose what run prints; a probe records what it is set to: drop one"
+                    .into(),
+            );
+        }
+        return run_file_probes(path, &text, track, (t_end, dt), &flags, json);
+    }
+    let r = run_keeping(&text, &registry(), t_end, dt, track, &keep)
+        .map_err(|e| format!("{path}: {e}"))?;
     for w in &r.warnings {
         eprintln!("warning: {path}: {w}");
     }
@@ -129,7 +301,7 @@ fn run_file(args: &[String]) -> Result<(), String> {
             .map_err(io::Error::other)
             .and_then(|()| writeln!(out))
     } else {
-        for p in &r.populations {
+        for p in r.populations.iter().filter(|p| !p.rows) {
             eprintln!(
                 "note: {} is a population (variable length) and is not written \
                  (--format json includes it)",
@@ -143,13 +315,166 @@ fn run_file(args: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// `run` of a model that uses model files (ADR 0066): every model on its
+/// own clock. JSON gives every one; CSV one, named by `--model` (`.` for
+/// the top level's own blocks) when there are several.
+fn run_composition_file(
+    path: &str,
+    text: &str,
+    t_end: Option<f64>,
+    flags: &Flags,
+    json: bool,
+    keep: &Keep,
+) -> Result<(), String> {
+    let c = simsandbox_session::compose::run_composition_keeping(
+        text,
+        &registry(),
+        t_end,
+        simsandbox_core::parallel::Parallel::Auto,
+        keep,
+    )
+    .map_err(|e| format!("{path}: {e}"))?;
+    for w in &c.warnings {
+        eprintln!("warning: {path}: {w}");
+    }
+    let mut out = BufWriter::new(io::stdout().lock());
+    let written = if json && !flags.has("--model") {
+        serde_json::to_writer(&mut out, &c.to_json())
+            .map_err(io::Error::other)
+            .and_then(|()| writeln!(out))
+    } else {
+        let names: Vec<&str> = c.models.iter().map(|(n, _)| n.as_str()).collect();
+        let name = match (flags.get("--model"), names.as_slice()) {
+            (Some(n), _) => n,
+            (None, [one]) => one,
+            (None, _) => {
+                return Err(format!(
+                    "{path} has several models, each at its own times: pick one with --model ({}) or use --format json",
+                    names.join(", ")
+                ))
+            }
+        };
+        let r = c
+            .model(name)
+            .ok_or_else(|| format!("no model '{name}'; models: {}", names.join(", ")))?;
+        for n in &r.notes {
+            eprintln!("note: {name}: {n}");
+        }
+        if json {
+            serde_json::to_writer(&mut out, &r.to_json())
+                .map_err(io::Error::other)
+                .and_then(|()| writeln!(out))
+        } else {
+            r.write_csv(&mut out)
+        }
+    };
+    written
+        .and_then(|()| out.flush())
+        .map_err(|e| e.to_string())
+}
+
+/// What `run` keeps (ADR 0076): `--signals a.x,b` and `--every N`.
+fn keep_of(flags: &Flags) -> Result<Keep, String> {
+    let signals = flags.get("--signals").map(|s| {
+        s.split(',')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(String::from)
+            .collect::<Vec<_>>()
+    });
+    if signals.as_ref().is_some_and(Vec::is_empty) {
+        return Err("--signals needs at least one name".into());
+    }
+    let every = match flags.get("--every") {
+        None => 1,
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) if n >= 1 => n,
+            _ => {
+                return Err(format!(
+                    "--every must be a whole number of steps, 1 or more, not '{v}'"
+                ))
+            }
+        },
+    };
+    Ok(Keep { signals, every })
+}
+
+/// `run` with probes (ADR 0062): print one (`--probe`), write their files
+/// (`--save-probes DIR`), or both.
+fn run_file_probes(
+    path: &str,
+    text: &str,
+    track: Vec<InputEvent>,
+    (t_end, dt): (Option<f64>, Option<f64>),
+    flags: &Flags,
+    json: bool,
+) -> Result<(), String> {
+    let names: Vec<String> = flags.get("--probe").map(String::from).into_iter().collect();
+    let dir = flags.get("--save-probes").map(std::path::Path::new);
+    // The app's memory budget, in MB (ADR 0062 step 5).
+    let memory = match flags.get("--memory") {
+        None => None,
+        Some(v) => Some(
+            v.parse::<f64>()
+                .map_err(|_| format!("--memory takes megabytes, not '{v}'"))?,
+        ),
+    };
+    let r = run_probes(text, &registry(), t_end, dt, track, &names, dir, memory)
+        .map_err(|e| format!("{path}: {e}"))?;
+    for w in &r.warnings {
+        eprintln!("warning: {path}: {w}");
+    }
+    if let Some(l) = r.labels {
+        eprintln!("speed: {:?} | accuracy: {:?}", l.speed, l.accuracy);
+    }
+    if let Some(dir) = flags.get("--save-probes") {
+        let (written, notes) = r
+            .write_files(std::path::Path::new(dir))
+            .map_err(|e| format!("{dir}: {e}"))?;
+        for n in notes {
+            eprintln!("note: {n}");
+        }
+        if written.is_empty() {
+            eprintln!("note: no probe has a file ('to'); nothing written");
+        }
+        for w in written {
+            eprintln!("wrote {}", w.display());
+        }
+    }
+    let Some((_, h)) = r.probes.first().filter(|_| flags.has("--probe")) else {
+        return Ok(());
+    };
+    let h = h.read();
+    let mut out = BufWriter::new(io::stdout().lock());
+    let written = if json {
+        serde_json::to_writer(&mut out, &probe::to_json(&h))
+            .map_err(io::Error::other)
+            .and_then(|()| writeln!(out))
+    } else {
+        for f in h.fields() {
+            eprintln!(
+                "note: {} is a field and is not written as CSV (--format json or --save-probes include it)",
+                f.name
+            );
+        }
+        probe::write_csv(&h, &mut out)
+    };
+    written
+        .and_then(|()| out.flush())
+        .map_err(|e| e.to_string())
+}
+
 /// Check a model file and print the findings as JSON. Fails (exit status
 /// 1) if the model cannot run.
 fn check(args: &[String]) -> Result<(), String> {
     let [path] = args else {
         return Err(USAGE.into());
     };
-    let report = describe::check(&read(path)?, &registry());
+    let report = if is_run_file(path) {
+        check_run(path)?
+    } else {
+        describe::check(&read(path)?, &registry())
+    };
     print_json(&report)?;
     if report["ok"] == true {
         Ok(())
@@ -201,18 +526,23 @@ fn render_file(args: &[String]) -> Result<(), String> {
             "--light",
             "--diagram",
             "--subsystem",
+            "--inside",
+            "--expand",
             "--no-data",
             "--values",
+            "--inputs",
         ],
     )?;
     let out = flags.get("--out").ok_or("render needs --out IMAGE.png")?;
-    let text = read(path)?;
+    let (text, track) = model_and_track(path, flags.get("--inputs"))?;
     let defaults = RenderOptions::default();
     let size = |flag: &str, default: f32| -> Result<f32, String> {
         Ok(flags.positive(flag)?.map_or(default, |v| v as f32))
     };
-    if flags.has("--subsystem") && !flags.has("--diagram") {
-        return Err("--subsystem draws a subsystem's diagram: add --diagram".into());
+    if (flags.has("--inside") || flags.has("--subsystem") || flags.has("--expand"))
+        && !flags.has("--diagram")
+    {
+        return Err("--inside draws a used model's diagram: add --diagram".into());
     }
     if flags.has("--values") && !flags.has("--diagram") {
         return Err("--values shows values on the diagram: add --diagram".into());
@@ -230,7 +560,16 @@ fn render_file(args: &[String]) -> Result<(), String> {
             scale: size("--scale", defaults.scale)?,
             view: None,
             light: flags.has("--light"),
-            subsystem: flags.get("--subsystem").map(str::to_string),
+            // `--subsystem` is the older name (ADR 0068).
+            inside: flags
+                .get("--inside")
+                .or_else(|| flags.get("--subsystem"))
+                .map(str::to_string),
+            // Uses expanded in place, comma-separated paths (ADR 0066).
+            expand: flags
+                .get("--expand")
+                .map(|v| v.split(',').map(|p| p.trim().to_string()).collect())
+                .unwrap_or_default(),
             data: !flags.has("--no-data"),
             values: flags.has("--values"),
         };
@@ -238,6 +577,9 @@ fn render_file(args: &[String]) -> Result<(), String> {
         return std::fs::write(out, png(&image)?).map_err(|e| format!("{out}: {e}"));
     }
     let mut s = Session::load(path, &text, &registry())?;
+    if !track.is_empty() {
+        s.replay(track).map_err(|e| format!("{path}: {e}"))?;
+    }
     for w in &s.warnings {
         eprintln!("warning: {path}: {w}");
     }
@@ -264,7 +606,8 @@ fn render_file(args: &[String]) -> Result<(), String> {
             })
             .transpose()?,
         light: flags.has("--light"),
-        subsystem: None,
+        inside: None,
+        expand: Vec::new(),
         data: false,
         values: false,
     };
@@ -370,10 +713,39 @@ fn run_lorenz(args: &[String]) -> Result<(), String> {
     out.flush().map_err(|e| e.to_string())
 }
 
+/// The folder of the model a command's file names (a run file's model):
+/// where blocks read the files their settings name (ADR 0063).
+fn model_folder(path: &str) -> Option<std::path::PathBuf> {
+    let model = if is_run_file(path) {
+        let run = RunFile::from_json(&read(path).ok()?).ok()?;
+        std::path::Path::new(path).parent()?.join(run.model)
+    } else {
+        std::path::PathBuf::from(path)
+    };
+    let folder = model.parent()?;
+    Some(if folder.as_os_str().is_empty() {
+        std::path::PathBuf::from(".")
+    } else {
+        folder.to_path_buf()
+    })
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rest = args.get(1..).unwrap_or(&[]);
-    let result = match args.first().map(String::as_str) {
+    let folder = rest.first().and_then(|p| model_folder(p));
+    let result = simsandbox_core::registry::in_folder(folder.as_deref(), || command(&args, rest));
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn command(args: &[String], rest: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
         Some("--version") | Some("-V") => {
             println!("simsandbox {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -381,21 +753,21 @@ fn main() -> ExitCode {
         Some("run") => run_file(rest),
         Some("check") => check(rest),
         Some("describe") => describe_types(rest),
-        Some("schema") => {
-            print!("{}", simsandbox_file::SCHEMA);
-            Ok(())
-        }
+        Some("schema") => match rest {
+            [] => {
+                print!("{}", simsandbox_file::SCHEMA);
+                Ok(())
+            }
+            [kind] if kind == "run" => {
+                print!("{}", simsandbox_file::runs::RUN_SCHEMA);
+                Ok(())
+            }
+            _ => Err(USAGE.into()),
+        },
         Some("render") => render_file(rest),
         Some("start-from") => start_from_file(rest),
         Some("upgrade") => upgrade_file(rest),
         Some("lorenz") => run_lorenz(rest),
         _ => Err(USAGE.to_string()),
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
     }
 }

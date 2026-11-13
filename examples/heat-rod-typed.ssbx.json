@@ -1,0 +1,73 @@
+{
+  "format": 1,
+  "description": "The heat rod written as typed equations on a grid (ADR 0060): the rod is a line of 50 cells, T has a value per cell, and dT/dt = alpha*lap(T) is the heat equation. The edge line holds the ends at the left and right temperatures. Compare with the built-in 'Heat along a rod' example: the same physics in four lines you can edit. Try a periodic rod (edge T: x periodic), an insulated one (delete the edge line), or a heat source term in the rate.",
+  "run": {
+    "dt": 0.05
+  },
+  "blocks": [
+    {
+      "name": "rod",
+      "type": "eq.equations",
+      "method": {
+        "name": "rk4",
+        "substeps": 10.0
+      },
+      "equations": [
+        "# heat along a rod of length 'length', held at 'left' and 'right' at its ends",
+        "grid x [m] = 0 .. length, 50",
+        "param length [m] = 1",
+        "param alpha [m^2/s] = 0.01",
+        "param left [K] = 0",
+        "param right [K] = 0",
+        "param peak [K] = 100",
+        "param width [m] = 0.1",
+        "state T[x] [K] = peak*exp(-((x - length/2)/width)^2)",
+        "edge T: x- = left, x+ = right",
+        "dT/dt = alpha*lap(T)",
+        "mean_T = mean(T)"
+      ]
+    }
+  ],
+  "controls": {
+    "params": {
+      "rod.alpha": {
+        "slider": true,
+        "pin": true
+      },
+      "rod.left": {
+        "slider": true,
+        "range": [
+          -100.0,
+          100.0
+        ],
+        "pin": true
+      },
+      "rod.right": {
+        "slider": true,
+        "range": [
+          -100.0,
+          100.0
+        ],
+        "pin": true
+      }
+    },
+    "speed": 1.0,
+    "views": [
+      {
+        "type": "plot.heatmap",
+        "bind": {
+          "field": "rod.T",
+          "x": "t",
+          "y": "rod.x"
+        }
+      },
+      {
+        "type": "plot.profile",
+        "bind": {
+          "x": "rod.x",
+          "y": "rod.T"
+        }
+      }
+    ]
+  }
+}

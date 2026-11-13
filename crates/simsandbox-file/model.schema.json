@@ -2,11 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/dylsitarski/SimSandbox/blob/main/crates/simsandbox-file/model.schema.json",
   "title": "SimSandbox model file",
-  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md and docs/decisions/0023-automatic-fusion.md and docs/decisions/0028-sweeps-as-samples.md.",
+  "description": "Format version 1. See docs/decisions/0007-json-model-files.md and docs/decisions/0012-controls-in-model-files.md and docs/decisions/0013-run-section.md and docs/decisions/0023-automatic-fusion.md and docs/decisions/0028-sweeps-as-samples.md and docs/decisions/0066-models-nest-as-blocks.md.",
   "type": "object",
   "required": [
-    "format",
-    "blocks"
+    "format"
   ],
   "additionalProperties": false,
   "properties": {
@@ -19,58 +18,6 @@
     "run": {
       "$ref": "#/$defs/run"
     },
-    "sample": {
-      "type": "object",
-      "description": "Where a model with no states is evaluated (ADR 0027, ADR 0028); without it such a model is swept over its first parameter. Each sample is recorded with the swept parameters as signals; a grid over two parameters also offers every signal as a grid named 'grid.<signal>'. At most 250000 samples. Invalid values are load errors.",
-      "required": [
-        "params"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "design": {
-          "enum": [
-            "grid",
-            "list",
-            "random",
-            "latin_hypercube",
-            "sobol"
-          ],
-          "default": "grid",
-          "description": "grid: every combination of evenly spaced values; list: the points in 'values'; random: independent uniform values; latin_hypercube: one value in each of 'count' slices of every parameter; sobol: the first 'count' points of the Sobol sequence (at most 10 parameters)."
-        },
-        "params": {
-          "type": "array",
-          "minItems": 1,
-          "description": "The swept parameters. Range defaults to the slider's range, then the suggested range; points (grid only) to 400 for one parameter and 100 each for several.",
-          "items": {
-            "$ref": "#/$defs/sweepAxis"
-          }
-        },
-        "count": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 250000,
-          "default": 1000,
-          "description": "random, latin_hypercube and sobol: how many samples."
-        },
-        "seed": {
-          "type": "integer",
-          "minimum": 0,
-          "default": 1,
-          "description": "random and latin_hypercube: the generator's seed."
-        },
-        "values": {
-          "type": "array",
-          "description": "list: the samples, one value per parameter each.",
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "number"
-            }
-          }
-        }
-      }
-    },
     "params": {
       "type": "object",
       "additionalProperties": {
@@ -78,17 +25,85 @@
       },
       "description": "Parameters of the model itself, which block parameters can use in formulas, e.g. a field size shared by two blocks (ADR 0043). Sliders may name them."
     },
-    "subsystems": {
+    "models": {
       "type": "object",
       "additionalProperties": {
-        "$ref": "#/$defs/subsystem"
+        "type": "object",
+        "description": "Written like a model file ('format' optional): blocks, connections, params, outputs, groups, fusion, optionally run, sample and its own models. Its controls hold only probes. Its input blocks are its inputs, its declared outputs its outputs."
       },
-      "description": "Groups of blocks used like block types by name (ADR 0043)."
+      "description": "Models defined in this file, used from 'blocks' by name with 'model' (ADR 0068), any number of times. A use finds a definition in the model it is written in, then in the models holding it."
     },
     "blocks": {
       "type": "array",
       "items": {
         "$ref": "#/$defs/block"
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "description": "Block inputs the model exposes to models using it (ADR 0074): signals with no default, each wired by every use or study (a use writes the wire to `use/name`). A model with exposed inputs does not run on its own.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "to"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The input's name: letters, digits and '_', apart from its blocks, outputs and declared parameters."
+          },
+          "to": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            },
+            "description": "The block inputs it feeds, `block.port`."
+          },
+          "unit": {
+            "type": "string",
+            "description": "The unit it takes, as written (`m/s`); empty for a plain number."
+          },
+          "canvas": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "description": "The outputs the model offers to models that use it (ADR 0066 step 4b), by name: 'from' is one of its blocks' outputs ('car.v') or a path into a model it uses ('plant/car.v'). Users wire and link to 'use/name'.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "from"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_]+$"
+          },
+          "from": {
+            "type": "string"
+          },
+          "canvas": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
       }
     },
     "connections": {
@@ -175,6 +190,31 @@
           ],
           "default": "newton",
           "description": "How algebraic loops (outputs that depend on each other at the same instant, ADR 0040) are solved: newton (Newton's method, the default), fixed_point (repeat until settled; fails when the loop gain exceeds one) or refuse (a model with a loop does not run)."
+        },
+        "inputs": {
+          "type": "array",
+          "description": "The model's default schedule (ADR 0058, ADR 0059): values changed at set times in every run, each at the first step boundary at or after t. Recordings live in run files.",
+          "items": {
+            "type": "object",
+            "required": [
+              "t",
+              "set",
+              "to"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "t": {
+                "type": "number",
+                "minimum": 0
+              },
+              "set": {
+                "$ref": "#/$defs/ref"
+              },
+              "to": {
+                "type": "number"
+              }
+            }
+          }
         }
       }
     },
@@ -215,8 +255,7 @@
     "block": {
       "type": "object",
       "required": [
-        "name",
-        "type"
+        "name"
       ],
       "additionalProperties": false,
       "properties": {
@@ -225,7 +264,7 @@
         },
         "type": {
           "type": "string",
-          "description": "A registered block type, or the name of a subsystem in 'subsystems'."
+          "description": "A registered block type (see simsandbox describe). A use of a model has 'file' or 'model' instead."
         },
         "method": {
           "type": "object",
@@ -306,7 +345,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/paramValue"
           },
-          "description": "Values in each parameter's declared unit; omitted parameters take their defaults. A value may be a formula of the declared parameters in scope (the model's 'params', or inside a subsystem its own), e.g. \"2*capacity\". For a subsystem: its declared parameters, plus inner values for this instance only as 'block.param' (numbers)."
+          "description": "Values in each parameter's declared unit; omitted parameters take their defaults. A value may be a formula of the declared parameters of the model it is written in, e.g. \"2*capacity\". For a use of a model: its declared parameters, and values inside it for this use only by path ('block.param', 'plant/car.m'), numbers or formulas."
         },
         "starts": {
           "type": "object",
@@ -337,10 +376,67 @@
             },
             "additionalProperties": false
           },
-          "description": "A subsystem's start states by inner block ('grass', nested 'field/grass'), written by 'Start from here'."
+          "description": "A use's start states inside it, by the path of the inner block ('hub', 'axle/hub') (ADR 0068)."
+        },
+        "file": {
+          "type": "string",
+          "description": "A use of a model file (ADR 0066) in place of a type: found from this file's folder, or a full path. Its params are values for this use only; everything in it is named with this entry's name as a prefix ('plant/car.v'). It runs on its own clock and is linked by probes into input.value blocks. A study block (type 'study') names the model it studies the same way (ADR 0070)."
+        },
+        "clock": {
+          "description": "A use's clock: {\"dt\": step}, {\"times\": [t1, t2, …]} to step from one listed instant to the next (ADR 0067 step 4), or \"shared\" to run on its user's clock, flattened in, with wires into its input.value blocks ('plant/force') and from its outputs ('plant/car.v'). If absent: shared when a wire reaches it and its model writes no run.dt; else its own at run.dt if it has states, on new data if not, its recorded data's sample times included (ADR 0066, ADR 0067, ADR 0068).",
+          "oneOf": [
+            {
+              "const": "shared"
+            },
+            {
+              "type": "object",
+              "required": [
+                "dt"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "dt": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "times"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "times": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "model": {
+          "type": "string",
+          "description": "A use of a model defined in this file ('models') or in a model holding this one, by name (ADR 0068), in place of 'type' or 'file'. A study block (type 'study') names the model it studies the same way (ADR 0070)."
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "A use's replacements of the files of uses inside it, by path ('plant', 'plant/engine'), found from this file's folder; only this use sees them (ADR 0066 step 4c)."
+        },
+        "sample": {
+          "$ref": "#/$defs/sample",
+          "description": "A study block's points and what it keeps of each run (ADR 0070): as the top-level `sample`. Only a `study` block has one."
         }
       },
-      "description": "A block: a registered type (e.g. 'eq.equations', see simsandbox describe), which needs a method, or a subsystem of this file by name (ADR 0043), which has none."
+      "description": "A block of a registered type (e.g. 'eq.equations', see simsandbox describe), or a use of a model: a 'file', or a 'model' defined in this file (ADR 0066, ADR 0068)."
     },
     "connection": {
       "type": "object",
@@ -354,7 +450,8 @@
           "$ref": "#/$defs/ref"
         },
         "to": {
-          "$ref": "#/$defs/ref"
+          "$ref": "#/$defs/ref",
+          "description": "An input, `block.port`, or a parameter, `block.param`, which the wire then drives in place of its value (ADR 0075); a used model's input or declared parameter is `use/name`, a study's parameter `study.name`. A wired parameter keeps its own value, unused while the wire is there."
         }
       }
     },
@@ -393,12 +490,6 @@
           "exclusiveMinimum": 0,
           "description": "Simulated seconds per wall-clock second."
         },
-        "plots": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ref"
-          }
-        },
         "filters": {
           "type": "array",
           "description": "Filters turning recorded data into new signals and fields (ADR 0030, ADR 0032). Each names its inputs; order carries no meaning.",
@@ -424,6 +515,24 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "probe": {
+                "type": "string",
+                "description": "The probe its inputs come from unless 'from' says otherwise (ADR 0063); the model at every step if absent."
+              },
+              "from": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "The probe each of these inputs comes from (ADR 0063)."
+              },
+              "when": {
+                "enum": [
+                  "paired",
+                  "any"
+                ],
+                "description": "With inputs from probes: run at the times all sources recorded (paired, the default), or whenever one does, with the others' latest values (any)."
               },
               "canvas": {
                 "type": "array",
@@ -488,7 +597,7 @@
           }
         },
         "sweep": {
-          "description": "The sweep as written before 'sample': one parameter or a list of two. Still read, leniently, and converted into a grid 'sample' (ADR 0027); views bound to 't' are bound to the first parameter, and two-parameter heat maps and cuts to the 'grid.' signals.",
+          "description": "The sweep as written before 'sample' (ADR 0027). Dropped with a warning: sweeps are studies (ADR 0071).",
           "oneOf": [
             {
               "$ref": "#/$defs/sweepAxis"
@@ -547,6 +656,10 @@
                 "minItems": 2,
                 "maxItems": 2,
                 "description": "Where its node sits on the canvas's data layer (ADR 0050)."
+              },
+              "probe": {
+                "type": "string",
+                "description": "The probe it shows (ADR 0062); every step if absent."
               },
               "camera": {
                 "type": "object",
@@ -619,6 +732,153 @@
         "layout": {
           "$ref": "#/$defs/layout",
           "description": "How the app arranges its panes (ADR 0053): splits of stacks of tabs. Tabs: 'inspector', 'diagram', 'view:K' (a view of controls.views), or {\"views\": [K, ...]} for views tiled in one tab."
+        },
+        "inputs": {
+          "type": "object",
+          "description": "How keys and views drive input blocks, by block name (ADR 0058). Never affects results.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "keys": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Two keys moving an input.value down and up (egui key names, e.g. Left, Right, A, D)."
+              },
+              "rate": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "With keys: change per second while held; the value stays where let go. Without: the range's end while held, 0 when released."
+              },
+              "view": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "An input.pointer fed by this view, by its place in controls.views."
+              }
+            }
+          }
+        },
+        "recorder": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The recorder (ADR 0064): with one, the model can be rewound.",
+          "properties": {
+            "every": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Steps between snapshots; 10 if absent."
+            },
+            "mb": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Memory for snapshots in MB; 256 if absent. Past it they thin."
+            },
+            "canvas": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        },
+        "probes": {
+          "type": "array",
+          "description": "Probes (ADR 0062): what is recorded, when, how long, and the file written. Never affects results.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "record": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Signals and fields by the names views bind, e.g. car.v, rod.T."
+              },
+              "every": {
+                "type": "object",
+                "additionalProperties": false,
+                "minProperties": 1,
+                "maxProperties": 1,
+                "description": "When it records; every step if absent.",
+                "properties": {
+                  "steps": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "times": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  }
+                }
+              },
+              "keep": {
+                "type": "object",
+                "additionalProperties": false,
+                "maxProperties": 1,
+                "description": "How long it keeps samples in memory; thinned past 100 000 samples (fewer for grids) if absent.",
+                "properties": {
+                  "samples": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "description": "Thinned past this many samples."
+                  },
+                  "mb": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Thinned past this many megabytes."
+                  },
+                  "last": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Only the newest this many samples."
+                  },
+                  "all": {
+                    "type": "boolean",
+                    "description": "Every sample, never thinned."
+                  }
+                }
+              },
+              "to": {
+                "type": "string",
+                "pattern": "^[^/\\\\]+\\.csv$",
+                "description": "A CSV file beside the model for its signals; each grid or point field goes to a .npy file beside it."
+              },
+              "stream": {
+                "type": "boolean",
+                "description": "Write the file as it records, every sample (ADR 0063)."
+              },
+              "canvas": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
         }
       }
     },
@@ -642,7 +902,7 @@
       "properties": {
         "value": {
           "type": "number",
-          "description": "The model's value, or a subsystem's default."
+          "description": "The model's value; for a model used elsewhere, its default."
         },
         "unit": {
           "type": "string",
@@ -659,96 +919,6 @@
           "minItems": 2,
           "maxItems": 2,
           "description": "Suggested range for sliders."
-        }
-      }
-    },
-    "subsystem": {
-      "type": "object",
-      "required": [
-        "blocks"
-      ],
-      "additionalProperties": false,
-      "description": "Blocks and wires with parameters and ports of their own, used like a block type (ADR 0043). Loading expands each use into its blocks, named 'instance/inner'.",
-      "properties": {
-        "description": {
-          "type": "string"
-        },
-        "params": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/paramDecl"
-          },
-          "description": "Parameters each use can set; inner block parameters use them in formulas."
-        },
-        "inputs": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": [
-              "name"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "name": {
-                "$ref": "#/$defs/name"
-              },
-              "to": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/ref"
-                },
-                "description": "Inner inputs it feeds."
-              },
-              "canvas": {
-                "type": "array",
-                "items": {
-                  "type": "number"
-                },
-                "minItems": 2,
-                "maxItems": 2
-              }
-            }
-          }
-        },
-        "outputs": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": [
-              "name",
-              "from"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "name": {
-                "$ref": "#/$defs/name"
-              },
-              "from": {
-                "$ref": "#/$defs/ref",
-                "description": "The inner output it shows."
-              },
-              "canvas": {
-                "type": "array",
-                "items": {
-                  "type": "number"
-                },
-                "minItems": 2,
-                "maxItems": 2
-              }
-            }
-          }
-        },
-        "blocks": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/block"
-          }
-        },
-        "connections": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/connection"
-          }
         }
       }
     },
@@ -828,6 +998,88 @@
           }
         }
       ]
+    },
+    "sample": {
+      "type": "object",
+      "description": "A study block's points (ADR 0070, ADR 0071): each a whole run of its model from the start to its t_end, or one evaluation if the model has nothing in time. Points set any parameter of the studied model by path ('block.param', 'use/inner.param') or a declared parameter. At most 250000 runs. Invalid values are load errors. A model file has no top-level 'sample': a file with one is refused (ADR 0071).",
+      "additionalProperties": false,
+      "properties": {
+        "design": {
+          "enum": [
+            "grid",
+            "list",
+            "random",
+            "latin_hypercube",
+            "sobol",
+            "file"
+          ],
+          "default": "grid",
+          "description": "grid: every combination of evenly spaced values; list: the points in 'values'; random: independent uniform values; latin_hypercube: one value in each of 'count' slices of every parameter; sobol: the first 'count' points of the Sobol sequence (at most 10 parameters)."
+        },
+        "params": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The swept parameters. Range defaults to the slider's range, then the suggested range; points (grid only) to 400 for one parameter and 100 each for several.",
+          "items": {
+            "$ref": "#/$defs/sweepAxis"
+          }
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 250000,
+          "default": 1000,
+          "description": "random, latin_hypercube and sobol: how many samples."
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1,
+          "description": "random and latin_hypercube: the generator's seed."
+        },
+        "values": {
+          "type": "array",
+          "description": "list: the samples, one value per parameter each.",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "file": {
+          "type": "string",
+          "description": "Design 'file': a CSV from the model's folder, one point per row, its header naming each column by path."
+        },
+        "keep": {
+          "enum": [
+            "final",
+            "series"
+          ],
+          "default": "final",
+          "description": "What a study keeps of each run: 'final' (each output's value at the end). 'series' is refused: a study keeps one value per run."
+        },
+        "seeds": {
+          "enum": [
+            "common",
+            "per point"
+          ],
+          "default": "common",
+          "description": "The runs' seeds: the run's at every point (common random numbers), or mixed from each point's id and replicate (Monte Carlo)."
+        },
+        "replicates": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Runs of each point, each replicate with a seed mixed from its number."
+        },
+        "reduce": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "A study's named results, one value per run (ADR 0067), each one reduction of an expression over the run's signals by full name and t: final, mean (over time), min, max, amplitude (half of max − min), period (mean time between upward crossings of the mean), first_time(a < b) (also >, <=, >=; NaN if never). Given, the rows hold these instead of final values. E.g. {\"v_max\": \"max(plant/car.v)\", \"settle\": \"first_time(abs(cruise.e) < 0.1)\"}."
+        }
+      }
     }
   }
 }

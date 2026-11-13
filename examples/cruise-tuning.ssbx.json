@@ -1,0 +1,152 @@
+{
+  "format": 1,
+  "description": "Tuning the cruise control with a study. The cruise-control model (the car and its PI controller) is defined once in this file; a study block runs it to 60 s at 20 values of the integral gain ki and reduces each run to two numbers: when the speed first comes within 0.5 m/s of the target (reach), and its peak. Stronger integral action reaches the target sooner but overshoots more. A formula reads the study's results as arrays and picks the fastest gain whose peak stays under a limit. Move the limit: only the formula is evaluated again, the study's runs are kept. Change the study's sample in the Inspector to vary another gain.",
+  "models": {
+    "cruise": {
+      "blocks": [
+        {
+          "equations": [
+            "# a car pushed by force F against drag c*v (mass m)",
+            "input F [N]",
+            "param m [kg] = 1000",
+            "param c [N*s/m] = 50",
+            "state v [m/s] = 0",
+            "dv/dt = (F - c*v)/m"
+          ],
+          "name": "car",
+          "type": "eq.equations"
+        },
+        {
+          "equations": [
+            "# PI control towards the target speed",
+            "input v [m/s]",
+            "param target [m/s] = 25",
+            "param kp [N*s/m] = 400",
+            "param ki [N/m] = 40",
+            "e = target - v",
+            "state I [m] = 0",
+            "dI/dt = e",
+            "F = kp*e + ki*I [N]"
+          ],
+          "name": "cruise",
+          "type": "eq.equations"
+        }
+      ],
+      "connections": [
+        {
+          "from": "car.v",
+          "to": "cruise.v"
+        },
+        {
+          "from": "cruise.F",
+          "to": "car.F"
+        }
+      ],
+      "description": "The car and its PI controller, as in the cruise-control example",
+      "run": {
+        "dt": 0.05,
+        "t_end": 60.0
+      }
+    }
+  },
+  "blocks": [
+    {
+      "name": "tuning",
+      "type": "study",
+      "model": "cruise",
+      "sample": {
+        "design": "grid",
+        "params": [
+          {
+            "param": "cruise.ki",
+            "range": [
+              5.0,
+              400.0
+            ],
+            "points": 20
+          }
+        ],
+        "reduce": {
+          "peak": "max(car.v)",
+          "reach": "first_time(abs(cruise.e) < 0.5)"
+        }
+      }
+    },
+    {
+      "name": "best",
+      "type": "eq.equations",
+      "equations": [
+        "# the study's 20 runs, one cell each",
+        "grid k = 20",
+        "input ki[k] [N/m], reach[k] [s], peak[k] [m/s]",
+        "param limit [m/s] = 27",
+        "param never [s] = 1000",
+        "# runs whose peak passes the limit count as never reaching",
+        "score = reach + (peak > limit)*never",
+        "best_ki = at(ki, argminof(score)) [N/m]",
+        "best_reach = at(reach, argminof(score)) [s]",
+        "best_peak = at(peak, argminof(score)) [m/s]"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "tuning.cruise_ki",
+      "to": "best.ki"
+    },
+    {
+      "from": "tuning.reach",
+      "to": "best.reach"
+    },
+    {
+      "from": "tuning.peak",
+      "to": "best.peak"
+    }
+  ],
+  "controls": {
+    "params": {
+      "best.limit": {
+        "slider": true,
+        "range": [
+          24.0,
+          35.0
+        ],
+        "pin": true
+      }
+    },
+    "views": [
+      {
+        "type": "plot.profile",
+        "bind": {
+          "x": "tuning.cruise_ki",
+          "y": "tuning.reach"
+        }
+      },
+      {
+        "type": "plot.profile",
+        "bind": {
+          "x": "tuning.cruise_ki",
+          "y": "tuning.peak"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "colour": "tuning.cruise_ki",
+          "x": "tuning.reach",
+          "y": "tuning.peak"
+        }
+      },
+      {
+        "type": "plot.values",
+        "bind": {
+          "values": [
+            "best.best_ki",
+            "best.best_reach",
+            "best.best_peak"
+          ]
+        }
+      }
+    ]
+  }
+}

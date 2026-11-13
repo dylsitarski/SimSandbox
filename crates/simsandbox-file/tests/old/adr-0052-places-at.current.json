@@ -1,51 +1,8 @@
 {
   "format": 1,
-  "description": "Block and subsystem port places written 'at', before ADR 0052 named every node's place 'canvas'.",
+  "description": "Block places written 'at', before ADR 0052 named every node's place 'canvas'.",
   "run": {
     "dt": 0.01
-  },
-  "subsystems": {
-    "lag": {
-      "inputs": [
-        {
-          "name": "u",
-          "to": [
-            "f.u"
-          ],
-          "canvas": [
-            -200.0,
-            0.0
-          ]
-        }
-      ],
-      "outputs": [
-        {
-          "name": "y",
-          "from": "f.x",
-          "canvas": [
-            300.0,
-            0.0
-          ]
-        }
-      ],
-      "blocks": [
-        {
-          "name": "f",
-          "type": "eq.equations",
-          "method": {
-            "name": "rk4"
-          },
-          "equations": [
-            "input u",
-            "dx/dt = u - x"
-          ],
-          "canvas": [
-            0.0,
-            0.0
-          ]
-        }
-      ]
-    }
   },
   "blocks": [
     {
@@ -63,8 +20,15 @@
       ]
     },
     {
-      "name": "a",
-      "type": "lag",
+      "name": "f",
+      "type": "eq.equations",
+      "method": {
+        "name": "rk4"
+      },
+      "equations": [
+        "input u",
+        "dx/dt = u - x"
+      ],
       "canvas": [
         260.0,
         40.0
@@ -74,7 +38,7 @@
   "connections": [
     {
       "from": "ramp.r",
-      "to": "a.u"
+      "to": "f.u"
     }
   ]
 }

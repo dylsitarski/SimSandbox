@@ -32,12 +32,95 @@ pub struct Model {
     pub(crate) blocks: Vec<Box<dyn Block>>,
     pub(crate) params: Vec<Vec<f64>>,
     pub(crate) connections: Vec<Connection>,
+    /// Parameters driven by wires (ADR 0075): `to.port` names a parameter.
+    pub(crate) drives: Vec<Connection>,
     pub(crate) groups: Vec<Group>,
     pub(crate) seed: u64,
     pub(crate) loops: crate::loops::LoopMethod,
     /// Per Block, a state to start from instead of the one its parameters
     /// give (ADR 0042).
     pub(crate) starts: Vec<Option<Start>>,
+    /// Clocks the blocks step on, when they step on several (ADR 0066
+    /// step 4b); empty for one clock, the step given to `Simulator::step`.
+    pub(crate) clocks: Vec<Clock>,
+    /// Per Block, its clock in `clocks`.
+    pub(crate) clock_of: Vec<usize>,
+    /// Per Block, its random stream when not the model's seed and its
+    /// name: a block of a used model draws as it would there.
+    pub(crate) streams: Vec<Option<u64>>,
+    /// Parts of the model activated by signals (ADR 0088).
+    pub(crate) activations: Vec<Activation>,
+}
+
+/// When an activated part acts on its `activate` signal (ADR 0088): the
+/// signal is high above 0.5, read at the part's communication instants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationMode {
+    /// Starts again when the signal goes high.
+    Rise,
+    /// Starts again when it goes low.
+    Fall,
+    /// Starts again at each change.
+    Change,
+    /// Steps only while high; held (states and outputs) while low.
+    While,
+}
+
+impl ActivationMode {
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "rise" => Self::Rise,
+            "fall" => Self::Fall,
+            "change" => Self::Change,
+            "while" => Self::While,
+            _ => return None,
+        })
+    }
+
+    /// Whether an edge mode acts, the level having gone from `before`
+    /// (`None` at the start: nothing is an edge) to `now`.
+    pub fn edge(self, before: Option<bool>, now: bool) -> bool {
+        match (self, before) {
+            (Self::While, _) | (_, None) => false,
+            (Self::Rise, Some(b)) => !b && now,
+            (Self::Fall, Some(b)) => b && !now,
+            (Self::Change, Some(b)) => b != now,
+        }
+    }
+}
+
+/// A part of the model activated by signals (ADR 0088): its blocks, the
+/// block whose first output is its `activate` signal (with the mode), and
+/// the one whose first output is its `restart` signal (starts it again on
+/// a rise).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Activation {
+    pub name: String,
+    pub members: Vec<BlockId>,
+    pub activate: Option<(BlockId, ActivationMode)>,
+    pub restart: Option<BlockId>,
+}
+
+/// A clock some blocks of a model step on (ADR 0066 step 4b): every `dt`,
+/// counted as `every` ticks of the model's common tick, or, on new data,
+/// evaluated at every instant of the others and never stepped. Listed
+/// `times` (ADR 0067 step 4) are instants of its own: a clock with
+/// `every` 0 steps from one to the next; one on new data is evaluated at
+/// them too (its data's sample times).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Clock {
+    pub dt: f64,
+    pub every: u128,
+    pub on_data: bool,
+    /// Ascending instants after the start, in ticks and in seconds.
+    pub times: Vec<(u128, f64)>,
+}
+
+impl Clock {
+    /// Whether it gives instants of its own: every `dt`, or listed.
+    pub fn in_time(&self) -> bool {
+        (!self.on_data && self.every > 0) || !self.times.is_empty()
+    }
 }
 
 /// A Block's state and table rows to start from, replacing what `init`
@@ -58,10 +141,15 @@ impl Default for Model {
             blocks: Vec::new(),
             params: Vec::new(),
             connections: Vec::new(),
+            drives: Vec::new(),
             groups: Vec::new(),
             seed: DEFAULT_SEED,
             loops: crate::loops::LoopMethod::default(),
             starts: Vec::new(),
+            clocks: Vec::new(),
+            clock_of: Vec::new(),
+            streams: Vec::new(),
+            activations: Vec::new(),
         }
     }
 }
@@ -81,6 +169,103 @@ impl Model {
         self.seed
     }
 
+    /// Step blocks on several clocks (ADR 0066 step 4b): `clock_of` gives
+    /// each Block's clock in `clocks`. `Simulator::step` then advances to
+    /// the next instant of any clock; blocks step at their clock's instants
+    /// only, and take their inputs only then.
+    /// Activate a part of the model by signals (ADR 0088). Its blocks may
+    /// not share a fused group with blocks outside it, since a group steps
+    /// whole; its signals' blocks are outside it.
+    pub fn activate(&mut self, a: Activation) -> Result<()> {
+        let fail = |reason: String| SimError::InvalidSetting {
+            setting: format!("{}.activate", a.name),
+            reason,
+        };
+        for &id in &a.members {
+            self.block(id)?;
+            if let Some(g) = self.group_of(id) {
+                if self.groups[g]
+                    .members
+                    .iter()
+                    .any(|m| !a.members.contains(m))
+                {
+                    return Err(fail(
+                        "its blocks share a fused group with blocks outside it".into(),
+                    ));
+                }
+            }
+        }
+        let signals = a.activate.map(|x| x.0).into_iter().chain(a.restart);
+        for id in signals {
+            self.block(id)?;
+            if a.members.contains(&id) {
+                return Err(fail(
+                    "its signals come from outside the part it activates".into(),
+                ));
+            }
+        }
+        if a.activate.is_none() && a.restart.is_none() {
+            return Err(fail(
+                "it has neither an activate nor a restart signal".into(),
+            ));
+        }
+        self.activations.push(a);
+        Ok(())
+    }
+
+    pub fn set_clocks(&mut self, clocks: Vec<Clock>, clock_of: Vec<usize>) -> Result<()> {
+        if clock_of.len() != self.blocks.len() || clock_of.iter().any(|&c| c >= clocks.len()) {
+            return Err(SimError::InvalidSetting {
+                setting: "clocks".into(),
+                reason: "every block needs one of the clocks".into(),
+            });
+        }
+        if !clocks.iter().any(Clock::in_time) {
+            return Err(SimError::InvalidSetting {
+                setting: "clocks".into(),
+                reason: "at least one clock runs in time".into(),
+            });
+        }
+        if clocks.iter().any(|c| c.every > 0 && !c.times.is_empty()) {
+            return Err(SimError::InvalidSetting {
+                setting: "clocks".into(),
+                reason: "a clock steps every dt or at listed times, not both".into(),
+            });
+        }
+        self.clocks = clocks;
+        self.clock_of = clock_of;
+        Ok(())
+    }
+
+    /// Back to one clock, the step given to `Simulator::step`.
+    pub fn clear_clocks(&mut self) {
+        self.clocks.clear();
+        self.clock_of.fill(0);
+    }
+
+    /// The last listed instant of any clock, in seconds: where a run that
+    /// only data drives ends (ADR 0067 step 4).
+    pub fn last_listed(&self) -> Option<f64> {
+        self.clocks
+            .iter()
+            .filter_map(|c| c.times.last().map(|t| t.1))
+            .reduce(f64::max)
+    }
+
+    /// The clocks set by [`Model::set_clocks`], and each Block's.
+    pub fn clocks(&self) -> (&[Clock], &[usize]) {
+        (&self.clocks, &self.clock_of)
+    }
+
+    /// The random stream of a Block, instead of the one from the model's
+    /// seed and its name (ADR 0066: a block of a used model draws as it
+    /// would in that model alone).
+    pub fn set_stream(&mut self, block: BlockId, stream: u64) -> Result<()> {
+        self.block(block)?;
+        self.streams[block.0] = Some(stream);
+        Ok(())
+    }
+
     /// How algebraic loops are solved (ADR 0040).
     pub fn set_loop_method(&mut self, method: crate::loops::LoopMethod) {
         self.loops = method;
@@ -94,6 +279,8 @@ impl Model {
     pub fn add(&mut self, block: Box<dyn Block>) -> BlockId {
         self.params.push(block.spec().default_params());
         self.starts.push(None);
+        self.clock_of.push(0);
+        self.streams.push(None);
         self.blocks.push(block);
         BlockId(self.blocks.len() - 1)
     }
@@ -192,10 +379,12 @@ impl Model {
                 from.1, to.1
             )));
         }
+        // The same lengths along the same axes in order (ADR 0081); the
+        // axes' names belong to each block.
         if out.shape != inp.shape {
             return Err(SimError::ShapeMismatch {
-                from: format!("{:?}", out.shape),
-                to: format!("{:?}", inp.shape),
+                from: crate::block::describe_shape(&out.shape),
+                to: crate::block::describe_shape(&inp.shape),
             });
         }
         if !out.unit.same_as(&inp.unit) {
@@ -224,6 +413,74 @@ impl Model {
             factor,
         });
         Ok(())
+    }
+
+    /// Drive a parameter by an output (ADR 0075): the parameter takes the
+    /// output's value whenever its Block reads it, in place of its own.
+    /// Checked as a connection is: a scalar output in the parameter's unit.
+    pub fn drive(&mut self, from: (BlockId, &str), to: (BlockId, &str)) -> Result<()> {
+        let out = self.port(from.0, from.1)?.clone();
+        let spec = self.block(to.0)?.spec();
+        let idx = param_index(spec, to.1)?;
+        let param = &spec.params[idx];
+        if out.causality != Causality::Output {
+            return Err(SimError::BadConnection(format!(
+                "'{}' -> '{}' must come from an output",
+                from.1, to.1
+            )));
+        }
+        if out.shape != crate::block::Shape::Scalar {
+            return Err(SimError::ShapeMismatch {
+                from: format!("{:?}", out.shape),
+                to: "Scalar".into(),
+            });
+        }
+        if !out.unit.same_as(&param.unit) {
+            return Err(SimError::UnitMismatch {
+                from: out.unit.to_string(),
+                to: param.unit.to_string(),
+            });
+        }
+        let to_ref = PortRef {
+            block: to.0,
+            port: to.1.into(),
+        };
+        if self.drives.iter().any(|c| c.to == to_ref) {
+            return Err(SimError::BadConnection(format!(
+                "parameter '{}' is already driven",
+                to.1
+            )));
+        }
+        self.drives.push(Connection {
+            from: PortRef {
+                block: from.0,
+                port: from.1.into(),
+            },
+            to: to_ref,
+            factor: 1.0,
+        });
+        Ok(())
+    }
+
+    /// The parameters driven by wires (ADR 0075), `to.port` naming each.
+    pub fn drives(&self) -> &[Connection] {
+        &self.drives
+    }
+
+    /// Whether a parameter is driven by a wire.
+    pub fn is_driven(&self, block: BlockId, name: &str) -> bool {
+        self.drives
+            .iter()
+            .any(|c| c.to.block == block && c.to.port == name)
+    }
+
+    /// The indices of a Block's driven parameters, in `BlockSpec::params`
+    /// order.
+    pub(crate) fn driven_params(&self, block: usize) -> Vec<usize> {
+        let spec = self.blocks[block].spec();
+        (0..spec.params.len())
+            .filter(|&i| self.is_driven(BlockId(block), &spec.params[i].name))
+            .collect()
     }
 
     /// Solve these Blocks together as one system with `solver` (ADR 0023).

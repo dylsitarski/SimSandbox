@@ -1,7 +1,7 @@
 //! Undo for canvas edits (ADR 0050). The app keeps the model file as it
 //! was before each edit; undoing restores the parts the canvas edits
-//! (blocks, wires, subsystems, declared parameters, groups, filters, views
-//! and their places) while keeping what changed elsewhere since: parameter
+//! (blocks, wires, subsystems, declared parameters, groups, filters, views,
+//! probes and their places) while keeping what changed elsewhere since: parameter
 //! values, sliders, speed and the run settings. How much changed decides
 //! how it applies: a layout alone or filters and views apply to the
 //! running model, anything else rebuilds it.
@@ -44,13 +44,21 @@ pub fn canvas_state(now: &ModelFile, target: &ModelFile) -> ModelFile {
         }
     }
     out.groups = target.groups.clone();
+    // Models defined in the file and declared outputs (ADR 0068).
+    out.models = target.models.clone();
+    out.outputs = target.outputs.clone();
+    let _ = out.resolve_models();
     out.controls.filters = target.controls.filters.clone();
     out.controls.views = target.controls.views.clone();
+    out.controls.probes = target.controls.probes.clone();
+    out.controls.recorder = target.controls.recorder.clone();
     out
 }
 
 /// `target`'s blocks with the numeric parameter values of `now`'s blocks
-/// of the same name and type.
+/// of the same name and type: those `target` writes, and, where the block's
+/// definition is the same (so its parameters are), those it leaves at
+/// their defaults.
 fn carried(now: &[BlockEntry], target: &[BlockEntry]) -> Vec<BlockEntry> {
     target
         .iter()
@@ -65,6 +73,13 @@ fn carried(now: &[BlockEntry], target: &[BlockEntry]) -> Vec<BlockEntry> {
                         (&*v, o.params.get(k))
                     {
                         *v = ParamValue::Number(*x);
+                    }
+                }
+                if o.equations == b.equations && o.settings == b.settings {
+                    for (k, v) in &o.params {
+                        if matches!(v, ParamValue::Number(_)) && !b.params.contains_key(k) {
+                            b.params.insert(k.clone(), v.clone());
+                        }
                     }
                 }
             }
@@ -96,6 +111,12 @@ fn unplaced(f: &ModelFile) -> ModelFile {
     for v in &mut f.controls.views {
         v.canvas = None;
     }
+    for p in &mut f.controls.probes {
+        p.canvas = None;
+    }
+    if let Some(r) = &mut f.controls.recorder {
+        r.canvas = None;
+    }
     f
 }
 
@@ -105,9 +126,28 @@ pub fn change(now: &ModelFile, next: &ModelFile) -> Change {
     if a == b {
         return Change::Layout;
     }
+    // A probe feeding the model is part of it (ADR 0063): when it records
+    // changes the model.
+    let feeding = |f: &ModelFile| -> Vec<(String, Option<simsandbox_file::ProbeEvery>)> {
+        f.controls
+            .probes
+            .iter()
+            .filter(|p| {
+                f.connections
+                    .iter()
+                    .any(|c| c.from.starts_with(&format!("probe:{}.", p.name)))
+            })
+            .map(|p| (p.name.clone(), p.every.clone()))
+            .collect()
+    };
+    if feeding(&a) != feeding(&b) {
+        return Change::Model;
+    }
     for f in [&mut a, &mut b] {
         f.controls.filters.clear();
         f.controls.views.clear();
+        f.controls.probes.clear();
+        f.controls.recorder = None;
     }
     if a == b {
         Change::Data

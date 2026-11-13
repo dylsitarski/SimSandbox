@@ -1,0 +1,173 @@
+{
+  "format": 1,
+  "description": "Searching for the best cruise-control gains (ADR 0078). A study block runs the cruise-control model at five points that arrive through its inputs. A search block, a map on the model's clock, is the strategy: pattern search. Each round (one step) it sends the study its centre and a step either way on each gain (kp and ki); reads each run's score (how soon the speed reaches within 0.5 m/s of the target, plus a large penalty if its peak passes the limit); moves to the best point, or halves its step when the centre is best. The study runs only the points that changed. When the step falls below the tolerance the search holds still and nothing runs again. The strategy is an ordinary model: open the search block to change it.",
+  "run": {
+    "dt": 1,
+    "t_end": 40
+  },
+  "models": {
+    "cruise": {
+      "blocks": [
+        {
+          "equations": [
+            "# a car pushed by force F against drag c*v (mass m)",
+            "input F [N]",
+            "param m [kg] = 1000",
+            "param c [N*s/m] = 50",
+            "state v [m/s] = 0",
+            "dv/dt = (F - c*v)/m"
+          ],
+          "name": "car",
+          "type": "eq.equations"
+        },
+        {
+          "equations": [
+            "# PI control towards the target speed",
+            "input v [m/s]",
+            "param target [m/s] = 25",
+            "param kp [N*s/m] = 400",
+            "param ki [N/m] = 40",
+            "e = target - v",
+            "state I [m] = 0",
+            "dI/dt = e",
+            "F = kp*e + ki*I [N]"
+          ],
+          "name": "cruise",
+          "type": "eq.equations"
+        }
+      ],
+      "connections": [
+        {
+          "from": "car.v",
+          "to": "cruise.v"
+        },
+        {
+          "from": "cruise.F",
+          "to": "car.F"
+        }
+      ],
+      "description": "The car and its PI controller, as in the cruise-control example",
+      "run": {
+        "dt": 0.05,
+        "t_end": 60.0
+      }
+    }
+  },
+  "blocks": [
+    {
+      "name": "trials",
+      "type": "study",
+      "model": "cruise",
+      "sample": {
+        "design": "inputs",
+        "count": 5,
+        "params": [
+          {
+            "param": "cruise.kp"
+          },
+          {
+            "param": "cruise.ki"
+          }
+        ],
+        "reduce": {
+          "peak": "max(car.v)",
+          "reach": "first_time(abs(cruise.e) < 0.5)"
+        }
+      }
+    },
+    {
+      "name": "search",
+      "type": "eq.equations",
+      "equations": [
+        "# Pattern search over two gains: point 0 is the centre, points 1 to 4 a step either way on each",
+        "grid k = 5",
+        "state kp [N*s/m]",
+        "state ki [N/m]",
+        "state step",
+        "input reach[k] [s], peak[k] [m/s]",
+        "param limit [m/s] = 26",
+        "param never [s] = 1000",
+        "param span_kp [N*s/m] = 1000",
+        "param span_ki [N/m] = 400",
+        "param tol = 0.001",
+        "param least_kp [N*s/m] = 1",
+        "param least_ki [N/m] = 1",
+        "# a run whose peak passes the limit counts as never reaching",
+        "score = reach + (peak > limit)*never [s]",
+        "dkp = (k > 0.5)*(k < 1.5) - (k > 1.5)*(k < 2.5)",
+        "dki = (k > 2.5)*(k < 3.5) - (k > 3.5)",
+        "# trial gains, kept positive",
+        "tkp = max(kp + step*span_kp*dkp, least_kp) [N*s/m]",
+        "tki = max(ki + step*span_ki*dki, least_ki) [N/m]",
+        "# the best point; the centre once the step is below the tolerance",
+        "best = argminof(score)*(step > tol)",
+        "best_score = minof(score) [s]",
+        "kp[n+1] = at(tkp, best)",
+        "ki[n+1] = at(tki, best)",
+        "step[n+1] = step*(1 - 0.5*(best < 0.5)*(step > tol))"
+      ],
+      "params": {
+        "kp0": 400,
+        "ki0": 40,
+        "step0": 0.25
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "search.tkp",
+      "to": "trials.cruise_kp"
+    },
+    {
+      "from": "search.tki",
+      "to": "trials.cruise_ki"
+    },
+    {
+      "from": "trials.reach",
+      "to": "search.reach"
+    },
+    {
+      "from": "trials.peak",
+      "to": "search.peak"
+    }
+  ],
+  "controls": {
+    "params": {
+      "search.limit": {
+        "slider": true,
+        "range": [
+          24.0,
+          35.0
+        ],
+        "pin": true
+      }
+    },
+    "views": [
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "search.kp",
+          "y": "search.ki"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "search.best_score"
+        }
+      },
+      {
+        "type": "plot.values",
+        "bind": {
+          "values": [
+            "search.kp",
+            "search.ki",
+            "search.step",
+            "search.best_score"
+          ]
+        }
+      }
+    ]
+  }
+}

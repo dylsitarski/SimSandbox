@@ -15,3 +15,4 @@ Thumbs.db
 *.pyd
 __pycache__/
 *.pyc
+/spikes/*/target

@@ -1,6 +1,6 @@
 # 0028 — Sweeps recorded as samples
 
-- **Status:** Accepted
+- **Status:** Accepted; where a sample lives and how the app records it superseded by [0071](0071-sweeps-are-studies.md) (the designs stand)
 - **Date:** 2026-10-18
 
 ## Context

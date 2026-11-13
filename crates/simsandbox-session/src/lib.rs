@@ -18,15 +18,22 @@
 //!   block type and view this build knows.
 
 pub mod canvas;
+pub mod compose;
 pub mod describe;
 pub mod diagram;
+pub mod edit_use;
 pub mod examples;
+pub mod expand;
 pub mod filters;
 pub mod observers;
+pub mod probe;
 pub mod raster;
+pub mod reduce;
 pub mod render;
 pub mod run;
 pub mod session;
+pub mod strategies;
+pub mod study;
 pub mod undo;
 pub mod views;
 

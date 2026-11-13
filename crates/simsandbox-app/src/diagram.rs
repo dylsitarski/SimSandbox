@@ -13,9 +13,10 @@
 use crate::live::Model;
 use eframe::egui;
 use simsandbox_core::registry::Registry;
-use simsandbox_file::{FilterEntry, ModelFile, ViewEntry};
+use simsandbox_file::{FilterEntry, ModelFile, ProbeEntry, ViewEntry};
 use simsandbox_session::canvas::{type_menu, Canvas, Request, Selection};
 use simsandbox_session::diagram::{apply_in, Diagram, Edit, NodeKind, Scope};
+use simsandbox_session::edit_use::{self, Edited, How, Target};
 use simsandbox_session::undo::{canvas_state, change, Change};
 use simsandbox_session::Session;
 use simsandbox_views::ViewRegistry;
@@ -33,16 +34,21 @@ pub enum Outcome {
     },
     /// Save block positions in the running model's file, at a level.
     Moved(Scope, Vec<(String, [f64; 2])>),
-    /// Save where data-layer nodes sit: filters by name, views by place.
+    /// Save where data-layer nodes sit: filters and probes by name, views
+    /// by place.
     Placed {
         filters: Vec<(String, [f64; 2])>,
         views: Vec<(usize, [f64; 2])>,
+        probes: Vec<(String, [f64; 2])>,
+        recorder: Option<[f64; 2]>,
     },
-    /// Apply these filters and views to the running model, then log the
-    /// notes.
+    /// Apply these filters, views and probes to the running model, then
+    /// log the notes.
     Data {
         filters: Vec<FilterEntry>,
         views: Vec<ViewEntry>,
+        probes: Vec<ProbeEntry>,
+        recorder: Option<simsandbox_file::RecorderEntry>,
         notes: Vec<String>,
     },
     /// Put every node where this file has it (undoing a move).
@@ -53,6 +59,8 @@ pub enum Outcome {
     ShowView(usize),
     /// Which nodes show their values, to save (ADR 0055).
     Opened(Vec<String>),
+    /// Which uses are expanded in place, to save (ADR 0066 step 4d).
+    Expanded(Vec<String>),
     /// Set a parameter typed on a node (ADR 0053).
     SetValue {
         key: String,
@@ -69,11 +77,16 @@ pub enum Outcome {
 struct Snapshot {
     file: ModelFile,
     scope: Scope,
+    /// Used model files edited from here and not saved (ADR 0066 4c).
+    edited: Edited,
 }
 
 #[derive(Default)]
 pub struct DiagramTab {
     pub canvas: Canvas,
+    /// What the run says of each activated use now (ADR 0088), set
+    /// before each frame.
+    pub activations: Vec<(String, bool, u64)>,
     /// The level shown: the model, or a subsystem's inside.
     pub scope: Scope,
     /// The subsystem's name as typed for renaming.
@@ -88,9 +101,562 @@ pub struct DiagramTab {
     data_key: String,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
+    /// A probe's settings, open from its node (ADR 0062).
+    probe: Option<crate::probe_editor::ProbeEditor>,
+    /// The recorder's settings, open from its node (ADR 0064).
+    recorder: Option<crate::recorder_editor::RecorderEditor>,
+    /// The saved model's folder, where blocks read the files they name
+    /// (ADR 0063); set by the app.
+    pub folder: Option<std::path::PathBuf>,
+    /// A used model opened to see inside (ADR 0066 step 4b), by the path
+    /// of uses leading to it; empty at the model's own levels.
+    pub inside: Vec<String>,
+    /// Its diagram, for that path.
+    inside_cache: Option<(Vec<String>, Diagram)>,
+    /// Model files edited from inside uses and not saved yet, read in
+    /// place of the disk (ADR 0066 step 4c); Save writes them.
+    pub edited: Edited,
+    /// The answer to the edit question for each use opened, by path,
+    /// until the model is closed or an edit is undone.
+    pub(crate) choices: BTreeMap<Vec<String>, Target>,
+    /// Edits inside a use waiting for that answer, with the name offered
+    /// for a new copy.
+    pub(crate) asking: Option<Asking>,
+    /// Uses shown expanded in place, by path (ADR 0066 step 4d); saved in
+    /// `controls.expand`.
+    pub expanded: Vec<String>,
+}
+
+use std::collections::BTreeMap;
+
+/// Edits inside a use waiting for the edit question's answer.
+pub(crate) struct Asking {
+    /// The use the edits are in.
+    pub(crate) path: Vec<String>,
+    edits: Vec<Edit>,
+    /// The name offered for a new copy.
+    name: String,
+    /// The definition of this file it uses, and how many uses it has,
+    /// when it is one (ADR 0068).
+    definition: Option<(String, usize)>,
+}
+
+/// The model file at the end of `path`, a chain of uses of model files
+/// from `top` (saved in `folder`), read from disk.
+pub(crate) fn used_file(
+    top: &ModelFile,
+    folder: Option<&std::path::Path>,
+    path: &[String],
+) -> Result<ModelFile, String> {
+    let mut file = top.clone();
+    let mut folder = folder
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| top.folder.clone());
+    for name in path {
+        let entry = file
+            .blocks
+            .iter()
+            .find(|b| &b.name == name && b.names_model())
+            .ok_or_else(|| format!("no model used as '{name}'"))?;
+        let (used, _, inner) = simsandbox_file::compose::used_model(entry, folder.as_deref())?;
+        folder = inner;
+        file = used;
+    }
+    Ok(file)
 }
 
 impl DiagramTab {
+    /// Inside a used model: its file's diagram as written, with what the
+    /// run gives its values; navigation only, since editing a used model
+    /// asks first (ADR 0066 step 4c).
+    fn show_inside(
+        &mut self,
+        ui: &mut egui::Ui,
+        model: &Model,
+        registry: &Registry,
+        views: &ViewRegistry,
+        current: &dyn Fn() -> Result<String, String>,
+    ) -> Vec<Outcome> {
+        let mut out = Vec::new();
+        let mut back = None;
+        let mut renamed = None;
+        ui.horizontal(|ui| {
+            if ui
+                .link("Model")
+                .on_hover_text("Back to the whole model")
+                .clicked()
+            {
+                back = Some(0);
+            }
+            for (k, name) in self.inside.iter().enumerate() {
+                ui.label("›");
+                if k + 1 < self.inside.len() {
+                    if ui.link(name).clicked() {
+                        back = Some(k + 1);
+                    }
+                } else {
+                    ui.strong(name);
+                }
+            }
+            match self.choices.get(&self.inside) {
+                Some(Target { file: Some(f), .. }) => {
+                    ui.weak(format!("· editing {}", f.display()));
+                }
+                Some(_) => {
+                    ui.weak("· editing a model defined in this file");
+                }
+                None => {
+                    ui.weak("· a used model: the first edit asks where it goes");
+                }
+            }
+            // A model defined in this file is renamed here; its uses
+            // follow (ADR 0068).
+            let defined = match self.inside.as_slice() {
+                [name] => model
+                    .file
+                    .blocks
+                    .iter()
+                    .find(|b| &b.name == name)
+                    .and_then(|b| b.model.clone()),
+                _ => None,
+            };
+            if let Some(def) = defined {
+                if self.rename.is_empty() {
+                    self.rename = def.clone();
+                }
+                ui.label("model");
+                let field =
+                    ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(100.0));
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.small_button("Rename").clicked() || enter) && self.rename.trim() != def {
+                    renamed = Some(Edit::RenameModel {
+                        from: def,
+                        to: self.rename.trim().to_string(),
+                    });
+                }
+            }
+        });
+        if let Some(e) = renamed {
+            self.rename.clear();
+            self.inside_cache = None;
+            return self.handle(vec![e], registry, current);
+        }
+        if let Some(k) = back {
+            self.inside.truncate(k);
+            self.inside_cache = None;
+            self.canvas.refit();
+            return out;
+        }
+        if self
+            .inside_cache
+            .as_ref()
+            .is_none_or(|(p, _)| *p != self.inside)
+        {
+            match used_file(&model.file, self.folder.as_deref(), &self.inside) {
+                Ok(file) => {
+                    let mut d = Diagram::new(&file, registry);
+                    d.observe(&file, views);
+                    d.inside = true;
+                    self.inside_cache = Some((self.inside.clone(), d));
+                }
+                Err(e) => {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                    if ui.button("Back").clicked() {
+                        self.inside.clear();
+                    }
+                    return out;
+                }
+            }
+        }
+        // The run's values, by their names inside it.
+        let prefix = format!("{}/", self.inside.join("/"));
+        let rows: Vec<simsandbox_session::session::ParamRow> = model
+            .params
+            .iter()
+            .filter_map(|r| {
+                let key = r.key.strip_prefix(&prefix)?.to_string();
+                Some(simsandbox_session::session::ParamRow { key, ..r.clone() })
+            })
+            .collect();
+        let (_, d) = self.inside_cache.as_mut().expect("built above");
+        d.live_values(&rows);
+        let (mut edits, requests) = self.canvas.show(ui, d, registry, true);
+        let mut opened = None;
+        // Nothing of it runs (the inside of a study, ADR 0070): its values
+        // are the model's, changed in the file.
+        let running = !rows.is_empty();
+        for r in requests {
+            if let Request::SetValue { key, value } = &r {
+                match key.split_once('.') {
+                    Some((block, param)) if !running => edits.push(Edit::SetParam {
+                        block: block.into(),
+                        param: param.into(),
+                        value: *value,
+                    }),
+                    _ => out.push(Outcome::SetValue {
+                        key: format!("{prefix}{key}"),
+                        value: *value,
+                    }),
+                }
+                continue;
+            }
+            if let Request::Open(name) = r {
+                let study = d
+                    .node(&name)
+                    .is_some_and(|k| d.nodes[k].type_name == simsandbox_file::STUDY);
+                match d.node(&name).map(|k| d.nodes[k].kind) {
+                    Some(NodeKind::Use) => opened = Some(name),
+                    // A study opens to the model it studies (ADR 0070).
+                    Some(NodeKind::Block) if study => opened = Some(name),
+                    // A block's equations, edited where it is (ADR 0068).
+                    Some(NodeKind::Block) => {
+                        out.push(Outcome::Open(format!("{}::{name}", self.inside.join("/"))))
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !edits.is_empty() {
+            out.extend(self.begin_edit(edits, registry, current));
+        }
+        out.extend(self.question(ui, registry, current));
+        if let Some(name) = opened {
+            self.inside.push(name);
+            self.inside_cache = None;
+            self.canvas.selected = None;
+            self.canvas.refit();
+        }
+        out
+    }
+
+    /// The values of node `name` inside the model open at `path`, as its
+    /// file writes them (what the Inspector shows for a block inside a
+    /// study, whose model does not run).
+    pub(crate) fn inside_values(
+        &self,
+        path: &[String],
+        name: &str,
+    ) -> Option<Vec<simsandbox_session::diagram::NodeValue>> {
+        let (p, d) = self.inside_cache.as_ref()?;
+        if p != path {
+            return None;
+        }
+        d.node(name).map(|k| d.nodes[k].values.clone())
+    }
+
+    /// Edits made inside the used model open: where its answer says, or
+    /// the edit question first (ADR 0066 step 4c, ADR 0068).
+    pub(crate) fn begin_edit(
+        &mut self,
+        edits: Vec<Edit>,
+        registry: &Registry,
+        current: &dyn Fn() -> Result<String, String>,
+    ) -> Vec<Outcome> {
+        let mut out = Vec::new();
+        match self.choices.get(&self.inside).cloned() {
+            Some(target) => out.extend(self.edit_inside(None, &target, edits, registry, current)),
+            None => {
+                let top = self.base(current).ok().map(|mut top| {
+                    top.folder.clone_from(&self.folder);
+                    top
+                });
+                let original = top.clone().and_then(|mut top| {
+                    edit_use::prepare(
+                        &mut top,
+                        self.folder.as_deref(),
+                        &mut self.edited.clone(),
+                        &self.inside,
+                        How::Original,
+                    )
+                    .ok()
+                });
+                // A definition of this file (ADR 0068): used once, as a
+                // local copy is, its edits go to it without asking.
+                let definition = match (&original, &top) {
+                    (Some(t), Some(top)) if t.file.is_none() && !t.def.is_empty() => Some((
+                        t.def.last().cloned().unwrap_or_default(),
+                        edit_use::uses_of(top, t),
+                    )),
+                    _ => None,
+                };
+                if let (Some((_, 1)), Some(t)) = (&definition, &original) {
+                    self.choices.insert(self.inside.clone(), t.clone());
+                    let t = t.clone();
+                    out.extend(self.edit_inside(None, &t, edits, registry, current));
+                } else {
+                    let file = match (&original, &definition) {
+                        (_, Some((def, _))) => std::path::PathBuf::from(format!("{def}.ssbx.json")),
+                        (Some(t), None) => t.file.clone().unwrap_or_default(),
+                        (None, None) => std::path::PathBuf::from("model.ssbx.json"),
+                    };
+                    let name = edit_use::copy_name(&file, self.folder.as_deref(), &self.edited);
+                    let name = name
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.asking = Some(Asking {
+                        path: self.inside.clone(),
+                        edits,
+                        name,
+                        definition,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// The edit question (ADR 0066 step 4c), while edits inside a used
+    /// model wait for it.
+    fn question(
+        &mut self,
+        ui: &mut egui::Ui,
+        registry: &Registry,
+        current: &dyn Fn() -> Result<String, String>,
+    ) -> Vec<Outcome> {
+        let Some(Asking {
+            name,
+            definition,
+            path,
+            ..
+        }) = &mut self.asking
+        else {
+            return Vec::new();
+        };
+        let definition = definition.clone();
+        let asked_path = path.clone();
+        let mut how = None;
+        let mut cancel = false;
+        let shown = asked_path.join(" › ");
+        let folder = self.folder.clone();
+        egui::Modal::new(egui::Id::new("edit-used-model")).show(ui.ctx(), |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(format!("Edit {shown}"));
+            let (says, original, hover) = match &definition {
+                Some((def, n)) => (
+                    format!("This is the model '{def}' defined in this file, used {n} times here. Where should the edit go?"),
+                    format!("Edit the definition ({n} uses)"),
+                    "Every use of it changes".to_string(),
+                ),
+                None => (
+                    "This model is used from a file. Where should the edit go?".to_string(),
+                    "Edit the original".to_string(),
+                    "The used file changes, for every model using it; Save writes it".to_string(),
+                ),
+            };
+            ui.label(says);
+            ui.add_space(6.0);
+            if ui.button(original).on_hover_text(hover).clicked() {
+                how = Some(How::Original);
+            }
+            ui.horizontal(|ui| {
+                let copy = ui
+                    .add_enabled(folder.is_some() && !name.trim().is_empty(), egui::Button::new("Edit as a new copy"))
+                    .on_hover_text("A new file next to this model, used here only; others keep the original");
+                ui.add(egui::TextEdit::singleline(name).desired_width(180.0));
+                if copy.clicked() {
+                    if let Some(f) = &folder {
+                        how = Some(How::NewCopy(f.join(name.trim())));
+                    }
+                }
+            });
+            if folder.is_none() {
+                ui.weak("Save this model first to make a copy next to it.");
+            }
+            if ui
+                .button("Make a local copy")
+                .on_hover_text("A model defined in this file for this use only, with the same clock and names")
+                .clicked()
+            {
+                how = Some(How::LocalCopy);
+            }
+            ui.add_space(6.0);
+            if ui.button("Cancel").clicked() {
+                cancel = true;
+            }
+        });
+        if cancel {
+            self.asking = None;
+            self.inside_cache = None;
+            return Vec::new();
+        }
+        let Some(how) = how else {
+            return Vec::new();
+        };
+        let Asking { edits, path, .. } = self.asking.take().expect("asking");
+        // Asked inside a used model, or from an outline on the model's
+        // level (ADR 0066 step 4d): answered for that use.
+        let here = std::mem::replace(&mut self.inside, path);
+        let out = self.answer(edits, how, registry, current);
+        self.inside = here;
+        out
+    }
+
+    /// Carry out the answer `how` to the edit question for the use open,
+    /// then apply `edits` inside it.
+    pub(crate) fn answer(
+        &mut self,
+        edits: Vec<Edit>,
+        how: How,
+        registry: &Registry,
+        current: &dyn Fn() -> Result<String, String>,
+    ) -> Vec<Outcome> {
+        let mut top = match self.base(current) {
+            Ok(f) => f,
+            Err(e) => return vec![Outcome::Error(e)],
+        };
+        top.folder.clone_from(&self.folder);
+        self.remember(top.clone());
+        let mut edited = self.edited.clone();
+        match edit_use::prepare(
+            &mut top,
+            self.folder.as_deref(),
+            &mut edited,
+            &self.inside,
+            how,
+        ) {
+            Ok(target) => {
+                self.edited = edited;
+                self.choices.insert(self.inside.clone(), target.clone());
+                self.edit_inside(Some(top), &target, edits, registry, current)
+            }
+            Err(e) => {
+                self.restore();
+                vec![Outcome::Error(e)]
+            }
+        }
+    }
+
+    /// Move the model the use `name` reads out to the file `to` (a model
+    /// defined here), or into this file (`None`, a model file), ADR 0068.
+    pub(crate) fn move_use(
+        &mut self,
+        name: &str,
+        to: Option<std::path::PathBuf>,
+        registry: &Registry,
+        current: &dyn Fn() -> Result<String, String>,
+    ) -> Vec<Outcome> {
+        let mut top = match self.base(current) {
+            Ok(f) => f,
+            Err(e) => return vec![Outcome::Error(e)],
+        };
+        top.folder.clone_from(&self.folder);
+        self.remember(top.clone());
+        let done = match &to {
+            Some(path) => {
+                let def = top
+                    .blocks
+                    .iter()
+                    .find(|b| b.name == name)
+                    .and_then(|b| b.model.clone())
+                    .unwrap_or_default();
+                edit_use::definition_to_file(
+                    &mut top,
+                    self.folder.as_deref(),
+                    &mut self.edited,
+                    &def,
+                    path,
+                )
+                .map(|()| format!("Moved the model {def} to {}", path.display()))
+            }
+            None => edit_use::file_to_definition(&mut top, self.folder.as_deref(), name)
+                .map(|key| format!("Put the file {name} uses in this model as the model {key}")),
+        };
+        let note = match done {
+            Ok(n) => n,
+            Err(e) => {
+                self.restore();
+                return vec![Outcome::Error(e)];
+            }
+        };
+        self.cache = None;
+        self.choices.clear();
+        let text = top.to_json();
+        match check(&text, registry, self.folder.as_deref()) {
+            Ok(_) => vec![Outcome::Apply {
+                text,
+                notes: vec![note],
+            }],
+            Err(problem) => {
+                self.restore();
+                vec![Outcome::Error(format!("Not applied: {problem}"))]
+            }
+        }
+    }
+
+    /// Undo what was remembered last, without a redo step: an edit that
+    /// did not apply.
+    fn restore(&mut self) {
+        if let Some(snap) = self.undo.pop() {
+            self.edited = snap.edited;
+            simsandbox_file::compose::set_edited(self.edited.clone());
+        }
+    }
+
+    /// Apply `edits` made inside the used model open to `target`; `top`
+    /// is the model as prepared for it (already remembered for undo), or
+    /// the current one.
+    pub(crate) fn edit_inside(
+        &mut self,
+        top: Option<ModelFile>,
+        target: &Target,
+        edits: Vec<Edit>,
+        registry: &Registry,
+        current: &dyn Fn() -> Result<String, String>,
+    ) -> Vec<Outcome> {
+        let mut out = Vec::new();
+        let mut top = match top {
+            Some(t) => t,
+            None => match self.base(current) {
+                Ok(mut t) => {
+                    t.folder.clone_from(&self.folder);
+                    self.remember(t.clone());
+                    t
+                }
+                Err(e) => return vec![Outcome::Error(e)],
+            },
+        };
+        self.inside_cache = None;
+        let mut model = match edit_use::read(&top, &self.edited, target) {
+            Ok(m) => m,
+            Err(e) => {
+                self.restore();
+                return vec![Outcome::Error(e)];
+            }
+        };
+        let mut notes = Vec::new();
+        for e in &edits {
+            match apply_in(&mut model, &Scope::Model, registry, e) {
+                Ok(note) => notes.push(note),
+                Err(err) => out.push(Outcome::Error(err)),
+            }
+        }
+        if notes.is_empty() {
+            self.restore();
+            return out;
+        }
+        if let Err(e) = edit_use::write(&mut top, &mut self.edited, target, &model) {
+            self.restore();
+            out.push(Outcome::Error(e));
+            return out;
+        }
+        let text = top.to_json();
+        match check(&text, registry, self.folder.as_deref()) {
+            Ok(_) => out.push(Outcome::Apply { text, notes }),
+            Err(problem) => {
+                self.restore();
+                out.push(Outcome::Error(format!("Not applied: {problem}")));
+            }
+        }
+        out
+    }
+
+    /// The diagram as drawn, for tests that edit it without a frame.
+    #[cfg(test)]
+    pub(crate) fn set_drawn(&mut self, d: Diagram) {
+        self.cache = Some(d);
+    }
+
     /// The model changed (opened or rebuilt): draw it afresh, dropping any
     /// draft.
     pub fn reset(&mut self) {
@@ -112,6 +678,17 @@ impl DiagramTab {
     pub fn forget_history(&mut self) {
         self.undo.clear();
         self.redo.clear();
+        self.inside.clear();
+        self.inside_cache = None;
+        self.asking = None;
+    }
+
+    /// A different model is opened: drop the used files edited for this
+    /// one and the answers given (the app asked about unsaved changes).
+    pub fn forget_files(&mut self) {
+        self.edited.clear();
+        self.choices.clear();
+        simsandbox_file::compose::set_edited(Edited::new());
     }
 
     /// Draw the tab. `views` are the open tiles as saved; `current` gives
@@ -147,64 +724,23 @@ impl DiagramTab {
                 self.reset();
             }
         }
+        if !self.inside.is_empty() {
+            return self.show_inside(ui, model, registry, views.1, current);
+        }
         let source = match &self.draft {
             Some((f, _)) => f,
             None => &model.file,
         };
-        // A subsystem that is gone (renamed, or not in a new model).
-        if let Scope::Subsystem(s) = &self.scope {
-            if !source.subsystems.contains_key(s) {
-                self.scope = Scope::Model;
-                self.cache = None;
-                self.canvas.refit();
-            }
-        }
-        if let Scope::Subsystem(s) = self.scope.clone() {
-            if self.rename.is_empty() {
-                self.rename = s.clone();
-            }
-            let uses = simsandbox_session::diagram::uses(source, &s);
-            ui.horizontal(|ui| {
-                if ui
-                    .link("Model")
-                    .on_hover_text("Back to the whole model")
-                    .clicked()
-                {
-                    self.scope = Scope::Model;
-                    self.cache = None;
-                    self.canvas.refit();
-                }
-                ui.label("›");
-                ui.strong(&s).on_hover_text(if uses.is_empty() {
-                    "Blocks and wires drawn here apply to every use of this subsystem".to_string()
-                } else {
-                    format!(
-                        "Blocks and wires drawn here apply to every use ({}); each use keeps \
-                         its own values, set in the inspector",
-                        uses.join(", ")
-                    )
-                });
-                let field =
-                    ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(100.0));
-                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.small_button("Rename").clicked() || enter) && self.rename != s {
-                    edits.push(Edit::RenameSubsystem {
-                        from: s.clone(),
-                        to: self.rename.trim().to_string(),
-                    });
-                }
-                if uses.is_empty() {
-                    ui.weak("not used yet");
-                }
-            });
-        }
         if self.cache.as_ref().is_some_and(|d| d.scope != self.scope) {
             self.cache = None;
         }
         // Filters and views change outside the canvas too.
         let key = match self.hide_data {
             true => String::new(),
-            false => serde_json::to_string(&(views.0, &model.filters)).unwrap_or_default(),
+            false => {
+                serde_json::to_string(&(views.0, &model.filters, &model.probes, &model.recorder))
+                    .unwrap_or_default()
+            }
         };
         if key != self.data_key {
             self.data_key = key;
@@ -213,24 +749,38 @@ impl DiagramTab {
         let scope = self.scope.clone();
         let hide_data = self.hide_data;
         let draft = self.draft.is_some();
+        let expanded = self.expanded.clone();
+        let folder = self.folder.clone();
         let built = self.cache.get_or_insert_with(|| {
             let mut d = Diagram::of(source, &scope, registry);
-            if !hide_data {
-                if draft {
-                    d.observe(source, views.1);
-                } else {
-                    // The running model's filters and the open tiles.
-                    let mut f = source.clone();
-                    f.controls.filters = model.filters.clone();
-                    f.controls.views = views.0.to_vec();
-                    d.observe(&f, views.1);
+            let mut f = source.clone();
+            if !draft {
+                // The running model's filters and the open tiles.
+                f.controls.filters = model.filters.clone();
+                f.controls.views = views.0.to_vec();
+                f.controls.probes = model.probes.clone();
+                f.controls.recorder = model.recorder.clone();
+            }
+            // Hidden, the data layer keeps the probes feeding blocks: they
+            // are part of the model (ADR 0063).
+            if hide_data {
+                f = simsandbox_session::observers::model_part(&f);
+            }
+            d.observe(&f, views.1);
+            // Uses expanded in place (ADR 0066 step 4d).
+            if !expanded.is_empty() {
+                let mut top = source.clone();
+                if top.folder.is_none() {
+                    top.folder.clone_from(&folder);
                 }
+                d.expand(&top, registry, &expanded);
             }
             d
         });
         // The running values on the nodes (ADR 0053).
         if !draft {
             built.live_values(&model.params);
+            built.live_activations(&self.activations);
         }
         // What the toolbar needs, so it can borrow the tab.
         let (subsystems, bounds) = (built.subsystems.clone(), built.bounds());
@@ -296,6 +846,9 @@ impl DiagramTab {
         let (made, requests) = self.canvas.show(ui, d, registry, true);
         edits.extend(made);
         let d = self.cache.as_ref().expect("built above");
+        // Moving a model to a file or back, after the requests (ADR 0068).
+        let mut moves: Vec<(String, Option<std::path::PathBuf>)> = Vec::new();
+        let mut expand_changed = false;
         for r in requests {
             let name = match r {
                 Request::Open(name) => name,
@@ -305,6 +858,26 @@ impl DiagramTab {
                 }
                 Request::ShowView(k) => {
                     out.push(Outcome::ShowView(k));
+                    continue;
+                }
+                Request::EditRecorder => {
+                    let recorder = match &self.draft {
+                        Some((f, _)) => f.controls.recorder.clone(),
+                        None => model.recorder.clone(),
+                    };
+                    if let Some(r) = recorder {
+                        self.recorder = Some(crate::recorder_editor::RecorderEditor::new(&r));
+                    }
+                    continue;
+                }
+                Request::EditProbe(name) => {
+                    let probes = match &self.draft {
+                        Some((f, _)) => &f.controls.probes,
+                        None => &model.probes,
+                    };
+                    if let Some(p) = probes.iter().find(|p| p.name == name) {
+                        self.probe = Some(crate::probe_editor::ProbeEditor::new(p));
+                    }
                     continue;
                 }
                 // While edits wait as a draft, values go into it: the
@@ -340,26 +913,119 @@ impl DiagramTab {
                     edits.push(Edit::SetSetting { block, key, text });
                     continue;
                 }
+                Request::MoveToFile(name) => {
+                    let def = model
+                        .file
+                        .blocks
+                        .iter()
+                        .find(|b| b.name == name)
+                        .and_then(|b| b.model.clone())
+                        .unwrap_or_default();
+                    let mut dialog = rfd::FileDialog::new()
+                        .set_title("Move the model to its own file")
+                        .add_filter("SimSandbox model", &["json"])
+                        .set_file_name(format!("{def}.ssbx.json"));
+                    if let Some(dir) = &self.folder {
+                        dialog = dialog.set_directory(dir);
+                    }
+                    if let Some(path) = dialog.save_file() {
+                        moves.push((name, Some(path)));
+                    }
+                    continue;
+                }
+                Request::Expand(path) => {
+                    if !self.expanded.contains(&path) {
+                        self.expanded.push(path);
+                    }
+                    expand_changed = true;
+                    continue;
+                }
+                Request::Collapse(path) => {
+                    // Its expanded uses inside go with it.
+                    let inner = format!("{path}/");
+                    self.expanded
+                        .retain(|p| *p != path && !p.starts_with(&inner));
+                    expand_changed = true;
+                    continue;
+                }
+                Request::PutInFile(name) => {
+                    moves.push((name, None));
+                    continue;
+                }
+                Request::AddModel(at) => {
+                    let mut dialog = rfd::FileDialog::new()
+                        .set_title("Use a model file")
+                        .add_filter("SimSandbox model", &["json"]);
+                    if let Some(dir) = &self.folder {
+                        dialog = dialog.set_directory(dir);
+                    }
+                    if let Some(path) = dialog.pick_file() {
+                        edits.push(Edit::AddUse {
+                            file: path.to_string_lossy().into_owned(),
+                            at,
+                        });
+                    }
+                    continue;
+                }
             };
             let node = d.node(&name).map(|k| d.nodes[k].clone());
             match node {
-                // A subsystem opens to its inside.
-                Some(n) if n.kind == NodeKind::Subsystem => {
-                    self.scope = Scope::Subsystem(n.type_name.clone());
-                    self.rename = n.type_name.clone();
-                    self.cache = None;
+                // A used model opens to its file, as written (ADR 0066); a
+                // study to the model it studies (ADR 0070).
+                Some(n)
+                    if (n.kind == NodeKind::Use || n.type_name == simsandbox_file::STUDY)
+                        && self.scope == Scope::Model =>
+                {
+                    // Also a use inside an expanded one (`p/one`).
+                    self.inside = name.split('/').map(str::to_string).collect();
+                    self.inside_cache = None;
                     self.canvas.selected = None;
                     self.canvas.refit();
                     return out;
                 }
+                // A block inside an expanded use: `use/path::block`.
                 Some(n) if n.kind == NodeKind::Block => {
-                    out.push(Outcome::Open(match &self.scope {
-                        Scope::Model => name,
-                        Scope::Subsystem(s) => format!("{s}::{name}"),
+                    out.push(Outcome::Open(match name.rsplit_once('/') {
+                        Some((path, block)) => format!("{path}::{block}"),
+                        None => name,
                     }))
                 }
                 _ => {}
             }
+        }
+        if let Some(ed) = &mut self.probe {
+            use crate::probe_editor::Done;
+            match ed.show(ui.ctx()) {
+                Some(Done::Apply(probe)) => {
+                    edits.push(Edit::SetProbe { probe: *probe });
+                    self.probe = None;
+                }
+                Some(Done::Close) => self.probe = None,
+                None => {}
+            }
+        }
+        if let Some(ed) = &mut self.recorder {
+            use crate::recorder_editor::Done;
+            match ed.show(ui.ctx()) {
+                Some(Done::Apply(recorder)) => {
+                    edits.push(Edit::SetRecorder { recorder });
+                    self.recorder = None;
+                }
+                Some(Done::Close) => self.recorder = None,
+                None => {}
+            }
+        }
+        if expand_changed {
+            self.cache = None;
+            out.push(Outcome::Expanded(self.expanded.clone()));
+        }
+        // The edit question for edits made inside an outline.
+        if self.asking.is_some() {
+            out.extend(self.question(ui, registry, current));
+        }
+        if let Some((name, to)) = moves.pop() {
+            out.extend(self.move_use(&name, to, registry, current));
+            return out;
         }
         if let Some(back) = step {
             out.extend(self.step(back, registry, current));
@@ -386,6 +1052,7 @@ impl DiagramTab {
         self.undo.push(Snapshot {
             file,
             scope: self.scope.clone(),
+            edited: self.edited.clone(),
         });
         if self.undo.len() > UNDO_DEPTH {
             self.undo.remove(0);
@@ -419,21 +1086,28 @@ impl DiagramTab {
         let here = Snapshot {
             file: now.clone(),
             scope: self.scope.clone(),
+            edited: self.edited.clone(),
         };
+        // Used files edited from inside uses go back too; the question is
+        // asked again, since a copy may be gone.
+        let files_changed = snap.edited != self.edited;
+        if files_changed {
+            self.edited = snap.edited.clone();
+            simsandbox_file::compose::set_edited(self.edited.clone());
+            self.choices.clear();
+            self.inside_cache = None;
+        }
         if back {
             self.redo.push(here);
         } else {
             self.undo.push(here);
         }
         let next = canvas_state(&now, &snap.file);
-        self.scope = match snap.scope {
-            Scope::Subsystem(s) if !next.subsystems.contains_key(&s) => Scope::Model,
-            s => s,
-        };
+        self.scope = snap.scope;
         self.cache = None;
         self.canvas.selected = None;
         let word = if back { "Undone" } else { "Redone" };
-        let kind = if self.draft.is_some() {
+        let kind = if self.draft.is_some() || files_changed {
             Change::Model
         } else {
             change(&now, &next)
@@ -445,18 +1119,24 @@ impl DiagramTab {
                 out.push(Outcome::Data {
                     filters: next.controls.filters,
                     views: next.controls.views,
+                    probes: next.controls.probes,
+                    recorder: next.controls.recorder,
                     notes: vec![word.into()],
                 });
             }
             Change::Model => {
                 self.draft = None;
                 let text = next.to_json();
-                match Session::load_deferred("check", &text, registry) {
+                match check(&text, registry, self.folder.as_deref()) {
                     Ok(_) => out.push(Outcome::Apply {
                         text,
                         notes: vec![word.into()],
                     }),
-                    Err(problem) => self.draft = Some((next, problem)),
+                    Err(problem) => {
+                        let mut next = next;
+                        next.folder = self.folder.clone();
+                        self.draft = Some((next, problem));
+                    }
                 }
             }
         }
@@ -477,6 +1157,53 @@ impl DiagramTab {
         if edits.is_empty() {
             return out;
         }
+        // Edits inside an expanded use go to the model it uses, as when it
+        // is opened; places pushed aside on screen are taken off
+        // (ADR 0066 step 4d).
+        let edits = match self
+            .cache
+            .as_ref()
+            .filter(|d| !d.outlines.is_empty() || !d.shifted.is_empty())
+        {
+            None => edits,
+            Some(d) => {
+                let mut top = Vec::new();
+                let mut inner: Option<(Vec<String>, Vec<Edit>)> = None;
+                for e in edits {
+                    match simsandbox_session::expand::route(d, &e) {
+                        Ok((None, e)) => top.push(e),
+                        Ok((Some(path), e)) => match &mut inner {
+                            Some((p, v)) if *p == path => v.push(e),
+                            Some(_) => {
+                                out.push(Outcome::Error(
+                                    "one edit at a time in different expanded models".into(),
+                                ));
+                                return out;
+                            }
+                            None => inner = Some((path, vec![e])),
+                        },
+                        Err(m) => {
+                            out.push(Outcome::Error(m));
+                            return out;
+                        }
+                    }
+                }
+                if let Some((path, v)) = inner {
+                    if !top.is_empty() {
+                        out.push(Outcome::Error(
+                            "edit an expanded model and the model around it one at a time".into(),
+                        ));
+                        return out;
+                    }
+                    let here = std::mem::replace(&mut self.inside, path);
+                    out.extend(self.begin_edit(v, registry, current));
+                    self.inside = here;
+                    self.cache = None;
+                    return out;
+                }
+                top
+            }
+        };
         let base = match self.base(current) {
             Ok(f) => f,
             Err(e) => {
@@ -498,7 +1225,8 @@ impl DiagramTab {
             );
             return out;
         }
-        let mut placed = (Vec::new(), Vec::new());
+        let mut placed = (Vec::new(), Vec::new(), Vec::new());
+        let mut recorder_at = None;
         let mut model_moves = Vec::new();
         for e in moves {
             let Edit::Move { block, at } = e else {
@@ -506,6 +1234,10 @@ impl DiagramTab {
             };
             if let Some(f) = block.strip_prefix("filter:") {
                 placed.0.push((f.to_string(), at));
+            } else if let Some(p) = block.strip_prefix("probe:") {
+                placed.2.push((p.to_string(), at));
+            } else if block == simsandbox_session::observers::RECORDER {
+                recorder_at = Some(at);
             } else if let Some(k) = block.strip_prefix("view:").and_then(|k| k.parse().ok()) {
                 placed.1.push((k, at));
             } else {
@@ -515,13 +1247,29 @@ impl DiagramTab {
         if !model_moves.is_empty() {
             out.push(Outcome::Moved(scope.clone(), model_moves));
         }
-        if !placed.0.is_empty() || !placed.1.is_empty() {
+        if !placed.0.is_empty()
+            || !placed.1.is_empty()
+            || !placed.2.is_empty()
+            || recorder_at.is_some()
+        {
             out.push(Outcome::Placed {
                 filters: placed.0,
                 views: placed.1,
+                probes: placed.2,
+                recorder: recorder_at,
             });
         }
         if !rest.is_empty() {
+            // A data edit that reaches the model (a probe feeding a block,
+            // ADR 0063) rebuilds it like any model edit.
+            let mut trial = base.clone();
+            for e in &rest {
+                let _ = apply_in(&mut trial, &scope, registry, e);
+            }
+            if change(&base, &trial) == Change::Model {
+                self.rebuild(base, rest, registry, &mut out);
+                return out;
+            }
             let mut file = base;
             let mut notes = Vec::new();
             for e in &rest {
@@ -534,6 +1282,8 @@ impl DiagramTab {
             out.push(Outcome::Data {
                 filters: file.controls.filters,
                 views: file.controls.views,
+                probes: file.controls.probes,
+                recorder: file.controls.recorder,
                 notes,
             });
         }
@@ -565,12 +1315,7 @@ impl DiagramTab {
         let mut notes = Vec::new();
         for e in &changes {
             match apply_in(&mut file, &scope, registry, e) {
-                Ok(note) => {
-                    notes.push(note);
-                    if let Edit::RenameSubsystem { to, .. } = e {
-                        self.scope = Scope::Subsystem(to.clone());
-                    }
-                }
+                Ok(note) => notes.push(note),
                 Err(err) => out.push(Outcome::Error(err)),
             }
         }
@@ -579,10 +1324,13 @@ impl DiagramTab {
             self.undo.pop();
             return;
         }
-        // A value or setting changed: the blocks are still there.
-        let kept = changes
-            .iter()
-            .all(|e| matches!(e, Edit::SetParam { .. } | Edit::SetSetting { .. }));
+        // The selection stays while every block in it is still there (a
+        // value, a setting, a study's sample or an offered output changed).
+        let kept = self.canvas.selected.as_ref().is_none_or(|sel| {
+            sel.blocks()
+                .iter()
+                .all(|n| file.blocks.iter().any(|b| &b.name == n))
+        });
         if !kept
             && matches!(
                 self.canvas.selected,
@@ -602,13 +1350,26 @@ impl DiagramTab {
                     Edit::SetFormula { .. } | Edit::DeclareParam { .. } | Edit::RemoveParam { .. }
                 )
             });
-        match Session::load_deferred("check", &text, registry) {
+        match check(&text, registry, self.folder.as_deref()) {
             Ok(_) => out.push(Outcome::Apply { text, notes }),
             Err(problem) if refused => {
                 self.undo.pop();
                 out.push(Outcome::Error(format!("Not applied: {problem}")));
             }
-            Err(problem) => self.draft = Some((file, problem)),
+            Err(problem) => {
+                let mut file = file;
+                file.folder = self.folder.clone();
+                self.draft = Some((file, problem));
+            }
         }
     }
+}
+
+/// Whether an edited model builds, as opening it would (ADR 0071): its
+/// studies are built and checked but not run, so a slow study does not hold
+/// the window.
+fn check(text: &str, registry: &Registry, folder: Option<&std::path::Path>) -> Result<(), String> {
+    simsandbox_session::study::without_running_studies(|| {
+        Session::load_in("check", text, registry, folder).map(drop)
+    })
 }

@@ -8,9 +8,6 @@
     {
       "name": "population",
       "type": "eq.equations",
-      "method": {
-        "name": "iterate"
-      },
       "equations": [
         "# x is the population as a fraction of the maximum; r is the growth rate",
         "x[n+1] = r*x[n]*(1 - x[n])"

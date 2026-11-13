@@ -21,3 +21,5 @@ What was decided, stated so someone can act on it.
 ## Consequences
 
 What becomes easier or harder; follow-up work; documents updated.
+
+**Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): each user-visible concept this decision adds, with why the existing ones cannot express it, and each it removes. "None" is a fine answer.

@@ -20,12 +20,19 @@ pub mod builtin;
 pub mod colour;
 pub mod cut;
 pub mod fields;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod history;
+pub mod mesh;
+pub mod slice;
 pub mod surface;
+pub mod values;
 pub mod view;
 pub mod view3d;
 
-pub use history::{Coordinate, Field, FieldShape, History, SignalRef};
+pub use history::{
+    Coordinate, Field, FieldShape, History, MeshInfo, MeshShape, Recorded, SignalRef,
+};
 pub use view::{
     Available, Bindings, Context, Preset, SlotKind, Swap, ViewRegistry, ViewState, ViewType,
 };

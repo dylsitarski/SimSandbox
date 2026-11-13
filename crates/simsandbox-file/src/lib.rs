@@ -32,14 +32,16 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use simsandbox_core::block::{Causality, Shape};
+use simsandbox_core::block::Shape;
 use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::registry::{BlockConfig, MethodSettings, Registry};
 use simsandbox_core::SimError;
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub mod compose;
 pub mod layout;
+pub mod runs;
 pub mod subsystems;
 pub use subsystems::{
     Declared, Derived, InputPort, OutputPort, ParamDecl, ParamPlan, ParamValue, Subsystem,
@@ -47,6 +49,11 @@ pub use subsystems::{
 
 /// The format version this crate reads and writes.
 pub const FORMAT_VERSION: u32 = 1;
+
+/// The block type of a study (ADR 0070): its model (`settings.model`, a
+/// definition in scope, or `settings.file`) run at each point of its
+/// `sample`.
+pub const STUDY: &str = "study";
 
 /// Conventional file extension.
 pub const EXTENSION: &str = ".ssbx.json";
@@ -77,11 +84,8 @@ pub struct ModelFile {
     pub format: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "RunSettings::writes_nothing")]
     pub run: RunSettings,
-    /// The parameter values a model without states is evaluated at
-    /// (ADR 0027, ADR 0028); `None` for one that runs in time.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sample: Option<Sampling>,
     /// Parameters of the model itself, which block parameters can use in
     /// formulas, e.g. a field size shared by two blocks (ADR 0043).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -89,7 +93,21 @@ pub struct ModelFile {
     /// Groups of blocks used like block types by name (ADR 0043).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub subsystems: BTreeMap<String, Subsystem>,
+    /// Models defined in this file, used by name from `blocks` (ADR 0068):
+    /// each written like a model file, `format` optional.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<String, Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<BlockEntry>,
+    /// The outputs it offers to models that use it (ADR 0066 step 4b), by
+    /// name: `from` is one of its blocks' outputs (`car.v`), or a path
+    /// into a model it uses (`plant/car.v`).
+    /// Block inputs it exposes to models using it (ADR 0074): signals
+    /// with no default, each wired by every use.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<InputPort>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<OutputPort>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<ConnectionEntry>,
     /// Whether connected equation blocks are solved together
@@ -105,6 +123,64 @@ pub struct ModelFile {
     /// written.
     #[serde(skip)]
     pub converted: Vec<String>,
+    /// The folder the file was read from, where blocks read the files
+    /// their settings name (ADR 0063); never written.
+    #[serde(skip)]
+    pub folder: Option<std::path::PathBuf>,
+}
+
+/// The clock of a model file's use (ADR 0066): its own, at the used
+/// file's `run.dt` or a step given here, or its parent's (`"shared"`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawClock", into = "RawClock")]
+pub enum UseClock {
+    /// Its own clock, at this step.
+    Step(f64),
+    /// Its parent's clock: flattened into the parent's model.
+    Shared,
+    /// Its own clock, at these instants after the start, ascending
+    /// (ADR 0067 step 4): it steps from one to the next.
+    Times(Vec<f64>),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum RawClock {
+    Word(String),
+    Step { dt: f64 },
+    Times { times: Vec<f64> },
+}
+
+impl TryFrom<RawClock> for UseClock {
+    type Error = String;
+    fn try_from(r: RawClock) -> Result<Self, String> {
+        match r {
+            RawClock::Word(w) if w == "shared" => Ok(Self::Shared),
+            RawClock::Word(w) => Err(format!(
+                "'{w}': a clock is \"shared\", {{\"dt\": step}} or {{\"times\": [t1, t2, …]}}"
+            )),
+            RawClock::Step { dt } => Ok(Self::Step(dt)),
+            RawClock::Times { times } => {
+                if times.is_empty()
+                    || times.iter().any(|t| !(t.is_finite() && *t > 0.0))
+                    || times.windows(2).any(|w| w[1] <= w[0])
+                {
+                    return Err("clock times are positive and ascending, e.g. [0.5, 1.2, 4]".into());
+                }
+                Ok(Self::Times(times))
+            }
+        }
+    }
+}
+
+impl From<UseClock> for RawClock {
+    fn from(c: UseClock) -> Self {
+        match c {
+            UseClock::Step(dt) => RawClock::Step { dt },
+            UseClock::Shared => RawClock::Word("shared".into()),
+            UseClock::Times(times) => RawClock::Times { times },
+        }
+    }
 }
 
 /// Automatic fusion of equation blocks (ADR 0023).
@@ -166,6 +242,49 @@ pub enum Design {
     LatinHypercube,
     /// The first `count` points of the Sobol sequence.
     Sobol,
+    /// The rows of a CSV file (`file`), its columns named by path
+    /// (ADR 0067): measured conditions, a test set.
+    File,
+    /// `count` points that arrive through the study's inputs, one array
+    /// input per parameter (ADR 0078): chosen by another model, such as
+    /// a search strategy.
+    Inputs,
+    /// One point per row of a table (ADR 0079 stage 1d): each swept
+    /// parameter's values arrive through the study's input of its name as
+    /// a table's rows, and each result leaves as rows with the same ids.
+    /// A row runs again only when it is new or its values changed.
+    Rows,
+}
+
+impl Design {
+    /// Whether its points arrive through the study's inputs (no ranges).
+    pub fn from_inputs(self) -> bool {
+        matches!(self, Design::Inputs | Design::Rows)
+    }
+}
+
+/// What an experiment keeps of each run (ADR 0067).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Keep {
+    /// Each output's value at the end: one row per point.
+    #[default]
+    Final,
+    /// Each point's whole run.
+    Series,
+}
+
+/// The seeds an experiment's runs draw from (ADR 0067).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Seeds {
+    /// The run's seed at every point (common random numbers): differences
+    /// between points come from the parameters.
+    #[default]
+    #[serde(rename = "common")]
+    Common,
+    /// The point's index mixed into the seed (Monte Carlo).
+    #[serde(rename = "per point")]
+    PerPoint,
 }
 
 impl Design {
@@ -179,13 +298,15 @@ impl Design {
 /// A sweep (ADR 0027, ADR 0028): the swept parameters and how their values
 /// are chosen. Unlike `controls`, this decides what is computed, so invalid
 /// values are load errors.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sampling {
     #[serde(default)]
     pub design: Design,
     /// The swept parameters: range (the slider's or the suggested range if
-    /// absent) and, for grids, number of values.
+    /// absent) and, for grids, number of values; for a file design, its
+    /// columns.
+    #[serde(default)]
     pub params: Vec<SweepControl>,
     /// Random, Latin hypercube and Sobol: how many points.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -196,7 +317,109 @@ pub struct Sampling {
     /// List: the points, one value per parameter each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<Vec<f64>>,
+    /// File: the CSV of points, from the model's folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// For a model that runs in time (ADR 0067): what each run keeps.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub keep: Keep,
+    /// For a model that runs in time: the seed at each point.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub seeds: Seeds,
+    /// For a model that runs in time: runs of each point, each with a seed
+    /// mixed from its replicate's number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replicates: Option<usize>,
+    /// For a model that runs in time: named results, each one reduction
+    /// of an expression over the run (`"v_max": "max(plant/car.v)"`,
+    /// ADR 0067 step 3); given, the rows hold these instead of final values.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reduce: BTreeMap<String, String>,
 }
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+/// Where a CSV of points named `name` is: from the model's folder (or the
+/// thread's).
+fn points_path(file: &ModelFile, name: &str) -> std::path::PathBuf {
+    let at = std::path::PathBuf::from(name);
+    match file
+        .folder
+        .clone()
+        .or_else(simsandbox_core::registry::current_folder)
+    {
+        Some(f) if at.is_relative() => f.join(at),
+        _ => at,
+    }
+}
+
+/// The parameter columns and rows of a CSV of points (ADR 0067), and the
+/// points' ids if a column is named `id` (ADR 0070 step 4): whole numbers
+/// from 0, each once.
+fn read_points(file: &ModelFile, name: &str) -> Result<Points, FileError> {
+    let at = points_path(file, name);
+    let text = std::fs::read_to_string(&at)
+        .map_err(|e| invalid("sample.file", format!("{}: {e}", at.display())))?;
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let mut columns: Vec<String> = lines
+        .next()
+        .ok_or_else(|| invalid("sample.file", format!("{} is empty", at.display())))?
+        .split(',')
+        .map(|c| c.trim().to_string())
+        .collect();
+    let mut rows = Vec::new();
+    for (k, line) in lines.enumerate() {
+        let row: Result<Vec<f64>, _> = line.split(',').map(|v| v.trim().parse::<f64>()).collect();
+        match row {
+            Ok(r) if r.len() == columns.len() && r.iter().all(|v| v.is_finite()) => rows.push(r),
+            _ => {
+                return Err(invalid(
+                    "sample.file",
+                    format!(
+                        "{} row {}: give {} numbers",
+                        at.display(),
+                        k + 1,
+                        columns.len()
+                    ),
+                ))
+            }
+        }
+    }
+    let ids = match columns.iter().position(|c| c == "id") {
+        None => None,
+        Some(c) => {
+            columns.remove(c);
+            let mut ids = Vec::with_capacity(rows.len());
+            for (k, row) in rows.iter_mut().enumerate() {
+                let v = row.remove(c);
+                if !(v >= 0.0 && v.fract() == 0.0 && v < 2f64.powi(53)) {
+                    return Err(invalid(
+                        "sample.file",
+                        format!(
+                            "{} row {}: an id is a whole number from 0, not {v}",
+                            at.display(),
+                            k + 1
+                        ),
+                    ));
+                }
+                if ids.contains(&(v as u64)) {
+                    return Err(invalid(
+                        "sample.file",
+                        format!("{} row {}: the id {v} is given twice", at.display(), k + 1),
+                    ));
+                }
+                ids.push(v as u64);
+            }
+            Some(ids)
+        }
+    };
+    Ok((columns, rows, ids))
+}
+
+/// A CSV's parameter columns, rows of points and ids if given.
+type Points = (Vec<String>, Vec<Vec<f64>>, Option<Vec<u64>>);
 
 /// Points in a design that takes a count, unless the file says otherwise.
 pub const DEFAULT_SAMPLE_COUNT: usize = 1000;
@@ -215,6 +438,22 @@ pub struct Plan {
     /// For a grid design: values per parameter (first varies fastest).
     pub grid: Option<Vec<usize>>,
     pub design: Design,
+    /// An experiment's runs of each point (ADR 0067), 1 for a sweep.
+    pub replicates: usize,
+    pub keep: Keep,
+    pub seeds: Seeds,
+    /// Named reductions of each run (ADR 0067 step 3).
+    pub reduce: BTreeMap<String, String>,
+    /// Each point's id when a points file gives them (ADR 0070 step 4);
+    /// otherwise a point's id is its place.
+    pub ids: Option<Vec<u64>>,
+}
+
+impl Plan {
+    /// Point `p`'s id: given, or its place.
+    pub fn id(&self, p: usize) -> u64 {
+        self.ids.as_ref().map_or(p as u64, |ids| ids[p])
+    }
 }
 
 impl Sampling {
@@ -227,13 +466,46 @@ impl Sampling {
         ids: &BTreeMap<String, BlockId>,
     ) -> Result<Plan, FileError> {
         use simsandbox_core::sampling as design;
-        if self.params.is_empty() {
+        // From a file: its columns are the parameters (ADR 0067).
+        let from_file = match (self.design, &self.file) {
+            (Design::File, Some(name)) => Some(read_points(file, name)?),
+            (Design::File, None) => {
+                return Err(invalid(
+                    "sample.file",
+                    "a file design names its CSV of points",
+                ))
+            }
+            _ => None,
+        };
+        let params: Vec<SweepControl> = match &from_file {
+            Some((columns, _, _)) => columns
+                .iter()
+                .map(|c| SweepControl {
+                    param: c.clone(),
+                    range: None,
+                    points: None,
+                })
+                .collect(),
+            None => self.params.clone(),
+        };
+        if params.is_empty() {
             return Err(invalid("sample.params", "sweep at least one parameter"));
         }
         let mut keys: Vec<String> = Vec::new();
         let mut ranges = Vec::new();
-        for (i, p) in self.params.iter().enumerate() {
+        for (i, p) in params.iter().enumerate() {
             let path = format!("sample.params[{i}]");
+            // A declared parameter of the model (ADR 0067: by path).
+            if let Some(d) = file.params.get(&p.param) {
+                let [lo, hi] = p
+                    .range
+                    .or(d.range)
+                    .or_else(|| file.controls.params.get(&p.param).and_then(|c| c.range))
+                    .unwrap_or([0.0, 2.0 * d.value.abs().max(1.0)]);
+                keys.push(p.param.clone());
+                ranges.push([lo, hi]);
+                continue;
+            }
             let spec = port_ref(&p.param, ids).ok().and_then(|(id, name)| {
                 model
                     .block(id)
@@ -325,6 +597,39 @@ impl Sampling {
                     .map_err(|e| invalid("sample.params", e))?,
                 None,
             ),
+            Design::File => {
+                let (_, rows, _) = from_file.clone().expect("read above");
+                if rows.is_empty() || rows.len() > MAX_SAMPLES {
+                    return Err(invalid(
+                        "sample.file",
+                        format!("give 1 to {MAX_SAMPLES} rows of points"),
+                    ));
+                }
+                (rows, None)
+            }
+            // Placeholders until the inputs give them: the ranges' middles.
+            Design::Inputs => {
+                let Some(n) = self.count else {
+                    return Err(invalid(
+                        "sample.count",
+                        "points from inputs need a count: how many arrive",
+                    ));
+                };
+                let n = count(n)?;
+                let middle: Vec<f64> = ranges.iter().map(|[lo, hi]| 0.5 * (lo + hi)).collect();
+                (vec![middle; n], None)
+            }
+            // One placeholder: the rows give the points, as many as come.
+            Design::Rows => {
+                if self.count.is_some() {
+                    return Err(invalid(
+                        "sample.count",
+                        "points from a table's rows are as many as its rows: give no count",
+                    ));
+                }
+                let middle: Vec<f64> = ranges.iter().map(|[lo, hi]| 0.5 * (lo + hi)).collect();
+                (vec![middle], None)
+            }
             Design::List => {
                 if self.values.is_empty() || self.values.len() > MAX_SAMPLES {
                     return Err(invalid(
@@ -343,18 +648,30 @@ impl Sampling {
                 (self.values.clone(), None)
             }
         };
+        let replicates = self.replicates.unwrap_or(1);
+        if replicates == 0 || replicates.saturating_mul(points.len()) > MAX_SAMPLES {
+            return Err(invalid(
+                "sample.replicates",
+                format!("1 or more, and at most {MAX_SAMPLES} runs in all"),
+            ));
+        }
         Ok(Plan {
             keys,
             ranges,
             points,
             grid,
             design: self.design,
+            replicates,
+            keep: self.keep,
+            seeds: self.seeds,
+            reduce: self.reduce.clone(),
+            ids: from_file.and_then(|(_, _, ids)| ids),
         })
     }
 }
 
 /// How the model is run (ADR 0013). Unlike `controls`, these affect results.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunSettings {
     /// Simulated seconds per communication step.
@@ -370,6 +687,54 @@ pub struct RunSettings {
     /// absent), `fixed_point` or `refuse`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loops: Option<String>,
+    /// The model's default schedule (ADR 0058, ADR 0059): values changed at
+    /// set times in every run. Recordings live in run files, never here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<ScheduledChange>,
+    /// Whether `dt` was written in the file: a use without a clock then
+    /// runs on its own at it, else on its user's (ADR 0068). `dt` is
+    /// written back when it was read or differs from the default.
+    #[serde(skip)]
+    pub dt_written: bool,
+}
+
+impl RunSettings {
+    /// Whether `dt` is written when saving.
+    pub fn writes_dt(&self) -> bool {
+        self.dt_written || self.dt != DEFAULT_DT
+    }
+
+    /// Nothing to write: the section is left out.
+    pub fn writes_nothing(&self) -> bool {
+        !self.writes_dt()
+            && self.t_end.is_none()
+            && self.seed.is_none()
+            && self.loops.is_none()
+            && self.inputs.is_empty()
+    }
+}
+
+impl Serialize for RunSettings {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("RunSettings", 5)?;
+        if self.writes_dt() {
+            st.serialize_field("dt", &self.dt)?;
+        }
+        if let Some(t) = &self.t_end {
+            st.serialize_field("t_end", t)?;
+        }
+        if let Some(seed) = &self.seed {
+            st.serialize_field("seed", seed)?;
+        }
+        if let Some(l) = &self.loops {
+            st.serialize_field("loops", l)?;
+        }
+        if !self.inputs.is_empty() {
+            st.serialize_field("inputs", &self.inputs)?;
+        }
+        st.end()
+    }
 }
 
 impl Default for RunSettings {
@@ -379,8 +744,230 @@ impl Default for RunSettings {
             t_end: None,
             seed: None,
             loops: None,
+            inputs: Vec::new(),
+            dt_written: false,
         }
     }
+}
+
+/// A value changed at a set time (ADR 0058): `{"t": 10, "set": "car.F",
+/// "to": 500}`. It applies at the first step boundary at or after `t`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduledChange {
+    pub t: f64,
+    /// A parameter key: `"block.param"`, or a declared parameter.
+    pub set: String,
+    pub to: f64,
+}
+
+/// Whether `s` is a name: a letter or `_`, then letters, digits or `_`.
+fn is_identifier(s: &str) -> bool {
+    let mut c = s.chars();
+    c.next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && c.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// A probe (ADR 0062): what it records, when, how long, and the file it
+/// writes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeEntry {
+    pub name: String,
+    /// Signals and fields, by the names views bind (`car.v`, `rod.T`);
+    /// empty for a probe that records nothing yet.
+    #[serde(default)]
+    pub record: Vec<String>,
+    /// When it records; every step if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<ProbeEvery>,
+    /// How long it keeps samples in memory; thinned past 100 000 samples
+    /// (fewer for grids) if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<ProbeKeep>,
+    /// The file it writes, beside the model: a CSV of its signals, and
+    /// a `.npy` file per grid or point field beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// Write the file as it records, every sample, instead of when asked
+    /// (ADR 0063): the file holds the whole run whatever `keep` keeps.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stream: bool,
+    /// Where its node sits on the canvas's data layer (ADR 0050).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<[f64; 2]>,
+}
+
+impl ProbeEntry {
+    /// When it records, as the kernel samples (every step if not given).
+    pub fn schedule(&self) -> simsandbox_core::schedule::Every {
+        use simsandbox_core::schedule::Every;
+        match &self.every {
+            Some(ProbeEvery { steps: Some(n), .. }) => Every::Steps(*n),
+            Some(ProbeEvery {
+                seconds: Some(dt), ..
+            }) => Every::Seconds(*dt),
+            Some(ProbeEvery {
+                times: Some(ts), ..
+            }) => Every::Times(ts.clone()),
+            _ => Every::Steps(1),
+        }
+    }
+
+    /// Check the settings the file can check alone (what it records is
+    /// checked against the model by the session); an error says what is
+    /// wrong.
+    pub fn check(&self) -> Result<(), String> {
+        let positive = |v: f64| v.is_finite() && v > 0.0;
+        if !is_identifier(&self.name) {
+            return Err(format!(
+                "'{}' is not a name (letters, digits, _)",
+                self.name
+            ));
+        }
+        if let Some(e) = &self.every {
+            let set = [e.steps.is_some(), e.seconds.is_some(), e.times.is_some()];
+            if set.iter().filter(|s| **s).count() != 1 {
+                return Err("'every' gives one of steps, seconds or times".into());
+            }
+            let ok = e.steps.is_none_or(|n| n >= 1)
+                && e.seconds.is_none_or(positive)
+                && e.times.as_ref().is_none_or(|ts| {
+                    !ts.is_empty() && ts.iter().all(|t| t.is_finite() && *t >= 0.0)
+                });
+            if !ok {
+                return Err(
+                    "'every': steps is at least 1, seconds positive, times 0 or more".into(),
+                );
+            }
+        }
+        if self.stream && self.to.is_none() {
+            return Err("'stream' writes its file: give 'to' too".into());
+        }
+        if let Some(kp) = &self.keep {
+            if kp.samples.is_some_and(|n| n < 2) {
+                return Err("'keep': samples is at least 2".into());
+            }
+            let set = [
+                kp.samples.is_some(),
+                kp.mb.is_some(),
+                kp.last.is_some(),
+                kp.all,
+            ];
+            if set.iter().filter(|s| **s).count() > 1 {
+                return Err("'keep' gives at most one of samples, mb, last or all".into());
+            }
+            if !(kp.mb.is_none_or(positive) && kp.last.is_none_or(|n| n >= 1)) {
+                return Err("'keep': mb is positive and last at least 1".into());
+            }
+        }
+        if let Some(to) = &self.to {
+            let plain = !to.contains(['/', '\\']) && to.len() > 4 && to.ends_with(".csv");
+            if !plain {
+                return Err(format!(
+                    "'to': '{to}' is a file name ending in .csv, written beside the model"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The recorder (ADR 0064): rewind's snapshots and their settings.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecorderEntry {
+    /// Steps between snapshots; 10 if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<u64>,
+    /// The memory snapshots may use, in MB; 256 if absent. Past it they
+    /// thin, every other one dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mb: Option<f64>,
+    /// Where its node sits on the canvas's data layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<[f64; 2]>,
+}
+
+impl RecorderEntry {
+    pub const EVERY: u64 = 10;
+    pub const MB: f64 = 256.0;
+
+    /// Steps between snapshots.
+    pub fn every(&self) -> u64 {
+        self.every.unwrap_or(Self::EVERY)
+    }
+
+    /// Its memory budget in MB.
+    pub fn mb(&self) -> f64 {
+        self.mb.unwrap_or(Self::MB)
+    }
+
+    /// What is wrong with its settings, if anything.
+    pub fn check(&self) -> Result<(), String> {
+        if self.every.is_some_and(|n| n == 0) {
+            return Err("'every' is at least 1 step".into());
+        }
+        if self.mb.is_some_and(|mb| !(mb.is_finite() && mb > 0.0)) {
+            return Err("'mb' is a positive size".into());
+        }
+        Ok(())
+    }
+}
+
+/// When a probe records: one of the three.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeEvery {
+    /// Every this many steps, from t = 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u64>,
+    /// Every this much simulated time, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<f64>,
+    /// At these times, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub times: Option<Vec<f64>>,
+}
+
+/// How long a probe keeps samples: at most one of these; thinned when
+/// long if none.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeKeep {
+    /// Thinned (every other sample dropped) past this many samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples: Option<usize>,
+    /// Thinned (every other sample dropped) past this many megabytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mb: Option<f64>,
+    /// Only the newest this many samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<usize>,
+    /// Every sample, never thinned.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all: bool,
+}
+
+/// How keys and views drive an input block (ADR 0058), in
+/// `controls.inputs` by the block's name. Never affects results: a run
+/// records the values, not the keys.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputBinding {
+    /// Two keys moving an `input.value` down and up, e.g. `["Left",
+    /// "Right"]` (egui key names).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
+    /// With keys: how fast the value moves while a key is held, per
+    /// second; it stays where it is let go. Without a rate the value is
+    /// its range's end while a key is held and 0 when none is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate: Option<f64>,
+    /// An `input.pointer` fed by this view (its place in `controls.views`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<usize>,
 }
 
 /// One Block: a unique name, a registered type, a method and parameter
@@ -390,9 +977,30 @@ impl Default for RunSettings {
 #[serde(deny_unknown_fields)]
 pub struct BlockEntry {
     pub name: String,
-    /// A registered block type, or a subsystem of this file (ADR 0043).
-    #[serde(rename = "type")]
+    /// A registered block type, or a subsystem of this file (ADR 0043);
+    /// empty for a use of a model file.
+    #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
     pub type_name: String,
+    /// A use of a model file (ADR 0066), found from this file's folder, in
+    /// place of a `type`; its `params` are values for this use only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// A model file use's clock: its own at the file's `run.dt` if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<UseClock>,
+    /// A model file use's replacements of the files of uses inside it, by
+    /// path (`plant`, `plant/engine`), found from this file's folder
+    /// (ADR 0066 step 4c): only this use sees them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, String>,
+    /// A use of a model defined in this file (`models`), or in a model
+    /// holding this one, by name (ADR 0068), in place of a `file`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The definition `model` names, found as the file was read; never
+    /// written.
+    #[serde(skip)]
+    pub resolved: Option<Box<ModelFile>>,
     /// Absent for a subsystem, whose blocks have their own; for a block,
     /// absent means the type's default method.
     #[serde(default, skip_serializing_if = "MethodEntry::is_empty")]
@@ -405,6 +1013,23 @@ pub struct BlockEntry {
     /// `units.convert` (ADR 0045); see `simsandbox describe TYPE`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, String>,
+    /// A study's points and what it keeps of each run (ADR 0070); only a
+    /// `study` block has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<Sampling>,
+    /// When it acts, by its `activate` input (ADR 0088): `rise`, `fall`,
+    /// `change` or `while`. A study or a use of a model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activate: Option<String>,
+    /// A use of a model with a `restart` input: it starts again when the
+    /// input rises (ADR 0088).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restart: bool,
+    /// A study's model when `model` names a definition: its text,
+    /// with the definitions in scope; found as the file was read, never
+    /// written.
+    #[serde(skip)]
+    pub study_model: Option<String>,
     /// The equations of an `eq.equations` block, one per line (ADR 0017),
     /// e.g. `"dx/dt = sigma*(y - x)"`. Absent for types with built-in
     /// equations.
@@ -429,6 +1054,60 @@ pub struct BlockEntry {
     /// `"field/grass"`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub starts: BTreeMap<String, StartEntry>,
+}
+
+impl BlockEntry {
+    /// How its type builds it, reading files from `folder`: its method,
+    /// definition (a study's from [`BlockEntry::study_definition`]),
+    /// update order and settings.
+    pub fn config(&self, folder: Option<&std::path::Path>) -> BlockConfig {
+        let mut settings = self.settings.clone();
+        // A study's file is read (and hashed) as a setting of its type.
+        if let (true, Some(f)) = (self.type_name == STUDY, &self.file) {
+            settings.insert("file".into(), f.clone());
+        }
+        // When a study acts (ADR 0088), as a setting of its type.
+        if let (true, Some(a)) = (self.type_name == STUDY, &self.activate) {
+            settings.insert("activate".into(), a.clone());
+        }
+        BlockConfig {
+            method: (&self.method).into(),
+            definition: if self.type_name == STUDY {
+                self.study_definition()
+            } else {
+                self.equations.clone()
+            },
+            update: self.update.clone(),
+            settings,
+            folder: folder.map(Into::into),
+        }
+    }
+
+    /// What a study block is built from (ADR 0070): its `sample` as JSON
+    /// (empty if none), then its model's text when `settings.model` names
+    /// a definition, then its equations (which it refuses).
+    pub fn study_definition(&self) -> Vec<String> {
+        let mut d = vec![self
+            .sample
+            .as_ref()
+            .map(|s| serde_json::to_string(s).expect("samples serialize"))
+            .unwrap_or_default()];
+        d.push(self.study_model.clone().unwrap_or_default());
+        d.extend(self.equations.iter().cloned());
+        d
+    }
+
+    /// A use of a model, by file or as a local copy (ADR 0066): an entry
+    /// with no type that names a model.
+    pub fn is_use(&self) -> bool {
+        self.type_name.is_empty() && self.names_model()
+    }
+
+    /// Whether it names a model (`file` or `model`): a use, or a study of
+    /// that model (ADR 0070), which the app opens and edits the same way.
+    pub fn names_model(&self) -> bool {
+        self.file.is_some() || self.model.is_some()
+    }
 }
 
 /// A saved start (ADR 0042): every state, in the block's state order, and
@@ -530,9 +1209,6 @@ pub struct Controls {
     /// Default playback speed: simulated seconds per wall-clock second.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
-    /// Outputs plotted by default, as `"block.port"`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub plots: Vec<String>,
     /// The views the model opens with (ADR 0015); the app shows the first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<ViewEntry>,
@@ -544,11 +1220,28 @@ pub struct Controls {
     /// and `subsystem::block` inside a subsystem. Unknown names are ignored.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub open: Vec<String>,
+    /// Uses shown expanded in place on the diagram, by path (`car1`,
+    /// `vehicle/plant`), one level each (ADR 0066 step 4d).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expand: Vec<String>,
+    /// Keys and views driving input blocks, by block name (ADR 0058).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, InputBinding>,
     /// Filters turning recorded data into new signals and fields
     /// (ADR 0030, ADR 0032): derived expressions, cuts. Checked by the app;
     /// invalid ones are dropped with a warning.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<FilterEntry>,
+    /// Probes recording chosen signals and fields at chosen times, and
+    /// the files they write (ADR 0062). Checked by the session; one that
+    /// records nothing the model has is dropped with a warning.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub probes: Vec<ProbeEntry>,
+    /// The recorder (ADR 0064): with one, the model can be rewound; its
+    /// settings say how often snapshots are taken and how much memory
+    /// they may use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorder: Option<RecorderEntry>,
     /// Derived signals as written before filters (name to expression).
     /// Still read; converted into `expression` filters on load and never
     /// written.
@@ -591,6 +1284,18 @@ pub struct FilterEntry {
     /// `at`, which cut filters use for their cuts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<[f64; 2]>,
+    /// The probe its inputs come from (ADR 0063), unless `from` says
+    /// otherwise; the model at every step if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe: Option<String>,
+    /// The probe each of these inputs comes from (ADR 0063).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub from: BTreeMap<String, String>,
+    /// When a filter with inputs from probes runs: `paired` (the default)
+    /// at the times all its sources recorded, or `any` whenever one does,
+    /// with each other input's latest value (ADR 0063).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
     /// Settings of the filter's type.
     #[serde(flatten)]
     pub settings: BTreeMap<String, Value>,
@@ -603,8 +1308,29 @@ impl FilterEntry {
             type_name: "expression".into(),
             inputs,
             canvas: None,
+            probe: None,
+            from: BTreeMap::new(),
+            when: None,
             settings: [("expr".to_string(), Value::String(expr.into()))].into(),
         }
+    }
+
+    /// The probe an input comes from (ADR 0063); `None` for the model.
+    pub fn source_of(&self, input: &str) -> Option<&str> {
+        self.from
+            .get(input)
+            .map(String::as_str)
+            .or(self.probe.as_deref())
+    }
+
+    /// Whether any input comes from a probe, so it has a clock of its own.
+    pub fn on_probes(&self) -> bool {
+        self.probe.is_some() || !self.from.is_empty()
+    }
+
+    /// Whether it runs whenever one of its sources records (`when: any`).
+    pub fn on_any(&self) -> bool {
+        self.when.as_deref() == Some("any")
     }
 
     /// An expression filter's text.
@@ -680,6 +1406,9 @@ fn cut_filter_from_selection(name: &str, grid: &str, selection: &Value) -> Optio
         type_name: "cut".into(),
         inputs: vec![grid.into()],
         canvas: None,
+        probe: None,
+        from: BTreeMap::new(),
+        when: None,
         settings,
     })
 }
@@ -709,6 +1438,11 @@ pub struct ViewEntry {
     /// `at`, which cut filters use for their cuts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<[f64; 2]>,
+    /// The probe it showed, as written on 2026-10-29 (ADR 0062). Still
+    /// read; converted into bindings from the probe (ADR 0063) and never
+    /// written.
+    #[serde(default, skip_serializing)]
+    pub probe: Option<String>,
 }
 
 impl ViewEntry {
@@ -747,6 +1481,23 @@ impl ViewEntry {
                 }
             }
             _ => {}
+        }
+        // ADR 0063: a view showing a probe reads each signal from it.
+        if let Some(probe) = self.probe.take() {
+            for b in self.bind.values_mut() {
+                let from: Vec<String> = b
+                    .signals()
+                    .into_iter()
+                    .map(|s| {
+                        if s == "t" || s.starts_with("probe:") {
+                            s
+                        } else {
+                            format!("probe:{probe}/{s}")
+                        }
+                    })
+                    .collect();
+                *b = Binding::from(from);
+            }
         }
         *self != before
     }
@@ -823,14 +1574,20 @@ impl From<Vec<String>> for Binding {
 }
 
 impl Controls {
+    /// Whether there is nothing to write: every section empty.
     pub fn is_empty(&self) -> bool {
         self.params.is_empty()
             && self.speed.is_none()
-            && self.plots.is_empty()
             && self.views.is_empty()
+            && self.layout.is_none()
+            && self.open.is_empty()
+            && self.expand.is_empty()
+            && self.inputs.is_empty()
+            && self.filters.is_empty()
+            && self.probes.is_empty()
+            && self.recorder.is_none()
             && self.sweep.is_empty()
             && self.signals.is_empty()
-            && self.filters.is_empty()
             && self.view.is_none()
     }
 }
@@ -885,6 +1642,7 @@ impl ViewControl {
             camera: self.camera,
             selection: None,
             canvas: None,
+            probe: None,
         }
     }
 
@@ -1010,14 +1768,216 @@ pub struct Loaded {
     pub conversions: Vec<String>,
     /// Blocks solved together (ADR 0023).
     pub groups: Vec<FusedGroup>,
-    /// Where a model without states is evaluated (ADR 0027); `None` for one
-    /// that runs in time.
-    pub plan: Option<Plan>,
+    /// The files blocks read (ADR 0063), as `block.setting` and the
+    /// SHA-256 of the file's contents: part of a run's model hash.
+    pub data: BTreeMap<String, String>,
+    /// Declared outputs of the models it uses (ADR 0066 step 4b), by full
+    /// name (`fast/x`), and the flat output each is (`fast/count.x`).
+    pub aliases: BTreeMap<String, String>,
 }
 
-/// Parse a model file and build its model.
+impl Loaded {
+    /// A study's `sample` (ADR 0070) made concrete for this model: its
+    /// points, by block parameter or declared parameter (ADR 0067); errors
+    /// carry a path such as `sample.params[1].range`.
+    pub fn plan_of(&self, sampling: &Sampling) -> Result<Plan, FileError> {
+        // The flat file has turned declared parameters into formulas.
+        let mut f = self.flat.clone();
+        f.params.clone_from(&self.file.params);
+        f.folder.clone_from(&self.file.folder);
+        sampling.plan(&f, &self.model, &self.ids)
+    }
+
+    /// The SHA-256 of a study's points file (ADR 0070 step 4), found from
+    /// this model's folder: part of the run hash; `None` for other designs.
+    pub fn points_digest(&self, sampling: &Sampling) -> Option<String> {
+        let (Design::File, Some(name)) = (sampling.design, &sampling.file) else {
+            return None;
+        };
+        Some(std::fs::read(points_path(&self.file, name)).map_or_else(
+            |_| "missing".to_string(),
+            |bytes| {
+                use sha2::{Digest, Sha256};
+                let d = Sha256::digest(&bytes);
+                let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
+                format!("sha256:{hex}")
+            },
+        ))
+    }
+
+    /// Whether no block has states, nor reads recorded data, nor is a
+    /// study: such a model is evaluated, not stepped (ADR 0067).
+    pub fn stateless(&self) -> bool {
+        stateless(&self.flat.blocks, &self.model, &self.ids)
+    }
+}
+
+/// Parse a model file and build its model, one that uses models too
+/// (ADR 0066 step 5): those are put in place as one model, each part on
+/// its own clock ([`compose::load_merged`]), as the app runs them. Files
+/// are found from `folder`, else the thread's ([`registry::in_folder`]).
+///
+/// [`registry::in_folder`]: simsandbox_core::registry::in_folder
+pub fn load_any(
+    text: &str,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+) -> Result<Loaded, FileError> {
+    if compose::is_composition(text) {
+        compose::load_merged(text, registry, folder)
+    } else {
+        load_in(text, registry, folder)
+    }
+}
+
+/// Whether no block has states. A study block counts as having some
+/// (ADR 0070): a model holding one is not swept by default.
+/// A use (ADR 0066) is stateless when every block it was merged into
+/// (`use/…`) is.
+fn stateless(blocks: &[BlockEntry], model: &Model, ids: &BTreeMap<String, BlockId>) -> bool {
+    // Recorded data runs in time at its own samples (ADR 0067 step 4).
+    let no_states = |id: &BlockId| {
+        model
+            .block(*id)
+            .is_ok_and(|x| x.spec().states.is_empty() && x.instants().is_none())
+    };
+    blocks.iter().all(|b| {
+        if b.type_name == STUDY {
+            false
+        } else if b.is_use() {
+            let prefix = format!("{}/", b.name);
+            ids.iter()
+                .filter(|(n, _)| n.starts_with(&prefix))
+                .all(|(_, id)| no_states(id))
+        } else {
+            ids.get(&b.name).is_some_and(no_states)
+        }
+    })
+}
+
+thread_local! {
+    /// For each model being loaded on this thread, innermost last: the
+    /// data its blocks reported (see [`report_data`]).
+    static REPORTED: std::cell::RefCell<Vec<BTreeMap<String, String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The data reported while one model loads; dropped when it is loaded.
+struct Reports;
+
+impl Reports {
+    fn begin() -> Self {
+        REPORTED.with(|r| r.borrow_mut().push(BTreeMap::new()));
+        Reports
+    }
+
+    /// What was reported so far for the model loading now.
+    fn taken() -> BTreeMap<String, String> {
+        REPORTED.with(|r| {
+            r.borrow_mut()
+                .last_mut()
+                .map(std::mem::take)
+                .unwrap_or_default()
+        })
+    }
+}
+
+impl Drop for Reports {
+    fn drop(&mut self) {
+        REPORTED.with(|r| {
+            r.borrow_mut().pop();
+        });
+    }
+}
+
+/// For a block that loads a model of its own as it is built, such as a
+/// study (ADR 0070): the data that model reads, its points file included,
+/// so the run hash of the model loading it covers them. Kept as
+/// `block:key`; nothing happens outside a load.
+pub fn report_data(block: &str, data: &BTreeMap<String, String>) {
+    REPORTED.with(|r| {
+        if let Some(top) = r.borrow_mut().last_mut() {
+            for (k, v) in data {
+                top.insert(format!("{block}:{k}"), v.clone());
+            }
+        }
+    });
+}
+
+/// The sample times (after the start, in exact ticks and seconds) of the
+/// recorded data in `model`, if it reads some and nothing in it has
+/// states (ADR 0067 step 4).
+pub fn data_times(model: &Model) -> Option<Vec<(u128, f64)>> {
+    let mut times: Vec<f64> = Vec::new();
+    for id in model.block_ids() {
+        let b = model.block(id).ok()?;
+        if !(b.spec().states.is_empty() && b.spec().tables.is_empty()) {
+            return None;
+        }
+        times.extend(b.instants().unwrap_or(&[]).iter().filter(|t| **t > 0.0));
+    }
+    listed(times).ok().flatten()
+}
+
+/// Instants in exact ticks of their own and seconds, ascending, once
+/// each; `None` if there are none.
+pub fn listed(mut times: Vec<f64>) -> Result<Option<Vec<(u128, f64)>>, String> {
+    times.sort_by(f64::total_cmp);
+    times.dedup();
+    if times.is_empty() {
+        return Ok(None);
+    }
+    let ticks =
+        simsandbox_core::clock::Ticks::with_times(&[], &times).map_err(|e| e.to_string())?;
+    times
+        .iter()
+        .map(|&t| ticks.at(t).map(|k| (k, t)).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+/// Parse a model file and build its model. Blocks that read files accept
+/// only absolute names: see [`load_in`].
 pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
+    load_in(text, registry, None)
+}
+
+/// Parse a model file saved in `folder` and build its model: blocks read
+/// the files their settings name from there (ADR 0063).
+pub fn load_in(
+    text: &str,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+) -> Result<Loaded, FileError> {
+    // Blocks that read files while they are built (a mesh, ADR 0085) find
+    // them in the model's folder, as under the headless tools.
+    match folder {
+        Some(f) => simsandbox_core::registry::in_folder(Some(f), || {
+            load_in_folder(text, registry, Some(f))
+        }),
+        None => load_in_folder(text, registry, None),
+    }
+}
+
+fn load_in_folder(
+    text: &str,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+) -> Result<Loaded, FileError> {
+    // What blocks that load models of their own report as they are built.
+    let _reports = Reports::begin();
     let (mut file, mut warnings) = ModelFile::from_json(text)?;
+    compose::runs_alone(&file)?;
+    if let Some(k) = file.blocks.iter().position(BlockEntry::is_use) {
+        return Err(invalid(
+            format!("blocks[{k}]"),
+            "this model uses model files (ADR 0066): run it with `simsandbox run` or \
+             Python; the app opens such models later",
+        ));
+    }
+    file.folder = folder
+        .map(Into::into)
+        .or_else(simsandbox_core::registry::current_folder);
     let subsystems::Flat {
         file: mut flat,
         plan: mut params,
@@ -1026,11 +1986,36 @@ pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
         checks,
     } = file.flatten()?;
     for c in &checks {
-        c.verify(registry)?;
+        c.verify(registry, folder)?;
     }
     // Errors name the place in the file as written.
     let origin = |e: FileError| origin(e, &block_origins, &connection_origins);
-    let (mut model, ids) = flat.build(registry).map_err(origin)?;
+    let (mut model, ids) = flat.build(registry, folder).map_err(origin)?;
+    // Declared outputs name real outputs (ADR 0066 step 4b).
+    for (k, o) in file.outputs.iter().enumerate() {
+        let Some((block, port)) = o.from.split_once('.').filter(|(b, _)| !b.contains('/')) else {
+            continue;
+        };
+        let found = match file.blocks.iter().find(|b| b.name == block) {
+            Some(b) if file.subsystems.contains_key(&b.type_name) => file.subsystems[&b.type_name]
+                .outputs
+                .iter()
+                .any(|p| p.name == port),
+            _ => ids.get(block).is_some_and(|&id| {
+                model
+                    .block(id)
+                    .is_ok_and(|b| b.spec().outputs().any(|p| p.name == port))
+            }),
+        };
+        if !found {
+            return Err(invalid(
+                format!("outputs[{k}].from"),
+                format!("'{}' is not an output of the model", o.from),
+            ));
+        }
+    }
+    let mut data = data_digests(&flat, registry, folder);
+    data.extend(Reports::taken());
     // Formulas give each block parameter in its unit (ADR 0045).
     params.fit_blocks(&mut model, &ids)?;
     for (block, param, value) in params.evaluate() {
@@ -1062,10 +2047,20 @@ pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
     let mut conversions = file.converted.clone();
     warnings.extend(flat.check_controls(&model, &ids, &params, &mut conversions));
     file.controls = flat.controls.clone();
-    let plan = flat.plan(&model, &ids)?;
-    // Older sweep controls become a `sample` section as the file is read.
-    file.sample = flat.sample.clone();
     file.controls = flat.controls.clone();
+    // A model with no states reading recorded data steps at the data's
+    // sample times (ADR 0067 step 4), unless it writes a step of its own.
+    if let Some(times) = data_times(&model).filter(|_| !file.run.writes_dt()) {
+        let n = model.block_ids().count();
+        let clock = simsandbox_core::graph::Clock {
+            dt: file.run.dt,
+            times,
+            ..Default::default()
+        };
+        model
+            .set_clocks(vec![clock], vec![0; n])
+            .map_err(|e| invalid("run", e))?;
+    }
     Ok(Loaded {
         conversions,
         file,
@@ -1075,8 +2070,100 @@ pub fn load(text: &str, registry: &Registry) -> Result<Loaded, FileError> {
         ids,
         warnings,
         groups,
-        plan,
+        data,
+        aliases: BTreeMap::new(),
     })
+}
+
+/// The file a typed-equations line starts a table from, if it is one
+/// (`start c = file "part.msh" at x, y`, ADR 0085; `start pts = file
+/// "nodes.csv"`, ADR 0069 step 3).
+fn mesh_file(line: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix("start ")?;
+    file_of(rest)
+}
+
+/// The file a typed-equations line reads an array parameter's values
+/// from, if it is one (`param m[k] = file "masses.csv"`, ADR 0069 step 3).
+fn param_file(line: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix("param ")?;
+    file_of(rest)
+}
+
+/// The quoted path after `= file` in `rest`, if any.
+fn file_of(rest: &str) -> Option<String> {
+    let (_, spec) = rest.split_once('=')?;
+    let quoted = spec
+        .trim()
+        .strip_prefix("file ")?
+        .trim()
+        .strip_prefix('"')?;
+    Some(quoted.split_once('"')?.0.to_string())
+}
+
+/// The SHA-256 of each file a block reads, by `block.setting`, of each
+/// file a typed-equations block starts a table from, by `block.mesh:path`
+/// (meshes and CSV tables alike), and of each file it reads an array
+/// parameter from, by `block.param:path`.
+fn data_digests(
+    flat: &ModelFile,
+    registry: &Registry,
+    folder: Option<&std::path::Path>,
+) -> BTreeMap<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut data = BTreeMap::new();
+    let digest_of = |path: &std::path::Path| {
+        std::fs::read(path).map_or_else(
+            |_| "missing".to_string(),
+            |bytes| {
+                let d = Sha256::digest(&bytes);
+                let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
+                format!("sha256:{hex}")
+            },
+        )
+    };
+    for b in &flat.blocks {
+        // Mesh files typed equations start from (ADR 0085): `start c =
+        // file "part.msh" at x, y`.
+        for line in &b.equations {
+            let (key, path) = match (mesh_file(line), param_file(line)) {
+                (Some(p), _) => ("mesh", p),
+                (_, Some(p)) => ("param", p),
+                _ => continue,
+            };
+            let file = std::path::PathBuf::from(&path);
+            let file = match (file.is_absolute(), folder) {
+                (false, Some(dir)) => dir.join(file),
+                _ => file,
+            };
+            data.insert(format!("{}.{key}:{path}", b.name), digest_of(&file));
+        }
+        let Some(info) = registry.info(&b.type_name) else {
+            continue;
+        };
+        let config = BlockConfig {
+            settings: b.config(folder).settings,
+            folder: folder.map(Into::into),
+            ..Default::default()
+        };
+        for setting in &info.files {
+            // The block was built, so its files were read; one that cannot
+            // be read again hashes as missing.
+            let Some(Ok(path)) = config.file(setting) else {
+                continue;
+            };
+            let digest = std::fs::read(&path).map_or_else(
+                |_| "missing".to_string(),
+                |bytes| {
+                    let d = Sha256::digest(&bytes);
+                    let hex: String = d.iter().map(|b| format!("{b:02x}")).collect();
+                    format!("sha256:{hex}")
+                },
+            );
+            data.insert(format!("{}.{setting}", b.name), digest);
+        }
+    }
+    data
 }
 
 /// Map an error at a flat path (`blocks[3].method`) to where it is
@@ -1110,13 +2197,21 @@ struct RawFile {
     description: Option<String>,
     #[serde(default)]
     run: RunSettings,
+    /// Removed (ADR 0071): read only to refuse it with what to write.
     #[serde(default)]
-    sample: Option<Sampling>,
+    sample: Option<Value>,
     #[serde(default)]
     params: BTreeMap<String, ParamDecl>,
     #[serde(default)]
     subsystems: BTreeMap<String, Subsystem>,
+    #[serde(default)]
+    models: BTreeMap<String, Value>,
+    #[serde(default)]
     blocks: Vec<BlockEntry>,
+    #[serde(default)]
+    inputs: Vec<InputPort>,
+    #[serde(default)]
+    outputs: Vec<OutputPort>,
     #[serde(default)]
     connections: Vec<ConnectionEntry>,
     #[serde(default)]
@@ -1134,24 +2229,42 @@ impl ModelFile {
             format: FORMAT_VERSION,
             description: None,
             run: RunSettings::default(),
-            sample: None,
             params: BTreeMap::new(),
             subsystems: BTreeMap::new(),
+            models: BTreeMap::new(),
             blocks: Vec::new(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
             connections: Vec::new(),
             fusion: Fusion::Auto,
             groups: Vec::new(),
             controls: Controls::default(),
             converted: Vec::new(),
+            folder: None,
         }
     }
 
     /// Parse without building. Returns warnings for a malformed `controls`
     /// section, which is replaced by empty controls.
     pub fn from_json(text: &str) -> Result<(Self, Vec<String>), FileError> {
+        let (mut file, warnings) = Self::from_json_unresolved(text)?;
+        compose::resolve_models(&mut file, &BTreeMap::new(), &mut Vec::new())?;
+        Ok((file, warnings))
+    }
+
+    /// Find again the definitions this file's uses name (ADR 0068), after
+    /// it was changed in memory.
+    pub fn resolve_models(&mut self) -> Result<(), FileError> {
+        compose::resolve_models(self, &BTreeMap::new(), &mut Vec::new())
+    }
+
+    /// Parse, leaving uses of definitions unresolved.
+    pub(crate) fn from_json_unresolved(text: &str) -> Result<(Self, Vec<String>), FileError> {
         // The format number first: a newer file may not parse as this one.
         let mut converted = Vec::new();
+        let mut dt_written = false;
         if let Ok(v) = serde_json::from_str::<Value>(text) {
+            dt_written = v.get("run").and_then(|r| r.get("dt")).is_some();
             if let Some(n) = v.get("format").and_then(Value::as_u64) {
                 if n > FORMAT_VERSION as u64 {
                     return Err(FileError::UnsupportedFormat(n as u32));
@@ -1172,7 +2285,7 @@ impl ModelFile {
                 );
             }
         }
-        let raw: RawFile = serde_json::from_str(text).map_err(|e| {
+        let mut raw: RawFile = serde_json::from_str(text).map_err(|e| {
             let mut message = e.to_string();
             if message.contains("unknown field") {
                 // ADR 0044: within a format, newer versions only add.
@@ -1191,7 +2304,32 @@ impl ModelFile {
         if raw.format != FORMAT_VERSION {
             return Err(FileError::UnsupportedFormat(raw.format));
         }
+        raw.run.dt_written = dt_written;
+        // Subsystems became models defined in the file (ADR 0068); the
+        // loader still flattens shared uses through them inside.
+        if !raw.subsystems.is_empty() && !compose::subsystems_allowed() {
+            return Err(invalid(
+                "subsystems",
+                "subsystems became models defined in the file (ADR 0068): write each under \
+                 `models`, its input ports as input.value blocks and its output ports as \
+                 declared `outputs`, and use it as {\"name\": ..., \"model\": ...}",
+            ));
+        }
         let positive = |v: f64| v.is_finite() && v > 0.0;
+        for (k, c) in raw.run.inputs.iter().enumerate() {
+            if !(c.t.is_finite() && c.t >= 0.0) {
+                return Err(invalid(
+                    format!("run.inputs[{k}].t"),
+                    format!("a time is 0 or more, got {}", c.t),
+                ));
+            }
+            if !c.to.is_finite() {
+                return Err(invalid(
+                    format!("run.inputs[{k}].to"),
+                    format!("must be a finite number, got {}", c.to),
+                ));
+            }
+        }
         if !positive(raw.run.dt) {
             return Err(invalid(
                 "run.dt",
@@ -1209,6 +2347,18 @@ impl ModelFile {
         if let Some(t) = raw.run.t_end.filter(|&t| !positive(t)) {
             return Err(invalid("run.t_end", format!("must be positive, got {t}")));
         }
+        compose::check_uses(&raw.blocks, &raw.subsystems)?;
+        compose::check_outputs(&raw.outputs, &raw.blocks)?;
+        compose::check_inputs(&raw.inputs, &raw.outputs, &raw.blocks)?;
+        compose::check_driven(&raw.params, &raw.inputs, &raw.outputs)?;
+        if raw.sample.is_some() {
+            return Err(invalid(
+                "sample",
+                "the `sample` section is removed (ADR 0071): put the model under `models` \
+                 and a study block over it (`{\"name\": \"study\", \"type\": \"study\", \
+                 \"model\": NAME, \"sample\": {…}}`); Python's `Model.as_study` does both",
+            ));
+        }
         let mut warnings = Vec::new();
         let mut controls: Controls = match raw.controls {
             None => Controls::default(),
@@ -1222,20 +2372,44 @@ impl ModelFile {
         for c in controls.params.values_mut() {
             c.pin |= c.slider;
         }
+        // Nor does the recorder.
+        if let Some(Err(e)) = controls.recorder.as_ref().map(RecorderEntry::check) {
+            warnings.push(format!("controls.recorder: {e}; ignored"));
+            controls.recorder = None;
+        }
+        // Probes never change results: an invalid one is dropped, not the file.
+        let mut names = std::collections::BTreeSet::new();
+        let mut k = 0;
+        controls.probes.retain(|pr| {
+            let checked = pr.check().and_then(|()| {
+                names
+                    .insert(pr.name.clone())
+                    .then_some(())
+                    .ok_or_else(|| format!("'{}' is used twice", pr.name))
+            });
+            if let Err(e) = &checked {
+                warnings.push(format!("controls.probes[{k}]: {e}; ignored"));
+            }
+            k += 1;
+            checked.is_ok()
+        });
         Ok((
             Self {
                 format: raw.format,
                 description: raw.description,
                 run: raw.run,
-                sample: raw.sample,
                 params: raw.params,
                 subsystems: raw.subsystems,
+                models: raw.models,
                 blocks: raw.blocks,
+                inputs: raw.inputs,
+                outputs: raw.outputs,
                 connections: raw.connections,
                 fusion: raw.fusion,
                 groups: raw.groups,
                 controls,
                 converted,
+                folder: None,
             },
             warnings,
         ))
@@ -1262,12 +2436,18 @@ impl ModelFile {
                 .ok_or_else(|| invalid(&path, format!("no block '{}' in model", entry.name)))?;
             let block = model.block(id).map_err(|e| invalid(&path, e))?;
             let values = model.params(id).map_err(|e| invalid(&path, e))?;
+            // A driven parameter runs on its signal's value; its own, as
+            // written, stays (ADR 0075).
+            let own = std::mem::take(&mut entry.params);
             entry.params = block
                 .spec()
                 .params
                 .iter()
                 .zip(values)
-                .map(|(p, v)| (p.name.clone(), ParamValue::Number(*v)))
+                .filter_map(|(p, v)| match model.is_driven(id, &p.name) {
+                    true => own.get(&p.name).map(|w| (p.name.clone(), w.clone())),
+                    false => Some((p.name.clone(), ParamValue::Number(*v))),
+                })
                 .collect();
         }
         Ok(())
@@ -1276,6 +2456,7 @@ impl ModelFile {
     pub(crate) fn build(
         &self,
         registry: &Registry,
+        folder: Option<&std::path::Path>,
     ) -> Result<(Model, BTreeMap<String, BlockId>), FileError> {
         let mut model = Model::new();
         model.set_seed(
@@ -1325,12 +2506,25 @@ impl ModelFile {
                     ),
                 ));
             }
-            let config = BlockConfig {
-                method: (&entry.method).into(),
-                definition: entry.equations.clone(),
-                update: entry.update.clone(),
-                settings: entry.settings.clone(),
-            };
+            if entry.sample.is_some() && entry.type_name != STUDY {
+                return Err(invalid(
+                    format!("{path}.sample"),
+                    "only a study block has a sample (ADR 0070)",
+                ));
+            }
+            if entry.activate.is_some() && entry.type_name != STUDY {
+                return Err(invalid(
+                    format!("{path}.activate"),
+                    "only a study or a use of a model is activated (ADR 0088)",
+                ));
+            }
+            if entry.restart {
+                return Err(invalid(
+                    format!("{path}.restart"),
+                    "only a use of a model starts again on a restart input (ADR 0088)",
+                ));
+            }
+            let config = entry.config(folder);
             let block = registry
                 .build(&entry.type_name, &entry.name, &config)
                 .map_err(|e| match e {
@@ -1361,13 +2555,84 @@ impl ModelFile {
                 .map_err(|e| invalid(format!("{path}.start"), e))?;
             ids.insert(entry.name.clone(), id);
         }
+        // Probes feeding the model: a hold per probe signal (ADR 0063).
+        let mut holds: BTreeMap<String, BlockId> = BTreeMap::new();
         for (ci, c) in self.connections.iter().enumerate() {
             let path = format!("connections[{ci}]");
-            let from = port_ref(&c.from, &ids).map_err(|m| invalid(format!("{path}.from"), m))?;
             let to = port_ref(&c.to, &ids).map_err(|m| invalid(format!("{path}.to"), m))?;
-            model.connect(from, to).map_err(|e| invalid(&path, e))?;
+            let from = match c.from.strip_prefix("probe:") {
+                Some(rest) => {
+                    let hold = match holds.get(rest) {
+                        Some(&h) => h,
+                        None => {
+                            let h = self
+                                .hold(&mut model, rest, &ids)
+                                .map_err(|m| invalid(format!("{path}.from"), m))?;
+                            holds.insert(rest.to_string(), h);
+                            h
+                        }
+                    };
+                    (hold, "y")
+                }
+                None => port_ref(&c.from, &ids).map_err(|m| invalid(format!("{path}.from"), m))?,
+            };
+            // Into a parameter: it is driven (ADR 0075).
+            let spec = model.block(to.0).map_err(|e| invalid(&path, e))?.spec();
+            let param = !spec.inputs().any(|p| p.name == to.1)
+                && spec.params.iter().any(|p| p.name == to.1);
+            if param {
+                model.drive(from, to).map_err(|e| invalid(&path, e))?;
+            } else {
+                model.connect(from, to).map_err(|e| invalid(&path, e))?;
+            }
         }
         Ok((model, ids))
+    }
+
+    /// The hold of `probe.signal` (ADR 0063): a sample-and-hold of the
+    /// signal's output, sampling when the probe records.
+    fn hold(
+        &self,
+        model: &mut Model,
+        probe_signal: &str,
+        ids: &BTreeMap<String, BlockId>,
+    ) -> Result<BlockId, String> {
+        let (probe, signal) = probe_signal
+            .split_once('.')
+            .ok_or_else(|| format!("'probe:{probe_signal}' must be 'probe:NAME.signal'"))?;
+        let p = self
+            .controls
+            .probes
+            .iter()
+            .find(|p| p.name == probe)
+            .ok_or_else(|| format!("no probe '{probe}'"))?;
+        if !p.record.iter().any(|r| r == signal) {
+            return Err(format!("probe {probe} does not record '{signal}'"));
+        }
+        let (id, port) = port_ref(signal, ids).map_err(|_| {
+            format!("'{signal}' is not a block's output: a probe feeds the model whole outputs")
+        })?;
+        let spec = model.block(id).map_err(|e| e.to_string())?.spec();
+        let out = spec
+            .outputs()
+            .find(|q| q.name == port)
+            .ok_or_else(|| format!("'{signal}' is not a block's output"))?;
+        if out.shape.is_variable() {
+            return Err(format!(
+                "'{signal}' varies in length (a population, or a table's rows): a probe records it but cannot pass it on to a block yet"
+            ));
+        }
+        let hold = simsandbox_core::hold::SampleHold::new(
+            &format!("probe:{probe}/{signal}"),
+            out.unit,
+            out.shape,
+            p.schedule(),
+        );
+        let h = model.add(Box::new(hold));
+        model
+            .connect((id, port), (h, "u"))
+            .map_err(|e| e.to_string())?;
+        Ok(h)
     }
 
     /// Fuse the explicit groups, then (unless `fusion` is off) every set of
@@ -1494,6 +2759,13 @@ impl ModelFile {
             if a == b || !candidate(a) || !candidate(b) || domain(a) != domain(b) {
                 continue;
             }
+            // Not across the edge of an activated part (ADR 0088), which
+            // steps or holds apart from the rest.
+            if crate::compose::activated_part(&self.blocks[a].name)
+                != crate::compose::activated_part(&self.blocks[b].name)
+            {
+                continue;
+            }
             let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
             if ra == rb {
                 continue;
@@ -1543,63 +2815,6 @@ impl ModelFile {
         Ok(fused)
     }
 
-    /// The sweep made concrete for `model`: the file's `sample`, or for a
-    /// model without states a grid over its first parameter; `None` for a
-    /// model that runs in time.
-    pub fn plan(
-        &self,
-        model: &Model,
-        ids: &BTreeMap<String, BlockId>,
-    ) -> Result<Option<Plan>, FileError> {
-        match self.sampling(model, ids)? {
-            Some(s) => s.plan(self, model, ids).map(Some),
-            None => Ok(None),
-        }
-    }
-
-    /// How `model` is sampled: the file's `sample`, or for a model without
-    /// states a grid over its first parameter; `None` for a model that runs
-    /// in time.
-    pub fn sampling(
-        &self,
-        model: &Model,
-        ids: &BTreeMap<String, BlockId>,
-    ) -> Result<Option<Sampling>, FileError> {
-        let stateless = self.blocks.iter().all(|b| {
-            model
-                .block(ids[&b.name])
-                .is_ok_and(|x| x.spec().states.is_empty())
-        });
-        match (&self.sample, stateless) {
-            (Some(_), false) => Err(invalid(
-                "sample",
-                "sampling models with states is not supported yet (ADR 0027); remove \
-                 'sample' to run in time",
-            )),
-            (Some(s), true) => Ok(Some(s.clone())),
-            (None, false) => Ok(None),
-            (None, true) => {
-                let first = self.blocks.iter().find_map(|b| {
-                    let spec = model.block(ids[&b.name]).ok()?.spec().clone();
-                    spec.params
-                        .first()
-                        .map(|p| format!("{}.{}", b.name, p.name))
-                });
-                Ok(first.map(|param| Sampling {
-                    design: Design::Grid,
-                    params: vec![SweepControl {
-                        param,
-                        range: None,
-                        points: None,
-                    }],
-                    count: None,
-                    seed: None,
-                    values: Vec::new(),
-                }))
-            }
-        }
-    }
-
     /// Drop controls that refer to nothing or carry bad values; return a
     /// warning for each.
     fn check_controls(
@@ -1637,20 +2852,6 @@ impl ModelFile {
                 c.speed = None;
             }
         }
-        c.plots.retain(|key| {
-            let known = port_ref(key, ids).ok().is_some_and(|(id, name)| {
-                model.block(id).is_ok_and(|b| {
-                    b.spec()
-                        .ports
-                        .iter()
-                        .any(|p| p.name == name && p.causality == Causality::Output)
-                })
-            });
-            if !known {
-                warnings.push(format!("controls.plots: no output '{key}'; ignored"));
-            }
-            known
-        });
         if let Some(v) = c.view.take() {
             conversions.push("controls.view became the first of controls.views (ADR 0016)".into());
             match view_problem(&v, model, ids) {
@@ -1726,135 +2927,64 @@ impl ModelFile {
             }
             v.selection = None;
         }
-        // The sweep as written before `sample` (ADR 0027): a grid over the
-        // parameters it names, read leniently as controls were, with views
-        // that bound `t` (the swept parameter) bound to the first
-        // parameter, and two-parameter results read from their grids
-        // (ADR 0028).
-        let old_sweep = std::mem::take(&mut c.sweep);
-        if !old_sweep.is_empty() {
-            conversions
-                .push("controls.sweep became the sample section (ADR 0027, ADR 0028)".into());
-        }
-        let stateless = self.blocks.iter().all(|b| {
-            model
-                .block(ids[&b.name])
-                .is_ok_and(|x| x.spec().states.is_empty())
-        });
-        if !old_sweep.is_empty() && !stateless {
-            warnings
-                .push("controls.sweep: the model has states, so it runs in time; ignored".into());
-        }
-        let mut params: Vec<SweepControl> = Vec::new();
-        for (i, mut sw) in old_sweep.into_iter().enumerate() {
-            if self.sample.is_some() || !stateless {
-                break;
-            }
-            let path = format!("controls.sweep[{i}]");
-            let known = port_ref(&sw.param, ids).ok().is_some_and(|(id, name)| {
-                model
-                    .block(id)
-                    .is_ok_and(|b| b.spec().params.iter().any(|p| p.name == name))
-            });
-            let problem = if !known {
-                Some(format!("no parameter '{}'", sw.param))
-            } else if params.iter().any(|p| p.param == sw.param) {
-                Some(format!("'{}' is swept twice", sw.param))
-            } else if params.len() == 2 {
-                Some("at most two parameters".into())
-            } else {
-                None
-            };
-            if let Some(p) = problem {
-                warnings.push(format!("{path}: {p}; ignored"));
-                continue;
-            }
-            if let Some([lo, hi]) = sw.range {
-                if !(lo.is_finite() && hi.is_finite() && lo < hi) {
-                    warnings.push(format!(
-                        "{path}.range: [{lo}, {hi}] is not an increasing range; using the default"
-                    ));
-                    sw.range = None;
-                }
-            }
-            if let Some(n) = sw.points.filter(|n| !(2..=100_000).contains(n)) {
-                warnings.push(format!(
-                    "{path}.points: {n} is outside 2 to 100000; using the default"
-                ));
-                sw.points = None;
-            }
-            params.push(sw);
-        }
-        if let [a, b] = params.as_mut_slice() {
-            let n = |p: &SweepControl| p.points.unwrap_or(DEFAULT_GRID_POINTS);
-            if n(a).saturating_mul(n(b)) > MAX_SAMPLES {
-                warnings.push(format!(
-                    "controls.sweep: more than {MAX_SAMPLES} points; using the default"
-                ));
-                a.points = None;
-                b.points = None;
-            }
-        }
-        if !params.is_empty() {
-            let keys: Vec<String> = params.iter().map(|s| s.param.clone()).collect();
-            for v in &mut c.views {
-                for b in v.bind.values_mut() {
-                    let names: Vec<String> = b
-                        .signals()
-                        .into_iter()
-                        .map(|n| match (n.as_str(), keys.len(), v.type_name.as_str()) {
-                            ("t", _, _) => keys[0].clone(),
-                            (_, 2, "plot.heatmap") => format!("grid.{n}"),
-                            _ => n,
-                        })
-                        .collect();
-                    *b = Binding::from(names);
-                }
-            }
-            if keys.len() == 2 {
-                for f in c.filters.iter_mut().filter(|f| f.type_name == "cut") {
-                    for i in &mut f.inputs {
-                        *i = format!("grid.{i}");
-                    }
-                }
-            }
-            self.sample = Some(Sampling {
-                design: Design::Grid,
-                params,
-                count: None,
-                seed: None,
-                values: Vec::new(),
-            });
+        // The sweep as written before `sample` (ADR 0027): sweeps are
+        // studies now (ADR 0071), so it is dropped with what to write.
+        if !std::mem::take(&mut c.sweep).is_empty() {
+            warnings.push(
+                "controls.sweep: sweeps are studies (ADR 0071): put the model under `models` \
+                 and a study block over it; ignored"
+                    .into(),
+            );
         }
         let c = &mut self.controls;
-        // Views may bind filter outputs as well as outputs; in a sweep the
-        // swept parameters, and in a two-parameter grid every scalar's grid
-        // (`grid.<name>`, ADR 0028).
-        let mut derived: Vec<String> = c.filters.iter().flat_map(FilterEntry::outputs).collect();
-        let (keys, grid2) = match &self.sample {
-            Some(sm) => (
-                sm.params
-                    .iter()
-                    .map(|p| p.param.clone())
-                    .collect::<Vec<_>>(),
-                sm.design == Design::Grid && sm.params.len() == 2,
-            ),
-            None => (Vec::new(), false),
-        };
-        derived.extend(keys.iter().cloned());
+        // Views may bind filter outputs as well as outputs.
+        let derived: Vec<String> = c.filters.iter().flat_map(FilterEntry::outputs).collect();
         let mut kept = Vec::new();
         // Each view's new place, for the layout.
         let mut moved: Vec<Option<usize>> = vec![None; c.views.len()];
+        let filter_outputs: Vec<String> = c.filters.iter().flat_map(FilterEntry::outputs).collect();
         for (i, mut v) in std::mem::take(&mut c.views).into_iter().enumerate() {
             let before = v.type_name.clone();
             if v.upgrade() {
-                conversions.push(format!("controls.views[{i}]: the older {before} became today's form (ADR 0018, ADR 0024)"));
+                conversions.push(format!("controls.views[{i}]: the older {before} became today's form (ADR 0018, ADR 0024, ADR 0063)"));
+            }
+            // A filter's outputs are bound by name, wherever it runs
+            // (ADR 0063); `probe:NAME/output` was written on 2026-10-29.
+            let mut renamed = false;
+            for b in v.bind.values_mut() {
+                let plain: Vec<String> = b
+                    .signals()
+                    .into_iter()
+                    .map(|s| {
+                        let inner = s
+                            .strip_prefix("probe:")
+                            .and_then(|r| r.split_once('/'))
+                            .map(|(_, o)| o.to_string());
+                        match inner {
+                            Some(o) if filter_outputs.contains(&o) => {
+                                renamed = true;
+                                o
+                            }
+                            _ => s,
+                        }
+                    })
+                    .collect();
+                *b = Binding::from(plain);
+            }
+            if renamed {
+                conversions.push(format!(
+                    "controls.views[{i}]: filter outputs are bound by name (ADR 0063)"
+                ));
             }
             let scalar =
                 |s: &str| derived.iter().any(|d| d == s) || output_element_exists(s, model, ids);
             let unknown = v.bind.values().flat_map(Binding::signals).find(|s| {
-                let grid = grid2 && s.strip_prefix("grid.").is_some_and(scalar);
-                s != "t" && !scalar(s) && !grid
+                // From a probe (ADR 0063): the model's signal it records.
+                let s = s
+                    .strip_prefix("probe:")
+                    .and_then(|r| r.split_once('/'))
+                    .map_or(s.as_str(), |(_, s)| s);
+                s != "t" && !scalar(s)
             });
             if let Some(s) = unknown {
                 warnings.push(format!("controls.views[{i}]: no signal '{s}'; ignored"));
@@ -1926,9 +3056,14 @@ fn output_element_exists(key: &str, model: &Model, ids: &BTreeMap<String, BlockI
                 && match (p.shape, index) {
                     (Shape::Scalar, None) => true,
                     (Shape::Vector(n), Some(i)) => i < n,
-                    // Fields and point sets are bound as a whole.
+                    // Fields and point sets are bound as a whole, of any
+                    // rank, and rows (ADR 0086).
                     (
-                        Shape::Grid { .. } | Shape::Points { .. } | Shape::Population { .. },
+                        Shape::Grid { .. }
+                        | Shape::Points { .. }
+                        | Shape::Population { .. }
+                        | Shape::Tensor { .. }
+                        | Shape::Rows { .. },
                         None,
                     ) => true,
                     _ => false,

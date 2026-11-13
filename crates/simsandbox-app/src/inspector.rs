@@ -113,24 +113,27 @@ pub fn organise(rows: &[ParamRow], file: &ModelFile, show_computed: bool) -> Org
         .filter(|r| r.owner.is_empty())
         .map(|r| (*r).clone())
         .collect();
-    // Uses by subsystem, on the model level.
+    // Uses by the model defined in the file they use (ADR 0068).
     let mut uses: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for b in &file.blocks {
-        if file.subsystems.contains_key(&b.type_name) {
-            uses.entry(b.type_name.as_str()).or_default().push(&b.name);
+        if let Some(m) = &b.model {
+            uses.entry(m.as_str()).or_default().push(&b.name);
         }
     }
     let starting_last = |v: &mut Vec<(String, ParamRow)>| {
         v.sort_by_key(|(_, r)| r.initial_condition);
     };
     for b in &file.blocks {
-        let instance = file.subsystems.contains_key(&b.type_name);
+        let instance = b.is_use();
         let mine: Vec<(String, ParamRow)> = shown
             .iter()
             .filter(|r| !r.owner.is_empty() && top(r) == b.name)
             .map(|r| (relative(r), (*r).clone()))
             .collect();
-        let shared = instance && uses.get(b.type_name.as_str()).is_some_and(|u| u.len() > 1);
+        let shared = b
+            .model
+            .as_deref()
+            .is_some_and(|m| uses.get(m).is_some_and(|u| u.len() > 1));
         if shared {
             continue;
         }
@@ -178,6 +181,30 @@ pub fn organise(rows: &[ParamRow], file: &ModelFile, show_computed: bool) -> Org
     o
 }
 
+/// A group's rows nested by the path in their names (ADR 0066 step 4b):
+/// `plant/car.m` under `plant` as `car.m`, each level's own rows first.
+#[derive(Debug, Default, Clone)]
+pub struct Nested {
+    pub rows: Vec<(String, ParamRow)>,
+    pub inner: BTreeMap<String, Nested>,
+}
+
+/// Nest `rows` by the path before each name's last part.
+pub fn nest(rows: &[(String, ParamRow)]) -> Nested {
+    let mut n = Nested::default();
+    for (name, row) in rows {
+        let mut at = &mut n;
+        let mut rest = name.as_str();
+        // The path is what comes before the block or parameter's name.
+        while let Some((first, more)) = rest.split_once('/') {
+            at = at.inner.entry(first.to_string()).or_default();
+            rest = more;
+        }
+        at.rows.push((rest.to_string(), row.clone()));
+    }
+    n
+}
+
 /// Rows whose key or description contains `query` (any case).
 pub fn search(rows: &[ParamRow], query: &str) -> Vec<ParamRow> {
     let q = query.trim().to_lowercase();
@@ -188,8 +215,9 @@ pub fn search(rows: &[ParamRow], query: &str) -> Vec<ParamRow> {
 }
 
 /// The rows of what is selected on the diagram: a model-level block or
-/// use (`scope` empty), or a block inside a subsystem (`scope` is the
-/// subsystem; one column per use of it). Returns the uses and rows by
+/// use (`scope` empty), a block inside the used model at a path (`scope`
+/// is the path, `car1` or `vehicle/plant`), or a block inside a model
+/// defined in the file (`scope` is the definition; one column per use). Returns the uses and rows by
 /// name, as a table.
 pub fn selected(
     rows: &[ParamRow],
@@ -199,10 +227,14 @@ pub fn selected(
 ) -> Option<UsesTable> {
     let (uses, inner): (Vec<String>, Option<&str>) = match scope {
         None => (vec![name.to_string()], None),
+        // A path into used models (`car1`, `vehicle/plant`): that use.
+        Some(s) if s.contains('/') || file.blocks.iter().any(|b| b.name == s && b.is_use()) => {
+            (vec![s.to_string()], Some(name))
+        }
         Some(s) => (
             file.blocks
                 .iter()
-                .filter(|b| b.type_name == s)
+                .filter(|b| b.model.as_deref() == Some(s))
                 .map(|b| b.name.clone())
                 .collect(),
             Some(name),
@@ -270,6 +302,21 @@ mod tests {
     }
 
     #[test]
+    fn rows_nest_by_path() {
+        let s = platoon();
+        let names = ["m", "plant/car.m", "vehicle/plant/car.c"];
+        let rows: Vec<(String, ParamRow)> = names
+            .iter()
+            .zip(s.params())
+            .map(|(n, r)| (n.to_string(), r))
+            .collect();
+        let n = nest(&rows);
+        assert_eq!(n.rows[0].0, "m");
+        assert_eq!(n.inner["plant"].rows[0].0, "car.m");
+        assert_eq!(n.inner["vehicle"].inner["plant"].rows[0].0, "car.c");
+    }
+
+    #[test]
     fn each_value_is_listed_once_where_it_is_set() {
         let s = platoon();
         let rows = s.params();
@@ -306,6 +353,23 @@ mod tests {
         assert_eq!(shown, 17);
         // Everything, computed values too.
         assert_eq!(organise(&rows, &s.file, true).computed, 0);
+    }
+
+    #[test]
+    fn a_block_picked_inside_a_used_model_shows_its_values() {
+        // Picked on the diagram inside `car1`: its car's values by path.
+        let s = platoon();
+        let rows = s.params();
+        let t = selected(&rows, &s.file, Some("car1"), "car").unwrap();
+        assert_eq!(t.uses, ["car1"]);
+        assert!(
+            t.rows
+                .iter()
+                .any(|(name, cells)| name == "m" && cells[0].is_some()),
+            "{:?}",
+            t.rows.iter().map(|(n, _)| n).collect::<Vec<_>>()
+        );
+        assert!(selected(&rows, &s.file, Some("car1"), "nothing").is_none());
     }
 
     #[test]

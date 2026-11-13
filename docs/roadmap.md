@@ -1,14 +1,14 @@
 # Roadmap
 
-_Last updated: 2026-10-23_
+_Last updated: 2026-10-26_
 
 Start with the equation sandbox: it exercises the whole Block contract, delivers all three pillars at small scale, and is useful on its own. Each gate is a working demo, not a feature count. If a gate fails, fix the Block contract before adding any new backend, because every later phase depends on it.
 
 ```mermaid
 flowchart LR
   P0["Phase 0 · Foundations<br/>one equation, live"] -->|"Gate: Lorenz runs live<br/>on the desktop"| P1["Phase 1 · Composition<br/>connect and reuse"]
-  P1 -->|"Gate: ODE + agents<br/>in one graph"| P2["Phase 2 · Breadth<br/>many domains"]
-  P2 -->|"Gate: verification<br/>suite passes"| P3["Phase 3 · Research<br/>trustworthy results"]
+  P1 -->|"Gate: ODE + agents<br/>in one graph"| P2["Phase 2 · Breadth<br/>interactive, extensible"]
+  P2 -->|"Gate: interactive cart-pole,<br/>replayed bit for bit"| P3["Phase 3 · Research<br/>trustworthy results"]
   P3 -->|"Gate: reproduce a<br/>published result"| V1((v1.0))
 ```
 
@@ -46,14 +46,20 @@ Goal: connect and reuse. Gate: an ODE model and an agent model run in one graph 
 
 ## Phase 2 · Breadth
 
-Goal: many domains. Gate: the verification suite passes for every backend.
+Goal: interactive real-time models, and heavy physics without rebuilding SimSandbox. Gate: an interactive cart-pole. A typed-equation controller balances a rigid-body pole live; the user disturbs it by dragging and with keys; rewinding and running on with the recorded input reproduces the run bit for bit; the demo is also checkable headless; every backend added passes its verification tests. Order, scope and gate: [ADR 0057](decisions/0057-phase-2-plan.md). The direction (agreed 2026-10-26) keeps a general game engine out of scope: no assets, audio, gameplay scripting or game export, and mature engines are wrapped, not written.
 
-- [ ] Rigid-body domain (MuJoCo)
+- [x] 1. Inputs: live, scheduled and replayed ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)), runs saved as run files ([ADR 0059](decisions/0059-run-files.md)). Input blocks and views that send input; every input recorded for exact replay; scheduled changes in the `run` section as input written in the file ([ADR 0042](decisions/0042-node-canvas.md)); headless input from a file. Built 2026-10-26; checked by the owner in the window on 2026-10-27
+- [x] 2. Typed equations with arrays and grid stencils ([ADR 0060](decisions/0060-arrays-in-typed-equations.md)), faster evaluation ([Q35](open-questions.md)), and an implicit method for stiff grids ([Q17](open-questions.md)); typed agent rules revisited ([Q26](open-questions.md)) Built 2026-10-27/28; follow-up: implicit methods are slow on large 2D grids (TR-BDF2 730 ms a step at 128 × 128, the LU ordering)
+- [ ] 2b. Probes: canvas nodes that record and save chosen values at chosen times, a memory budget, and runs that are exact (several cores, same bits everywhere) or fast ([ADR 0062](decisions/0062-probes-recording-and-replay.md)); recompute on demand after
+- [ ] 3. Rigid bodies and a 2D/3D scene view whose bodies can be grabbed (the gate). The engine is chosen by a spike between MuJoCo and Rapier, then its own ADR
+- [ ] 4. One plugin interface for user-defined blocks and views, after a WebAssembly spike ([Q28](open-questions.md), [Q37](open-questions.md))
+
+After the gate, in an order chosen then:
+
 - [ ] ML Blocks (ONNX Runtime)
 - [ ] FMI 3.0 import and export
 - [ ] Fast GPU fluids (real-time method)
 - [ ] Co-simulation master with adaptive steps, coupling-error estimates, iteration and rollback
-- [ ] Scheduled changes: parameter steps and disturbances at set times in the `run` section, so one run covers settling and a transient ([ADR 0042](decisions/0042-node-canvas.md))
 - [ ] Physical (acausal) connections in the equation domain
 
 ## Phase 3 · Research
@@ -63,6 +69,7 @@ Goal: trustworthy results. Gate: reproduce a published result end to end.
 - [ ] CFD/FEM batch runs (OpenFOAM, FEniCSx)
 - [ ] Parameter sweeps and uncertainty quantification
 - [ ] Provenance reports
+- [ ] Convergence check: a case earns Verified by rerunning at half the step (and twice the cells on grids) and showing the change as an error estimate; the label lasts until the model changes ([ADR 0061](decisions/0061-verified-is-earned-per-case.md)). First cases: the heat-rod examples
 - [ ] Cluster execution
 - [ ] Standalone player app and explorables gallery
 - [ ] AI model assistant

@@ -66,6 +66,17 @@ pub(crate) struct Link {
     pub factor: f64,
 }
 
+/// A route from a unit's output of varying length (a population, or a
+/// table's rows) to another's input: their places among the unit's ports
+/// of varying length.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RowsLink {
+    pub from: usize,
+    pub from_index: usize,
+    pub to: usize,
+    pub to_index: usize,
+}
+
 /// An output port of a unit: its index among the unit's outputs and where
 /// its values are.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +85,9 @@ struct Port {
     offset: usize,
     len: usize,
     name: String,
+    /// An output of varying length: its place among the unit's such
+    /// outputs (its values are not in the fixed arrays).
+    rows: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,26 +105,65 @@ pub(crate) struct OutputPlan {
 }
 
 impl OutputPlan {
-    /// Plan for `units` (their specs, named for messages) linked by `links`.
-    /// Fails if a feedthrough declaration names something that is not an
-    /// input of its Block.
-    pub fn new(units: &[(&BlockSpec, &str)], links: &[Link]) -> Result<Self> {
+    /// Plan for `units` (their specs, named for messages, and the indices
+    /// of their parameters driven by wires) linked by `links`. A unit's
+    /// driven parameters are inputs of its own after its ports, one value
+    /// each, in the order given (ADR 0075). Fails if a feedthrough
+    /// declaration names something that is not an input or parameter of
+    /// its Block.
+    pub fn new(
+        units: &[(&BlockSpec, &str, &[usize])],
+        links: &[Link],
+        rows_links: &[RowsLink],
+    ) -> Result<Self> {
         // Nodes: outputs with feedthrough.
         let mut nodes: Vec<Port> = Vec::new();
         let mut depends: Vec<Vec<(usize, usize)>> = Vec::new(); // (unit, input offset..len) pairs
-        for (u, (spec, name)) in units.iter().enumerate() {
+                                                                // The inputs of varying length each node depends on, by place.
+        let mut depends_rows: Vec<Vec<usize>> = Vec::new();
+        for (u, (spec, name, driven)) in units.iter().enumerate() {
             let mut offset = 0;
+            let mut varying = 0;
             for p in spec.outputs() {
-                let len = p.shape.len();
-                if !p.feedthrough.is_empty() {
-                    if p.shape.is_variable() {
+                if let Some(list) = &p.param_feedthrough {
+                    if let Some(q) = list
+                        .iter()
+                        .find(|q| !spec.params.iter().any(|s| &s.name == *q))
+                    {
                         return Err(SimError::InvalidDefinition(format!(
-                            "{name}.{}: populations cannot have direct feedthrough yet",
+                            "{name}.{} depends on '{q}', which is not a parameter of '{name}'",
                             p.name
                         )));
                     }
+                }
+                let len = p.shape.len();
+                // Driven parameters it reads at the same instant; starting
+                // values are read only when the block starts.
+                let params: Vec<(usize, usize)> = driven
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &i)| {
+                        let q = &spec.params[i];
+                        !q.initial_condition && p.reads_param(&q.name)
+                    })
+                    .map(|(j, _)| (spec.input_len() + j, 1))
+                    .collect();
+                let rows = p.shape.is_variable().then_some(varying);
+                if p.shape.is_variable() {
+                    varying += 1;
+                }
+                if !p.feedthrough.is_empty() || !params.is_empty() {
                     let mut deps = Vec::new();
+                    let mut deps_rows = Vec::new();
                     for i in &p.feedthrough {
+                        if let Some(k) = spec
+                            .inputs()
+                            .filter(|q| q.shape.is_variable())
+                            .position(|q| q.name == *i)
+                        {
+                            deps_rows.push(k);
+                            continue;
+                        }
                         let (off, n) = input_range(spec, i).ok_or_else(|| {
                             SimError::InvalidDefinition(format!(
                                 "{name}.{} depends on '{i}', which is not an input of '{name}'",
@@ -119,13 +172,16 @@ impl OutputPlan {
                         })?;
                         deps.push((off, n));
                     }
+                    deps.extend(params);
                     nodes.push(Port {
                         unit: u,
                         offset,
                         len,
                         name: format!("{name}.{}", p.name),
+                        rows,
                     });
                     depends.push(deps);
+                    depends_rows.push(deps_rows);
                 }
                 offset += len;
             }
@@ -141,8 +197,24 @@ impl OutputPlan {
                         continue;
                     }
                     for (p, src) in nodes.iter().enumerate() {
-                        if src.unit == l.from && overlaps(src.offset, src.len, l.from_offset, l.len)
+                        if src.rows.is_none()
+                            && src.unit == l.from
+                            && overlaps(src.offset, src.len, l.from_offset, l.len)
                         {
+                            edges[p].push(q);
+                        }
+                    }
+                }
+            }
+            // Through rows: from the output of varying length feeding an
+            // input this one depends on.
+            for &k in &depends_rows[q] {
+                for l in rows_links
+                    .iter()
+                    .filter(|l| l.to == node.unit && l.to_index == k)
+                {
+                    for (p, src) in nodes.iter().enumerate() {
+                        if src.unit == l.from && src.rows == Some(l.from_index) {
                             edges[p].push(q);
                         }
                     }
@@ -153,13 +225,20 @@ impl OutputPlan {
             .into_iter()
             .map(|c| {
                 let looped = c.len() > 1 || edges[c[0]].contains(&c[0]);
-                if looped {
+                if looped && c.iter().any(|&i| nodes[i].rows.is_some()) {
+                    let names: Vec<&str> = c.iter().map(|&i| nodes[i].name.as_str()).collect();
+                    return Err(SimError::AlgebraicLoop(format!(
+                        "{} form a loop through a table's rows (or a population), which cannot be solved; break it with a state",
+                        names.join(" → ")
+                    )));
+                }
+                Ok(if looped {
                     Item::Loop(c.into_iter().map(|i| nodes[i].clone()).collect())
                 } else {
                     Item::One(nodes[c[0]].clone())
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<Item>>>()?;
         let mut into = vec![Vec::new(); units.len()];
         for l in links {
             into[l.to].push(*l);
@@ -182,6 +261,21 @@ impl OutputPlan {
         self.items.is_empty()
     }
 
+    /// Whether every one of `unit`'s `len` output values is computed by
+    /// [`OutputPlan::solve`] on its own, outside any loop: what it held
+    /// before is then never read.
+    pub fn computes_all_of(&self, unit: usize, len: usize) -> bool {
+        let mut covered = 0;
+        for item in &self.items {
+            match item {
+                Item::One(p) if p.unit == unit => covered += p.len,
+                Item::Loop(ports) if ports.iter().any(|p| p.unit == unit) => return false,
+                _ => {}
+            }
+        }
+        len > 0 && covered == len
+    }
+
     /// Make the feedthrough outputs consistent with their inputs. Other
     /// outputs must already be final. `eval(unit, inputs, outputs)`
     /// computes all of a unit's outputs from its inputs (its state held).
@@ -192,15 +286,41 @@ impl OutputPlan {
         inputs: &mut [Vec<f64>],
         eval: &mut Eval<'_>,
     ) -> Result<()> {
+        self.solve_active(method, outputs, inputs, eval, None)
+    }
+
+    /// [`OutputPlan::solve`] for the units `active` marks only (ADR 0066
+    /// step 4b: the blocks whose clock has an instant now); the others
+    /// keep their outputs and their inputs.
+    pub fn solve_active(
+        &self,
+        method: LoopMethod,
+        outputs: &mut [Vec<f64>],
+        inputs: &mut [Vec<f64>],
+        eval: &mut Eval<'_>,
+        active: Option<&[bool]>,
+    ) -> Result<()> {
+        let on = |u: usize| active.is_none_or(|a| a[u]);
         let mut scratch = Vec::new();
         for item in &self.items {
             match item {
+                Item::One(p) if !on(p.unit) => {}
                 Item::One(p) => {
                     self.compute(p, outputs, inputs, eval, &mut scratch)?;
                     outputs[p.unit][p.offset..p.offset + p.len]
                         .copy_from_slice(&scratch[p.offset..p.offset + p.len]);
                 }
-                Item::Loop(ports) => self.solve_loop(method, ports, outputs, inputs, eval)?,
+                Item::Loop(ports) if ports.iter().all(|p| on(p.unit)) => {
+                    self.solve_loop(method, ports, outputs, inputs, eval)?
+                }
+                Item::Loop(ports) => {
+                    // Part of a loop is between its instants: solved with
+                    // those ports held.
+                    let now: Vec<Port> = ports.iter().filter(|p| on(p.unit)).cloned().collect();
+                    if !now.is_empty() {
+                        self.solve_loop(method, &now, outputs, inputs, eval)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -384,7 +504,7 @@ fn gauss(a: &mut [f64], mut b: Vec<f64>, n: usize) -> Option<Vec<f64>> {
 
 /// Strongly connected components (Tarjan), sources first: every edge goes
 /// from a component to itself or to a later one.
-fn components(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+pub(crate) fn components(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
     struct State<'a> {
         edges: &'a [Vec<usize>],
         index: Vec<Option<usize>>,
@@ -476,7 +596,7 @@ mod tests {
             tables: vec![],
             time: TimeSemantics::Stateless,
         };
-        let err = OutputPlan::new(&[(&spec, "b")], &[]).unwrap_err();
+        let err = OutputPlan::new(&[(&spec, "b", &[])], &[], &[]).unwrap_err();
         assert!(err.to_string().contains("b.y depends on 'v'"), "{err}");
     }
 

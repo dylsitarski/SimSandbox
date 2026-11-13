@@ -3,7 +3,7 @@ name = "simsandbox-session"
 description = "SimSandbox sessions: an open model with its recorded history, filters and sweeps, shared by the app, the CLI and the Python API"
 version.workspace = true
 edition.workspace = true
-rust-version = "1.95"
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -16,6 +16,7 @@ simsandbox-views = { path = "../simsandbox-views" }
 # The built-in examples load with every block type and view this build has.
 simsandbox-eq = { path = "../simsandbox-eq", features = ["views"] }
 simsandbox-agents = { path = "../simsandbox-agents" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Headless rendering (ADR 0039): egui with its own fonts, as the views
 # draw, and PNG output. Same pinned egui as simsandbox-views.

@@ -5,7 +5,7 @@
 //! parameters). A [`ViewState`] is one view on screen: a type, its slot
 //! bindings, its style values and the drawing state (e.g. a 3D camera).
 
-use crate::history::{Coordinate, History, SignalRef, TIME};
+use crate::history::{split_source, Coordinate, History, Recorded, SignalRef, TIME};
 use std::collections::BTreeMap;
 
 /// What a slot accepts.
@@ -13,11 +13,16 @@ use std::collections::BTreeMap;
 pub enum SlotKind {
     /// A scalar signal or `t`.
     Scalar,
-    /// A grid field.
+    /// A scalar signal, `t`, or a line of cells, which a view draws cell
+    /// by cell (a study's runs, ADR 0071).
+    Values,
+    /// A field drawn over two axes: a grid, or a field of more axes whose
+    /// others are left over (ADR 0086).
     Grid,
     /// A point set.
     Points,
-    /// A grid with one row (a line of cells).
+    /// A field drawn along one axis: a line of cells, or a field of more
+    /// axes whose others are left over (ADR 0086).
     Line,
     /// An axis of a field picture: the index (`t`) or a coordinate of the
     /// field bound to the slot named in [`Slot::of`] (ADR 0024).
@@ -25,6 +30,10 @@ pub enum SlotKind {
     /// A coordinate of the field bound to the slot named in [`Slot::of`],
     /// never the index.
     Coordinate,
+    /// A field over a table's rows, one value a row (ADR 0086).
+    Rows,
+    /// A mesh's cells (ADR 0086).
+    Mesh,
 }
 
 /// What a slot or style property's applicability is judged on (ADR 0025).
@@ -38,7 +47,7 @@ pub fn always(_: &Context<'_>) -> bool {
     true
 }
 
-/// Applies when the index is time, not a swept parameter.
+/// Applies when the index is time.
 pub fn over_time(c: &Context<'_>) -> bool {
     c.history.over_time()
 }
@@ -77,24 +86,53 @@ pub struct StyleProperty {
 /// Slot name to signal names (`"t"`, `"a.x"`, `"lorenz.xyz[0]"`).
 pub type Bindings = BTreeMap<String, Vec<String>>;
 
+/// A bound signal in the recording it comes from (ADR 0063): its binding
+/// as written, the recording and the signal there.
+#[derive(Clone, Copy)]
+pub struct Bound<'a> {
+    pub name: &'a str,
+    pub history: &'a History,
+    pub signal: SignalRef,
+}
+
 /// What a view draws from in one frame.
 pub struct ViewInput<'a> {
+    /// The recording of the view's first bound signal (in slot order), or
+    /// the model's: what [`ViewInput::one`] and [`ViewInput::many`] read.
     pub history: &'a History,
     pub bind: &'a Bindings,
+    /// The view feeds an `input.pointer` (ADR 0058): dragging sends the
+    /// pointer instead of panning, through [`View::pointer`].
+    pub sends_pointer: bool,
+    /// Bindings in `history`.
     slots: BTreeMap<&'a str, Vec<SignalRef>>,
+    /// Every binding, in its own recording.
+    any: BTreeMap<&'a str, Vec<Bound<'a>>>,
     style: &'a BTreeMap<String, f64>,
     view_type: &'a ViewType,
 }
 
-impl ViewInput<'_> {
-    /// The signal bound to a single slot.
+impl<'a> ViewInput<'a> {
+    /// The signal bound to a single slot, if it is in [`ViewInput::history`].
     pub fn one(&self, slot: &str) -> Option<SignalRef> {
         self.slots.get(slot).and_then(|v| v.first().copied())
     }
 
-    /// The signals bound to a slot.
+    /// The signals bound to a slot that are in [`ViewInput::history`]:
+    /// views that draw from one recording read these.
     pub fn many(&self, slot: &str) -> &[SignalRef] {
         self.slots.get(slot).map_or(&[], Vec::as_slice)
+    }
+
+    /// The signal bound to a single slot, from whichever recording.
+    pub fn one_any(&self, slot: &str) -> Option<Bound<'a>> {
+        self.any.get(slot).and_then(|v| v.first().copied())
+    }
+
+    /// The signals bound to a slot, each from its own recording: views that
+    /// pair signals at common times read these (ADR 0063).
+    pub fn many_any(&self, slot: &str) -> &[Bound<'a>] {
+        self.any.get(slot).map_or(&[], Vec::as_slice)
     }
 
     /// A style property's value, or its default where it is unset or does
@@ -152,6 +190,13 @@ pub trait View: Send {
     fn picked(&mut self) -> Option<String> {
         None
     }
+
+    /// While the view sends input ([`ViewInput::sends_pointer`]): the
+    /// pointer since last asked, `[x, y, down]` in the view's coordinates
+    /// (ADR 0058). Views that cannot send input return nothing.
+    fn pointer(&mut self) -> Option<[f64; 3]> {
+        None
+    }
 }
 
 /// What a model offers views: its recorded signals by kind and its block
@@ -164,25 +209,50 @@ pub struct Available<'a> {
     pub block_types: &'a [String],
     /// Grids with one row (lines of cells), which can be drawn over time.
     pub lines: &'a [String],
+    /// Fields over a table's rows, one value a row (ADR 0086), drawn by
+    /// id against another over the same table.
+    pub rows: &'a [String],
+    /// Meshes and the fields over them (ADR 0086).
+    pub meshes: &'a [crate::history::MeshInfo],
     /// Which fields place which others' cells (ADR 0024).
     pub coordinates: &'a [Coordinate],
-    /// In a sweep, the swept parameters' keys, also among `scalars`
-    /// (ADR 0028).
-    pub swept: &'a [String],
+    /// The outputs of filters with clocks of their own (ADR 0063): bound
+    /// by name, recorded apart from the model's history.
+    pub derived: &'a [String],
 }
 
 impl Available<'_> {
-    /// Whether `name` can fill a slot of this kind.
+    /// Whether `name` can fill a slot of this kind; from a probe
+    /// (`probe:NAME/signal`), whether the model has the signal.
     pub fn accepts(&self, kind: SlotKind, name: &str) -> bool {
+        if self.derived.iter().any(|p| p == name) {
+            return true;
+        }
+        let name = split_source(name).1;
         match kind {
             SlotKind::Scalar => name == TIME || self.scalars.iter().any(|s| s == name),
+            SlotKind::Values => {
+                name == TIME
+                    || self.scalars.iter().any(|s| s == name)
+                    || self.lines.iter().any(|s| s == name)
+                    || self.rows.iter().any(|s| s == name)
+            }
             SlotKind::Grid => self.grids.iter().any(|s| s == name),
             SlotKind::Points => self.points.iter().any(|s| s == name),
-            SlotKind::Line => self.lines.iter().any(|s| s == name),
+            // A line, or a field whose other axes are left over (ADR 0086).
+            SlotKind::Line => {
+                self.lines.iter().any(|s| s == name)
+                    || self.grids.iter().any(|s| s == name)
+                    || self.rows.iter().any(|s| s == name)
+            }
             // Whether it places the bound field is checked with the field,
             // so the reason can be given.
             SlotKind::Axis => name == TIME || self.grids.iter().any(|s| s == name),
-            SlotKind::Coordinate => self.grids.iter().any(|s| s == name),
+            SlotKind::Coordinate => {
+                self.grids.iter().any(|s| s == name) || self.rows.iter().any(|s| s == name)
+            }
+            SlotKind::Rows => self.rows.iter().any(|s| s == name),
+            SlotKind::Mesh => self.meshes.iter().any(|m| m.cells == name),
         }
     }
 
@@ -204,6 +274,7 @@ impl Available<'_> {
     /// `Some(axis)` for a coordinate; an error if it cannot be an axis of
     /// it.
     pub fn axis_of(&self, field: &str, name: &str) -> Result<Option<usize>, String> {
+        let (field, name) = (split_source(field).1, split_source(name).1);
         if name == TIME {
             return if self.lines.iter().any(|l| l == field) {
                 Ok(None)
@@ -226,13 +297,26 @@ impl Available<'_> {
             SlotKind::Scalar => std::iter::once(TIME)
                 .chain(self.scalars.iter().map(String::as_str))
                 .collect(),
+            SlotKind::Values => std::iter::once(TIME)
+                .chain(self.scalars.iter().map(String::as_str))
+                .chain(self.lines.iter().map(String::as_str))
+                .chain(self.rows.iter().map(String::as_str))
+                .collect(),
             SlotKind::Grid => self.grids.iter().map(String::as_str).collect(),
             SlotKind::Points => self.points.iter().map(String::as_str).collect(),
-            SlotKind::Line => self.lines.iter().map(String::as_str).collect(),
+            SlotKind::Line => self
+                .lines
+                .iter()
+                .chain(self.grids.iter().filter(|g| !self.lines.contains(g)))
+                .chain(self.rows.iter())
+                .map(String::as_str)
+                .collect(),
             SlotKind::Axis => std::iter::once(TIME)
                 .chain(self.coordinates.iter().map(|c| c.name.as_str()))
                 .collect(),
             SlotKind::Coordinate => self.coordinates.iter().map(|c| c.name.as_str()).collect(),
+            SlotKind::Rows => self.rows.iter().map(String::as_str).collect(),
+            SlotKind::Mesh => self.meshes.iter().map(|m| m.cells.as_str()).collect(),
         }
     }
 }
@@ -398,27 +482,90 @@ impl ViewRegistry {
     }
 }
 
-/// What a view of type `t` draws from: its bindings resolved in `history`;
-/// bindings to signals that no longer exist are skipped.
+/// What a view of type `t` draws from: its bindings resolved in their
+/// recordings; bindings to signals that no longer exist (or a probe that is
+/// gone) are skipped.
 pub(crate) fn view_input<'a>(
     bind: &'a Bindings,
     style: &'a BTreeMap<String, f64>,
     t: &'a ViewType,
-    history: &'a History,
+    recorded: Recorded<'a>,
 ) -> ViewInput<'a> {
-    let slots = bind
+    let any: BTreeMap<&str, Vec<Bound>> = bind
         .iter()
         .map(|(slot, names)| {
-            let refs = names.iter().filter_map(|n| history.resolve(n)).collect();
-            (slot.as_str(), refs)
+            let bound = names
+                .iter()
+                .filter_map(|n| {
+                    let (history, signal) = recorded.resolve(n)?;
+                    Some(Bound {
+                        name: n.as_str(),
+                        history,
+                        signal,
+                    })
+                })
+                .collect();
+            (slot.as_str(), bound)
+        })
+        .collect();
+    // The recording of the first signal bound, in slot order.
+    let history = t
+        .slots
+        .iter()
+        .filter_map(|s| any.get(s.name))
+        .flatten()
+        .find(|b| b.signal != SignalRef::Time)
+        .map_or(recorded.all, |b| b.history);
+    let slots = any
+        .iter()
+        .map(|(slot, bound)| {
+            let refs = bound
+                .iter()
+                .filter(|b| b.signal == SignalRef::Time || std::ptr::eq(b.history, history))
+                .map(|b| b.signal)
+                .collect();
+            (*slot, refs)
         })
         .collect();
     ViewInput {
         history,
         bind,
+        sends_pointer: false,
         slots,
+        any,
         style,
         view_type: t,
+    }
+}
+
+/// A plot's pointer as input (ADR 0058): `[x, y, down]` in the plot's
+/// coordinates while the pointer is pressed on it, and once more when it is
+/// let go (`down` 0), else nothing.
+#[derive(Debug, Default)]
+pub struct PlotPointer {
+    last: Option<[f64; 2]>,
+    sent: Option<[f64; 3]>,
+}
+
+impl PlotPointer {
+    /// Read the pointer from a plot's response, to be taken by
+    /// [`PlotPointer::take`].
+    pub fn read<R>(&mut self, response: &egui_plot::PlotResponse<R>) {
+        let r = &response.response;
+        if r.is_pointer_button_down_on() {
+            if let Some(pos) = r.interact_pointer_pos() {
+                let v = response.transform.value_from_position(pos);
+                self.last = Some([v.x, v.y]);
+                self.sent = Some([v.x, v.y, 1.0]);
+            }
+        } else if let Some([x, y]) = self.last.take() {
+            self.sent = Some([x, y, 0.0]);
+        }
+    }
+
+    /// What was read since last asked.
+    pub fn take(&mut self) -> Option<[f64; 3]> {
+        self.sent.take()
     }
 }
 
@@ -428,6 +575,8 @@ pub struct ViewState {
     pub bind: Bindings,
     /// Style values that differ from or override the defaults.
     pub style: BTreeMap<String, f64>,
+    /// The view feeds an `input.pointer` (ADR 0058), set by the app.
+    pub sends_pointer: bool,
     view: Box<dyn View>,
 }
 
@@ -442,6 +591,7 @@ impl ViewState {
             type_name: t.name.into(),
             bind,
             style: BTreeMap::new(),
+            sends_pointer: false,
             view: (t.create)(),
         })
     }
@@ -463,6 +613,7 @@ impl ViewState {
             type_name: t.name.into(),
             bind,
             style,
+            sends_pointer: false,
             view,
         })
     }
@@ -476,16 +627,28 @@ impl ViewState {
     }
 
     /// The view's selection controls, for the side panel.
-    pub fn edit_selection(&mut self, ui: &mut egui::Ui, t: &ViewType, history: &History) {
-        let input = view_input(&self.bind, &self.style, t, history);
+    pub fn edit_selection<'a>(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &ViewType,
+        recorded: impl Into<Recorded<'a>>,
+    ) {
+        let input = view_input(&self.bind, &self.style, t, recorded.into());
         self.view.edit_selection(ui, &input);
     }
 
-    /// Draw from `history`. Bindings to signals that no longer exist are
-    /// skipped.
-    pub fn show(&mut self, ui: &mut egui::Ui, t: &ViewType, history: &History) {
-        let input = view_input(&self.bind, &self.style, t, history);
+    /// Draw from what is recorded: the model's recording, and probes' for
+    /// bindings that name one. Bindings to signals that no longer exist
+    /// are skipped.
+    pub fn show<'a>(&mut self, ui: &mut egui::Ui, t: &ViewType, recorded: impl Into<Recorded<'a>>) {
+        let mut input = view_input(&self.bind, &self.style, t, recorded.into());
+        input.sends_pointer = self.sends_pointer;
         self.view.show(ui, &input);
+    }
+
+    /// The pointer the view sent since last asked (ADR 0058).
+    pub fn pointer(&mut self) -> Option<[f64; 3]> {
+        self.view.pointer()
     }
 
     pub fn camera(&self) -> Option<[f64; 3]> {
@@ -548,7 +711,9 @@ mod tests {
                 "plot.profile",
                 "plot.scatter",
                 "plot.surface",
-                "plot.contour"
+                "plot.contour",
+                "plot.values",
+                "plot.mesh",
             ]
         );
         assert!(crate::builtin::register(&mut r).is_err());
@@ -663,6 +828,55 @@ mod tests {
     }
 
     #[test]
+    fn values_show_scalars_and_lines() {
+        let r = ViewRegistry::builtin();
+        let v = r.get("plot.values").unwrap();
+        let scalars: Vec<String> = ["b.k", "b.reach"].map(String::from).to_vec();
+        let lines: Vec<String> = vec!["s.peak".into()];
+        let a = Available {
+            scalars: &scalars,
+            grids: &lines,
+            lines: &lines,
+            ..Default::default()
+        };
+        let bind: Bindings = [(
+            "values".to_string(),
+            vec!["b.k".to_string(), "s.peak".to_string()],
+        )]
+        .into();
+        assert!(v.check(&bind, &BTreeMap::new(), &a).is_ok());
+        let preset = ViewState::from_preset(v, 0, &a).unwrap();
+        assert_eq!(preset.bind["values"], scalars);
+    }
+
+    #[test]
+    fn plot_xy_draws_lines_of_cells_against_each_other() {
+        // A study's results: lines of cells, plotted cell by cell (ADR 0071).
+        let r = ViewRegistry::builtin();
+        let xy = r.get("plot.xy").unwrap();
+        let lines: Vec<String> = ["s.ki", "s.reach", "s.peak"].map(String::from).to_vec();
+        let a = Available {
+            grids: &lines,
+            lines: &lines,
+            ..Default::default()
+        };
+        let bind: Bindings = [
+            ("x".to_string(), vec!["s.ki".to_string()]),
+            ("y".to_string(), vec!["s.reach".to_string()]),
+            ("colour".to_string(), vec!["s.peak".to_string()]),
+        ]
+        .into();
+        assert!(xy.check(&bind, &BTreeMap::new(), &a).is_ok());
+        let cells = xy
+            .presets
+            .iter()
+            .position(|p| p.label == "Cell by cell")
+            .unwrap();
+        let v = ViewState::from_preset(xy, cells, &a).unwrap();
+        assert_eq!(v.bind, bind);
+    }
+
+    #[test]
     fn settings_that_do_not_apply_fall_back_to_their_defaults() {
         let r = ViewRegistry::builtin();
         let xy = r.get("plot.xy").unwrap();
@@ -672,7 +886,9 @@ mod tests {
             ViewInput {
                 history: h,
                 bind: &bind,
+                sends_pointer: false,
                 slots: BTreeMap::new(),
+                any: BTreeMap::new(),
                 style: &style,
                 view_type: xy,
             }
@@ -680,7 +896,10 @@ mod tests {
         };
         // Over time the saved trail applies; in a sweep it means nothing.
         assert_eq!(input(&History::new(vec![])), 5.0);
-        assert_eq!(input(&History::with_index("spring.w", vec![])), -1.0);
+        assert_eq!(
+            input(&History::with_fields("spring.w", vec![], Vec::new())),
+            -1.0
+        );
     }
 
     #[test]

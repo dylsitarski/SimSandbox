@@ -33,9 +33,10 @@ impl HeatRod {
                 name: name.into(),
                 domain: Domain::Equations,
                 ports: vec![
-                    PortSpec::output("temperature", k, Shape::Grid { nx: n, ny: 1 }),
+                    PortSpec::output("temperature", k, Shape::Grid { nx: n, ny: 1 }).from_state(0),
                     PortSpec::output("position", Unit::METER, Shape::Grid { nx: n, ny: 1 })
-                        .coordinate_of("temperature", 0),
+                        .coordinate_of("temperature", 0)
+                        .depends_on_params(&["length"]),
                 ],
                 params: vec![
                     param(
@@ -162,10 +163,15 @@ impl Grass {
                 domain: Domain::Equations,
                 ports: vec![
                     PortSpec::input("grazing", per_second, grid),
-                    PortSpec::output("grass", density, grid),
-                    PortSpec::output("x", Unit::METER, grid).coordinate_of("grass", 0),
-                    PortSpec::output("y", Unit::METER, grid).coordinate_of("grass", 1),
-                    PortSpec::output("total", Unit::KILOGRAM, Shape::Scalar),
+                    PortSpec::output("grass", density, grid).from_state(0),
+                    PortSpec::output("x", Unit::METER, grid)
+                        .coordinate_of("grass", 0)
+                        .depends_on_params(&["size"]),
+                    PortSpec::output("y", Unit::METER, grid)
+                        .coordinate_of("grass", 1)
+                        .depends_on_params(&["size"]),
+                    PortSpec::output("total", Unit::KILOGRAM, Shape::Scalar)
+                        .depends_on_params(&["size"]),
                 ],
                 params: vec![
                     param(
@@ -271,7 +277,9 @@ impl Orbits {
                         count: Self::PARTICLES,
                         dim: 2,
                     },
-                )],
+                )
+                // From the state only.
+                .depends_on_params(&[])],
                 params: vec![
                     param("GM", one, 1.0, 0.0, 5.0, "Central mass times G"),
                     param(
@@ -318,7 +326,7 @@ fn inverse_cube(r2: f64, eps: f64) -> f64 {
 impl Equations for Orbits {
     fn rhs(&self, _t: f64, x: &[f64], _u: &[f64], p: &[f64], dx: &mut [f64]) {
         let (gm, eps) = (p[0], p[1]);
-        for (s, d) in x.chunks_exact(4).zip(dx.chunks_exact_mut(4)) {
+        for (s, d) in x.as_chunks::<4>().0.iter().zip(dx.as_chunks_mut::<4>().0) {
             let a = -gm * inverse_cube(s[0] * s[0] + s[1] * s[1], eps);
             d[0] = s[2];
             d[1] = s[3];
@@ -328,7 +336,7 @@ impl Equations for Orbits {
     }
 
     fn outputs(&self, _t: f64, x: &[f64], _u: &[f64], _p: &[f64], y: &mut [f64]) {
-        for (s, out) in x.chunks_exact(4).zip(y.chunks_exact_mut(2)) {
+        for (s, out) in x.as_chunks::<4>().0.iter().zip(y.as_chunks_mut::<2>().0) {
             out.copy_from_slice(&s[..2]);
         }
     }
@@ -344,7 +352,7 @@ impl OdeSystem for Orbits {
         // The golden angle spreads the particles evenly without lining up.
         let golden = std::f64::consts::PI * (3.0 - 5f64.sqrt());
         let n = Self::PARTICLES as f64;
-        for (i, s) in x0.chunks_exact_mut(4).enumerate() {
+        for (i, s) in x0.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let r = r_min + (r_max - r_min) * (i as f64 + 0.5) / n;
             let (sin, cos) = (i as f64 * golden).sin_cos();
             // Circular orbit: v²/r = GM r / (r² + ε²)^(3/2).
@@ -471,7 +479,9 @@ mod tests {
         let (start, id) = run(Orbits::new("o"), &[("speed", 1.0)], dt, 0);
         let (end, _) = run(Orbits::new("o"), &[("speed", 1.0)], dt, steps);
         let radius = |p: &[f64]| {
-            p.chunks_exact(2)
+            p.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| c[0].hypot(c[1]))
                 .collect::<Vec<_>>()
         };

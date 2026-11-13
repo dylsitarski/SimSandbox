@@ -20,13 +20,17 @@
 //! - [`random`]: counter-based random numbers (ADR 0034).
 
 pub mod block;
+pub mod clock;
 pub mod error;
 pub mod fusion;
 pub mod graph;
+pub mod hold;
 pub mod loops;
+pub mod parallel;
 pub mod random;
 pub mod registry;
 pub mod sampling;
+pub mod schedule;
 pub mod sim;
 pub mod table;
 pub mod units;

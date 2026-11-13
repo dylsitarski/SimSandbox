@@ -73,6 +73,10 @@ pub struct InputPort {
     /// Inner inputs, `"block.port"`.
     #[serde(default)]
     pub to: Vec<String>,
+    /// For a model's exposed input (ADR 0074): the unit it takes, as
+    /// written (`m/s`); empty for a plain number.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unit: String,
     /// Where its node sits on the subsystem's canvas (`at` before
     /// ADR 0052).
     #[serde(default, alias = "at", skip_serializing_if = "Option::is_none")]
@@ -344,7 +348,13 @@ pub(crate) struct Check {
 /// What a name at one level of the model stands for.
 enum Item {
     Block(String),
-    Instance { inputs: Inputs, outputs: Outputs },
+    Instance {
+        inputs: Inputs,
+        outputs: Outputs,
+        /// Its declared parameters a wire may drive (ADR 0075): the flat
+        /// `block.param`s set to each alone, or why it cannot be driven.
+        params: Params,
+    },
 }
 
 struct Ctx<'a> {
@@ -508,6 +518,36 @@ fn declared_unit(text: &str, path: &str) -> Result<Option<Unit>, FileError> {
         .map_err(|e| invalid(path, format!("{e}; leave it out for none")))
 }
 
+/// The value of a formula of a file's declared parameters `decls`, in
+/// `unit` (ADR 0066): a value given once to a model on its own clock,
+/// which runs in a simulator of its own.
+pub(crate) fn evaluate_formula(
+    text: &str,
+    decls: &BTreeMap<String, ParamDecl>,
+    unit: &str,
+    path: &str,
+) -> Result<f64, FileError> {
+    let mut declared = Vec::new();
+    let mut scope = BTreeMap::new();
+    for (name, d) in decls {
+        scope.insert(name.clone(), declared.len());
+        declared.push(Declared {
+            key: name.clone(),
+            value: d.value,
+            formula: None,
+            default: None,
+            unit: d.unit.clone(),
+            description: String::new(),
+            range: None,
+            editable: false,
+        });
+    }
+    let mut f = compile(text, &scope, path, &declared)?;
+    f.fit(declared_unit(unit, path)?.as_ref(), "the parameter", path)?;
+    let values: Vec<f64> = declared.iter().map(|d| d.value).collect();
+    Ok(f.expr.eval(&values))
+}
+
 /// Compile a formula of the declared parameters in `scope`; checked and
 /// in SI when one of its names has a unit (ADR 0045).
 fn compile(
@@ -560,6 +600,13 @@ fn compile(
 type Inputs = BTreeMap<String, Vec<String>>;
 /// A subsystem's outputs as the flat output each shows.
 type Outputs = BTreeMap<String, String>;
+type Params = BTreeMap<String, std::result::Result<Vec<String>, String>>;
+
+/// Whether formula `text` names `name`.
+fn names(text: &str, name: &str) -> bool {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|w| w == name)
+}
 
 /// Resolve a subsystem's ports among its inner items.
 fn interface(
@@ -614,7 +661,15 @@ fn resolve(items: &BTreeMap<String, Item>, key: &str, input: bool) -> Result<Vec
     match items.get(name) {
         None => Err(format!("no block named '{name}'")),
         Some(Item::Block(flat)) => Ok(vec![format!("{flat}.{port}")]),
-        Some(Item::Instance { inputs, outputs }) => {
+        Some(Item::Instance {
+            inputs,
+            outputs,
+            params,
+        }) => {
+            // A wire into a declared parameter drives it (ADR 0075).
+            if let (true, None, Some(p)) = (input, inputs.get(port), params.get(port)) {
+                return p.clone();
+            }
             let found = if input {
                 inputs.get(port).cloned()
             } else {
@@ -622,7 +677,7 @@ fn resolve(items: &BTreeMap<String, Item>, key: &str, input: bool) -> Result<Vec
             };
             found.ok_or_else(|| {
                 let (kind, names): (&str, Vec<&String>) = if input {
-                    ("input", inputs.keys().collect())
+                    ("input", inputs.keys().chain(params.keys()).collect())
                 } else {
                     ("output", outputs.keys().collect())
                 };
@@ -649,8 +704,10 @@ impl Ctx<'_> {
         epath: &str,
         top: bool,
     ) -> Result<BTreeMap<String, usize>, FileError> {
-        for (k, v) in &entry.params {
-            if !k.contains('.') && !def.params.contains_key(k) {
+        for k in entry.params.keys() {
+            // `block.param` and `use/k` reach inside; a plain name is one
+            // of the subsystem's own parameters.
+            if !k.contains('.') && !k.contains('/') && !def.params.contains_key(k) {
                 let names: Vec<&str> = def.params.keys().map(String::as_str).collect();
                 return Err(invalid(
                     format!("{epath}.params.{k}"),
@@ -659,12 +716,6 @@ impl Ctx<'_> {
                         entry.type_name,
                         if names.is_empty() { "none".into() } else { names.join(", ") }
                     ),
-                ));
-            }
-            if k.contains('.') && v.number().is_none() {
-                return Err(invalid(
-                    format!("{epath}.params.{k}"),
-                    "inner parameters are set to numbers",
                 ));
             }
         }
@@ -778,8 +829,19 @@ impl Ctx<'_> {
         }
         for (ci, c) in connections.iter().enumerate() {
             let cpath = format!("{path}connections[{ci}]");
-            let from =
-                resolve(&items, &c.from, false).map_err(|m| invalid(format!("{cpath}.from"), m))?;
+            // A probe feeding the model (ADR 0063), on the model's level:
+            // the loader puts a hold between them.
+            let from = if c.from.starts_with("probe:") {
+                if !path.is_empty() {
+                    return Err(invalid(
+                        format!("{cpath}.from"),
+                        "probes feed blocks on the model's level, not inside a subsystem",
+                    ));
+                }
+                vec![c.from.clone()]
+            } else {
+                resolve(&items, &c.from, false).map_err(|m| invalid(format!("{cpath}.from"), m))?
+            };
             let to = resolve(&items, &c.to, true).map_err(|m| invalid(format!("{cpath}.to"), m))?;
             for t in to {
                 self.connections.push(ConnectionEntry {
@@ -835,11 +897,47 @@ impl Ctx<'_> {
         let inner_prefix = format!("{flat}/");
         let path = format!("subsystems.{ty}.");
         let first = self.blocks.len();
+        let first_declared = self.plan.declared.len();
         let items = self.level(&def.blocks, &def.connections, &inner_prefix, &path, &scope)?;
         self.stack.pop();
-        // Inner values set for this instance only.
+        // Inner values set for this instance only: numbers, or formulas of
+        // the parameters where the instance is written (ADR 0066).
+        let values: Vec<f64> = self.plan.declared.iter().map(|d| d.value).collect();
         for (k, v) in &entry.params {
+            let fpath = format!("{epath}.params.{k}");
             let Some((inner, param)) = k.rsplit_once('.') else {
+                // `use/k`: a parameter declared by an instance inside.
+                let Some((inst, pname)) = k.rsplit_once('/') else {
+                    continue;
+                };
+                let key = format!("{inner_prefix}{inst}.{pname}");
+                let d = self.plan.declared[first_declared..]
+                    .iter_mut()
+                    .find(|d| d.key == key)
+                    .ok_or_else(|| {
+                        invalid(
+                            &fpath,
+                            format!("'{ty}' has no subsystem '{inst}' declaring '{pname}'"),
+                        )
+                    })?;
+                match v {
+                    ParamValue::Number(n) => {
+                        d.value = *n;
+                        d.formula = None;
+                    }
+                    ParamValue::Formula(text) => {
+                        let unit = declared_unit(&d.unit, &fpath)?;
+                        let mut f = compile(text, outer, &fpath, &self.plan.declared)?;
+                        f.fit(unit.as_ref(), &key, &fpath)?;
+                        let d = self.plan.declared[first_declared..]
+                            .iter_mut()
+                            .find(|d| d.key == key)
+                            .expect("found above");
+                        d.value = f.expr.eval(&values);
+                        d.formula = Some(f);
+                        d.editable = false;
+                    }
+                }
                 continue;
             };
             let target = format!("{inner_prefix}{inner}");
@@ -852,10 +950,25 @@ impl Ctx<'_> {
                         format!("'{ty}' has no block '{inner}'"),
                     )
                 })?;
-            b.params.insert(param.into(), v.clone());
             self.plan
                 .derived
                 .retain(|d| !(d.block == target && d.param == param));
+            match v {
+                ParamValue::Number(_) => {
+                    b.params.insert(param.into(), v.clone());
+                }
+                ParamValue::Formula(text) => {
+                    let f = compile(text, outer, &fpath, &self.plan.declared)?;
+                    b.params
+                        .insert(param.into(), ParamValue::Number(f.expr.eval(&values)));
+                    self.plan.derived.push(Derived {
+                        block: target.clone(),
+                        param: param.into(),
+                        formula: f,
+                        path: fpath.clone(),
+                    });
+                }
+            }
         }
         for (inner, start) in &entry.starts {
             let target = format!("{inner_prefix}{inner}");
@@ -871,7 +984,59 @@ impl Ctx<'_> {
             b.start = Some(start.clone());
         }
         let (inputs, outputs) = interface(def, &items, &path)?;
-        Ok(Item::Instance { inputs, outputs })
+        // What a wire into each declared parameter drives: the inner
+        // parameters set to it alone, unless a formula reads it otherwise.
+        let mut params = Params::new();
+        for d in def.params.keys() {
+            let mut targets = Vec::new();
+            let mut blocked = None;
+            for b in &def.blocks {
+                for (k, v) in &b.params {
+                    let ParamValue::Formula(text) = v else {
+                        continue;
+                    };
+                    let text = text.trim();
+                    if text != d {
+                        if names(text, d) {
+                            blocked = Some(format!("{}.{k} = {text} reads it", b.name));
+                        }
+                        continue;
+                    }
+                    match items.get(&b.name) {
+                        Some(Item::Block(flat)) => targets.push(format!("{flat}.{k}")),
+                        Some(Item::Instance { params: inner, .. }) => match inner.get(k) {
+                            Some(Ok(t)) => targets.extend(t.iter().cloned()),
+                            Some(Err(e)) => blocked = Some(e.clone()),
+                            None => blocked = Some(format!("{}.{k} = {text}", b.name)),
+                        },
+                        None => {}
+                    }
+                }
+            }
+            // An inner value this use sets itself is not driven.
+            targets.retain(|t| {
+                !entry
+                    .params
+                    .keys()
+                    .any(|k| format!("{inner_prefix}{k}") == *t)
+            });
+            params.insert(
+                d.clone(),
+                match blocked {
+                    Some(why) => Err(format!(
+                        "'{}' cannot drive its parameter {d}: {why}; only parameters set to \
+                         it alone can be driven (ADR 0075)",
+                        entry.name
+                    )),
+                    None => Ok(targets),
+                },
+            );
+        }
+        Ok(Item::Instance {
+            inputs,
+            outputs,
+            params,
+        })
     }
 }
 
@@ -965,10 +1130,11 @@ impl Check {
     pub(crate) fn verify(
         &self,
         registry: &simsandbox_core::registry::Registry,
+        folder: Option<&std::path::Path>,
     ) -> Result<(), FileError> {
         let (mut model, ids) = self
             .file
-            .build(registry)
+            .build(registry, folder)
             .map_err(|e| crate::origin(e, &self.block_origins, &self.connection_origins))?;
         self.plan.clone().fit_blocks(&mut model, &ids)?;
         for (path, port, input) in &self.ports {

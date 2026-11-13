@@ -2,21 +2,22 @@
 //! recorded signals the views draw from, and its parameters.
 
 use crate::filters::Filters;
-use simsandbox_core::block::{MethodLabels, Shape};
+use crate::probe::{ProbeSpec, Trigger};
+use simsandbox_core::block::{MethodLabels, Shape, TimeSemantics};
 use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::{Simulator, Snapshot};
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
-use simsandbox_file::{
-    Design, FilterEntry, FusedGroup, ModelFile, ParamPlan, Plan, Sampling, ViewEntry,
-};
+use simsandbox_file::runs::RunFile;
+use simsandbox_file::{FilterEntry, FusedGroup, ModelFile, ParamPlan, ProbeEntry, ViewEntry};
 use simsandbox_views::cut::Geometry;
 use simsandbox_views::history::thin;
-use simsandbox_views::{Available, Coordinate, FieldShape, History, SignalRef};
+use simsandbox_views::{
+    Available, Coordinate, FieldShape, History, MeshInfo, MeshShape, SignalRef,
+};
 use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::time::{Duration, Instant};
 
 /// The recorded history, shared with the window (ADR 0035): the session
 /// writes it, the window reads it to draw. Cloning shares it.
@@ -46,6 +47,134 @@ impl SharedHistory {
     }
 }
 
+/// A probe besides the implicit one (ADR 0062): a subset of what the
+/// session records, on its own schedule, kept its own way.
+struct Extra {
+    spec: ProbeSpec,
+    trigger: Trigger,
+    history: SharedHistory,
+    /// Where its signals and fields are in a whole sample.
+    signals: Vec<usize>,
+    fields: Vec<usize>,
+    pending: Vec<Pending>,
+    /// Whether it keeps samples in memory: only while something reads
+    /// them (views, filters, a file written when asked, a headless run),
+    /// so a probe feeding a block or writing as it records costs none.
+    in_memory: bool,
+    /// Its file, written as it records (ADR 0063).
+    stream: Option<crate::probe::Stream>,
+}
+
+impl Extra {
+    /// Its signals' names and its fields, as recorded.
+    fn layout(&self) -> (Vec<String>, Vec<(String, FieldShape)>) {
+        let h = self.history.read();
+        (
+            h.names().to_vec(),
+            h.fields()
+                .iter()
+                .map(|f| (f.name.clone(), f.shape))
+                .collect(),
+        )
+    }
+}
+
+/// Where an input of a filter with a clock of its own comes from
+/// (ADR 0063).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Src {
+    /// The model, at every step.
+    Model,
+    /// A probe, by place.
+    Probe(usize),
+    /// Another such filter, by place (always an earlier one).
+    Derived(usize),
+}
+
+/// One input: its name, source, and where its value is: a place in the
+/// whole sample (model, probe), or among that filter's outputs.
+#[derive(Clone, Debug)]
+struct Input {
+    name: String,
+    src: Src,
+    at: usize,
+    field: bool,
+}
+
+/// A filter with an input from a probe (ADR 0063): it runs when its
+/// sources record (all of them, or any with `when: any`) and keeps its
+/// own recording, bound by its outputs' names.
+struct Derived {
+    entry: FilterEntry,
+    /// Its probes as set, so it is kept while they do not change.
+    key: Vec<ProbeSpec>,
+    filters: Filters,
+    inputs: Vec<Input>,
+    sources: Vec<Src>,
+    /// Each input's latest value (one number for a signal).
+    held: Vec<Option<Vec<f64>>>,
+    history: SharedHistory,
+    pending: Vec<Pending>,
+    /// What it gave at the current step, for filters reading it.
+    now: Option<(Vec<f64>, Vec<Vec<f64>>)>,
+}
+
+impl Derived {
+    /// Its outputs' names: signals, then fields.
+    fn outputs(&self) -> (Vec<String>, Vec<String>) {
+        (
+            self.filters.exprs.iter().map(|f| f.name.clone()).collect(),
+            self.filters
+                .cuts
+                .iter()
+                .flat_map(|c| c.fields().into_iter().map(|(n, _)| n))
+                .collect(),
+        )
+    }
+
+    fn flush(&mut self, wait: bool) -> bool {
+        if self.pending.is_empty() {
+            return true;
+        }
+        let guard = if wait {
+            Some(self.history.write())
+        } else {
+            self.history.try_write()
+        };
+        let Some(mut h) = guard else {
+            return false;
+        };
+        for p in self.pending.drain(..) {
+            let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
+            h.push_sample(p.index, &p.values, &frames);
+        }
+        true
+    }
+}
+
+impl Extra {
+    /// Append any pending samples, waiting for readers if `wait`.
+    /// Returns whether none are left.
+    fn flush(&mut self, wait: bool) -> bool {
+        if self.pending.is_empty() {
+            return true;
+        }
+        let guard = if wait {
+            Some(self.history.write())
+        } else {
+            self.history.try_write()
+        };
+        let Some(mut h) = guard else {
+            return false;
+        };
+        for p in self.pending.drain(..) {
+            let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
+            h.push_sample(p.index, &p.values, &frames);
+        }
+        true
+    }
+}
+
 /// A sample that found the history being read, kept to append later.
 struct Pending {
     index: f64,
@@ -53,24 +182,40 @@ struct Pending {
     frames: Vec<Vec<f64>>,
 }
 
-/// A sweep being evaluated, a slice at a time (ADR 0035): the next sample,
-/// and for a two-parameter grid the columns collected so far.
-struct ResampleJob {
-    next: usize,
-    columns: Vec<Vec<f64>>,
-    started: Instant,
-}
-
-/// A sweep counts as real-time (ADR 0037) when it recomputes within this.
-const REAL_TIME_SWEEP: Duration = Duration::from_millis(33);
-
-/// Take a snapshot for rewind every this many steps.
-const SNAPSHOT_EVERY: usize = 10;
-/// When the snapshots grow past this, every other one is dropped: the whole
-/// run stays reachable, at coarser resolution.
+/// When the snapshots grow past this many, or past the recorder's memory
+/// budget (ADR 0064), every other one is dropped: the whole run stays
+/// reachable, at coarser resolution. Gray–Scott (128 × 128, its outputs
+/// computed again on rewind, ADR 0063) takes about 0.26 MB a snapshot, so
+/// the default 256 MB keeps about 1 000.
 const MAX_SNAPSHOTS: usize = 10_000;
 
+/// The app's memory budget by default, in MB (ADR 0062 step 5): shared by
+/// snapshots, the history and probes, a quarter each by default.
+pub const DEFAULT_MEMORY_MB: f64 = 1024.0;
+
+/// What a session's recordings hold against its memory budget (ADR 0062
+/// step 5), in bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryUse {
+    pub budget: usize,
+    pub held: usize,
+    /// Each part: `snapshots`, `history`, `probe NAME`, `filter NAME`.
+    pub parts: Vec<(String, usize)>,
+}
+
+impl MemoryUse {
+    /// The part holding most, if any holds anything.
+    pub fn largest(&self) -> Option<&(String, usize)> {
+        self.parts.iter().filter(|p| p.1 > 0).max_by_key(|p| p.1)
+    }
+
+    pub fn over(&self) -> bool {
+        self.held > self.budget
+    }
+}
+
 /// Where a recorded signal comes from: an element of an output port.
+#[derive(Clone)]
 struct Source {
     block: BlockId,
     port: String,
@@ -78,6 +223,7 @@ struct Source {
 }
 
 /// A whole output port recorded as a field (a grid or a point set).
+#[derive(Clone)]
 struct FieldSource {
     block: BlockId,
     port: String,
@@ -104,52 +250,30 @@ pub struct ParamRow {
     pub suggested: [f64; 2],
     pub initial_condition: bool,
     pub value: f64,
+    /// The signal driving it (ADR 0075), `block.port`: then its value is
+    /// that signal's, not set by hand.
+    pub driven: Option<String>,
 }
 
-/// A sweep (ADR 0027, ADR 0028), for models with no states: the outputs
-/// are evaluated at each sample of the swept parameters instead of running
-/// in time. Every sample is recorded, with the swept parameters as signals;
-/// a grid over two parameters also gives every signal reshaped as a grid
-/// named `grid.<signal>`, the parameters' grids as its coordinates.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Sweep {
-    /// As written in the file's `sample` section.
-    pub sampling: Sampling,
-    /// The samples it gives.
-    pub plan: Plan,
-    /// The block and parameter of each swept key.
-    targets: Vec<(BlockId, String)>,
-}
-
-impl Sweep {
-    /// The swept parameters' keys, `"block.param"`.
-    pub fn keys(&self) -> &[String] {
-        &self.plan.keys
-    }
-
-    /// The grid's size when the design is a grid over two parameters.
-    pub fn grid(&self) -> Option<(usize, usize)> {
-        match self.plan.grid.as_deref() {
-            Some(&[nx, ny]) => Some((nx, ny)),
-            _ => None,
-        }
-    }
-
-    /// Two parameters on a grid: results are also offered as grids.
-    pub fn is_grid(&self) -> bool {
-        self.grid().is_some()
-    }
-
-    /// The samples have no order to draw lines along: anything but a grid
-    /// over one parameter.
-    pub fn unordered(&self) -> bool {
-        !(self.plan.design == Design::Grid && self.plan.keys.len() == 1)
-    }
-}
-
-/// The name of signal `name` reshaped as a grid over a two-parameter sweep.
-pub fn grid_name(name: &str) -> String {
-    format!("grid.{name}")
+/// The parameters of `model` driven by wires, as `block.param` to the
+/// `block.port` driving each (ADR 0075).
+pub fn drives(model: &simsandbox_core::graph::Model) -> Vec<(String, String)> {
+    let name = |id: BlockId| {
+        model
+            .block(id)
+            .map(|b| b.spec().name.clone())
+            .unwrap_or_default()
+    };
+    model
+        .drives()
+        .iter()
+        .map(|c| {
+            (
+                format!("{}.{}", name(c.to.block), c.to.port),
+                format!("{}.{}", name(c.from.block), c.from.port),
+            )
+        })
+        .collect()
 }
 
 pub struct Session {
@@ -171,11 +295,39 @@ pub struct Session {
     /// Blocks solved together as one system (ADR 0023).
     pub groups: Vec<FusedGroup>,
     pub dt: f64,
-    /// Recorded signals, one per plotted output element (ADR 0015), and in
-    /// a sweep the swept parameters (ADR 0028); shared with the window.
+    /// Recorded signals, one per plotted output element (ADR 0015);
+    /// shared with the window.
     history: SharedHistory,
     /// Samples waiting for the window to stop reading.
     pending: Vec<Pending>,
+    /// Probes besides the implicit one, which is `history` (ADR 0062).
+    probes: Vec<Extra>,
+    /// What views read from the model directly (ADR 0063): the history
+    /// records these and what filters read, nothing else. `None` until
+    /// known (a model without saved views, before the app shows any):
+    /// everything.
+    view_reads: Option<Vec<String>>,
+    /// Every scalar and per-sample field a step yields, in sample order:
+    /// what probes take from and views can bind.
+    layout_scalars: Vec<String>,
+    layout_fields: Vec<(String, FieldShape)>,
+    /// Which fields place which others' cells, among everything a step
+    /// yields.
+    all_coordinates: Vec<Coordinate>,
+    /// Filters with an input from a probe, each with its own clock and
+    /// recording (ADR 0063), in dependency order.
+    derived: Vec<Derived>,
+    /// Their outputs' names, as views bind them.
+    derived_names: Vec<String>,
+    /// Probes whose recordings views read.
+    view_probes: Vec<String>,
+    /// Keep every probe's samples (a headless run).
+    record_all_probes: bool,
+    /// Where probes write their files as they record.
+    probe_dir: Option<std::path::PathBuf>,
+    /// What the history keeps of each sample: places in the layout.
+    keep_signals: Vec<usize>,
+    keep_fields: Vec<usize>,
     sources: Vec<Source>,
     /// Names of the scalar output signals, in `sources` order.
     output_names: Vec<String>,
@@ -191,56 +343,192 @@ pub struct Session {
     /// types: what views can bind besides scalars.
     grids: Vec<String>,
     points: Vec<String>,
+    /// Fields over a table's rows, one value each (ADR 0086).
+    rows: Vec<String>,
+    /// Meshes views can draw, and how (ADR 0086).
+    meshes: Vec<MeshInfo>,
+    mesh_shapes: Vec<(String, MeshShape)>,
     block_types: Vec<String>,
     /// Where the app pauses (the file's `run.t_end`); cleared once reached so
     /// Run continues past it (ADR 0013).
     stop_at: Option<f64>,
     sim: Simulator,
     snapshots: Vec<Snapshot>,
+    /// The app's memory budget in MB (ADR 0062 step 5).
+    memory_mb: f64,
     steps_since_snapshot: usize,
-    /// Set when the model has no states: it is swept, not run.
-    sweep: Option<Arc<Sweep>>,
-    /// The sweep being evaluated, if not finished.
-    job: Option<ResampleJob>,
-    /// Sweeps are evaluated by [`Session::resume_resample`] (on the worker
-    /// thread) instead of at once.
-    deferred: bool,
-    /// How long the last complete sweep took.
-    last_sweep: Option<Duration>,
+    /// Built without running its studies ([`crate::study::without_running_studies`]),
+    /// or (evaluated later) changed since last evaluated: [`Session::evaluate`]
+    /// brings it up to date.
+    unevaluated: bool,
+    /// Nothing in it runs in time (ADR 0072): evaluated, not stepped.
+    timeless: bool,
+    /// Only maps, and nothing reads time (ADR 0083): it iterates.
+    iterates: bool,
+    /// An iterating model has rounds still to run: since it opened or last
+    /// changed, it has neither held still nor reached its last round.
+    rounds_pending: bool,
+    /// Its last round changed no state.
+    held_still: bool,
+    /// Changes to a model with nothing in time leave it unevaluated, for
+    /// the caller to [`Session::evaluate`] (the app's worker, ADR 0072),
+    /// instead of evaluating it at once.
+    evaluate_later: bool,
+    /// The recorder (ADR 0064): without one, no snapshots and no rewind.
+    recorder: Option<simsandbox_file::RecorderEntry>,
     /// Filters as written, for saving and editing (ADR 0030, ADR 0032).
     filter_entries: Vec<FilterEntry>,
     /// Filters compiled: expressions recorded after the output signals,
     /// cut fields after the recorded fields.
     filters: Filters,
+    /// The schedule and the recorded live input (ADR 0058).
+    track: Track,
+    /// The history lacks what views read now for its samples up to this
+    /// time: wired after they were recorded (ADR 0063). Filled on demand
+    /// by [`Session::recompute`].
+    gaps_until: Option<f64>,
+    /// The file as it was when the current run started (its parameters at
+    /// t = 0), which a run file is made with (ADR 0059).
+    start_file: ModelFile,
+    /// Digests of the files blocks read, for the model hash (ADR 0063).
+    data: BTreeMap<String, String>,
+}
+
+/// Set a value by its key on a running model: a declared parameter (the
+/// formulas it feeds follow, ADR 0043) or `"block.param"`, unless a formula
+/// sets it.
+pub(crate) fn set_key(
+    sim: &mut Simulator,
+    plan: &mut ParamPlan,
+    ids: &BTreeMap<String, BlockId>,
+    key: &str,
+    value: f64,
+) -> Result<(), String> {
+    if plan.declared(key).is_some() {
+        for (block, param, v) in plan.set(key, value)? {
+            // A driven parameter takes its signal instead (ADR 0075).
+            if sim.model().is_driven(ids[&block], &param) {
+                continue;
+            }
+            sim.set_param(ids[&block], &param, v)
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    let (block, name) = key
+        .rsplit_once('.')
+        .ok_or_else(|| format!("'{key}' is not 'block.param'"))?;
+    let id = *ids
+        .get(block)
+        .ok_or_else(|| format!("no block '{block}'"))?;
+    if let Some(f) = plan.formula_of(block, name) {
+        return Err(format!("{key} is computed from '{}'", f.text));
+    }
+    sim.set_param(id, name, value).map_err(|e| e.to_string())
+}
+
+/// One change of a value during a run (ADR 0058): `key` is a parameter
+/// key (`"block.param"` or a declared parameter), applied at the first step
+/// boundary at or after `t`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputEvent {
+    pub t: f64,
+    pub key: String,
+    pub value: f64,
+}
+
+/// The input track: the schedule (kept by restarts) and the recorded live
+/// input (dropped by restarts, kept by rewinds and replayed), each with
+/// how much of it has been applied.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Track {
+    schedule: Vec<InputEvent>,
+    /// The model's own value of each key the schedule sets, which every
+    /// run starts from.
+    base: Vec<(String, f64)>,
+    recorded: Vec<InputEvent>,
+    next_schedule: usize,
+    next_recorded: usize,
+}
+
+impl Track {
+    /// A schedule and recorded input, each put in time order.
+    pub(crate) fn new(mut schedule: Vec<InputEvent>, mut recorded: Vec<InputEvent>) -> Self {
+        schedule.sort_by(|a, b| a.t.total_cmp(&b.t));
+        recorded.sort_by(|a, b| a.t.total_cmp(&b.t));
+        Self {
+            schedule,
+            recorded,
+            ..Self::default()
+        }
+    }
+
+    /// The next event due by `now`: the earlier of the two lists, the
+    /// schedule first at equal times (as it was applied live).
+    pub(crate) fn take_due(&mut self, now: f64, eps: f64) -> Option<InputEvent> {
+        let s = self
+            .schedule
+            .get(self.next_schedule)
+            .filter(|e| e.t <= now + eps);
+        let r = self
+            .recorded
+            .get(self.next_recorded)
+            .filter(|e| e.t <= now + eps);
+        match (s, r) {
+            (Some(a), Some(b)) if b.t < a.t - eps => {
+                self.next_recorded += 1;
+                Some(b.clone())
+            }
+            (Some(a), _) => {
+                self.next_schedule += 1;
+                Some(a.clone())
+            }
+            (None, Some(b)) => {
+                self.next_recorded += 1;
+                Some(b.clone())
+            }
+            (None, None) => None,
+        }
+    }
+
+    /// Start applying again from time `t`: events at `t` or later are
+    /// still ahead.
+    fn seek(&mut self, t: f64, eps: f64) {
+        self.next_schedule = self.schedule.partition_point(|e| e.t < t - eps);
+        self.next_recorded = self.recorded.partition_point(|e| e.t < t - eps);
+    }
 }
 
 impl Session {
-    /// Load a model file, evaluating any sweep at once. Errors are
-    /// formatted for display.
+    /// Load a model file. Errors are formatted for display.
     pub fn load(title: &str, text: &str, registry: &Registry) -> Result<Self, String> {
-        Self::load_with(title, text, registry, false)
+        Self::load_in(title, text, registry, None)
     }
 
-    /// Load a model file, leaving its sweep (if any) to be evaluated by
-    /// [`Session::resume_resample`].
-    pub fn load_deferred(title: &str, text: &str, registry: &Registry) -> Result<Self, String> {
-        Self::load_with(title, text, registry, true)
-    }
-
-    fn load_with(
+    /// Load a model file saved in `folder`, whose blocks read the files
+    /// they name from there (ADR 0063).
+    pub fn load_in(
         title: &str,
         text: &str,
         registry: &Registry,
-        deferred: bool,
+        folder: Option<&std::path::Path>,
     ) -> Result<Self, String> {
-        let loaded = simsandbox_file::load(text, registry).map_err(|e| e.to_string())?;
+        // A model that uses model files runs as one simulator with clocks
+        // (ADR 0066 step 4b).
+        let loaded = if simsandbox_file::compose::is_composition(text) {
+            simsandbox_file::compose::load_merged(text, registry, folder)
+        } else {
+            simsandbox_file::load_in(text, registry, folder)
+        }
+        .map_err(|e| e.to_string())?;
         let mut names = Vec::new();
         let mut sources = Vec::new();
         let mut fields = Vec::new();
         let mut field_sources = Vec::new();
+        let mut meshes: Vec<MeshInfo> = Vec::new();
+        let mut mesh_shapes: Vec<(String, MeshShape)> = Vec::new();
         let mut coordinates: Vec<Coordinate> = Vec::new();
         let mut block_types = Vec::new();
-        let plots = &loaded.file.controls.plots;
         for entry in &loaded.flat.blocks {
             let id = loaded.ids[&entry.name];
             let block = loaded.model.block(id).map_err(|e| e.to_string())?;
@@ -249,24 +537,84 @@ impl Session {
             }
             let spec = block.spec();
             for port in spec.outputs() {
+                // Every output can be recorded; what is, wiring decides
+                // (ADR 0063).
                 let key = format!("{}.{}", entry.name, port.name);
-                // Plot what the file asks for, or every output if it says nothing.
-                if !plots.is_empty() && !plots.contains(&key) {
-                    continue;
-                }
                 let field = match port.shape {
                     Shape::Grid { nx, ny } => Some(FieldShape::Grid { nx, ny }),
                     Shape::Points { count, dim } => Some(FieldShape::Points { count, dim }),
                     Shape::Population { dim } => Some(FieldShape::Population { dim }),
+                    Shape::Tensor { rank, dims } => Some(FieldShape::Tensor { rank, dims }),
+                    // Recorded with their ids (ADR 0079 stage 1c).
+                    Shape::Rows { dim } => Some(FieldShape::Rows { dim }),
                     Shape::Scalar | Shape::Vector(_) => None,
                 };
                 if let Some(shape) = field {
-                    if let Some(c) = &port.coordinate {
+                    for c in &port.coordinate {
                         coordinates.push(Coordinate {
                             name: key.clone(),
                             of: format!("{}.{}", entry.name, c.port),
                             axis: c.axis,
                         });
+                    }
+                    // A mesh's cells, with the fields over its cells and
+                    // points (ADR 0086).
+                    if let Some(m) = &port.mesh {
+                        let table = |o: &simsandbox_core::block::PortSpec| {
+                            o.axis_names
+                                .first()
+                                .cloned()
+                                .filter(|_| matches!(o.shape, Shape::Rows { dim: 1 }))
+                        };
+                        let points = spec
+                            .outputs()
+                            .find(|o| Some(&o.name) == m.coordinates.first())
+                            .and_then(table);
+                        let over = |t: Option<String>| -> Vec<String> {
+                            spec.outputs()
+                                .filter(|o| t.is_some() && table(o) == t)
+                                .map(|o| format!("{}.{}", entry.name, o.name))
+                                .collect()
+                        };
+                        let qualified: Vec<String> = m
+                            .coordinates
+                            .iter()
+                            .map(|c| format!("{}.{}", entry.name, c))
+                            .collect();
+                        meshes.push(MeshInfo {
+                            cells: key.clone(),
+                            coordinates: qualified.clone(),
+                            over_cells: over(port.axis_names.first().cloned()),
+                            over_points: over(points)
+                                .into_iter()
+                                .filter(|f| !qualified.contains(f))
+                                .collect(),
+                        });
+                        mesh_shapes.push((
+                            key.clone(),
+                            MeshShape {
+                                dim: m.dim,
+                                faces: m.faces.clone(),
+                                coordinates: qualified,
+                            },
+                        ));
+                    }
+                    // Rows of one table place each other, by id (ADR 0086):
+                    // any of its quantities can be the other's axis.
+                    if let (Shape::Rows { dim: 1 }, Some(table)) =
+                        (port.shape, port.axis_names.first())
+                    {
+                        for other in spec.outputs().filter(|o| {
+                            o.name != port.name
+                                && matches!(o.shape, Shape::Rows { dim: 1 })
+                                && o.axis_names.first() == Some(table)
+                        }) {
+                            coordinates.push(Coordinate {
+                                name: key.clone(),
+                                of: format!("{}.{}", entry.name, other.name),
+                                axis: 0,
+                            });
+                        }
                     }
                     fields.push((key, shape));
                     field_sources.push(FieldSource {
@@ -289,23 +637,51 @@ impl Session {
                 }
             }
         }
-        // A coordinate needs the field it places, recorded, of the same shape.
+        // Declared outputs of used models (ADR 0066 step 4b) are recorded
+        // under their names too, from the same outputs.
+        for (alias, target) in &loaded.aliases {
+            if let Some(k) = names.iter().position(|n| n == target) {
+                names.push(alias.clone());
+                sources.push(sources[k].clone());
+            } else if let Some(k) = fields.iter().position(|(n, _)| n == target) {
+                fields.push((alias.clone(), fields[k].1));
+                field_sources.push(field_sources[k].clone());
+            }
+        }
+        // A coordinate needs the field it places, recorded, of the same
+        // shape, or a line along its axis (ADR 0080).
         coordinates.retain(|c| {
             let shape = |n: &str| fields.iter().find(|(f, _)| f == n).map(|(_, s)| *s);
-            shape(&c.name).is_some() && shape(&c.name) == shape(&c.of)
-        });
-        let sweep = match loaded.plan {
-            Some(plan) => {
-                let sampling = loaded
-                    .file
-                    .sampling(&loaded.model, &loaded.ids)
-                    .map_err(|e| e.to_string())?
-                    .ok_or("a sweep with nothing to sample")?;
-                Some(Arc::new(Sweep::new(sampling, plan, &loaded.ids)?))
+            match (shape(&c.name), shape(&c.of)) {
+                (Some(a), Some(b)) if a == b => true,
+                (Some(FieldShape::Grid { nx: n, ny: 1 }), Some(FieldShape::Grid { nx, ny })) => {
+                    n == if c.axis == 0 { nx } else { ny }
+                }
+                // Along one axis of a field of more (ADR 0086).
+                (
+                    Some(FieldShape::Grid { nx: n, ny: 1 }),
+                    Some(FieldShape::Tensor { rank, dims }),
+                ) => c.axis < rank && dims[c.axis] == n,
+                _ => false,
             }
-            None => None,
-        };
+        });
+        // Where a run only data drives ends (ADR 0067 step 4).
+        let data_end = crate::run::data_end(&loaded.model);
         let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
+        let mut schedule: Vec<InputEvent> = loaded
+            .file
+            .run
+            .inputs
+            .iter()
+            .map(|c| InputEvent {
+                t: c.t,
+                key: c.set.clone(),
+                value: c.to,
+            })
+            .collect();
+        schedule.sort_by(|a, b| a.t.total_cmp(&b.t));
+        let start_file = loaded.file.clone();
+        let data = loaded.data;
         let mut warnings = loaded.warnings;
         warnings.extend(loop_notes(&sim));
         let entries = loaded.file.controls.filters.clone();
@@ -313,7 +689,7 @@ impl Session {
             title: title.into(),
             description: loaded.file.description.clone(),
             dt: loaded.file.run.dt,
-            stop_at: loaded.file.run.t_end,
+            stop_at: loaded.file.run.t_end.or(data_end),
             conversions: loaded.conversions,
             file: loaded.file,
             flat: loaded.flat,
@@ -323,6 +699,19 @@ impl Session {
             warnings,
             history: SharedHistory::new(History::new(Vec::new())),
             pending: Vec::new(),
+            probes: Vec::new(),
+            view_reads: (!start_file.controls.views.is_empty())
+                .then(|| view_reads(&start_file.controls.views)),
+            layout_scalars: Vec::new(),
+            layout_fields: Vec::new(),
+            all_coordinates: Vec::new(),
+            keep_signals: Vec::new(),
+            keep_fields: Vec::new(),
+            derived: Vec::new(),
+            derived_names: Vec::new(),
+            view_probes: Vec::new(),
+            record_all_probes: false,
+            probe_dir: None,
             sources,
             output_names: names,
             base_fields: fields,
@@ -331,43 +720,226 @@ impl Session {
             field_sources,
             grids: Vec::new(),
             points: Vec::new(),
+            rows: Vec::new(),
+            meshes,
+            mesh_shapes,
             block_types,
             snapshots: vec![sim.snapshot()],
+            memory_mb: DEFAULT_MEMORY_MB,
             sim,
             steps_since_snapshot: 0,
-            sweep,
-            job: None,
-            deferred,
-            last_sweep: None,
+            recorder: start_file.controls.recorder.clone(),
             filter_entries: Vec::new(),
             filters: Filters::default(),
+            track: Track {
+                schedule,
+                ..Track::default()
+            },
+            gaps_until: None,
+            start_file,
+            data,
+            unevaluated: false,
+            timeless: false,
+            iterates: false,
+            rounds_pending: false,
+            held_still: false,
+            evaluate_later: false,
         };
+        session.timeless = session.nothing_in_time();
+        session.iterates = !session.timeless && session.only_rounds();
+        session.rounds_pending = session.iterates;
+        session.unevaluated = !crate::study::studies_run()
+            && session.block_types.iter().any(|t| t == crate::study::STUDY);
+        session.check_events(
+            &session
+                .track
+                .schedule
+                .iter()
+                .map(|e| (e.key.clone(), e.value))
+                .collect::<Vec<_>>(),
+            "run.inputs",
+        )?;
+        let rows = session.params();
+        let mut base: Vec<(String, f64)> = Vec::new();
+        for e in &session.track.schedule {
+            if !base.iter().any(|(k, _)| *k == e.key) {
+                if let Some(r) = rows.iter().find(|r| r.key == e.key) {
+                    base.push((e.key.clone(), r.value));
+                }
+            }
+        }
+        session.track.base = base;
         let (filters, problems) = session.compile_filters(&entries);
-        session.filter_entries = filters.entries(&entries);
+        session.filter_entries = kept_entries(&filters, &entries);
         session.filters = filters;
         for p in problems {
             session
                 .warnings
                 .push(format!("controls.filters.{p}; ignored"));
         }
-        if session.sweep.is_some() {
-            session.resample();
-        } else {
-            session.rebuild_history();
-            session.record();
-        }
+        // No probes yet: they are loaded next, and the filters that read
+        // them with them.
+        session.build_history();
+        session.load_probes();
+        // Scheduled changes at t = 0 set where the run starts.
+        session.restart().map_err(|e| e.to_string())?;
         Ok(session)
+    }
+
+    /// Events must name parameters a person sets (not ones a formula
+    /// computes); values outside a parameter's suggested range are noted.
+    fn check_events(&mut self, events: &[(String, f64)], what: &str) -> Result<(), String> {
+        let rows = self.params();
+        for (k, (key, value)) in events.iter().enumerate() {
+            let Some(row) = rows.iter().find(|r| r.key == *key) else {
+                return Err(format!("{what}[{k}]: no parameter '{key}'"));
+            };
+            if row.formula.is_some() {
+                return Err(format!(
+                    "{what}[{k}]: {key} is set by a formula, so it cannot be changed"
+                ));
+            }
+            let [lo, hi] = row.suggested;
+            if *value < lo || *value > hi {
+                self.warnings.push(format!(
+                    "{what}[{k}]: {key} = {value} is outside its suggested range {lo} to {hi}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// How close two times must be to count as the same step boundary.
+    fn eps(&self) -> f64 {
+        1e-9 * self.dt.max(self.time().abs())
+    }
+
+    /// Apply every event due by now (ADR 0058). An event that no longer
+    /// applies is noted, not fatal.
+    fn apply_due(&mut self) {
+        let (now, eps) = (self.time(), self.eps());
+        while let Some(e) = self.track.take_due(now, eps) {
+            if let Err(err) = self.set_value(&e.key, e.value) {
+                self.warnings
+                    .push(format!("input at t = {}: {err}", short(e.t)));
+            }
+        }
+    }
+
+    /// The scheduled changes in effect (ADR 0058).
+    pub fn schedule(&self) -> &[InputEvent] {
+        &self.track.schedule
+    }
+
+    /// The live input recorded in this run, including any ahead of now
+    /// after a rewind (ADR 0058).
+    pub fn recorded(&self) -> &[InputEvent] {
+        &self.track.recorded
+    }
+
+    /// Recorded input lies ahead of now: running on replays it.
+    pub fn replaying(&self) -> bool {
+        self.track.next_recorded < self.track.recorded.len()
+    }
+
+    /// Restart and replay `track` as recorded live input (a run file's,
+    /// ADR 0059). Errors name the event that does not apply.
+    pub fn replay(&mut self, mut track: Vec<InputEvent>) -> Result<(), String> {
+        let events: Vec<(String, f64)> = track.iter().map(|e| (e.key.clone(), e.value)).collect();
+        self.check_events(&events, "track")?;
+        track.sort_by(|a, b| a.t.total_cmp(&b.t));
+        self.restart().map_err(|e| e.to_string())?;
+        self.track.recorded = track;
+        self.track.next_recorded = 0;
+        // Recorded input at t = 0 sets where the run starts, as live.
+        if self
+            .track
+            .recorded
+            .first()
+            .is_some_and(|e| e.t <= self.eps())
+        {
+            self.restart_keeping_recorded().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// The file as it was when the current run started.
+    pub fn start_file(&self) -> &ModelFile {
+        &self.start_file
+    }
+
+    /// This run as a run file (ADR 0059): the model hash of the file it
+    /// started from, its seed and settings, the schedule and the recorded
+    /// input. `model` is the model file's path relative to where the run
+    /// file goes.
+    pub fn run_file(&self, model: &str, name: &str, note: &str, created: &str) -> RunFile {
+        RunFile {
+            format: simsandbox_file::runs::RUN_FORMAT,
+            model: model.into(),
+            model_hash: simsandbox_file::runs::model_hash_with(&self.start_file, &self.data),
+            made_with: simsandbox_file::runs::MADE_WITH.into(),
+            name: name.into(),
+            note: note.into(),
+            created: created.into(),
+            seed: Some(self.file.run.seed.unwrap_or(1)),
+            run: Some(simsandbox_file::runs::RunOverrides {
+                dt: Some(self.dt),
+                t_end: self.file.run.t_end,
+            }),
+            inputs: self
+                .track
+                .schedule
+                .iter()
+                .map(|e| simsandbox_file::ScheduledChange {
+                    t: e.t,
+                    set: e.key.clone(),
+                    to: e.value,
+                })
+                .collect(),
+            track: self
+                .track
+                .recorded
+                .iter()
+                .map(|e| (e.t, e.key.clone(), e.value))
+                .collect(),
+        }
     }
 
     /// Names of the recorded grids, point sets, one-row grids and the
     /// model's block types: what views can bind besides scalars.
-    pub fn bindable(&self) -> [&[String]; 4] {
-        [&self.grids, &self.points, &self.lines, &self.block_types]
+    /// Every scalar a step yields, which views can bind (ADR 0063).
+    pub fn bindable_scalars(&self) -> &[String] {
+        &self.layout_scalars
     }
 
-    /// The sweep, shared.
-    pub fn sweep_shared(&self) -> Option<Arc<Sweep>> {
-        self.sweep.clone()
+    /// The 2D grids a cut filter can take, recorded or not (ADR 0063).
+    pub fn cut_inputs(&self) -> Vec<String> {
+        self.layout_fields
+            .iter()
+            .filter(|(_, s)| matches!(s, FieldShape::Grid { nx, ny } if *nx >= 2 && *ny >= 2))
+            .filter(|(n, _)| !self.all_coordinates.iter().any(|c| &c.name == n))
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    /// Which fields place which others' cells, among all a step yields.
+    pub fn all_coordinates(&self) -> &[Coordinate] {
+        &self.all_coordinates
+    }
+
+    /// The meshes views can draw (ADR 0086).
+    pub fn meshes(&self) -> &[MeshInfo] {
+        &self.meshes
+    }
+
+    pub fn bindable(&self) -> [&[String]; 5] {
+        [
+            &self.grids,
+            &self.points,
+            &self.lines,
+            &self.block_types,
+            &self.rows,
+        ]
     }
 
     /// The recorded signals, for reading.
@@ -400,8 +972,20 @@ impl Session {
     /// Append pending samples: waiting for the window if `wait`, else only
     /// if it is not reading. Returns whether none are left.
     pub fn flush(&mut self, wait: bool) -> bool {
+        let mut probes_done = true;
+        for p in &mut self.probes {
+            probes_done &= p.flush(wait);
+            if wait {
+                if let Some(w) = &mut p.stream {
+                    let _ = w.flush();
+                }
+            }
+        }
+        for d in &mut self.derived {
+            probes_done &= d.flush(wait);
+        }
         if self.pending.is_empty() {
-            return true;
+            return probes_done;
         }
         if wait {
             drop(self.history_mut());
@@ -426,32 +1010,216 @@ impl Session {
             .copied()
             .chain(cuts.iter().map(Vec::as_slice))
             .collect();
+        if !self.probes.is_empty() || !self.derived.is_empty() {
+            let (step, eps) = (self.sim.step_count(), self.eps());
+            let mut fired = Vec::with_capacity(self.probes.len());
+            for p in &mut self.probes {
+                let due = p.trigger.due(index, step, eps);
+                fired.push(due);
+                if !due {
+                    continue;
+                }
+                let own: Vec<f64> = p.signals.iter().map(|&i| values[i]).collect();
+                if p.stream.is_some() {
+                    let fr: Vec<&[f64]> = p.fields.iter().map(|&i| frames[i]).collect();
+                    let (_, fields) = p.layout();
+                    let w = p.stream.as_mut().expect("checked");
+                    if let Err(e) = w.write(index, &own, &fr, &fields) {
+                        let note = format!("probe {}: writing its file failed: {e}", p.spec.name);
+                        p.stream = None;
+                        if !self.warnings.contains(&note) {
+                            self.warnings.push(note);
+                        }
+                    }
+                }
+                if !p.in_memory {
+                    continue;
+                }
+                p.pending.push(Pending {
+                    index,
+                    values: own,
+                    frames: p.fields.iter().map(|&i| frames[i].to_vec()).collect(),
+                });
+                p.flush(false);
+            }
+            self.run_derived(index, values, &frames, &fired);
+        }
+        self.push_kept(index, values, &frames);
+    }
+
+    /// Record in the history what it keeps of a whole sample (ADR 0063).
+    fn push_kept(&mut self, index: f64, values: &[f64], frames: &[&[f64]]) {
+        let values: Vec<f64> = self.keep_signals.iter().map(|&i| values[i]).collect();
+        let frames: Vec<&[f64]> = self
+            .keep_fields
+            .iter()
+            .map(|&i| frames.get(i).copied().unwrap_or(&[]))
+            .collect();
         if let Some(mut h) = self.history.try_write() {
             for p in self.pending.drain(..) {
                 let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
                 h.push_sample(p.index, &p.values, &frames);
             }
-            h.push_sample(index, values, &frames);
+            h.push_sample(index, &values, &frames);
             return;
         }
         self.pending.push(Pending {
             index,
-            values: values.to_vec(),
+            values,
             frames: frames.iter().map(|f| f.to_vec()).collect(),
         });
     }
 
-    /// What views can bind, with `h` this session's history: the scalar
-    /// signals, grids, point sets and the model's block types.
+    /// Tell the session what the views read (their bindings as written):
+    /// the history records what they read from the model directly and
+    /// what filters read, from now on (ADR 0063). What it recorded of
+    /// those before is kept; what it no longer records is dropped.
+    pub fn set_view_reads(&mut self, reads: Vec<String>) {
+        let mut probes: Vec<String> = reads
+            .iter()
+            .filter_map(|r| {
+                simsandbox_views::history::split_source(r)
+                    .0
+                    .map(String::from)
+            })
+            .collect();
+        probes.sort();
+        probes.dedup();
+        if probes != self.view_probes {
+            self.view_probes = probes;
+            self.update_probe_io();
+        }
+        let reads = Some(model_reads(reads));
+        if self.view_reads == reads {
+            return;
+        }
+        self.view_reads = reads;
+        let (signals, fields) = self.kept();
+        if signals == self.keep_signals && fields == self.keep_fields {
+            return;
+        }
+        drop(self.history_mut());
+        let old = self.replace_history(History::new(Vec::new()));
+        self.build_history();
+        // The sample at now is had again from the model as it is.
+        let mut fills = BTreeMap::new();
+        if let Some(&last) = old.times().last() {
+            if (last - self.time()).abs() <= self.eps() {
+                fills.insert(old.len() - 1, self.sample_now());
+            }
+        }
+        self.replay_history(&old, false, &fills);
+    }
+
+    /// The places in the layout the history keeps: everything when no
+    /// views are known, else what views read from the model
+    /// and what filters read, with the coordinates cuts need.
+    fn kept(&self) -> (Vec<usize>, Vec<usize>) {
+        let Some(reads) = &self.view_reads else {
+            return (
+                (0..self.layout_scalars.len()).collect(),
+                (0..self.layout_fields.len()).collect(),
+            );
+        };
+        let mut want: std::collections::BTreeSet<String> = reads.iter().cloned().collect();
+        // Filters with clocks of their own read probes and each other.
+        let derived = crate::observers::clocked(&self.filter_entries);
+        let model = |f: &&FilterEntry| !derived.iter().any(|d| d.name == f.name);
+        for f in self.filter_entries.iter().filter(model) {
+            want.extend(crate::observers::filter_reads(f));
+        }
+        for c in &self.filters.cuts {
+            want.extend(
+                self.all_coordinates
+                    .iter()
+                    .filter(|k| k.of == c.input)
+                    .map(|k| k.name.clone()),
+            );
+        }
+        let signals = (0..self.layout_scalars.len())
+            .filter(|&i| want.contains(&self.layout_scalars[i]))
+            .collect();
+        let fields = (0..self.layout_fields.len())
+            .filter(|&i| want.contains(&self.layout_fields[i].0))
+            .collect();
+        (signals, fields)
+    }
+
+    /// Append the samples of `old` to the (new, empty) history, by name:
+    /// what it did not record is NaN for signals and absent for fields.
+    /// With `recompute`, the filters are computed again from the outputs.
+    ///
+    /// Samples in `fills` (by index in `old`: every scalar, and the kept
+    /// fields' frames) are taken from there instead. Names `old` lacks
+    /// mark the samples before as gaps, unless recomputed.
+    fn replay_history(&mut self, old: &History, recompute: bool, fills: &BTreeMap<usize, Pending>) {
+        let signal_at: Vec<Option<usize>> = self
+            .layout_scalars
+            .iter()
+            .map(|n| old.names().iter().position(|m| m == n))
+            .collect();
+        let field_at: Vec<Option<usize>> = self
+            .layout_fields
+            .iter()
+            .map(|(n, _)| old.fields().iter().position(|f| &f.name == n))
+            .collect();
+        let outputs = self.output_names.len();
+        let base = self.base_fields.len();
+        let lacks = self
+            .keep_signals
+            .iter()
+            .any(|&i| signal_at[i].is_none() && (!recompute || i < outputs))
+            || self
+                .keep_fields
+                .iter()
+                .any(|&i| field_at[i].is_none() && (!recompute || i < base));
+        // The latest sample neither filled nor complete.
+        let unfilled = (0..old.len()).rev().find(|k| !fills.contains_key(k));
+        if let (true, Some(k)) = (lacks, unfilled) {
+            let last = old.times()[k];
+            self.gaps_until = Some(self.gaps_until.map_or(last, |g| g.max(last)));
+        }
+        for k in 0..old.len() {
+            let t = old.times()[k];
+            if let Some(f) = fills.get(&k) {
+                let frames: Vec<&[f64]> = f.frames.iter().map(Vec::as_slice).collect();
+                self.push_kept(t, &f.values, &frames);
+                continue;
+            }
+            let mut values: Vec<f64> = signal_at
+                .iter()
+                .map(|i| i.map_or(f64::NAN, |i| old.value(SignalRef::Signal(i), k)))
+                .collect();
+            let mut frames: Vec<&[f64]> = field_at
+                .iter()
+                .map(|i| i.map_or(&[][..], |i| old.fields()[i].frame(k)))
+                .collect();
+            let cuts;
+            if recompute {
+                values.truncate(outputs);
+                self.append_derived(t, &mut values);
+                frames.truncate(base);
+                cuts = self.sample_cuts(&frames);
+                frames.extend(cuts.iter().map(Vec::as_slice));
+            }
+            self.push_kept(t, &values, &frames);
+        }
+    }
+
+    /// What views can bind: everything a step yields (ADR 0063), whether
+    /// or not the history `h` records it now; and the model's block types.
     pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
+        let _ = h;
         Available {
-            scalars: h.names(),
+            scalars: &self.layout_scalars,
             grids: &self.grids,
             points: &self.points,
             block_types: &self.block_types,
             lines: &self.lines,
-            coordinates: h.coordinates(),
-            swept: self.sweep.as_ref().map_or(&[], |sw| sw.keys()),
+            rows: &self.rows,
+            meshes: &self.meshes,
+            coordinates: &self.all_coordinates,
+            derived: &self.derived_names,
         }
     }
 
@@ -465,90 +1233,37 @@ impl Session {
             .collect()
     }
 
-    /// The grids recorded before any cut filter, which cuts may take as
-    /// input: the grid outputs, and in a two-parameter grid sweep every
-    /// scalar (named in `scalars`) and swept parameter as a grid.
-    fn source_grids(&self, scalars: &[String]) -> Vec<(String, FieldShape)> {
-        let mut grids = self.base_fields.clone();
-        if let Some(sw) = &self.sweep {
-            if let Some((nx, ny)) = sw.grid() {
-                let shape = FieldShape::Grid { nx, ny };
-                grids.extend(
-                    scalars
-                        .iter()
-                        .chain(sw.keys())
-                        .map(|n| (grid_name(n), shape)),
-                );
-            }
-        }
-        grids
-    }
-
-    /// Whether a cut filter reads a field made from the whole sweep, so it
-    /// is computed once rather than per sample.
-    fn whole_cut(&self, input: &str) -> bool {
-        !self.base_fields.iter().any(|(n, _)| n == input)
-    }
-
     /// Compile filters for this model; problems are `name: reason`.
+    /// Filters on probes are compiled with their probes (ADR 0063).
     fn compile_filters(&self, entries: &[FilterEntry]) -> (Filters, Vec<String>) {
+        let entries: Vec<FilterEntry> = entries
+            .iter()
+            .filter(|e| {
+                !crate::observers::clocked(entries)
+                    .iter()
+                    .any(|d| d.name == e.name)
+            })
+            .cloned()
+            .collect();
+        let entries = &entries[..];
         let params = param_keys(&self.flat, &self.ids, self.sim.model());
-        // Cuts may take any grid an expression makes in a 2D sweep.
-        let mut scalars = self.output_names.clone();
-        scalars.extend(
-            entries
-                .iter()
-                .filter(|e| e.type_name == "expression")
-                .map(|e| e.name.clone()),
-        );
-        let grids = self.source_grids(&scalars);
-        Filters::compile(entries, &self.output_names, &params, &grids)
+        Filters::compile(entries, &self.output_names, &params, &self.base_fields)
     }
 
-    /// An empty history for the current mode: signals against time, or
-    /// samples of a sweep with the swept parameters as signals and, for a
-    /// two-parameter grid, every signal reshaped as a grid; then the cut
-    /// filters' fields.
-    fn rebuild_history(&mut self) {
+    /// The layout of a sample and an empty history keeping what is wired.
+    fn build_history(&mut self) {
         let names = self.scalar_names();
         let mut fields = self.base_fields.clone();
-        let mut whole = Vec::new();
         let mut coordinates = self.base_coordinates.clone();
-        let mut scalars = names.clone();
-        if let Some(sw) = &self.sweep {
-            scalars.extend(sw.keys().iter().cloned());
-            if let Some((nx, ny)) = sw.grid() {
-                let shape = FieldShape::Grid { nx, ny };
-                whole.extend(scalars.iter().map(|n| (grid_name(n), shape)));
-                // The swept parameters place every result's cells.
-                for (axis, key) in sw.keys().iter().enumerate() {
-                    coordinates.extend(names.iter().map(|n| Coordinate {
-                        name: grid_name(key),
-                        of: grid_name(n),
-                        axis,
-                    }));
-                }
-            }
-        }
+        let scalars = names;
         let mut labels = Vec::new();
         for c in &self.filters.cuts {
-            if self.whole_cut(&c.input) {
-                whole.extend(c.fields());
-            } else {
-                fields.extend(c.fields());
-            }
+            fields.extend(c.fields());
             let coordinate = c.coordinate();
             // For labels only the coordinates' names matter.
             let mut g = Geometry::cells(c.nx, c.ny);
             for k in coordinates.iter().filter(|k| k.of == c.input && k.axis < 2) {
-                // A swept parameter's grid is labelled as the parameter.
-                let swept = self.sweep.as_ref().and_then(|sw| {
-                    sw.keys()
-                        .iter()
-                        .find(|key| grid_name(key) == k.name)
-                        .cloned()
-                });
-                g.names[k.axis] = Some(swept.unwrap_or_else(|| k.name.clone()));
+                g.names[k.axis] = Some(k.name.clone());
             }
             labels.extend(c.labels(&g));
             coordinates.extend(c.lines().into_iter().map(|l| Coordinate {
@@ -557,57 +1272,773 @@ impl Session {
                 axis: 0,
             }));
         }
-        let index = if self.sweep.is_some() { "sample" } else { "t" };
-        let all: Vec<&(String, FieldShape)> = fields.iter().chain(&whole).collect();
+        let index = "t";
+        let all: Vec<&(String, FieldShape)> = fields.iter().collect();
+        // What views can draw: grids and tensors, points and populations.
         let of_kind = |grid: bool| -> Vec<String> {
             all.iter()
-                .filter(|(_, s)| matches!(s, FieldShape::Grid { .. }) == grid)
+                .filter(|(_, s)| {
+                    if grid {
+                        // Fields of more axes too: views leave the others
+                        // over (ADR 0086).
+                        matches!(s, FieldShape::Grid { .. } | FieldShape::Tensor { .. })
+                    } else {
+                        matches!(s, FieldShape::Points { .. } | FieldShape::Population { .. })
+                    }
+                })
                 .map(|(n, _)| n.clone())
                 .collect()
         };
         self.grids = of_kind(true);
         self.points = of_kind(false);
-        let mut h = History::with_fields(index, scalars, fields);
-        for (name, shape) in whole {
-            h.add_whole(&name, shape);
-        }
-        if let Some(sw) = &self.sweep {
-            h.keep_all();
-            h.set_unordered(sw.unordered());
-            // A grid of a signal is labelled as the signal.
-            if sw.is_grid() {
-                for name in self.scalar_names().iter().chain(sw.keys()) {
-                    h.set_label(&grid_name(name), name);
-                }
-            }
-        }
+        self.lines = all
+            .iter()
+            .filter(|(_, s)| matches!(s, FieldShape::Grid { ny: 1, .. }))
+            .map(|(n, _)| n.clone())
+            .collect();
+        self.rows = all
+            .iter()
+            .filter(|(_, s)| matches!(s, FieldShape::Rows { dim: 1 }))
+            .map(|(n, _)| n.clone())
+            .collect();
+        self.layout_scalars = scalars;
+        self.layout_fields = fields;
+        self.all_coordinates = coordinates;
+        (self.keep_signals, self.keep_fields) = self.kept();
+        let kept_fields: Vec<(String, FieldShape)> = self
+            .keep_fields
+            .iter()
+            .map(|&i| self.layout_fields[i].clone())
+            .collect();
+        let mut h = History::with_fields(
+            index,
+            self.keep_signals
+                .iter()
+                .map(|&i| self.layout_scalars[i].clone())
+                .collect(),
+            kept_fields,
+        );
+        h.set_field_budget(self.share());
+        // Coordinates among what it records.
+        let recorded = |n: &str| h.fields().iter().any(|f| f.name == n);
+        let coordinates = self
+            .all_coordinates
+            .iter()
+            .filter(|c| recorded(&c.name) && recorded(&c.of))
+            .cloned()
+            .collect();
         h.set_coordinates(coordinates);
         for (name, label) in labels {
             h.set_label(&name, &label);
         }
-        self.lines = h
-            .fields()
-            .iter()
-            .filter(|f| matches!(f.shape, FieldShape::Grid { ny: 1, .. }))
-            .map(|f| f.name.clone())
-            .collect();
+        // Outputs' units, for views that print them.
+        let model = self.sim.model();
+        let unit = |block: BlockId, port: &str| {
+            model
+                .block(block)
+                .ok()
+                .and_then(|b| b.spec().outputs().find(|p| p.name == port).map(|p| p.unit))
+                .filter(|u| *u != Unit::DIMENSIONLESS)
+                .map(|u| u.to_string())
+        };
+        for (name, s) in self.output_names.iter().zip(&self.sources) {
+            if let Some(u) = unit(s.block, &s.port) {
+                h.set_unit(name, &u);
+            }
+        }
+        for ((name, _), f) in self.base_fields.iter().zip(&self.field_sources) {
+            if let Some(u) = unit(f.block, &f.port) {
+                h.set_unit(name, &u);
+            }
+            // Its axes' names, for views that leave some over (ADR 0086).
+            let axes = model
+                .block(f.block)
+                .ok()
+                .and_then(|b| {
+                    b.spec()
+                        .outputs()
+                        .find(|p| p.name == f.port)
+                        .map(|p| p.axis_names.clone())
+                })
+                .unwrap_or_default();
+            if !axes.is_empty() {
+                h.set_axes(name, axes);
+            }
+        }
+        for (name, m) in &self.mesh_shapes {
+            h.set_mesh(name, m.clone());
+        }
+        // A cut's lines have its grid's unit; its coordinate, the unit of
+        // the grid's coordinate along the cut.
+        for c in &self.filters.cuts {
+            if let Some(u) = h.unit(&c.input).map(str::to_string) {
+                for l in c.lines() {
+                    h.set_unit(&l, &u);
+                }
+            }
+            let axis = match c.settings.mode {
+                simsandbox_views::cut::Mode::AlongX => Some(0),
+                simsandbox_views::cut::Mode::AlongY => Some(1),
+                simsandbox_views::cut::Mode::Free => None,
+            };
+            let along = axis.and_then(|a| {
+                self.all_coordinates
+                    .iter()
+                    .find(|k| k.of == c.input && k.axis == a)
+                    .and_then(|k| h.unit(&k.name).map(str::to_string))
+            });
+            if let Some(u) = along {
+                h.set_unit(&c.coordinate(), &u);
+            }
+        }
         self.replace_history(h);
     }
 
-    /// The frames of the cut filters that are per sample (`whole` false)
-    /// or made from the whole sweep (`whole` true), in order, given the
-    /// frames of the fields they read.
-    fn cut_frames<'a>(
+    /// What the probes record may have moved or gone: they start afresh,
+    /// without what a step no longer yields.
+    fn reset_probes(&mut self) {
+        let mut specs: Vec<ProbeSpec> = Vec::new();
+        {
+            let (scalars, fields) = (&self.layout_scalars, &self.layout_fields);
+            let recorded =
+                |n: &str| scalars.iter().any(|m| m == n) || fields.iter().any(|(f, _)| f == n);
+            for p in &self.probes {
+                let mut spec = p.spec.clone();
+                let had = !spec.record.is_empty();
+                spec.record.retain(|r| {
+                    let ok = recorded(r);
+                    if !ok {
+                        self.warnings
+                            .push(format!("probe {}: '{r}' is no longer recorded", spec.name));
+                    }
+                    ok
+                });
+                if had && spec.record.is_empty() {
+                    self.warnings.push(format!(
+                        "probe {}: removed, it records nothing now",
+                        spec.name
+                    ));
+                } else {
+                    specs.push(spec);
+                }
+            }
+        }
+        self.probes.clear();
+        if let Err(problems) = self.set_probes(specs) {
+            self.warnings.extend(problems);
+        }
+    }
+
+    /// Replace the probes besides the implicit one (ADR 0062). Each must
+    /// record signals or fields this session records; otherwise nothing
+    /// changes and the problems are returned. Probes record in time only,
+    /// not in sweeps, and start empty.
+    pub fn set_probes(&mut self, specs: Vec<ProbeSpec>) -> Result<(), Vec<String>> {
+        self.install_probes(specs)?;
+        self.build_derived();
+        self.update_probe_io();
+        Ok(())
+    }
+
+    /// Which probes keep samples in memory, and which write their files
+    /// as they record (ADR 0063): call after anything those depend on
+    /// changes.
+    fn update_probe_io(&mut self) {
+        let read_by_filters: Vec<usize> = self
+            .derived
+            .iter()
+            .flat_map(|d| d.sources.iter())
+            .filter_map(|s| match s {
+                Src::Probe(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        let indexed = self.recorder.is_some();
+        let mut notes = Vec::new();
+        for (i, p) in self.probes.iter_mut().enumerate() {
+            let s = &p.spec;
+            let in_memory = self.record_all_probes
+                || self.view_probes.contains(&s.name)
+                || read_by_filters.contains(&i)
+                || (s.to.is_some() && !s.stream);
+            if in_memory != p.in_memory {
+                // Started or stopped: from now on, nothing before.
+                p.pending.clear();
+                p.history.write().clear();
+                p.in_memory = in_memory;
+            }
+            let wanted = match (&s.to, &self.probe_dir) {
+                (Some(to), Some(dir)) if s.stream => Some(dir.join(to)),
+                _ => None,
+            };
+            let current = p.stream.as_ref().map(|w| w.paths[0].clone());
+            if wanted != current {
+                p.stream = None;
+                if let (Some(_), Some(dir), Some(to)) = (&wanted, &self.probe_dir, &s.to) {
+                    let (names, fields) = p.layout();
+                    match crate::probe::Stream::new(dir, to, &names, &fields, indexed) {
+                        Ok((w, n)) => {
+                            notes.extend(n.into_iter().map(|n| format!("probe {}: {n}", s.name)));
+                            p.stream = Some(w);
+                        }
+                        Err(e) => notes.push(format!("probe {}: cannot write {to}: {e}", s.name)),
+                    }
+                }
+            }
+            if let Some(w) = &mut p.stream {
+                w.set_indexed(indexed);
+            }
+            if s.stream && s.to.is_some() && self.probe_dir.is_none() {
+                notes.push(format!(
+                    "probe {}: it writes its file once the model is saved",
+                    s.name
+                ));
+            }
+        }
+        for n in notes {
+            if !self.warnings.contains(&n) {
+                self.warnings.push(n);
+            }
+        }
+    }
+
+    /// Where probes write their files as they record: beside the model
+    /// (ADR 0063). `None` while the model has no file.
+    pub fn set_probe_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        if self.probe_dir != dir {
+            self.probe_dir = dir;
+            self.update_probe_io();
+        }
+    }
+
+    /// Keep every probe's samples in memory, whatever reads them: a
+    /// headless run returns them all.
+    pub fn record_all_probes(&mut self) {
+        self.record_all_probes = true;
+        self.update_probe_io();
+    }
+
+    /// [`Session::set_probes`] without the filters that read probes.
+    fn install_probes(&mut self, specs: Vec<ProbeSpec>) -> Result<(), Vec<String>> {
+        let mut problems = Vec::new();
+        let mut names: Vec<&str> = Vec::new();
+        // Probes take from every sample a step yields (ADR 0063), not
+        // from what the history keeps.
+        let (scalars, field_list) = (&self.layout_scalars, &self.layout_fields);
+        let mut built = Vec::new();
+        for spec in &specs {
+            if let Err(e) = spec.check() {
+                problems.push(e);
+                continue;
+            }
+            if names.contains(&spec.name.as_str()) {
+                problems.push(format!("probe {}: the name is used twice", spec.name));
+            }
+            names.push(&spec.name);
+            let mut signals = Vec::new();
+            let mut fields = Vec::new();
+            for r in &spec.record {
+                if let Some(i) = scalars.iter().position(|n| n == r) {
+                    signals.push(i);
+                } else if let Some(i) = field_list.iter().position(|(f, _)| f == r) {
+                    fields.push(i);
+                } else {
+                    problems.push(format!("probe {}: the model has no '{r}'", spec.name));
+                }
+            }
+            let probe_fields: Vec<(String, FieldShape)> =
+                fields.iter().map(|&i| field_list[i].clone()).collect();
+            let probe_signals: Vec<String> = signals.iter().map(|&i| scalars[i].clone()).collect();
+            let mut ph = History::with_fields("t", probe_signals, probe_fields);
+            // Coordinates of what it records, when it records them too.
+            let has = |n: &str| spec.record.iter().any(|r| r == n);
+            ph.set_coordinates(
+                self.all_coordinates
+                    .iter()
+                    .filter(|c| has(&c.name) && has(&c.of))
+                    .cloned()
+                    .collect(),
+            );
+            ph.set_field_budget(self.share());
+            spec.keep.apply(&mut ph);
+            built.push(Extra {
+                spec: spec.clone(),
+                trigger: Trigger::new(spec.every.clone()),
+                history: SharedHistory::new(ph),
+                signals,
+                fields,
+                pending: Vec::new(),
+                in_memory: true,
+                stream: None,
+            });
+        }
+        let recorded_to = self.history.read().times().last().copied();
+        if !problems.is_empty() {
+            return Err(problems);
+        }
+        // A probe whose recording is unchanged keeps what it recorded; a
+        // new one records from now on.
+        let eps = self.eps();
+        for b in &mut built {
+            let same = |o: &&mut Extra| {
+                o.spec.name == b.spec.name
+                    && o.spec.record == b.spec.record
+                    && o.spec.every == b.spec.every
+                    && o.spec.keep == b.spec.keep
+            };
+            if let Some(old) = self.probes.iter_mut().find(same) {
+                std::mem::swap(b, old);
+                b.spec = old.spec.clone();
+            } else {
+                b.trigger.seek(recorded_to, eps);
+            }
+        }
+        self.probes = built;
+        Ok(())
+    }
+
+    /// The filters with an input from a probe (ADR 0063), in an order
+    /// where each comes after those it reads. One whose recording and
+    /// probes did not change keeps what it recorded.
+    fn build_derived(&mut self) {
+        let mut old: Vec<Derived> = std::mem::take(&mut self.derived);
+        self.derived_names.clear();
+        let params = param_keys(&self.flat, &self.ids, self.sim.model());
+        let mut waiting: Vec<FilterEntry> = crate::observers::clocked(&self.filter_entries);
+        let mut notes = Vec::new();
+        let recorded_to = self.history.read().times().last().copied();
+        while !waiting.is_empty() {
+            let before = waiting.len();
+            let mut k = 0;
+            while k < waiting.len() {
+                match self.derived_inputs(&waiting[k], &waiting) {
+                    Ok(None) => k += 1,
+                    Ok(Some(inputs)) => {
+                        let e = waiting.remove(k);
+                        match self.compile_derived(e, inputs, &params, &mut old, recorded_to) {
+                            Ok(d) => self.derived.push(d),
+                            Err(p) => notes.push(p),
+                        }
+                    }
+                    Err(p) => {
+                        notes.push(p);
+                        waiting.remove(k);
+                    }
+                }
+            }
+            if waiting.len() == before {
+                for e in waiting.drain(..) {
+                    notes.push(format!(
+                        "filter {}: it reads itself through other filters; ignored",
+                        e.name
+                    ));
+                }
+            }
+        }
+        for d in &self.derived {
+            let (s, f) = d.outputs();
+            self.derived_names.extend(s.into_iter().chain(f));
+        }
+        // Filters are set again on every probe edit: say each once.
+        for n in notes {
+            if !self.warnings.contains(&n) {
+                self.warnings.push(n);
+            }
+        }
+    }
+
+    /// The inputs of filter `e`, each with its source; `Ok(None)` while a
+    /// filter it reads (among `waiting`) is not built yet.
+    fn derived_inputs(
         &self,
-        frame: impl Fn(&str) -> Option<&'a [f64]>,
-        whole: bool,
-    ) -> Vec<Vec<f64>> {
-        let h = self.signals();
-        let coordinates = h.coordinates();
+        e: &FilterEntry,
+        waiting: &[FilterEntry],
+    ) -> Result<Option<Vec<Input>>, String> {
+        let params = param_keys(&self.flat, &self.ids, self.sim.model());
+        let reads: Vec<String> = crate::observers::filter_reads(e)
+            .into_iter()
+            .filter(|r| r != "t" && !params.contains(r))
+            .collect();
+        for p in e.probe.iter().chain(e.from.values()) {
+            if !self.probes.iter().any(|x| x.spec.name == *p) {
+                return Err(format!(
+                    "filter {}: there is no probe '{p}' to run on",
+                    e.name
+                ));
+            }
+        }
+        let mut inputs = Vec::new();
+        for r in reads {
+            if waiting
+                .iter()
+                .any(|w| w.name != e.name && w.outputs().contains(&r))
+            {
+                return Ok(None);
+            }
+            if let Some(j) = self.derived.iter().position(|d| {
+                let (s, f) = d.outputs();
+                s.contains(&r) || f.contains(&r)
+            }) {
+                let (s, f) = self.derived[j].outputs();
+                let (at, field) = match s.iter().position(|n| *n == r) {
+                    Some(i) => (i, false),
+                    None => (f.iter().position(|n| *n == r).unwrap_or(0), true),
+                };
+                inputs.push(Input {
+                    name: r,
+                    src: Src::Derived(j),
+                    at,
+                    field,
+                });
+                continue;
+            }
+            let src = match e.source_of(&r) {
+                None => Src::Model,
+                Some(p) => {
+                    let i = self
+                        .probes
+                        .iter()
+                        .position(|x| x.spec.name == p)
+                        .ok_or_else(|| {
+                            format!("filter {}: there is no probe '{p}' to run on", e.name)
+                        })?;
+                    if !self.probes[i].spec.record.contains(&r) {
+                        return Err(format!(
+                            "filter {}: probe {p} does not record '{r}'; ignored",
+                            e.name
+                        ));
+                    }
+                    Src::Probe(i)
+                }
+            };
+            let (at, field) = match self.layout_scalars.iter().position(|n| *n == r) {
+                Some(i) => (i, false),
+                None => match self.layout_fields.iter().position(|(n, _)| *n == r) {
+                    Some(i) => (i, true),
+                    None => {
+                        return Err(format!(
+                            "filter {}: the model has no '{r}'; ignored",
+                            e.name
+                        ))
+                    }
+                },
+            };
+            inputs.push(Input {
+                name: r,
+                src,
+                at,
+                field,
+            });
+        }
+        Ok(Some(inputs))
+    }
+
+    /// Compile filter `e` on its inputs, keeping the recording of an
+    /// equal one in `old`.
+    fn compile_derived(
+        &self,
+        e: FilterEntry,
+        inputs: Vec<Input>,
+        params: &[String],
+        old: &mut Vec<Derived>,
+        recorded_to: Option<f64>,
+    ) -> Result<Derived, String> {
+        let scalars: Vec<String> = inputs
+            .iter()
+            .filter(|i| !i.field)
+            .map(|i| i.name.clone())
+            .collect();
+        let shape_of = |i: &Input| match i.src {
+            Src::Derived(j) => {
+                let h = self.derived[j].history.read();
+                h.fields()
+                    .iter()
+                    .find(|f| f.name == i.name)
+                    .map(|f| f.shape)
+            }
+            _ => Some(self.layout_fields[i.at].1),
+        };
+        let grids: Vec<(String, FieldShape)> = inputs
+            .iter()
+            .filter(|i| i.field)
+            .filter_map(|i| shape_of(i).map(|s| (i.name.clone(), s)))
+            .collect();
+        let (filters, problems) =
+            Filters::compile(std::slice::from_ref(&e), &scalars, params, &grids);
+        if let Some(p) = problems.into_iter().next() {
+            return Err(format!("filter {p}; ignored"));
+        }
+        let mut sources: Vec<Src> = Vec::new();
+        for i in &inputs {
+            if !sources.contains(&i.src) {
+                sources.push(i.src);
+            }
+        }
+        let key: Vec<ProbeSpec> = sources
+            .iter()
+            .filter_map(|s| match s {
+                Src::Probe(i) => Some(self.probes[*i].spec.clone()),
+                _ => None,
+            })
+            .collect();
+        let held = vec![None; inputs.len()];
+        if let Some(k) = old.iter().position(|d| d.entry == e && d.key == key) {
+            let mut d = old.remove(k);
+            d.filters = filters;
+            d.inputs = inputs;
+            d.sources = sources;
+            return Ok(d);
+        }
+        let mut d = Derived {
+            entry: e,
+            key,
+            filters,
+            inputs,
+            sources,
+            held,
+            history: SharedHistory::new(History::new(Vec::new())),
+            pending: Vec::new(),
+            now: None,
+        };
+        let (names, _) = d.outputs();
+        let fields: Vec<(String, FieldShape)> =
+            d.filters.cuts.iter().flat_map(|c| c.fields()).collect();
+        let mut h = History::with_fields("t", names, fields);
+        h.set_field_budget(self.share());
+        let mut coordinates = Vec::new();
+        for c in &d.filters.cuts {
+            coordinates.extend(c.lines().into_iter().map(|l| Coordinate {
+                name: c.coordinate(),
+                of: l,
+                axis: 0,
+            }));
+        }
+        h.set_coordinates(coordinates);
+        d.history = SharedHistory::new(h);
+        // Mid-run, it starts from what its sources recorded so far.
+        if recorded_to.is_some() {
+            self.reseed(&mut d);
+        }
+        Ok(d)
+    }
+
+    /// Take a filter's held inputs again from its sources' recordings, as
+    /// they stand (after a rewind, or when it is new).
+    fn reseed(&self, d: &mut Derived) {
+        for (k, i) in d.inputs.iter().enumerate() {
+            let h = match i.src {
+                Src::Model => None,
+                Src::Probe(p) => Some(self.probes[p].history.clone()),
+                Src::Derived(j) => Some(self.derived[j].history.clone()),
+            };
+            d.held[k] = h.and_then(|h| {
+                let h = h.read();
+                let last = h.len().checked_sub(1)?;
+                if i.field {
+                    let f = h.fields().iter().find(|f| f.name == i.name)?;
+                    Some(f.frame(last).to_vec()).filter(|v| !v.is_empty())
+                } else {
+                    let s = h.resolve(&i.name)?;
+                    Some(vec![h.value(s, last)])
+                }
+            });
+        }
+        d.now = None;
+    }
+
+    /// Run the filters with clocks of their own whose sources recorded at
+    /// this sample (`fired`, by probe).
+    fn run_derived(&mut self, t: f64, values: &[f64], frames: &[&[f64]], fired: &[bool]) {
+        if self.derived.is_empty() {
+            return;
+        }
+        let params = self.param_values();
+        let coordinates = self.all_coordinates.clone();
+        let mut produced = vec![false; self.derived.len()];
+        for j in 0..self.derived.len() {
+            let (before, rest) = self.derived.split_at_mut(j);
+            let d = &mut rest[0];
+            d.now = None;
+            let did = |s: &Src| match *s {
+                Src::Model => true,
+                Src::Probe(i) => fired.get(i).copied().unwrap_or(false),
+                Src::Derived(k) => produced[k],
+            };
+            let go = if d.entry.on_any() {
+                d.sources.iter().any(did)
+            } else {
+                d.sources.iter().all(did)
+            };
+            if !go {
+                continue;
+            }
+            for (k, i) in d.inputs.iter().enumerate() {
+                if !did(&i.src) {
+                    continue;
+                }
+                d.held[k] = Some(match (i.src, i.field) {
+                    (Src::Derived(m), field) => {
+                        let (v, f) = before[m].now.as_ref().expect("it produced");
+                        if field {
+                            f[i.at].clone()
+                        } else {
+                            vec![v[i.at]]
+                        }
+                    }
+                    (_, true) => frames[i.at].to_vec(),
+                    (_, false) => vec![values[i.at]],
+                });
+            }
+            // Until every input has a value (`any`), it gives NaN.
+            let ready = d.held.iter().all(Option::is_some);
+            let mut vals: Vec<f64> = d
+                .inputs
+                .iter()
+                .zip(&d.held)
+                .filter(|(i, _)| !i.field)
+                .map(|(_, h)| h.as_ref().map_or(f64::NAN, |v| v[0]))
+                .collect();
+            let base = vals.len();
+            derive(&d.filters.exprs, t, &mut vals, &params);
+            let mut out: Vec<f64> = vals.split_off(base);
+            if !ready {
+                out.iter_mut().for_each(|v| *v = f64::NAN);
+            }
+            let field_names: Vec<String> = d
+                .inputs
+                .iter()
+                .filter(|i| i.field)
+                .map(|i| i.name.clone())
+                .collect();
+            let field_frames: Vec<Vec<f64>> = d
+                .inputs
+                .iter()
+                .zip(&d.held)
+                .filter(|(i, _)| i.field)
+                .map(|(_, h)| h.clone().unwrap_or_default())
+                .collect();
+            let cut_frames = derived_cuts(&d.filters, &field_names, &field_frames, &coordinates);
+            d.pending.push(Pending {
+                index: t,
+                values: out.clone(),
+                frames: cut_frames.clone(),
+            });
+            d.flush(false);
+            d.now = Some((out, cut_frames));
+            produced[j] = true;
+        }
+    }
+
+    /// The outputs of filters with clocks of their own, as views bind
+    /// them (ADR 0063).
+    pub fn derived_names(&self) -> &[String] {
+        &self.derived_names
+    }
+
+    /// What each filter with a clock of its own recorded, by its name.
+    pub fn derived_histories(&self) -> Vec<(String, SharedHistory)> {
+        self.derived
+            .iter()
+            .map(|d| (d.entry.name.clone(), d.history.clone()))
+            .collect()
+    }
+
+    /// Set the probes from the model file's form (ADR 0062), as the
+    /// canvas edits them: what each probe recorded is kept if its
+    /// recording did not change.
+    pub fn set_probe_entries(&mut self, entries: &[ProbeEntry]) -> Result<(), Vec<String>> {
+        self.set_probes(entries.iter().map(ProbeSpec::from_entry).collect())
+    }
+
+    /// The probes in the model file's form.
+    pub fn probe_entries(&self) -> Vec<ProbeEntry> {
+        self.probes.iter().map(|p| p.spec.to_entry()).collect()
+    }
+
+    /// Write the files of the probes that have one (`to`) into `dir`, as
+    /// recorded so far: the files written, and notes on what was left out.
+    pub fn write_probe_files(
+        &mut self,
+        dir: &std::path::Path,
+    ) -> std::io::Result<(Vec<std::path::PathBuf>, Vec<String>)> {
+        self.flush(true);
+        let mut written = Vec::new();
+        let mut notes = Vec::new();
+        for p in &mut self.probes {
+            // Written as it records: already there, flushed above.
+            if let Some(w) = &p.stream {
+                written.extend(w.paths.iter().cloned());
+                continue;
+            }
+            if let Some(to) = p.spec.to.as_ref().filter(|_| !p.spec.stream) {
+                let (w, n) = crate::probe::write_files(&p.history.read(), dir, to)?;
+                written.extend(w);
+                notes.extend(n.into_iter().map(|n| format!("probe {}: {n}", p.spec.name)));
+            }
+        }
+        Ok((written, notes))
+    }
+
+    /// Where a probe's node sits on the data layer, without restarting
+    /// its recording.
+    pub fn place_probe(&mut self, name: &str, at: Option<[f64; 2]>) -> Result<(), String> {
+        let p = self
+            .probes
+            .iter_mut()
+            .find(|p| p.spec.name == name)
+            .ok_or_else(|| format!("no probe '{name}'"))?;
+        p.spec.canvas = at.map(|p| p.map(|v| (v * 10.0).round() / 10.0));
+        Ok(())
+    }
+
+    /// Build the file's probes, one by one: one that records what this
+    /// session does not is dropped with a warning.
+    fn load_probes(&mut self) {
+        let mut kept: Vec<ProbeSpec> = Vec::new();
+        for (k, e) in self.file.controls.probes.clone().iter().enumerate() {
+            let mut specs = kept.clone();
+            specs.push(ProbeSpec::from_entry(e));
+            match self.install_probes(specs.clone()) {
+                Ok(()) => kept = specs,
+                Err(problems) => {
+                    for p in problems {
+                        self.warnings
+                            .push(format!("controls.probes[{k}]: {p}; ignored"));
+                    }
+                }
+            }
+        }
+        if let Err(problems) = self.set_probes(kept) {
+            self.warnings.extend(problems);
+        }
+    }
+
+    /// The probes besides the implicit one, by name.
+    pub fn probe_names(&self) -> Vec<&str> {
+        self.probes.iter().map(|p| p.spec.name.as_str()).collect()
+    }
+
+    /// The probes besides the implicit one, as set.
+    pub fn probe_specs(&self) -> Vec<&ProbeSpec> {
+        self.probes.iter().map(|p| &p.spec).collect()
+    }
+
+    /// What probe `name` has recorded, shared for reading (`None` if
+    /// there is no such probe). The implicit probe is [`Session::signals`].
+    pub fn probe(&self, name: &str) -> Option<SharedHistory> {
+        self.probes
+            .iter()
+            .find(|p| p.spec.name == name)
+            .map(|p| p.history.clone())
+    }
+
+    /// The frames of the cut filters, in order, given the frames of the
+    /// fields they read.
+    fn cut_frames<'a>(&self, frame: impl Fn(&str) -> Option<&'a [f64]>) -> Vec<Vec<f64>> {
+        let coordinates = &self.all_coordinates;
         self.filters
             .cuts
             .iter()
-            .filter(|c| self.whole_cut(&c.input) == whole)
             .flat_map(|c| match frame(&c.input) {
                 Some(input) => {
                     let g = c.geometry(coordinates, &frame);
@@ -622,15 +2053,12 @@ impl Session {
     /// The per-sample cut frames from the frames of the base fields.
     fn sample_cuts(&self, before: &[&[f64]]) -> Vec<Vec<f64>> {
         let fields = &self.base_fields;
-        self.cut_frames(
-            |name| {
-                fields
-                    .iter()
-                    .position(|(f, _)| f == name)
-                    .and_then(|i| before.get(i).copied())
-            },
-            false,
-        )
+        self.cut_frames(|name| {
+            fields
+                .iter()
+                .position(|(f, _)| f == name)
+                .and_then(|i| before.get(i).copied())
+        })
     }
 
     pub fn time(&self) -> f64 {
@@ -641,28 +2069,52 @@ impl Session {
         self.sim.labels()
     }
 
-    /// Advance one communication step and record it.
+    /// Advance one communication step and record it. A step whose study
+    /// was given up (ADR 0071 step 2, [`crate::run::given_up`]) leaves the
+    /// model as it was before it.
     pub fn step(&mut self) -> Result<(), SimError> {
-        self.sim.step(self.dt)?;
+        self.apply_due();
+        let studied = self.block_types.iter().any(|t| t == simsandbox_file::STUDY);
+        let before = studied.then(|| self.sim.snapshot());
+        let states_before = self.iterates.then(|| self.state_bits());
+        if let Err(e) = self.sim.step(self.dt) {
+            if let Some(b) = before.filter(|_| crate::run::given_up(&e)) {
+                self.sim.restore(&b);
+            }
+            return Err(e);
+        }
+        // A round that changes no state is the last that changes anything
+        // (ADR 0083).
+        if let Some(b) = states_before {
+            if b == self.state_bits() {
+                self.held_still = true;
+                self.rounds_pending = false;
+            }
+        }
         self.record();
+        let Some(r) = &self.recorder else {
+            return Ok(());
+        };
         self.steps_since_snapshot += 1;
-        if self.steps_since_snapshot >= SNAPSHOT_EVERY {
+        if self.steps_since_snapshot as u64 >= r.every() {
             self.steps_since_snapshot = 0;
             self.snapshots.push(self.sim.snapshot());
-            if self.snapshots.len() > MAX_SNAPSHOTS {
-                thin(&mut self.snapshots);
-            }
+            self.fit_snapshots();
         }
         Ok(())
     }
 
     /// Step until the time reaches `t` (within rounding), recording every
-    /// step: how headless interfaces run a model (ADR 0039). A swept model
-    /// is not run in time; this does nothing for it.
+    /// step: how headless interfaces run a model (ADR 0039).
+    /// How long the next step is in simulated time: `dt`, or with several
+    /// clocks the time to the next instant of any (ADR 0066 step 4b).
+    pub fn step_dt(&self) -> f64 {
+        self.sim
+            .next_instant()
+            .map_or(self.dt, |next| (next - self.time()).max(0.0))
+    }
+
     pub fn run_until(&mut self, t: f64) -> Result<(), SimError> {
-        if self.sweep.is_some() {
-            return Ok(());
-        }
         while self.time() < t - 1e-9 * self.dt.max(t.abs()) {
             self.step()?;
         }
@@ -679,6 +2131,21 @@ impl Session {
             self.stop_at = None;
         }
         reached
+    }
+
+    /// The kernel model being run.
+    pub fn sim_model(&self) -> &simsandbox_core::graph::Model {
+        self.sim.model()
+    }
+
+    /// Each activated use (ADR 0088), by path: whether it is held now
+    /// and how often it has started again since the run began.
+    pub fn activations(&self) -> Vec<(String, bool, u64)> {
+        self.sim
+            .activations()
+            .into_iter()
+            .map(|(name, held, starts)| (name.to_string(), held, starts))
+            .collect()
     }
 
     /// Every parameter: the declared ones (the model's, then each
@@ -705,6 +2172,7 @@ impl Session {
                 suggested: d.range.unwrap_or_else(|| suggested_range(d.value)),
                 initial_condition: false,
                 value: d.value,
+                driven: None,
             });
         }
         for entry in &self.flat.blocks {
@@ -731,68 +2199,292 @@ impl Session {
                     suggested: [p.suggested_min, p.suggested_max],
                     initial_condition: p.initial_condition,
                     value,
+                    driven: None,
                 });
             }
+        }
+        // What wires drive (ADR 0075); a declared parameter of a use is
+        // driven when the parameters set to it are.
+        let driven = drives(model);
+        for r in &mut rows {
+            r.driven = driven
+                .iter()
+                .find(|(to, _)| *to == r.key)
+                .map(|(_, from)| from.clone());
+        }
+        let blocks: Vec<(String, Option<String>, Option<String>)> = rows
+            .iter()
+            .filter(|r| r.block.is_some())
+            .map(|r| (r.owner.clone(), r.formula.clone(), r.driven.clone()))
+            .collect();
+        for r in rows
+            .iter_mut()
+            .filter(|r| r.block.is_none() && !r.owner.is_empty())
+        {
+            let inside = format!("{}/", r.owner);
+            r.driven = blocks
+                .iter()
+                .find(|(owner, formula, d)| {
+                    owner.starts_with(&inside) && formula.as_deref() == Some(&r.name) && d.is_some()
+                })
+                .and_then(|(_, _, d)| d.clone());
         }
         rows
     }
 
     /// Change a parameter by its key (`"block.param"`, or a declared
     /// parameter's), recomputing what formulas set from it (ADR 0043).
+    /// The change is live input: it is recorded in the run's input track
+    /// (ADR 0058), after any events due now, and drops recorded input
+    /// ahead (running on from a rewind with new input is a new branch).
     pub fn set_param_key(&mut self, key: &str, value: f64) -> Result<(), String> {
-        if self.plan.declared(key).is_some() {
-            let set = self.plan.set(key, value)?;
-            for (block, param, v) in set {
-                let id = self.ids[&block];
-                self.sim
-                    .set_param(id, &param, v)
-                    .map_err(|e| e.to_string())?;
+        self.apply_due();
+        self.set_value(key, value)?;
+        // Before the run starts, a value the schedule also sets is the
+        // model's own: the run starts from it.
+        if self.time() == 0.0 && self.sim.step_count() == 0 {
+            for (k, v) in &mut self.track.base {
+                if k == key {
+                    *v = value;
+                }
             }
-            return self.after_param_change();
         }
-        let (block, name) = key
-            .rsplit_once('.')
-            .ok_or_else(|| format!("'{key}' is not 'block.param'"))?;
-        let id = *self
-            .ids
-            .get(block)
-            .ok_or_else(|| format!("no block '{block}'"))?;
-        if let Some(f) = self.plan.formula_of(block, name) {
-            return Err(format!("{key} is computed from '{}'", f.text));
-        }
-        self.set_param(id, name, value)
-    }
-
-    /// Change a parameter while running. Initial conditions apply on
-    /// [`Session::restart`], or at once if the run has not started.
-    pub fn set_param(&mut self, block: BlockId, name: &str, value: f64) -> Result<(), String> {
-        self.sim
-            .set_param(block, name, value)
-            .map_err(|e| e.to_string())?;
+        let t = self.time();
+        let ahead = self.track.next_recorded;
+        self.track.recorded.truncate(ahead);
+        self.track.recorded.push(InputEvent {
+            t,
+            key: key.to_string(),
+            value,
+        });
+        self.track.next_recorded = self.track.recorded.len();
         self.after_param_change()
     }
 
+    /// Live input from a device (keys, a view's pointer, ADR 0058): as
+    /// [`Session::set_param_key`], but nothing happens (and nothing is
+    /// recorded) when an input block's value is already `value`, so a held
+    /// pointer or key sends only changes. Returns whether it changed.
+    pub fn set_input(&mut self, key: &str, value: f64) -> Result<bool, String> {
+        self.apply_due();
+        if let Some((block, name)) = key.rsplit_once('.') {
+            if let Some(&id) = self.ids.get(block) {
+                if self.sim.param(id, name).ok() == Some(value) {
+                    return Ok(false);
+                }
+            }
+        }
+        self.set_param_key(key, value).map(|()| true)
+    }
+
+    /// Set a value by key, not recorded.
+    fn set_value(&mut self, key: &str, value: f64) -> Result<(), String> {
+        set_key(&mut self.sim, &mut self.plan, &self.ids, key, value)
+    }
+
+    /// Change a parameter while running, as live input (recorded, like
+    /// [`Session::set_param_key`]). Initial conditions apply on
+    /// [`Session::restart`], or at once if the run has not started.
+    pub fn set_param(&mut self, block: BlockId, name: &str, value: f64) -> Result<(), String> {
+        let flat = self
+            .ids
+            .iter()
+            .find(|(_, &id)| id == block)
+            .map(|(n, _)| n.clone())
+            .ok_or("no such block")?;
+        self.set_param_key(&format!("{flat}.{name}"), value)
+    }
+
     fn after_param_change(&mut self) -> Result<(), String> {
-        if self.sweep.is_some() {
-            self.resample();
-        } else if self.time() == 0.0 && self.snapshots.len() == 1 {
+        if self.timeless && self.evaluate_later {
+            self.unevaluated = true;
+            return Ok(());
+        }
+        // An iteration starts again from round 0 (ADR 0083).
+        if self.iterates && self.evaluate_later {
+            return self.restart().map_err(|e| e.to_string());
+        }
+        if self.time() == 0.0 && self.sim.step_count() == 0 {
             self.restart().map_err(|e| e.to_string())?;
         }
         Ok(())
     }
 
+    /// Whether it was built without running its studies, or changed since
+    /// last evaluated with evaluation left for later: [`Session::evaluate`]
+    /// brings it up to date.
+    pub fn unevaluated(&self) -> bool {
+        self.unevaluated
+    }
+
+    /// Nothing in it runs in time (ADR 0072): no block has states or
+    /// tables or reads recorded data, there are no clocks and no scheduled
+    /// inputs. The app evaluates such a model and never steps it.
+    pub fn timeless(&self) -> bool {
+        self.timeless
+    }
+
+    /// Only maps, with a last round, and nothing reads time or happens at a
+    /// time (ADR 0083): a `t_end`; no continuous states, tables, clocks,
+    /// data or scheduled inputs; and every block says it never reads `t`. The app iterates such a model
+    /// as fast as it can instead of pacing it.
+    pub fn iterates(&self) -> bool {
+        self.iterates
+    }
+
+    /// An iterating model still has rounds to run: it has neither held
+    /// still nor reached its last round since it opened or last changed.
+    pub fn rounds_pending(&self) -> bool {
+        self.rounds_pending
+    }
+
+    /// Stop iterating (its last round was reached, or a step failed).
+    pub fn stop_rounds(&mut self) {
+        self.rounds_pending = false;
+    }
+
+    /// Its last round changed no state, so no later round changes anything.
+    pub fn held_still(&self) -> bool {
+        self.held_still
+    }
+
+    /// Rounds run since it started.
+    pub fn round(&self) -> u64 {
+        self.sim.step_count()
+    }
+
+    /// Every block's state and tables (rows, ids and values), by bits.
+    fn state_bits(&self) -> Vec<u64> {
+        let mut bits = Vec::new();
+        for &id in self.ids.values() {
+            bits.extend(self.sim.state(id).iter().map(|v| v.to_bits()));
+            for t in self.sim.tables(id) {
+                bits.push(t.len() as u64);
+                bits.extend(t.ids());
+                for c in 0..t.columns() {
+                    bits.extend(t.column(c).iter().map(|v| v.to_bits()));
+                }
+            }
+        }
+        bits
+    }
+
+    fn only_rounds(&self) -> bool {
+        let model = self.sim.model();
+        // A last round: an open-ended map (the logistic map) is watched as
+        // it goes, paced as any model.
+        self.file.run.t_end.is_some()
+            && model.clocks().0.is_empty()
+            && self.track.schedule.is_empty()
+            && self.ids.values().all(|&id| {
+                model.block(id).is_ok_and(|b| {
+                    // Tables only of blocks that say they never read
+                    // time: rows that change by rules each round. A block
+                    // integrated in time runs in time, whatever holds its
+                    // states (rows of tables, ADR 0085 step 3).
+                    b.reads_time() == Some(false)
+                        && b.instants().is_none()
+                        && b.spec().time != TimeSemantics::Continuous
+                        && (b.spec().states.is_empty()
+                            || b.spec().time == TimeSemantics::DiscreteEvent)
+                })
+            })
+    }
+
+    fn nothing_in_time(&self) -> bool {
+        let model = self.sim.model();
+        model.clocks().0.is_empty()
+            && self.track.schedule.is_empty()
+            && self.ids.values().all(|&id| {
+                model.block(id).is_ok_and(|b| {
+                    b.spec().states.is_empty()
+                        && b.spec().tables.is_empty()
+                        && b.instants().is_none()
+                })
+            })
+    }
+
+    /// Leave changes to a model with nothing in time unevaluated, for the
+    /// caller to [`Session::evaluate`] where it can show progress and give
+    /// a study up (the app's worker, ADR 0072).
+    pub fn evaluate_later(&mut self) {
+        self.evaluate_later = true;
+    }
+
+    /// Bring the model up to date (a restart: the history starts over with
+    /// its values): run the studies of a model built without running them,
+    /// or evaluate a model with nothing in time after a change. A study
+    /// given up ([`crate::run::given_up`]) leaves it unevaluated, to run
+    /// again.
+    pub fn evaluate(&mut self) -> Result<(), SimError> {
+        let r = self.restart();
+        // A study that failed is reported once, not run again and again.
+        if r.as_ref().is_err_and(|e| !crate::run::given_up(e)) {
+            self.unevaluated = false;
+        }
+        r
+    }
+
     /// Start again at t = 0 from the current parameter values. History and
     /// plots start over.
     pub fn restart(&mut self) -> Result<(), SimError> {
-        if self.sweep.is_some() {
-            self.resample();
-            return Ok(());
+        // A new run: recorded input is dropped; what the schedule sets
+        // starts from the model's own values and is set again.
+        self.track.recorded.clear();
+        for (key, value) in self.track.base.clone() {
+            if let Err(e) = self.set_value(&key, value) {
+                self.warnings.push(e);
+            }
         }
+        let r = self.restart_keeping_recorded();
+        self.rounds_pending = self.iterates;
+        self.held_still = false;
+        // Any restart outside `without_running_studies` runs them.
+        if r.is_ok() && crate::study::studies_run() {
+            self.unevaluated = false;
+        }
+        r
+    }
+
+    /// Restart at t = 0 with the events at t = 0 applied first, so they
+    /// set where the run starts, and the rest still ahead.
+    fn restart_keeping_recorded(&mut self) -> Result<(), SimError> {
+        self.track.seek(0.0, 0.0);
+        // Back to t = 0 so the events there are due.
         self.sim.restart(0.0)?;
-        self.snapshots = vec![self.sim.snapshot()];
+        // The model as it starts, before the events: a run's hash and the
+        // saved model agree, and replaying applies the events again.
+        if let Err(e) = self.capture_start() {
+            self.warnings.push(e);
+        }
+        self.apply_due();
+        self.sim.restart(0.0)?;
+        self.snapshots = match self.recorder {
+            Some(_) => vec![self.sim.snapshot()],
+            None => Vec::new(),
+        };
         self.steps_since_snapshot = 0;
-        self.stop_at = self.file.run.t_end;
+        self.stop_at = self
+            .file
+            .run
+            .t_end
+            .or_else(|| crate::run::data_end(self.sim.model()));
         self.history_mut().clear();
+        self.gaps_until = None;
+        for p in &mut self.probes {
+            p.pending.clear();
+            p.history.write().clear();
+            p.trigger.seek(None, 0.0);
+            if let Some(w) = &mut p.stream {
+                let _ = w.truncate_after(None);
+            }
+        }
+        for d in &mut self.derived {
+            d.pending.clear();
+            d.history.write().clear();
+            d.held.iter_mut().for_each(|h| *h = None);
+            d.now = None;
+        }
         self.record();
         Ok(())
     }
@@ -804,9 +2496,6 @@ impl Session {
     /// `start` entry in the file with their state and tables. Returns a
     /// note per block.
     pub fn start_from_now(&mut self) -> Result<Vec<String>, String> {
-        if self.sweep.is_some() {
-            return Err("a swept model has no state to start from".into());
-        }
         let t = self.time();
         let mut notes = Vec::new();
         for i in 0..self.flat.blocks.len() {
@@ -962,190 +2651,269 @@ impl Session {
             self.file.controls.views = v;
         }
         self.file.controls.filters = self.filter_entries.clone();
-        if let Some(sw) = &self.sweep {
-            self.file.sample = Some(sw.sampling.clone());
-        }
+        self.file.controls.recorder = self.recorder.clone();
+        self.file.controls.probes = self.probe_entries();
         Ok(self.file.to_json())
     }
 
-    /// The sweep, if the model is swept instead of run.
-    pub fn sweep(&self) -> Option<&Sweep> {
-        self.sweep.as_deref()
-    }
-
-    /// Change what is swept and how (ADR 0028), and recompute. Filters that
-    /// no longer apply (a cut through a grid the sweep no longer makes) are
-    /// dropped; the returned notes say which.
-    pub fn set_sampling(&mut self, sampling: Sampling) -> Result<Vec<String>, String> {
-        if self.sweep.is_none() {
-            return Err("this model has states, so it runs in time instead".into());
-        }
-        let plan = sampling
-            .plan(&self.flat, self.sim.model(), &self.ids)
+    /// Keep the file as it is now, with the current parameters, as the
+    /// file this run starts from.
+    fn capture_start(&mut self) -> Result<(), String> {
+        self.flat
+            .capture_params(self.sim.model(), &self.ids)
             .map_err(|e| e.to_string())?;
-        self.sweep = Some(Arc::new(Sweep::new(sampling, plan, &self.ids)?));
-        let entries = self.filter_entries.clone();
-        let (filters, problems) = self.compile_filters(&entries);
-        self.filter_entries = filters.entries(&entries);
-        self.filters = filters;
-        self.resample();
-        Ok(problems
-            .into_iter()
-            .map(|p| format!("filter {p}; removed"))
-            .collect())
-    }
-
-    /// Evaluate the outputs at every sample of the sweep: at once, or when
-    /// deferred, by later calls to [`Session::resume_resample`].
-    fn resample(&mut self) {
-        if self.sweep.is_none() {
-            return;
-        }
-        self.rebuild_history();
-        let names = self.scalar_names().len();
-        let grid = self.sweep.as_ref().is_some_and(|sw| sw.is_grid());
-        self.job = Some(ResampleJob {
-            next: 0,
-            columns: vec![Vec::new(); if grid { names + 2 } else { 0 }],
-            started: Instant::now(),
-        });
-        if !self.deferred {
-            self.resume_resample(None);
-        }
-    }
-
-    /// The sweep's progress while it is being evaluated: samples done and
-    /// in all.
-    pub fn resampling(&self) -> Option<(usize, usize)> {
-        let job = self.job.as_ref()?;
-        let total = self.sweep.as_ref().map_or(0, |sw| sw.plan.points.len());
-        Some((job.next, total))
-    }
-
-    /// Evaluate more of the sweep, for at most `budget` (all of it if
-    /// `None`). The model is left with the panel's values after each call.
-    /// Returns true when the sweep is complete.
-    pub fn resume_resample(&mut self, budget: Option<Duration>) -> bool {
-        let (Some(sw), Some(mut job)) = (self.sweep.clone(), self.job.take()) else {
-            return true;
-        };
-        let start = Instant::now();
-        let originals: Vec<f64> = sw
-            .targets
-            .iter()
-            .map(|(b, p)| self.sim.param(*b, p).unwrap_or(f64::NAN))
-            .collect();
-        let set = |sim: &mut Simulator, values: &[f64]| {
-            sw.targets
-                .iter()
-                .zip(values)
-                .all(|((b, p), &v)| sim.set_param(*b, p, v).is_ok())
-                && sim.restart(0.0).is_ok()
-        };
-        let names = self.scalar_names().len();
-        // For a grid over two parameters: every scalar signal, then the
-        // swept parameters, sample by sample (cell (i, j) at j * nx + i).
-        while job.next < sw.plan.points.len() {
-            if budget.is_some_and(|b| start.elapsed() >= b) {
-                break;
-            }
-            let k = job.next;
-            let point = &sw.plan.points[k];
-            let ok = set(&mut self.sim, point);
-            let mut values = if ok {
-                self.sample(k as f64)
-            } else {
-                vec![f64::NAN; names]
-            };
-            values.extend_from_slice(point);
-            for (c, v) in job.columns.iter_mut().zip(&values) {
-                c.push(*v);
-            }
-            let owned: Vec<Vec<f64>> = if ok {
-                frames(&self.sim, &self.field_sources)
-                    .into_iter()
-                    .map(<[f64]>::to_vec)
-                    .collect()
-            } else {
-                vec![Vec::new(); self.field_sources.len()]
-            };
-            let frames: Vec<&[f64]> = owned.iter().map(Vec::as_slice).collect();
-            let cuts = self.sample_cuts(&frames);
-            self.push(k as f64, &values, &frames, &cuts);
-            job.next += 1;
-        }
-        // Leave the model as the panel shows it.
-        set(&mut self.sim, &originals);
-        if job.next < sw.plan.points.len() {
-            self.job = Some(job);
-            return false;
-        }
-        if sw.is_grid() {
-            let grids: Vec<(String, Vec<f64>)> = self
-                .scalar_names()
-                .iter()
-                .chain(sw.keys())
-                .map(|n| grid_name(n))
-                .zip(std::mem::take(&mut job.columns))
-                .collect();
-            let whole = self.cut_frames(
-                |name| {
-                    grids
-                        .iter()
-                        .find(|(n, _)| n == name)
-                        .map(|(_, f)| f.as_slice())
-                },
-                true,
-            );
-            let names: Vec<String> = self
-                .filters
-                .cuts
-                .iter()
-                .filter(|c| self.whole_cut(&c.input))
-                .flat_map(|c| c.fields().into_iter().map(|(n, _)| n))
-                .collect();
-            let mut h = self.history_mut();
-            for (name, frame) in grids.into_iter().chain(names.into_iter().zip(whole)) {
-                h.set_whole(&name, frame);
-            }
-        }
-        self.last_sweep = Some(job.started.elapsed());
-        true
+        self.file.capture_from(&self.flat, &self.plan);
+        self.file.run.dt = self.dt;
+        self.start_file = self.file.clone();
+        Ok(())
     }
 
     /// Whether dragged sliders apply while dragged (ADR 0037): every method
-    /// is real-time and, for a sweep, the last complete one took at most
-    /// two frames.
+    /// is real-time.
     pub fn real_time(&self) -> bool {
-        let methods = self
-            .labels()
-            .is_some_and(|l| l.speed == simsandbox_core::block::SpeedClass::RealTime);
-        let sweep = match &self.sweep {
-            None => true,
-            // The last complete sweep, so a drag does not change the rule
-            // halfway while each change restarts the sweep.
-            Some(_) => self.last_sweep.is_some_and(|d| d <= REAL_TIME_SWEEP),
+        self.labels()
+            .is_some_and(|l| l.speed == simsandbox_core::block::SpeedClass::RealTime)
+    }
+
+    /// Thin the snapshots to the recorder's budget.
+    fn fit_snapshots(&mut self) {
+        let Some(r) = &self.recorder else {
+            return;
         };
-        methods && sweep
+        // Its own budget, or its share of the app's.
+        let mb = r.mb.unwrap_or(self.memory_mb / 4.0);
+        let budget = (mb * 1e6 / 8.0) as usize;
+        let held = |s: &[Snapshot]| s.iter().map(Snapshot::values).sum::<usize>();
+        while self.snapshots.len() > 2
+            && (self.snapshots.len() > MAX_SNAPSHOTS || held(&self.snapshots) > budget)
+        {
+            thin(&mut self.snapshots);
+        }
+    }
+
+    /// A quarter of the memory budget, in bytes: the default share of
+    /// snapshots, the history and each probe (ADR 0062 step 5).
+    fn share(&self) -> usize {
+        (self.memory_mb * 1e6 / 4.0) as usize
+    }
+
+    /// The app's memory budget in MB (ADR 0062 step 5).
+    pub fn memory_budget(&self) -> f64 {
+        self.memory_mb
+    }
+
+    /// Set the memory budget in MB (ADR 0062 step 5): snapshots (unless
+    /// the recorder sets its own), the history, each probe that keeps
+    /// what it records by default, and each filter thin past a quarter of
+    /// it. What is held now thins at the next sample.
+    pub fn set_memory_budget(&mut self, mb: f64) {
+        if !(mb.is_finite() && mb > 0.0) {
+            return;
+        }
+        self.memory_mb = mb;
+        let share = self.share();
+        self.history.write().set_field_budget(share);
+        for p in &self.probes {
+            p.history.write().set_field_budget(share);
+        }
+        for d in &self.derived {
+            d.history.write().set_field_budget(share);
+        }
+        self.fit_snapshots();
+    }
+
+    /// What the recordings hold against the memory budget (ADR 0062 step
+    /// 5): snapshots, the history, each probe and filter.
+    pub fn memory_use(&self) -> MemoryUse {
+        let mut parts = vec![
+            (
+                "snapshots".to_string(),
+                8 * self.snapshots.iter().map(Snapshot::values).sum::<usize>(),
+            ),
+            ("history".to_string(), self.history.read().bytes()),
+        ];
+        for p in &self.probes {
+            parts.push((format!("probe {}", p.spec.name), p.history.read().bytes()));
+        }
+        for d in &self.derived {
+            parts.push((format!("filter {}", d.entry.name), d.history.read().bytes()));
+        }
+        MemoryUse {
+            budget: (self.memory_mb * 1e6) as usize,
+            held: parts.iter().map(|p| p.1).sum(),
+            parts,
+        }
+    }
+
+    /// The recorder, if the model has one (ADR 0064).
+    pub fn recorder(&self) -> Option<&simsandbox_file::RecorderEntry> {
+        self.recorder.as_ref()
+    }
+
+    /// Add, change or remove the recorder (ADR 0064). Added during a run,
+    /// it can rewind to now and later; removed, its snapshots go.
+    pub fn set_recorder(&mut self, recorder: Option<simsandbox_file::RecorderEntry>) {
+        match (&self.recorder, &recorder) {
+            (None, Some(_)) => {
+                self.snapshots = vec![self.sim.snapshot()];
+                self.steps_since_snapshot = 0;
+            }
+            (_, None) => self.snapshots.clear(),
+            _ => {}
+        }
+        self.recorder = recorder;
+        self.fit_snapshots();
+        self.update_probe_io();
     }
 
     /// Earliest and latest time the run can be rewound to.
     pub fn history_range(&self) -> (f64, f64) {
-        let first = self.snapshots.first().map_or(0.0, |s| s.t);
+        let first = self.snapshots.first().map_or(self.time(), |s| s.t);
         let last = self.snapshots.last().map_or(first, |s| s.t);
         (first, last)
     }
 
+    /// Every scalar and every field's frame of the model now, `keep`
+    /// fields only (the rest empty), as a sample at its time.
+    fn sample_now(&self) -> Pending {
+        let t = self.sim.time();
+        let values = self.sample(t);
+        let before = frames(&self.sim, &self.field_sources);
+        let cuts = self.sample_cuts(&before);
+        let mut all: Vec<Vec<f64>> = before.iter().map(|f| f.to_vec()).chain(cuts).collect();
+        for (i, f) in all.iter_mut().enumerate() {
+            if !self.keep_fields.contains(&i) {
+                *f = Vec::new();
+            }
+        }
+        Pending {
+            index: t,
+            values,
+            frames: all,
+        }
+    }
+
+    /// Whether the history lacks, for samples it holds, something views
+    /// read now (wired after those samples were recorded, ADR 0063):
+    /// [`Session::recompute`] fills it.
+    pub fn has_gaps(&self) -> bool {
+        let first = self.history.read().times().first().copied();
+        matches!((self.gaps_until, first), (Some(g), Some(f)) if g >= f)
+    }
+
+    /// Fill the history's gaps (ADR 0062, ADR 0063: on demand, never
+    /// automatically): run again from the latest snapshot before them,
+    /// replaying the input as recorded, and record what views read now at
+    /// the times of the samples held. The model is put back as it was, at
+    /// the same time; it computes the same values bit for bit, so samples
+    /// recorded before are unchanged. Probes and filters with clocks of
+    /// their own are not filled. Needs the recorder's snapshots.
+    pub fn recompute(&mut self) -> Result<(), String> {
+        if !self.has_gaps() {
+            return Ok(());
+        }
+        let until = self.gaps_until.expect("has gaps");
+        let first = self.history.read().times()[0];
+        let Some(snap) = self.snapshots.iter().rev().find(|s| s.t <= first) else {
+            return Err("recomputing needs the recorder's snapshots (ADR 0064)".into());
+        };
+        let snap = snap.clone();
+        drop(self.history_mut());
+        let times: Vec<f64> = self.history.read().times().to_vec();
+        let now = self.sim.snapshot();
+        let track = (self.track.next_schedule, self.track.next_recorded);
+        let plan = self.plan.clone();
+        let warnings = self.warnings.len();
+        let eps = self.eps();
+        self.sim.restore(&snap);
+        self.track.seek(snap.t, eps);
+        let mut fills: BTreeMap<usize, Pending> = BTreeMap::new();
+        let mut k = times.partition_point(|&t| t < snap.t - eps);
+        let mut failed = None;
+        while k < times.len() && times[k] <= until + eps {
+            let t = self.sim.time();
+            if (times[k] - t).abs() <= eps {
+                fills.insert(k, self.sample_now());
+                k += 1;
+                continue;
+            }
+            if times[k] < t - eps {
+                // A sample between steps (none are, but never loop).
+                k += 1;
+                continue;
+            }
+            self.apply_due();
+            if let Err(e) = self.sim.step(self.dt) {
+                failed = Some(e.to_string());
+                break;
+            }
+        }
+        self.sim.restore(&now);
+        (self.track.next_schedule, self.track.next_recorded) = track;
+        self.plan = plan;
+        self.warnings.truncate(warnings);
+        if let Some(e) = failed {
+            return Err(format!("recomputing failed: {e}"));
+        }
+        let old = self.replace_history(History::new(Vec::new()));
+        self.gaps_until = None;
+        self.build_history();
+        self.replay_history(&old, false, &fills);
+        Ok(())
+    }
+
     /// Rewind to the latest snapshot at or before `t`. Everything recorded
     /// after it is discarded, so running on starts a new branch.
+    /// Without a recorder (ADR 0064) there is nothing to rewind to.
     pub fn rewind_to(&mut self, t: f64) {
+        if self.snapshots.is_empty() {
+            return;
+        }
         let keep = self.snapshots.iter().rposition(|s| s.t <= t).unwrap_or(0);
         self.snapshots.truncate(keep + 1);
         let snap = &self.snapshots[keep];
         self.sim.restore(snap);
         let t0 = snap.t;
-        self.stop_at = self.file.run.t_end.filter(|&end| end > t0);
+        // Input from then on is ahead again: running on replays it.
+        let eps = self.eps();
+        self.track.seek(t0, eps);
+        self.stop_at = self
+            .file
+            .run
+            .t_end
+            .or_else(|| crate::run::data_end(self.sim.model()))
+            .filter(|&end| end > t0);
         self.history_mut().truncate_after(t0);
+        for p in &mut self.probes {
+            p.flush(true);
+            p.history.write().truncate_after(t0);
+            p.trigger.seek(Some(t0), eps);
+            if let Some(w) = &mut p.stream {
+                let _ = w.truncate_after(Some(t0));
+            }
+        }
+        // Filters with clocks of their own hold what their sources
+        // recorded by then (ADR 0063).
+        for j in 0..self.derived.len() {
+            let mut d = std::mem::replace(
+                &mut self.derived[j],
+                Derived {
+                    entry: FilterEntry::expression("", "0", Vec::new()),
+                    key: Vec::new(),
+                    filters: Filters::default(),
+                    inputs: Vec::new(),
+                    sources: Vec::new(),
+                    held: Vec::new(),
+                    history: SharedHistory::new(History::new(Vec::new())),
+                    pending: Vec::new(),
+                    now: None,
+                },
+            );
+            d.flush(true);
+            d.history.write().truncate_after(t0);
+            self.reseed(&mut d);
+            self.derived[j] = d;
+        }
         self.steps_since_snapshot = 0;
     }
 
@@ -1222,28 +2990,15 @@ impl Session {
         if !problems.is_empty() {
             return Err(problems);
         }
-        self.filter_entries = filters.entries(&entries);
+        self.filter_entries = kept_entries(&filters, &entries);
         self.filters = filters;
-        if self.sweep.is_some() {
-            self.resample();
-            return Ok(());
-        }
-        // Replay the recorded outputs and fields through the new filters.
+        // Replay the recorded outputs and fields through the new filters;
+        // probes start afresh from now.
         drop(self.history_mut());
         let old = self.replace_history(History::new(Vec::new()));
-        self.rebuild_history();
-        let outputs = self.output_names.len();
-        let base = self.base_fields.len();
-        for k in 0..old.len() {
-            let t = old.times()[k];
-            let mut values: Vec<f64> = (0..outputs)
-                .map(|i| old.value(SignalRef::Signal(i), k))
-                .collect();
-            self.append_derived(t, &mut values);
-            let frames: Vec<&[f64]> = old.fields()[..base].iter().map(|f| f.frame(k)).collect();
-            let cuts = self.sample_cuts(&frames);
-            self.push(t, &values, &frames, &cuts);
-        }
+        self.build_history();
+        self.replay_history(&old, true, &BTreeMap::new());
+        self.reset_probes();
         Ok(())
     }
 
@@ -1259,6 +3014,86 @@ impl Session {
             })
             .collect()
     }
+}
+
+/// A filter's cut frames for one sample, from its input fields' frames,
+/// named by `names`.
+fn derived_cuts(
+    filters: &Filters,
+    names: &[String],
+    frames: &[Vec<f64>],
+    coordinates: &[Coordinate],
+) -> Vec<Vec<f64>> {
+    let frame = |name: &str| -> Option<&[f64]> {
+        names
+            .iter()
+            .position(|n| n == name)
+            .and_then(|i| frames.get(i))
+            .map(Vec::as_slice)
+    };
+    filters
+        .cuts
+        .iter()
+        .flat_map(|c| match frame(&c.input) {
+            Some(input) => {
+                let g = c.geometry(coordinates, frame);
+                c.frames(&g, input)
+            }
+            None => vec![Vec::new(); c.settings.count() + 1],
+        })
+        .collect()
+}
+
+/// The filters as saved: the model's, compiled, with their inputs written
+/// out; those on probes as given (ADR 0063); in the given order.
+fn kept_entries(filters: &Filters, given: &[FilterEntry]) -> Vec<FilterEntry> {
+    let compiled = filters.entries(given);
+    let derived = crate::observers::clocked(given);
+    given
+        .iter()
+        .filter_map(|g| match &g.probe {
+            _ if derived.iter().any(|d| d.name == g.name) => Some(g.clone()),
+            _ => compiled.iter().find(|c| c.name == g.name).cloned(),
+        })
+        .collect()
+}
+
+/// Evaluate expression filters into `values`, which holds `base` signals
+/// first: slots are `t`, those signals, the filters, then `params`.
+fn derive(exprs: &[crate::filters::ExprFilter], t: f64, values: &mut Vec<f64>, params: &[f64]) {
+    if exprs.is_empty() {
+        return;
+    }
+    let base = values.len();
+    let mut vars = Vec::with_capacity(1 + base + exprs.len() + params.len());
+    vars.push(t);
+    vars.extend_from_slice(values);
+    vars.extend(std::iter::repeat_n(0.0, exprs.len()));
+    vars.extend_from_slice(params);
+    for (k, f) in exprs.iter().enumerate() {
+        let v = f.expr.eval(&vars);
+        vars[1 + base + k] = v;
+        values.push(v);
+    }
+}
+
+/// What views read, as their bindings are written (ADR 0063).
+pub fn view_reads(views: &[ViewEntry]) -> Vec<String> {
+    model_reads(
+        views
+            .iter()
+            .flat_map(|v| v.bind.values().flat_map(simsandbox_file::Binding::signals))
+            .collect(),
+    )
+}
+
+/// Of these bindings, what is read from the model directly: not `t` and
+/// not a probe's recording; sorted, once each.
+fn model_reads(mut reads: Vec<String>) -> Vec<String> {
+    reads.retain(|r| r != "t" && !r.starts_with("probe:"));
+    reads.sort();
+    reads.dedup();
+    reads
 }
 
 /// One note per algebraic loop (ADR 0040), saying how it is solved.
@@ -1323,6 +3158,9 @@ pub fn default_cut(h: &History, name: &str, input: &str) -> FilterEntry {
         type_name: "cut".into(),
         inputs: vec![input.into()],
         canvas: None,
+        probe: None,
+        from: Default::default(),
+        when: None,
         settings: [
             ("mode".to_string(), serde_json::Value::from("along_x")),
             ("at".to_string(), serde_json::Value::from(at)),
@@ -1356,29 +3194,6 @@ fn param_keys(file: &ModelFile, ids: &BTreeMap<String, BlockId>, model: &Model) 
         }
     }
     keys
-}
-
-impl Sweep {
-    fn new(
-        sampling: Sampling,
-        plan: Plan,
-        ids: &BTreeMap<String, BlockId>,
-    ) -> Result<Self, String> {
-        let targets = plan
-            .keys
-            .iter()
-            .map(|key| {
-                key.split_once('.')
-                    .and_then(|(b, p)| Some((*ids.get(b)?, p.to_string())))
-                    .ok_or_else(|| format!("no parameter '{key}'"))
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(Self {
-            sampling,
-            plan,
-            targets,
-        })
-    }
 }
 
 /// A slider range for a declared parameter that gives none: from zero to
@@ -1422,13 +3237,15 @@ mod tests {
         );
         assert!(s.warnings.is_empty());
         for e in EXAMPLES {
-            Session::load(e.name, e.text, &registry()).unwrap();
+            Session::load_in(e.name, e.text, &registry(), e.folder().as_deref()).unwrap();
         }
     }
 
     #[test]
     fn rewind_then_rerun_reproduces_the_run() {
         let mut s = lorenz();
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
         for _ in 0..300 {
             s.step().unwrap();
         }
@@ -1508,6 +3325,8 @@ mod tests {
             .text
             .replace(r#""dt": 0.01"#, r#""dt": 0.01, "t_end": 0.5"#);
         let mut s = Session::load("l", &text, &registry()).unwrap();
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
         let mut steps = 0;
         while !s.take_end_reached() {
             s.step().unwrap();
@@ -1545,241 +3364,222 @@ mod tests {
         s.signals().values(r)
     }
 
-    /// A grid over the given `(key, range, points)`.
-    fn grid_of(params: &[(&str, [f64; 2], usize)]) -> Sampling {
-        Sampling {
-            design: Design::Grid,
-            params: params
-                .iter()
-                .map(|&(k, r, n)| simsandbox_file::SweepControl {
-                    param: k.into(),
-                    range: Some(r),
-                    points: Some(n),
-                })
-                .collect(),
-            count: None,
-            seed: None,
-            values: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn formula_models_are_swept_not_run() {
-        let mut s = example("Resonance curve");
-        let sw = s.sweep().unwrap();
-        assert_eq!(sw.keys(), ["spring.w"]);
-        assert!(!sw.unordered());
-        assert_eq!(s.signals().index(), "sample");
-        assert_eq!(s.signals().len(), 600);
-        assert!(!s.signals().unordered());
-        // The swept parameter is a signal like the outputs.
-        assert_eq!(
-            s.signals().names(),
-            ["spring.amplitude", "spring.lag", "spring.w"]
-        );
-        assert_eq!(s.available(&s.signals()).swept, ["spring.w"]);
-        let w = values(&s, "spring.w");
-        assert_eq!((w[0], w[599]), (0.0, 3.0));
-        let amp = values(&s, "spring.amplitude");
-        // At w = 0 the swing is F/k; near w = 1 it peaks at about F/c.
-        assert!((amp[0] - 1.0).abs() < 1e-12);
-        let peak = amp.iter().cloned().fold(0.0, f64::max);
-        assert!((peak - 5.0).abs() < 0.1, "peak {peak}");
-
-        // Moving a slider recomputes at once; the swept value is left alone.
-        let id = s.ids["spring"];
-        s.set_param(id, "c", 0.1).unwrap();
-        let peak = values(&s, "spring.amplitude")
-            .into_iter()
-            .fold(0.0, f64::max);
-        assert!((peak - 10.0).abs() < 0.3, "peak {peak}");
-        assert_eq!(param(&s, "spring.w"), 1.0);
-
-        // Sweep something else.
-        s.set_sampling(grid_of(&[("spring.c", [0.1, 1.0], 10)]))
-            .unwrap();
-        assert_eq!(values(&s, "spring.c")[9], 1.0);
-        assert!(s.signals().resolve("spring.w").is_none());
-        assert!(s
-            .set_sampling(grid_of(&[("spring.c", [1.0, 0.1], 10)]))
-            .is_err());
-        assert!(s
-            .set_sampling(grid_of(&[("spring.q", [0.0, 1.0], 10)]))
-            .is_err());
-        assert_eq!(s.sweep().unwrap().keys(), ["spring.c"]);
-        let saved = s.save_json(1.0, None).unwrap();
-        let file: serde_json::Value = serde_json::from_str(&saved).unwrap();
-        assert_eq!(
-            file["sample"],
-            serde_json::json!({"design": "grid", "params": [{"param": "spring.c", "range": [0.1, 1.0], "points": 10}]})
-        );
-    }
-
-    #[test]
-    fn unordered_designs_record_samples_drawn_as_points() {
-        let mut s = example("Resonance samples");
-        let sw = s.sweep().unwrap();
-        assert_eq!(sw.plan.design, Design::Sobol);
-        assert!(sw.unordered() && !sw.is_grid());
-        assert!(s.signals().unordered());
-        assert_eq!(s.signals().len(), 2000);
-        assert!(s.available(&s.signals()).grids.is_empty());
-        let (w, c, amp) = (
-            values(&s, "spring.w"),
-            values(&s, "spring.c"),
-            values(&s, "spring.amplitude"),
-        );
-        for k in [0, 1, 777, 1999] {
-            let exact = 1.0 / ((1.0 - w[k].powi(2)).powi(2) + (c[k] * w[k]).powi(2)).sqrt();
-            assert!((amp[k] - exact).abs() < 1e-12 * exact, "sample {k}");
-        }
-        // The first Sobol point is the lower corner, the second the centre.
-        assert_eq!((w[0], c[0]), (0.0, 0.02));
-        assert_eq!((w[1], c[1]), (1.5, 0.51));
-
-        // Another design, a third parameter; saved and loaded back alike.
-        let mut sampling = s.sweep().unwrap().sampling.clone();
-        sampling.design = Design::LatinHypercube;
-        sampling.count = Some(64);
-        sampling.seed = Some(9);
-        sampling.params.push(simsandbox_file::SweepControl {
-            param: "spring.m".into(),
-            range: None,
-            points: None,
-        });
-        assert!(s.set_sampling(sampling).unwrap().is_empty());
-        assert_eq!(s.signals().len(), 64);
-        let m = values(&s, "spring.m");
-        // The slider's range, one sample in each 64th of it.
-        let mut slices: Vec<usize> = m
-            .iter()
-            .map(|v| ((v - 0.2) / 3.8 * 64.0) as usize)
-            .collect();
-        slices.sort();
-        assert_eq!(slices, (0..64).collect::<Vec<_>>());
-        let text = s.save_json(1.0, None).unwrap();
-        let again = Session::load("again", &text, &registry()).unwrap();
-        assert_eq!(again.sweep(), s.sweep());
-        assert_eq!(values(&again, "spring.m"), m);
-    }
-
-    #[test]
-    fn two_parameter_grids_also_offer_every_signal_as_a_grid() {
-        let mut s = example("Resonance curve");
-        s.set_filters(exprs(&[("half", "spring.amplitude/2")]))
-            .unwrap();
-        let (nx, ny) = (31, 20);
-        s.set_sampling(grid_of(&[
-            ("spring.w", [0.0, 3.0], nx),
-            ("spring.c", [0.1, 2.0], ny),
-        ]))
-        .unwrap();
-        assert!(s.sweep().unwrap().is_grid());
-        assert!(s.signals().unordered());
-        assert_eq!(s.signals().len(), nx * ny);
+    /// The newest frame of field `name`.
+    fn newest(s: &Session, name: &str) -> Vec<f64> {
         let h = s.signals();
-        let a = s.available(&h);
-        assert_eq!(
-            a.scalars,
-            [
-                "spring.amplitude",
-                "spring.lag",
-                "half",
-                "spring.w",
-                "spring.c"
-            ]
-        );
-        // The swept parameters place every result's cells.
-        assert_eq!(
-            a.axis_choices("grid.half"),
-            ["grid.spring.w", "grid.spring.c"]
-        );
-        assert_eq!(
-            a.axis_of("grid.spring.amplitude", "grid.spring.c"),
-            Ok(Some(1))
-        );
-        assert!(a.axis_of("grid.spring.amplitude", "t").is_err());
-        assert_eq!(
-            a.grids,
-            [
-                "grid.spring.amplitude",
-                "grid.spring.lag",
-                "grid.half",
-                "grid.spring.w",
-                "grid.spring.c"
-            ]
-        );
-        drop(h);
-        let grid = |name: &str| {
-            let h = s.signals();
-            let f = h.fields().iter().find(|f| f.name == name).unwrap();
-            assert_eq!(f.shape, FieldShape::Grid { nx, ny });
-            f.frame(0).to_vec()
-        };
-        let (amp, half, w, c) = (
-            grid("grid.spring.amplitude"),
-            grid("grid.half"),
-            grid("grid.spring.w"),
-            grid("grid.spring.c"),
-        );
-        // The grids are the samples reshaped.
-        assert_eq!(amp, values(&s, "spring.amplitude"));
-        // Cell (i, j) at j * nx + i: w along x, c along y; F = k = m = 1.
-        for (i, j) in [(0, 0), (10, 0), (10, 7), (30, 19)] {
-            let cell = j * nx + i;
-            assert_eq!(w[cell], 3.0 * i as f64 / 30.0);
-            assert!((c[cell] - (0.1 + 1.9 * j as f64 / 19.0)).abs() < 1e-15);
-            let exact =
-                1.0 / ((1.0 - w[cell].powi(2)).powi(2) + (c[cell] * w[cell]).powi(2)).sqrt();
-            assert!((amp[cell] - exact).abs() < 1e-12 * exact, "{i},{j}");
-            assert_eq!(half[cell], amp[cell] / 2.0);
-        }
-        // The panel's values are left alone.
-        assert_eq!(param(&s, "spring.c"), 0.2);
+        let f = h.fields().iter().find(|f| f.name == name).unwrap();
+        f.frame(h.len() - 1).to_vec()
+    }
 
-        // Too many points, or one parameter twice, are refused.
-        assert!(s
-            .set_sampling(grid_of(&[
-                ("spring.w", [0.0, 3.0], 1000),
-                ("spring.c", [0.1, 2.0], 1000)
-            ]))
-            .is_err());
-        assert!(s
-            .set_sampling(grid_of(&[
-                ("spring.w", [0.0, 3.0], 9),
-                ("spring.w", [0.1, 2.0], 9)
-            ]))
-            .is_err());
-
-        // Saved, and loaded back as the same grid.
-        let text = s.save_json(1.0, None).unwrap();
-        let again = Session::load("again", &text, &registry()).unwrap();
-        assert_eq!(again.sweep(), s.sweep());
-        assert_eq!(
-            again
-                .signals()
-                .fields()
-                .iter()
-                .find(|f| f.name == "grid.spring.amplitude")
-                .unwrap()
-                .frame(0),
-            &amp[..]
-        );
-
-        // Back to one parameter: no grids, ordered samples.
-        s.set_sampling(grid_of(&[("spring.w", [0.0, 3.0], 50)]))
+    #[test]
+    fn formula_models_run_in_time_and_their_studies_give_the_curves() {
+        // No default sweep (ADR 0071): the resonance curve is a study of
+        // the spring, whose damping is an input the slider sets.
+        let mut s = example("Resonance curve");
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        assert_eq!(s.signals().index(), "t");
+        let amp = newest(&s, "curve.spring_amplitude");
+        assert_eq!(amp.len(), 600);
+        assert_eq!(newest(&s, "curve.w")[599], 3.0);
+        // The same numbers as the headless run of the file.
+        let rows =
+            crate::run::run(&s.save_json(1.0, None).unwrap(), &registry(), None, None).unwrap();
+        let headless = rows
+            .outputs
+            .iter()
+            .find(|o| o.name == "curve.spring_amplitude")
             .unwrap();
-        assert_eq!(s.signals().len(), 50);
-        assert!(!s.signals().unordered());
-        assert!(s.available(&s.signals()).coordinates.is_empty());
-        assert!(s.available(&s.signals()).grids.is_empty());
-        assert_eq!(values(&s, "half").len(), 50);
+        assert_eq!(
+            headless
+                .values
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            amp.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        // Less damping, a taller peak.
+        let peak = |v: &[f64]| v.iter().copied().fold(0.0, f64::max);
+        s.set_param_key("curve.c", 0.05).unwrap();
+        s.step().unwrap();
+        assert!(peak(&newest(&s, "curve.spring_amplitude")) > 3.0 * peak(&amp));
+    }
+
+    #[test]
+    fn a_study_given_up_leaves_its_step_undone() {
+        // ADR 0071 step 2: the app gives up a study when what it reads
+        // changes; the step is undone, and done again later.
+        use crate::run::{given_up, watch_studies, Progress};
+        let mut s = example("Resonance curve");
+        s.step().unwrap();
+        let progress = std::sync::Arc::new(Progress::default());
+        watch_studies(Some(progress.clone()));
+        // Less damping: the next step runs the study again.
+        s.set_param_key("curve.c", 0.05).unwrap();
+        let (t, len) = (s.time(), s.signals().len());
+        progress.give_up();
+        let e = s.step().unwrap_err();
+        assert!(given_up(&e), "{e}");
+        assert_eq!((s.time(), s.signals().len()), (t, len));
+        assert_eq!(progress.runs(), None);
+        // Done again: every run counted, the same numbers as a model that
+        // had the value from the start.
+        progress.reset();
+        s.step().unwrap();
+        assert_eq!(progress.runs(), Some((600, 600)));
+        watch_studies(None);
+        let mut direct = example("Resonance curve");
+        direct.set_param_key("curve.c", 0.05).unwrap();
+        assert_eq!(
+            newest(&s, "curve.spring_amplitude"),
+            newest(&direct, "curve.spring_amplitude")
+        );
+    }
+
+    #[test]
+    fn a_model_built_without_its_studies_runs_them_later() {
+        // How the app opens a model (ADR 0071): built and checked on the
+        // window's thread, its studies run on the worker.
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Resonance curve"))
+            .unwrap();
+        let mut s = crate::study::without_running_studies(|| {
+            Session::load(e.name, e.text, &registry()).unwrap()
+        });
+        assert!(s.unevaluated());
+        assert!(newest(&s, "curve.spring_amplitude")
+            .iter()
+            .all(|v| v.is_nan()));
+        s.evaluate().unwrap();
+        assert!(!s.unevaluated());
+        let direct = example("Resonance curve");
+        assert_eq!(
+            newest(&s, "curve.spring_amplitude"),
+            newest(&direct, "curve.spring_amplitude")
+        );
+        assert!(!direct.unevaluated());
+        // A model without studies has none to run.
+        let plain = crate::study::without_running_studies(|| example("Lorenz"));
+        assert!(!plain.unevaluated());
+    }
+
+    #[test]
+    fn the_history_knows_each_outputs_unit() {
+        let s = example("Tuning");
+        let h = s.signals();
+        assert_eq!(h.unit("best.best_peak"), Some("m/s"));
+        assert_eq!(h.unit("best.best_reach"), Some("s"));
+        assert_eq!(h.unit("tuning.reach"), Some("s"));
+        drop(h);
+        // A plain number has none.
+        let l = example("Logistic");
+        assert_eq!(l.signals().unit("population.x"), None);
+    }
+
+    #[test]
+    fn models_of_maps_that_never_read_time_iterate() {
+        // ADR 0083: the search iterates; maps that read t, open-ended maps
+        // and models with continuous states do not.
+        for (part, iterates) in [
+            ("Searching", true),
+            ("Logistic", false),
+            ("Cruise control", false),
+            ("Resonance curve", false),
+        ] {
+            assert_eq!(example(part).iterates(), iterates, "{part}");
+        }
+        let lines = |eq: &str| {
+            format!(
+                r#"{{"format": 1, "run": {{"dt": 1, "t_end": 50}}, "blocks": [
+                {{"name": "m", "type": "eq.equations", "equations": ["state x = 0", "{eq}"]}}]}}"#
+            )
+        };
+        let load = |text: &str| Session::load("m", text, &registry()).unwrap();
+        assert!(load(&lines("x[n+1] = (x + 2/max(x, 1))/2")).iterates());
+        assert!(!load(&lines("x[n+1] = x + t")).iterates());
+        // It iterates until a round changes nothing: Newton's square root
+        // of 2 holds still well before its last round.
+        let mut s = load(&lines("x[n+1] = (x + 2/max(x, 1))/2"));
+        s.evaluate_later();
+        let mut rounds = 0;
+        while s.rounds_pending() {
+            s.step().unwrap();
+            rounds += 1;
+            assert!(rounds <= 50, "it ends by its last round");
+        }
+        assert!(s.held_still() && rounds < 20, "{rounds}");
+        assert_eq!(s.round(), rounds);
+        // The search holds still before its 40 rounds; a change starts it
+        // again from round 0.
+        let mut s = example("Searching");
+        s.evaluate_later();
+        while s.rounds_pending() && !s.take_end_reached() {
+            s.step().unwrap();
+        }
+        assert!(s.held_still() && s.round() < 40, "{}", s.round());
+        s.set_param_key("search.limit", 30.0).unwrap();
+        assert!(s.rounds_pending() && !s.held_still());
+        assert_eq!(s.round(), 0);
+    }
+
+    #[test]
+    fn models_with_nothing_in_time_are_told_apart() {
+        // ADR 0072: no states, tables, data, clocks or schedule.
+        for (part, timeless) in [
+            ("Resonance curve", true),
+            ("Resonance map", true),
+            ("Tuning", true),
+            ("Units", false),
+            ("Lorenz", false),
+            ("Logistic", false),
+            ("grazing", false),
+            ("Steer the car", false),
+        ] {
+            assert_eq!(example(part).timeless(), timeless, "{part}");
+        }
+    }
+
+    #[test]
+    fn a_model_with_nothing_in_time_can_leave_a_change_for_later() {
+        let mut s = example("Resonance curve");
+        let before = newest(&s, "curve.spring_amplitude");
+        // At once, by default (headless).
+        s.set_param_key("curve.c", 0.1).unwrap();
+        let at_once = newest(&s, "curve.spring_amplitude");
+        assert_ne!(at_once, before);
+        assert!(!s.unevaluated());
+        // Left for later (the app's worker): the values stay until then.
+        s.evaluate_later();
+        s.set_param_key("curve.c", 0.05).unwrap();
+        assert!(s.unevaluated());
+        assert_eq!(newest(&s, "curve.spring_amplitude"), at_once);
+        s.evaluate().unwrap();
+        assert!(!s.unevaluated());
+        let mut direct = example("Resonance curve");
+        direct.set_param_key("curve.c", 0.05).unwrap();
+        assert_eq!(
+            newest(&s, "curve.spring_amplitude"),
+            newest(&direct, "curve.spring_amplitude")
+        );
+        assert_eq!((s.time(), s.signals().len()), (0.0, 1));
+    }
+
+    #[test]
+    fn a_top_level_sample_is_refused_with_what_to_write() {
+        let e = Session::load(
+            "old",
+            r#"{"format": 1, "sample": {"design": "grid", "params": [{"param": "f.a"}]},
+                "blocks": [{"name": "f", "type": "eq.equations", "equations": ["y = a"]}]}"#,
+            &registry(),
+        )
+        .err()
+        .unwrap();
+        assert!(e.contains("ADR 0071") && e.contains("study"), "{e}");
     }
 
     #[test]
     fn maps_step_once_per_communication_step() {
         let mut s = example("Logistic");
-        assert!(s.sweep().is_none());
         s.step().unwrap();
         let x = values(&s, "population.x");
         assert_eq!(x[0], 0.2);
@@ -1801,7 +3601,9 @@ mod tests {
         let drift = e.iter().map(|v| (v - e[0]).abs()).fold(0.0, f64::max);
         assert!(drift < 1e-9 * e[0], "energy drifted by {drift} of {}", e[0]);
 
-        // Redefining recomputes the whole history.
+        // Redefining recomputes the whole history (of what a view reads,
+        // ADR 0063).
+        s.set_view_reads(vec!["ax2".into()]);
         s.set_filters(exprs(&[("ax2", "a.x^2 + 0*t")])).unwrap();
         let ax = values(&s, "a.x");
         let ax2 = values(&s, "ax2");
@@ -1831,6 +3633,7 @@ mod tests {
     #[test]
     fn expression_filters_may_read_each_other() {
         let mut s = example("Coupled");
+        s.set_view_reads(vec!["double".into()]);
         s.set_filters(exprs(&[("double", "2*sq"), ("sq", "a.x^2")]))
             .unwrap();
         for _ in 0..10 {
@@ -1847,9 +3650,11 @@ mod tests {
     }
 
     #[test]
-    fn cut_filters_cut_two_parameter_sweeps_into_lines() {
+    fn cut_filters_cut_a_studys_2d_results_into_lines() {
+        // A study over two parameters gives 2D fields (ADR 0071) that cuts
+        // read directly.
         let mut s = example("Resonance map");
-        let cut = default_cut(&s.signals(), "res", "grid.spring.amplitude");
+        let cut = default_cut(&s.signals(), "res", "map.spring_amplitude");
         let mut filters = s.filters().to_vec();
         filters.push(cut.clone());
         s.set_filters(filters).unwrap();
@@ -1865,43 +3670,43 @@ mod tests {
         assert_eq!(lines, ["res[0]", "res[1]", "res[2]", "res[3]", "res.x"]);
         assert_eq!(a.axis_choices("res[0]"), ["t", "res.x"]);
         drop(h);
-        let grid = |name: &str| {
-            let h = s.signals();
-            let f = h.fields().iter().find(|f| f.name == name).unwrap();
-            f.frame(0).to_vec()
-        };
+        // What a view of the cut reads is recorded.
+        s.set_view_reads(
+            ["map.spring_amplitude", "map.c", "map.w", "res[1]", "res.x"]
+                .map(String::from)
+                .to_vec(),
+        );
+        s.step().unwrap();
         let (amp, c, w) = (
-            grid("grid.spring.amplitude"),
-            grid("grid.spring.c"),
-            grid("res.x"),
+            newest(&s, "map.spring_amplitude"),
+            newest(&s, "map.c"),
+            newest(&s, "res.x"),
         );
         let at = cut.settings["at"].as_array().unwrap()[1].as_f64().unwrap();
         // Default cuts lie on rows, so they read them exactly.
         let row = (0..120).find(|&j| c[j * 200] == at).unwrap();
-        assert_eq!(grid("res[1]"), amp[row * 200..row * 200 + 200].to_vec());
-        assert_eq!(w, grid("grid.spring.w")[..200].to_vec());
+        assert_eq!(
+            newest(&s, "res[1]"),
+            amp[row * 200..row * 200 + 200].to_vec()
+        );
+        assert_eq!(w, newest(&s, "map.w")[..200].to_vec());
         let h = s.signals();
         let label = h.label(h.resolve("res[1]").unwrap());
-        assert!(label.starts_with("spring.c = "), "{label}");
-        assert_eq!(h.label(h.resolve("res.x").unwrap()), "spring.w");
+        assert!(label.starts_with("map.c = "), "{label}");
+        assert_eq!(h.label(h.resolve("res.x").unwrap()), "map.w");
         drop(h);
         // Saved with its input.
         let saved = s.save_json(1.0, None).unwrap();
         let again = Session::load("again", &saved, &registry()).unwrap();
         assert!(again.warnings.is_empty(), "{:?}", again.warnings);
         assert_eq!(again.filters(), s.filters());
-
-        // A sweep with no grid drops the cuts, saying so.
-        let notes = s
-            .set_sampling(grid_of(&[("spring.w", [0.0, 3.0], 50)]))
-            .unwrap();
-        assert_eq!(notes.len(), 2, "{notes:?}");
-        assert!(s.filters().is_empty());
     }
 
     #[test]
     fn field_outputs_are_recorded_whole_and_offered_to_views() {
         let mut s = example("rod");
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
         let h = s.signals();
         let a = s.available(&h);
         assert!(a.scalars.is_empty());
@@ -2043,6 +3848,11 @@ mod subsystem_tests {
     use crate::examples::{registry, EXAMPLES};
     use simsandbox_file::ParamValue;
 
+    /// The model the cars use, as the file defines it (ADR 0068).
+    fn follower(f: &ModelFile) -> ModelFile {
+        simsandbox_file::compose::read_definition("follower", &f.models["follower"]).unwrap()
+    }
+
     fn platoon() -> Session {
         let e = EXAMPLES
             .iter()
@@ -2098,10 +3908,9 @@ mod subsystem_tests {
         let car1 = &f.blocks[1].params;
         assert_eq!(car1["car.c"], ParamValue::Number(80.0));
         assert_eq!(car1.len(), 4, "{car1:?}");
-        assert_eq!(
-            f.subsystems["follower"].blocks[0].params["c"],
-            ParamValue::Number(50.0)
-        );
+        // The definition is untouched: its car still takes c from its
+        // equations.
+        assert!(!follower(&f).blocks[0].params.contains_key("c"));
         let again = Session::load("again", &text, &registry()).unwrap();
         assert_eq!(
             again.sim.model().param(again.ids["car1/car"], "c").unwrap(),
@@ -2127,11 +3936,1040 @@ mod subsystem_tests {
         let (f, _) = ModelFile::from_json(&text).unwrap();
         // The cars' initial speeds are parameters, set for each instance.
         assert_eq!(f.blocks[3].params["car.v0"], ParamValue::Number(v[0]));
-        assert_eq!(
-            f.subsystems["follower"].blocks[0].params["v0"],
-            ParamValue::Number(0.0)
-        );
+        assert!(!follower(&f).blocks[0].params.contains_key("v0"));
         let again = Session::load("again", &text, &registry()).unwrap();
         assert_eq!(again.sim.state(again.ids["car3/car"]), v);
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use crate::examples::registry;
+
+    /// A cart pushed by an input: dv/dt = F/m - c*v.
+    const CART: &str = r#"{"format": 1, "run": {"dt": 0.01},
+      "blocks": [
+        {"name": "push", "type": "input.value", "settings": {"unit": "N", "min": "-50", "max": "50"}},
+        {"name": "cart", "type": "eq.equations", "method": {"name": "rk4"},
+         "equations": ["input F [N]", "param m [kg] = 2", "param c [1/s] = 0.5",
+                       "state v [m/s]", "dv/dt = F/m - c*v"]}],
+      "connections": [{"from": "push.y", "to": "cart.F"}]}"#;
+
+    fn cart(text: &str) -> Session {
+        Session::load("cart", text, &registry()).unwrap()
+    }
+
+    /// Where two recordings first differ, for a readable failure.
+    fn same(a: &[Vec<(u64, u64)>], b: &[Vec<(u64, u64)>], names: &[String]) {
+        assert_eq!(a.len(), b.len(), "signal count");
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            let k = x.iter().zip(y).position(|(p, q)| p != q);
+            assert!(
+                k.is_none() && x.len() == y.len(),
+                "signal {} differs at sample {:?} (lengths {} and {}): {:?} vs {:?}",
+                names[i],
+                k,
+                x.len(),
+                y.len(),
+                k.map(|k| (f64::from_bits(x[k].0), f64::from_bits(x[k].1))),
+                k.map(|k| (f64::from_bits(y[k].0), f64::from_bits(y[k].1)))
+            );
+        }
+    }
+
+    /// Every recorded signal, as bits.
+    fn signals(s: &Session) -> Vec<Vec<(u64, u64)>> {
+        let h = s.signals();
+        (0..h.names().len())
+            .map(|i| {
+                h.points(i)
+                    .iter()
+                    .map(|p| (p.x.to_bits(), p.y.to_bits()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Steer by hand: push at 0.5 s, change the mass at 1.2 s, let go at
+    /// 2 s; run to 3 s.
+    fn steer(s: &mut Session) {
+        s.run_until(0.5).unwrap();
+        s.set_param_key("push.y", 40.0).unwrap();
+        s.run_until(1.2).unwrap();
+        s.set_param_key("cart.m", 4.0).unwrap();
+        s.run_until(2.0).unwrap();
+        s.set_param_key("push.y", 0.0).unwrap();
+        s.run_until(3.0).unwrap();
+    }
+
+    #[test]
+    fn live_input_is_recorded_and_replays_bit_for_bit() {
+        let mut s = cart(CART);
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
+        steer(&mut s);
+        let reference = signals(&s);
+        assert_eq!(s.recorded().len(), 3);
+        // The push moved the cart.
+        let v = s.signals().points(1).last().unwrap().y;
+        assert!(v > 1.0, "{v}");
+        // Rewind and run on: the recorded input is replayed.
+        s.rewind_to(0.3);
+        assert!(s.replaying());
+        s.run_until(3.0).unwrap();
+        assert!(!s.replaying());
+        same(&signals(&s), &reference, s.signals().names());
+        // Saved as a run file, it replays the same in a fresh session.
+        let run = s.run_file("cart.ssbx.json", "steer", "", "");
+        let (model, _) = ModelFile::from_json(CART).unwrap();
+        let loaded = simsandbox_file::load(CART, &registry()).unwrap();
+        assert!(run.fits(&loaded).unwrap());
+        // A different mass is a different model.
+        let heavier = CART.replace("param m [kg] = 2", "param m [kg] = 3");
+        let other = simsandbox_file::load(&heavier, &registry()).unwrap();
+        assert!(!run.fits(&other).unwrap());
+        let mut again = cart(&run.apply_to(&model).to_json());
+        let track = run
+            .track
+            .iter()
+            .map(|(t, key, value)| InputEvent {
+                t: *t,
+                key: key.clone(),
+                value: *value,
+            })
+            .collect();
+        again.replay(track).unwrap();
+        again.run_until(3.0).unwrap();
+        same(&signals(&again), &reference, s.signals().names());
+        // Headless, the same track gives the same values.
+        let track2 = run
+            .track
+            .iter()
+            .map(|(t, key, value)| InputEvent {
+                t: *t,
+                key: key.clone(),
+                value: *value,
+            })
+            .collect();
+        let text = run.apply_to(&model).to_json();
+        let r = crate::run::run_with(&text, &registry(), Some(3.0), None, track2).unwrap();
+        let v = r.outputs.iter().find(|o| o.name == "cart.v").unwrap();
+        let k = s
+            .signals()
+            .names()
+            .iter()
+            .position(|n| n == "cart.v")
+            .unwrap();
+        let live: Vec<u64> = s
+            .signals()
+            .points(k)
+            .iter()
+            .map(|p| p.y.to_bits())
+            .collect();
+        let headless: Vec<u64> = v.values.iter().map(|x| x.to_bits()).collect();
+        assert_eq!(headless, live);
+        // The run started from m = 2, not the 4 it ended with.
+        let start = &s.start_file().blocks[1].params;
+        assert_eq!(
+            start.get("m"),
+            Some(&simsandbox_file::ParamValue::Number(2.0))
+        );
+    }
+
+    #[test]
+    fn input_acts_in_the_next_step() {
+        let mut s = cart(CART);
+        s.run_until(0.5).unwrap();
+        let k = s
+            .signals()
+            .names()
+            .iter()
+            .position(|n| n == "cart.v")
+            .unwrap();
+        let before = s.signals().points(k).last().unwrap().y;
+        s.set_param_key("push.y", 40.0).unwrap();
+        s.step().unwrap();
+        let after = s.signals().points(k).last().unwrap().y;
+        // dv = F/m dt (less the drag): about 0.2 in one 0.01 s step.
+        assert!(after - before > 0.15, "{before} -> {after}");
+    }
+
+    #[test]
+    fn new_input_during_a_replay_starts_a_branch() {
+        let mut s = cart(CART);
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
+        steer(&mut s);
+        s.rewind_to(1.0);
+        s.run_until(1.5).unwrap();
+        // The mass change at 1.2 was replayed; now push the other way.
+        s.set_param_key("push.y", -20.0).unwrap();
+        assert!(!s.replaying());
+        let keys: Vec<(String, f64)> = s
+            .recorded()
+            .iter()
+            .map(|e| (e.key.clone(), e.value))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                ("push.y".to_string(), 40.0),
+                ("cart.m".to_string(), 4.0),
+                ("push.y".to_string(), -20.0)
+            ]
+        );
+        // A restart drops the recording.
+        s.restart().unwrap();
+        assert!(s.recorded().is_empty());
+    }
+
+    #[test]
+    fn scheduled_changes_apply_in_every_run_and_bad_ones_are_reported() {
+        let scheduled = CART.replace(
+            r#""run": {"dt": 0.01}"#,
+            r#""run": {"dt": 0.01, "inputs": [
+                {"t": 1, "set": "push.y", "to": 30},
+                {"t": 0, "set": "cart.v0", "to": 2}]}"#,
+        );
+        let mut s = cart(&scheduled);
+        // The start value at t = 0 set where the run starts.
+        let v0 = s.signals().points(1)[0].y;
+        assert_eq!(v0, 2.0);
+        s.run_until(2.0).unwrap();
+        let first = signals(&s);
+        assert!(s.recorded().is_empty());
+        // Kept by a restart: the second run is the same.
+        s.restart().unwrap();
+        s.run_until(2.0).unwrap();
+        same(&signals(&s), &first, s.signals().names());
+        // A change to something that does not exist is a load error.
+        let bad = scheduled.replace(r#""set": "push.y""#, r#""set": "push.z""#);
+        let err = Session::load("cart", &bad, &registry()).err().unwrap();
+        assert!(
+            err.contains("run.inputs[") && err.contains("push.z"),
+            "{err}"
+        );
+        // Out of range is noted, not refused.
+        let far = scheduled.replace(r#""to": 30"#, r#""to": 300"#);
+        let s = cart(&far);
+        assert!(s
+            .warnings
+            .iter()
+            .any(|w| w.contains("outside its suggested range")));
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    //! Probes besides the implicit one (ADR 0062).
+    use super::*;
+    use crate::examples::{registry, EXAMPLES};
+    use crate::probe::{Every, Keep, ProbeSpec};
+
+    fn example(part: &str) -> Session {
+        let e = EXAMPLES.iter().find(|e| e.name.contains(part)).unwrap();
+        Session::load(e.name, e.text, &registry()).unwrap()
+    }
+
+    fn spec(name: &str, record: &[&str], every: Every, keep: Keep) -> ProbeSpec {
+        ProbeSpec {
+            every,
+            keep,
+            ..ProbeSpec::new(name, record.iter().map(|r| r.to_string()).collect())
+        }
+    }
+
+    /// `(t, value)` bits of signal `name` in history `h`.
+    fn series(h: &History, name: &str) -> Vec<(u64, u64)> {
+        let k = h.names().iter().position(|n| n == name).unwrap();
+        h.points(k)
+            .iter()
+            .map(|p| (p.x.to_bits(), p.y.to_bits()))
+            .collect()
+    }
+
+    #[test]
+    fn a_probe_records_a_subset_on_its_own_schedule() {
+        // Cruise control, 0.05 s steps; a probe of the speed every 0.5 s.
+        let mut s = example("Cruise control");
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
+        s.set_probes(vec![spec(
+            "speed",
+            &["car.v"],
+            Every::Seconds(0.5),
+            Keep::default(),
+        )])
+        .unwrap();
+        assert_eq!(s.probe_names(), ["speed"]);
+        s.restart().unwrap();
+        s.run_until(5.0).unwrap();
+        s.flush(true);
+        let probe = s.probe("speed").unwrap();
+        let p = probe.read();
+        assert_eq!(p.names(), ["car.v"]);
+        let times: Vec<f64> = p.times().to_vec();
+        assert_eq!(times.len(), 11, "{times:?}");
+        // Every sample is the implicit probe's at the same time, exactly.
+        let all = s.signals();
+        let k = all.names().iter().position(|n| n == "car.v").unwrap();
+        for (i, t) in times.iter().enumerate() {
+            let j = all.times().iter().position(|x| x == t).unwrap();
+            assert_eq!(
+                p.value(SignalRef::Signal(0), i).to_bits(),
+                all.points(k)[j].y.to_bits()
+            );
+        }
+        drop((p, all));
+        // Unknown names are refused, and nothing changes.
+        let bad = s.set_probes(vec![spec("x", &["car.nope"], Every::Steps(1), Keep::All)]);
+        assert!(bad.unwrap_err()[0].contains("the model has no 'car.nope'"));
+        assert_eq!(s.probe_names(), ["speed"]);
+    }
+
+    #[test]
+    fn probes_keep_the_newest_or_thin_and_replay_after_a_rewind() {
+        let mut s = example("Cruise control");
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
+        s.set_probes(vec![
+            spec(
+                "last",
+                &["car.v"],
+                Every::Steps(1),
+                Keep::Last { samples: 20 },
+            ),
+            spec("every", &["car.v", "cruise.F"], Every::Steps(2), Keep::All),
+        ])
+        .unwrap();
+        s.restart().unwrap();
+        s.run_until(10.0).unwrap();
+        s.flush(true);
+        let last = s.probe("last").unwrap();
+        let n = last.read().len();
+        assert!((20..=22).contains(&n), "{n}");
+        assert!(last.read().times()[n - 1] > 9.9);
+        let every = s.probe("every").unwrap();
+        let before = series(&every.read(), "cruise.F");
+        assert_eq!(before.len(), 101);
+        // Rewind to 4 s and run on: the same samples again, bit for bit.
+        s.rewind_to(4.0);
+        assert!(every.read().times().last().unwrap() <= &4.0);
+        s.run_until(10.0).unwrap();
+        s.flush(true);
+        assert_eq!(series(&every.read(), "cruise.F"), before);
+        // Restart: empty, then recording again from t = 0.
+        s.restart().unwrap();
+        assert_eq!(every.read().len(), 1);
+    }
+
+    #[test]
+    fn probes_record_grid_fields_with_their_coordinates() {
+        let mut s = example("Typed heat equation");
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
+        s.set_probes(vec![spec(
+            "snapshots",
+            &["rod.T", "rod.x"],
+            Every::Times(vec![0.0, 1.0, 2.0]),
+            Keep::All,
+        )])
+        .unwrap();
+        s.restart().unwrap();
+        s.run_until(3.0).unwrap();
+        s.flush(true);
+        let p = s.probe("snapshots").unwrap();
+        let h = p.read();
+        assert_eq!(h.len(), 3);
+        let names: Vec<&str> = h.fields().iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["rod.T", "rod.x"]);
+        assert_eq!(h.fields()[0].frame(2).len(), 50);
+        assert!(h
+            .coordinates()
+            .iter()
+            .any(|c| c.name == "rod.x" && c.of == "rod.T"));
+    }
+
+    #[test]
+    fn probes_survive_filter_edits_without_what_is_gone() {
+        let mut s = example("Cruise control");
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
+        let filter = FilterEntry::expression("double", "2*car.v", vec!["car.v".into()]);
+        s.set_filters(vec![filter]).unwrap();
+        s.set_probes(vec![spec(
+            "p",
+            &["car.v", "double"],
+            Every::Steps(1),
+            Keep::default(),
+        )])
+        .unwrap();
+        s.set_filters(Vec::new()).unwrap();
+        assert_eq!(s.probe_names(), ["p"]);
+        assert_eq!(s.probe("p").unwrap().read().names(), ["car.v"]);
+        assert!(s
+            .warnings
+            .iter()
+            .any(|w| w.contains("'double' is no longer recorded")));
+    }
+
+    /// The cruise control example with `probes` (JSON) in its controls.
+    fn cruise_with(probes: &str) -> String {
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Cruise control"))
+            .unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(e.text).unwrap();
+        v["controls"]["probes"] = serde_json::from_str(probes).unwrap();
+        v.to_string()
+    }
+
+    #[test]
+    fn probes_load_from_the_file_and_save_back() {
+        let text = cruise_with(
+            r#"[{"name": "speed", "record": ["car.v"], "every": {"seconds": 0.5},
+                 "keep": {"last": 4}, "to": "speed.csv", "canvas": [10, 20]},
+                {"name": "bad", "record": ["car.nope"]}]"#,
+        );
+        let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        assert_eq!(s.probe_names(), ["speed"]);
+        assert!(
+            s.warnings
+                .iter()
+                .any(|w| w.contains("controls.probes[1]") && w.contains("car.nope")),
+            "{:?}",
+            s.warnings
+        );
+        let spec = s.probe_specs()[0].clone();
+        assert_eq!(spec.every, Every::Seconds(0.5));
+        assert_eq!(spec.keep, Keep::Last { samples: 4 });
+        assert_eq!(spec.canvas, Some([10.0, 20.0]));
+        let saved = s.save_json(1.0, None).unwrap();
+        let again = Session::load("again", &saved, &registry()).unwrap();
+        assert_eq!(again.probe_specs(), [&spec]);
+    }
+
+    #[test]
+    fn a_headless_run_records_what_the_app_does() {
+        let text = cruise_with(
+            r#"[{"name": "speed", "record": ["car.v"], "every": {"steps": 10}, "keep": {"all": true},
+                 "to": "speed.csv"}]"#,
+        );
+        let r = crate::run::run_probes(
+            &text,
+            &registry(),
+            Some(5.0),
+            None,
+            Vec::new(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let (spec, h) = &r.probes[0];
+        assert_eq!(spec.name, "speed");
+        let h = h.read();
+        assert_eq!(h.len(), 11);
+        // Every sample is the plain run's at the same step, exactly.
+        let plain = crate::run::run(&text, &registry(), Some(5.0), None).unwrap();
+        let v = &plain
+            .outputs
+            .iter()
+            .find(|o| o.name == "car.v")
+            .unwrap()
+            .values;
+        for (k, p) in h.points(0).iter().enumerate() {
+            assert_eq!(p.y.to_bits(), v[10 * k].to_bits());
+        }
+        let err = crate::run::run_probes(
+            &text,
+            &registry(),
+            None,
+            None,
+            Vec::new(),
+            &["x".into()],
+            None,
+            None,
+        );
+        assert!(err.is_err_and(|e| e.contains("no probe 'x'")));
+    }
+
+    #[test]
+    fn probe_edits_keep_what_unchanged_probes_recorded() {
+        let text =
+            cruise_with(r#"[{"name": "speed", "record": ["car.v"], "keep": {"all": true}}]"#);
+        let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
+        s.restart().unwrap();
+        s.run_until(1.0).unwrap();
+        s.flush(true);
+        let before = s.probe("speed").unwrap().read().len();
+        assert_eq!(before, 21);
+        // Moved, and a probe added that records nothing yet.
+        let mut entries = s.probe_entries();
+        entries[0].canvas = Some([5.0, 5.0]);
+        entries.push(ProbeSpec::new("later", vec![]).to_entry());
+        entries[1].every = Some(simsandbox_file::ProbeEvery {
+            seconds: Some(0.5),
+            ..Default::default()
+        });
+        entries[1].record = vec!["car.v".into()];
+        s.set_probe_entries(&entries).unwrap();
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        assert_eq!(s.probe("speed").unwrap().read().len(), 41);
+        // The new one from now on, at multiples of 0.5 s after t = 1.
+        let later: Vec<f64> = s.probe("later").unwrap().read().times().to_vec();
+        assert_eq!(later.len(), 2, "{later:?}");
+        assert!((later[0] - 1.5).abs() < 1e-9);
+        assert_eq!(s.probe_entries()[0].canvas, Some([5.0, 5.0]));
+        // A probe that records nothing is kept.
+        entries[1].record.clear();
+        s.set_probe_entries(&entries).unwrap();
+        assert_eq!(s.probe_names(), ["speed", "later"]);
+    }
+
+    #[test]
+    fn the_history_records_only_what_is_wired_and_probes_anything() {
+        // Cruise control's views read car.v and cruise.F, and so on.
+        let mut s = example("Cruise control");
+        // Kept whatever reads them, as a headless run keeps them.
+        s.record_all_probes();
+        s.set_view_reads(vec!["car.v".into(), "probe:speed/cruise.F".into()]);
+        assert_eq!(s.signals().names(), ["car.v"]);
+        // Everything can still be bound and probed.
+        let h = s.signals();
+        assert!(s.available(&h).scalars.contains(&"cruise.I".to_string()));
+        drop(h);
+        s.set_probes(vec![spec("i", &["cruise.I"], Every::Steps(1), Keep::All)])
+            .unwrap();
+        s.run_until(1.0).unwrap();
+        s.flush(true);
+        // Added after the sample at t = 0: every step since.
+        assert_eq!(s.probe("i").unwrap().read().len(), 20);
+        // Wiring cruise.I to a view records it from now; car.v keeps its past.
+        s.set_view_reads(vec!["car.v".into(), "cruise.I".into()]);
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        let h = s.signals();
+        assert_eq!(h.names(), ["car.v", "cruise.I"]);
+        let i = h.values(h.resolve("cruise.I").unwrap());
+        assert_eq!(h.len(), 41);
+        // The sample at the time it was wired is had from the model then.
+        assert!(i[..20].iter().all(|v| v.is_nan()));
+        assert!(i[20..].iter().all(|v| v.is_finite()));
+        assert!(s.has_gaps());
+        assert!(h
+            .values(h.resolve("car.v").unwrap())
+            .iter()
+            .all(|v| v.is_finite()));
+    }
+
+    /// The values of `name` in a filter's own recording, with its times.
+    fn derived_series(s: &Session, filter: &str, name: &str) -> (Vec<f64>, Vec<f64>) {
+        let (_, h) = s
+            .derived_histories()
+            .into_iter()
+            .find(|(n, _)| n == filter)
+            .unwrap();
+        let h = h.read();
+        let r = h.resolve(name).unwrap();
+        (h.times().to_vec(), h.values(r))
+    }
+
+    #[test]
+    fn filters_on_a_probe_run_on_its_samples() {
+        let text = cruise_with(
+            r#"[{"name": "speed", "record": ["car.v", "cruise.F"], "every": {"seconds": 0.5},
+                 "keep": {"all": true}}]"#,
+        );
+        let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        let mut filters = s.filters().to_vec();
+        let mut power = FilterEntry::expression("power", "car.v*cruise.F", Vec::new());
+        power.probe = Some("speed".into());
+        filters.push(power);
+        s.set_filters(filters.clone()).unwrap();
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        // Every 0.5 s, from the probe's samples, in a recording of its own.
+        let (t, w) = derived_series(&s, "power", "power");
+        let p = s.probe("speed").unwrap();
+        let h = p.read();
+        assert_eq!(t, h.times());
+        let (v, f) = (
+            h.values(SignalRef::Signal(0)),
+            h.values(SignalRef::Signal(1)),
+        );
+        assert!(w
+            .iter()
+            .zip(v.iter().zip(&f))
+            .all(|(w, (v, f))| (w - v * f).abs() < 1e-9));
+        drop(h);
+        assert!(s.signals().resolve("power").is_none());
+        assert!(s.derived_names().contains(&"power".to_string()));
+        let saved = s.save_json(1.0, None).unwrap();
+        assert!(saved.contains("\"probe\": \"speed\""));
+        // A filter on a probe reads only what the probe records.
+        let mut bad = FilterEntry::expression("pi", "cruise.I*2", Vec::new());
+        bad.probe = Some("speed".into());
+        filters.push(bad);
+        s.set_filters(filters.clone()).unwrap();
+        assert!(s
+            .warnings
+            .iter()
+            .any(|w| w.contains("pi") && w.contains("does not record")));
+        let mut nowhere = FilterEntry::expression("x", "1", Vec::new());
+        nowhere.probe = Some("gone".into());
+        s.set_filters(vec![nowhere]).unwrap();
+        assert!(s.warnings.iter().any(|w| w.contains("no probe 'gone'")));
+    }
+
+    #[test]
+    fn filters_on_several_probes_run_paired_or_on_any() {
+        // car.v every 0.2 s, cruise.F every 0.3 s (steps of 0.05 s).
+        let text = cruise_with(
+            r#"[{"name": "a", "record": ["car.v"], "every": {"steps": 4}, "keep": {"all": true}},
+                {"name": "b", "record": ["cruise.F"], "every": {"steps": 6}, "keep": {"all": true}}]"#,
+        );
+        let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        // Rewinding needs a recorder (ADR 0064).
+        s.set_recorder(Some(Default::default()));
+        let both = |name: &str, when: Option<&str>| {
+            let mut f = FilterEntry::expression(name, "car.v*cruise.F", Vec::new());
+            f.from = [
+                ("car.v".into(), "a".into()),
+                ("cruise.F".into(), "b".into()),
+            ]
+            .into();
+            f.when = when.map(String::from);
+            f
+        };
+        // And a filter reading a filter: on its clock.
+        let half = FilterEntry::expression("half", "paired/2", Vec::new());
+        s.set_filters(vec![
+            both("paired", None),
+            both("latest", Some("any")),
+            half,
+        ])
+        .unwrap();
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        s.run_until(1.2).unwrap();
+        s.flush(true);
+        let step =
+            |t: &[f64]| -> Vec<i64> { t.iter().map(|t| (t / 0.05).round() as i64).collect() };
+        // Paired: where both recorded, every 12 steps.
+        let (t, w) = derived_series(&s, "paired", "paired");
+        assert_eq!(step(&t), [12, 24]);
+        let (th, h) = derived_series(&s, "half", "half");
+        assert_eq!(th, t);
+        assert!(h.iter().zip(&w).all(|(h, w)| (2.0 * h - w).abs() < 1e-9));
+        // Any: whenever either recorded (steps 4, 6, 8, 12, ...), with the
+        // other's latest value; NaN until both have one.
+        let (t, w) = derived_series(&s, "latest", "latest");
+        assert_eq!(step(&t), [4, 6, 8, 12, 16, 18, 20, 24]);
+        assert!(w[0].is_nan() && w[1].is_finite());
+        let a = s.probe("a").unwrap();
+        let b = s.probe("b").unwrap();
+        let (a, b) = (a.read(), b.read());
+        // At step 8: car.v at 8, cruise.F held from 6.
+        let (v8, f6) = (
+            a.values(SignalRef::Signal(0))[1],
+            b.values(SignalRef::Signal(0))[0],
+        );
+        assert!((w[2] - v8 * f6).abs() < 1e-9);
+        drop((a, b));
+        // After a rewind it records the same again.
+        let before = derived_series(&s, "latest", "latest").1;
+        s.rewind_to(0.5);
+        s.run_until(1.2).unwrap();
+        s.flush(true);
+        let again = derived_series(&s, "latest", "latest").1;
+        assert_eq!(
+            before.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            again.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn snapshots_leave_out_outputs_had_again_from_state_and_restore_them_exactly() {
+        let all_outputs = |s: &Session| -> Vec<u64> {
+            let mut v = Vec::new();
+            for e in &s.flat.blocks {
+                let id = s.ids[&e.name];
+                let spec = s.sim.model().block(id).unwrap().spec().clone();
+                for p in spec.outputs() {
+                    v.extend(
+                        s.sim
+                            .output(id, &p.name)
+                            .unwrap_or(&[])
+                            .iter()
+                            .map(|x| x.to_bits()),
+                    );
+                }
+            }
+            v
+        };
+        for e in EXAMPLES {
+            let mut s =
+                Session::load_in(e.name, e.text, &registry(), e.folder().as_deref()).unwrap();
+            for _ in 0..20 {
+                s.step().unwrap();
+            }
+            let before = all_outputs(&s);
+            let snap = s.sim.snapshot();
+            for _ in 0..7 {
+                s.step().unwrap();
+            }
+            s.sim.restore(&snap);
+            assert_eq!(all_outputs(&s), before, "{}", e.name);
+        }
+        // Gray–Scott: its outputs (u, v, reaction, the axes) come from its
+        // state and parameters alone: a snapshot holds the two state grids.
+        let gs = EXAMPLES.iter().find(|e| e.name.contains("Gray")).unwrap();
+        let s = Session::load(gs.name, gs.text, &registry()).unwrap();
+        let snap = s.sim.snapshot();
+        let cells = 128 * 128;
+        assert!(snap.values() < 2 * cells + 100, "{} values", snap.values());
+    }
+
+    #[test]
+    fn rewind_needs_a_recorder_and_reaches_back_to_when_it_was_added() {
+        let mut s = example("Cruise control");
+        assert!(s.recorder().is_none());
+        s.run_until(1.0).unwrap();
+        // No recorder: no snapshots, nothing to rewind to.
+        assert_eq!(s.history_range(), (s.time(), s.time()));
+        s.rewind_to(0.5);
+        assert!((s.time() - 1.0).abs() < 1e-9);
+        // Added at t = 1: rewind reaches back to then, not before.
+        s.set_recorder(Some(simsandbox_file::RecorderEntry {
+            every: Some(4),
+            ..Default::default()
+        }));
+        s.run_until(2.0).unwrap();
+        let (first, last) = s.history_range();
+        assert!((first - 1.0).abs() < 1e-9 && (last - 2.0).abs() < 1e-9);
+        s.rewind_to(0.5);
+        assert!((s.time() - 1.0).abs() < 1e-9);
+        // Saved with the model; removed, its snapshots go.
+        assert!(s.save_json(1.0, None).unwrap().contains("\"recorder\""));
+        s.set_recorder(None);
+        assert_eq!(s.history_range(), (s.time(), s.time()));
+        assert!(!s.save_json(1.0, None).unwrap().contains("\"recorder\""));
+    }
+
+    /// Cruise control whose controller reads the speed through probe
+    /// `sampled`, every `every` seconds (ADR 0063 step 3).
+    fn sampled_cruise(every: f64) -> String {
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Cruise control"))
+            .unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(e.text).unwrap();
+        v["controls"]["probes"] = serde_json::json!([
+            {"name": "sampled", "record": ["car.v"], "every": {"seconds": every}}
+        ]);
+        v["connections"][0]["from"] = "probe:sampled.car.v".into();
+        v.to_string()
+    }
+
+    #[test]
+    fn a_probe_feeding_the_model_holds_its_samples_with_no_delay() {
+        let text = sampled_cruise(1.0);
+        let r = crate::run::run(&text, &registry(), Some(5.0), None).unwrap();
+        let series = |name: &str| -> &Vec<f64> {
+            &r.outputs.iter().find(|o| o.name == name).unwrap().values
+        };
+        let (v, e) = (series("car.v"), series("cruise.e"));
+        // 0.05 s steps: samples at steps 0, 20, 40, ... The error uses the
+        // speed of that very step (no delay) and holds it until the next.
+        for (k, e) in e.iter().enumerate() {
+            let sampled = 20 * (k / 20);
+            assert_eq!(e.to_bits(), (25.0 - v[sampled]).to_bits(), "step {k}");
+        }
+        // Sampled every step, it is a direct wire between blocks solved
+        // apart (a hold never joins a fused group), bit for bit.
+        let direct_text = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Cruise control"))
+            .unwrap()
+            .text;
+        let apart = |text: &str| {
+            let mut v: serde_json::Value = serde_json::from_str(text).unwrap();
+            v["fusion"] = "off".into();
+            v.to_string()
+        };
+        let every_step = apart(&sampled_cruise(1e-9));
+        let a = crate::run::run(&apart(direct_text), &registry(), Some(5.0), None).unwrap();
+        let b = crate::run::run(&every_step, &registry(), Some(5.0), None).unwrap();
+        let bits = |r: &crate::run::Results| -> Vec<u64> {
+            r.outputs
+                .iter()
+                .filter(|o| !o.name.starts_with("probe:"))
+                .flat_map(|o| o.values.iter().map(|x| x.to_bits()))
+                .collect()
+        };
+        assert_eq!(bits(&a), bits(&b));
+    }
+
+    #[test]
+    fn a_probe_file_read_back_drives_the_model_as_the_probe_did() {
+        // ADR 0063 step 4: the controller reads the speed every second
+        // from a probe; the probe's file, read back by an input.file block
+        // in place of the probe, gives the same run bit for bit.
+        let dir = temp_dir("read-back");
+        let mut live: serde_json::Value = serde_json::from_str(&sampled_cruise(1.0)).unwrap();
+        live["controls"]["probes"][0]["to"] = "speed.csv".into();
+        live["controls"]["probes"][0]["stream"] = true.into();
+        let watched = |s: &mut Session| {
+            s.set_view_reads(vec!["car.v".into(), "cruise.e".into()]);
+            s.run_until(5.0).unwrap();
+            s.flush(true);
+            let h = s.signals();
+            ["car.v", "cruise.e"]
+                .iter()
+                .flat_map(|n| h.values(h.resolve(n).unwrap()))
+                .map(f64::to_bits)
+                .collect::<Vec<_>>()
+        };
+        let mut a = Session::load("live", &live.to_string(), &registry()).unwrap();
+        a.set_probe_dir(Some(dir.clone()));
+        a.restart().unwrap();
+        let first = watched(&mut a);
+        drop(a);
+        let mut read: serde_json::Value = serde_json::from_str(&sampled_cruise(1.0)).unwrap();
+        read["controls"]["probes"] = serde_json::json!([]);
+        read["blocks"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "recorded", "type": "input.file",
+                "settings": {"file": "speed.csv", "unit.car.v": "m/s"}
+            }));
+        read["connections"][0]["from"] = "recorded.car_v".into();
+        let text = read.to_string();
+        // A relative file needs the model's folder.
+        let e = Session::load("read", &text, &registry()).err().unwrap();
+        assert!(e.contains("save the model first"), "{e}");
+        let mut b = Session::load_in("read", &text, &registry(), Some(&dir)).unwrap();
+        assert_eq!(watched(&mut b), first);
+        // The run hash follows the file's contents.
+        let hash = |s: &Session| s.run_file("m.json", "", "", "").model_hash;
+        let before = hash(&b);
+        let csv = std::fs::read_to_string(dir.join("speed.csv")).unwrap();
+        std::fs::write(dir.join("speed.csv"), csv.replacen("\n0,", "\n0.0,", 1)).unwrap();
+        let b = Session::load_in("read", &text, &registry(), Some(&dir)).unwrap();
+        assert_ne!(hash(&b), before);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_held_probe_rewinds_and_replays_exactly() {
+        let mut s = Session::load("c", &sampled_cruise(0.7), &registry()).unwrap();
+        s.set_recorder(Some(Default::default()));
+        s.set_view_reads(vec!["cruise.e".into()]);
+        s.run_until(5.0).unwrap();
+        s.flush(true);
+        let e = |s: &Session| {
+            let h = s.signals();
+            h.values(h.resolve("cruise.e").unwrap())
+        };
+        let first = e(&s);
+        s.rewind_to(2.2);
+        s.run_until(5.0).unwrap();
+        s.flush(true);
+        let again = e(&s);
+        assert_eq!(
+            first.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            again.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+        );
+        // The hold is not a recorded output of the model.
+        assert!(!s.bindable_scalars().iter().any(|n| n.starts_with("probe:")));
+    }
+
+    #[test]
+    fn recompute_fills_what_was_wired_later_bit_for_bit() {
+        // ADR 0062/0063: wired mid-run, a signal and a field have no past;
+        // recomputing on demand fills it as if it had been recorded from
+        // the start, live input included, and leaves the model as it was.
+        let example = |name: &str| {
+            EXAMPLES
+                .iter()
+                .find(|e| e.name.contains(name))
+                .unwrap()
+                .text
+        };
+        let run = |text: &str, (key, value): (&str, f64), reads: &[&str], late: bool| {
+            let mut s = Session::load("m", text, &registry()).unwrap();
+            s.set_recorder(Some(Default::default()));
+            let all: Vec<String> = reads.iter().map(|r| r.to_string()).collect();
+            s.set_view_reads(if late { all[..1].to_vec() } else { all.clone() });
+            s.run_until(2.0).unwrap();
+            s.set_param_key(key, value).unwrap();
+            s.run_until(4.0).unwrap();
+            if late {
+                s.set_view_reads(all);
+            }
+            s.flush(true);
+            s
+        };
+        let bits = |s: &Session, name: &str| -> Vec<u64> {
+            let h = s.signals();
+            if let Some(f) = h.fields().iter().find(|f| f.name == name) {
+                return (0..h.len())
+                    .flat_map(|k| f.frame(k).to_vec())
+                    .map(f64::to_bits)
+                    .collect();
+            }
+            h.values(h.resolve(name).unwrap())
+                .iter()
+                .map(|x| x.to_bits())
+                .collect()
+        };
+        for (text, key, reads) in [
+            (
+                example("Cruise control"),
+                ("cruise.kp", 600.0),
+                ["car.v", "cruise.e"],
+            ),
+            (
+                example("Heat"),
+                ("rod.alpha", 0.02),
+                ["rod.position", "rod.temperature"],
+            ),
+        ] {
+            let mut whole = run(text, key, &reads, false);
+            let mut late = run(text, key, &reads, true);
+            assert!(!whole.has_gaps());
+            assert!(late.has_gaps());
+            assert_ne!(bits(&late, reads[1]), bits(&whole, reads[1]));
+            late.recompute().unwrap();
+            assert!(!late.has_gaps());
+            for r in reads {
+                assert_eq!(bits(&late, r), bits(&whole, r), "{r}");
+            }
+            // Where it was, as it was: running on gives the same.
+            assert_eq!(late.time().to_bits(), whole.time().to_bits());
+            whole.run_until(5.0).unwrap();
+            late.run_until(5.0).unwrap();
+            whole.flush(true);
+            late.flush(true);
+            for r in reads {
+                assert_eq!(bits(&late, r), bits(&whole, r), "{r}");
+            }
+            // Without the recorder's snapshots, there is nothing to run from.
+            let mut bare = run(text, key, &reads, true);
+            bare.set_recorder(None);
+            assert!(bare.has_gaps());
+            assert!(bare.recompute().unwrap_err().contains("snapshots"));
+        }
+    }
+
+    /// A fresh folder for files a test writes.
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("simsandbox-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_probe_writes_its_file_as_it_records_and_rewinds_cut_it_back() {
+        let text = cruise_with(
+            r#"[{"name": "speed", "record": ["car.v"], "keep": {"last": 2},
+                 "to": "speed.csv", "stream": true}]"#,
+        );
+        let dir = temp_dir("stream");
+        let mut s = Session::load("cruise", &text, &registry()).unwrap();
+        s.set_recorder(Some(Default::default()));
+        s.set_probe_dir(Some(dir.clone()));
+        s.restart().unwrap();
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        let csv = || std::fs::read_to_string(dir.join("speed.csv")).unwrap();
+        // Every sample in the file, whatever Keep keeps in memory (here
+        // nothing: no view reads it).
+        let all = csv();
+        assert_eq!(all.lines().count(), 1 + 41, "{all}");
+        assert!(s.probe("speed").unwrap().read().is_empty());
+        // A rewind cuts the file back; running on writes the same again.
+        s.rewind_to(1.01);
+        s.flush(true);
+        assert_eq!(csv().lines().count(), 1 + 21);
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        assert_eq!(csv(), all);
+        // A restart starts it afresh.
+        s.restart().unwrap();
+        s.flush(true);
+        assert_eq!(csv().lines().count(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_streamed_grid_is_a_npy_file_numpy_reads() {
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Typed heat"))
+            .unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(e.text).unwrap();
+        let rod = v["blocks"][0]["name"].as_str().unwrap().to_string();
+        v["controls"]["probes"] = serde_json::json!([{
+            "name": "profile", "record": [format!("{rod}.T")], "every": {"steps": 5},
+            "to": "rod.csv", "stream": true
+        }]);
+        let dir = temp_dir("stream-npy");
+        let mut s = Session::load("rod", &v.to_string(), &registry()).unwrap();
+        s.set_probe_dir(Some(dir.clone()));
+        s.restart().unwrap();
+        for _ in 0..20 {
+            s.step().unwrap();
+        }
+        s.flush(true);
+        let npy = std::fs::read(dir.join(format!("rod.{rod}.T.npy"))).unwrap();
+        let len = u16::from_le_bytes([npy[8], npy[9]]) as usize;
+        let header = std::str::from_utf8(&npy[10..10 + len]).unwrap();
+        // Steps 0, 5, 10, 15, 20: five frames of one row.
+        assert!(header.contains("'shape': (5, 1, "), "{header}");
+        let cells: usize = header
+            .split(", ")
+            .nth(4)
+            .unwrap()
+            .trim_end_matches(')')
+            .parse()
+            .unwrap_or(0);
+        assert_eq!(npy.len(), 10 + len + 5 * cells * 8, "{header}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn probes_keep_samples_in_memory_only_when_something_reads_them() {
+        // Feeding the controller only: nothing kept.
+        let mut s = Session::load("c", &sampled_cruise(0.5), &registry()).unwrap();
+        s.run_until(2.0).unwrap();
+        s.flush(true);
+        assert!(s.probe("sampled").unwrap().read().is_empty());
+        // A view reading it: kept from then on.
+        s.set_view_reads(vec!["probe:sampled/car.v".into()]);
+        s.run_until(4.0).unwrap();
+        s.flush(true);
+        assert_eq!(s.probe("sampled").unwrap().read().len(), 4);
+        // A headless run keeps every probe.
+        let r = crate::run::run_probes(
+            &sampled_cruise(0.5),
+            &registry(),
+            Some(2.0),
+            None,
+            Vec::new(),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(r.probes[0].1.read().len(), 5);
     }
 }

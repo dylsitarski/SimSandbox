@@ -6,9 +6,10 @@
 //! simsandbox-app [FILE] --screenshot OUT.ppm [--after SECONDS]
 //! ```
 //!
-//! Without a file it opens the built-in Lorenz example. `--screenshot`
-//! saves the window after `--after` seconds (default 3) and exits; it is
-//! for documentation and visual checks.
+//! It opens maximized (F11 toggles full screen); without a file, on the
+//! landing page (a new model, a file or an example). `--screenshot` saves
+//! the window after `--after` seconds (default 3) and exits; it is for
+//! documentation and visual checks, at a fixed size.
 
 mod app;
 mod diagram;
@@ -17,6 +18,8 @@ mod inspector;
 mod live;
 mod log;
 mod pacing;
+mod probe_editor;
+mod recorder_editor;
 
 use app::{ScreenshotRequest, SimApp};
 use eframe::egui;
@@ -85,6 +88,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
 /// on their own (ADR 0054).
 struct Shared(std::sync::Arc<std::sync::Mutex<SimApp>>);
 
+/// Where the app keeps its memory budget between launches (ADR 0062
+/// step 5), in eframe's storage.
+const MEMORY_KEY: &str = "memory_budget_mb";
+
 impl eframe::App for Shared {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let mut app = self
@@ -92,6 +99,19 @@ impl eframe::App for Shared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         eframe::App::ui(&mut *app, ui, frame);
+    }
+
+    /// Only the app's settings are kept, not egui's own state.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let app = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        storage.set_string(MEMORY_KEY, app.memory_budget().to_string());
+    }
+
+    fn persist_egui_memory(&self) -> bool {
+        false
     }
 }
 
@@ -106,24 +126,44 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Typed equations' native code is built where a Rust toolchain is
+    // found (ADR 0089); `SIMSANDBOX_NATIVE=off` turns it off.
+    simsandbox_compiled::native::set_mode(simsandbox_compiled::native::Mode::Build);
+    // Maximized once it shows (`SimApp`), not when created: on Windows a
+    // window created maximized keeps drawing at this size until resized.
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("SimSandbox")
+        .with_inner_size([1100.0, 700.0])
+        .with_drag_and_drop(true);
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        viewport: egui::ViewportBuilder::default()
-            .with_title("SimSandbox")
-            .with_inner_size([1100.0, 700.0])
-            .with_drag_and_drop(true),
+        viewport,
+        // The window opens maximized each time; only settings are kept.
+        persist_window: false,
         ..Default::default()
     };
     let result = eframe::run_native(
         "SimSandbox",
         options,
-        Box::new(move |_cc| {
-            let app = SimApp::new(
+        Box::new(move |cc| {
+            // Meshes on the GPU (ADR 0086); without it they draw with
+            // egui's painter.
+            if let Some(rs) = cc.wgpu_render_state.as_ref() {
+                simsandbox_views::gpu::install(rs);
+            }
+            let mut app = SimApp::new(
                 args.path,
                 args.view.as_deref(),
                 args.window.as_deref(),
                 args.screenshot,
             );
+            if let Some(mb) = cc
+                .storage
+                .and_then(|s| s.get_string(MEMORY_KEY))
+                .and_then(|v| v.parse::<f64>().ok())
+            {
+                app.set_memory_budget(mb);
+            }
             Ok(Box::new(Shared(app.shared())))
         }),
     );

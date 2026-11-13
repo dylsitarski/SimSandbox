@@ -8,10 +8,6 @@
     {
       "name": "bob",
       "type": "eq.pendulum",
-      "method": {
-        "name": "rk4",
-        "substeps": 1.0
-      },
       "params": {
         "L": 1.0,
         "c": 0.0,
@@ -33,12 +29,6 @@
       }
     },
     "speed": 1.0,
-    "plots": [
-      "bob.angle",
-      "bob.omega",
-      "bob.x",
-      "bob.y"
-    ],
     "views": [
       {
         "type": "eq.pendulum",

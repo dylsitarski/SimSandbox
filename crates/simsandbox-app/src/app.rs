@@ -51,11 +51,32 @@ pub struct SimApp {
     this: std::sync::Weak<std::sync::Mutex<SimApp>>,
     /// What popped-out windows asked for, carried out by the main window.
     popped_actions: Vec<DockAction>,
+    /// What the views read, as last told to the session (ADR 0063).
+    view_reads: Vec<String>,
+    /// The folder probes write their files into as they record, as last
+    /// told to the session: the saved model's (ADR 0063).
+    probe_dir: Option<PathBuf>,
+    /// The dock as it settled by itself (egui_dock fits splits to their
+    /// contents and to the window), and the arrangement that stands for:
+    /// such changes are not edits, so they neither mark the model unsaved
+    /// nor get saved.
+    dock_settled: Option<(
+        simsandbox_file::layout::Layout,
+        Option<simsandbox_file::layout::Layout>,
+    )>,
+    /// Values keys are driving (ADR 0058), by input block, while a key is
+    /// held or until its release is sent.
+    key_values: HashMap<String, f64>,
+    /// "Save run…" while open: the run's name and note.
+    run_dialog: Option<(String, String)>,
     registry: Registry,
     /// The open model, running on its worker thread (ADR 0035).
     session: Option<Live>,
     /// Requested speed, sent to the worker when changed.
     speed: f64,
+    /// The memory budget in MB (ADR 0062 step 5), an app setting kept
+    /// between launches.
+    memory_mb: f64,
     error: Option<String>,
     /// Success messages, e.g. "Saved to …".
     /// Notices, warnings and errors, shown in the status tile.
@@ -65,6 +86,11 @@ pub struct SimApp {
     /// The file the open model was loaded from; Save writes back to it.
     /// `None` for built-in examples, which Save turns into Save as.
     path: Option<PathBuf>,
+    /// A built-in example that reads files (ADR 0069 step 3): the folder
+    /// it was unpacked into, which it reads them from while it has no
+    /// path, and its place in `EXAMPLES`; Save as copies its files beside
+    /// the model.
+    example_folder: Option<(PathBuf, usize)>,
     /// Text being typed into parameter fields, keyed by `"block.param"`.
     param_edits: HashMap<String, String>,
     /// Values of sliders being dragged that apply on release (ADR 0037).
@@ -89,6 +115,9 @@ pub struct SimApp {
     last_canvas: Option<simsandbox_session::canvas::Selection>,
     /// List values formulas set too.
     show_computed: bool,
+    /// What the study picked last can vary: its name, its model's text and
+    /// the parameters (ADR 0070), kept while they stay the same.
+    study_keys: HashMap<String, (String, std::sync::Arc<Studied>)>,
     diagram: DiagramTab,
     started: Instant,
     /// The open model as saved or opened, to tell unsaved changes.
@@ -103,10 +132,31 @@ pub struct SimApp {
     discard_ok: bool,
     screenshot: Option<ScreenshotRequest>,
     screenshot_requested: bool,
+    /// Frames drawn before the window is maximized: once it is showing,
+    /// as a person would (created maximized, Windows keeps the drawing
+    /// area at the first size). `None` when done, or for screenshots.
+    maximize_in: Option<u8>,
 }
 
 impl SimApp {
     /// The app shared between the main window and popped-out ones.
+    /// The memory budget in MB (ADR 0062 step 5), kept between launches.
+    pub fn memory_budget(&self) -> f64 {
+        self.memory_mb
+    }
+
+    /// Set the memory budget in MB (ADR 0062 step 5), for the model
+    /// running and those opened later.
+    pub fn set_memory_budget(&mut self, mb: f64) {
+        if !(mb.is_finite() && mb > 0.0) || mb == self.memory_mb {
+            return;
+        }
+        self.memory_mb = mb;
+        if let Some(live) = &self.session {
+            live.send(Some("memory"), move |s, _| s.set_memory_budget(mb));
+        }
+    }
+
     pub fn shared(self) -> std::sync::Arc<std::sync::Mutex<SimApp>> {
         std::sync::Arc::new_cyclic(|this| {
             let mut app = self;
@@ -125,13 +175,20 @@ impl SimApp {
             new_param: Default::default(),
             this: std::sync::Weak::new(),
             popped_actions: Vec::new(),
+            view_reads: Vec::new(),
+            probe_dir: None,
+            dock_settled: None,
+            key_values: HashMap::new(),
+            run_dialog: None,
             registry: registry(),
             session: None,
             speed: 1.0,
+            memory_mb: simsandbox_session::session::DEFAULT_MEMORY_MB,
             error: None,
             log: Log::default(),
             logged_error: None,
             path: None,
+            example_folder: None,
             param_edits: HashMap::new(),
             pending: HashMap::new(),
             editor: None,
@@ -144,6 +201,7 @@ impl SimApp {
             picked: Vec::new(),
             last_canvas: None,
             show_computed: false,
+            study_keys: HashMap::new(),
             diagram: DiagramTab::default(),
             started: Instant::now(),
             baseline: None,
@@ -151,16 +209,14 @@ impl SimApp {
             last_unsaved_check: Instant::now(),
             asking: None,
             discard_ok: false,
+            maximize_in: screenshot.is_none().then_some(2),
             screenshot,
             screenshot_requested: false,
         };
-        // Hobbyists first (ADR 0009): a model runs as soon as it opens.
-        match path {
-            Some(p) => app.open_path(&p),
-            None => {
-                app.open_text(EXAMPLES[0].name, EXAMPLES[0].text);
-                app.mark_saved();
-            }
+        // A file given opens and runs at once (ADR 0009); without one, the
+        // landing page offers a new model, a file or an example.
+        if let Some(p) = path {
+            app.open_path(&p);
         }
         // A --view flag overrides the view saved in the file.
         if view == Some("diagram") {
@@ -195,15 +251,25 @@ impl SimApp {
         if self.ask_first(Discard::OpenPath(path.into())) {
             return;
         }
+        if path.ends_with(".run.json") {
+            self.open_run(Path::new(path));
+            return;
+        }
         match std::fs::read_to_string(path) {
             Ok(text) => {
                 let title = Path::new(path)
                     .file_name()
                     .map_or(path.into(), |n| n.to_string_lossy().into_owned());
+                // Blocks read their files from the model's folder (ADR 0063).
+                let previous = self.path.replace(path.into());
+                let example = self.example_folder.take();
+                self.diagram.forget_files();
                 self.open_text(&title, &text);
                 if self.error.is_none() {
-                    self.path = Some(path.into());
                     self.mark_saved();
+                } else {
+                    self.path = previous;
+                    self.example_folder = example;
                 }
             }
             Err(e) => self.error = Some(format!("{path}: {e}")),
@@ -216,10 +282,28 @@ impl SimApp {
             return;
         }
         let e = &EXAMPLES[k];
+        self.diagram.forget_files();
+        // An example that reads files opens from a folder holding them, a
+        // fresh copy each time it is opened.
+        let previous = self.example_folder.take();
+        if !e.files.is_empty() {
+            let dir = std::env::temp_dir()
+                .join("simsandbox-examples")
+                .join(e.file_name().trim_end_matches(".ssbx.json"));
+            if let Err(err) = e.unpack(&dir) {
+                self.example_folder = previous;
+                self.error = Some(format!("{}: {err}", dir.display()));
+                return;
+            }
+            self.example_folder = Some((dir, k));
+        }
+        let path = self.path.take();
         self.open_text(e.name, e.text);
         if self.error.is_none() {
-            self.path = None;
             self.mark_saved();
+        } else {
+            self.path = path;
+            self.example_folder = previous;
         }
     }
 
@@ -233,6 +317,10 @@ impl SimApp {
     /// Whether the open model has changes a save would write: parameters,
     /// edits, sliders, views, speed or step.
     fn has_unsaved(&self) -> bool {
+        // Used model files edited from here (ADR 0066 step 4c).
+        if !self.diagram.edited.is_empty() {
+            return true;
+        }
         match (&self.session, &self.baseline) {
             (Some(_), Some(b)) => self.saved_text().is_ok_and(|t| &t != b),
             _ => false,
@@ -400,16 +488,32 @@ impl SimApp {
         }
     }
 
-    /// Open a model; it runs at once if `running` (sweeps are evaluated
-    /// either way). The previous model's worker stops.
+    /// Open a model; it runs at once if `running`. The previous model's
+    /// worker stops.
     fn open_text_with(&mut self, title: &str, text: &str, running: bool) {
         self.open_inner(title, text, running, true);
     }
 
     fn open_inner(&mut self, title: &str, text: &str, running: bool, announce: bool) {
-        match Session::load_deferred(title, text, &self.registry) {
+        let folder = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .or(self.example_folder.as_ref().map(|e| e.0.as_path()));
+        self.diagram.folder = folder.map(Path::to_path_buf);
+        // Blocks the window builds (the diagram's nodes, the Inspector,
+        // equation edits) read their files from the model's folder, as the
+        // session's do (ADR 0063, ADR 0069 step 3).
+        simsandbox_core::registry::set_folder(folder.map(Path::to_path_buf));
+        // Its studies run on the worker, which shows their progress
+        // (ADR 0071): the window never waits for them.
+        let loaded = simsandbox_session::study::without_running_studies(|| {
+            Session::load_in(title, text, &self.registry, folder)
+        });
+        match loaded {
             Ok(mut s) => {
                 self.speed = s.file.controls.speed.unwrap_or(1.0);
+                s.set_memory_budget(self.memory_mb);
                 // Tabs shown in their own windows stay there when the model
                 // is rebuilt (canvas edits).
                 let popped = if announce {
@@ -422,14 +526,20 @@ impl SimApp {
                     self.views.open(&s.available(&h), &s.file.controls.views)
                 };
                 s.warnings.extend(w);
+                // The history records what the views read (ADR 0063).
+                self.view_reads = simsandbox_session::session::view_reads(&self.views.entries());
+                s.set_view_reads(self.view_reads.clone());
                 let tiles = self.tile_ids();
                 let opened = self.views.opened.clone();
                 let tile = |k: usize| opened.get(k).copied().flatten();
                 self.diagram.canvas.open = s.file.controls.open.iter().cloned().collect();
+                self.diagram.expanded.clone_from(&s.file.controls.expand);
                 self.dock = match &s.file.controls.layout {
                     Some(l) => Dock::from_layout(l, &tile, &tiles),
                     None => Dock::standard(&tiles),
                 };
+                self.dock_settled = None;
+                self.probe_dir = None;
                 for p in popped {
                     let pane = match p {
                         Popped::Controls => Some(Pane::Controls),
@@ -451,7 +561,6 @@ impl SimApp {
                         ));
                     }
                 }
-                let running = running && s.sweep().is_none();
                 self.session = Some(Live::start(s, self.speed, running));
                 self.error = None;
                 self.param_edits.clear();
@@ -484,6 +593,23 @@ impl SimApp {
         let st = live.status();
         if st.running {
             self.rewind_t = st.time;
+        }
+        // Probes writing as they record write beside the saved model.
+        let dir = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        if dir != self.probe_dir {
+            self.diagram.folder = dir.clone();
+            self.probe_dir = dir.clone();
+            live.send(Some("probe-dir"), move |s, _| s.set_probe_dir(dir));
+        }
+        // Views bound, rebound or closed: the history follows (ADR 0063).
+        let reads = simsandbox_session::session::view_reads(&self.views.entries());
+        if reads != self.view_reads {
+            self.view_reads = reads.clone();
+            live.send(Some("view-reads"), move |s, _| s.set_view_reads(reads));
         }
     }
 
@@ -532,6 +658,9 @@ impl SimApp {
                 self.save_as_dialog();
             }
             if has_model {
+                ui.menu_button("Runs", |ui| self.runs_menu(ui))
+                    .response
+                    .on_hover_text("Save this run's input beside the model, and replay saved runs");
                 ui.separator();
                 self.view_menus(ui);
                 self.solving_menu(ui);
@@ -548,6 +677,7 @@ impl SimApp {
             }
         });
         self.shortcuts(ui);
+        self.key_inputs(ui);
 
         let Some(live) = self.session.as_ref() else {
             return;
@@ -562,33 +692,36 @@ impl SimApp {
                 ui.add(egui::Label::new(d.as_str()).truncate());
             }
         });
-        // Models with no states are swept, not run (ADR 0019, ADR 0027,
-        // ADR 0028).
-        if let Some(sw) = m.sweep.clone() {
-            match sweep_controls(ui, live, &m, &sw) {
-                Ok(None) => {}
-                Ok(Some(notes)) => {
-                    for n in notes {
-                        self.log.warn(n);
-                    }
-                    let now = live.model();
-                    let now_sweep = now.sweep().expect("still swept");
-                    if structure(now_sweep) != structure(&sw) {
-                        // Other signals, grids or drawing: the views start over.
-                        let h = live.history();
-                        self.views.open(&now.available(&h), &[]);
-                        self.log.info(if now_sweep.is_grid() {
-                            "Swept on a grid over two parameters: every signal is also a \
-                             grid; views reset"
-                        } else {
-                            "Sweep changed; views reset"
-                        });
-                    }
-                }
-                Err(e) => self.error = Some(format!("sweep: {e}")),
-            }
-        }
-        if m.sweep.is_none() {
+        if m.timeless {
+            // Nothing to run, pause, step or rewind (ADR 0072).
+            ui.horizontal(|ui| {
+                ui.label("Evaluated, not run in time").on_hover_text(
+                    "Nothing in this model changes with time (no states, data, clocks or \
+                     schedule): it is evaluated when opened and again whenever a value it \
+                     reads changes",
+                );
+            });
+        } else if m.iterates {
+            // Rounds, not seconds: nothing to run, pause, pace or rewind
+            // (ADR 0083).
+            ui.horizontal(|ui| {
+                let state = if st.iterating {
+                    ui.ctx().request_repaint_after(Duration::from_millis(50));
+                    "iterating"
+                } else if st.held_still {
+                    "holds still"
+                } else {
+                    "reached its last round"
+                };
+                ui.label(format!("Iterates: round {} — {state}", st.round))
+                    .on_hover_text(
+                        "Only maps that never read time: its steps are rounds, not seconds. \
+                         It runs as fast as it can when opened and again from round 0 whenever \
+                         a value it reads changes, until a round changes nothing or its last \
+                         round (the file's t_end)",
+                    );
+            });
+        } else {
             ui.horizontal(|ui| {
                 let label = if st.running { "⏸ Pause" } else { "▶ Run" };
                 if ui.button(label).clicked() {
@@ -679,6 +812,31 @@ impl SimApp {
                 }
                 ui.separator();
                 ui.monospace(format!("t = {:.3} s", st.time));
+                if st.replaying {
+                    ui.separator();
+                    ui.colored_label(ui.visuals().hyperlink_color, "Replaying input")
+                        .on_hover_text(
+                            "Recorded input lies ahead and is applied as the run goes on. \
+                             Any live input from here on takes over (a new branch).",
+                        );
+                }
+                if st.gaps && m.recorder.is_some() {
+                    ui.separator();
+                    if ui
+                        .button("Fill the past")
+                        .on_hover_text(
+                            "Something views show was wired after the run started, so it \
+                             has no past. Run again from the start, replaying the input as \
+                             recorded, to fill it; the run then carries on from where it is.",
+                        )
+                        .clicked()
+                    {
+                        live.send(None, |s, c| match s.recompute() {
+                            Ok(()) => c.info("Filled the past of what views show"),
+                            Err(e) => c.error(e),
+                        });
+                    }
+                }
             });
         }
         ui.horizontal(|ui| {
@@ -698,7 +856,30 @@ impl SimApp {
                     ),
                 );
             }
-            if let Some(d) = live.stepping_for().filter(|d| *d >= SLOW_STEP) {
+            // Past the memory budget (ADR 0062 step 5): say so, and what
+            // holds most.
+            if let Some(mem) = st.memory.as_ref().filter(|m| m.over()) {
+                let most = mem
+                    .largest()
+                    .map(|(part, bytes)| format!("; most: {part}, {}", megabytes(*bytes)))
+                    .unwrap_or_default();
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!(
+                        "recordings hold {} of a {} memory budget{most}",
+                        megabytes(mem.held),
+                        megabytes(mem.budget)
+                    ),
+                )
+                .on_hover_text(
+                    "Raise the budget under Memory…, or give the largest probe a keep of its own (last samples, or a size)",
+                );
+            }
+            let study = live.study_runs();
+            if let Some(d) = live
+                .stepping_for()
+                .filter(|d| *d >= SLOW_STEP && study.is_none())
+            {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
                     format!("a step has been running for {:.1} s", d.as_secs_f64()),
@@ -706,8 +887,25 @@ impl SimApp {
                 .on_hover_text("Commands, including Pause, take effect when it ends");
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
             }
-            if let Some((done, total)) = st.sweep {
-                ui.weak(format!("evaluating sample {done} of {total}"));
+            // A study in the step: its runs so far (ADR 0071 step 2).
+            if study.is_none() && m.unevaluated {
+                ui.weak(if m.timeless {
+                    "about to evaluate"
+                } else {
+                    "studies about to run"
+                })
+                .on_hover_text("Its studies run first, on the simulation's thread");
+            }
+            if let Some((done, total)) = study {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!("study: {done} of {total} runs"),
+                )
+                .on_hover_text(
+                    "Changing what it reads, Pause or Run gives it up and starts it again from \
+                     the new values",
+                );
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
             }
         });
     }
@@ -716,7 +914,9 @@ impl SimApp {
         let Some(live) = self.session.as_ref() else {
             return;
         };
-        if live.model().sweep.is_some() {
+        // Without a recorder there is nothing to rewind to (ADR 0064).
+        let m = live.model();
+        if m.recorder.is_none() || m.timeless || m.iterates {
             return;
         }
         let (first, last) = live.status().history_range;
@@ -836,14 +1036,104 @@ impl SimApp {
     fn layout(&self) -> Option<simsandbox_file::layout::Layout> {
         let index = |id: u64| self.views.tiles.iter().position(|t| t.id == id);
         let l = self.dock.to_layout(&index)?;
+        // As it settled by itself: what it was before.
+        if let Some((now, was)) = &self.dock_settled {
+            if *now == l {
+                return was.clone();
+            }
+        }
         let standard = Dock::standard(&self.tile_ids()).to_layout(&index);
         (Some(&l) != standard.as_ref()).then_some(l)
+    }
+
+    /// The landing page, while no model is open: start a model, open a
+    /// file or pick an example.
+    fn landing(&mut self, ui: &mut egui::Ui) {
+        let mut open = None;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // One column, centred.
+                let width = ui.available_width().min(760.0);
+                {
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(width);
+                        ui.add_space(48.0);
+                        ui.heading(egui::RichText::new("SimSandbox").size(34.0).strong());
+                        ui.add_space(4.0);
+                        ui.label("Build a model, run it live, and change it while it runs.");
+                        ui.add_space(20.0);
+                        let button = |text: &str| {
+                            egui::Button::new(egui::RichText::new(text).size(16.0))
+                                .min_size(egui::vec2(150.0, 36.0))
+                        };
+                        let gap = ui.spacing().item_spacing.x;
+                        ui.horizontal(|ui| {
+                            ui.add_space(((width - 300.0 - gap) / 2.0).max(0.0));
+                            if ui
+                                .add(button("New model…"))
+                                .on_hover_text("Type equations and run them")
+                                .clicked()
+                            {
+                                self.editor = Some(Editor {
+                                    block: None,
+                                    text: NEW_MODEL.into(),
+                                    error: None,
+                                });
+                            }
+                            if ui
+                                .add(button("Open…"))
+                                .on_hover_text(
+                                    "A model file (.ssbx.json) or a saved run (.run.json)",
+                                )
+                                .clicked()
+                            {
+                                self.open_dialog();
+                            }
+                        });
+                        ui.add_space(6.0);
+                        ui.weak("or drop a model file on this window");
+                        ui.add_space(32.0);
+                        ui.label(egui::RichText::new("Examples").strong().size(16.0));
+                        ui.add_space(8.0);
+                        // Two columns, each name a link with its description
+                        // on hover.
+                        let column = (width - gap) / 2.0;
+                        let half = EXAMPLES.len().div_ceil(2);
+                        ui.horizontal_top(|ui| {
+                            for part in [0..half, half..EXAMPLES.len()] {
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(column, 0.0),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_width(column);
+                                        for k in part {
+                                            if ui
+                                                .link(EXAMPLES[k].name)
+                                                .on_hover_text(example_description(k))
+                                                .clicked()
+                                            {
+                                                open = Some(k);
+                                            }
+                                            ui.add_space(2.0);
+                                        }
+                                    },
+                                );
+                            }
+                        });
+                        ui.add_space(24.0);
+                    });
+                }
+            });
+        if let Some(k) = open {
+            self.open_example(k);
+        }
     }
 
     /// The docked tabs (ADR 0053), and the ones popped out into windows.
     fn docked(&mut self, ui: &mut egui::Ui) {
         if self.session.is_none() {
-            ui.centered_and_justified(|ui| ui.label("Open an example or a model file."));
+            self.landing(ui);
             return;
         }
         let tiles = self.tile_ids();
@@ -851,7 +1141,12 @@ impl SimApp {
         if let Some(Focus::Tile(t)) = self.focus.take() {
             self.dock.focus(|p| p.tiles().contains(&t));
         }
+        let saved_before = self.layout();
+        let arranged = |app: &Self, dock: &Dock| {
+            dock.to_layout(&|id: u64| app.views.tiles.iter().position(|t| t.id == id))
+        };
         let mut dock = std::mem::replace(&mut self.dock, Dock::standard(&[]));
+        let before = arranged(self, &dock);
         let mut tabs = Tabs {
             app: self,
             actions: Vec::new(),
@@ -863,6 +1158,16 @@ impl SimApp {
             .show_leaf_close_all_buttons(false)
             .show_inside(ui, &mut tabs);
         let mut actions = tabs.actions;
+        // The dock changed with no pointer at work: it fitted itself to
+        // its contents or the window. That is not an edit.
+        let after = arranged(self, &dock);
+        let pointer = ui
+            .input(|i| i.pointer.any_down() || i.pointer.any_pressed() || i.pointer.any_released());
+        if before != after && !pointer {
+            if let Some(after) = after {
+                self.dock_settled = Some((after, saved_before));
+            }
+        }
         actions.append(&mut self.popped_actions);
         // Popped-out tabs are deferred viewports: each window is drawn on
         // its own, from the shared app, so one window never waits for
@@ -903,6 +1208,11 @@ impl SimApp {
                 }
                 DockAction::Select(t) => self.views.selected = Some(t),
                 DockAction::Inspect(signal) => self.inspect_signal(&signal),
+                DockAction::Pointer(block, p) => {
+                    for (name, v) in ["x", "y", "down"].into_iter().zip(p) {
+                        self.send_input(format!("{block}.{name}"), v);
+                    }
+                }
             }
         }
     }
@@ -1011,6 +1321,7 @@ impl SimApp {
             let (views, layout) = (views.clone(), layout.clone());
             live.call(move |s, _| s.save_json_with(speed, Some(views), Some(layout)))?
         };
+        self.diagram.activations = live.status().activations;
         let outcomes = self.diagram.show(
             ui,
             &m,
@@ -1052,10 +1363,34 @@ impl SimApp {
                 }
                 Outcome::Open(name) => self.open_block(m, &name),
                 Outcome::Error(e) => self.error = Some(e),
-                Outcome::Placed { filters, views } => {
+                Outcome::Placed {
+                    filters,
+                    views,
+                    probes,
+                    recorder,
+                } => {
                     let Some(live) = &self.session else {
                         return;
                     };
+                    if let Some(at) = recorder {
+                        live.send(Some("place-recorder"), move |s, _| {
+                            let r = s
+                                .recorder()
+                                .cloned()
+                                .map(|r| simsandbox_file::RecorderEntry {
+                                    canvas: Some(at.map(|v| (v * 10.0).round() / 10.0)),
+                                    ..r
+                                });
+                            s.set_recorder(r);
+                        });
+                    }
+                    for (name, at) in probes {
+                        live.send(Some(&format!("place-probe:{name}")), move |s, c| {
+                            if let Err(e) = s.place_probe(&name, Some(at)) {
+                                c.error(e);
+                            }
+                        });
+                    }
                     for (name, at) in filters {
                         live.send(Some(&format!("place:{name}")), move |s, c| {
                             if let Err(e) = s.place_filter(&name, Some(at)) {
@@ -1079,6 +1414,12 @@ impl SimApp {
                             let _ = s.place_filter(&name, at);
                         });
                     }
+                    for p in &file.controls.probes {
+                        let (name, at) = (p.name.clone(), p.canvas);
+                        live.send(None, move |s, _| {
+                            let _ = s.place_probe(&name, at);
+                        });
+                    }
                     for (t, v) in self.views.tiles.iter_mut().zip(&file.controls.views) {
                         t.canvas = v.canvas;
                     }
@@ -1089,8 +1430,18 @@ impl SimApp {
                 Outcome::Data {
                     filters,
                     views,
+                    probes,
+                    recorder,
                     notes,
-                } => self.apply_data(m, filters, views, notes),
+                } => {
+                    // The recorder is set apart: it never needs a check.
+                    if let Some(live) = &self.session {
+                        if recorder != m.recorder {
+                            live.send(None, move |s, _| s.set_recorder(recorder));
+                        }
+                    }
+                    self.apply_data(m, (filters, views, probes), notes)
+                }
                 Outcome::EditData(_) => {
                     self.signals_editor = Some(SignalsEditor::new(m));
                 }
@@ -1102,6 +1453,11 @@ impl SimApp {
                 Outcome::Opened(open) => {
                     if let Some(live) = &self.session {
                         live.send(None, move |s, _| s.file.controls.open = open);
+                    }
+                }
+                Outcome::Expanded(paths) => {
+                    if let Some(live) = &self.session {
+                        live.send(None, move |s, _| s.file.controls.expand = paths);
                     }
                 }
                 Outcome::ShowView(k) => {
@@ -1120,8 +1476,11 @@ impl SimApp {
     fn apply_data(
         &mut self,
         m: &crate::live::Model,
-        filters: Vec<simsandbox_file::FilterEntry>,
-        views: Vec<simsandbox_file::ViewEntry>,
+        (filters, views, probes): (
+            Vec<simsandbox_file::FilterEntry>,
+            Vec<simsandbox_file::ViewEntry>,
+            Vec<simsandbox_file::ProbeEntry>,
+        ),
         notes: Vec<String>,
     ) {
         let Some(live) = &self.session else {
@@ -1129,6 +1488,20 @@ impl SimApp {
         };
         if filters != m.filters {
             match live.call(move |s, _| s.set_filters(filters)) {
+                Ok(Ok(())) => {}
+                Ok(Err(problems)) => {
+                    self.error = Some(problems.join("; "));
+                    return;
+                }
+                Err(e) => {
+                    self.error = Some(e);
+                    return;
+                }
+            }
+        }
+        // Probes follow the filters, which they may record (ADR 0062).
+        if probes != live.model().probes {
+            match live.call(move |s, _| s.set_probe_entries(&probes)) {
                 Ok(Ok(())) => {}
                 Ok(Err(problems)) => {
                     self.error = Some(problems.join("; "));
@@ -1153,13 +1526,19 @@ impl SimApp {
 
     /// Open a block's definition: the equation editor for typed equations.
     fn open_block(&mut self, m: &crate::live::Model, name: &str) {
-        // `subsystem::block` for a block inside a subsystem (ADR 0043).
-        let blocks = match name.split_once("::") {
-            Some((def, _)) => m.file.subsystems.get(def).map(|d| &d.blocks),
-            None => Some(&m.file.blocks),
+        // `use/path::block` for a block inside a used model (ADR 0068).
+        let inside = match name.split_once("::") {
+            Some((path, _)) => {
+                let path: Vec<String> = path.split('/').map(str::to_string).collect();
+                crate::diagram::used_file(&m.file, self.diagram.folder.as_deref(), &path).ok()
+            }
+            None => Some(m.file.clone()),
         };
         let inner = name.rsplit("::").next().unwrap_or(name);
-        let Some(b) = blocks.and_then(|bs| bs.iter().find(|b| b.name == inner)) else {
+        let Some(b) = inside
+            .as_ref()
+            .and_then(|f| f.blocks.iter().find(|b| b.name == inner))
+        else {
             return;
         };
         if b.type_name == simsandbox_eq::registry::EQUATIONS {
@@ -1222,6 +1601,47 @@ impl SimApp {
         {
             self.signals_editor = Some(SignalsEditor::new(&m));
         }
+        drop(history);
+        self.memory_menu(ui);
+        native_status(ui);
+    }
+
+    /// "Memory…" (ADR 0062 step 5): what the recordings hold, part by
+    /// part, against the memory budget, which is set here and kept
+    /// between launches. Snapshots (unless the recorder sets its own),
+    /// the history, and each probe and filter that keeps what it records
+    /// by default thin past a quarter of it.
+    fn memory_menu(&mut self, ui: &mut egui::Ui) {
+        let memory = self.session.as_ref().and_then(|l| l.status().memory);
+        let mut mb = self.memory_mb;
+        ui.menu_button("Memory…", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Memory budget");
+                ui.add(
+                    egui::DragValue::new(&mut mb)
+                        .range(16.0..=1_048_576.0)
+                        .speed(8.0)
+                        .suffix(" MB"),
+                )
+                .on_hover_text(
+                    "Shared by rewind's snapshots and what probes, the history and filters keep in memory; each takes a quarter by default and thins past it",
+                );
+            });
+            if let Some(m) = &memory {
+                ui.separator();
+                ui.label(format!(
+                    "Held now: {} of {}",
+                    megabytes(m.held),
+                    megabytes(m.budget)
+                ));
+                for (part, bytes) in m.parts.iter().filter(|p| p.1 > 0) {
+                    ui.weak(format!("{part}: {}", megabytes(*bytes)));
+                }
+            }
+        })
+        .response
+        .on_hover_text("The memory recordings may use, and what they hold");
+        self.set_memory_budget(mb);
     }
 
     /// Views as tiles in an automatic grid, each with its slot pickers, a
@@ -1241,6 +1661,23 @@ impl SimApp {
         // Read while drawing; the worker keeps stepping and appends later.
         let history = live.history();
         let available = m.available(&history);
+        // Bindings from a probe draw what it recorded (ADR 0063).
+        let probe_guards: Vec<_> = m
+            .probe_histories
+            .iter()
+            .map(|(n, h)| (n.as_str(), h.read()))
+            .collect();
+        let probes: Vec<(&str, &simsandbox_views::History)> =
+            probe_guards.iter().map(|(n, g)| (*n, &**g)).collect();
+        // Outputs of filters with clocks of their own, from their recordings.
+        let derived_guards: Vec<_> = m.derived_histories.iter().map(|(_, h)| h.read()).collect();
+        let derived: Vec<&simsandbox_views::History> =
+            derived_guards.iter().map(|g| &**g).collect();
+        let recorded = simsandbox_views::Recorded {
+            all: &history,
+            probes: &probes,
+            derived: &derived,
+        };
         let views = &mut self.views;
         let (text, error) = (&mut self.param_edits, &mut self.error);
         let area = ui.available_rect_before_wrap();
@@ -1257,6 +1694,17 @@ impl SimApp {
             });
             return;
         }
+        // Views feeding an `input.pointer` (ADR 0058), by tile.
+        let senders: HashMap<u64, String> = m
+            .file
+            .controls
+            .inputs
+            .iter()
+            .filter_map(|(block, b)| {
+                let tile = (*views.opened.get(b.view?)?)?;
+                Some((tile, block.clone()))
+            })
+            .collect();
         let (cols, rows) = simsandbox_session::views::grid(shown.len());
         let mut swap = false;
         for (k, &i) in shown.iter().enumerate() {
@@ -1322,7 +1770,7 @@ impl SimApp {
                                     }
                                     let id = tile.id;
                                     ui.menu_button("style", |ui| {
-                                        style_editor(ui, t, &mut tile.state, &history, id, text, error);
+                                        style_editor(ui, t, &mut tile.state, recorded, id, text, error);
                                     })
                                     .response
                                     .on_hover_text("How this view draws: trails, scales and what it picks");
@@ -1343,14 +1791,32 @@ impl SimApp {
                             tile.state.swap(t);
                         }
                         slot_editors(ui, t, &mut tile.state, &available, &history);
-                        tile.state.show(ui, t, &history);
+                        let sender = senders.get(&tile.id);
+                        tile.state.sends_pointer = sender.is_some();
+                        tile.state.show(ui, t, recorded);
                         if let Some(signal) = tile.state.picked() {
                             actions.push(DockAction::Inspect(signal));
+                        }
+                        if let (Some(block), Some(p)) = (sender, tile.state.pointer()) {
+                            actions.push(DockAction::Pointer(block.clone(), p));
                         }
                     });
             });
         }
         ui.allocate_rect(area, egui::Sense::hover());
+    }
+
+    /// Live input from keys or a view (ADR 0058): recorded when it changes
+    /// a value. A newer value for the same key replaces one not yet sent.
+    fn send_input(&self, key: String, value: f64) {
+        let Some(live) = self.session.as_ref() else {
+            return;
+        };
+        live.send(Some(&format!("input:{key}")), move |s, c| {
+            if let Err(e) = s.set_input(&key, value) {
+                c.error(format!("input {key}: {e}"));
+            }
+        });
     }
 
     /// Apply typed or dragged parameter values to the running model.
@@ -1384,15 +1850,14 @@ impl SimApp {
 
     /// A curve was clicked: show the block it comes from in the inspector,
     /// and select it on the diagram when that shows the model level
-    /// (`car1/car.v` comes from the use `car1`; a sweep's `grid.spring.x`
-    /// from `spring`). Signals of filters have no block.
+    /// (`car1/car.v` comes from the use `car1`). Signals of filters have no
+    /// block.
     fn inspect_signal(&mut self, signal: &str) {
         let Some(live) = &self.session else {
             return;
         };
         let m = live.model();
-        let base = signal.strip_prefix("grid.").unwrap_or(signal);
-        let Some((node, _)) = base.split_once('.') else {
+        let Some((node, _)) = signal.split_once('.') else {
             self.log
                 .info(format!("{signal} is computed by a filter: see Data…"));
             return;
@@ -1435,15 +1900,370 @@ impl SimApp {
             .saved_text()
             .and_then(|text| std::fs::write(path, text).map_err(|e| e.to_string()));
         let _ = live;
+        // Used model files edited from here go with it (ADR 0066 step 4c).
+        let result =
+            result.and_then(|()| simsandbox_session::edit_use::save(&mut self.diagram.edited));
+        // An example's files go beside it, unless files of those names
+        // are there already.
+        let result = result.and_then(|written| {
+            let mut written = written;
+            if let (Some((_, k)), Some(dir)) = (&self.example_folder, path.parent()) {
+                for (name, text) in EXAMPLES[*k].files {
+                    let to = dir.join(name);
+                    if !to.exists() {
+                        std::fs::write(&to, text).map_err(|e| format!("{}: {e}", to.display()))?;
+                        written.push(to);
+                    }
+                }
+            }
+            Ok(written)
+        });
         match result {
-            Ok(()) => {
+            Ok(written) => {
                 self.error = None;
+                for f in written {
+                    self.log.info(format!("Saved {}", f.display()));
+                }
                 self.log.info(format!("Saved to {}", path.display()));
                 self.path = Some(path.to_path_buf());
+                self.example_folder = None;
+                self.diagram.folder = path.parent().map(Path::to_path_buf);
+                simsandbox_core::registry::set_folder(self.diagram.folder.clone());
                 self.mark_saved();
             }
             Err(e) => self.error = Some(format!("{}: {e}", path.display())),
         }
+    }
+
+    /// Write the probes' files beside the model (ADR 0062).
+    fn save_probe_data(&mut self) {
+        let (Some(live), Some(dir)) = (
+            self.session.as_ref(),
+            self.path.as_deref().and_then(Path::parent),
+        ) else {
+            return;
+        };
+        let dir = dir.to_path_buf();
+        let shown = dir.display().to_string();
+        match live.call(move |s, _| s.write_probe_files(&dir).map_err(|e| e.to_string())) {
+            Ok(Ok((written, notes))) => {
+                for n in notes {
+                    self.log.warn(n);
+                }
+                let names: Vec<String> = written
+                    .iter()
+                    .filter_map(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .collect();
+                self.log
+                    .info(format!("Saved probe data in {shown}: {}", names.join(", ")));
+            }
+            Ok(Err(e)) | Err(e) => self.error = Some(format!("{shown}: {e}")),
+        }
+    }
+
+    /// The Runs menu (ADR 0059): save this run, replay a saved run of
+    /// this model, or make a run the model's default schedule.
+    fn runs_menu(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .button("Save run…")
+            .on_hover_text("Write this run's schedule and recorded input beside the model, to replay it later or headless")
+            .clicked()
+        {
+            self.run_dialog = Some((String::new(), String::new()));
+            ui.close();
+        }
+        if ui
+            .button("Use this run as the model's schedule")
+            .on_hover_text("Its schedule and recorded input become run.inputs: every run of the model applies them")
+            .clicked()
+        {
+            match self.current_run("this run", "") {
+                Ok(run) => self.use_as_schedule(&run, "this run"),
+                Err(e) => self.error = Some(e),
+            }
+            ui.close();
+        }
+        let with_files = self
+            .session
+            .as_ref()
+            .is_some_and(|l| l.model().probes.iter().any(|p| p.to.is_some()));
+        let hover = match (&self.path, with_files) {
+            (_, false) => "No probe has a file: set one in a probe's settings (double-click it on the diagram)",
+            (None, true) => "Save the model first: probe files are written beside it",
+            _ => "Write what the probes with a file have recorded so far, beside the model (CSV, and .npy for grids)",
+        };
+        if ui
+            .add_enabled(
+                with_files && self.path.is_some(),
+                egui::Button::new("Save probe data"),
+            )
+            .on_hover_text(hover)
+            .on_disabled_hover_text(hover)
+            .clicked()
+        {
+            self.save_probe_data();
+            ui.close();
+        }
+        ui.separator();
+        let Some(model) = self.path.clone() else {
+            ui.weak("Save the model to keep runs beside it.");
+            return;
+        };
+        let runs = runs_beside(&model);
+        if runs.is_empty() {
+            ui.weak("No saved runs of this model.");
+        }
+        for (path, run) in runs {
+            let name = if run.name.is_empty() {
+                path.file_name()
+                    .map_or(String::new(), |n| n.to_string_lossy().into_owned())
+            } else {
+                run.name.clone()
+            };
+            let mut hover = format!(
+                "{} events scheduled, {} recorded",
+                run.inputs.len(),
+                run.track.len()
+            );
+            if !run.created.is_empty() {
+                hover = format!("{}\n{hover}", run.created);
+            }
+            if !run.note.is_empty() {
+                hover = format!("{}\n{hover}", run.note);
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .button(&name)
+                    .on_hover_text(format!("Restart and replay it\n{hover}"))
+                    .clicked()
+                {
+                    self.open_run(&path);
+                    ui.close();
+                }
+                if ui
+                    .small_button("as schedule")
+                    .on_hover_text("Use its events as the model's schedule (run.inputs)")
+                    .clicked()
+                {
+                    self.use_as_schedule(&run, &name);
+                    ui.close();
+                }
+            });
+        }
+    }
+
+    /// This run as a run file (ADR 0059), its model named relative to the
+    /// model's folder.
+    fn current_run(
+        &self,
+        name: &str,
+        note: &str,
+    ) -> Result<simsandbox_file::runs::RunFile, String> {
+        let live = self.session.as_ref().ok_or("no model is open")?;
+        let model = self
+            .path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        let (name, note, created) = (name.to_string(), note.to_string(), utc_now());
+        live.call(move |s, _| s.run_file(&model, &name, &note, &created))
+    }
+
+    /// The name and note asked by "Save run…".
+    fn run_dialog(&mut self, ctx: &egui::Context) {
+        let Some((name, note)) = self.run_dialog.as_mut() else {
+            return;
+        };
+        let mut answer = None;
+        egui::Modal::new(egui::Id::new("save-run")).show(ctx, |ui| {
+            ui.heading("Save run");
+            ui.weak("The schedule and the input recorded so far, beside the model.");
+            ui.add_space(6.0);
+            egui::Grid::new("save-run-fields")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    ui.label("Name");
+                    ui.text_edit_singleline(name);
+                    ui.end_row();
+                    ui.label("Note");
+                    ui.text_edit_multiline(note);
+                    ui.end_row();
+                });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!name.trim().is_empty(), egui::Button::new("Save"))
+                    .clicked()
+                {
+                    answer = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        match answer {
+            Some(true) => {
+                let (name, note) = self.run_dialog.take().unwrap_or_default();
+                self.save_run(name.trim(), note.trim());
+            }
+            Some(false) => self.run_dialog = None,
+            None => {}
+        }
+    }
+
+    /// Write this run beside the model (ADR 0059), saving a model that has
+    /// never been saved first.
+    fn save_run(&mut self, name: &str, note: &str) {
+        if self.path.is_none() {
+            self.save_as_dialog();
+        }
+        let Some(model) = self.path.clone() else {
+            return;
+        };
+        let run = match self.current_run(name, note) {
+            Ok(run) => run,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        let model_name = model
+            .file_name()
+            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        let dir = model.parent().unwrap_or(Path::new(""));
+        let file = simsandbox_file::runs::run_file_name(&model_name, name);
+        let mut path = dir.join(&file);
+        let mut k = 2;
+        while path.exists() {
+            let stem = file.trim_end_matches(".run.json");
+            path = dir.join(format!("{stem}-{k}.run.json"));
+            k += 1;
+        }
+        if !run_fits_disk(&run, &model, &self.registry) {
+            self.log.warn(format!(
+                "{}: the model changed since this run started (unsaved or since saved); \
+                 the run opens with a warning. Save the model, restart and record again for one that fits",
+                path.display()
+            ));
+        }
+        match std::fs::write(&path, run.to_json()) {
+            Ok(()) => self.log.info(format!(
+                "Saved run '{name}' ({} scheduled, {} recorded) to {}",
+                run.inputs.len(),
+                run.track.len(),
+                path.display()
+            )),
+            Err(e) => self.error = Some(format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// Open a run file (ADR 0059): its model from disk with the run's
+    /// seed, settings and schedule, then restart and replay its input.
+    fn open_run(&mut self, path: &Path) {
+        let fail = |e: String| format!("{}: {e}", path.display());
+        let run = match std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| simsandbox_file::runs::RunFile::from_json(&t).map_err(|e| e.to_string()))
+        {
+            Ok(run) => run,
+            Err(e) => {
+                self.error = Some(fail(e));
+                return;
+            }
+        };
+        let model = path.parent().unwrap_or(Path::new("")).join(&run.model);
+        let file = match std::fs::read_to_string(&model)
+            .map_err(|e| format!("its model {}: {e}", model.display()))
+            .and_then(|t| {
+                simsandbox_file::ModelFile::from_json(&t)
+                    .map(|(f, _)| f)
+                    .map_err(|e| format!("its model {}: {e}", model.display()))
+            }) {
+            Ok(f) => f,
+            Err(e) => {
+                self.error = Some(fail(e));
+                return;
+            }
+        };
+        let replayed = run.apply_to(&file);
+        let differs = replayed.run != file.run;
+        let title = model
+            .file_name()
+            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        let previous = self.path.replace(model.clone());
+        self.open_text(&title, &replayed.to_json());
+        if self.error.is_some() {
+            self.path = previous;
+            return;
+        }
+        self.mark_saved();
+        if !run_fits_disk(&run, &model, &self.registry) {
+            self.log.warn(format!(
+                "{}: the model changed since this run was recorded; replaying it anyway",
+                path.display()
+            ));
+        }
+        if let Some(note) = run.version_note() {
+            self.log.warn(format!("{}: {note}", path.display()));
+        }
+        let track: Vec<simsandbox_session::session::InputEvent> = run
+            .track
+            .iter()
+            .map(|(t, key, value)| simsandbox_session::session::InputEvent {
+                t: *t,
+                key: key.clone(),
+                value: *value,
+            })
+            .collect();
+        let replay = self
+            .session
+            .as_ref()
+            .map(|live| live.call(move |s, _| s.replay(track)));
+        match replay {
+            Some(Ok(Ok(()))) => {
+                let name = if run.name.is_empty() {
+                    "run"
+                } else {
+                    &run.name
+                };
+                self.log.info(format!(
+                    "Replaying {name} ({} recorded events)",
+                    run.track.len()
+                ));
+                if differs {
+                    self.log.info(
+                        "The run's seed, step or schedule differ from the model's and are in use; \
+                         saving the model would keep them",
+                    );
+                }
+            }
+            Some(Ok(Err(e)) | Err(e)) => self.error = Some(fail(e)),
+            None => {}
+        }
+    }
+
+    /// Make a run's events the model's default schedule (`run.inputs`).
+    fn use_as_schedule(&mut self, run: &simsandbox_file::runs::RunFile, name: &str) {
+        let mut events = run.inputs.clone();
+        events.extend(
+            run.track
+                .iter()
+                .map(|(t, key, value)| simsandbox_file::ScheduledChange {
+                    t: *t,
+                    set: key.clone(),
+                    to: *value,
+                }),
+        );
+        // Stable: at equal times the schedule stays before the recording,
+        // as they were applied.
+        events.sort_by(|a, b| a.t.total_cmp(&b.t));
+        let n = events.len();
+        self.rebuild(
+            move |f| f.run.inputs = events,
+            &format!("The model's schedule is now {name}'s {n} events"),
+        );
     }
 
     /// The open model as a file, with the current parameters, step, speed
@@ -1459,6 +2279,12 @@ impl SimApp {
         let save_as = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
         let save = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
         let open = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
+        // F11: full screen and back.
+        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F11)) {
+            let full = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+        }
         // The more specific shortcut first, so Ctrl+Shift+S is not taken as Ctrl+S.
         if ui.input_mut(|i| i.consume_shortcut(&save_as)) && self.session.is_some() {
             self.save_as_dialog();
@@ -1466,6 +2292,68 @@ impl SimApp {
             self.save();
         } else if ui.input_mut(|i| i.consume_shortcut(&open)) {
             self.open_dialog();
+        }
+    }
+
+    /// Keys bound to `input.value` blocks in `controls.inputs` (ADR 0058).
+    /// With a rate, the first key moves the value down and the second up
+    /// at that rate per second, and it stays where it is let go; without,
+    /// the value is its range's low or high end while a key is held and 0
+    /// when none is. Keys typed into a field are not input.
+    fn key_inputs(&mut self, ui: &mut egui::Ui) {
+        let Some(live) = self.session.as_ref() else {
+            return;
+        };
+        let m = live.model();
+        if m.file.controls.inputs.values().all(|b| b.keys.is_empty()) {
+            return;
+        }
+        let typing = ui.ctx().egui_wants_keyboard_input();
+        let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
+        let mut sends = Vec::new();
+        for (block, b) in &m.file.controls.inputs {
+            let [down, up] = match b.keys.as_slice() {
+                [d, u] => [d, u].map(|k| egui::Key::from_name(k)),
+                _ => continue,
+            };
+            let held =
+                |k: Option<egui::Key>| !typing && k.is_some_and(|k| ui.input(|i| i.key_down(k)));
+            let dir = held(up) as i32 - held(down) as i32;
+            let key = format!("{block}.y");
+            let Some(row) = m.params.iter().find(|r| r.key == key) else {
+                continue;
+            };
+            let [lo, hi] = row.suggested;
+            let value = match (b.rate, dir) {
+                (_, 0) if held(up) || held(down) => continue,
+                (Some(_), 0) => {
+                    self.key_values.remove(block);
+                    continue;
+                }
+                (None, 0) => match self.key_values.remove(block) {
+                    Some(_) => 0.0_f64.clamp(lo, hi),
+                    None => continue,
+                },
+                (Some(rate), d) => {
+                    let from = self.key_values.get(block).copied().unwrap_or(row.value);
+                    (from + d as f64 * rate * dt).clamp(lo, hi)
+                }
+                (None, d) => {
+                    if d > 0 {
+                        hi
+                    } else {
+                        lo
+                    }
+                }
+            };
+            if dir != 0 {
+                self.key_values.insert(block.clone(), value);
+                ui.ctx().request_repaint();
+            }
+            sends.push((key, value));
+        }
+        for (key, value) in sends {
+            self.send_input(key, value);
         }
     }
 
@@ -1538,6 +2426,72 @@ impl SimApp {
         }
     }
 
+    /// What the study `name` of `file` can vary (its model's parameters).
+    fn study_keys(&mut self, file: &simsandbox_file::ModelFile, name: &str) -> Vec<StudyKey> {
+        self.studied(file, name)
+            .map(|s| s.keys.clone())
+            .unwrap_or_default()
+    }
+
+    /// The model the study `name` of `file` studies: what it can vary and
+    /// its blocks' values, worked out again only when it changed.
+    fn studied(
+        &mut self,
+        file: &simsandbox_file::ModelFile,
+        name: &str,
+    ) -> Option<std::sync::Arc<Studied>> {
+        let b = file
+            .blocks
+            .iter()
+            .find(|b| b.name == name && b.type_name == simsandbox_file::STUDY)?;
+        let label = match (&b.model, &b.file) {
+            (Some(m), _) => m.clone(),
+            (None, Some(f)) => f.clone(),
+            _ => return None,
+        };
+        let folder = self.path.as_deref().and_then(Path::parent);
+        let model =
+            simsandbox_session::edit_use::model_at(file, folder, &[name.to_string()]).ok()?;
+        let text = model.to_json();
+        if let Some((t, s)) = self.study_keys.get(name) {
+            if *t == text {
+                return Some(s.clone());
+            }
+        }
+        let at = model.folder.as_deref().or(folder);
+        let keys = simsandbox_session::diagram::study_parameters(&model, &self.registry, at);
+        let d = Diagram::new(&model, &self.registry);
+        let blocks = d
+            .nodes
+            .into_iter()
+            .filter(|n| !n.is_observer() && !n.values.is_empty())
+            .map(|n| (n.name, n.values))
+            .collect();
+        let s = std::sync::Arc::new(Studied {
+            model: label,
+            keys,
+            blocks,
+        });
+        self.study_keys.insert(name.to_string(), (text, s.clone()));
+        Some(s)
+    }
+
+    /// Apply edits to the model open on the canvas (inside a study): the
+    /// edit question first where the model is used elsewhere too.
+    fn edit_inside(&mut self, edits: Vec<Edit>) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let m = live.model();
+        let (speed, views, layout) = (self.speed, self.views.entries(), self.layout());
+        let current = || {
+            let (views, layout) = (views.clone(), layout.clone());
+            live.call(move |s, _| s.save_json_with(speed, Some(views), Some(layout)))?
+        };
+        let outcomes = self.diagram.begin_edit(edits, &self.registry, &current);
+        self.diagram_outcomes(&m, outcomes);
+    }
+
     /// The inspector (ADR 0053): search, what is selected, and every
     /// parameter where it is set.
     fn param_panel(&mut self, ui: &mut egui::Ui) {
@@ -1549,9 +2503,18 @@ impl SimApp {
         let mut changes: Vec<(ParamRow, f64)> = Vec::new();
         let mut controls: Vec<(String, simsandbox_file::ParamControl)> = Vec::new();
         let mut open_editor: Option<(String, String)> = None;
+        // Where a file reader's data is named from (ADR 0063).
+        let folder = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        let folder = folder.as_deref();
         // Edits that go through the diagram (a conversion's units, a new
         // block's values), at the level they apply to.
         let mut canvas_edits: Vec<(Scope, Edit)> = Vec::new();
+        // Edits of the model open on the canvas inside a study.
+        let mut inside_edits: Vec<Edit> = Vec::new();
         macro_rules! edits {
             () => {
                 Edits {
@@ -1598,19 +2561,46 @@ impl SimApp {
             let canvas = self.diagram.canvas.selected.clone();
             if canvas != self.last_canvas {
                 self.last_canvas = canvas.clone();
-                let scope = match &self.diagram.scope {
-                    Scope::Model => None,
-                    Scope::Subsystem(s) => Some(s.clone()),
-                };
+                // Inside a used model, picks are named inside it: its path
+                // (`car1`, `vehicle/plant`) says where.
+                let scope: Option<String> =
+                    (!self.diagram.inside.is_empty()).then(|| self.diagram.inside.join("/"));
+                // A block in a model expanded in place is named by its path
+                // (`shaken/mass`): inside that use, as when it is opened.
                 self.picked = canvas
                     .map(|s| s.blocks())
                     .unwrap_or_default()
                     .into_iter()
                     .filter(|n| !n.contains(':'))
-                    .map(|n| (scope.clone(), n))
+                    .map(|n| match n.rsplit_once('/') {
+                        Some((path, name)) => {
+                            let full = match &scope {
+                                Some(s) => format!("{s}/{path}"),
+                                None => path.to_string(),
+                            };
+                            (Some(full), name.to_string())
+                        }
+                        None => (scope.clone(), n),
+                    })
                     .collect();
             }
             let picked = self.picked.clone();
+            // A study picked: what its model can vary, for its form.
+            let keys = match picked.as_slice() {
+                [(None, name)] => self.study_keys(&m.file, name),
+                _ => Vec::new(),
+            };
+            // Every study's model, for the tree (ADR 0070).
+            let studies: HashMap<String, std::sync::Arc<Studied>> = m
+                .file
+                .blocks
+                .iter()
+                .filter(|b| b.type_name == simsandbox_file::STUDY)
+                .map(|b| b.name.clone())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|n| self.studied(&m.file, &n).map(|s| (n, s)))
+                .collect();
             if !picked.is_empty() {
                 let title = match picked.as_slice() {
                     [(Some(s), name)] => format!("Selected: {name} in {s}"),
@@ -1623,7 +2613,7 @@ impl SimApp {
                     .default_open(true)
                     .show(ui, |ui| {
                         for (scope, name) in &picked {
-                            let at = scope.clone().map_or(Scope::Model, Scope::Subsystem);
+                            let at = Scope::Model;
                             if picked.len() > 1 {
                                 ui.strong(name);
                             }
@@ -1646,7 +2636,15 @@ impl SimApp {
                                     canvas_edits.push((at.clone(), e));
                                     shown = true;
                                 }
-                                shown |= b.type_name == simsandbox_eq::convert::CONVERT;
+                                for e in file_fields(ui, b, &mut self.param_edits, folder) {
+                                    canvas_edits.push((at.clone(), e));
+                                }
+                                for e in study_fields(ui, b, &mut self.param_edits, &keys) {
+                                    canvas_edits.push((at.clone(), e));
+                                }
+                                shown |= b.type_name == simsandbox_eq::convert::CONVERT
+                                    || b.type_name == simsandbox_eq::file_input::FILE
+                                    || b.type_name == simsandbox_file::STUDY;
                             } else if let (Some(b), Some(f)) = (drafted, &draft) {
                                 ui.weak(
                                     "Not in the running model yet: it joins when the model loads",
@@ -1663,7 +2661,40 @@ impl SimApp {
                                 for e in unit_fields(ui, b, &mut self.param_edits) {
                                     canvas_edits.push((at.clone(), e));
                                 }
+                                for e in file_fields(ui, b, &mut self.param_edits, folder) {
+                                    canvas_edits.push((at.clone(), e));
+                                }
+                                for e in study_fields(ui, b, &mut self.param_edits, &keys) {
+                                    canvas_edits.push((at.clone(), e));
+                                }
                                 shown = true;
+                            }
+                            // A block inside a used model: its values by path.
+                            if running.is_none() && drafted.is_none() {
+                                if let Some(t) = crate::inspector::selected(
+                                    &m.params,
+                                    &m.file,
+                                    scope.as_deref(),
+                                    name,
+                                ) {
+                                    uses_table(ui, &t, &m.file.controls.params, edits!());
+                                    shown = true;
+                                } else if let Some(values) = scope.as_deref().and_then(|s| {
+                                    let path: Vec<String> =
+                                        s.split('/').map(str::to_string).collect();
+                                    self.diagram.inside_values(&path, name)
+                                }) {
+                                    // Inside a study: the model's values, as
+                                    // written; a change edits the model.
+                                    ui.weak(
+                                        "Values of the studied model: a change edits the model",
+                                    );
+                                    for e in studied_rows(ui, name, &values, &mut self.param_edits)
+                                    {
+                                        inside_edits.push(e);
+                                    }
+                                    shown = !values.is_empty();
+                                }
                             }
                             if !shown {
                                 ui.weak("Nothing to set");
@@ -1687,6 +2718,10 @@ impl SimApp {
                             }
                         });
                     if let Some(e) = declare_form(ui, &mut self.new_param, &mut self.error) {
+                        canvas_edits.push((Scope::Model, e));
+                    }
+                    // What models using this one see of it (ADR 0073).
+                    for e in offered_outputs(ui, &m) {
                         canvas_edits.push((Scope::Model, e));
                     }
                 })
@@ -1717,10 +2752,18 @@ impl SimApp {
                     .map(|b| b.equations.join("\n"));
                 let agents = entry.filter(|b| b.type_name.starts_with("agents."));
                 let convert = entry.filter(|b| b.type_name == simsandbox_eq::convert::CONVERT);
-                let kind = if g.instance {
-                    format!("subsystem {}", g.type_name)
-                } else {
-                    g.type_name.clone()
+                let studied = studies.get(&g.name);
+                let kind = match entry.filter(|b| b.is_use()).map(|b| b.file.as_deref()) {
+                    _ if studied.is_some() => {
+                        format!("study of {}", studied.map_or("", |s| s.model.as_str()))
+                    }
+                    Some(Some(file)) => format!("uses {file}"),
+                    Some(None) => format!(
+                        "uses the model {}",
+                        entry.and_then(|b| b.model.as_deref()).unwrap_or_default()
+                    ),
+                    None if g.instance => format!("subsystem {}", g.type_name),
+                    None => g.type_name.clone(),
                 };
                 let header = egui::RichText::new(format!("{}  ({kind})", g.name)).strong();
                 egui::CollapsingHeader::new(header)
@@ -1772,18 +2815,26 @@ impl SimApp {
                                 canvas_edits.push((Scope::Model, e));
                             }
                         }
-                        egui::Grid::new(("params", &g.name))
-                            .num_columns(4)
-                            .spacing([6.0, 4.0])
-                            .show(ui, |ui| {
-                                // Starting values come last, each marked ↻.
-                                for (name, row) in &g.rows {
-                                    let mut r = row.clone();
-                                    r.name = name.clone();
-                                    let used = o.used_by.get(&row.key);
-                                    param_row(ui, &m, &r, Place::Tree, used, edits!());
-                                }
-                            });
+                        // When a used model acts (ADR 0088).
+                        if let Some(b) = entry.filter(|b| b.is_use() && studied.is_none()) {
+                            for e in use_activation(ui, b) {
+                                canvas_edits.push((Scope::Model, e));
+                            }
+                        }
+                        // Starting values come last, each marked ↻; a used
+                        // model's parameters nest by path (ADR 0066).
+                        // A study's model, nested: its blocks' values as
+                        // written (ADR 0070).
+                        if let Some(st) = studied {
+                            studied_tree(ui, &g.name, st);
+                        }
+                        let nested = crate::inspector::nest(&g.rows);
+                        nested_rows(ui, &nested, &g.name, &mut |ui, name, row| {
+                            let mut r = row.clone();
+                            r.name = name.to_string();
+                            let used = o.used_by.get(&row.key);
+                            param_row(ui, &m, &r, Place::Tree, used, edits!());
+                        });
                     });
             }
             // Blocks added on the diagram that wait, as a draft, for the
@@ -1839,6 +2890,9 @@ impl SimApp {
         self.apply_edits(changes, controls);
         for (scope, e) in canvas_edits {
             self.edit_at(scope, e);
+        }
+        if !inside_edits.is_empty() {
+            self.edit_inside(inside_edits);
         }
         if let Some((block, u)) = update {
             self.rebuild(
@@ -1903,6 +2957,7 @@ impl SimApp {
         let (mut apply, mut cancel) = (false, false);
         {
             let history = live.history();
+            let m = live.model();
             egui::Window::new("Data")
                 .open(&mut open)
                 .default_width(640.0)
@@ -1911,7 +2966,7 @@ impl SimApp {
                     egui::ScrollArea::vertical()
                         .max_height(520.0)
                         .show(ui, |ui| {
-                            data_editor(ui, ed, &history);
+                            data_editor(ui, ed, &history, &m);
                         });
                     for p in &ed.problems {
                         ui.colored_label(ui.visuals().error_fg_color, p);
@@ -1932,14 +2987,15 @@ impl SimApp {
                 .map(|f| f.name.clone())
                 .collect();
             let mut entries = ed.entries();
-            // Filters keep their place on the canvas (ADR 0050).
+            // Filters keep their place on the canvas (ADR 0050) and the
+            // probe they run on (ADR 0063).
             for e in &mut entries {
-                e.canvas = live
-                    .model()
-                    .filters
-                    .iter()
-                    .find(|f| f.name == e.name)
-                    .and_then(|f| f.canvas);
+                let was = live.model();
+                let was = was.filters.iter().find(|f| f.name == e.name);
+                e.canvas = was.and_then(|f| f.canvas);
+                e.probe = was.and_then(|f| f.probe.clone());
+                e.from = was.map(|f| f.from.clone()).unwrap_or_default();
+                e.when = was.and_then(|f| f.when.clone());
             }
             match live.call(move |s, _| s.set_filters(entries)) {
                 Ok(Ok(())) => {
@@ -1983,6 +3039,42 @@ impl SimApp {
         if block.is_none() && self.ask_first(Discard::NewModel) {
             return;
         }
+        // Inside a used model: an edit there, which may ask where it goes
+        // (ADR 0068).
+        if let Some((path, inner)) = block.as_deref().and_then(|b| b.split_once("::")) {
+            let Some(live) = &self.session else {
+                return;
+            };
+            let m = live.model();
+            let (speed, views, layout) = (self.speed, self.views.entries(), self.layout());
+            let current = || {
+                let (views, layout) = (views.clone(), layout.clone());
+                live.call(move |s, _| s.save_json_with(speed, Some(views), Some(layout)))?
+            };
+            self.diagram.inside = path.split('/').map(str::to_string).collect();
+            let edit = Edit::SetEquations {
+                block: inner.to_string(),
+                equations: lines,
+            };
+            let outcomes = self
+                .diagram
+                .begin_edit(vec![edit], &self.registry, &current);
+            let previous_error = self.error.take();
+            self.diagram_outcomes(&m, outcomes);
+            match self.error.take() {
+                Some(e) => {
+                    self.error = previous_error;
+                    if let Some(ed) = self.editor.as_mut() {
+                        ed.error = Some(e);
+                    }
+                }
+                None => {
+                    self.editor = None;
+                    self.log.info("Equations applied");
+                }
+            }
+            return;
+        }
         let result = match &block {
             None => {
                 let mut file = simsandbox_file::ModelFile::new();
@@ -2023,6 +3115,7 @@ impl SimApp {
             None => {
                 if block.is_none() {
                     self.path = None;
+                    self.example_folder = None;
                     self.mark_saved();
                 }
                 self.editor = None;
@@ -2088,11 +3181,7 @@ impl SimApp {
             Some(live) => live.model().title.clone(),
             None => return Err("no model is open".into()),
         };
-        // `subsystem::block` edits a block inside a subsystem (ADR 0043).
-        let (def, inner) = match block.split_once("::") {
-            Some((d, b)) => (Some(d.to_string()), b),
-            None => (None, block),
-        };
+        let inner = block;
         let set = simsandbox_eq::EquationSet::parse(inner, &lines).map_err(|e| e.to_string())?;
         let keep: Vec<String> = simsandbox_eq::OdeSystem::spec(&set)
             .params
@@ -2102,17 +3191,8 @@ impl SimApp {
         let text = self.saved_text()?;
         let (mut file, _) =
             simsandbox_file::ModelFile::from_json(&text).map_err(|e| e.to_string())?;
-        let blocks = match &def {
-            Some(d) => {
-                &mut file
-                    .subsystems
-                    .get_mut(d)
-                    .ok_or_else(|| format!("no subsystem '{d}'"))?
-                    .blocks
-            }
-            None => &mut file.blocks,
-        };
-        let entry = blocks
+        let entry = file
+            .blocks
             .iter_mut()
             .find(|b| b.name == inner)
             .ok_or_else(|| format!("no block '{block}'"))?;
@@ -2127,25 +3207,6 @@ impl SimApp {
         };
         if !compatible {
             entry.method = set.kind().default_method().into();
-        }
-        // Only formulas are swept (ADR 0027), and only parameters that remain.
-        if let Some(sample) = &mut file.sample {
-            let gone = |key: &str| {
-                key.split_once('.')
-                    .is_some_and(|(b, p)| b == block && !keep.iter().any(|k| k == p))
-            };
-            let removed: Vec<usize> = (0..sample.params.len())
-                .filter(|&i| gone(&sample.params[i].param))
-                .collect();
-            for &i in removed.iter().rev() {
-                sample.params.remove(i);
-                for row in &mut sample.values {
-                    row.remove(i);
-                }
-            }
-            if sample.params.is_empty() || set.kind() != simsandbox_eq::Kind::Formulas {
-                file.sample = None;
-            }
         }
         Ok((title, file.to_json()))
     }
@@ -2186,12 +3247,25 @@ impl SimApp {
 impl eframe::App for SimApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Fill the screen once the window shows.
+        match self.maximize_in {
+            Some(0) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                self.maximize_in = None;
+            }
+            Some(n) => {
+                self.maximize_in = Some(n - 1);
+                ctx.request_repaint();
+            }
+            None => {}
+        }
         self.handle_dropped_files(&ctx);
         self.poll(&ctx);
         self.equation_editor(&ctx);
         self.signals_window(&ctx);
         self.guard_close(&ctx);
         self.unsaved_dialog(&ctx);
+        self.run_dialog(&ctx);
         self.check_unsaved();
 
         egui::Panel::top("toolbar").show(ui, |ui| {
@@ -2227,6 +3301,8 @@ enum DockAction {
     Select(u64),
     /// Show where a clicked curve comes from.
     Inspect(String),
+    /// A view's pointer for an `input.pointer` block: `[x, y, down]`.
+    Pointer(String, [f64; 3]),
 }
 
 /// A tab in its own window, by what it shows (tiles are renumbered when
@@ -2434,7 +3510,7 @@ fn uses_table(
                 let first_value = cells
                     .iter()
                     .flatten()
-                    .find(|r| r.formula.is_none())
+                    .find(|r| r.formula.is_none() && r.driven.is_none())
                     .map(|r| r.value);
                 let response = ui
                     .label(label)
@@ -2445,7 +3521,11 @@ fn uses_table(
                             .button(format!("Set every use to {}", format_value(v)))
                             .clicked()
                         {
-                            for r in cells.iter().flatten().filter(|r| r.formula.is_none()) {
+                            for r in cells
+                                .iter()
+                                .flatten()
+                                .filter(|r| r.formula.is_none() && r.driven.is_none())
+                            {
                                 changes.push((r.clone(), v));
                             }
                             ui.close();
@@ -2468,6 +3548,11 @@ fn uses_table(
                 ui.weak(first.map_or("", |r| r.unit.as_str()));
                 for cell in cells {
                     match cell {
+                        Some(r) if r.driven.is_some() => {
+                            let from = r.driven.as_deref().unwrap_or_default();
+                            ui.weak(format!("from {from}"))
+                                .on_hover_text(format!("Driven by {from} (ADR 0075)"));
+                        }
                         Some(r) => {
                             let key = format!("cell:{}", r.key);
                             let f = r.formula.as_deref();
@@ -2492,17 +3577,17 @@ fn style_editor(
     ui: &mut egui::Ui,
     t: &ViewType,
     state: &mut ViewState,
-    history: &History,
+    recorded: simsandbox_views::Recorded<'_>,
     tile: u64,
     text: &mut HashMap<String, String>,
     error: &mut Option<String>,
 ) {
     let context = simsandbox_views::Context {
-        history,
+        history: recorded.all,
         bind: &state.bind,
     };
     let shown: Vec<_> = t.style.iter().filter(|p| (p.applies)(&context)).collect();
-    state.edit_selection(ui, t, history);
+    state.edit_selection(ui, t, recorded);
     if shown.is_empty() {
         ui.weak("Nothing to set for this view");
         return;
@@ -2604,34 +3689,39 @@ fn param_row(
     // that is not real-time, its field shows the value that applies on
     // release (ADR 0037).
     let formula = row.formula.as_deref();
-    let typed = match edits.pending.get(&row.key) {
-        Some(p) => {
+    // Driven by a wire (ADR 0075): its source, not a value to type.
+    let driven = row.driven.as_deref();
+    let typed = match (driven, edits.pending.get(&row.key)) {
+        (Some(from), _) => {
+            ui.weak(format!("from {from}")).on_hover_text(format!(
+                "Driven by {from}: it takes that signal's value (ADR 0075). Drag the wire \
+                 off its dot on the diagram to set it again"
+            ));
+            None
+        }
+        (None, Some(p)) => {
             pending_field(ui, *p);
             None
         }
-        None => value_entry(ui, &row.key, row.value, formula, edits.text, edits.error),
+        (None, None) => value_entry(ui, &row.key, row.value, formula, edits.text, edits.error),
     };
     if let Some(t) = typed {
         apply_typed(row, t, edits.changes, edits.file, edits.error);
     }
 
     ui.horizontal(|ui| {
-        if formula.is_some() {
+        if formula.is_some() || driven.is_some() {
             ui.weak(format_value(row.value))
-                .on_hover_text("Its value now, from the formula");
+                .on_hover_text("Its value now");
         }
         ui.label(&row.unit);
         if row.initial_condition {
             ui.weak("↻")
                 .on_hover_text("Initial condition: applies on Restart");
         }
-        if m.sweep().is_some_and(|s| s.keys().contains(&row.key)) {
-            ui.weak("swept")
-                .on_hover_text("Swept: its own value is not used while sweeping");
-        }
     });
     ui.horizontal(|ui| {
-        if place == Place::Controls && formula.is_none() {
+        if place == Place::Controls && formula.is_none() && driven.is_none() {
             ui.checkbox(&mut control.slider, "")
                 .on_hover_text("A slider under the value, between the two ends of its range");
         }
@@ -2640,7 +3730,7 @@ fn param_row(
     ui.end_row();
 
     // The slider between its range's ends, which are typed in place.
-    if place == Place::Controls && control.slider && formula.is_none() {
+    if place == Place::Controls && control.slider && formula.is_none() && driven.is_none() {
         let [mut lo, mut hi] = control.range.unwrap_or(row.suggested);
         let a = ui
             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2703,11 +3793,964 @@ fn block_entry<'a>(
     scope: Option<&str>,
     name: &str,
 ) -> Option<&'a simsandbox_file::BlockEntry> {
-    let blocks = match scope {
-        None => &file.blocks,
-        Some(s) => &file.subsystems.get(s)?.blocks,
+    // Inside a used model it is not one of the file's own blocks.
+    scope
+        .is_none()
+        .then(|| file.blocks.iter().find(|b| b.name == name))
+        .flatten()
+}
+
+/// A text field for one setting of block `b`; a changed value is an edit
+/// (empty clears the setting).
+fn setting_field(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    key: &str,
+    width: f32,
+    hint: &str,
+    edits: &mut HashMap<String, String>,
+) -> Option<Edit> {
+    let now = b.settings.get(key).cloned().unwrap_or_default();
+    let id = format!("setting:{}:{key}", b.name);
+    let mut text = edits.get(&id).cloned().unwrap_or_else(|| now.clone());
+    let r = ui
+        .add(egui::TextEdit::singleline(&mut text).desired_width(width))
+        .on_hover_text(hint);
+    if r.has_focus() {
+        edits.insert(id.clone(), text.clone());
+    }
+    if r.lost_focus() {
+        edits.remove(&id);
+        if text.trim() != now {
+            return Some(Edit::SetSetting {
+                block: b.name.clone(),
+                key: key.into(),
+                text: text.trim().into(),
+            });
+        }
+    }
+    None
+}
+
+/// The outputs the model offers to models using it (ADR 0073): each by
+/// name with the signal it shows, removable, and a picker to offer another
+/// block output.
+fn offered_outputs(ui: &mut egui::Ui, m: &crate::live::Model) -> Vec<Edit> {
+    let mut out = Vec::new();
+    let offered = &m.file.outputs;
+    ui.add_space(4.0);
+    ui.label("Offered to models using this one").on_hover_text(
+        "Ports of this model where another model uses it, by name: they stay valid when \
+             its insides change. A model nothing uses needs none.",
+    );
+    for o in offered {
+        ui.horizontal(|ui| {
+            ui.monospace(&o.name);
+            ui.weak(format!("shows {}", o.from));
+            if ui
+                .small_button("×")
+                .on_hover_text("Stop offering it")
+                .clicked()
+            {
+                out.push(Edit::RemoveOutput {
+                    name: o.name.clone(),
+                });
+            }
+        });
+    }
+    // Whole outputs of the model's own blocks, not yet offered.
+    let blocks: Vec<&str> = m
+        .file
+        .blocks
+        .iter()
+        .filter(|b| !b.is_use())
+        .map(|b| b.name.as_str())
+        .collect();
+    let candidates: Vec<&String> = m
+        .scalars
+        .iter()
+        .chain(m.grids())
+        .filter(|s| !s.contains('[') && !s.contains('/'))
+        .filter(|s| s.split_once('.').is_some_and(|(b, _)| blocks.contains(&b)))
+        .filter(|s| !offered.iter().any(|o| &o.from == *s))
+        .collect();
+    if candidates.is_empty() {
+        return out;
+    }
+    egui::ComboBox::from_id_salt("offer-output")
+        .selected_text("+ offer an output")
+        .show_ui(ui, |ui| {
+            for c in candidates {
+                if ui.selectable_label(false, c.as_str()).clicked() {
+                    let port = c.split_once('.').map_or(c.as_str(), |(_, p)| p);
+                    let taken = |x: &str| offered.iter().any(|o| o.name == x);
+                    let name = if taken(port) {
+                        simsandbox_session::diagram::free_name(&c.replace('.', "_"), taken)
+                    } else {
+                        port.to_string()
+                    };
+                    out.push(Edit::DeclareOutput {
+                        name,
+                        from: c.clone(),
+                    });
+                }
+            }
+        });
+    out
+}
+
+/// The values of block `block` of a studied model, as written: a field
+/// each, a changed value an edit of the model; values formulas set are
+/// shown, not edited.
+fn studied_rows(
+    ui: &mut egui::Ui,
+    block: &str,
+    values: &[simsandbox_session::diagram::NodeValue],
+    edits: &mut HashMap<String, String>,
+) -> Vec<Edit> {
+    let mut out = Vec::new();
+    egui::Grid::new(("studied-rows", block))
+        .num_columns(3)
+        .spacing([6.0, 4.0])
+        .show(ui, |ui| {
+            for v in values {
+                ui.label(&v.name);
+                match (&v.driven, &v.formula) {
+                    (Some(from), _) => {
+                        ui.weak(format!("from {from}"));
+                    }
+                    (None, Some(f)) => {
+                        ui.weak(format!("= {f}"));
+                    }
+                    (None, None) => {
+                        let id = format!("studied:{block}.{}", v.name);
+                        let now = simsandbox_views::values::number(v.value);
+                        let mut text = edits.get(&id).cloned().unwrap_or_else(|| now.clone());
+                        let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(70.0));
+                        if r.has_focus() {
+                            edits.insert(id.clone(), text.clone());
+                        }
+                        if r.lost_focus() {
+                            edits.remove(&id);
+                            match text.trim().parse::<f64>() {
+                                Ok(x) if x.is_finite() && text.trim() != now => {
+                                    out.push(Edit::SetParam {
+                                        block: block.to_string(),
+                                        param: v.name.clone(),
+                                        value: x,
+                                    })
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                ui.label(if v.initial {
+                    format!("{} ↻", v.unit)
+                } else {
+                    v.unit.clone()
+                });
+                ui.end_row();
+            }
+        });
+    out
+}
+
+/// A study's model in the model tree: each block's values as written, to
+/// read; changed by opening the study's node.
+fn studied_tree(ui: &mut egui::Ui, study: &str, s: &Studied) {
+    egui::CollapsingHeader::new(format!("model {}", s.model))
+        .id_salt(("studied", study))
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.weak("Its values as written; open the study's node and pick a block to change them");
+            for (block, values) in &s.blocks {
+                ui.strong(block);
+                egui::Grid::new(("studied-tree", study, block))
+                    .num_columns(2)
+                    .spacing([8.0, 2.0])
+                    .show(ui, |ui| {
+                        for v in values {
+                            ui.label(&v.name);
+                            let text = match (&v.driven, &v.formula) {
+                                (Some(from), _) => format!("from {from}"),
+                                (None, Some(f)) => format!("= {f}"),
+                                (None, None) => format!(
+                                    "{} {}",
+                                    simsandbox_views::values::number(v.value),
+                                    v.unit
+                                ),
+                            };
+                            ui.monospace(text);
+                            ui.end_row();
+                        }
+                    });
+            }
+        })
+        .header_response
+        .on_hover_text("The model this study runs at each of its points");
+}
+
+/// The model a study studies, as the Inspector shows it: its name, what
+/// it can vary, and each block's values as its file writes them.
+struct Studied {
+    model: String,
+    keys: Vec<StudyKey>,
+    blocks: Vec<(String, Vec<simsandbox_session::diagram::NodeValue>)>,
+}
+
+/// A parameter a study can vary: its key, a range for it and whether it
+/// is an initial condition.
+type StudyKey = (String, [f64; 2], bool);
+
+/// A study's form (ADR 0070): what it studies and how many runs, its
+/// design, a row per parameter it varies (picked from `keys`, the studied
+/// model's parameters with ranges), count and seed, replicates and seeds,
+/// its named results, and the whole sample as JSON. Changes are kept as a
+/// draft while typed or dragged and applied when a field is left, a
+/// choice made or a button pressed. Nothing for other blocks.
+/// When a used model acts (ADR 0088): always, or on its `activate` input
+/// in a mode; and whether a `restart` input starts it again.
+fn use_activation(ui: &mut egui::Ui, b: &simsandbox_file::BlockEntry) -> Vec<Edit> {
+    let mut out = Vec::new();
+    ui.horizontal(|ui| {
+        let now = b.activate.clone();
+        let label = |m: &Option<String>| match m.as_deref() {
+            None => "always".to_string(),
+            Some("while") => "while 'activate' is high".to_string(),
+            Some(m) => format!("starting again on 'activate' ({m})"),
+        };
+        ui.label("Runs");
+        egui::ComboBox::from_id_salt(("use-activate", &b.name))
+            .selected_text(label(&now))
+            .show_ui(ui, |ui| {
+                for m in [
+                    None,
+                    Some("rise"),
+                    Some("fall"),
+                    Some("change"),
+                    Some("while"),
+                ] {
+                    let m = m.map(String::from);
+                    if ui.selectable_label(now == m, label(&m)).clicked() && now != m {
+                        out.push(Edit::SetActivate {
+                            block: b.name.clone(),
+                            mode: m,
+                        });
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Activated, it gets an 'activate' input: it starts again from its starting \
+                 values when the input rises, falls or changes, or runs only while it is high \
+                 and holds otherwise",
+            );
+        let mut restart = b.restart;
+        if ui
+            .checkbox(&mut restart, "restart input")
+            .on_hover_text(
+                "A 'restart' input: it starts again from its starting values when the input rises",
+            )
+            .changed()
+        {
+            out.push(Edit::SetRestart {
+                block: b.name.clone(),
+                on: restart,
+            });
+        }
+    });
+    out
+}
+
+fn study_fields(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    edits: &mut HashMap<String, String>,
+    keys: &[StudyKey],
+) -> Vec<Edit> {
+    use simsandbox_file::{Design, Sampling, Seeds, SweepControl};
+    let mut out = Vec::new();
+    if b.type_name != simsandbox_file::STUDY {
+        return out;
+    }
+    let saved = b.sample.clone().unwrap_or_default();
+    let id = format!("study:{}", b.name);
+    let mut s: Sampling = edits
+        .get(&id)
+        .and_then(|t| serde_json::from_str(t).ok())
+        .unwrap_or_else(|| saved.clone());
+    // When it runs (ADR 0088).
+    ui.horizontal(|ui| {
+        let now = b.activate.clone();
+        let label = |m: &Option<String>| match m.as_deref() {
+            None => "when its inputs change".to_string(),
+            Some("while") => "while 'activate' is high".to_string(),
+            Some(m) => format!("on 'activate' ({m})"),
+        };
+        ui.label("Runs");
+        egui::ComboBox::from_id_salt(("activate", &b.name))
+            .selected_text(label(&now))
+            .show_ui(ui, |ui| {
+                for m in [
+                    None,
+                    Some("rise"),
+                    Some("fall"),
+                    Some("change"),
+                    Some("while"),
+                ] {
+                    let m = m.map(String::from);
+                    if ui.selectable_label(now == m, label(&m)).clicked() && now != m {
+                        out.push(Edit::SetActivate {
+                            block: b.name.clone(),
+                            mode: m,
+                        });
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Activated, a study gets an 'activate' input: it runs once when it rises, falls \
+                 or changes, or keeps running while it is high, and holds its results otherwise",
+            );
+    });
+    let mut changed = false;
+    let mut commit = false;
+    let runs = match s.design {
+        Design::Rows => "a run per row".to_string(),
+        _ => format!("{} runs", study_runs(&s)),
     };
-    blocks.iter().find(|b| b.name == name)
+    ui.weak(match (&b.model, &b.file) {
+        (Some(m), _) => {
+            format!("Studies the model {m}: {runs} (open the node to edit the model)")
+        }
+        (None, Some(f)) => {
+            format!("Studies the file {f}: {runs} (open the node to edit the model)")
+        }
+        _ => "Names no model to study".into(),
+    });
+    let range_of = |key: &str| {
+        keys.iter()
+            .find(|(k, _, _)| k == key)
+            .map_or([0.0, 1.0], |(_, r, _)| *r)
+    };
+    egui::Grid::new(("study-form", &b.name))
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("design");
+            let designs = [
+                (Design::Grid, "grid: every combination"),
+                (Design::List, "list of points"),
+                (Design::Random, "random"),
+                (Design::LatinHypercube, "Latin hypercube"),
+                (Design::Sobol, "Sobol sequence"),
+                (Design::File, "points from a file"),
+                (Design::Inputs, "points from its inputs"),
+                (Design::Rows, "a point per row of a table"),
+            ];
+            let label = designs.iter().find(|(d, _)| *d == s.design).map_or("", |(_, l)| l);
+            egui::ComboBox::from_id_salt(("study-design", &b.name))
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    for (d, l) in designs {
+                        if ui.selectable_value(&mut s.design, d, l).clicked() {
+                            // Points from inputs need their number; a
+                            // table's rows are as many as come.
+                            if d == Design::Inputs && s.count.is_none() {
+                                s.count = Some(simsandbox_file::DEFAULT_SAMPLE_COUNT);
+                            }
+                            if d == Design::Rows {
+                                s.count = None;
+                                s.replicates = None;
+                            }
+                            // ... and have no ranges: their values arrive.
+                            if d.from_inputs() {
+                                for p in &mut s.params {
+                                    p.range = None;
+                                    p.points = None;
+                                }
+                            }
+                            changed = true;
+                            commit = true;
+                        }
+                    }
+                });
+            ui.end_row();
+            if matches!(
+                s.design,
+                Design::Random | Design::LatinHypercube | Design::Sobol | Design::Inputs
+            ) {
+                ui.label("points");
+                let mut n = s.count.unwrap_or(simsandbox_file::DEFAULT_SAMPLE_COUNT);
+                let r = ui.add(egui::DragValue::new(&mut n).range(1..=simsandbox_file::MAX_SAMPLES));
+                if r.changed() {
+                    s.count = Some(n);
+                    changed = true;
+                }
+                commit |= r.drag_stopped() || r.lost_focus();
+                ui.end_row();
+            }
+            if matches!(s.design, Design::Random | Design::LatinHypercube) {
+                ui.label("seed");
+                let mut seed = s.seed.unwrap_or(simsandbox_file::DEFAULT_SEED);
+                let r = ui.add(egui::DragValue::new(&mut seed));
+                if r.changed() {
+                    s.seed = Some(seed);
+                    changed = true;
+                }
+                commit |= r.drag_stopped() || r.lost_focus();
+                ui.end_row();
+            }
+            if s.design == Design::File {
+                ui.label("file");
+                let mut f = s.file.clone().unwrap_or_default();
+                let r = ui
+                    .add(egui::TextEdit::singleline(&mut f).hint_text("points.csv"))
+                    .on_hover_text("A CSV from the model's folder: a column per parameter, by path; an id column optional");
+                if r.changed() {
+                    s.file = (!f.trim().is_empty()).then_some(f);
+                    changed = true;
+                }
+                commit |= r.lost_focus();
+                ui.end_row();
+            }
+            // A table's rows run once each (ADR 0079 stage 1d).
+            if s.design != Design::Rows {
+                ui.label("replicates");
+                let mut reps = s.replicates.unwrap_or(1);
+                let r = ui
+                    .add(egui::DragValue::new(&mut reps).range(1..=10_000))
+                    .on_hover_text("Runs of each point, each replicate with a seed of its own");
+                if r.changed() {
+                    s.replicates = (reps > 1).then_some(reps);
+                    changed = true;
+                }
+                commit |= r.drag_stopped() || r.lost_focus();
+                ui.end_row();
+            }
+            ui.label("seeds");
+            egui::ComboBox::from_id_salt(("study-seeds", &b.name))
+                .selected_text(match s.seeds {
+                    Seeds::Common => "common to every point",
+                    Seeds::PerPoint => "one per point",
+                })
+                .show_ui(ui, |ui| {
+                    for (v, l) in [
+                        (Seeds::Common, "common to every point"),
+                        (Seeds::PerPoint, "one per point"),
+                    ] {
+                        if ui.selectable_value(&mut s.seeds, v, l).clicked() {
+                            changed = true;
+                            commit = true;
+                        }
+                    }
+                });
+            ui.end_row();
+        });
+    // What it varies.
+    if s.design == Design::File {
+        ui.weak("The file's columns are the parameters it varies.");
+    } else if s.design == Design::List {
+        ui.weak(format!(
+            "{} parameters, {} points: edit the list as JSON below",
+            s.params.len(),
+            s.values.len()
+        ));
+    } else {
+        // Points from inputs have no range: another model sends the values
+        // (ADR 0078).
+        let ranged = !s.design.from_inputs();
+        ui.strong("varies");
+        if s.design == Design::Rows {
+            ui.weak("Each parameter's values arrive as a table's rows through the study's input of the same name; each row is a point, and the results leave as rows with the same ids.");
+        } else if !ranged {
+            ui.weak("Each parameter's values arrive through the study's input of the same name, one per point.");
+        }
+        let mut remove = None;
+        egui::Grid::new(("study-params", &b.name))
+            .num_columns(5)
+            .spacing([6.0, 4.0])
+            .show(ui, |ui| {
+                if !s.params.is_empty() && ranged {
+                    for h in ["parameter", "from", "to"] {
+                        ui.weak(h);
+                    }
+                    ui.weak(if s.design == Design::Grid { "points" } else { "" });
+                    ui.end_row();
+                }
+                for (k, p) in s.params.iter_mut().enumerate() {
+                    egui::ComboBox::from_id_salt(("study-param", &b.name, k))
+                        .selected_text(&p.param)
+                        .show_ui(ui, |ui| {
+                            for (key, range, ic) in keys {
+                                let l = if *ic { format!("{key} (start)") } else { key.clone() };
+                                if ui.selectable_label(*key == p.param, l).clicked() && *key != p.param {
+                                    p.param = key.clone();
+                                    p.range = ranged.then_some(*range);
+                                    changed = true;
+                                    commit = true;
+                                }
+                            }
+                        });
+                    if !ranged {
+                        if ui.small_button("×").on_hover_text("Stop varying it").clicked() {
+                            remove = Some(k);
+                        }
+                        ui.end_row();
+                        continue;
+                    }
+                    let [mut lo, mut hi] = p.range.unwrap_or_else(|| range_of(&p.param));
+                    let speed = ((hi - lo).abs() / 200.0).max(1e-6);
+                    let a = ui.add(egui::DragValue::new(&mut lo).speed(speed)).on_hover_text("From");
+                    let z = ui.add(egui::DragValue::new(&mut hi).speed(speed)).on_hover_text("To");
+                    if a.changed() || z.changed() {
+                        p.range = Some([lo, hi]);
+                        changed = true;
+                    }
+                    commit |= a.drag_stopped() || a.lost_focus() || z.drag_stopped() || z.lost_focus();
+                    if s.design == Design::Grid {
+                        let mut n = p.points.unwrap_or(0);
+                        let r = ui
+                            .add(egui::DragValue::new(&mut n).range(0..=100_000).custom_formatter(|v, _| {
+                                if v == 0.0 { "auto".into() } else { format!("{v:.0}") }
+                            }))
+                            .on_hover_text("Values along this parameter (auto: 400 for one parameter, 100 each for several)");
+                        if r.changed() {
+                            p.points = (n >= 2).then_some(n);
+                            changed = true;
+                        }
+                        commit |= r.drag_stopped() || r.lost_focus();
+                    } else {
+                        ui.label("");
+                    }
+                    if ui.small_button("×").on_hover_text("Stop varying it").clicked() {
+                        remove = Some(k);
+                    }
+                    ui.end_row();
+                }
+            });
+        if let Some(k) = remove {
+            s.params.remove(k);
+            changed = true;
+            commit = true;
+        }
+        let unused = keys
+            .iter()
+            .find(|(k, _, _)| !s.params.iter().any(|p| &p.param == k));
+        if let Some((key, range, _)) = unused {
+            if ui
+                .small_button("+ parameter")
+                .on_hover_text("Vary another parameter of the studied model")
+                .clicked()
+            {
+                s.params.push(SweepControl {
+                    param: key.clone(),
+                    range: ranged.then_some(*range),
+                    points: None,
+                });
+                changed = true;
+                commit = true;
+            }
+        }
+    }
+    // Its named results.
+    ui.strong("results").on_hover_text(
+        "Each run reduced to named values, e.g. max(car.v) or first_time(abs(cruise.e) < 0.5); \
+         without any, each output's final value",
+    );
+    let mut renamed: Option<(String, String)> = None;
+    let mut dropped = None;
+    for (name, formula) in s.reduce.iter_mut() {
+        ui.horizontal(|ui| {
+            let mut n = name.clone();
+            let r = ui.add_sized([70.0, 20.0], egui::TextEdit::singleline(&mut n));
+            if r.changed() {
+                renamed = Some((name.clone(), n));
+            }
+            commit |= r.lost_focus();
+            ui.label("=");
+            let width = (ui.available_width() - 30.0).max(120.0);
+            let r = ui.add_sized([width, 20.0], egui::TextEdit::singleline(formula));
+            if r.changed() {
+                changed = true;
+            }
+            commit |= r.lost_focus();
+            if ui
+                .small_button("×")
+                .on_hover_text("Drop this result")
+                .clicked()
+            {
+                dropped = Some(name.clone());
+            }
+        });
+    }
+    if let Some((from, to)) = renamed {
+        if let Some(f) = s.reduce.remove(&from) {
+            s.reduce.insert(to, f);
+            changed = true;
+        }
+    }
+    if let Some(n) = dropped {
+        s.reduce.remove(&n);
+        changed = true;
+        commit = true;
+    }
+    if ui
+        .small_button("+ result")
+        .on_hover_text("Reduce each run to one more named value")
+        .clicked()
+    {
+        let mut k = s.reduce.len() + 1;
+        while s.reduce.contains_key(&format!("r{k}")) {
+            k += 1;
+        }
+        s.reduce.insert(format!("r{k}"), "final(t)".into());
+        changed = true;
+        commit = true;
+    }
+    if changed {
+        edits.insert(id.clone(), serde_json::to_string(&s).unwrap_or_default());
+    }
+    if commit {
+        edits.remove(&id);
+        if s != saved {
+            out.push(Edit::SetSample {
+                block: b.name.clone(),
+                sample: serde_json::to_string(&s).unwrap_or_default(),
+            });
+        }
+    }
+    out.extend(search_fields(ui, b, &s, edits, keys));
+    // Everything, as written in the file.
+    egui::CollapsingHeader::new("sample as JSON")
+        .id_salt(("study-json", &b.name))
+        .show(ui, |ui| {
+            let now = serde_json::to_string_pretty(&saved).unwrap_or_default();
+            let jid = format!("sample:{}", b.name);
+            let mut text = edits.get(&jid).cloned().unwrap_or_else(|| now.clone());
+            let r = ui.add(
+                egui::TextEdit::multiline(&mut text)
+                    .code_editor()
+                    .desired_rows(6)
+                    .desired_width(f32::INFINITY),
+            );
+            if r.has_focus() {
+                edits.insert(jid.clone(), text.clone());
+            }
+            if r.lost_focus() {
+                edits.remove(&jid);
+                if text.trim() != now.trim() {
+                    out.push(Edit::SetSample {
+                        block: b.name.clone(),
+                        sample: text,
+                    });
+                }
+            }
+        });
+    out
+}
+
+/// "Search…" (ADR 0078 point 7): a strategy model written to drive this
+/// study over its parameters (their ranges as it has them): pattern
+/// search, Levenberg–Marquardt, refinement or continuation, with the one
+/// formula each needs. The study's sample is replaced and a strategy
+/// block wired to it, which can be opened and changed like any other.
+fn search_fields(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    s: &simsandbox_file::Sampling,
+    edits: &mut HashMap<String, String>,
+    keys: &[StudyKey],
+) -> Option<Edit> {
+    let mut out = None;
+    egui::CollapsingHeader::new("Search…")
+        .id_salt(("study-search", &b.name))
+        .show(ui, |ui| {
+            let field = |edits: &HashMap<String, String>, f: &str, default: &str| {
+                edits
+                    .get(&format!("search-{f}:{}", b.name))
+                    .cloned()
+                    .unwrap_or_else(|| default.to_string())
+            };
+            let kinds = [
+                ("minimize", "lower an objective (pattern search)"),
+                ("fit", "fit to data (Levenberg–Marquardt)"),
+                ("refine", "find where a result changes (refinement)"),
+                ("continue", "follow a branch (continuation)"),
+            ];
+            let mut kind = field(edits, "kind", "minimize");
+            egui::ComboBox::from_id_salt(("search-kind", &b.name))
+                .selected_text(kinds.iter().find(|k| k.0 == kind).map_or("", |k| k.1))
+                .show_ui(ui, |ui| {
+                    for (k, l) in kinds {
+                        ui.selectable_value(&mut kind, k.to_string(), l);
+                    }
+                });
+            edits.insert(format!("search-kind:{}", b.name), kind.clone());
+            let first = s.reduce.values().next().cloned().unwrap_or_default();
+            let (label, hint) = match kind.as_str() {
+                "minimize" => ("objective", "lower is better, e.g. first_time(abs(cruise.e) < 0.5)"),
+                "fit" => ("residuals", "a vector per run, e.g. at_samples(osc.x - data.x, data)"),
+                "refine" => ("result", "split where it changes, e.g. final(bi.x) > 0"),
+                _ => ("settled", "the state a run settles at, e.g. final(bi.x)"),
+            };
+            let mut formula = field(edits, "formula", &first);
+            ui.horizontal(|ui| {
+                ui.label(label);
+                ui.add(egui::TextEdit::singleline(&mut formula).hint_text(hint));
+            });
+            edits.insert(format!("search-formula:{}", b.name), formula.clone());
+            // Each swept parameter with its range: the study's, or the
+            // model's suggested one.
+            let params: Vec<(String, [f64; 2])> = s
+                .params
+                .iter()
+                .map(|p| {
+                    let range = p.range.or_else(|| {
+                        keys.iter().find(|k| k.0 == p.param).map(|k| k.1)
+                    });
+                    (p.param.clone(), range.unwrap_or([0.0, 1.0]))
+                })
+                .collect();
+            let mut state = field(edits, "state", "");
+            let mut step = field(edits, "step", "0.02").parse::<f64>().unwrap_or(0.02);
+            if kind == "continue" {
+                ui.horizontal(|ui| {
+                    ui.label("starting value");
+                    egui::ComboBox::from_id_salt(("search-state", &b.name))
+                        .selected_text(state.clone())
+                        .show_ui(ui, |ui| {
+                            for k in keys.iter().filter(|k| k.2) {
+                                ui.selectable_value(&mut state, k.0.clone(), &k.0);
+                            }
+                        });
+                    ui.label("step");
+                    ui.add(egui::DragValue::new(&mut step).speed(0.001));
+                });
+                edits.insert(format!("search-state:{}", b.name), state.clone());
+                edits.insert(format!("search-step:{}", b.name), step.to_string());
+            }
+            let mut budget = field(edits, "budget", "60").parse::<f64>().unwrap_or(60.0);
+            ui.horizontal(|ui| {
+                ui.label("rounds at most");
+                ui.add(egui::DragValue::new(&mut budget).range(1.0..=100_000.0));
+            });
+            edits.insert(format!("search-budget:{}", b.name), budget.to_string());
+            ui.weak(match kind.as_str() {
+                "refine" => format!(
+                    "Over {}, each across its range: refined where the result changes.",
+                    params.iter().map(|p| p.0.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+                "continue" => format!(
+                    "Over {} from {} to {}.",
+                    params.first().map_or("(no parameter)", |p| p.0.as_str()),
+                    params.first().map_or(0.0, |p| p.1[0]),
+                    params.first().map_or(0.0, |p| p.1[1])
+                ),
+                _ => format!(
+                    "Over {}, starting at the middle of each range.",
+                    params.iter().map(|p| p.0.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+            });
+            let mid = |r: [f64; 2]| 0.5 * (r[0] + r[1]);
+            let spec = match kind.as_str() {
+                "minimize" => serde_json::json!({"kind": "minimize", "objective": formula, "budget": budget,
+                    "params": params.iter().map(|(k, r)| serde_json::json!(
+                        {"param": k, "start": mid(*r), "span": r[1] - r[0], "range": r})).collect::<Vec<_>>()}),
+                "fit" => serde_json::json!({"kind": "fit", "residuals": formula, "budget": budget,
+                    "params": params.iter().map(|(k, r)| serde_json::json!(
+                        {"param": k, "start": mid(*r)})).collect::<Vec<_>>()}),
+                // A mesh of simplices over the parameters, segments over
+                // one (ADR 0085 point 7).
+                "refine" => serde_json::json!({"kind": "refine", "result": formula,
+                    "budget": budget, "points": if params.len() > 1 { 5 } else { 9 },
+                    "max": if params.len() > 1 { 2000 } else { 200 },
+                    "params": params.iter().map(|(k, r)| serde_json::json!(
+                        {"param": k, "range": r, "tol": (r[1] - r[0]) * 1e-3})).collect::<Vec<_>>()}),
+                _ => serde_json::json!({"kind": "continue", "settled": formula, "budget": budget,
+                    "state": state, "step": step,
+                    "param": params.first().map(|p| p.0.clone()).unwrap_or_default(),
+                    "range": params.first().map_or([0.0, 1.0], |p| p.1)}),
+            };
+            if ui
+                .button("Write strategy")
+                .on_hover_text("Replace this study's sample and add a strategy block that drives it, one round a step")
+                .clicked()
+            {
+                out = Some(Edit::Search {
+                    study: b.name.clone(),
+                    strategy: spec.to_string(),
+                });
+            }
+        });
+    out
+}
+
+/// Bytes as megabytes for people (`12.5 MB`).
+fn megabytes(bytes: usize) -> String {
+    let mb = bytes as f64 / 1e6;
+    if mb < 10.0 {
+        format!("{mb:.1} MB")
+    } else {
+        format!("{mb:.0} MB")
+    }
+}
+
+/// How many runs a study's sample makes: points times replicates.
+fn study_runs(s: &simsandbox_file::Sampling) -> usize {
+    use simsandbox_file::Design;
+    let points = match s.design {
+        Design::Grid => {
+            let auto = if s.params.len() == 1 {
+                simsandbox_file::DEFAULT_SWEEP_POINTS
+            } else {
+                simsandbox_file::DEFAULT_GRID_POINTS
+            };
+            s.params
+                .iter()
+                .map(|p| p.points.unwrap_or(auto))
+                .product::<usize>()
+                * usize::from(!s.params.is_empty())
+        }
+        Design::List => s.values.len(),
+        Design::Random | Design::LatinHypercube | Design::Sobol | Design::Inputs => {
+            s.count.unwrap_or(simsandbox_file::DEFAULT_SAMPLE_COUNT)
+        }
+        // As many as arrive.
+        Design::File | Design::Rows => 0,
+    };
+    points * s.replicates.unwrap_or(1)
+}
+
+/// A file reader's settings (ADR 0063): the file, typed or chosen in the
+/// system dialog (relative to the model's `folder` when inside it), how
+/// values go between samples, the unit, and for a `.npy` its times and
+/// shape. Nothing for other blocks.
+fn file_fields(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    edits: &mut HashMap<String, String>,
+    folder: Option<&Path>,
+) -> Vec<Edit> {
+    let mut out = Vec::new();
+    if b.type_name != simsandbox_eq::file_input::FILE {
+        return out;
+    }
+    let set = |key: &str, text: String| Edit::SetSetting {
+        block: b.name.clone(),
+        key: key.into(),
+        text,
+    };
+    let relative = |path: std::path::PathBuf| {
+        folder
+            .and_then(|f| path.strip_prefix(f).ok())
+            .map_or(path.clone(), Path::to_path_buf)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    ui.horizontal(|ui| {
+        ui.label("reads");
+        let hint = if folder.is_some() {
+            "A .csv (time, then a column per output) or .npy, in the model's folder or a full path"
+        } else {
+            "A .csv or .npy: save the model first to name it from the model's folder, or give a full path"
+        };
+        out.extend(setting_field(ui, b, "file", 160.0, hint, edits));
+        if ui.small_button("Choose…").clicked() {
+            let mut dialog = rfd::FileDialog::new()
+                .set_title("Data to read")
+                .add_filter("Data", &["csv", "npy"]);
+            if let Some(dir) = folder {
+                dialog = dialog.set_directory(dir);
+            }
+            if let Some(path) = dialog.pick_file() {
+                out.push(set("file", relative(path)));
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("between samples");
+        let now = b.settings.get("interpolate").map_or("hold", String::as_str);
+        for (choice, hint) in [
+            (
+                "hold",
+                "The last sample, as a probe feeding a block gives it",
+            ),
+            ("linear", "A straight line between samples"),
+        ] {
+            if ui
+                .selectable_label(now == choice, choice)
+                .on_hover_text(hint)
+                .clicked()
+                && now != choice
+            {
+                out.push(set("interpolate", choice.into()));
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("unit");
+        out.extend(setting_field(
+            ui,
+            b,
+            "unit",
+            70.0,
+            "For columns whose header gives none (\"car.v [m/s]\" does), e.g. m/s",
+            edits,
+        ));
+    });
+    if b.settings.get("file").is_some_and(|f| f.ends_with(".npy")) {
+        ui.horizontal(|ui| {
+            ui.label("times from");
+            out.extend(setting_field(
+                ui,
+                b,
+                "times",
+                110.0,
+                "A CSV whose first column gives the samples' times, e.g. the probe's CSV",
+                edits,
+            ));
+            ui.label("or every");
+            out.extend(setting_field(
+                ui,
+                b,
+                "dt",
+                50.0,
+                "Seconds between samples, from 0",
+                edits,
+            ));
+            ui.label("s");
+        });
+    }
+    out
+}
+
+/// Parameter rows nested by path: this level's in a grid, then each
+/// level inside, collapsed, by name (ADR 0066 step 4b).
+fn nested_rows(
+    ui: &mut egui::Ui,
+    n: &crate::inspector::Nested,
+    salt: &str,
+    row: &mut dyn FnMut(&mut egui::Ui, &str, &simsandbox_session::session::ParamRow),
+) {
+    if !n.rows.is_empty() {
+        egui::Grid::new(("params", salt))
+            .num_columns(4)
+            .spacing([6.0, 4.0])
+            .show(ui, |ui| {
+                for (name, r) in &n.rows {
+                    row(ui, name, r);
+                }
+            });
+    }
+    for (name, inner) in &n.inner {
+        let salt = format!("{salt}/{name}");
+        egui::CollapsingHeader::new(name)
+            .id_salt(("nested", &salt))
+            .default_open(false)
+            .show(ui, |ui| nested_rows(ui, inner, &salt, row));
+    }
 }
 
 /// A conversion block's `from` and `to` units (ADR 0045) as text fields;
@@ -3021,176 +5064,9 @@ fn apply_typed(
 /// fit the tile.
 const SLOT_WIDTH: f32 = 150.0;
 
-/// What decides the views a sweep can show: the swept parameters, whether
-/// they form a two-parameter grid, and whether samples are drawn as points.
-fn structure(sw: &simsandbox_session::session::Sweep) -> (Vec<String>, bool, bool) {
-    (sw.keys().to_vec(), sw.is_grid(), sw.unordered())
-}
-
-/// How a model with no states is swept (ADR 0028): the design, then one
-/// row per parameter with its range and, on a grid, its number of values.
-/// Returns the notes of an applied change, or why it was refused.
-fn sweep_controls(
-    ui: &mut egui::Ui,
-    live: &Live,
-    m: &Model,
-    sw: &simsandbox_session::session::Sweep,
-) -> Result<Option<Vec<String>>, String> {
-    use simsandbox_file::{Design, SweepControl, DEFAULT_SAMPLE_COUNT, DEFAULT_SEED, MAX_SAMPLES};
-    let rows = &m.params;
-    let mut sampling = sw.sampling.clone();
-    let designs = [
-        (
-            Design::Grid,
-            "grid",
-            "Every combination of evenly spaced values",
-        ),
-        (
-            Design::Random,
-            "random",
-            "Independent uniform values from a seeded generator",
-        ),
-        (
-            Design::LatinHypercube,
-            "Latin hypercube",
-            "One value in each of `count` equal slices of every parameter",
-        ),
-        (
-            Design::Sobol,
-            "Sobol",
-            "A low-discrepancy sequence: spread evenly at any count",
-        ),
-        (Design::List, "list", "The points written in the file"),
-    ];
-    let name = |d: Design| designs.iter().find(|x| x.0 == d).map_or("?", |x| x.1);
-    ui.horizontal(|ui| {
-        ui.label("Sweep").on_hover_text(
-            "This model has no states, so instead of running in time its outputs are \
-             evaluated at samples of the parameters below",
-        );
-        egui::ComboBox::from_id_salt("sweep_design")
-            .selected_text(name(sampling.design))
-            .show_ui(ui, |ui| {
-                for &(d, label, hover) in &designs {
-                    // A list is written in the file, not built here.
-                    if d == Design::List && sampling.design != Design::List {
-                        continue;
-                    }
-                    ui.selectable_value(&mut sampling.design, d, label)
-                        .on_hover_text(hover);
-                }
-            });
-        if !matches!(sampling.design, Design::Grid | Design::List) {
-            let mut count = sampling.count.unwrap_or(DEFAULT_SAMPLE_COUNT);
-            ui.label("count");
-            ui.add(egui::DragValue::new(&mut count).range(1..=MAX_SAMPLES));
-            sampling.count = Some(count);
-        }
-        if matches!(sampling.design, Design::Random | Design::LatinHypercube) {
-            let mut seed = sampling.seed.unwrap_or(DEFAULT_SEED);
-            ui.label("seed");
-            ui.add(egui::DragValue::new(&mut seed));
-            sampling.seed = Some(seed);
-        }
-    });
-    let grid = sampling.design == Design::Grid;
-    let several = sampling.params.len() > 1;
-    let mut remove = None;
-    for (k, p) in sampling.params.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            ui.add_space(16.0);
-            egui::ComboBox::from_id_salt(("sweep_param", k))
-                .selected_text(p.param.as_str())
-                .show_ui(ui, |ui| {
-                    for r in rows {
-                        if ui.selectable_label(p.param == r.key, &r.key).clicked()
-                            && p.param != r.key
-                        {
-                            p.param = r.key.clone();
-                            // The slider's or suggested range, as on load.
-                            p.range = None;
-                        }
-                    }
-                });
-            let mut range = sw.plan.ranges.get(k).copied().unwrap_or([0.0, 1.0]);
-            ui.label("from");
-            let a = ui.add(egui::DragValue::new(&mut range[0]).speed(0.1));
-            ui.label("to");
-            let b = ui.add(egui::DragValue::new(&mut range[1]).speed(0.1));
-            if a.changed() || b.changed() {
-                p.range = Some(range);
-            }
-            if grid {
-                let mut points = sw
-                    .plan
-                    .grid
-                    .as_ref()
-                    .and_then(|g| g.get(k).copied())
-                    .unwrap_or(2);
-                ui.label("points");
-                if ui
-                    .add(egui::DragValue::new(&mut points).range(2..=100_000))
-                    .changed()
-                {
-                    p.points = Some(points);
-                }
-            }
-            if several
-                && ui
-                    .small_button("×")
-                    .on_hover_text("Stop sweeping this parameter")
-                    .clicked()
-            {
-                remove = Some(k);
-            }
-        });
-    }
-    let unswept = rows
-        .iter()
-        .find(|r| !sampling.params.iter().any(|p| p.param == r.key));
-    if let Some(r) = unswept {
-        let more = ui
-            .horizontal(|ui| {
-                ui.add_space(16.0);
-                ui.button("+ parameter").on_hover_text(if grid {
-                    "Sweep another parameter; two on a grid make every signal a grid too"
-                } else {
-                    "Sweep another parameter"
-                })
-            })
-            .inner
-            .clicked();
-        if more && sampling.design != Design::List {
-            sampling.params.push(SweepControl {
-                param: r.key.clone(),
-                range: None,
-                points: None,
-            });
-        }
-    }
-    if let Some(k) = remove {
-        sampling.params.remove(k);
-        for row in &mut sampling.values {
-            row.remove(k);
-        }
-    }
-    if sampling.params.len() != sw.sampling.params.len() && grid {
-        // Start over from points that keep the grid within its limit.
-        let n = sampling.params.len();
-        let each = (MAX_SAMPLES as f64).powf(1.0 / n as f64).floor() as usize;
-        for p in &mut sampling.params {
-            p.points = (n > 2).then_some(each.min(100));
-        }
-    }
-    if sampling == sw.sampling {
-        return Ok(None);
-    }
-    live.call(move |s, _| s.set_sampling(sampling))?.map(Some)
-}
-
 /// Pickers for a view's slots: a menu of checkboxes for slots that take
 /// several signals, a combo box otherwise (with "none" when optional).
-/// `t` is shown as what it means: time, or the swept parameter (ADR 0021).
+/// `t` is shown as what it means: the history's index, time.
 /// Slots that do not apply here are hidden (ADR 0025).
 fn slot_editors(
     ui: &mut egui::Ui,
@@ -3233,7 +5109,7 @@ fn slot_editor(
         _ => available.choices(slot.kind),
     };
     let current = state.bind.get(slot.name).cloned().unwrap_or_default();
-    // "t" is stored, but shown as what it is: time, or the swept parameter.
+    // "t" is stored, but shown as what it is: the history's index.
     let display = |s: &str| {
         if s == "t" {
             index.to_string()
@@ -3365,6 +5241,9 @@ impl CutEdit {
             type_name: "cut".into(),
             inputs: vec![self.input.clone()],
             canvas: None,
+            probe: None,
+            from: Default::default(),
+            when: None,
             settings,
         }
     }
@@ -3413,7 +5292,7 @@ impl SignalsEditor {
 }
 
 /// The Data window's contents: expressions, then cuts.
-fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History) {
+fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History, m: &Model) {
     use simsandbox_views::cut::{Interpolation, Mode};
     ui.heading("Signals");
     ui.label(
@@ -3445,13 +5324,13 @@ fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History) {
         ed.exprs
             .push((format!("signal{}", ed.exprs.len() + 1), String::new()));
     }
-    ui.weak(format!("Plotted signals: {}", history.names().join(", ")));
+    ui.weak(format!("Signals: {}", m.scalars.join(", ")));
 
-    let inputs = simsandbox_session::session::cut_inputs(history);
+    let inputs = &m.cut_inputs;
     ui.add_space(8.0);
     ui.heading("Cuts");
     if inputs.is_empty() {
-        ui.weak("Cuts take a 2D grid, such as the results of a two-parameter sweep; this model has none.");
+        ui.weak("Cuts take a 2D grid, such as the results of a study over two parameters; this model has none.");
         return;
     }
     ui.label(
@@ -3468,7 +5347,7 @@ fn data_editor(ui: &mut egui::Ui, ed: &mut SignalsEditor, history: &History) {
             egui::ComboBox::from_id_salt(("cut_input", k))
                 .selected_text(&c.input)
                 .show_ui(ui, |ui| {
-                    for i in &inputs {
+                    for i in inputs {
                         ui.selectable_value(&mut c.input, i.clone(), i);
                     }
                 });
@@ -3619,6 +5498,23 @@ struct Editor {
     error: Option<String>,
 }
 
+/// A built-in example's description, from its file, read once.
+fn example_description(k: usize) -> &'static str {
+    static DESCRIPTIONS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let all = DESCRIPTIONS.get_or_init(|| {
+        EXAMPLES
+            .iter()
+            .map(|e| {
+                serde_json::from_str::<serde_json::Value>(e.text)
+                    .ok()
+                    .and_then(|v| v["description"].as_str().map(String::from))
+                    .unwrap_or_default()
+            })
+            .collect()
+    });
+    all.get(k).map_or("", String::as_str)
+}
+
 /// What "New model…" starts with: a damped oscillator that moves at once.
 const NEW_MODEL: &str = "\
 # A spring with friction. Change anything, then press Apply.
@@ -3667,6 +5563,81 @@ fn write_ppm(path: &Path, image: &egui::ColorImage) -> std::io::Result<()> {
     std::fs::write(path, bytes)
 }
 
+/// The run files beside `model` that name it (ADR 0059), by name.
+fn runs_beside(model: &Path) -> Vec<(PathBuf, simsandbox_file::runs::RunFile)> {
+    let Some(model_name) = model.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return Vec::new();
+    };
+    let dir = match model.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut runs: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().ends_with(".run.json"))
+        .filter_map(|p| {
+            let text = std::fs::read_to_string(&p).ok()?;
+            let run = simsandbox_file::runs::RunFile::from_json(&text).ok()?;
+            (run.model == model_name).then_some((p, run))
+        })
+        .collect();
+    runs.sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.0.cmp(&b.0)));
+    runs
+}
+
+/// Whether the model saved at `model` is the one `run` was made with.
+fn run_fits_disk(run: &simsandbox_file::runs::RunFile, model: &Path, registry: &Registry) -> bool {
+    std::fs::read_to_string(model)
+        .ok()
+        .and_then(|t| simsandbox_file::load_any(&t, registry, model.parent()).ok())
+        .and_then(|l| run.fits(&l).ok())
+        .unwrap_or(false)
+}
+
+/// Now as RFC 3339 in UTC, to the second.
+fn utc_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs()) as i64;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+/// What typed equations' native code is doing (ADR 0089), when anything:
+/// being built, in use, or not used for a difference or a failed build.
+fn native_status(ui: &mut egui::Ui) {
+    let (ready, building, failed) = simsandbox_compiled::native::summary();
+    let hover = format!(
+        "Typed equations' large grids as native code built with your Rust toolchain: {ready} in use, {building} being built, {failed} not used (a failed build or different results). The results are the same either way; SIMSANDBOX_NATIVE=off turns it off."
+    );
+    if building > 0 {
+        ui.weak("Native code: building…").on_hover_text(hover);
+    } else if ready > 0 {
+        ui.weak("Native code").on_hover_text(hover);
+    } else if failed > 0 {
+        ui.weak("Native code: not used").on_hover_text(hover);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3704,6 +5675,9 @@ mod tests {
         let path = dir.join("lorenz.ssbx.json");
 
         let mut app = SimApp::new(None, None, None, None);
+        // Without a file the app opens on its landing page.
+        app.open_example(0);
+        app.mark_saved();
         assert!(app.path.is_none(), "built-in examples have no path");
         app.save_to(&path);
         assert_eq!(app.error, None);
@@ -3789,18 +5763,19 @@ mod tests {
         app.editor = editor(None, "y = a*x^2");
         app.apply_equations();
         assert_eq!(method(&app), "evaluate");
-        assert!(app.session.as_ref().unwrap().model().sweep.is_some());
 
         // Editing a formula block into a continuous one switches the method.
         app.editor = editor(Some("model"), "dy/dt = -a*y");
         app.apply_equations();
         assert_eq!(method(&app), "rk4");
-        assert!(app.session.as_ref().unwrap().model().sweep.is_none());
     }
 
     #[test]
     fn mistakes_keep_the_editor_open_and_the_model_running() {
         let mut app = SimApp::new(None, None, None, None);
+        // Without a file the app opens on its landing page.
+        app.open_example(0);
+        app.mark_saved();
         app.editor = editor(None, "dx/dt = -k*");
         app.apply_equations();
         let e = app.editor.as_ref().unwrap().error.as_deref().unwrap();
@@ -3865,9 +5840,11 @@ mod tests {
                 "{real_time} {case:?}"
             );
         }
-        // The examples: the Lorenz system is real-time; a sweep is once
-        // evaluated quickly.
-        let app = SimApp::new(None, None, None, None);
+        // The examples: the Lorenz system is real-time.
+        let mut app = SimApp::new(None, None, None, None);
+        // Without a file the app opens on its landing page.
+        app.open_example(0);
+        app.mark_saved();
         let live = app.session.as_ref().unwrap();
         assert!(live.model().real_time);
     }
@@ -3998,6 +5975,143 @@ mod tests {
     }
 
     #[test]
+    fn a_studys_runs_are_counted_as_its_design_makes_them() {
+        let s = |v: serde_json::Value| -> simsandbox_file::Sampling {
+            serde_json::from_value(v).unwrap()
+        };
+        let one = serde_json::json!({"param": "a.x"});
+        let two = serde_json::json!({"param": "a.y", "points": 3});
+        assert_eq!(study_runs(&s(serde_json::json!({"params": [one]}))), 400);
+        assert_eq!(
+            study_runs(&s(serde_json::json!({"params": [one, two]}))),
+            300
+        );
+        assert_eq!(
+            study_runs(&s(
+                serde_json::json!({"design": "sobol", "params": [one], "count": 64, "replicates": 2})
+            )),
+            128
+        );
+        assert_eq!(
+            study_runs(&s(
+                serde_json::json!({"design": "list", "params": [one], "values": [[1.0], [2.0]]})
+            )),
+            2
+        );
+    }
+
+    #[test]
+    fn a_block_inside_a_study_shows_its_models_values() {
+        // ADR 0070: open the tuning study, pick its car: the cruise
+        // model's values, as written, in the Inspector and the tree.
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Tuning"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        let file = app.session.as_ref().unwrap().model().file.clone();
+        let st = app.studied(&file, "tuning").unwrap();
+        assert_eq!(st.model, "cruise");
+        let car = st.blocks.iter().find(|(b, _)| b == "car").unwrap();
+        assert!(car.1.iter().any(|v| v.name == "m"), "{:?}", car.1);
+        app.diagram.inside = vec!["tuning".into()];
+        let o = simsandbox_session::render::RenderOptions {
+            width: 900.0,
+            height: 600.0,
+            ..Default::default()
+        };
+        simsandbox_session::render::paint(&o, |ui| app.diagram_tab(ui));
+        let values = app
+            .diagram
+            .inside_values(&["tuning".to_string()], "car")
+            .unwrap();
+        assert!(values.iter().any(|v| v.name == "m"), "{values:?}");
+        app.diagram.canvas.selected =
+            Some(simsandbox_session::canvas::Selection::Block("car".into()));
+        // SIMSANDBOX_SHOT=FILE.png writes the Inspector as drawn, to look at.
+        if let Ok(path) = std::env::var("SIMSANDBOX_SHOT_INSIDE") {
+            let o = simsandbox_session::render::RenderOptions {
+                width: 520.0,
+                height: 900.0,
+                ..Default::default()
+            };
+            let image = simsandbox_session::render::paint(&o, |ui| app.param_panel(ui));
+            std::fs::write(path, simsandbox_session::render::png(&image).unwrap()).unwrap();
+        }
+        inspect(&mut app);
+        assert_eq!(
+            app.picked,
+            [(Some("tuning".to_string()), "car".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_study_selected_shows_its_form() {
+        // ADR 0070: what it varies comes from its model's parameters.
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Tuning"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        let file = app.session.as_ref().unwrap().model().file.clone();
+        let keys = app.study_keys(&file, "tuning");
+        let names: Vec<&str> = keys.iter().map(|(k, _, _)| k.as_str()).collect();
+        assert!(
+            names.contains(&"cruise.ki") && names.contains(&"car.m"),
+            "{names:?}"
+        );
+        assert!(app.study_keys(&file, "best").is_empty());
+        app.diagram.canvas.selected = Some(simsandbox_session::canvas::Selection::Block(
+            "tuning".into(),
+        ));
+        // SIMSANDBOX_SHOT=FILE.png writes the Inspector as drawn, to look at.
+        if let Ok(path) = std::env::var("SIMSANDBOX_SHOT") {
+            let o = simsandbox_session::render::RenderOptions {
+                width: 520.0,
+                height: 900.0,
+                ..Default::default()
+            };
+            let image = simsandbox_session::render::paint(&o, |ui| app.param_panel(ui));
+            std::fs::write(path, simsandbox_session::render::png(&image).unwrap()).unwrap();
+        }
+        inspect(&mut app);
+        assert_eq!(app.picked, [(None, "tuning".to_string())]);
+    }
+
+    #[test]
+    fn a_study_of_points_from_inputs_shows_no_ranges() {
+        // ADR 0078: its values arrive through its inputs; drawing its form
+        // writes no range into it.
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Searching"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        app.diagram.canvas.selected = Some(simsandbox_session::canvas::Selection::Block(
+            "trials".into(),
+        ));
+        let o = simsandbox_session::render::RenderOptions {
+            width: 520.0,
+            height: 900.0,
+            ..Default::default()
+        };
+        let image = simsandbox_session::render::paint(&o, |ui| app.param_panel(ui));
+        if let Ok(path) = std::env::var("SIMSANDBOX_SHOT_INPUTS") {
+            std::fs::write(path, simsandbox_session::render::png(&image).unwrap()).unwrap();
+        }
+        let file = app.session.as_ref().unwrap().model().file.clone();
+        let trials = file.blocks.iter().find(|b| b.name == "trials").unwrap();
+        let sample = trials.sample.as_ref().unwrap();
+        assert!(sample
+            .params
+            .iter()
+            .all(|p| p.range.is_none() && p.points.is_none()));
+    }
+
+    #[test]
     fn a_value_typed_on_a_node_applies_to_the_running_model() {
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES.iter().find(|e| e.name.contains("Cruise")).unwrap();
@@ -4075,6 +6189,7 @@ mod tests {
 
     #[test]
     fn open_nodes_are_saved_and_inner_values_are_every_uses_default() {
+        use simsandbox_session::edit_use::How;
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES
             .iter()
@@ -4082,7 +6197,7 @@ mod tests {
             .unwrap();
         app.open_text(e.name, e.text);
         let m = app.session.as_ref().unwrap().model();
-        let open = vec!["car1".to_string(), "follower::car".to_string()];
+        let open = vec!["car1".to_string(), "leader".to_string()];
         app.diagram_outcomes(&m, vec![Outcome::Opened(open.clone())]);
         let text = app.saved_text().unwrap();
         let (file, _) = simsandbox_file::ModelFile::from_json(&text).unwrap();
@@ -4091,13 +6206,22 @@ mod tests {
         let mut again = SimApp::new(None, None, None, None);
         again.open_text("again", &text);
         assert_eq!(again.diagram.canvas.open, open.into_iter().collect());
-        // Inside the subsystem, a value is the default of every use.
+        // Inside the model the cars use, a value changes every use.
         let e = Edit::SetParam {
             block: "car".into(),
             param: "c".into(),
             value: 80.0,
         };
-        app.edit_at(Scope::Subsystem("follower".into()), e);
+        app.diagram.inside = vec!["car1".into()];
+        let live = app.session.as_ref().unwrap();
+        let m = live.model();
+        let text = app.saved_text().unwrap();
+        let current = move || Ok(text.clone());
+        let outcomes = app
+            .diagram
+            .answer(vec![e], How::Original, &app.registry, &current);
+        app.diagram_outcomes(&m, outcomes);
+        assert!(app.error.is_none(), "{:?}", app.error);
         let live = app.session.as_ref().unwrap();
         live.sync();
         let m = live.model();
@@ -4148,7 +6272,11 @@ mod tests {
         assert!(app.error.as_deref().unwrap().starts_with("Not applied"));
         type_in(&mut app, "leader.T", Typed::Formula("nope".into()));
         assert!(app.error.as_deref().unwrap().contains("nope"));
-        assert!(app.diagram.draft_problem().is_none());
+        assert!(
+            app.diagram.draft_problem().is_none(),
+            "{:?}",
+            app.diagram.draft_problem()
+        );
         assert_eq!(row(&app, "leader.T").formula.as_deref(), Some("tau / 2"));
         // A use's own value takes a formula too; the model's parameters and
         // values inside uses stay numbers.
@@ -4193,18 +6321,35 @@ mod tests {
         app.diagram.canvas.selected = Some(Selection::Block("leader".into()));
         inspect(&mut app);
         assert_eq!(app.picked, [(None, "leader".to_string())]);
-        // A sweep's grid comes from the swept block; a filter's signal has
-        // none.
-        app.inspect_signal("grid.leader.v");
-        assert_eq!(app.picked, [(None, "leader".to_string())]);
+        // A filter's signal has none.
         app.inspect_signal("energy");
         assert_eq!(app.picked, [(None, "leader".to_string())]);
     }
 
     #[test]
+    fn a_block_picked_in_a_model_expanded_in_place_shows_its_values() {
+        use simsandbox_session::canvas::Selection;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        inspect(&mut app);
+        // car1 expanded: its car is named by path on the canvas.
+        app.diagram.canvas.selected = Some(Selection::Block("car1/car".into()));
+        inspect(&mut app);
+        assert_eq!(app.picked, [(Some("car1".to_string()), "car".to_string())]);
+        let m = app.session.as_ref().unwrap().model();
+        let t = crate::inspector::selected(&m.params, &m.file, Some("car1"), "car")
+            .expect("the car's values");
+        assert!(t.rows.iter().any(|(k, _)| k == "c"), "{:?}", t.rows);
+        assert!(app.error.is_none(), "{:?}", app.error);
+    }
+
+    #[test]
     fn the_inspector_draws_selection_search_and_computed_values() {
         use simsandbox_session::canvas::Selection;
-        use simsandbox_session::diagram::Scope;
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES
             .iter()
@@ -4213,9 +6358,6 @@ mod tests {
         app.open_text(e.name, e.text);
         inspect(&mut app);
         app.diagram.canvas.selected = Some(Selection::Block("car2".into()));
-        inspect(&mut app);
-        app.diagram.scope = Scope::Subsystem("follower".into());
-        app.diagram.canvas.selected = Some(Selection::Block("control".into()));
         inspect(&mut app);
         app.show_computed = true;
         app.inspect_query = "mass".into();
@@ -4342,6 +6484,130 @@ mod tests {
     }
 
     #[test]
+    fn a_dragged_run_is_saved_beside_the_model_and_replayed() {
+        let dir = std::env::temp_dir().join(format!("simsandbox-runs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Drag the bob"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        let model = dir.join("drag.ssbx.json");
+        app.save_to(&model);
+        let live = app.session.as_ref().unwrap();
+        live.set_running(false);
+        live.call(|s, _| s.restart()).unwrap().unwrap();
+        live.call(|s, _| s.run_until(0.5)).unwrap().unwrap();
+        // The view's pointer, as the dock sends it; a repeat is not recorded.
+        for [x, y, down] in [[1.0, 0.0, 1.0], [1.0, 0.0, 1.0]] {
+            for (k, v) in [("x", x), ("y", y), ("down", down)] {
+                app.send_input(format!("hand.{k}"), v);
+            }
+            app.session.as_ref().unwrap().sync();
+        }
+        let live = app.session.as_ref().unwrap();
+        live.call(|s, _| s.run_until(1.0)).unwrap().unwrap();
+        app.send_input("hand.down".into(), 0.0);
+        let live = app.session.as_ref().unwrap();
+        live.call(|s, _| s.run_until(1.5)).unwrap().unwrap();
+        let theta = |app: &SimApp| {
+            app.session
+                .as_ref()
+                .unwrap()
+                .call(|s, _| {
+                    let h = s.signals();
+                    let k = h.names().iter().position(|n| n == "bob.theta").unwrap();
+                    h.points(k)
+                        .iter()
+                        .map(|p| p.y.to_bits())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        };
+        let reference = theta(&app);
+        assert_eq!(live.call(|s, _| s.recorded().len()).unwrap(), 3);
+
+        app.save_run("pull", "dragged right");
+        let runs = runs_beside(&model);
+        assert_eq!(runs.len(), 1);
+        let (path, run) = &runs[0];
+        assert!(path.ends_with("drag.pull.run.json"));
+        assert_eq!((run.name.as_str(), run.track.len()), ("pull", 3));
+        assert!(run_fits_disk(run, &model, &app.registry));
+        // Opening it replays the drag bit for bit.
+        app.open_run(path);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let live = app.session.as_ref().unwrap();
+        live.set_running(false);
+        assert!(live.call(|s, _| s.replaying()).unwrap());
+        live.call(|s, _| s.run_until(1.5)).unwrap().unwrap();
+        assert_eq!(theta(&app), reference);
+        // As the model's schedule, every run applies it.
+        let run = run.clone();
+        app.use_as_schedule(&run, "pull");
+        let m = app.session.as_ref().unwrap().model();
+        assert_eq!(m.file.run.inputs.len(), 3);
+        assert!(utc_now().ends_with('Z') && utc_now().len() == 20);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probes_added_on_the_canvas_record_and_save_their_files() {
+        use simsandbox_session::diagram::Edit;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES.iter().find(|e| e.name.contains("Cruise")).unwrap();
+        app.open_text(e.name, e.text);
+        let dir = std::env::temp_dir().join(format!("simsandbox-app-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        app.path = Some(dir.join("cruise.ssbx.json"));
+        let live = app.session.as_ref().unwrap();
+        live.call(|s, _| s.run_until(1.0)).unwrap().unwrap();
+        canvas_edits(&mut app, vec![Edit::AddProbe { at: [600.0, 0.0] }]);
+        canvas_edits(
+            &mut app,
+            vec![Edit::Bind {
+                from: "car.v".into(),
+                to: "probe:probe1.record".into(),
+                many: true,
+            }],
+        );
+        let mut probe = app.session.as_ref().unwrap().model().probes[0].clone();
+        assert_eq!(probe.record, ["car.v"]);
+        probe.to = Some("speed.csv".into());
+        canvas_edits(&mut app, vec![Edit::SetProbe { probe }]);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let live = app.session.as_ref().unwrap();
+        // Not restarted: the probe records from t = 1 on.
+        assert!(live.status().time > 0.9);
+        live.call(|s, _| s.run_until(2.0)).unwrap().unwrap();
+        app.save_probe_data();
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let csv = std::fs::read_to_string(dir.join("speed.csv")).unwrap();
+        // From when it was wired, at every step since.
+        let t: Vec<f64> = csv
+            .lines()
+            .skip(1)
+            .map(|l| l.split(',').next().unwrap().parse().unwrap())
+            .collect();
+        assert!(t.len() > 2 && t[0] > 0.9, "{csv}");
+        assert!(
+            t.windows(2).all(|w| (w[1] - w[0] - 0.05).abs() < 1e-9),
+            "{csv}"
+        );
+        // Saved with the model, and undone without a restart.
+        assert!(app.saved_text().unwrap().contains("\"to\": \"speed.csv\""));
+        canvas_step(&mut app, true);
+        canvas_step(&mut app, true);
+        canvas_step(&mut app, true);
+        let live = app.session.as_ref().unwrap();
+        live.sync();
+        assert!(live.model().probes.is_empty());
+        assert!(live.status().time > 1.9);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn canvas_edits_apply_when_the_model_loads_and_wait_as_a_draft_otherwise() {
         use simsandbox_session::diagram::Edit;
         let mut app = SimApp::new(None, None, None, None);
@@ -4382,7 +6648,11 @@ mod tests {
                 to: "car.F".into(),
             }],
         );
-        assert!(app.diagram.draft_problem().is_none());
+        assert!(
+            app.diagram.draft_problem().is_none(),
+            "{:?}",
+            app.diagram.draft_problem()
+        );
         assert!(app.error.is_none(), "{:?}", app.error);
         let live = app.session.as_ref().unwrap();
         let m = live.model();
@@ -4426,37 +6696,37 @@ mod tests {
     }
 
     #[test]
-    fn subsystems_are_grouped_opened_and_edited_from_the_canvas() {
-        use simsandbox_session::diagram::{Edit, Scope};
+    fn models_are_made_opened_and_edited_from_the_canvas() {
+        use simsandbox_session::diagram::Edit;
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES.iter().find(|e| e.name.contains("Cruise")).unwrap();
         app.open_text(e.name, e.text);
-        // Group both blocks: the model now uses a subsystem, and runs.
+        // Make a model of both blocks: the file now defines and uses it.
         canvas_edits(
             &mut app,
-            vec![Edit::Group {
+            vec![Edit::GroupModel {
                 blocks: vec!["car".into(), "cruise".into()],
             }],
         );
         assert!(app.error.is_none(), "{:?}", app.error);
         let m = app.session.as_ref().unwrap().model();
-        assert!(m.file.subsystems.contains_key("group1"));
+        assert!(m.file.models.contains_key("model1"));
         assert!(m.params.iter().any(|r| r.key == "group1/cruise.kp"));
-        // Inside it, an edit changes the subsystem.
-        app.diagram.scope = Scope::Subsystem("group1".into());
-        canvas_edits(
-            &mut app,
-            vec![Edit::Rename {
-                from: "car".into(),
-                to: "body".into(),
-            }],
-        );
+        // Inside it (used once: no question), an edit changes the model.
+        app.diagram.inside = vec!["group1".into()];
+        let live = app.session.as_ref().unwrap();
+        let text = app.saved_text().unwrap();
+        let current = move || Ok(text.clone());
+        let rename = Edit::Rename {
+            from: "car".into(),
+            to: "body".into(),
+        };
+        let outcomes = app
+            .diagram
+            .begin_edit(vec![rename], &app.registry, &current);
+        app.diagram_outcomes(&live.model(), outcomes);
         assert!(app.error.is_none(), "{:?}", app.error);
         let m = app.session.as_ref().unwrap().model();
-        assert!(m.file.subsystems["group1"]
-            .blocks
-            .iter()
-            .any(|b| b.name == "body"));
         assert!(m.params.iter().any(|r| r.key == "group1/body.m"));
         // And the equation editor works on a block inside it.
         app.open_block(&m, "group1::body");
@@ -4464,6 +6734,7 @@ mod tests {
         ed.text = ed.text.replace("(F - c*v)/m", "(F - drag2*c*v)/m");
         app.apply_equations();
         assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(app.editor.is_none(), "applied");
         let m = app.session.as_ref().unwrap().model();
         assert!(m.params.iter().any(|r| r.key == "group1/body.drag2"));
     }
@@ -4507,6 +6778,471 @@ mod tests {
     }
 
     #[test]
+    fn a_file_reader_added_on_the_canvas_reads_from_the_models_folder() {
+        let dir = std::env::temp_dir().join(format!("simsandbox-app-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("push.csv"), "t,F [N]\n0,1\n1,3\n").unwrap();
+        let model = dir.join("m.ssbx.json");
+        std::fs::write(
+            &model,
+            r#"{"format": 1, "blocks": [{"name": "one", "type": "eq.equations",
+                "equations": ["y = 1"]}]}"#,
+        )
+        .unwrap();
+        let mut app = SimApp::new(None, None, None, None);
+        app.open_path(&model.to_string_lossy());
+        assert!(app.error.is_none(), "{:?}", app.error);
+        // Added without a file it waits as a draft; naming one loads it.
+        app.edit_at(
+            Scope::Model,
+            Edit::Add {
+                type_name: simsandbox_eq::file_input::FILE.into(),
+                at: [0.0, 0.0],
+            },
+        );
+        let problem = app.diagram.draft_problem().unwrap();
+        assert!(problem.contains("settings.file"), "{problem}");
+        let name = app.diagram.draft_file().unwrap().blocks[1].name.clone();
+        app.edit_at(
+            Scope::Model,
+            Edit::SetSetting {
+                block: name.clone(),
+                key: "file".into(),
+                text: "push.csv".into(),
+            },
+        );
+        assert!(
+            app.diagram.draft_problem().is_none(),
+            "{:?}",
+            app.diagram.draft_problem()
+        );
+        let live = app.session.as_ref().unwrap();
+        let key = format!("{name}.F");
+        let f = live
+            .call(move |s, _| {
+                s.set_view_reads(vec![key.clone()]);
+                s.restart().unwrap();
+                s.run_until(1.0).unwrap();
+                s.flush(true);
+                let h = s.signals();
+                h.values(h.resolve(&key).unwrap())
+            })
+            .unwrap();
+        assert_eq!((f.first(), f.last()), (Some(&1.0), Some(&3.0)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_model_using_model_files_opens_and_runs() {
+        let dir = std::env::temp_dir().join(format!("simsandbox-app-uses-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, v: serde_json::Value| {
+            std::fs::write(dir.join(name), v.to_string()).unwrap()
+        };
+        write(
+            "count.ssbx.json",
+            serde_json::json!({"format": 1, "run": {"dt": 0.1},
+            "blocks": [{"name": "count", "type": "eq.equations", "method": {"name": "euler"},
+                        "equations": ["state x", "dx/dt = 1"], "params": {"x0": 0}}],
+            "outputs": [{"name": "x", "from": "count.x"}]}),
+        );
+        write(
+            "hold.ssbx.json",
+            serde_json::json!({"format": 1, "run": {"dt": 0.3},
+            "blocks": [{"name": "u", "type": "input.value"},
+                       {"name": "sum", "type": "eq.equations", "method": {"name": "euler"},
+                        "equations": ["input u", "state z", "dz/dt = u"], "params": {"z0": 0}}],
+            "connections": [{"from": "u.y", "to": "sum.u"}]}),
+        );
+        let model = dir.join("both.ssbx.json");
+        write(
+            "both.ssbx.json",
+            serde_json::json!({"format": 1,
+            "blocks": [{"name": "fast", "file": "count.ssbx.json"}, {"name": "slow", "file": "hold.ssbx.json"}],
+            "connections": [{"from": "probe:p.fast/x", "to": "slow/u"}],
+            "controls": {"probes": [{"name": "p", "record": ["fast/x"]}]}}),
+        );
+        let mut app = SimApp::new(None, None, None, None);
+        app.open_path(&model.to_string_lossy());
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let live = app.session.as_ref().unwrap();
+        let (t, u) = live
+            .call(|s, _| {
+                s.set_view_reads(vec!["slow/u.y".into(), "fast/x".into()]);
+                s.restart().unwrap();
+                s.run_until(0.6).unwrap();
+                s.flush(true);
+                let h = s.signals();
+                // A declared output is recorded under its name.
+                let x = h.values(h.resolve("fast/x").unwrap());
+                assert!((x.last().unwrap() - 0.6).abs() < 1e-9, "{x:?}");
+                (s.time(), h.values(h.resolve("slow/u.y").unwrap()))
+            })
+            .unwrap();
+        assert!((t - 0.6).abs() < 1e-9, "{t}");
+        // slow read fast's count at its own instants: 0 at the start,
+        // about 0.3 from 0.3 s.
+        assert_eq!(u[0], 0.0);
+        assert!((u.last().unwrap() - 0.6).abs() < 1e-9, "{u:?}");
+        // Opening a use reads its file, from the folder of the file using it.
+        let (top, _) =
+            simsandbox_file::ModelFile::from_json(&std::fs::read_to_string(&model).unwrap())
+                .unwrap();
+        let inside = crate::diagram::used_file(&top, Some(&dir), &["slow".into()]).unwrap();
+        assert_eq!(inside.blocks[1].name, "sum");
+        assert!(crate::diagram::used_file(&top, Some(&dir), &["nowhere".into()]).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_used_model_is_edited_from_the_model_using_it() {
+        use simsandbox_session::edit_use::How;
+        let dir =
+            std::env::temp_dir().join(format!("simsandbox-app-edit-use-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, v: serde_json::Value| {
+            std::fs::write(dir.join(name), v.to_string()).unwrap()
+        };
+        write(
+            "hold.ssbx.json",
+            serde_json::json!({"format": 1, "run": {"dt": 0.1},
+            "blocks": [{"name": "sum", "type": "eq.equations", "method": {"name": "euler"},
+                        "equations": ["state z", "dz/dt = 1"], "params": {"z0": 0}}]}),
+        );
+        let model = dir.join("top.ssbx.json");
+        write(
+            "top.ssbx.json",
+            serde_json::json!({"format": 1, "blocks": [{"name": "slow", "file": "hold.ssbx.json"}]}),
+        );
+        let hold = std::fs::read_to_string(dir.join("hold.ssbx.json")).unwrap();
+        let start = |app: &SimApp| {
+            app.session
+                .as_ref()
+                .unwrap()
+                .call(|s, _| {
+                    s.set_view_reads(vec!["slow/sum.z".into()]);
+                    s.restart().unwrap();
+                    s.run_until(0.2).unwrap();
+                    s.flush(true);
+                    let h = s.signals();
+                    h.values(h.resolve("slow/sum.z").unwrap())[0]
+                })
+                .unwrap()
+        };
+        let z0 = |v: f64| {
+            vec![simsandbox_session::diagram::Edit::SetParam {
+                block: "sum".into(),
+                param: "z0".into(),
+                value: v,
+            }]
+        };
+        let answer = |app: &mut SimApp, how: Option<How>, edits| {
+            let live = app.session.as_ref().unwrap();
+            let m = live.model();
+            let text = app.saved_text().unwrap();
+            let current = move || Ok(text.clone());
+            let outcomes = match how {
+                Some(how) => app.diagram.answer(edits, how, &app.registry, &current),
+                None => {
+                    let t = app.diagram.choices[&app.diagram.inside].clone();
+                    app.diagram
+                        .edit_inside(None, &t, edits, &app.registry, &current)
+                }
+            };
+            app.diagram_outcomes(&m, outcomes);
+            assert!(app.error.is_none(), "{:?}", app.error);
+        };
+        for how in [
+            How::NewCopy(dir.join("hold-2.ssbx.json")),
+            How::Original,
+            How::LocalCopy,
+        ] {
+            let mut app = SimApp::new(None, None, None, None);
+            app.open_path(&model.to_string_lossy());
+            assert_eq!(start(&app), 0.0);
+            app.diagram.inside = vec!["slow".into()];
+            answer(&mut app, Some(how.clone()), z0(5.0));
+            assert_eq!(start(&app), 5.0, "{how:?}");
+            // The next edit goes to the same place without asking.
+            answer(&mut app, None, z0(6.0));
+            assert_eq!(start(&app), 6.0, "{how:?}");
+            let saved = app.saved_text().unwrap();
+            match &how {
+                How::NewCopy(_) => assert!(saved.contains("hold-2.ssbx.json"), "{saved}"),
+                How::Original => assert!(saved.contains("\"hold.ssbx.json\"")),
+                How::LocalCopy => {
+                    assert!(saved.contains("\"model\"") && !saved.contains("hold.ssbx.json"))
+                }
+            }
+            assert_eq!(app.diagram.edited.is_empty(), how == How::LocalCopy);
+            assert!(app.has_unsaved());
+            // Undo takes the edits back, used files included.
+            canvas_step(&mut app, true);
+            canvas_step(&mut app, true);
+            assert_eq!(start(&app), 0.0, "{how:?} undone");
+            assert!(app.diagram.edited.is_empty());
+            canvas_step(&mut app, false);
+            assert_eq!(start(&app), 5.0, "{how:?} redone");
+            // Nothing on disk changes until saved; then every file is.
+            assert_eq!(
+                std::fs::read_to_string(dir.join("hold.ssbx.json")).unwrap(),
+                hold
+            );
+            app.save_to(&model);
+            assert!(app.error.is_none(), "{:?}", app.error);
+            assert!(app.diagram.edited.is_empty() && !app.has_unsaved());
+            let reopened = {
+                let mut again = SimApp::new(None, None, None, None);
+                again.open_path(&model.to_string_lossy());
+                start(&again)
+            };
+            assert_eq!(reopened, 5.0, "{how:?} reopened");
+            // Back to the start for the next answer.
+            write("hold.ssbx.json", serde_json::from_str(&hold).unwrap());
+            write(
+                "top.ssbx.json",
+                serde_json::json!({"format": 1, "blocks": [{"name": "slow", "file": "hold.ssbx.json"}]}),
+            );
+            let _ = std::fs::remove_file(dir.join("hold-2.ssbx.json"));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_model_defined_in_the_file_is_edited_for_every_use_or_one() {
+        use simsandbox_session::edit_use::How;
+        let counter = serde_json::json!({"blocks": [{"name": "c", "type": "eq.equations",
+            "method": {"name": "euler"}, "equations": ["state x", "dx/dt = 1"], "params": {"x0": 0}}]});
+        let text =
+            serde_json::json!({"format": 1, "run": {"dt": 0.1}, "models": {"count": counter},
+            "blocks": [{"name": "a", "model": "count"}, {"name": "b", "model": "count"}]})
+            .to_string();
+        let starts = |app: &SimApp| {
+            app.session
+                .as_ref()
+                .unwrap()
+                .call(|s, _| {
+                    s.set_view_reads(vec!["a/c.x".into(), "b/c.x".into()]);
+                    s.restart().unwrap();
+                    s.run_until(0.1).unwrap();
+                    s.flush(true);
+                    let h = s.signals();
+                    let first = |n: &str| h.values(h.resolve(n).unwrap())[0];
+                    (first("a/c.x"), first("b/c.x"))
+                })
+                .unwrap()
+        };
+        let x0 = |v: f64| {
+            vec![simsandbox_session::diagram::Edit::SetParam {
+                block: "c".into(),
+                param: "x0".into(),
+                value: v,
+            }]
+        };
+        let edit = |app: &mut SimApp, how: Option<How>, edits| {
+            let live = app.session.as_ref().unwrap();
+            let m = live.model();
+            let text = app.saved_text().unwrap();
+            let current = move || Ok(text.clone());
+            let outcomes = match how {
+                Some(how) => app.diagram.answer(edits, how, &app.registry, &current),
+                None => app.diagram.begin_edit(edits, &app.registry, &current),
+            };
+            app.diagram_outcomes(&m, outcomes);
+            assert!(app.error.is_none(), "{:?}", app.error);
+        };
+        // Used twice: the question is asked; the definition changes both.
+        let mut app = SimApp::new(None, None, None, None);
+        app.open_text("defs", &text);
+        assert_eq!(starts(&app), (0.0, 0.0));
+        app.diagram.inside = vec!["a".into()];
+        edit(&mut app, None, x0(2.0));
+        assert!(app.diagram.asking.is_some(), "asked");
+        assert_eq!(starts(&app), (0.0, 0.0));
+        app.diagram.asking = None;
+        edit(&mut app, Some(How::Original), x0(2.0));
+        assert_eq!(starts(&app), (2.0, 2.0));
+        assert!(app.diagram.edited.is_empty());
+        // A local copy for one use: a new definition, the other unchanged.
+        let mut app = SimApp::new(None, None, None, None);
+        app.open_text("defs", &text);
+        app.diagram.inside = vec!["b".into()];
+        edit(&mut app, Some(How::LocalCopy), x0(3.0));
+        assert_eq!(starts(&app), (0.0, 3.0));
+        let saved = app.saved_text().unwrap();
+        assert!(
+            saved.contains("\"model\": \"b\"") && saved.contains("\"count\""),
+            "{saved}"
+        );
+        // That copy is used once: the next edit goes to it without asking.
+        app.diagram.choices.clear();
+        edit(&mut app, None, x0(4.0));
+        assert!(app.diagram.asking.is_none());
+        assert_eq!(starts(&app), (0.0, 4.0));
+    }
+
+    #[test]
+    fn a_used_model_moves_into_the_file_and_back_out() {
+        let dir = std::env::temp_dir().join(format!("simsandbox-app-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("count.ssbx.json"),
+            serde_json::json!({"format": 1, "run": {"dt": 0.1}, "blocks": [{"name": "c",
+                "type": "eq.equations", "method": {"name": "euler"}, "equations": ["state x", "dx/dt = 1"],
+                "params": {"x0": 2}}]})
+            .to_string(),
+        )
+        .unwrap();
+        let model = dir.join("top.ssbx.json");
+        std::fs::write(
+            &model,
+            serde_json::json!({"format": 1, "blocks": [{"name": "a", "file": "count.ssbx.json"}]})
+                .to_string(),
+        )
+        .unwrap();
+        let mut app = SimApp::new(None, None, None, None);
+        app.open_path(&model.to_string_lossy());
+        let mv = |app: &mut SimApp, to: Option<std::path::PathBuf>| {
+            let live = app.session.as_ref().unwrap();
+            let m = live.model();
+            let text = app.saved_text().unwrap();
+            let current = move || Ok(text.clone());
+            let outcomes = app.diagram.move_use("a", to, &app.registry, &current);
+            app.diagram_outcomes(&m, outcomes);
+            assert!(app.error.is_none(), "{:?}", app.error);
+        };
+        let x0 = |app: &SimApp| {
+            app.session
+                .as_ref()
+                .unwrap()
+                .call(|s, _| {
+                    s.set_view_reads(vec!["a/c.x".into()]);
+                    s.restart().unwrap();
+                    s.run_until(0.1).unwrap();
+                    s.flush(true);
+                    let h = s.signals();
+                    h.values(h.resolve("a/c.x").unwrap())[0]
+                })
+                .unwrap()
+        };
+        mv(&mut app, None);
+        let saved = app.saved_text().unwrap();
+        assert!(
+            saved.contains("\"model\": \"count\"") && saved.contains("\"models\""),
+            "{saved}"
+        );
+        assert_eq!(x0(&app), 2.0);
+        mv(&mut app, Some(dir.join("count-2.ssbx.json")));
+        assert!(app.saved_text().unwrap().contains("count-2.ssbx.json"));
+        assert!(app
+            .diagram
+            .edited
+            .contains_key(&dir.join("count-2.ssbx.json")));
+        assert_eq!(x0(&app), 2.0);
+        // Undo brings the definition back and forgets the new file.
+        canvas_step(&mut app, true);
+        assert!(app.diagram.edited.is_empty());
+        assert!(app.saved_text().unwrap().contains("\"model\": \"count\""));
+        canvas_step(&mut app, false);
+        app.save_to(&model);
+        assert!(dir.join("count-2.ssbx.json").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn edits_inside_an_expanded_use_change_the_model_it_uses() {
+        use simsandbox_session::diagram::{Diagram, Edit};
+        use simsandbox_session::edit_use::How;
+        let mut app = SimApp::new(None, None, None, None);
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Platoon"))
+            .unwrap();
+        app.open_text(e.name, e.text);
+        // Expanded, and saved so.
+        let m = app.session.as_ref().unwrap().model();
+        app.diagram.expanded = vec!["car1".into()];
+        app.diagram_outcomes(&m, vec![Outcome::Expanded(vec!["car1".into()])]);
+        let saved = app.saved_text().unwrap();
+        assert!(saved.contains("\"expand\": [\n      \"car1\""), "{saved}");
+        let draw = |app: &mut SimApp| {
+            let m = app.session.as_ref().unwrap().model();
+            let mut d = Diagram::new(&m.file, &app.registry);
+            d.expand(&m.file, &app.registry, &app.diagram.expanded.clone());
+            app.diagram.set_drawn(d.clone());
+            d
+        };
+        let d = draw(&mut app);
+        // A value set on the car inside the outline: the follower is used
+        // three times, so the question is asked for car1.
+        canvas_edits(
+            &mut app,
+            vec![Edit::SetParam {
+                block: "car1/car".into(),
+                param: "c".into(),
+                value: 80.0,
+            }],
+        );
+        let asked = app.diagram.asking.as_ref().expect("asked");
+        assert_eq!(asked.path, ["car1"]);
+        // Answered: every use changes.
+        let live = app.session.as_ref().unwrap();
+        let m = live.model();
+        let text = app.saved_text().unwrap();
+        let current = move || Ok(text.clone());
+        app.diagram.asking = None;
+        app.diagram.inside = vec!["car1".into()];
+        let edit = Edit::SetParam {
+            block: "car".into(),
+            param: "c".into(),
+            value: 80.0,
+        };
+        let outcomes = app
+            .diagram
+            .answer(vec![edit], How::Original, &app.registry, &current);
+        app.diagram.inside.clear();
+        app.diagram_outcomes(&m, outcomes);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let live = app.session.as_ref().unwrap();
+        live.sync();
+        let m = live.model();
+        assert!(m
+            .params
+            .iter()
+            .filter(|r| r.key.ends_with("/car.c"))
+            .all(|r| r.value == 80.0));
+        // A node pushed aside keeps its own place when moved.
+        let _ = draw(&mut app);
+        let car2 = d.nodes[d.node("car2").unwrap()].clone();
+        let pushed = d.shifted["car2"];
+        canvas_edits(
+            &mut app,
+            vec![Edit::Move {
+                block: "car2".into(),
+                at: [car2.at[0] + 10.0, car2.at[1]],
+            }],
+        );
+        let saved = app.saved_text().unwrap();
+        let (f, _) = simsandbox_file::ModelFile::from_json(&saved).unwrap();
+        let at = f
+            .blocks
+            .iter()
+            .find(|b| b.name == "car2")
+            .unwrap()
+            .canvas
+            .unwrap();
+        assert_eq!(at[0], car2.at[0] + 10.0 - pushed[0]);
+        // Reopened, it opens expanded.
+        let mut again = SimApp::new(None, None, None, None);
+        again.open_text("again", &saved);
+        assert_eq!(again.diagram.expanded, ["car1"]);
+    }
+
+    #[test]
     fn model_parameters_set_every_block_using_them() {
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES
@@ -4527,6 +7263,106 @@ mod tests {
                 .unwrap();
             assert_eq!((row.value, row.formula.as_deref()), (800.0, Some("kp")));
         }
+    }
+
+    #[test]
+    fn the_dock_fitting_itself_to_the_window_is_not_an_edit() {
+        let mut app = SimApp::new(None, None, None, None);
+        let k = EXAMPLES
+            .iter()
+            .position(|e| e.name.contains("Cruise"))
+            .unwrap();
+        app.open_example(k);
+        let frame = |app: &mut SimApp, ctx: &egui::Context, height: f32| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, height),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.docked(ui));
+            out.textures_delta.clear();
+        };
+        // A short window: the splits are fitted to the panes' contents.
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&mut app, &ctx, 260.0);
+        }
+        assert!(app.dock_settled.is_some(), "the dock did not fit itself");
+        assert!(!app.has_unsaved(), "fitting the dock is not an edit");
+        // A real change still counts: a view in a tab of its own.
+        let t = app.tile_ids()[0];
+        app.dock.own_tab(t);
+        assert!(app.has_unsaved());
+    }
+
+    #[test]
+    fn without_a_file_the_app_opens_on_its_landing_page() {
+        let mut app = SimApp::new(None, None, None, None);
+        assert!(app.session.is_none());
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.docked(ui));
+        out.textures_delta.clear();
+        assert!(!example_description(0).is_empty());
+        assert!(!app.has_unsaved());
+    }
+
+    #[test]
+    fn an_example_that_reads_files_opens_and_saves_with_them() {
+        // ADR 0069 step 3: the bridge reads its nodes and wires from CSV
+        // files built into the app with it.
+        let mut app = SimApp::new(None, None, None, None);
+        let k = EXAMPLES.iter().position(|e| !e.files.is_empty()).unwrap();
+        app.open_example(k);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(app.path.is_none(), "an example has no path until saved");
+        // The window's own builds (the diagram's nodes, the Inspector) read
+        // the files too.
+        let m = app.session.as_ref().unwrap().model();
+        let d = simsandbox_session::diagram::Diagram::new(&m.file, &app.registry);
+        let n = &d.nodes[d.node("bridge").unwrap()];
+        assert!(n.error.is_none(), "{:?}", n.error);
+        assert!(
+            n.values.iter().any(|v| v.name == "supply"),
+            "its parameters"
+        );
+        for p in ["bridge.supply", "bridge.C"] {
+            assert!(
+                m.params.iter().any(|r| r.key.ends_with(p)),
+                "{p} in the Inspector"
+            );
+        }
+        let live = app.session.as_ref().unwrap();
+        assert!(live
+            .call(|s, _| s.run_until(1.0).map_err(|e| e.to_string()))
+            .unwrap()
+            .is_ok());
+        // Save as puts its files beside it, and it opens from there.
+        let dir = std::env::temp_dir().join(format!("simsandbox-app-net-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bridge.ssbx.json");
+        app.save_to(&path);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        for (name, text) in EXAMPLES[k].files {
+            assert_eq!(&std::fs::read_to_string(dir.join(name)).unwrap(), text);
+        }
+        assert!(app.example_folder.is_none());
+        let mut again = SimApp::new(None, None, None, None);
+        again.open_path(&path.to_string_lossy());
+        assert!(again.error.is_none(), "{:?}", again.error);
+        // Another example after it reads no folder of the first's.
+        app.open_example(0);
+        assert!(app.error.is_none() && app.example_folder.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
