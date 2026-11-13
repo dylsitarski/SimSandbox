@@ -895,15 +895,21 @@ impl Gathering {
                 list.push(at);
             }
         };
+        // What the phase writes must be chunked and never read whole. An
+        // array it only reads is read whole once anything reads it so;
+        // read cell by cell, each chunk takes its own cells of it.
+        let mut writes: Vec<usize> = self.ops.iter().map(|&(_, w, _, _)| w).collect();
+        add(&mut writes, d);
         add(&mut chunked, d);
         for (k, s) in [a, b].iter().enumerate().filter(|(_, s)| s.array) {
             if whole && k == 0 {
                 add(&mut read, s.at);
-            } else {
+                chunked.retain(|&x| x != s.at || writes.contains(&x));
+            } else if !read.contains(&s.at) {
                 add(&mut chunked, s.at);
             }
         }
-        if chunked.iter().any(|x| read.contains(x)) {
+        if chunked.iter().any(|x| read.contains(x)) || writes.iter().any(|x| read.contains(x)) {
             return false;
         }
         let all: Vec<usize> = chunked.iter().chain(&read).copied().collect();
@@ -996,6 +1002,7 @@ impl Gathering {
             read: self.read,
             ops,
             choice: crate::cells::Choice::default(),
+            compiled: None,
         }
     }
 }
@@ -1294,6 +1301,9 @@ pub struct Program {
     split: bool,
     /// Whether some arrays were placed outside the registers.
     outside: bool,
+    /// Where array temporaries start: registers before are the caller's
+    /// variables, constants and scalar temporaries.
+    temps_at: usize,
 }
 
 struct Builder<'a> {
@@ -1760,6 +1770,7 @@ impl Program {
             steps,
             split: largest >= crate::cells::WORTH,
             outside: false,
+            temps_at: b.temps_at,
         }
     }
 
@@ -1930,6 +1941,74 @@ impl Program {
         (read_out, write_out)
     }
 
+    /// Compile its phases of cells (ADR 0084 point 6): `compiler` is given
+    /// each phase's view and may return code to run in its place. Returns
+    /// how many it compiled. Call after [`Program::place_outside`], which
+    /// drops what was compiled.
+    pub fn compile_phases(
+        &mut self,
+        compiler: &mut dyn FnMut(
+            &crate::cells::PhaseView,
+        ) -> Option<std::sync::Arc<dyn crate::cells::PhaseKernel>>,
+    ) -> usize {
+        let mut compiled = 0;
+        // What each step reads, worked out once.
+        let reads: Vec<Vec<(usize, usize)>> = self.steps.iter().map(|s| self.reads(s)).collect();
+        let kept: Vec<Option<Vec<bool>>> = (0..self.steps.len())
+            .map(|s| match &self.steps[s] {
+                Step::Cells(p) => Some(
+                    p.written
+                        .iter()
+                        .map(|&at| {
+                            let hits = |&(a, m): &(usize, usize)| a < at + p.n && at < a + m;
+                            at < self.temps_at || reads[s + 1..].iter().flatten().any(hits)
+                        })
+                        .collect(),
+                ),
+                Step::One(_) => None,
+            })
+            .collect();
+        for (step, kept) in self.steps.iter_mut().zip(kept) {
+            if let Step::Cells(phase) = step {
+                let (mut view, scalars) = phase.view();
+                view.kept = kept.expect("a phase");
+                if let Some(kernel) = compiler(&view) {
+                    phase.compile(kernel, scalars);
+                    compiled += 1;
+                }
+            }
+        }
+        compiled
+    }
+
+    /// The runs of registers a step reads, as (first, count).
+    fn reads(&self, step: &Step) -> Vec<(usize, usize)> {
+        let of = |i: usize| -> Vec<(usize, usize)> {
+            match self.code[i] {
+                Ins::Arr(k) => self.arrays[k as usize].touches()[1..].to_vec(),
+                ins => scalar_regs(ins)
+                    .map_or(Vec::new(), |(_, r)| r.into_iter().map(|r| (r, 1)).collect()),
+            }
+        };
+        match step {
+            Step::One(i) => of(*i),
+            Step::Cells(p) => {
+                let mut all: Vec<(usize, usize)> = p.first.iter().flat_map(|&i| of(i)).collect();
+                all.extend(p.read.iter().map(|&r| (r, p.n)));
+                for op in &p.ops {
+                    for o in [op.a, op.b] {
+                        all.push(match o {
+                            Operand::Written(k) => (p.written[k], p.n),
+                            Operand::Read(k) => (p.read[k], p.n),
+                            Operand::Scalar(r) => (r, 1),
+                        });
+                    }
+                }
+                all
+            }
+        }
+    }
+
     /// Run as [`Program::run`], with the arrays placed outside read from
     /// and written to `out`.
     pub fn run_outside(&self, r: &mut [f64], mut out: Outside) {
@@ -2000,6 +2079,102 @@ impl Program {
 mod tests {
     use super::*;
     use crate::parse;
+
+    use crate::cells::{Arg, EdgeView, OpKind, PhaseKernel, PhaseView};
+
+    /// A phase run cell by cell from its view alone, as a compiler would:
+    /// the reference for [`PhaseView`]'s rules.
+    struct ByView(PhaseView);
+
+    impl PhaseKernel for ByView {
+        fn run(&self, lo: usize, written: &mut [&mut [f64]], read: &[&[f64]], s: &[f64]) {
+            let len = written.first().map_or(0, |w| w.len());
+            for i in 0..len {
+                let k = lo + i;
+                // Each cell's values as the operations leave them, stored
+                // at the end only where kept.
+                let mut cell: Vec<Option<f64>> = vec![None; written.len()];
+                for op in &self.0.ops {
+                    let get = |a: Arg, written: &[&mut [f64]]| match a {
+                        Arg::Written(w) => cell[w].unwrap_or(written[w][i]),
+                        Arg::Read(r) => read[r][k],
+                        Arg::Scalar(x) => s[x],
+                    };
+                    let (x, y) = (get(op.a, written), get(op.b, written));
+                    let edge = |e: EdgeView| match e {
+                        EdgeView::Value(v) => (Some(s[v]), None),
+                        EdgeView::Gradient(g) => (None, Some(g.map_or(0.0, |g| s[g]))),
+                        EdgeView::Periodic => (None, None),
+                    };
+                    let v = match op.kind {
+                        OpKind::Copy => x,
+                        OpKind::Neg => -x,
+                        OpKind::Bin(o) => o.apply(x, y),
+                        OpKind::Call1(f) => f.apply(x, 0.0),
+                        OpKind::Call2(f) => f.apply(x, y),
+                        OpKind::Axis { stride, count } => {
+                            x + ((k / stride % count) as f64 + 0.5) * y
+                        }
+                        OpKind::Stencil {
+                            second,
+                            stride,
+                            count,
+                        }
+                        | OpKind::Shift {
+                            up: second,
+                            stride,
+                            count,
+                        } => {
+                            let Arg::Read(a) = op.a else { unreachable!() };
+                            let src = read[a];
+                            let h = y;
+                            let j = k / stride % count;
+                            let (first, last) = (k - j * stride, k + (count - 1 - j) * stride);
+                            let stencil = matches!(op.kind, OpKind::Stencil { .. });
+                            let beyond = |e: EdgeView, end: f64, far: f64| match edge(e) {
+                                (Some(v), _) => {
+                                    if stencil {
+                                        2.0 * v - end
+                                    } else {
+                                        v
+                                    }
+                                }
+                                (_, Some(g)) => end + g * h,
+                                _ => far,
+                            };
+                            let below = if j == 0 {
+                                beyond(op.edges[0], src[first], src[last])
+                            } else {
+                                src[k - stride]
+                            };
+                            let above = if j + 1 == count {
+                                beyond(op.edges[1], src[last], src[first])
+                            } else {
+                                src[k + stride]
+                            };
+                            match (stencil, second) {
+                                (true, true) => (below - 2.0 * src[k] + above) * (1.0 / (h * h)),
+                                (true, false) => (above - below) * (1.0 / (2.0 * h)),
+                                (false, up) => {
+                                    if up {
+                                        above
+                                    } else {
+                                        below
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    cell[op.d] = Some(v);
+                }
+                for (w, v) in cell.iter().enumerate() {
+                    if let (Some(v), true) = (v, self.0.kept[w]) {
+                        written[w][i] = *v;
+                    }
+                }
+            }
+        }
+    }
 
     const NAMES: [&str; 4] = ["t", "x", "y", "k"];
 
@@ -2331,6 +2506,29 @@ mod tests {
         }
         crate::cells::TEST_BLOCK.with(|b| b.set(None));
         assert!(in_order[spans[total].at].is_finite());
+        // Compiled: each phase run by code following only what its view
+        // says, cell by cell, gives the same bits, in any chunks.
+        let mut q = p.clone();
+        q.steps = steps.clone();
+        let mut dropped = 0;
+        let compiled = q.compile_phases(&mut |v| {
+            dropped += v.kept.iter().filter(|k| !**k).count();
+            Some(std::sync::Arc::new(ByView(v.clone())))
+        });
+        assert_eq!(compiled, phases);
+        assert!(dropped > 0, "some temporaries need not be stored");
+        // Temporaries nothing reads after their phase need not be
+        // stored: all else is the same.
+        for chunks in [1, 3] {
+            let mut compiled = r.clone();
+            q.run_steps(&q.steps, &mut compiled, Some(chunks), None);
+            let at = q.temps_at;
+            assert_eq!(
+                bits(&compiled[..at]),
+                bits(&in_order[..at]),
+                "compiled, {chunks} chunks"
+            );
+        }
     }
 
     #[test]

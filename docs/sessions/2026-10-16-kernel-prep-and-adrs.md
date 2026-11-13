@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-13: ADR 0084 point 6 comparison in `spikes/compiled-routes`: Cranelift JIT, generated WebAssembly in Wasmtime, a hand-written WebAssembly Gray–Scott and fused Rust against the interpreter (time, compile time, bits, size); the `PhaseView`/`PhaseKernel` hook and `kept` analysis in `simsandbox-expr`; phases merge where an only-read array is read both ways; Q54 resolved, Q55 opened.
 - 2026-11-13: stencils multiply by 1/h² and 1/(2h) in both evaluation paths; `fused_speed`'s fused kernel follows; Gray–Scott 512 × 512 at 1965 µs (from 5050 at the start of the day).
 - 2026-11-13: STATUS item 3, first step: typed equations' phases run in blocks of 2048 cells, stencils and shifts by runs of cells inside a line; large grids 1.9–2× faster, same bits (`cells.rs`; measurements in performance.md).
 - 2026-11-13: ADR 0088 point 8: activation ports first with the mode, live `held` / start count on activated uses' nodes (kernel start count in snapshots, `Session::activations`, `Diagram::live_activations`).
@@ -208,6 +209,7 @@
 
 ## Decided
 
+- 2026-11-13 (mine, ADR 0084 comparison): the spike lives outside the workspace (`spikes/`, its own `[workspace]`, target ignored) so Cranelift and Wasmtime stay out of the build and CI; compiled code calls the interpreter's own functions for `^` and functions so bits match; route 3 copies arrays per call (its memory is its own), and that cost is reported with the time inside.
 - 2026-11-13 (owner): stencils may multiply by 1/h² though the last bits of results change once.
 - 2026-11-13 (mine, STATUS item 3): blocks of 2048 cells (measured best of 256–4096); large programs run by phases on one core too.
 - 2026-11-13 (mine, ADR 0088 point 8): the start count lives in the kernel's snapshot so rewinds take it back; a study's node does not show whether it holds results.

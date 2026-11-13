@@ -1,6 +1,6 @@
 # Open questions
 
-_Last updated: 2026-11-08_
+_Last updated: 2026-11-13_
 
 Decisions not yet made. When one is resolved, write an ADR, link it in the **Resolved** table and remove the row from **Open**.
 
@@ -8,7 +8,7 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Options | Needed by | Notes |
 | --- | --- | --- | --- | --- |
-| Q54 | Where typed equations stop and wrapped libraries, FMI or other backends begin | [ADR 0084](decisions/0084-where-typed-equations-stop.md) (owner, 2026-11-08): blocks wrap anything; typed equations a causal language of exact, verified primitives, algorithms as models; acausal physics from Modelica through FMI; no outside compiler for model files; the WebAssembly spike compares compiled routes for our own program |
+| Q55 | Whether typed equations run compiled phases (Cranelift in the process) now | (a) Yes: `simsandbox-eq` compiles large programs' phases when built, the interpreter as reference and fallback; 1.3–1.7× on Gray–Scott, 4–9 ms per edit, 4.95 MB; (b) not yet: keep the interpreter (now within 2× of compiled code), revisit when SIMD code or a model needs it; (c) behind a build feature | Before more work on typed equations' speed | [Performance](design/performance.md#compiled-routes-adr-0084-point-6-2026-11-13), 2026-11-13: by ADR 0084's rule route 2 (Cranelift) is the compiled route; route 3 (Wasmtime) is not close. Compiled code is still 2× from fused Rust (no vector instructions) |
 | Q52 | How a study keeps each run's series, now that experiments are studies (ADR 0071) and `keep: "series"` is refused | (a) A 2D output per signal, runs × samples, on a common time grid; (b) a probe inside the studied model writing a file per run; (c) not at all: reduce, or run the model alone at that point | When someone needs whole runs of a study | Experiments kept them headless (`Results.series`) until 2026-11-04; nothing used them besides tests |
 | Q43 | Re-reading a data file that changes while its model is open (`input.file`, ADR 0063) | (a) Read when the model is built only (as built 2026-10-30): reopen or edit to re-read; (b) re-read on Restart; (c) watch the file and offer to reload | When the owner reads files that change, e.g. another model's streamed probe | Step 5 (several models in one session) links models by probes directly, which may make this rare |
 | Q42 | Whether probe CSV files write units in their header (`car.v [m/s]`) | (a) No (as now): reading one back needs `unit.COLUMN` settings; (b) yes: `input.file` reads them with no settings, but pandas column names carry the unit; (c) a sidecar file with units and field shapes | Before probe files are read back often | `input.file` already reads `name [unit]` headers (ADR 0048: units from the source when it has any). The session would need each recorded signal's unit |
@@ -22,6 +22,7 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Resolution |
 | --- | --- | --- |
+| Q54 | Where typed equations stop and wrapped libraries, FMI or other backends begin | [ADR 0084](decisions/0084-where-typed-equations-stop.md) (owner, 2026-11-08): blocks wrap anything; typed equations a causal language of exact, verified primitives; acausal physics from Modelica through FMI; speed from compiling our own program, the route measured 2026-11-13 (Cranelift; whether now: Q55) |
 | Q53 | How a model or study runs or restarts when an event fires (activation) | [ADR 0088](decisions/0088-activation.md) (2026-11-13): an `activate` input on used models and studies with modes `rise` (default), `fall`, `change` and `while` (held outputs keep their last values); a `restart` input on used models; events within a step later, as a capability of the signal's source |
 | Q51 | Whether `controls.plots` leaves the format | Removed (owner, 2026-11-04): no file relies on it, so nothing converts it; a stray `plots` is ignored like any unknown `controls` key |
 | Q50 | Where repetition and recursion of structure belong | [ADR 0069](decisions/0069-repetition-in-blocks.md) (owner, 2026-11-02): in blocks (arrays extended); no self-use; Duplicate; `count` waits |

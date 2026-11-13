@@ -19,7 +19,7 @@ mod cells;
 pub mod program;
 pub mod units;
 
-pub use cells::Outside;
+pub use cells::{Arg, EdgeView, OpKind, OpView, Outside, PhaseKernel, PhaseView};
 pub use program::Program;
 
 use std::fmt;
@@ -147,7 +147,8 @@ impl Func {
         }
     }
 
-    fn apply(self, a: f64, b: f64) -> f64 {
+    /// The function of `a` (and `b`, for those of two arguments).
+    pub fn apply(self, a: f64, b: f64) -> f64 {
         match self {
             Func::Sin => a.sin(),
             Func::Cos => a.cos(),

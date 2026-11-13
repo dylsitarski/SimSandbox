@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::program::{ghost, EdgeAt, EdgeValue};
 use crate::{Func, Line, Op};
+use std::sync::Arc;
 
 /// Below this many cell operations (a stencil counts four) a phase runs
 /// on one core, without measuring: starting threads and sharing memory
@@ -127,6 +128,117 @@ pub(crate) struct Phase {
     pub written_out: Vec<bool>,
     pub read_out: Vec<bool>,
     pub choice: Choice,
+    /// Code compiled for it, run in place of its operations.
+    pub compiled: Option<Box<Compiled>>,
+}
+
+/// A phase as a compiler sees it (ADR 0084 point 6): its operations over
+/// `cells` cells, on `written` arrays it writes, `read` arrays it only
+/// reads and `scalars` numbers read once per run, each by its place in
+/// those lists. A [`PhaseKernel`] compiled from it must give the bits the
+/// interpreter gives:
+/// - each cell's operations in order, an operand that is a written array
+///   read at the same cell (as the operations before left it);
+/// - `Axis`: `a + (j + 0.5)*b`, `j` the cell's place along the line, as
+///   an `f64`;
+/// - `Stencil`: from `a`, a read array, along its line, spacing `b`:
+///   `(below - 2*here + above) * (1/(b*b))` (second) or
+///   `(above - below) * (1/(2*b))` (first), the reciprocal worked out
+///   once; beyond an end, by its edge: `Value(v)`: `2*v - end`,
+///   `Gradient(g)`: `end + g*b` (`g` 0 if none), `Periodic`: the far end;
+/// - `Shift`: the neighbour before (or after, `up`); beyond an end
+///   `Value(v)`: `v`, `Gradient(g)`: `end + g*b`, `Periodic`: the far end;
+/// - `Bin`, `Call1`, `Call2`: as [`Op::apply`] and [`Func::apply`]
+///   (`Call1` with 0 as its second argument).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhaseView {
+    pub cells: usize,
+    pub written: usize,
+    pub read: usize,
+    pub scalars: usize,
+    pub ops: Vec<OpView>,
+    /// Per written array, whether its cells must be stored: the others
+    /// are temporaries nothing reads after the phase, which compiled code
+    /// may keep in registers only (all are kept unless the program says).
+    pub kept: Vec<bool>,
+}
+
+/// One operation of a [`PhaseView`]: written array `d` from `a` and `b`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpView {
+    pub kind: OpKind,
+    pub d: usize,
+    pub a: Arg,
+    pub b: Arg,
+    /// For stencils and shifts, the low and high ends' edges.
+    pub edges: [EdgeView; 2],
+}
+
+/// An operand of an [`OpView`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arg {
+    Written(usize),
+    Read(usize),
+    Scalar(usize),
+}
+
+/// What an [`OpView`] computes; lines by stride and count of cells.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OpKind {
+    Copy,
+    Neg,
+    Bin(Op),
+    Call1(Func),
+    Call2(Func),
+    Axis {
+        stride: usize,
+        count: usize,
+    },
+    Stencil {
+        second: bool,
+        stride: usize,
+        count: usize,
+    },
+    Shift {
+        up: bool,
+        stride: usize,
+        count: usize,
+    },
+}
+
+/// An edge of a stencil or shift, its numbers by place among the scalars.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeView {
+    Value(usize),
+    Gradient(Option<usize>),
+    Periodic,
+}
+
+/// Code compiled from a [`PhaseView`]. `run` computes the cells from
+/// `lo`: `written[k]` is those cells of written array `k` (all the same
+/// length), `read[k]` read array `k` whole, `scalars` in the view's order.
+pub trait PhaseKernel: Send + Sync {
+    fn run(&self, lo: usize, written: &mut [&mut [f64]], read: &[&[f64]], scalars: &[f64]);
+}
+
+/// A phase's kernel and the registers its scalars are read from.
+#[derive(Clone)]
+pub(crate) struct Compiled {
+    kernel: std::sync::Arc<dyn PhaseKernel>,
+    scalars: Vec<usize>,
+}
+
+impl std::fmt::Debug for Compiled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Compiled({} scalars)", self.scalars.len())
+    }
+}
+
+/// Compiled code is not part of what a phase is.
+impl PartialEq for Compiled {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// Arrays kept by the caller instead of in the registers: registers from
@@ -224,6 +336,8 @@ impl Phase {
     /// only, so moved to the read arrays) and those `write_out` says
     /// (written, never read).
     pub fn place(&mut self, read_out: impl Fn(usize) -> bool, write_out: impl Fn(usize) -> bool) {
+        // Compiled for the arrays where they were.
+        self.compiled = None;
         let moved: Vec<bool> = self.written.iter().map(|&at| read_out(at)).collect();
         if moved.iter().any(|&m| m) {
             let mut new_index = vec![Operand::Written(0); self.written.len()];
@@ -254,6 +368,96 @@ impl Phase {
         }
         self.written_out = self.written.iter().map(|&at| write_out(at)).collect();
         self.read_out = self.read.iter().map(|&at| read_out(at)).collect();
+    }
+
+    /// What a compiler sees of it, and the registers of its scalars in
+    /// the view's order.
+    pub fn view(&self) -> (PhaseView, Vec<usize>) {
+        let mut scalars: Vec<usize> = Vec::new();
+        let mut scalar = |at: usize| match scalars.iter().position(|&s| s == at) {
+            Some(k) => k,
+            None => {
+                scalars.push(at);
+                scalars.len() - 1
+            }
+        };
+        let mut arg = |o: Operand| match o {
+            Operand::Written(k) => Arg::Written(k),
+            Operand::Read(k) => Arg::Read(k),
+            Operand::Scalar(at) => Arg::Scalar(scalar(at)),
+        };
+        let ops = self
+            .ops
+            .iter()
+            .map(|op| {
+                let (a, b) = (arg(op.a), arg(op.b));
+                let (kind, edges) = match op.kind {
+                    Kind::Copy => (OpKind::Copy, None),
+                    Kind::Neg => (OpKind::Neg, None),
+                    Kind::Bin(o) => (OpKind::Bin(o), None),
+                    Kind::Call1(f) => (OpKind::Call1(f), None),
+                    Kind::Call2(f) => (OpKind::Call2(f), None),
+                    Kind::Axis(l) => (
+                        OpKind::Axis {
+                            stride: l.stride,
+                            count: l.count,
+                        },
+                        None,
+                    ),
+                    Kind::Stencil {
+                        second,
+                        line,
+                        edges,
+                    } => (
+                        OpKind::Stencil {
+                            second,
+                            stride: line.stride,
+                            count: line.count,
+                        },
+                        Some(edges),
+                    ),
+                    Kind::Shift { up, line, edges } => (
+                        OpKind::Shift {
+                            up,
+                            stride: line.stride,
+                            count: line.count,
+                        },
+                        Some(edges),
+                    ),
+                };
+                (kind, op.d, a, b, edges)
+            })
+            .collect::<Vec<_>>();
+        let ops = ops
+            .into_iter()
+            .map(|(kind, d, a, b, edges)| OpView {
+                kind,
+                d,
+                a,
+                b,
+                edges: edges.map_or([EdgeView::Periodic; 2], |e| {
+                    e.map(|e| match e {
+                        EdgeAt::Value(v) => EdgeView::Value(scalar(v)),
+                        EdgeAt::Gradient(g) => EdgeView::Gradient(g.map(&mut scalar)),
+                        EdgeAt::Periodic => EdgeView::Periodic,
+                    })
+                }),
+            })
+            .collect();
+        let view = PhaseView {
+            kept: vec![true; self.written.len()],
+            cells: self.n,
+            written: self.written.len(),
+            read: self.read.len(),
+            scalars: scalars.len(),
+            ops,
+        };
+        (view, scalars)
+    }
+
+    /// Run `kernel` in place of its operations.
+    pub fn compile(&mut self, kernel: Arc<dyn PhaseKernel>, scalars: Vec<usize>) {
+        self.compiled = Some(Box::new(Compiled { kernel, scalars }));
     }
 
     /// The work it does: cells times operations, a stencil as four.
@@ -291,6 +495,12 @@ impl Phase {
             EdgeAt::Gradient(g) => EdgeValue::Gradient(g.map_or(0.0, |g| r[g])),
             EdgeAt::Periodic => EdgeValue::Periodic,
         };
+        let compiled = self.compiled.as_ref().map(|c| {
+            (
+                &c.kernel,
+                c.scalars.iter().map(|&at| r[at]).collect::<Vec<f64>>(),
+            )
+        });
         let ops: Vec<Ready> = self
             .ops
             .iter()
@@ -377,7 +587,11 @@ impl Phase {
         let block = block_cells();
         // Each share in blocks of cells small enough that the arrays the
         // phase writes stay in the cache from one operation to the next.
+        let compiled = &compiled;
         let go = |(lo, mut mine): (usize, Vec<&mut [f64]>)| {
+            if let Some((kernel, scalars)) = compiled {
+                return kernel.run(lo, &mut mine, read, scalars);
+            }
             let len = mine.first().map_or(0, |m| m.len());
             let mut start = 0;
             while start < len {

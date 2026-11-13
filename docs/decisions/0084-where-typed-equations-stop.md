@@ -58,3 +58,12 @@ For each: time per evaluation, compile latency after an edit, whether the bits e
 - The language stays small; heavy cases are blocks, not new syntax.
 - The spike decides the compiled back end with measurements, not estimates.
 - **Concepts added:** none. Blocks and typed equations exist; this sets their boundary.
+
+## As built
+
+**The comparison (2026-11-13).** `spikes/compiled-routes` (outside the workspace), measured on Gray–Scott's rates; numbers and reasons in [performance](../design/performance.md#compiled-routes-adr-0084-point-6-2026-11-13).
+- **The hook:** `simsandbox-expr` describes each phase of cells to a compiler (`PhaseView`, with the rules a kernel must follow to give the interpreter's bits, and `kept`: which written arrays a later step reads) and runs compiled code in its place (`PhaseKernel`, `Program::compile_phases`, `EquationSet::compile_phases`). Tested with a kernel written from the rules alone, in any chunking. Functions and powers are called from compiled code as the interpreter's own.
+- **Results, one core:** route 2 (Cranelift) 1.3–1.7× faster than the interpreter and 2× slower than fused Rust; route 3 (our program as WebAssembly in Wasmtime) 1.3–1.4× slower than route 2 inside the module and 2.8–3.9× with the copies in and out; route 4 (a block written by hand) 2.3–2.4× fused Rust inside WebAssembly; every route the same bits; compile after an edit 4–9 ms (route 2), 10–16 ms (route 3); size 4.95 MB (Cranelift), 12.7 MB (Wasmtime).
+- **By point 6's rule:** route 3 is not close to route 2, so typed equations' compiled route is Cranelift in the process; one runtime does not serve both typed equations and plugins. Whether it goes into the build now is [Q55](../open-questions.md).
+- **On the way, the interpreter:** phases no longer split where an array only read is read both whole and cell by cell (Gray–Scott's rates: one phase, not four), 1.2–1.3× on large grids, the same bits.
+

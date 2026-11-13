@@ -2111,6 +2111,27 @@ fn lower(
 }
 
 impl EquationSet {
+    /// Compile the phases of cells of its programs (ADR 0084 point 6):
+    /// `compiler` is given each phase's view and may return code to run
+    /// in its place, which must give the interpreter's bits. Returns how
+    /// many phases it compiled.
+    pub fn compile_phases(
+        &mut self,
+        compiler: &mut dyn FnMut(
+            &simsandbox_expr::PhaseView,
+        )
+            -> Option<std::sync::Arc<dyn simsandbox_expr::PhaseKernel>>,
+    ) -> usize {
+        let mut n = self.outputs.compile_phases(compiler) + self.rates.compile_phases(compiler);
+        for p in [&mut self.init, &mut self.rules_program]
+            .into_iter()
+            .flatten()
+        {
+            n += p.compile_phases(compiler);
+        }
+        n
+    }
+
     /// Build from the lines of a definition, as a Block named `name`.
     pub fn parse(name: &str, lines: &[String]) -> Result<Self> {
         Self::parse_with_rows(name, lines, &std::collections::BTreeMap::new())

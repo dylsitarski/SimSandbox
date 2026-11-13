@@ -1,0 +1,30 @@
+# The compiled-route comparison of ADR 0084 point 6: not part of the
+# workspace, so its compilers stay out of SimSandbox's build and CI.
+[package]
+name = "compiled-routes"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+default = ["cranelift", "wasm"]
+cranelift = ["dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native"]
+wasm = ["dep:wasmtime", "dep:wasm-encoder", "dep:wat"]
+
+[dependencies]
+simsandbox-core = { path = "../../crates/simsandbox-core" }
+simsandbox-expr = { path = "../../crates/simsandbox-expr" }
+simsandbox-eq = { path = "../../crates/simsandbox-eq" }
+cranelift-codegen = { version = "=0.137.0", optional = true }
+cranelift-frontend = { version = "=0.137.0", optional = true }
+cranelift-jit = { version = "=0.137.0", optional = true }
+cranelift-module = { version = "=0.137.0", optional = true }
+cranelift-native = { version = "=0.137.0", optional = true }
+wasmtime = { version = "=50.0.0", optional = true, default-features = false, features = ["cranelift", "runtime", "std"] }
+wasm-encoder = { version = "0.245", optional = true }
+wat = { version = "1", optional = true }
+
+[profile.release]
+debug = false

@@ -211,6 +211,33 @@ From the start of the day typed Gray–Scott went from 5050 to 1965 µs at 512 �
 
 What is left is the interpreter itself: about 64 instructions per cell against fused code's 25, each operation loading and storing its operands where fused code keeps them in registers. Closing it means compiling the program ([ADR 0084](../decisions/0084-where-typed-equations-stop.md) point 6).
 
+## Compiled routes (ADR 0084 point 6, 2026-11-13)
+
+[ADR 0084](../decisions/0084-where-typed-equations-stop.md) point 6's comparison, in `spikes/compiled-routes` (outside the workspace; [README](../../spikes/compiled-routes/README.md)). `simsandbox-expr` gained a hook for it: a phase of cells is described to a compiler (`PhaseView`: its operations, the arrays it writes and reads, its scalars, and which written arrays a later step reads, `kept`), and compiled code (`PhaseKernel`) may run it in place of the interpreter (`Program::compile_phases`, `EquationSet::compile_phases`). A test runs every phase of a program through a kernel written from the view's rules alone, cell by cell, and requires the interpreter's bits.
+
+**Two changes to the interpreter came out of it, the same bits:**
+- **Phases merge:** an array a phase only reads may be read whole (by a stencil) and cell by cell (`F*(1 - u)`) in one phase; that had split Gray–Scott's rates into four phases. Now one phase of 18 operations: on one core 1.2× faster at 256 × 256 and 1.3× at 512 × 512 (1537 µs), the same at 128 × 128; on four cores 512 × 512 takes 589 µs, 1.2× single-core fused code.
+- **The kept analysis** (`kept`): a written array that is a temporary and that no later step reads need not be stored. The interpreter still stores it (its operations pass arrays to each other); compiled code keeps it in a register.
+
+Microseconds per evaluation, one core (`taskset -c 0`), best of five; for WebAssembly, inside the module in brackets; every route gives the interpreter's bits:
+
+| Grid | 1. Interpreter | 2. Cranelift | 3. Wasmtime, generated | 4. Wasmtime, by hand | 5. Fused Rust |
+|---|---|---|---|---|---|
+| 128 × 128 | 72 | 56 | 159 (76) | 77 (66) | 28 |
+| 256 × 256 | 389 | 233 | 881 (300) | 445 (275) | 114 |
+| 512 × 512 | 1529 | 930 | 3654 (1252) | 1807 (1103) | 471 |
+
+| | Compile after an edit (Gray–Scott, all its programs) | Size added (stripped, on 1.40 MB) |
+|---|---|---|
+| 2. Cranelift | 4–9 ms (15 phases) | 4.95 MB |
+| 3. Wasmtime, generated | 10–16 ms | 12.7 MB (Wasmtime with Cranelift) |
+| 4. Wasmtime, by hand | 1.1–1.6 ms (one function) | as route 3 |
+
+- **Route 2 is 1.3–1.7× faster than the interpreter, still 2× slower than fused Rust**, with the same bits. Cranelift emits one scalar operation per cell; LLVM vectorises and schedules the fused loop, and the interpreter's own loops over blocks of cells. Getting there took the same care as the interpreter: runs of cells inside every line (no per-cell bookkeeping, neighbours at constant offsets) and temporaries kept in registers (storing them all cost 2×).
+- **Route 3 is not close to route 2:** its code alone is 1.3–1.4× slower (Wasm's 32-bit addresses and locals), and copying the arrays into the module's memory and out again at each call makes it 2.8–3.9× slower than route 2 in all, slower than the interpreter. Sharing memory without copying would mean typed equations' registers living inside the module's memory.
+- **Route 4, a block written by hand, runs inside WebAssembly at 2.3–2.4× fused Rust's time**; with its state copied in and rates out at each call, 1.1–1.2× the interpreter's. That is the measure for user blocks as WebAssembly plugins ([Q28](../open-questions.md)): fine for blocks whose work is large against their inputs and outputs.
+- **By ADR 0084's rule** (route 3 close to route 2, else route 2 for typed equations), typed equations' compiled route is Cranelift in the process. Whether it goes into the build now, for 1.3–1.7× and 5 MB, is the owner's ([Q55](../open-questions.md)).
+
 ## Implicit methods on 2D grids (2026-11-13)
 
 TR-BDF2 on Gray–Scott at 128 × 128 (`grid_cost` on a copy of the example with `"method": {"name": "trbdf2"}`) cost 520 ms a step, 300–330 ms of it in `faer`'s sparse LU with partial pivoting. A better ordering for that LU gained at most 28% (its fill is bounded by AᵀA's structure, which COLAMD already orders for). [ADR 0087](../decisions/0087-implicit-lu-on-the-matrix-pattern.md): our own multifrontal LU on the pattern of A + Aᵀ, pivots on the diagonal, nested dissection: 165 ms a step (factorising 75 ms, solves 5 ms each). `crates/simsandbox-eq/examples/lu_speed.rs` compares the two LUs on a 2D grid, a chain and a ring; 1D systems cost the same as before (`typed_speed`).

@@ -42,6 +42,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Guide | Branches, commits, pull requests, definition of done |
 | [CHANGELOG.md](../CHANGELOG.md) | Changelog | User-visible changes |
 | [python/README.md](../python/README.md) | Guide | The Python package's layout and checks |
+| [spikes/compiled-routes/README.md](../spikes/compiled-routes/README.md) | Guide | The compiled-route comparison of ADR 0084: how to build and run it |
 
 ### Project
 
