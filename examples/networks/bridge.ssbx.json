@@ -1,12 +1,17 @@
 {
   "format": 1,
   "description": "An unbalanced Wheatstone bridge read from two files: nodes.csv (each node's id, starting voltage and whether it is held) and wires.csv (each wire's ends and conductance). A current flows along each wire from its higher end; every free node charges a small capacitance until the currents into it balance, which is Kirchhoff's solution: then the power the held nodes supply equals the power the wires dissipate.",
-  "run": {"dt": 0.05, "t_end": 30},
+  "run": {
+    "dt": 0.05,
+    "t_end": 30
+  },
   "blocks": [
     {
       "name": "bridge",
       "type": "eq.equations",
-      "method": {"name": "rk4"},
+      "method": {
+        "name": "rk4"
+      },
       "equations": [
         "table nodes",
         "start nodes = file \"nodes.csv\"",
@@ -22,5 +27,23 @@
         "dissipated = sum(I*I/g)"
       ]
     }
-  ]
+  ],
+  "controls": {
+    "views": [
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "bridge.supplied"
+        }
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": "bridge.dissipated"
+        }
+      }
+    ]
+  }
 }

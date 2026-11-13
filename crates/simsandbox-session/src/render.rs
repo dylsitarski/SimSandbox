@@ -367,7 +367,8 @@ mod tests {
     #[test]
     fn every_example_renders_its_views() {
         for e in EXAMPLES {
-            let mut s = Session::load(e.name, e.text, &registry()).unwrap();
+            let mut s =
+                Session::load_in(e.name, e.text, &registry(), e.folder().as_deref()).unwrap();
             s.run_until(s.dt * 50.0).unwrap();
             let o = RenderOptions {
                 width: 400.0,
@@ -396,7 +397,10 @@ mod tests {
                 height: 300.0,
                 ..Default::default()
             };
-            let img = render_diagram(&f, &registry(), &o).unwrap();
+            let img = simsandbox_core::registry::in_folder(e.folder().as_deref(), || {
+                render_diagram(&f, &registry(), &o)
+            })
+            .unwrap();
             let first = &img.rgba[..4];
             let differing = img.rgba.chunks(4).filter(|p| p != &first).count();
             assert!(differing > 3000, "{}: {differing} pixels drawn", e.name);

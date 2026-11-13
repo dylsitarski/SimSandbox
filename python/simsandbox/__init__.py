@@ -79,7 +79,7 @@ def upgrade(model: "Model | dict | str | os.PathLike") -> tuple["Model", list[st
 
 def examples() -> list[str]:
     """Names of the built-in example models, for :meth:`Model.example`."""
-    return [name for name, _ in _native.examples()]
+    return [name for name, _, _ in _native.examples()]
 
 
 @contextlib.contextmanager
@@ -154,14 +154,17 @@ class Model:
         """A built-in example, by its name or a unique part of it
         (``"grazing"``)."""
         found = [
-            (n, t)
-            for n, t in _native.examples()
+            (n, t, d)
+            for n, t, d in _native.examples()
             if n == name or name.lower() in n.lower()
         ]
         exact = [f for f in found if f[0] == name]
         if len(exact) == 1 or len(found) == 1:
-            return cls.from_json((exact or found)[0][1])
-        raise KeyError(f"{name!r} matches {[n for n, _ in found]}; examples: {examples()}")
+            # An example that reads files reads them from a folder holding
+            # them (ADR 0069 step 3).
+            _, text, folder = (exact or found)[0]
+            return cls(json.loads(text), folder)
+        raise KeyError(f"{name!r} matches {[n for n, _, _ in found]}; examples: {examples()}")
 
     def to_json(self) -> str:
         return json.dumps(self.data, indent=2)

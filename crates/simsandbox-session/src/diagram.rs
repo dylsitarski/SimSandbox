@@ -3361,7 +3361,9 @@ mod tests {
         let r = registry();
         for e in EXAMPLES {
             let (f, _) = ModelFile::from_json(e.text).unwrap();
-            let d = Diagram::new(&f, &r);
+            let d = simsandbox_core::registry::in_folder(e.folder().as_deref(), || {
+                Diagram::new(&f, &r)
+            });
             assert_eq!(d.nodes.len(), f.blocks.len(), "{}", e.name);
             assert_eq!(d.wires.len(), f.connections.len(), "{}", e.name);
             assert!(d.nodes.iter().all(|n| n.error.is_none()), "{}", e.name);

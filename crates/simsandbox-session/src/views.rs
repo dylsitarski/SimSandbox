@@ -402,7 +402,7 @@ mod tests {
         use crate::examples::{registry, view_registry, EXAMPLES};
         use crate::session::Session;
         for e in EXAMPLES {
-            let s = Session::load(e.name, e.text, &registry()).unwrap();
+            let s = Session::load_in(e.name, e.text, &registry(), e.folder().as_deref()).unwrap();
             let mut v = Views::new(view_registry());
             let w = v.open(&s.available(&s.signals()), &s.file.controls.views);
             assert!(w.is_empty(), "{}: {w:?}", e.name);

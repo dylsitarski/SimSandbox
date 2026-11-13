@@ -86,6 +86,11 @@ pub struct SimApp {
     /// The file the open model was loaded from; Save writes back to it.
     /// `None` for built-in examples, which Save turns into Save as.
     path: Option<PathBuf>,
+    /// A built-in example that reads files (ADR 0069 step 3): the folder
+    /// it was unpacked into, which it reads them from while it has no
+    /// path, and its place in `EXAMPLES`; Save as copies its files beside
+    /// the model.
+    example_folder: Option<(PathBuf, usize)>,
     /// Text being typed into parameter fields, keyed by `"block.param"`.
     param_edits: HashMap<String, String>,
     /// Values of sliders being dragged that apply on release (ADR 0037).
@@ -183,6 +188,7 @@ impl SimApp {
             log: Log::default(),
             logged_error: None,
             path: None,
+            example_folder: None,
             param_edits: HashMap::new(),
             pending: HashMap::new(),
             editor: None,
@@ -256,12 +262,14 @@ impl SimApp {
                     .map_or(path.into(), |n| n.to_string_lossy().into_owned());
                 // Blocks read their files from the model's folder (ADR 0063).
                 let previous = self.path.replace(path.into());
+                let example = self.example_folder.take();
                 self.diagram.forget_files();
                 self.open_text(&title, &text);
                 if self.error.is_none() {
                     self.mark_saved();
                 } else {
                     self.path = previous;
+                    self.example_folder = example;
                 }
             }
             Err(e) => self.error = Some(format!("{path}: {e}")),
@@ -275,10 +283,27 @@ impl SimApp {
         }
         let e = &EXAMPLES[k];
         self.diagram.forget_files();
+        // An example that reads files opens from a folder holding them, a
+        // fresh copy each time it is opened.
+        let previous = self.example_folder.take();
+        if !e.files.is_empty() {
+            let dir = std::env::temp_dir()
+                .join("simsandbox-examples")
+                .join(e.file_name().trim_end_matches(".ssbx.json"));
+            if let Err(err) = e.unpack(&dir) {
+                self.example_folder = previous;
+                self.error = Some(format!("{}: {err}", dir.display()));
+                return;
+            }
+            self.example_folder = Some((dir, k));
+        }
+        let path = self.path.take();
         self.open_text(e.name, e.text);
         if self.error.is_none() {
-            self.path = None;
             self.mark_saved();
+        } else {
+            self.path = path;
+            self.example_folder = previous;
         }
     }
 
@@ -470,7 +495,11 @@ impl SimApp {
     }
 
     fn open_inner(&mut self, title: &str, text: &str, running: bool, announce: bool) {
-        let folder = self.path.as_deref().and_then(Path::parent);
+        let folder = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .or(self.example_folder.as_ref().map(|e| e.0.as_path()));
         self.diagram.folder = folder.map(Path::to_path_buf);
         // Its studies run on the worker, which shows their progress
         // (ADR 0071): the window never waits for them.
@@ -1868,6 +1897,21 @@ impl SimApp {
         // Used model files edited from here go with it (ADR 0066 step 4c).
         let result =
             result.and_then(|()| simsandbox_session::edit_use::save(&mut self.diagram.edited));
+        // An example's files go beside it, unless files of those names
+        // are there already.
+        let result = result.and_then(|written| {
+            let mut written = written;
+            if let (Some((_, k)), Some(dir)) = (&self.example_folder, path.parent()) {
+                for (name, text) in EXAMPLES[*k].files {
+                    let to = dir.join(name);
+                    if !to.exists() {
+                        std::fs::write(&to, text).map_err(|e| format!("{}: {e}", to.display()))?;
+                        written.push(to);
+                    }
+                }
+            }
+            Ok(written)
+        });
         match result {
             Ok(written) => {
                 self.error = None;
@@ -1876,6 +1920,7 @@ impl SimApp {
                 }
                 self.log.info(format!("Saved to {}", path.display()));
                 self.path = Some(path.to_path_buf());
+                self.example_folder = None;
                 self.mark_saved();
             }
             Err(e) => self.error = Some(format!("{}: {e}", path.display())),
@@ -3056,6 +3101,7 @@ impl SimApp {
             None => {
                 if block.is_none() {
                     self.path = None;
+                    self.example_folder = None;
                     self.mark_saved();
                 }
                 self.editor = None;
@@ -7149,6 +7195,40 @@ mod tests {
         out.textures_delta.clear();
         assert!(!example_description(0).is_empty());
         assert!(!app.has_unsaved());
+    }
+
+    #[test]
+    fn an_example_that_reads_files_opens_and_saves_with_them() {
+        // ADR 0069 step 3: the bridge reads its nodes and wires from CSV
+        // files built into the app with it.
+        let mut app = SimApp::new(None, None, None, None);
+        let k = EXAMPLES.iter().position(|e| !e.files.is_empty()).unwrap();
+        app.open_example(k);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(app.path.is_none(), "an example has no path until saved");
+        let live = app.session.as_ref().unwrap();
+        assert!(live
+            .call(|s, _| s.run_until(1.0).map_err(|e| e.to_string()))
+            .unwrap()
+            .is_ok());
+        // Save as puts its files beside it, and it opens from there.
+        let dir = std::env::temp_dir().join(format!("simsandbox-app-net-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bridge.ssbx.json");
+        app.save_to(&path);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        for (name, text) in EXAMPLES[k].files {
+            assert_eq!(&std::fs::read_to_string(dir.join(name)).unwrap(), text);
+        }
+        assert!(app.example_folder.is_none());
+        let mut again = SimApp::new(None, None, None, None);
+        again.open_path(&path.to_string_lossy());
+        assert!(again.error.is_none(), "{:?}", again.error);
+        // Another example after it reads no folder of the first's.
+        app.open_example(0);
+        assert!(app.error.is_none() && app.example_folder.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

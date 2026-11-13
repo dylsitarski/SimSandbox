@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-13: examples with files in the app's menu (owner's request): `Example::files`, `unpack`, `file_name`, `folder`; the app's `example_folder` (opening from a fresh temporary folder, Save as copying the files); the bridge registered with views; loops over all examples load from their folders; app test `an_example_that_reads_files_opens_and_saves_with_them`; ADR 0069 note, STATUS, CHANGELOG
 - 2026-11-13: STATUS item 1, repetition in blocks (ADR 0069 step 3): `row_params` (parameters over rows compiled as holding states), a zero right side balances in any unit, `outflow` over edge tables, `StartCsv` (CSV starts for tables and edge tables, ids, unit conversion, checks; read on first compile), `param m[k] = file` for grid arrays, `param_file` in the model hash, `examples/networks/` (bridge, nodes.csv, wires.csv), `tests/networks.rs`, `older_files.rs` walks example folders; ADR 0069 step 3, ADR 0079 note, headless guide, STATUS, CHANGELOG
 - 2026-11-13: STATUS item 1, implicit methods on large 2D grids: measured faer's LU with COLAMD, AMD, nested dissection on A and on AᵀA (at most −28%), and Cholesky on the same pattern (65 ms); ADR 0087 written; `sparse_lu.rs` (nested dissection by level sets, AMD via faer, elimination tree, supernodes relaxed to 32 columns, multifrontal factorisation in blocks of 32 with faer matmul above 4096 multiplications, single-column solve path), used by `implicit.rs` with faer's LU as fallback (`Factor`); `examples/lu_speed.rs`; TR-BDF2 Gray–Scott 520 → 165 ms a step, 1D unchanged (checked against `typed_speed` old and new alternately); tests: grids and chains to 1e-12, same bits twice, refusal and fallback, ordering choice
 - 2026-11-13: recompute on demand (STATUS item 1, probes): `Session::has_gaps`/`recompute`, `gaps_until` noted by `set_view_reads` (which now takes the sample at the current time again from the model), `replay_history` with filled samples, `sample_now`; the app's `Status::gaps` and **Fill the past** button on the worker; tests in the session (cruise control and the heat rod, bit for bit against recording from the start, a live parameter change replayed, refused without a recorder) and on the app's worker (Lorenz); ADR 0063 As built, ADR 0062 note, STATUS (item 1 now the implicit-methods follow-up), CHANGELOG
@@ -200,6 +201,7 @@
 
 ## Decided
 
+- 2026-11-13 (mine): an example with files opens unsaved from a fresh copy under the system's temporary folder (rewritten at each opening); Save as copies its files beside the saved model unless files of those names exist.
 - 2026-11-13 (owner): networks with an example now (of: networks with an example; file parameters only; defer).
 - 2026-11-13 (mine, ADR 0069 step 3): one form `start T = file "x.csv"` for any table, ids from an `id` column, edges by `from`/`to` ids; parameters over rows as holding states (not Inspector parameters); `outflow` along edges instead of building `sumover`/`other`; the network example in `examples/networks/`, outside the app's built-in Examples menu.
 - 2026-11-13 (owner): implicit methods get our own LU without row interchanges (of: ordering only; own LU; record and move on).

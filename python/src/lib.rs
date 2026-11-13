@@ -90,10 +90,18 @@ fn run_schema() -> &'static str {
     simsandbox_session::run::RUN_SCHEMA
 }
 
-/// The built-in examples as (name, model file) pairs.
+/// The built-in examples as (name, model file, folder) triples: the
+/// folder holds the files an example reads (ADR 0069 step 3), unpacked
+/// once; `None` for the others.
 #[pyfunction]
-fn examples() -> Vec<(&'static str, &'static str)> {
-    EXAMPLES.iter().map(|e| (e.name, e.text)).collect()
+fn examples() -> Vec<(&'static str, &'static str, Option<String>)> {
+    EXAMPLES
+        .iter()
+        .map(|e| {
+            let folder = e.folder().map(|d| d.to_string_lossy().into_owned());
+            (e.name, e.text, folder)
+        })
+        .collect()
 }
 
 /// What a run keeps (ADR 0076): the outputs named, every `every`-th step.

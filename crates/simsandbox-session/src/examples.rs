@@ -6,104 +6,188 @@ use simsandbox_views::ViewRegistry;
 pub struct Example {
     pub name: &'static str,
     pub text: &'static str,
+    /// The model's file name and the files it reads from its folder (a
+    /// table's starting rows, an array's values: ADR 0069 step 3), by name
+    /// and contents; none for most examples.
+    pub files: &'static [(&'static str, &'static str)],
+}
+
+impl Example {
+    /// Write the model (as `file_name`) and its files into `dir`, made if
+    /// needed; the model's path.
+    pub fn unpack(&self, dir: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+        std::fs::create_dir_all(dir)?;
+        for (name, text) in self.files {
+            std::fs::write(dir.join(name), text)?;
+        }
+        let model = dir.join(self.file_name());
+        std::fs::write(&model, self.text)?;
+        Ok(model)
+    }
+
+    /// A file name for the model, from its name: lower case, words joined
+    /// by dashes.
+    pub fn file_name(&self) -> String {
+        let words: Vec<String> = self
+            .name
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect();
+        format!("{}.ssbx.json", words.join("-"))
+    }
+
+    /// A folder holding the example and its files, written once per
+    /// process under the system's temporary folder; `None` when it reads
+    /// no files. For loading it headless: `registry::in_folder(e.folder()…)`.
+    pub fn folder(&self) -> Option<std::path::PathBuf> {
+        if self.files.is_empty() {
+            return None;
+        }
+        let dir = std::env::temp_dir()
+            .join(format!("simsandbox-examples-{}", std::process::id()))
+            .join(self.file_name().trim_end_matches(".ssbx.json"));
+        if !dir.join(self.file_name()).exists() {
+            self.unpack(&dir).ok()?;
+        }
+        Some(dir)
+    }
 }
 
 pub const EXAMPLES: &[Example] = &[
     Example {
         name: "Lorenz system",
         text: include_str!("../../../examples/lorenz.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Coupled oscillators",
         text: include_str!("../../../examples/coupled-oscillators.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Predator and prey (typed equations)",
         text: include_str!("../../../examples/predator-prey.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Cruise control (a controller with feedthrough)",
         text: include_str!("../../../examples/cruise-control.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Steer the car with keys (input)",
         text: include_str!("../../../examples/cruise-steer.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Tuning a controller's gain (a study of a model)",
         text: include_str!("../../../examples/cruise-tuning.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Searching for a controller's best gains (a strategy model)",
         text: include_str!("../../../examples/cruise-search.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Fitting a model to measurements (Levenberg–Marquardt as a model)",
         text: include_str!("../../../examples/oscillator-fit.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Following a branch through hysteresis (continuation as a model)",
         text: include_str!("../../../examples/bistable-continuation.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Finding where a state's fate changes (refinement as a model)",
         text: include_str!("../../../examples/bistable-refinement.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Units (a shaker in mm drives springs in m)",
         text: include_str!("../../../examples/units.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Platoon (a model defined once, used three times)",
         text: include_str!("../../../examples/platoon.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Forced spring (a parameter driven by a wire)",
         text: include_str!("../../../examples/forced-spring.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Logistic map (a discrete map)",
         text: include_str!("../../../examples/logistic-map.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Resonance curve (a study of formulas)",
         text: include_str!("../../../examples/resonance.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Resonance map (a study over two parameters)",
         text: include_str!("../../../examples/resonance-map.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Resonance samples (a Sobol study)",
         text: include_str!("../../../examples/resonance-samples.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Pendulum (with its own view)",
         text: include_str!("../../../examples/pendulum.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Drag the bob (input from a view)",
         text: include_str!("../../../examples/pendulum-drag.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Heat along a rod (a grid field)",
         text: include_str!("../../../examples/heat-rod.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Typed heat equation (arrays on a grid)",
         text: include_str!("../../../examples/heat-rod-typed.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Gray–Scott spots (reaction–diffusion on a 2D grid)",
         text: include_str!("../../../examples/gray-scott.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Orbiting particles (a point set)",
         text: include_str!("../../../examples/orbits.ssbx.json"),
+        files: &[],
     },
     Example {
         name: "Sheep grazing (agents and an ODE)",
         text: include_str!("../../../examples/grazing.ssbx.json"),
+        files: &[],
+    },
+    Example {
+        name: "A Wheatstone bridge (a network from files)",
+        text: include_str!("../../../examples/networks/bridge.ssbx.json"),
+        files: &[
+            (
+                "nodes.csv",
+                include_str!("../../../examples/networks/nodes.csv"),
+            ),
+            (
+                "wires.csv",
+                include_str!("../../../examples/networks/wires.csv"),
+            ),
+        ],
     },
 ];
 
@@ -145,7 +229,8 @@ mod tests {
         // warnings, and runs (each model briefly).
         let r = registry();
         for e in EXAMPLES {
-            let loaded = simsandbox_file::load_any(e.text, &r, None)
+            let folder = e.folder();
+            let loaded = simsandbox_file::load_any(e.text, &r, folder.as_deref())
                 .unwrap_or_else(|err| panic!("{}: {err}", e.name));
             assert!(
                 loaded.conversions.is_empty(),
@@ -159,9 +244,11 @@ mod tests {
                 e.name,
                 loaded.warnings
             );
-            let ran = crate::run::run(e.text, &r, Some(0.5), None);
-            // A swept model takes no end time: run it as written.
-            let ran = ran.or_else(|_| crate::run::run(e.text, &r, None, None));
+            let ran = simsandbox_core::registry::in_folder(folder.as_deref(), || {
+                crate::run::run(e.text, &r, Some(0.5), None)
+                    // A swept model takes no end time: run it as written.
+                    .or_else(|_| crate::run::run(e.text, &r, None, None))
+            });
             assert!(ran.is_ok(), "{}: {:?}", e.name, ran.err());
         }
     }

@@ -3224,7 +3224,7 @@ mod tests {
         );
         assert!(s.warnings.is_empty());
         for e in EXAMPLES {
-            Session::load(e.name, e.text, &registry()).unwrap();
+            Session::load_in(e.name, e.text, &registry(), e.folder().as_deref()).unwrap();
         }
     }
 
@@ -4601,7 +4601,8 @@ mod probe_tests {
             v
         };
         for e in EXAMPLES {
-            let mut s = Session::load(e.name, e.text, &registry()).unwrap();
+            let mut s =
+                Session::load_in(e.name, e.text, &registry(), e.folder().as_deref()).unwrap();
             for _ in 0..20 {
                 s.step().unwrap();
             }
