@@ -203,6 +203,7 @@
 
 ## Decided
 
+- 2026-11-13 (owner, ADR 0088): activation by an `activate` input with modes `rise` (default), `fall`, `change`, `while`; held outputs keep their last values; a `restart` input on used models so resuming or starting again can depend on a condition; events within a step later, as a capability of the signal's source on the same wire; studies first, then used models. Mine: time goes on for the whole model.
 - 2026-11-13 (owner): units are shown as written.
 - 2026-11-13 (mine): debug and test builds optimise our crates at level 1, dependencies unoptimised (measured best for the edit-and-test cycle; +37 s for a cold build).
 - 2026-11-13 (mine): an example with files opens unsaved from a fresh copy under the system's temporary folder (rewritten at each opening); Save as copies its files beside the saved model unless files of those names exist.
