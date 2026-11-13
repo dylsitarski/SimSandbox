@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Units are shown as they were written (`V`, `N*s/m`, `mS`) in the app, `describe`, `check` and outputs, instead of in SI base units; units computed from others are shown as before.
 - Implicit methods (`backward_euler`, `trbdf2`) factorise with an LU of their own on the matrix's symmetric pattern (ADR 0087): about 3× faster per step on 2D grids (Gray–Scott at 128 × 128 with TR-BDF2: 165 ms a step, from 520), the same in 1D. Their results change in the last bits.
 - Wiring a view while paused or before running records the current sample of what it reads, instead of leaving it empty.
 - An input over a table that has its own `start`, rules or edges is now matched to its rows by id (NaN for a row the input lacks), instead of being refused; only a table with none of these follows its input's rows.
