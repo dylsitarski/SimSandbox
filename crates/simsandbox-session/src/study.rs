@@ -826,8 +826,8 @@ impl StudyBlock {
         let mut out = Vec::with_capacity(width * n * reps);
         let mut start = 0;
         for &w in &self.widths {
-            for p in 0..n {
-                let (_, mine) = memory.points[p].as_ref().expect("every point ran");
+            for point in &memory.points[..n] {
+                let (_, mine) = point.as_ref().expect("every point ran");
                 out.extend_from_slice(&mine[start * reps..(start + w) * reps]);
             }
             start += w;
