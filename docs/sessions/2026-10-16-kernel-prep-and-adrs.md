@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-13: ADR 0089 built and accepted: `simsandbox-compiled::native` (generator from phase views, cache, one build thread, `libloading`, bit check on first call), the app's default and toolbar status, `tests/native.rs`, `fused_speed` waits for libraries.
 - 2026-11-13: Cranelift with vector code in the build: `crates/simsandbox-compiled` (from the spike), compiled by `simsandbox-eq` for every large program, kept by phase; `tests/compiled.rs`; workspace Rust minimum 1.97 (every crate, the Python package); lints the new minimum brought (`is_multiple_of`, `as_chunks`) fixed.
 - 2026-11-13: two-lane vector code in the spike's Cranelift route (1.3× fused Rust, the same bits; a mixed model checks every kind of operation through both compiled routes); ADR 0089 drafted (proposed): generated Rust compiled where a toolchain exists.
 - 2026-11-13: ADR 0084 point 6 comparison in `spikes/compiled-routes`: Cranelift JIT, generated WebAssembly in Wasmtime, a hand-written WebAssembly Gray–Scott and fused Rust against the interpreter (time, compile time, bits, size); the `PhaseView`/`PhaseKernel` hook and `kept` analysis in `simsandbox-expr`; phases merge where an only-read array is read both ways; Q54 resolved, Q55 opened.
@@ -212,6 +213,7 @@
 ## Decided
 
 - 2026-11-13 (owner): Cranelift with vector code into the build; native code switches on when a toolchain is found (ADR 0089).
+- 2026-11-13 (mine, ADR 0089): the app builds native code; the CLI and Python only use libraries already built (a short-lived process would leave builds running), `SIMSANDBOX_NATIVE=build` to build there too; each library is checked against Cranelift's code (itself checked against the interpreter) on its first call; `check` per block not done yet.
 - 2026-11-13 (mine): compiled phases kept by their view (a model rebuilt compiles nothing), at most 512; `SIMSANDBOX_INTERPRET=1` to compare; the compiled crate allows unsafe code in its `jit` module only; one Rust minimum (1.97) for every crate.
 - 2026-11-13 (owner): measure vector code in the compiled route first, then draft the ADR for generated Rust compiled on demand.
 - 2026-11-13 (mine, ADR 0089 draft): native code is a setting of the machine, not of the model (it changes no result); the generator works from `PhaseView`; checked once against the interpreter before use; falls back to Cranelift or the interpreter.

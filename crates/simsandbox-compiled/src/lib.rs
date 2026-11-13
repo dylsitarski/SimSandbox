@@ -13,6 +13,7 @@
 // Calling compiled code and keeping its memory: here only.
 #[allow(unsafe_code)]
 mod jit;
+pub mod native;
 mod routes;
 
 use std::collections::HashMap;
@@ -51,10 +52,27 @@ pub fn kernel(view: &PhaseView) -> Option<Arc<dyn PhaseKernel>> {
 }
 
 /// Compile `program`'s phases of cells, if compiling is on. Returns how
-/// many run compiled.
+/// many run compiled. With native code on ([`native`]), each runs the
+/// program's library once it is there and gives the same bits.
 pub fn compile(program: &mut Program) -> usize {
     if !enabled() {
         return 0;
     }
-    program.compile_phases(&mut |view| kernel(view))
+    let mut views: Vec<PhaseView> = Vec::new();
+    program.compile_phases(&mut |view| {
+        views.push(view.clone());
+        None
+    });
+    let library = native::library(&views);
+    let mut phase = 0;
+    program.compile_phases(&mut |view| {
+        // The phase's place in the library, whether or not it compiles.
+        let k = phase;
+        phase += 1;
+        let jit = kernel(view)?;
+        Some(match &library {
+            Some(lib) => Arc::new(native::Switching::new(jit, Arc::clone(lib), k, view)),
+            None => jit,
+        })
+    })
 }

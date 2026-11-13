@@ -10,7 +10,9 @@
 //! FMA kernel's bits change.
 //!
 //! Kernels, each one evaluation of du/dt and dv/dt on a periodic grid:
-//! - **typed**: the typed-equations block, as models run it;
+//! - **typed**: the typed-equations block, as models run it: compiled by
+//!   Cranelift, or interpreted with `SIMSANDBOX_INTERPRET=1`, or native
+//!   code with `SIMSANDBOX_NATIVE=build` (ADR 0089);
 //! - **fused**: one loop over the cells doing the same operations in the
 //!   same order (same bits);
 //! - **rewritten**: one five-point stencil instead of one per axis
@@ -253,6 +255,9 @@ fn main() {
     );
     for n in [128, 256, 512] {
         let set = EquationSet::parse("gs", &lines(n)).expect("valid");
+        // With native code being built (`SIMSANDBOX_NATIVE=build`), time
+        // it once it is in use.
+        simsandbox_compiled::native::wait(std::time::Duration::from_secs(600));
         let p: Vec<f64> = set.spec().params.iter().map(|q| q.default).collect();
         let value = |name: &str| {
             p[set

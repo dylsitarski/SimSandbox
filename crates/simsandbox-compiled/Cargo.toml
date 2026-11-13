@@ -15,6 +15,8 @@ cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"
 cranelift-module = "=0.137.0"
 cranelift-native = "=0.137.0"
+# Loading native code built from typed equations (ADR 0089).
+libloading = "=0.9.1"
 
 # The workspace's lints, but for unsafe code: calling compiled code and
 # keeping its memory need it, here only, each use marked where it is.

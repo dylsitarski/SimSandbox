@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Native code for typed equations (ADR 0089): where a Rust toolchain is installed, the app builds Rust generated from large grids' equations in the background and switches to it once it gives the same bits (Gray–Scott at hand-written Rust's speed). The toolbar says when it builds and when it is in use. `SIMSANDBOX_NATIVE` (`off`, `cache`, `build`) and `SIMSANDBOX_CACHE` set it anywhere; the CLI and Python use libraries already built.
 - Typed equations on large grids are compiled to machine code when built (Cranelift, two cells at a time): Gray–Scott at 512 × 512 evaluates in 0.74 ms instead of 1.75 ms on one core, with the same results bit for bit. `SIMSANDBOX_INTERPRET=1` runs the interpreter instead. Building SimSandbox now needs Rust 1.97.
 - Typed equations on large grids run their cell-by-cell work as fewer passes where an array is read both by a stencil and cell by cell (Gray–Scott: one pass, not four), 1.2–1.3× faster again, the same results bit for bit.
 - Typed equations evaluate large grids about twice as fast (Gray–Scott at 512 × 512: 5.0 ms to 2.5 ms on one core), with the same results bit for bit.

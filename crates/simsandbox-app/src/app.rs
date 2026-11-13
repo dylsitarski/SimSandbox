@@ -1603,6 +1603,7 @@ impl SimApp {
         }
         drop(history);
         self.memory_menu(ui);
+        native_status(ui);
     }
 
     /// "Memory…" (ADR 0062 step 5): what the recordings hold, part by
@@ -5619,6 +5620,22 @@ fn utc_now() -> String {
         rem % 3600 / 60,
         rem % 60
     )
+}
+
+/// What typed equations' native code is doing (ADR 0089), when anything:
+/// being built, in use, or not used for a difference or a failed build.
+fn native_status(ui: &mut egui::Ui) {
+    let (ready, building, failed) = simsandbox_compiled::native::summary();
+    let hover = format!(
+        "Typed equations' large grids as native code built with your Rust toolchain: {ready} in use, {building} being built, {failed} not used (a failed build or different results). The results are the same either way; SIMSANDBOX_NATIVE=off turns it off."
+    );
+    if building > 0 {
+        ui.weak("Native code: building…").on_hover_text(hover);
+    } else if ready > 0 {
+        ui.weak("Native code").on_hover_text(hover);
+    } else if failed > 0 {
+        ui.weak("Native code: not used").on_hover_text(hover);
+    }
 }
 
 #[cfg(test)]

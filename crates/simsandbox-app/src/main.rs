@@ -126,6 +126,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Typed equations' native code is built where a Rust toolchain is
+    // found (ADR 0089); `SIMSANDBOX_NATIVE=off` turns it off.
+    simsandbox_compiled::native::set_mode(simsandbox_compiled::native::Mode::Build);
     // Maximized once it shows (`SimApp`), not when created: on Windows a
     // window created maximized keeps drawing at this size until resized.
     let viewport = egui::ViewportBuilder::default()

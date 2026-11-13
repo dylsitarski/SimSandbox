@@ -1,6 +1,6 @@
 # 0089 — Native code for typed equations: generated Rust, compiled where a toolchain exists
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-13: native code switches on when a toolchain is found)
 - **Date:** 2026-11-13
 - **Builds on:** [ADR 0084](0084-where-typed-equations-stop.md) points 5 and 6 (no outside compiler needed; speed from compiling our own program), [Q55](../open-questions.md) (Cranelift in the build)
 
@@ -45,7 +45,11 @@ SimSandbox already describes each phase of cells exactly (`PhaseView`, with the 
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none. "Native code" is a setting of how fast the machine runs a model, not a concept of models.
 
-## Open points for the owner
+## As built (2026-11-13)
 
-- Whether native code is worth a dependency on the user's Rust toolchain, or Cranelift with vector code (1.3× from fused) is enough for now.
-- Whether it should switch on by itself when a toolchain is found, or only when asked.
+`crates/simsandbox-compiled/src/native.rs`; tests `crates/simsandbox-eq/tests/native.rs`.
+- **Where it switches on:** the app builds when a toolchain is found (`Mode::Build`, its toolbar says "Native code: building…", then "Native code"); the CLI and Python use libraries already built (by the app, say) but start no builds, because a short-lived process would leave a build running after it exits; `SIMSANDBOX_NATIVE=build` makes them build too, `SIMSANDBOX_NATIVE=off` turns it off everywhere. Point 1's CLI flag and Python option are this variable for now.
+- **Generated, built, loaded** as point 2 to 6 say: one library per program (one `phase_N` function each), a crate in `<cache>/simsandbox/native/crates/ssn_<hash>` (`SIMSANDBOX_CACHE` moves the cache), built `--offline` for this CPU on one background thread, loaded with `libloading`.
+- **Checked:** each phase's first call with the library runs Cranelift's code and the library's on copies and compares the arrays kept; equal, the library alone from then on; different, Cranelift's code and a warning. `check` does not report it per block yet; the app's toolbar counts the libraries in use, being built and not used.
+- **Measured** (Gray–Scott, `fused_speed`, one core): 24, 104, 516 µs at 128², 256², 512² against fused Rust's 28, 113, 471 and Cranelift's 39, 162, 733; the benchmark asserts the bits equal fused Rust's. A library built in under a second here.
+- **Tested:** Gray–Scott and a model using every kind of operation built natively in a fresh cache, the rates the interpreter's bits with parameters as given and moved, both libraries in use, none failed; skipped where `cargo` is missing.

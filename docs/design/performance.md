@@ -260,6 +260,18 @@ The owner put Cranelift with vector code into the build (Q55). `simsandbox-eq` c
 
 Compiled is 1.4–1.5× fused Rust on one core (the spike's 1.3× had its kernel's layout; here the rates' copies and the program around them count too). Every example's outputs and renders are the same bytes as before (90 and 24); a test builds Gray–Scott (256 × 256, shared among cores) and a model using every kind of operation both ways and requires the same rates and outputs, with parameters as given and moved.
 
+## Native code (ADR 0089, 2026-11-13)
+
+Rust generated from Gray–Scott's phases, built for this CPU with the installed toolchain (`SIMSANDBOX_NATIVE=build`), µs per evaluation, one core, `fused_speed` (which waits for the library and asserts the fused bits):
+
+| Grid | Native | Fused Rust | Cranelift |
+|---|---|---|---|
+| 128 × 128 | 24 | 28 | 39 |
+| 256 × 256 | 104 | 113 | 162 |
+| 512 × 512 | 516 | 471 | 733 |
+
+Native code is fused code's speed (faster on small grids: built for this CPU, AVX; within 1.1× at 512 × 512, where memory bounds both). Building a library took under a second for Gray–Scott.
+
 ## Implicit methods on 2D grids (2026-11-13)
 
 TR-BDF2 on Gray–Scott at 128 × 128 (`grid_cost` on a copy of the example with `"method": {"name": "trbdf2"}`) cost 520 ms a step, 300–330 ms of it in `faer`'s sparse LU with partial pivoting. A better ordering for that LU gained at most 28% (its fill is bounded by AᵀA's structure, which COLAMD already orders for). [ADR 0087](../decisions/0087-implicit-lu-on-the-matrix-pattern.md): our own multifrontal LU on the pattern of A + Aᵀ, pivots on the diagonal, nested dissection: 165 ms a step (factorising 75 ms, solves 5 ms each). `crates/simsandbox-eq/examples/lu_speed.rs` compares the two LUs on a 2D grid, a chain and a ring; 1D systems cost the same as before (`typed_speed`).

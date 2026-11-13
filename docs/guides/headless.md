@@ -57,6 +57,20 @@ Notes, warnings and labels go to standard error; data to standard output.
 
 JSON has no infinities or NaN; they are written as `null`. CSV leaves populations out, and writes a table's rows by id: a column per id any row had (`pop.size#7`), NaN where that row is not there.
 
+## Speed of typed equations
+
+Large grids in typed equations run compiled, with the same results bit for bit whichever way ([ADR 0084](../decisions/0084-where-typed-equations-stop.md), [ADR 0089](../decisions/0089-native-code-for-typed-equations.md)). Environment variables choose how:
+
+| Variable | Effect |
+| --- | --- |
+| `SIMSANDBOX_INTERPRET=1` | The interpreter only (the reference), for comparing |
+| `SIMSANDBOX_NATIVE=off` | No native code: Cranelift's code only |
+| `SIMSANDBOX_NATIVE=cache` | Native libraries already built are used, none built (the CLI's and Python's default) |
+| `SIMSANDBOX_NATIVE=build` | Missing libraries are built in the background with the installed Rust toolchain (the app's default); a run uses one once it is built and has given the same bits |
+| `SIMSANDBOX_CACHE=DIR` | Where native libraries are kept (default: the platform's cache folder, under `simsandbox/native`) |
+
+Moving parameters (sliders, `--set`, driven parameters) never compiles anything; editing an equation, a grid's cells or an edge kind does (milliseconds for Cranelift; for a native library, in the background while the run goes on).
+
 ## Probes
 
 Probes ([ADR 0062](../decisions/0062-probes-recording-and-replay.md)) record chosen signals and fields on their own schedule, and can write files. They are saved in `controls.probes`:

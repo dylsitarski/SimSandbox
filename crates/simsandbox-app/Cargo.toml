@@ -16,6 +16,8 @@ path = "src/main.rs"
 simsandbox-core = { path = "../simsandbox-core" }
 simsandbox-agents = { path = "../simsandbox-agents" }
 simsandbox-eq = { path = "../simsandbox-eq", features = ["views"] }
+# Native code for typed equations, built when a toolchain is found (ADR 0089).
+simsandbox-compiled = { path = "../simsandbox-compiled" }
 simsandbox-expr = { path = "../simsandbox-expr" }
 simsandbox-file = { path = "../simsandbox-file" }
 # Meshes drawn by wgpu in the window (ADR 0086).
