@@ -181,6 +181,24 @@ On four cores the typed 512 × 512 evaluation takes 3.2–3.5 ms (its phases spl
 - **A cheaper formula keeps exactness on any machine.** Multiplying by 1/h² once instead of dividing by h² twice is 1.4–2× faster. It changes the last bits once, as ADR 0077's sums did, and is then the same on every machine.
 - **What would gain:** evaluating a phase's cells together (an interpreter over cells within chunks, or code compiled in the process such as Cranelift) with the same operations in the same order; stencils multiplying by 1/h². Both keep exact bits ([ADR 0082](../decisions/0082-exactness-is-labelled.md) point 4). Listed in [STATUS](../STATUS.md) Next up.
 
+## Typed equations in blocks of cells (2026-11-13)
+
+Item 3 of STATUS's Next up, first step: the interpreter keeps every operation and its order, and runs faster. Profiling Gray–Scott (`callgrind`) put all of an evaluation in the phases' operations (`cells::run_op`), most of it in stencils: each cell worked out where it lies along its line and went through closures to find its neighbours. Two changes, `crates/simsandbox-expr/src/cells.rs`:
+- **Stencils and shifts by runs:** cells inside a line read their neighbours a stride away, in plain loops over three slices; only the two end cells of each line take the edge rules. Same expression, so the same bits.
+- **Blocks of cells:** a phase runs all its operations on 2048 cells before the next block, on one core and within each core's share, so the arrays it writes stay in the cache. A program with large arrays now runs by phases on one core too (before, only on several).
+
+Microseconds per evaluation, `fused_speed`, one core (`taskset -c 0`), default build, the same machine as above; typed equations before, then after:
+
+| Grid | Typed before | Typed after | Fused | After against fused |
+|---|---|---|---|---|
+| 128 × 128 | 162 | 88 | 41 | 2.2× |
+| 256 × 256 | 953 | 627 | 161 | 3.9× |
+| 512 × 512 | 5050 | 2518 | 661 | 3.8× |
+
+Blocks alone (before the stencil change) gained 5–15%; at 512 × 512 after it, whole arrays took 4280 µs, blocks of 256 cells 3280, of 1024–4096 cells 2600–2670. On four cores 512 × 512 went from 3110 to 2460 µs. Small models (`typed_speed`: Lorenz, heat rod, pendulum, stiff rod) are unchanged: their arrays are below the phases' threshold. All results are the same bits (the benchmark checks typed against fused; the phases' test runs every block size from 1 cell against the instructions in order).
+
+What is left is the interpreter itself: about 64 instructions per cell against fused code's 25, each operation loading and storing its operands where fused code keeps them in registers. Closing it means compiling the program ([ADR 0084](../decisions/0084-where-typed-equations-stop.md) point 6).
+
 ## Implicit methods on 2D grids (2026-11-13)
 
 TR-BDF2 on Gray–Scott at 128 × 128 (`grid_cost` on a copy of the example with `"method": {"name": "trbdf2"}`) cost 520 ms a step, 300–330 ms of it in `faer`'s sparse LU with partial pivoting. A better ordering for that LU gained at most 28% (its fill is bounded by AᵀA's structure, which COLAMD already orders for). [ADR 0087](../decisions/0087-implicit-lu-on-the-matrix-pattern.md): our own multifrontal LU on the pattern of A + Aᵀ, pivots on the diagonal, nested dissection: 165 ms a step (factorising 75 ms, solves 5 ms each). `crates/simsandbox-eq/examples/lu_speed.rs` compares the two LUs on a 2D grid, a chain and a ring; 1D systems cost the same as before (`typed_speed`).

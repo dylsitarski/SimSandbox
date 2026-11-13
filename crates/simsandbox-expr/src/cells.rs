@@ -1,4 +1,4 @@
-//! Large arrays on several cores (ADR 0062 step 3).
+//! Large arrays in blocks of cells and on several cores (ADR 0062 step 3).
 //!
 //! A [`Program`](crate::program::Program) whose arrays are large runs by
 //! [`Step`]s. A **phase** gathers consecutive operations over arrays of one
@@ -6,7 +6,10 @@
 //! axes, and stencils and shifts of arrays the phase does not write (read
 //! whole, so a cell may look at its neighbours). Scalar instructions among
 //! them run first. The phase then runs its whole list on chunks of cells
-//! at once, one chunk per core. Anything else (reductions, single cells)
+//! at once, one chunk per core, and each chunk in blocks of cells small
+//! enough to stay in the cache, all operations on a block before the next.
+//! A stencil or shift reads the cells inside a line by their neighbours a
+//! stride away, without asking where each cell lies. Anything else (reductions, single cells)
 //! runs in order between phases. Every cell is computed by the same
 //! operations as one after another, so the results are the same bits in
 //! any split; reductions keep their order.
@@ -36,6 +39,28 @@ pub(crate) const PLAN: usize = 1 << 14;
 
 /// How often a phase tries the way it does not use, by calls.
 const RETRY: u64 = 64;
+
+/// Cells in a block a phase runs all its operations on before the next:
+/// small enough that the arrays it writes stay in the cache from one
+/// operation to the next (2026-11-13: on Gray–Scott at 512 × 512, blocks
+/// of 1024 to 4096 cells ran 1.6 times faster than whole arrays, 256
+/// slower; `docs/design/performance.md`).
+fn block_cells() -> usize {
+    #[cfg(test)]
+    if let Some(b) = TEST_BLOCK.with(std::cell::Cell::get) {
+        return b;
+    }
+    BLOCK_CELLS
+}
+
+/// See [`block_cells`].
+const BLOCK_CELLS: usize = 2048;
+
+#[cfg(test)]
+thread_local! {
+    /// A test's block size, in place of [`BLOCK_CELLS`].
+    pub(crate) static TEST_BLOCK: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
 
 /// The cores available.
 pub(crate) fn cores() -> usize {
@@ -349,9 +374,20 @@ impl Phase {
             }
         }
         let read = &read;
+        let block = block_cells();
+        // Each share in blocks of cells small enough that the arrays the
+        // phase writes stay in the cache from one operation to the next.
         let go = |(lo, mut mine): (usize, Vec<&mut [f64]>)| {
-            for op in &ops {
-                run_op(op, lo, &mut mine, read);
+            let len = mine.first().map_or(0, |m| m.len());
+            let mut start = 0;
+            while start < len {
+                let end = (start + block).min(len);
+                let mut part: Vec<&mut [f64]> =
+                    mine.iter_mut().map(|m| &mut m[start..end]).collect();
+                for op in &ops {
+                    run_op(op, lo + start, &mut part, read);
+                }
+                start = end;
             }
         };
         simsandbox_core::parallel::each(work, chunks > 1, go);
@@ -394,33 +430,45 @@ fn run_op(op: &Ready, lo: usize, mine: &mut [&mut [f64]], read: &[&[f64]]) {
             let src = read[a];
             let (s, c) = (line.stride, line.count);
             let edges = op.edges;
-            let mut place = Place::new(lo, line);
-            for (i, v) in dst.iter_mut().enumerate() {
-                let (j, base) = (place.j, lo + i - place.j * s);
+            // The same operations as cell by cell: `h*h` and `2*h` give the
+            // same bits once as at every cell.
+            let (hh, h2) = (h * h, 2.0 * h);
+            let edge_cell = |k: usize, j: usize| {
+                let base = k - j * s;
                 let at = |j: usize| base + j * s;
-                let below = |j: usize| {
-                    if j == 0 {
-                        ghost(edges[0], src[at(0)], src[at(c - 1)], h)
-                    } else {
-                        src[at(j - 1)]
+                let below = if j == 0 {
+                    ghost(edges[0], src[at(0)], src[at(c - 1)], h)
+                } else {
+                    src[at(j - 1)]
+                };
+                let above = if j + 1 == c {
+                    ghost(edges[1], src[at(c - 1)], src[at(0)], h)
+                } else {
+                    src[at(j + 1)]
+                };
+                if second {
+                    (below - 2.0 * src[k] + above) / hh
+                } else {
+                    (above - below) / h2
+                }
+            };
+            interior_runs(dst, lo, line, edge_cell, |dst, k| {
+                let n = dst.len();
+                let (before, here, after) = (
+                    &src[k - s..k - s + n],
+                    &src[k..k + n],
+                    &src[k + s..k + s + n],
+                );
+                if second {
+                    for (((v, &b), &x), &a) in dst.iter_mut().zip(before).zip(here).zip(after) {
+                        *v = (b - 2.0 * x + a) / hh;
                     }
-                };
-                let above = |j: usize| {
-                    if j + 1 == c {
-                        ghost(edges[1], src[at(c - 1)], src[at(0)], h)
-                    } else {
-                        src[at(j + 1)]
+                } else {
+                    for ((v, &b), &a) in dst.iter_mut().zip(before).zip(after) {
+                        *v = (a - b) / h2;
                     }
-                };
-                let edge = j == 0 || j + 1 == c;
-                *v = match (second, edge) {
-                    (true, false) => (src[at(j - 1)] - 2.0 * src[at(j)] + src[at(j + 1)]) / (h * h),
-                    (true, true) => (below(j) - 2.0 * src[at(j)] + above(j)) / (h * h),
-                    (false, false) => (src[at(j + 1)] - src[at(j - 1)]) / (2.0 * h),
-                    (false, true) => (above(j) - below(j)) / (2.0 * h),
-                };
-                place.next();
-            }
+                }
+            });
         }
         Kind::Shift { up, line, .. } => {
             let (Value::Whole(a), Value::Scalar(h)) = (op.a, op.b) else {
@@ -435,21 +483,54 @@ fn run_op(op: &Ready, lo: usize, mine: &mut [&mut [f64]], read: &[&[f64]]) {
                 EdgeValue::Periodic => far,
             };
             let edges = op.edges;
-            let mut place = Place::new(lo, line);
-            for (i, v) in dst.iter_mut().enumerate() {
-                let (j, base) = (place.j, lo + i - place.j * s);
+            let edge_cell = |k: usize, j: usize| {
+                let base = k - j * s;
                 let at = |j: usize| base + j * s;
-                *v = match (up, j) {
+                match (up, j) {
                     (false, 0) => beyond(edges[0], src[at(0)], src[at(c - 1)]),
                     (false, j) => src[at(j - 1)],
                     (true, j) if j + 1 == c => beyond(edges[1], src[at(c - 1)], src[at(0)]),
                     (true, j) => src[at(j + 1)],
-                };
-                place.next();
-            }
+                }
+            };
+            interior_runs(dst, lo, line, edge_cell, |dst, k| {
+                let from = if up { k + s } else { k - s };
+                dst.copy_from_slice(&src[from..from + dst.len()]);
+            });
         }
     }
     mine[op.d] = dst;
+}
+
+/// Fill `dst`, the cells from `lo`, along `line`: cells at either end of
+/// the line by `edge(cell, place)`, runs of cells inside it by
+/// `inside(part of dst, first cell)`, where each cell's neighbours along
+/// the line are a stride before and after it.
+fn interior_runs(
+    dst: &mut [f64],
+    lo: usize,
+    line: Line,
+    edge: impl Fn(usize, usize) -> f64,
+    mut inside: impl FnMut(&mut [f64], usize),
+) {
+    let (s, c) = (line.stride, line.count);
+    let mut place = Place::new(lo, line);
+    let mut i = 0;
+    while i < dst.len() {
+        let j = place.j;
+        if j == 0 || j + 1 == c {
+            dst[i] = edge(lo + i, j);
+            place.next();
+            i += 1;
+            continue;
+        }
+        // Along a line of stride 1 the place grows at every cell, up to the
+        // last; otherwise it stays until the stride's cells are done.
+        let run = if s == 1 { c - 1 - j } else { s - place.within }.min(dst.len() - i);
+        inside(&mut dst[i..i + run], lo + i);
+        place.skip(run);
+        i += run;
+    }
 }
 
 /// A cell's place along a line, `j`, kept by counting from cell `lo`
@@ -466,6 +547,17 @@ impl Place {
             j: (lo / line.stride) % line.count,
             within: lo % line.stride,
             line,
+        }
+    }
+
+    /// Move on `n` cells, all at this place but for a stride of 1.
+    fn skip(&mut self, n: usize) {
+        if self.line.stride == 1 {
+            // Inside the line: no wrap.
+            self.j += n;
+        } else {
+            self.within += n - 1;
+            self.next();
         }
     }
 

@@ -1827,8 +1827,9 @@ impl Program {
     /// Run every step on `r`, a buffer from [`Program::registers`] (or
     /// one at least as long, with the same constants).
     pub fn run(&self, r: &mut [f64]) {
-        // Large arrays: by phases, on several cores (the same bits).
-        if self.split && crate::cells::cores() > 1 {
+        // Large arrays: by phases, in blocks of cells, on several cores
+        // when that is faster (the same bits).
+        if self.split {
             self.run_steps(&self.steps, r, None, None);
             return;
         }
@@ -2303,11 +2304,29 @@ mod tests {
         let mut in_order = r.clone();
         p.run_in_order(&mut in_order);
         let bits = |r: &[f64]| r.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
-        for chunks in [1, 2, 3, 7] {
-            let mut split = r.clone();
-            p.run_steps(&steps, &mut split, Some(chunks), None);
-            assert_eq!(bits(&split), bits(&in_order), "{chunks} chunks");
+        // In blocks of cells of any size: ending inside a line, at its
+        // ends, across lines.
+        for block in [
+            None,
+            Some(1),
+            Some(2),
+            Some(5),
+            Some(127),
+            Some(128),
+            Some(300),
+        ] {
+            crate::cells::TEST_BLOCK.with(|b| b.set(block));
+            for chunks in [1, 2, 3, 7] {
+                let mut split = r.clone();
+                p.run_steps(&steps, &mut split, Some(chunks), None);
+                assert_eq!(
+                    bits(&split),
+                    bits(&in_order),
+                    "{chunks} chunks of {block:?}"
+                );
+            }
         }
+        crate::cells::TEST_BLOCK.with(|b| b.set(None));
         assert!(in_order[spans[total].at].is_finite());
     }
 
