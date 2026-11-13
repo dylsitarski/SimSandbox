@@ -539,21 +539,24 @@ impl ArrIns {
                     let high = ghost(edges[1], src[at(c - 1)], src[at(0)], h);
                     let below = |j: usize| if j == 0 { low } else { src[at(j - 1)] };
                     let above = |j: usize| if j + 1 == c { high } else { src[at(j + 1)] };
+                    // Multiplied by 1/h² or 1/(2h), worked out once for
+                    // the array: a multiplication is cheaper than a
+                    // division, and the same on any machine.
                     if second {
-                        let h2 = h * h;
+                        let inv = 1.0 / (h * h);
                         for j in 1..c.saturating_sub(1) {
-                            dst[at(j)] = (src[at(j - 1)] - 2.0 * src[at(j)] + src[at(j + 1)]) / h2;
+                            dst[at(j)] = (src[at(j - 1)] - 2.0 * src[at(j)] + src[at(j + 1)]) * inv;
                         }
                         for j in [0, c - 1] {
-                            dst[at(j)] = (below(j) - 2.0 * src[at(j)] + above(j)) / h2;
+                            dst[at(j)] = (below(j) - 2.0 * src[at(j)] + above(j)) * inv;
                         }
                     } else {
-                        let h2 = 2.0 * h;
+                        let inv = 1.0 / (2.0 * h);
                         for j in 1..c.saturating_sub(1) {
-                            dst[at(j)] = (src[at(j + 1)] - src[at(j - 1)]) / h2;
+                            dst[at(j)] = (src[at(j + 1)] - src[at(j - 1)]) * inv;
                         }
                         for j in [0, c - 1] {
-                            dst[at(j)] = (above(j) - below(j)) / h2;
+                            dst[at(j)] = (above(j) - below(j)) * inv;
                         }
                     }
                 }

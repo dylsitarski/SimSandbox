@@ -197,6 +197,18 @@ Microseconds per evaluation, `fused_speed`, one core (`taskset -c 0`), default b
 
 Blocks alone (before the stencil change) gained 5–15%; at 512 × 512 after it, whole arrays took 4280 µs, blocks of 256 cells 3280, of 1024–4096 cells 2600–2670. On four cores 512 × 512 went from 3110 to 2460 µs. Small models (`typed_speed`: Lorenz, heat rod, pendulum, stiff rod) are unchanged: their arrays are below the phases' threshold. All results are the same bits (the benchmark checks typed against fused; the phases' test runs every block size from 1 cell against the instructions in order).
 
+**Then multiplying by 1/h² (owner, 2026-11-13: changing the last bits once is acceptable).** Each stencil multiplies by 1/h² (second derivative) or 1/(2h) (first), worked out once per evaluation, instead of dividing at every cell; the same in the phases and in the instructions in order, so a model's results are the same whichever path runs it, and the same on any machine. `fused_speed`'s "fused" kernel does the same and still gives the typed block's bits; its "rewritten" kernel now differs only in adding a cell's four neighbours first (one five-point stencil instead of one per axis). One core, µs per evaluation:
+
+| Grid | Typed | Fused | Rewritten (five-point) |
+|---|---|---|---|
+| 128 × 128 | 73 | 30 | 26 |
+| 256 × 256 | 469 | 118 | 101 |
+| 512 × 512 | 1965 | 438 | 411 |
+
+What changed in results, against the version before (`run --t-end 30`, every number of the output compared): the models with stencils (the Gray–Scott and typed heat-rod examples, and grid models built for timing, alone, coupled or through probes) changed in about half their values, by at most 6 × 10⁻¹⁶ of the largest value and 6 × 10⁻¹⁵ relative; models without stencils and all 24 example renders are the same bytes. A 512 × 512 grid stepped at 1 s, unstable and NaN within six steps either way, differs in which cells become NaN first.
+
+From the start of the day typed Gray–Scott went from 5050 to 1965 µs at 512 × 512 (2.6×). Fused code gained as much from the multiplication, so typed equations are still 2.4–4.5× from it.
+
 What is left is the interpreter itself: about 64 instructions per cell against fused code's 25, each operation loading and storing its operands where fused code keeps them in registers. Closing it means compiling the program ([ADR 0084](../decisions/0084-where-typed-equations-stop.md) point 6).
 
 ## Implicit methods on 2D grids (2026-11-13)

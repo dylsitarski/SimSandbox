@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-13: stencils multiply by 1/h² and 1/(2h) in both evaluation paths; `fused_speed`'s fused kernel follows; Gray–Scott 512 × 512 at 1965 µs (from 5050 at the start of the day).
 - 2026-11-13: STATUS item 3, first step: typed equations' phases run in blocks of 2048 cells, stencils and shifts by runs of cells inside a line; large grids 1.9–2× faster, same bits (`cells.rs`; measurements in performance.md).
 - 2026-11-13: ADR 0088 point 8: activation ports first with the mode, live `held` / start count on activated uses' nodes (kernel start count in snapshots, `Session::activations`, `Diagram::live_activations`).
 - 2026-11-13: ADR 0088 step 2: activation of used models (kernel `Activation` and `Simulator::gate`, hidden `activate`/`restart` input blocks in the loader, Inspector controls and node ports, `tests/activation.rs`).
@@ -207,6 +208,7 @@
 
 ## Decided
 
+- 2026-11-13 (owner): stencils may multiply by 1/h² though the last bits of results change once.
 - 2026-11-13 (mine, STATUS item 3): blocks of 2048 cells (measured best of 256–4096); large programs run by phases on one core too.
 - 2026-11-13 (mine, ADR 0088 point 8): the start count lives in the kernel's snapshot so rewinds take it back; a study's node does not show whether it holds results.
 - 2026-11-13 (mine, ADR 0088 step 2): `"restart": true` on the use (the input exists only when written); the signals are hidden `input.value` blocks of the used model named `activate` and `restart`, so it may not have blocks of those names; wires into them are written by path (`c/activate`), as for any input of a use; fusion stops at an activated use's boundary; restarted blocks start at their clock's present time.

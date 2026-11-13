@@ -13,6 +13,8 @@
 //! - **typed**: the typed-equations block, as models run it;
 //! - **fused**: one loop over the cells doing the same operations in the
 //!   same order (same bits);
+//! - **rewritten**: one five-point stencil instead of one per axis
+//!   (different bits);
 //! - **fused FMA**: the same with `mul_add` where it fits (different bits;
 //!   a slow library call unless built for a CPU with FMA).
 
@@ -53,7 +55,8 @@ fn lines(cells: usize) -> Vec<String> {
 #[derive(Clone, Copy)]
 struct Consts {
     n: usize,
-    h2: f64,
+    /// 1/h², as typed equations' stencils multiply by it.
+    inv: f64,
     du: f64,
     dv: f64,
     f: f64,
@@ -76,8 +79,8 @@ fn cell(
     vs: f64,
     vn: f64,
 ) -> (f64, f64) {
-    let lu = (uw - 2.0 * uc + ue) / c.h2 + (us - 2.0 * uc + un) / c.h2;
-    let lv = (vw - 2.0 * vc + ve) / c.h2 + (vs - 2.0 * vc + vn) / c.h2;
+    let lu = (uw - 2.0 * uc + ue) * c.inv + (us - 2.0 * uc + un) * c.inv;
+    let lv = (vw - 2.0 * vc + ve) * c.inv + (vs - 2.0 * vc + vn) * c.inv;
     let reaction = c.r * uc * (vc * vc);
     (
         c.du * lu - reaction + c.f * (1.0 - uc),
@@ -85,9 +88,9 @@ fn cell(
     )
 }
 
-/// The same written another way: one multiplication by 1/h² instead of
-/// two divisions by h², the neighbours added first. Still exact on any
-/// machine, but not the same bits as `cell`.
+/// The same written another way: one five-point stencil, the neighbours
+/// added first, multiplied by 1/h² once instead of once per axis. Still
+/// exact on any machine, but not the same bits as `cell`.
 #[inline(always)]
 fn cell_rewritten(
     c: &Consts,
@@ -102,7 +105,7 @@ fn cell_rewritten(
     vs: f64,
     vn: f64,
 ) -> (f64, f64) {
-    let inv = 1.0 / c.h2;
+    let inv = c.inv;
     let lu = ((uw + ue) + (us + un) - 4.0 * uc) * inv;
     let lv = ((vw + ve) + (vs + vn) - 4.0 * vc) * inv;
     let reaction = c.r * uc * (vc * vc);
@@ -128,9 +131,9 @@ fn cell_fma_only(
     vn: f64,
 ) -> (f64, f64) {
     let lu = (-2.0f64).mul_add(uc, uw) + ue;
-    let lu = lu / c.h2 + ((-2.0f64).mul_add(uc, us) + un) / c.h2;
+    let lu = lu * c.inv + ((-2.0f64).mul_add(uc, us) + un) * c.inv;
     let lv = (-2.0f64).mul_add(vc, vw) + ve;
-    let lv = lv / c.h2 + ((-2.0f64).mul_add(vc, vs) + vn) / c.h2;
+    let lv = lv * c.inv + ((-2.0f64).mul_add(vc, vs) + vn) * c.inv;
     let reaction = c.r * uc * (vc * vc);
     (
         c.du.mul_add(lu, -reaction) + c.f * (1.0 - uc),
@@ -153,7 +156,7 @@ fn cell_fma(
     vs: f64,
     vn: f64,
 ) -> (f64, f64) {
-    let inv = 1.0 / c.h2;
+    let inv = c.inv;
     let lu = ((-4.0f64).mul_add(uc, uw + ue) + (us + un)) * inv;
     let lv = ((-4.0f64).mul_add(vc, vw + ve) + (vs + vn)) * inv;
     let reaction = (c.r * uc) * (vc * vc);
@@ -265,7 +268,7 @@ fn main() {
         let h = value("size") / n as f64;
         let c = Consts {
             n,
-            h2: h * h,
+            inv: 1.0 / (h * h),
             du: value("Du"),
             dv: value("Dv"),
             f: value("F"),

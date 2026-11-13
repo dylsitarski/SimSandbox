@@ -430,9 +430,9 @@ fn run_op(op: &Ready, lo: usize, mine: &mut [&mut [f64]], read: &[&[f64]]) {
             let src = read[a];
             let (s, c) = (line.stride, line.count);
             let edges = op.edges;
-            // The same operations as cell by cell: `h*h` and `2*h` give the
-            // same bits once as at every cell.
-            let (hh, h2) = (h * h, 2.0 * h);
+            // Multiplied by 1/h² and 1/(2h), worked out once: the same as
+            // the instructions in order, which do the same.
+            let (hh, h2) = (1.0 / (h * h), 1.0 / (2.0 * h));
             let edge_cell = |k: usize, j: usize| {
                 let base = k - j * s;
                 let at = |j: usize| base + j * s;
@@ -447,9 +447,9 @@ fn run_op(op: &Ready, lo: usize, mine: &mut [&mut [f64]], read: &[&[f64]]) {
                     src[at(j + 1)]
                 };
                 if second {
-                    (below - 2.0 * src[k] + above) / hh
+                    (below - 2.0 * src[k] + above) * hh
                 } else {
-                    (above - below) / h2
+                    (above - below) * h2
                 }
             };
             interior_runs(dst, lo, line, edge_cell, |dst, k| {
@@ -461,11 +461,11 @@ fn run_op(op: &Ready, lo: usize, mine: &mut [&mut [f64]], read: &[&[f64]]) {
                 );
                 if second {
                     for (((v, &b), &x), &a) in dst.iter_mut().zip(before).zip(here).zip(after) {
-                        *v = (b - 2.0 * x + a) / hh;
+                        *v = (b - 2.0 * x + a) * hh;
                     }
                 } else {
                     for ((v, &b), &a) in dst.iter_mut().zip(before).zip(after) {
-                        *v = (a - b) / h2;
+                        *v = (a - b) * h2;
                     }
                 }
             });

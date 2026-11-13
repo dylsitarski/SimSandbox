@@ -7,6 +7,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 ### Changed
 
 - Typed equations evaluate large grids about twice as fast (Gray–Scott at 512 × 512: 5.0 ms to 2.5 ms on one core), with the same results bit for bit.
+- Stencils (`lap`, and first derivatives `ddx(u)`, `dd(u, x)`) multiply by 1/h² or 1/(2h) instead of dividing by h² or 2h, a further 1.3× on Gray–Scott (2.0 ms). Results of models using them change in their last bits, once; they are the same on every machine as before.
 - Units are shown as they were written (`V`, `N*s/m`, `mS`) in the app, `describe`, `check` and outputs, instead of in SI base units; units computed from others are shown as before.
 - Implicit methods (`backward_euler`, `trbdf2`) factorise with an LU of their own on the matrix's symmetric pattern (ADR 0087): about 3× faster per step on 2D grids (Gray–Scott at 128 × 128 with TR-BDF2: 165 ms a step, from 520), the same in 1D. Their results change in the last bits.
 - Wiring a view while paused or before running records the current sample of what it reads, instead of leaving it empty.
