@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-13: units keep the name they were written with (owner): `Unit::name` (interned), `Display` prints it, `unnamed`; three tests' expectations of base-unit text updated. Slow checks investigated (owner): timings of five debug profiles (performance.md); `[profile.dev] opt-level = 1` for our crates; the disk had filled from a 22 GB `target/` (cleared)
 - 2026-11-13: fixes from the owner's report on the bridge in the window: typed-equations factory reads files from `BlockConfig::folder`, the app sets its thread's folder on opening and Save as, `only_rounds` never counts a continuous block; the bridge gained `supply` and `C` with sliders (`share` per node); checked by an app test and screenshots under Xvfb
 - 2026-11-13: examples with files in the app's menu (owner's request): `Example::files`, `unpack`, `file_name`, `folder`; the app's `example_folder` (opening from a fresh temporary folder, Save as copying the files); the bridge registered with views; loops over all examples load from their folders; app test `an_example_that_reads_files_opens_and_saves_with_them`; ADR 0069 note, STATUS, CHANGELOG
 - 2026-11-13: STATUS item 1, repetition in blocks (ADR 0069 step 3): `row_params` (parameters over rows compiled as holding states), a zero right side balances in any unit, `outflow` over edge tables, `StartCsv` (CSV starts for tables and edge tables, ids, unit conversion, checks; read on first compile), `param m[k] = file` for grid arrays, `param_file` in the model hash, `examples/networks/` (bridge, nodes.csv, wires.csv), `tests/networks.rs`, `older_files.rs` walks example folders; ADR 0069 step 3, ADR 0079 note, headless guide, STATUS, CHANGELOG
@@ -202,6 +203,8 @@
 
 ## Decided
 
+- 2026-11-13 (owner): units are shown as written.
+- 2026-11-13 (mine): debug and test builds optimise our crates at level 1, dependencies unoptimised (measured best for the edit-and-test cycle; +37 s for a cold build).
 - 2026-11-13 (mine): an example with files opens unsaved from a fresh copy under the system's temporary folder (rewritten at each opening); Save as copies its files beside the saved model unless files of those names exist.
 - 2026-11-13 (owner): networks with an example now (of: networks with an example; file parameters only; defer).
 - 2026-11-13 (mine, ADR 0069 step 3): one form `start T = file "x.csv"` for any table, ids from an `id` column, edges by `from`/`to` ids; parameters over rows as holding states (not Inspector parameters); `outflow` along edges instead of building `sumover`/`other`; the network example in `examples/networks/`, outside the app's built-in Examples menu.

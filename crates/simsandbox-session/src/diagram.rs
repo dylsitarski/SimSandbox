@@ -2967,7 +2967,7 @@ mod tests {
         // own again.
         toggle(&mut f, car, "par", "c").unwrap();
         assert_eq!(f.params["c"].value, 50.0);
-        assert_eq!(f.params["c"].unit, "kg/s");
+        assert_eq!(f.params["c"].unit, "N*s/m");
         let d = Diagram::new(&f, &r);
         let c = d.nodes[car].values.iter().find(|v| v.name == "c").unwrap();
         assert_eq!(c.exposed.as_deref(), Some("c"));

@@ -27,3 +27,16 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Tests run numerical code (integrators, typed equations, meshes) that is
+# 4–5× slower unoptimised: our own crates are built at opt-level 1 in debug
+# and test builds (the test run 77 s → 27 s, a rebuild after an edit
+# unchanged, a cold build 187 s → 274 s; measured 2026-11-13). Dependencies
+# stay unoptimised: optimising them (faer, the UI) tripled cold builds and
+# made the tests no faster. Floating point is IEEE at every level, so
+# results are the same bits.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 0

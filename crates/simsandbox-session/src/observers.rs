@@ -1568,7 +1568,7 @@ mod tests {
         let b = f.blocks.iter().find(|b| b.name == "push").unwrap();
         assert_eq!(b.type_name, "eq.equations");
         assert!(
-            b.equations.iter().any(|l| l == "input cruise_F [kg·m/s^2]"),
+            b.equations.iter().any(|l| l == "input cruise_F [N]"),
             "{:?}",
             b.equations
         );

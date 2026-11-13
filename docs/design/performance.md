@@ -184,3 +184,19 @@ On four cores the typed 512 × 512 evaluation takes 3.2–3.5 ms (its phases spl
 ## Implicit methods on 2D grids (2026-11-13)
 
 TR-BDF2 on Gray–Scott at 128 × 128 (`grid_cost` on a copy of the example with `"method": {"name": "trbdf2"}`) cost 520 ms a step, 300–330 ms of it in `faer`'s sparse LU with partial pivoting. A better ordering for that LU gained at most 28% (its fill is bounded by AᵀA's structure, which COLAMD already orders for). [ADR 0087](../decisions/0087-implicit-lu-on-the-matrix-pattern.md): our own multifrontal LU on the pattern of A + Aᵀ, pivots on the diagonal, nested dissection: 165 ms a step (factorising 75 ms, solves 5 ms each). `crates/simsandbox-eq/examples/lu_speed.rs` compares the two LUs on a 2D grid, a chain and a ring; 1D systems cost the same as before (`typed_speed`).
+
+## Test builds (2026-11-13)
+
+The checks had become slow: `cargo test --workspace` ran for 77 s after a 187 s build, most of it in our own numerical code unoptimised (`finite_volumes` 34 s, `gray_scott` 14 s, the session's unit tests 14 s). Measured with each configuration built from nothing in its own target folder, on the cloud machine (4 cores, `-j3`), then all tests run, then a rebuild after touching `symbolic.rs`:
+
+| Debug profile | Build | Tests | Rebuild |
+| --- | --- | --- | --- |
+| Unoptimised (before) | 187 s | 77 s | 32 s |
+| Dependencies at `opt-level = 2` | 520 s | 81 s | 39 s |
+| Dependencies at 2, our crates at 1 | 644 s | 17 s | 42 s |
+| Everything at 1 | 506 s | 18 s | 42 s |
+| **Our crates at 1, dependencies at 0 (chosen)** | 274 s | 27 s | 31 s |
+| As chosen, with faer and its kernels at 2 | 292 s | 28 s | 31 s |
+
+Optimising dependencies (faer, the UI crates) costs most of the build time and buys nothing in the tests, whose time is in typed equations, integrators and meshes. The chosen profile halves an edit-and-test cycle (109 s → 58 s) and adds 37 s to a run from nothing (CI, which keeps no cache). All 572 tests passed in every configuration; Rust keeps IEEE floating point at every optimisation level, so results are the same bits.
+

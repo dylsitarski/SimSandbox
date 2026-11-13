@@ -41,9 +41,11 @@ cargo run --release -p simsandbox-app -- examples/lorenz.ssbx.json --view 3d   #
 | Build | Command | Use it for | Cost |
 |---|---|---|---|
 | **Release** | `cargo run --release …`, `cargo build --release` (binaries in `target/release/`) | Running models: the app, `simsandbox run` and `render`, timing (`docs/design/performance.md`) | Slower to compile |
-| **Debug** | `cargo run …`, `cargo build`, `cargo test` (binaries in `target/debug/`) | Changing and debugging the code: quick rebuilds, debug assertions, overflow checks, readable backtraces | Simulates more than ten times slower |
+| **Debug** | `cargo run …`, `cargo build`, `cargo test` (binaries in `target/debug/`) | Changing and debugging the code: quick rebuilds, debug assertions, overflow checks, readable backtraces | Simulates several times slower |
 
 The difference matters for any model with real work per step. Gray–Scott (a 128 × 128 grid) takes 1.5–2.2 ms a step in a release build and about 27 ms in a debug build (measured 2026-11-06 with `profile_steps`). The app steps for at most 7 ms of each 8.3 ms tick and drops what it cannot do, so in a debug build it plays Gray–Scott at about 57× instead of the 200× it asks for; in a release build it keeps up. Small models (Lorenz, the cruise control) keep up either way. Tests run in debug builds; the checks in [AGENTS.md](../../AGENTS.md) need no `--release`. The two builds keep separate outputs, so switching does not rebuild the other.
+
+Since 2026-11-13 the debug build optimises SimSandbox's own crates a little (`[profile.dev] opt-level = 1` in `Cargo.toml`) and leaves dependencies unoptimised: `cargo test --workspace` runs in about 27 s instead of 77 s, a rebuild after an edit costs the same, and a build from nothing takes about 4.5 minutes instead of 3 ([performance](../design/performance.md#test-builds-2026-11-13)). Debug assertions and overflow checks stay on; a debugger may show fewer local variables. `target/` grows with every build (incremental caches, release and debug outputs: 22 GB after a long session); `cargo clean` empties it when the disk fills.
 
 The app can save a screenshot and exit, for documentation and for checking it renders on machines without a display:
 
