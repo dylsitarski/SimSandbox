@@ -138,6 +138,9 @@ pub struct Status {
     pub limited: bool,
     /// Recorded input lies ahead: running on replays it (ADR 0058).
     pub replaying: bool,
+    /// The history lacks the past of something views read now: wired
+    /// after it was recorded (ADR 0063), filled on demand.
+    pub gaps: bool,
     /// An iterating model (ADR 0083): rounds run, whether rounds remain,
     /// and whether the last changed nothing.
     pub round: u64,
@@ -395,6 +398,7 @@ fn status(s: &Session, running: bool, achieved: f64, limited: bool) -> Status {
         achieved,
         limited,
         replaying: s.replaying(),
+        gaps: s.has_gaps(),
         round: s.round(),
         iterating: s.rounds_pending(),
         held_still: s.held_still(),
@@ -651,6 +655,42 @@ mod tests {
             &reference[..]
         );
         assert!(!live.status().running);
+    }
+
+    #[test]
+    fn filling_the_past_runs_on_the_worker_and_matches_direct_stepping() {
+        // ADR 0062/0063: wired mid-run, a signal has no past until it is
+        // recomputed, on demand.
+        let text = example("Lorenz");
+        let mut direct = Session::load("l", text, &registry()).unwrap();
+        for _ in 0..200 {
+            direct.step().unwrap();
+        }
+        let reference = values(&direct.signals(), "lorenz.xyz[1]");
+
+        let mut s = Session::load("l", text, &registry()).unwrap();
+        s.set_recorder(Some(Default::default()));
+        s.set_view_reads(vec!["lorenz.xyz[0]".into()]);
+        let live = Live::start(s, 200.0, true);
+        wait_for(&live, 201);
+        live.set_running(false);
+        live.sync();
+        live.call(|s, _| s.set_view_reads(vec!["lorenz.xyz[0]".into(), "lorenz.xyz[1]".into()]))
+            .unwrap();
+        live.sync();
+        assert!(live.status().gaps);
+        assert!(values(&live.history(), "lorenz.xyz[1]")[0].is_nan());
+        live.send(None, |s, c| {
+            if let Err(e) = s.recompute() {
+                c.error(e);
+            }
+        });
+        live.sync();
+        assert!(!live.status().gaps);
+        assert_eq!(
+            &values(&live.history(), "lorenz.xyz[1]")[..201],
+            &reference[..]
+        );
     }
 
     #[test]

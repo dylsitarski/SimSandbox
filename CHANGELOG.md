@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Wiring a view while paused or before running records the current sample of what it reads, instead of leaving it empty.
 - An input over a table that has its own `start`, rules or edges is now matched to its rows by id (NaN for a row the input lacks), instead of being refused; only a table with none of these follows its input's rows.
 - A recorded-data block, `at_times` and `at_samples` count a step whose time is within rounding of a sample's as at it. Before, steps summed from `dt` could fall a hair short (2.4999999999998 for 2500 steps of 0.001) and take the sample a step late. In models with data, a sample can now take effect one step earlier than before, so their results can change slightly (not only in the last digits); they stay exact within this version on any machine. Run files made earlier replay with that difference, and say so (below).
 - Run files and `run --format json` output record the SimSandbox that made them (`"made_with": "simsandbox 0.0.1"`). Replaying a run made by another version, or before this was recorded, warns that results can differ where the changelog says.
@@ -62,6 +63,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- **Fill the past** in the run bar: something wired to a view during a run, which had no past until Restart, is filled by running again from a snapshot with the input as recorded, giving the same numbers as a run that recorded it from the start; the run then carries on from where it was. Needs the recorder. Rust: `Session::has_gaps` and `Session::recompute`.
 - `plot.mesh` cuts a 3D mesh by a plane in any direction (along x, y or z, or any normal, with a slider), drawing the section flat; the cut is saved with the view as `{"cut": {"normal": […], "at": …}}`. `plot.xy` draws quantities over a table's rows against each other, cell by cell, paired by id.
 - Strategy helpers write refinement over any number of parameters, in one form: `{"kind": "refine", "params": [{"param": "f.u", "range": [-1, 1]}, …], "result": …}`, Python `Model.refine(target, {"f.u": (-1, 1), "f.v": (-1, 1)}, result)`, and the app's "Search…": a mesh of simplices over the parameters (segments over one) refined where the result changes. `param` and `range` alone, and Python's `refine(target, param, range, result)`, are replaced by it.
 - In the app, meshes are drawn by the GPU (wgpu) with a depth buffer; headless renders draw the same triangles with egui.

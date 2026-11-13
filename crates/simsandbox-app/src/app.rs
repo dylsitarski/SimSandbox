@@ -787,6 +787,23 @@ impl SimApp {
                              Any live input from here on takes over (a new branch).",
                         );
                 }
+                if st.gaps && m.recorder.is_some() {
+                    ui.separator();
+                    if ui
+                        .button("Fill the past")
+                        .on_hover_text(
+                            "Something views show was wired after the run started, so it \
+                             has no past. Run again from the start, replaying the input as \
+                             recorded, to fill it; the run then carries on from where it is.",
+                        )
+                        .clicked()
+                    {
+                        live.send(None, |s, c| match s.recompute() {
+                            Ok(()) => c.info("Filled the past of what views show"),
+                            Err(e) => c.error(e),
+                        });
+                    }
+                }
             });
         }
         ui.horizontal(|ui| {

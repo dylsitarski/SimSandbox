@@ -383,6 +383,10 @@ pub struct Session {
     filters: Filters,
     /// The schedule and the recorded live input (ADR 0058).
     track: Track,
+    /// The history lacks what views read now for its samples up to this
+    /// time: wired after they were recorded (ADR 0063). Filled on demand
+    /// by [`Session::recompute`].
+    gaps_until: Option<f64>,
     /// The file as it was when the current run started (its parameters at
     /// t = 0), which a run file is made with (ADR 0059).
     start_file: ModelFile,
@@ -731,6 +735,7 @@ impl Session {
                 schedule,
                 ..Track::default()
             },
+            gaps_until: None,
             start_file,
             data,
             unevaluated: false,
@@ -1096,7 +1101,14 @@ impl Session {
         drop(self.history_mut());
         let old = self.replace_history(History::new(Vec::new()));
         self.build_history();
-        self.replay_history(&old, false);
+        // The sample at now is had again from the model as it is.
+        let mut fills = BTreeMap::new();
+        if let Some(&last) = old.times().last() {
+            if (last - self.time()).abs() <= self.eps() {
+                fills.insert(old.len() - 1, self.sample_now());
+            }
+        }
+        self.replay_history(&old, false, &fills);
     }
 
     /// The places in the layout the history keeps: everything when no
@@ -1136,7 +1148,11 @@ impl Session {
     /// Append the samples of `old` to the (new, empty) history, by name:
     /// what it did not record is NaN for signals and absent for fields.
     /// With `recompute`, the filters are computed again from the outputs.
-    fn replay_history(&mut self, old: &History, recompute: bool) {
+    ///
+    /// Samples in `fills` (by index in `old`: every scalar, and the kept
+    /// fields' frames) are taken from there instead. Names `old` lacks
+    /// mark the samples before as gaps, unless recomputed.
+    fn replay_history(&mut self, old: &History, recompute: bool, fills: &BTreeMap<usize, Pending>) {
         let signal_at: Vec<Option<usize>> = self
             .layout_scalars
             .iter()
@@ -1149,8 +1165,27 @@ impl Session {
             .collect();
         let outputs = self.output_names.len();
         let base = self.base_fields.len();
+        let lacks = self
+            .keep_signals
+            .iter()
+            .any(|&i| signal_at[i].is_none() && (!recompute || i < outputs))
+            || self
+                .keep_fields
+                .iter()
+                .any(|&i| field_at[i].is_none() && (!recompute || i < base));
+        // The latest sample neither filled nor complete.
+        let unfilled = (0..old.len()).rev().find(|k| !fills.contains_key(k));
+        if let (true, Some(k)) = (lacks, unfilled) {
+            let last = old.times()[k];
+            self.gaps_until = Some(self.gaps_until.map_or(last, |g| g.max(last)));
+        }
         for k in 0..old.len() {
             let t = old.times()[k];
+            if let Some(f) = fills.get(&k) {
+                let frames: Vec<&[f64]> = f.frames.iter().map(Vec::as_slice).collect();
+                self.push_kept(t, &f.values, &frames);
+                continue;
+            }
             let mut values: Vec<f64> = signal_at
                 .iter()
                 .map(|i| i.map_or(f64::NAN, |i| old.value(SignalRef::Signal(i), k)))
@@ -2422,6 +2457,7 @@ impl Session {
             .t_end
             .or_else(|| crate::run::data_end(self.sim.model()));
         self.history_mut().clear();
+        self.gaps_until = None;
         for p in &mut self.probes {
             p.pending.clear();
             p.history.write().clear();
@@ -2724,6 +2760,95 @@ impl Session {
         (first, last)
     }
 
+    /// Every scalar and every field's frame of the model now, `keep`
+    /// fields only (the rest empty), as a sample at its time.
+    fn sample_now(&self) -> Pending {
+        let t = self.sim.time();
+        let values = self.sample(t);
+        let before = frames(&self.sim, &self.field_sources);
+        let cuts = self.sample_cuts(&before);
+        let mut all: Vec<Vec<f64>> = before.iter().map(|f| f.to_vec()).chain(cuts).collect();
+        for (i, f) in all.iter_mut().enumerate() {
+            if !self.keep_fields.contains(&i) {
+                *f = Vec::new();
+            }
+        }
+        Pending {
+            index: t,
+            values,
+            frames: all,
+        }
+    }
+
+    /// Whether the history lacks, for samples it holds, something views
+    /// read now (wired after those samples were recorded, ADR 0063):
+    /// [`Session::recompute`] fills it.
+    pub fn has_gaps(&self) -> bool {
+        let first = self.history.read().times().first().copied();
+        matches!((self.gaps_until, first), (Some(g), Some(f)) if g >= f)
+    }
+
+    /// Fill the history's gaps (ADR 0062, ADR 0063: on demand, never
+    /// automatically): run again from the latest snapshot before them,
+    /// replaying the input as recorded, and record what views read now at
+    /// the times of the samples held. The model is put back as it was, at
+    /// the same time; it computes the same values bit for bit, so samples
+    /// recorded before are unchanged. Probes and filters with clocks of
+    /// their own are not filled. Needs the recorder's snapshots.
+    pub fn recompute(&mut self) -> Result<(), String> {
+        if !self.has_gaps() {
+            return Ok(());
+        }
+        let until = self.gaps_until.expect("has gaps");
+        let first = self.history.read().times()[0];
+        let Some(snap) = self.snapshots.iter().rev().find(|s| s.t <= first) else {
+            return Err("recomputing needs the recorder's snapshots (ADR 0064)".into());
+        };
+        let snap = snap.clone();
+        drop(self.history_mut());
+        let times: Vec<f64> = self.history.read().times().to_vec();
+        let now = self.sim.snapshot();
+        let track = (self.track.next_schedule, self.track.next_recorded);
+        let plan = self.plan.clone();
+        let warnings = self.warnings.len();
+        let eps = self.eps();
+        self.sim.restore(&snap);
+        self.track.seek(snap.t, eps);
+        let mut fills: BTreeMap<usize, Pending> = BTreeMap::new();
+        let mut k = times.partition_point(|&t| t < snap.t - eps);
+        let mut failed = None;
+        while k < times.len() && times[k] <= until + eps {
+            let t = self.sim.time();
+            if (times[k] - t).abs() <= eps {
+                fills.insert(k, self.sample_now());
+                k += 1;
+                continue;
+            }
+            if times[k] < t - eps {
+                // A sample between steps (none are, but never loop).
+                k += 1;
+                continue;
+            }
+            self.apply_due();
+            if let Err(e) = self.sim.step(self.dt) {
+                failed = Some(e.to_string());
+                break;
+            }
+        }
+        self.sim.restore(&now);
+        (self.track.next_schedule, self.track.next_recorded) = track;
+        self.plan = plan;
+        self.warnings.truncate(warnings);
+        if let Some(e) = failed {
+            return Err(format!("recomputing failed: {e}"));
+        }
+        let old = self.replace_history(History::new(Vec::new()));
+        self.gaps_until = None;
+        self.build_history();
+        self.replay_history(&old, false, &fills);
+        Ok(())
+    }
+
     /// Rewind to the latest snapshot at or before `t`. Everything recorded
     /// after it is discarded, so running on starts a new branch.
     /// Without a recorder (ADR 0064) there is nothing to rewind to.
@@ -2859,7 +2984,7 @@ impl Session {
         drop(self.history_mut());
         let old = self.replace_history(History::new(Vec::new()));
         self.build_history();
-        self.replay_history(&old, true);
+        self.replay_history(&old, true, &BTreeMap::new());
         self.reset_probes();
         Ok(())
     }
@@ -4321,8 +4446,10 @@ mod probe_tests {
         assert_eq!(h.names(), ["car.v", "cruise.I"]);
         let i = h.values(h.resolve("cruise.I").unwrap());
         assert_eq!(h.len(), 41);
-        assert!(i[..21].iter().all(|v| v.is_nan()));
-        assert!(i[21..].iter().all(|v| v.is_finite()));
+        // The sample at the time it was wired is had from the model then.
+        assert!(i[..20].iter().all(|v| v.is_nan()));
+        assert!(i[20..].iter().all(|v| v.is_finite()));
+        assert!(s.has_gaps());
         assert!(h
             .values(h.resolve("car.v").unwrap())
             .iter()
@@ -4648,6 +4775,84 @@ mod probe_tests {
         );
         // The hold is not a recorded output of the model.
         assert!(!s.bindable_scalars().iter().any(|n| n.starts_with("probe:")));
+    }
+
+    #[test]
+    fn recompute_fills_what_was_wired_later_bit_for_bit() {
+        // ADR 0062/0063: wired mid-run, a signal and a field have no past;
+        // recomputing on demand fills it as if it had been recorded from
+        // the start, live input included, and leaves the model as it was.
+        let example = |name: &str| {
+            EXAMPLES
+                .iter()
+                .find(|e| e.name.contains(name))
+                .unwrap()
+                .text
+        };
+        let run = |text: &str, (key, value): (&str, f64), reads: &[&str], late: bool| {
+            let mut s = Session::load("m", text, &registry()).unwrap();
+            s.set_recorder(Some(Default::default()));
+            let all: Vec<String> = reads.iter().map(|r| r.to_string()).collect();
+            s.set_view_reads(if late { all[..1].to_vec() } else { all.clone() });
+            s.run_until(2.0).unwrap();
+            s.set_param_key(key, value).unwrap();
+            s.run_until(4.0).unwrap();
+            if late {
+                s.set_view_reads(all);
+            }
+            s.flush(true);
+            s
+        };
+        let bits = |s: &Session, name: &str| -> Vec<u64> {
+            let h = s.signals();
+            if let Some(f) = h.fields().iter().find(|f| f.name == name) {
+                return (0..h.len())
+                    .flat_map(|k| f.frame(k).to_vec())
+                    .map(f64::to_bits)
+                    .collect();
+            }
+            h.values(h.resolve(name).unwrap())
+                .iter()
+                .map(|x| x.to_bits())
+                .collect()
+        };
+        for (text, key, reads) in [
+            (
+                example("Cruise control"),
+                ("cruise.kp", 600.0),
+                ["car.v", "cruise.e"],
+            ),
+            (
+                example("Heat"),
+                ("rod.alpha", 0.02),
+                ["rod.position", "rod.temperature"],
+            ),
+        ] {
+            let mut whole = run(text, key, &reads, false);
+            let mut late = run(text, key, &reads, true);
+            assert!(!whole.has_gaps());
+            assert!(late.has_gaps());
+            assert_ne!(bits(&late, reads[1]), bits(&whole, reads[1]));
+            late.recompute().unwrap();
+            assert!(!late.has_gaps());
+            for r in reads {
+                assert_eq!(bits(&late, r), bits(&whole, r), "{r}");
+            }
+            // Where it was, as it was: running on gives the same.
+            assert_eq!(late.time().to_bits(), whole.time().to_bits());
+            whole.run_until(5.0).unwrap();
+            late.run_until(5.0).unwrap();
+            whole.flush(true);
+            late.flush(true);
+            for r in reads {
+                assert_eq!(bits(&late, r), bits(&whole, r), "{r}");
+            }
+            // Without the recorder's snapshots, there is nothing to run from.
+            let mut bare = run(text, key, &reads, true);
+            bare.set_recorder(None);
+            assert!(bare.has_gaps());
+            assert!(bare.recompute().unwrap_err().contains("snapshots"));
+        }
     }
 
     /// A fresh folder for files a test writes.
