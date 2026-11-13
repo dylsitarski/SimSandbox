@@ -985,6 +985,10 @@ pub enum Edit {
     StudyModel,
     /// A study's `sample` (ADR 0070), as JSON.
     SetSample { block: String, sample: String },
+    /// When a study runs (ADR 0088): a mode (`rise`, `fall`, `change`,
+    /// `while`), or none. Without one, its `activate` input and the wire
+    /// into it go.
+    SetActivate { block: String, mode: Option<String> },
     /// A strategy driving a study (ADR 0078 point 7, "Search…"): the
     /// strategy as JSON (`crate::strategies::Strategy`), written by
     /// `crate::strategies::write`.
@@ -1436,6 +1440,22 @@ fn edit_level(
                 .ok_or_else(|| format!("no study '{block}'"))?;
             b.sample = Some(parsed);
             Ok(format!("{block}: sample changed"))
+        }
+        Edit::SetActivate { block, mode } => {
+            let b = l
+                .blocks
+                .iter_mut()
+                .find(|b| b.name == *block && b.type_name == simsandbox_file::STUDY)
+                .ok_or_else(|| format!("no study '{block}'"))?;
+            b.activate.clone_from(mode);
+            if mode.is_none() {
+                let port = format!("{block}.activate");
+                l.connections.retain(|c| c.to != port);
+            }
+            Ok(match mode {
+                Some(m) => format!("{block} runs on its activate input ({m})"),
+                None => format!("{block} runs when its inputs change"),
+            })
         }
         Edit::SetSetting { block, key, text } => {
             let b = l
@@ -3139,6 +3159,43 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.contains("car1_study's sample"), "{e}");
+        // Activated (ADR 0088): an 'activate' input on its node, wired from
+        // a switch (high above 0.5; a speed is refused, being in m/s); off
+        // again, the input and the wire go.
+        f.blocks.push(
+            serde_json::from_value(serde_json::json!(
+                {"name": "go", "type": "input.value", "params": {"y": 1.0}}))
+            .unwrap(),
+        );
+        let set = |f: &mut ModelFile, mode: Option<&str>| {
+            apply(
+                f,
+                &r,
+                &Edit::SetActivate {
+                    block: "car1_study".into(),
+                    mode: mode.map(String::from),
+                },
+            )
+            .unwrap()
+        };
+        set(&mut f, Some("while"));
+        apply(
+            &mut f,
+            &r,
+            &Edit::Connect {
+                from: "go.y".into(),
+                to: "car1_study.activate".into(),
+            },
+        )
+        .unwrap();
+        let d = Diagram::of(&f, &Scope::Model, &r);
+        let n = d.nodes.iter().find(|n| n.name == "car1_study").unwrap();
+        assert!(n.inputs.iter().any(|p| p.name == "activate"));
+        run(&f);
+        set(&mut f, None);
+        assert!(f.connections.iter().all(|c| c.to != "car1_study.activate"));
+        assert!(f.blocks.iter().all(|b| b.activate.is_none()));
+        run(&f);
         // Renaming the model renames what the study studies.
         apply(
             &mut f,

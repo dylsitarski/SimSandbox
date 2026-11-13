@@ -4018,6 +4018,40 @@ fn study_fields(
         .get(&id)
         .and_then(|t| serde_json::from_str(t).ok())
         .unwrap_or_else(|| saved.clone());
+    // When it runs (ADR 0088).
+    ui.horizontal(|ui| {
+        let now = b.activate.clone();
+        let label = |m: &Option<String>| match m.as_deref() {
+            None => "when its inputs change".to_string(),
+            Some("while") => "while 'activate' is high".to_string(),
+            Some(m) => format!("on 'activate' ({m})"),
+        };
+        ui.label("Runs");
+        egui::ComboBox::from_id_salt(("activate", &b.name))
+            .selected_text(label(&now))
+            .show_ui(ui, |ui| {
+                for m in [
+                    None,
+                    Some("rise"),
+                    Some("fall"),
+                    Some("change"),
+                    Some("while"),
+                ] {
+                    let m = m.map(String::from);
+                    if ui.selectable_label(now == m, label(&m)).clicked() && now != m {
+                        out.push(Edit::SetActivate {
+                            block: b.name.clone(),
+                            mode: m,
+                        });
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Activated, a study gets an 'activate' input: it runs once when it rises, falls \
+                 or changes, or keeps running while it is high, and holds its results otherwise",
+            );
+    });
     let mut changed = false;
     let mut commit = false;
     let runs = match s.design {

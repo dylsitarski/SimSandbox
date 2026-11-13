@@ -65,6 +65,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Activation of studies (ADR 0088): `"activate": "rise"` (or `fall`, `change`, `while`) on a study gives it an `activate` input; it runs once on that edge of the wired signal, or while it is high, and holds its results otherwise. In the app: "Runs" in the study's Inspector form.
 - Networks from files in typed equations: `start nodes = file "nodes.csv"` starts a table from a CSV file (an `id` column, and a column per quantity, with units in the header if wanted); an edge table's file has `from` and `to` (node ids); `param g[wires] [S] = 0.001` is a value per row; `outflow(I, wires)` sums a flow along edges onto their ends; `param m[k] [kg] = file "masses.csv"` reads an array parameter's values. The files count in the model hash. Example: `examples/networks/bridge.ssbx.json`, a Wheatstone bridge.
 - `dx/dt = 0` (a right side of exactly zero) balances in any unit.
 - Built-in examples may read files: the app opens such an example from a folder holding them, and Save as writes them beside the saved model. "A Wheatstone bridge (a network from files)" is in the Examples menu, with the supply voltage and capacitance as sliders.

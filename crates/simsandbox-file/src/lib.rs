@@ -1017,6 +1017,11 @@ pub struct BlockEntry {
     /// `study` block has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample: Option<Sampling>,
+    /// When it acts, by its `activate` input (ADR 0088): `rise`, `fall`,
+    /// `change` or `while`. A study only, for now (used models with ADR
+    /// 0088 step 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activate: Option<String>,
     /// A study's model when `model` names a definition: its text,
     /// with the definitions in scope; found as the file was read, never
     /// written.
@@ -1057,6 +1062,10 @@ impl BlockEntry {
         // A study's file is read (and hashed) as a setting of its type.
         if let (true, Some(f)) = (self.type_name == STUDY, &self.file) {
             settings.insert("file".into(), f.clone());
+        }
+        // When a study acts (ADR 0088), as a setting of its type.
+        if let (true, Some(a)) = (self.type_name == STUDY, &self.activate) {
+            settings.insert("activate".into(), a.clone());
         }
         BlockConfig {
             method: (&self.method).into(),
@@ -2498,6 +2507,12 @@ impl ModelFile {
                 return Err(invalid(
                     format!("{path}.sample"),
                     "only a study block has a sample (ADR 0070)",
+                ));
+            }
+            if entry.activate.is_some() && entry.type_name != STUDY {
+                return Err(invalid(
+                    format!("{path}.activate"),
+                    "only a study is activated, for now; used models come with ADR 0088 step 2",
                 ));
             }
             let config = entry.config(folder);

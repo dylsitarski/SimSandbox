@@ -65,3 +65,12 @@ Revised 2026-11-13 after the owner's answers: activation covers steps as well as
 - Updated with the work: the concept list, [headless guide](../guides/headless.md), STATUS, Q53 resolved.
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): **activation**, because no existing concept says *when* a part starts: wires carry values, clocks say when steps happen, and Restart applies to the whole model.
+
+## As built
+
+**Step 1 (2026-11-13): studies.** `crates/simsandbox-session/src/study.rs` (`Activate`, `StudyBlock`), `BlockEntry::activate`.
+- **File:** `"activate": "while"` on a study (a mode as a string: `rise`, `fall`, `change`, `while`), passed to the study type as a setting; an unknown mode is refused, and so is `activate` on any block but a study (used models come with step 2). Point 1 as built: the `activate` input exists when a mode is written (the kernel has no optional inputs), and must then be wired, as any input; without a mode the study is as before. Files without the field are unchanged.
+- **The study:** a dimensionless `activate` input after its own; states: the level last read, whether it holds results, and the inputs and parameters it holds. At each instant its outputs come from the current inputs when it acts (or holds nothing yet, at the start) and from those it holds otherwise; the step commits that choice. Its runs are the same pure function of what it runs with as before (cached by their bits), so results held are bit for bit those of the run that made them, and a rewind restores what it holds. Over a table's rows it is not activated yet.
+- **In the app:** "Runs" in the study's Inspector form: when its inputs change, or on `activate` with each mode (`Edit::SetActivate`); turning it off removes the input and its wire.
+- **Tested:** a study scaling its input `u = t`, gated high at t = 3, 4, 5, runs with u = 0, 0, 0, 3, 3, … (`rise`), 0 until 6 then 6 (`fall`), 0, 0, 0, 3, 3, 3, 6, 6, 6 (`change`), 0, 0, 0, 3, 4, 5, 5, 5, 5 (`while`), and 0 … 8 without activation; both runs hold alike; a rewind into a held stretch replays the same bits; an unknown mode, an unwired `activate` and activation off a study are refused; the edit adds the port, a dimensionless switch wires to it (a speed is refused for its unit), and turning it off removes port and wire.
+

@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-13: ADR 0088 written with the owner (activation; modes generalised from impulses to steps at the owner's request; `restart` as an input so resuming or starting again can depend on a condition; events within a step deferred on the same wire) and step 1 built: `BlockEntry::activate`, `Activate` and the study's held state, `Edit::SetActivate` and the "Runs" picker, tests; ADR As built, concept list, headless guide, STATUS, CHANGELOG
 - 2026-11-13: units keep the name they were written with (owner): `Unit::name` (interned), `Display` prints it, `unnamed`; three tests' expectations of base-unit text updated. Slow checks investigated (owner): timings of five debug profiles (performance.md); `[profile.dev] opt-level = 1` for our crates; the disk had filled from a 22 GB `target/` (cleared)
 - 2026-11-13: fixes from the owner's report on the bridge in the window: typed-equations factory reads files from `BlockConfig::folder`, the app sets its thread's folder on opening and Save as, `only_rounds` never counts a continuous block; the bridge gained `supply` and `C` with sliders (`share` per node); checked by an app test and screenshots under Xvfb
 - 2026-11-13: examples with files in the app's menu (owner's request): `Example::files`, `unpack`, `file_name`, `folder`; the app's `example_folder` (opening from a fresh temporary folder, Save as copying the files); the bridge registered with views; loops over all examples load from their folders; app test `an_example_that_reads_files_opens_and_saves_with_them`; ADR 0069 note, STATUS, CHANGELOG
@@ -203,6 +204,7 @@
 
 ## Decided
 
+- 2026-11-13 (mine, ADR 0088 step 1): the file form is a string (`"activate": "while"`); the `activate` input exists only when a mode is written (no optional inputs in the kernel); a study over a table's rows is not activated yet.
 - 2026-11-13 (owner, ADR 0088): activation by an `activate` input with modes `rise` (default), `fall`, `change`, `while`; held outputs keep their last values; a `restart` input on used models so resuming or starting again can depend on a condition; events within a step later, as a capability of the signal's source on the same wire; studies first, then used models. Mine: time goes on for the whole model.
 - 2026-11-13 (owner): units are shown as written.
 - 2026-11-13 (mine): debug and test builds optimise our crates at level 1, dependencies unoptimised (measured best for the edit-and-test cycle; +37 s for a cold build).

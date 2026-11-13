@@ -95,8 +95,51 @@ enum From {
     Output(String),
 }
 
+/// The input that says when an activated study runs (ADR 0088).
+pub const ACTIVATE: &str = "activate";
+
+/// When an activated study runs (ADR 0088), from its `activate` input,
+/// high above 0.5, read at each communication instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activate {
+    /// Once, when it goes high.
+    Rise,
+    /// Once, when it goes low.
+    Fall,
+    /// Once, at each change.
+    Change,
+    /// As without activation while high; its results held while low.
+    While,
+}
+
+impl Activate {
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "rise" => Self::Rise,
+            "fall" => Self::Fall,
+            "change" => Self::Change,
+            "while" => Self::While,
+            _ => return None,
+        })
+    }
+
+    /// Whether, with the level `now` and the one before (`None` at the
+    /// start), it acts now.
+    fn acts(self, before: Option<bool>, now: bool) -> bool {
+        match (self, before) {
+            (Self::While, _) => now,
+            (_, None) => false,
+            (Self::Rise, Some(b)) => !b && now,
+            (Self::Fall, Some(b)) => b && !now,
+            (Self::Change, Some(b)) => b != now,
+        }
+    }
+}
+
 pub struct StudyBlock {
     spec: BlockSpec,
+    /// When it runs, if activated (ADR 0088).
+    activate: Option<Activate>,
     method: MethodSpec,
     /// The model with the study's sample, and the folder it reads from.
     text: String,
@@ -162,7 +205,11 @@ fn port_name(key: &str) -> String {
 
 impl StudyBlock {
     pub fn from_config(name: &str, c: &BlockConfig) -> Result<Self> {
-        if let Some(k) = c.settings.keys().find(|k| k.as_str() != "file") {
+        if let Some(k) = c
+            .settings
+            .keys()
+            .find(|k| !matches!(k.as_str(), "file" | "activate"))
+        {
             return Err(SimError::InvalidSetting {
                 setting: format!("settings.{k}"),
                 reason: "a study has no settings: it names its model as a use does, with \"model\" (a definition here) or \"file\"".into(),
@@ -177,6 +224,13 @@ impl StudyBlock {
         if c.update.is_some() {
             return Err(invalid("a study takes no 'update'"));
         }
+        let activate = match c.settings.get("activate") {
+            None => None,
+            Some(m) => Some(Activate::parse(m).ok_or_else(|| SimError::InvalidSetting {
+                setting: "activate".into(),
+                reason: format!("'{m}' is not a mode: rise, fall, change or while (ADR 0088)"),
+            })?),
+        };
         let mut lines = c.definition.iter();
         let sample = lines.next().filter(|s| !s.is_empty()).ok_or_else(|| {
             invalid("a study needs a `sample`: its design and parameters, as for an experiment")
@@ -335,6 +389,25 @@ impl StudyBlock {
             ports.push(PortSpec::input(&b.name, unit, Shape::Scalar));
             keys.push(key);
         }
+        // When it runs (ADR 0088): an input of its own, last.
+        let held_inputs = ports.iter().map(|p| p.shape.len()).sum::<usize>();
+        if activate.is_some() {
+            if by_rows {
+                return Err(invalid(
+                    "activate: a study over a table's rows is not activated yet",
+                ));
+            }
+            if ports.iter().any(|p| p.name == ACTIVATE) {
+                return Err(invalid(
+                    "activate: the model has an input block named 'activate'; rename it",
+                ));
+            }
+            ports.push(PortSpec::input(
+                ACTIVATE,
+                Unit::DIMENSIONLESS,
+                Shape::Scalar,
+            ));
+        }
         let inputs: Vec<String> = ports.iter().map(|p| p.name.clone()).collect();
         let inputs: Vec<&str> = inputs.iter().map(String::as_str).collect();
         let mut from = Vec::new();
@@ -486,6 +559,17 @@ impl StudyBlock {
             speed: SpeedClass::RealTime,
             accuracy: AccuracyClass::Quantitative,
         });
+        // Activated, it keeps the level last read, whether it holds
+        // results, and the inputs and parameters it last ran with.
+        let states: Vec<String> = match activate {
+            None => Vec::new(),
+            Some(_) => ["activate_last", "activate_held"]
+                .into_iter()
+                .map(String::from)
+                .chain((0..held_inputs).map(|k| format!("held_input[{k}]")))
+                .chain(declared.iter().map(|p| format!("held_{p}")))
+                .collect(),
+        };
         Ok(Self {
             spec: BlockSpec {
                 name: name.into(),
@@ -493,10 +577,15 @@ impl StudyBlock {
                 domain: Domain::External,
                 ports,
                 params,
-                states: Vec::new(),
+                time: if states.is_empty() {
+                    TimeSemantics::Stateless
+                } else {
+                    TimeSemantics::DiscreteEvent
+                },
+                states,
                 tables: Vec::new(),
-                time: TimeSemantics::Stateless,
             },
+            activate,
             method: MethodSpec {
                 name: RUNS.into(),
                 labels: MethodLabels {
@@ -851,6 +940,24 @@ fn signal_unit(
         .unwrap_or(Unit::DIMENSIONLESS)
 }
 
+impl StudyBlock {
+    /// The inputs (without `activate`) and parameters an activated study
+    /// runs with at an instant (ADR 0088): the current ones when it acts
+    /// now or holds nothing yet, else those it holds.
+    fn with(&self, state: &[f64], inputs: &[f64], params: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let mode = self.activate.expect("activated");
+        let own = &inputs[..inputs.len() - 1];
+        let level = inputs[inputs.len() - 1] > 0.5;
+        let before = (!state[0].is_nan()).then_some(state[0] > 0.5);
+        let held = state[1] > 0.5;
+        if !held || mode.acts(before, level) {
+            return (own.to_vec(), params.to_vec());
+        }
+        let n = own.len();
+        (state[2..2 + n].to_vec(), state[2 + n..].to_vec())
+    }
+}
+
 impl Block for StudyBlock {
     fn spec(&self) -> &BlockSpec {
         &self.spec
@@ -860,15 +967,36 @@ impl Block for StudyBlock {
         &self.method
     }
 
-    fn init(&mut self, _params: &[f64], _state: &mut [f64]) -> Result<()> {
+    fn init(&mut self, _params: &[f64], state: &mut [f64]) -> Result<()> {
+        // Nothing read yet, nothing held: it runs with what it starts with.
+        if let Some(s) = state.get_mut(..2) {
+            s.copy_from_slice(&[f64::NAN, 0.0]);
+        }
         Ok(())
     }
 
     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
+        // What it ran with at the instant the step starts is what it holds
+        // from now (ADR 0088): the decision `compute_outputs` made there.
+        if self.activate.is_some() {
+            let (inputs, params) = self.with(io.state, io.inputs, io.params);
+            let level = io.inputs[io.inputs.len() - 1] > 0.5;
+            io.state[0] = f64::from(u8::from(level));
+            io.state[1] = 1.0;
+            let n = inputs.len();
+            io.state[2..2 + n].copy_from_slice(&inputs);
+            io.state[2 + n..].copy_from_slice(&params);
+        }
         self.compute_outputs(ctx.t + ctx.dt, io)
     }
 
     fn compute_outputs(&self, _t: f64, io: StepIo<'_>) -> Result<()> {
+        if self.activate.is_some() {
+            let (inputs, params) = self.with(io.state, io.inputs, io.params);
+            let values = self.evaluate(&inputs, &params)?;
+            io.outputs.copy_from_slice(&values);
+            return Ok(());
+        }
         if self.by_rows {
             let frames = self.evaluate_rows(io.population_inputs, io.inputs, io.params)?;
             for (to, f) in io.population_outputs.iter_mut().zip(frames) {
@@ -970,6 +1098,93 @@ mod tests {
     /// A point per row of a table (ADR 0079 stage 1d): rows come, change
     /// and go; each runs when it is new or changed, its result leaves
     /// under its id, and a block downstream follows them.
+    /// ADR 0088: an activated study runs when its `activate` input says,
+    /// and holds its results between, exactly and through a rewind.
+    #[test]
+    fn an_activated_study_runs_on_its_edges_or_while_high() {
+        let r = registry();
+        let model = |activate: Option<&str>| {
+            let mut s = json!({"name": "s", "type": "study", "model": "scale",
+                "sample": {"design": "list", "params": [{"param": "g.a"}],
+                           "values": [[1.0], [2.0]], "reduce": {"out": "final(g.y)"}}});
+            if let Some(a) = activate {
+                s["activate"] = json!(a);
+            }
+            let mut connections = vec![json!({"from": "src.drive", "to": "s.u"})];
+            if activate.is_some() {
+                connections.push(json!({"from": "src.gate", "to": "s.activate"}));
+            }
+            json!({"format": 1, "run": {"dt": 1, "t_end": 8},
+                "models": {"scale": {"run": {"dt": 1, "t_end": 1}, "blocks": [
+                    {"name": "u", "type": "input.value", "params": {"y": 0.0}},
+                    {"name": "g", "type": "eq.equations", "equations": [
+                        "input u", "param a = 1", "y = a*u"]}],
+                    "connections": [{"from": "u.y", "to": "g.u"}]}},
+                "blocks": [
+                    {"name": "src", "type": "eq.equations", "equations": [
+                        "state clock = 0", "dclock/dt = 1",
+                        "drive = t", "gate = (t > 2.5)*(t < 5.5)"]},
+                    s],
+                "connections": connections})
+            .to_string()
+        };
+        // The input each run used, per instant: run 0's result (a = 1).
+        let used = |text: &str| -> Vec<f64> {
+            let y = run(text, &r, None, None).unwrap();
+            value(&y, "s.out").chunks(2).map(|c| c[0]).collect()
+        };
+        assert_eq!(used(&model(None)), [0., 1., 2., 3., 4., 5., 6., 7., 8.]);
+        assert_eq!(
+            used(&model(Some("rise"))),
+            [0., 0., 0., 3., 3., 3., 3., 3., 3.]
+        );
+        assert_eq!(
+            used(&model(Some("fall"))),
+            [0., 0., 0., 0., 0., 0., 6., 6., 6.]
+        );
+        assert_eq!(
+            used(&model(Some("change"))),
+            [0., 0., 0., 3., 3., 3., 6., 6., 6.]
+        );
+        assert_eq!(
+            used(&model(Some("while"))),
+            [0., 0., 0., 3., 4., 5., 5., 5., 5.]
+        );
+        // Both runs held alike: run 1 is twice run 0.
+        let y = run(&model(Some("while")), &r, None, None).unwrap();
+        assert!(value(&y, "s.out").chunks(2).all(|c| c[1] == 2.0 * c[0]));
+        // A rewind into a held stretch replays the same results.
+        let mut s = crate::session::Session::load("m", &model(Some("change")), &r).unwrap();
+        s.set_recorder(Some(Default::default()));
+        s.run_until(8.0).unwrap();
+        let frames = |s: &mut crate::session::Session| -> Vec<u64> {
+            s.flush(true);
+            let h = s.signals();
+            let f = h.fields().iter().find(|f| f.name == "s.out").unwrap();
+            (0..h.len())
+                .flat_map(|k| f.frame(k).to_vec())
+                .map(f64::to_bits)
+                .collect()
+        };
+        let first = frames(&mut s);
+        assert_eq!(first.len(), 18);
+        s.rewind_to(4.0);
+        s.run_until(8.0).unwrap();
+        assert_eq!(frames(&mut s), first);
+        // An unknown mode, an unwired activate and activation off a study
+        // are refused.
+        let e = run(&model(Some("sometimes")), &r, None, None).unwrap_err();
+        assert!(e.contains("not a mode"), "{e}");
+        let mut v: Value = serde_json::from_str(&model(Some("rise"))).unwrap();
+        v["connections"].as_array_mut().unwrap().pop();
+        let e = run(&v.to_string(), &r, None, None).unwrap_err();
+        assert!(e.contains("activate"), "{e}");
+        let mut v: Value = serde_json::from_str(&model(None)).unwrap();
+        v["blocks"][0]["activate"] = json!("rise");
+        let e = run(&v.to_string(), &r, None, None).unwrap_err();
+        assert!(e.contains("only a study is activated"), "{e}");
+    }
+
     #[test]
     fn a_study_runs_a_point_per_row_and_remembers_each_by_id() {
         let r = registry();
