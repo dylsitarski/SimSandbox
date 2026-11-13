@@ -177,6 +177,14 @@ fn check_mixed() {
         let mut got = vec![0.0; n * n];
         set.rhs(0.0, &x, &[], &p, &mut got);
         out += &format!(" Cranelift {phases} phases [{}]", same(&got, &want));
+        // Every parameter changed, as sliders would: the same code, no
+        // compiling again, still the interpreter's bits.
+        let moved: Vec<f64> = p.iter().map(|v| v * 1.37 + 0.01).collect();
+        let interp = EquationSet::parse("m", &mixed(n)).expect("valid");
+        let mut want2 = vec![0.0; n * n];
+        interp.rhs(0.0, &x, &[], &moved, &mut want2);
+        set.rhs(0.0, &x, &[], &moved, &mut got);
+        out += &format!(" parameters moved [{}, results changed {}]", same(&got, &want2), !same(&want2, &want));
     }
     #[cfg(feature = "wasm")]
     {
