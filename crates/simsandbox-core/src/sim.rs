@@ -33,9 +33,10 @@ pub struct Snapshot {
     /// since inputs are taken only at their block's instants.
     clocks: Vec<(f64, u128)>,
     inputs: Vec<Vec<f64>>,
-    /// Activated parts' signals as last read, and which blocks are held
-    /// (ADR 0088).
+    /// Activated parts' signals as last read, how often each started
+    /// again, and which blocks are held (ADR 0088).
     gates: Vec<[f64; 2]>,
+    starts: Vec<u64>,
     held: Vec<bool>,
 }
 
@@ -451,8 +452,10 @@ pub struct Simulator {
     /// A study, for one, would run every point on inputs of zero.
     late: Vec<bool>,
     /// Activated parts (ADR 0088): each one's signals as last read (NaN
-    /// before the first instant), and per Block whether it is held now.
+    /// before the first instant), how often each started again, and per
+    /// Block whether it is held now.
     gates: Vec<[f64; 2]>,
+    starts: Vec<u64>,
     held: Vec<bool>,
 }
 
@@ -797,9 +800,11 @@ impl Simulator {
             pool: None,
             late: Vec::new(),
             gates: Vec::new(),
+            starts: Vec::new(),
             held: vec![false; blocks],
         };
         sim.gates = vec![[f64::NAN; 2]; sim.model.activations.len()];
+        sim.starts = vec![0; sim.model.activations.len()];
         sim.late = (0..sim.model.blocks.len())
             .map(|b| {
                 let spec = sim.model.blocks[b].spec();
@@ -845,6 +850,7 @@ impl Simulator {
         }
         self.active.fill(true);
         self.gates.fill([f64::NAN; 2]);
+        self.starts.fill(0);
         self.held.fill(false);
         self.resolve(t0)?;
         self.exchange();
@@ -1328,6 +1334,21 @@ impl Simulator {
     /// or a rise of its restart signal, and is held under `while` while
     /// its signal is low. After starting any again, outputs are made
     /// consistent at this instant before the step.
+    /// Each activated part (ADR 0088), as registered: its name, whether
+    /// it is held now and how often it has started again since the run
+    /// began.
+    pub fn activations(&self) -> Vec<(&str, bool, u64)> {
+        self.model
+            .activations
+            .iter()
+            .zip(&self.starts)
+            .map(|(a, &n)| {
+                let held = a.members.first().is_some_and(|m| self.held[m.0]);
+                (a.name.as_str(), held, n)
+            })
+            .collect()
+    }
+
     fn gate(&mut self, stepping: &dyn Fn(usize) -> bool) -> Result<()> {
         if self.model.activations.is_empty() {
             return Ok(());
@@ -1371,6 +1392,7 @@ impl Simulator {
                     };
                     self.start_block(m.0, t, false)?;
                 }
+                self.starts[k] += 1;
                 started = true;
             }
         }
@@ -1686,6 +1708,7 @@ impl Simulator {
                 self.inputs.clone()
             },
             gates: self.gates.clone(),
+            starts: self.starts.clone(),
             held: self.held.clone(),
         }
     }
@@ -1725,6 +1748,7 @@ impl Simulator {
         }
         self.step = snap.step;
         self.gates.clone_from(&snap.gates);
+        self.starts.clone_from(&snap.starts);
         self.held.clone_from(&snap.held);
         self.states.clone_from(&snap.states);
         self.tables.clone_from(&snap.tables);

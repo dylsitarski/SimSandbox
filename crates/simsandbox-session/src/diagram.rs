@@ -87,6 +87,9 @@ pub struct Node {
     /// A used model's ports not shown on its node (ADR 0066 step 4b),
     /// reachable by path from its list: `true` for an input.
     pub reachable: Vec<(bool, Port)>,
+    /// What the run says of it now: an activated use held, or how often
+    /// it started again (ADR 0088).
+    pub status: Option<String>,
 }
 
 /// A parameter value shown on a node.
@@ -540,6 +543,7 @@ fn use_node(
         values: Vec::new(),
         open: false,
         reachable: Vec::new(),
+        status: None,
         settings: Default::default(),
     };
     let folder = folder
@@ -560,15 +564,22 @@ fn use_node(
     };
     // Its exposed inputs are ports, as input blocks are (ADR 0074); so
     // are its activation signals (ADR 0088).
+    // Those first, the mode beside `activate`.
     simsandbox_file::compose::expose_inputs(&mut model);
-    for (name, on) in [("activate", b.activate.is_some()), ("restart", b.restart)] {
+    for (name, on) in [("restart", b.restart), ("activate", b.activate.is_some())] {
         if on {
-            model.blocks.push(BlockEntry {
-                name: name.into(),
-                type_name: simsandbox_eq::input::VALUE.into(),
-                ..Default::default()
-            });
+            model.blocks.insert(
+                0,
+                BlockEntry {
+                    name: name.into(),
+                    type_name: simsandbox_eq::input::VALUE.into(),
+                    ..Default::default()
+                },
+            );
         }
+    }
+    if let Some(mode) = &b.activate {
+        n.settings.insert("activate".into(), mode.clone());
     }
     let mut has_states = false;
     // Every input and output it has, by path; the node shows its
@@ -754,7 +765,7 @@ fn node(
 ) -> Node {
     let mut method = b.method.name.clone();
     let mut values = Vec::new();
-    let (inputs, outputs, error) = match build(b, registry, folder) {
+    let (mut inputs, outputs, error) = match build(b, registry, folder) {
         Ok(block) => {
             if method.is_empty() {
                 method = block.method().name.clone();
@@ -792,6 +803,15 @@ fn node(
         }
         Err(e) => (Vec::new(), Vec::new(), Some(e)),
     };
+    // An activated study's `activate` first, its mode beside it (ADR 0088).
+    let mut settings = b.settings.clone();
+    if let Some(mode) = &b.activate {
+        if let Some(k) = inputs.iter().position(|p| p.name == "activate") {
+            let port = inputs.remove(k);
+            inputs.insert(0, port);
+        }
+        settings.insert("activate".into(), mode.clone());
+    }
     // A conversion says what it converts (ADR 0045).
     if let (Some(from), Some(to)) = (b.settings.get("from"), b.settings.get("to")) {
         method = format!("{from} to {to}");
@@ -818,7 +838,8 @@ fn node(
         values,
         open: false,
         reachable: Vec::new(),
-        settings: b.settings.clone(),
+        status: None,
+        settings,
     }
 }
 
@@ -832,6 +853,27 @@ fn unit_text(u: &simsandbox_core::units::Unit) -> String {
 }
 
 impl Diagram {
+    /// Say on each activated use's node what the run says of it now
+    /// (ADR 0088): `held`, or how often it started again. `activations`
+    /// are by path, as [`crate::session::Session::activations`] gives
+    /// them.
+    pub fn live_activations(&mut self, activations: &[(String, bool, u64)]) {
+        if self.scope != Scope::Model {
+            return;
+        }
+        for n in &mut self.nodes {
+            n.status = activations
+                .iter()
+                .find(|(name, ..)| *name == n.name)
+                .and_then(|&(_, held, starts)| match (held, starts) {
+                    (true, _) => Some("held".to_string()),
+                    (false, 0) => None,
+                    (false, 1) => Some("started again once".to_string()),
+                    (false, k) => Some(format!("started again {k} times")),
+                });
+        }
+    }
+
     /// Show these current values (as the inspector lists them, ADR 0053)
     /// on the model level's nodes in place of the file's.
     pub fn live_values(&mut self, rows: &[crate::session::ParamRow]) {

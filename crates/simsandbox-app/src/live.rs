@@ -149,6 +149,9 @@ pub struct Status {
     /// What the recordings hold against the memory budget (ADR 0062
     /// step 5).
     pub memory: Option<simsandbox_session::session::MemoryUse>,
+    /// Each activated use, by path: held now, and how often it started
+    /// again (ADR 0088).
+    pub activations: Vec<(String, bool, u64)>,
 }
 
 /// Something for the log.
@@ -403,6 +406,7 @@ fn status(s: &Session, running: bool, achieved: f64, limited: bool) -> Status {
         iterating: s.rounds_pending(),
         held_still: s.held_still(),
         memory: Some(s.memory_use()),
+        activations: s.activations(),
     }
 }
 

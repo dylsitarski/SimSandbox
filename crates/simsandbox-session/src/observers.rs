@@ -302,6 +302,7 @@ impl Diagram {
                         values: Vec::new(),
                         open: false,
                         reachable: Vec::new(),
+                        status: None,
                         // Its file, shown beside its input; whether it is
                         // part of the model (feeding a block, ADR 0063).
                         settings: pr
@@ -366,6 +367,7 @@ impl Diagram {
                     values: Vec::new(),
                     open: false,
                     reachable: Vec::new(),
+                    status: None,
                     // The probe each input comes from; `clock` marks a
                     // filter with a clock of its own.
                     settings: filter_reads(f)
@@ -450,6 +452,7 @@ impl Diagram {
                 values: Vec::new(),
                 open: false,
                 reachable: Vec::new(),
+                status: None,
                 settings: Default::default(),
             });
         }
@@ -468,6 +471,7 @@ impl Diagram {
                 values: Vec::new(),
                 open: false,
                 reachable: Vec::new(),
+                status: None,
                 settings: Default::default(),
             });
         }

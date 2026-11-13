@@ -84,6 +84,9 @@ struct Snapshot {
 #[derive(Default)]
 pub struct DiagramTab {
     pub canvas: Canvas,
+    /// What the run says of each activated use now (ADR 0088), set
+    /// before each frame.
+    pub activations: Vec<(String, bool, u64)>,
     /// The level shown: the model, or a subsystem's inside.
     pub scope: Scope,
     /// The subsystem's name as typed for renaming.
@@ -777,6 +780,7 @@ impl DiagramTab {
         // The running values on the nodes (ADR 0053).
         if !draft {
             built.live_values(&model.params);
+            built.live_activations(&self.activations);
         }
         // What the toolbar needs, so it can borrow the tab.
         let (subsystems, bounds) = (built.subsystems.clone(), built.bounds());

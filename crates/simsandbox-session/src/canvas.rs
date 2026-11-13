@@ -595,6 +595,11 @@ impl Canvas {
                 NodeKind::Recorder => format!("rewind · {}", n.method),
             }
         };
+        // What the run says of it now first: held, started again (ADR 0088).
+        let kind = match &n.status {
+            Some(status) => format!("{status} · {kind}"),
+            None => kind,
+        };
         painter.text(
             r.min + Vec2::new(pad, 22.0 * z),
             egui::Align2::LEFT_TOP,
@@ -663,6 +668,13 @@ impl Canvas {
                             p.name.clone()
                         } else {
                             format!("{} · {}", p.name, more.join(", "))
+                        }
+                    }
+                    // An activated part's mode beside its port (ADR 0088).
+                    _ if c == Causality::Input && p.name == "activate" => {
+                        match n.settings.get("activate") {
+                            Some(mode) => format!("activate · {mode}"),
+                            None => p.name.clone(),
                         }
                     }
                     // A probe names its file beside its input.

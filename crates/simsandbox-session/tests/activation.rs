@@ -100,6 +100,41 @@ fn a_session_runs_it_alike_and_rewinds_exactly() {
         s.flush(true);
         assert_eq!(values(&s), first, "rewound to {at}");
     }
+    // It started again at the rise and the fall; a rewind takes the count
+    // back with it, and running on counts them again.
+    assert_eq!(s.activations(), [("c".to_string(), false, 2)]);
+    s.rewind_to(1.0);
+    assert_eq!(s.activations(), [("c".to_string(), false, 0)]);
+    s.run_until(8.0).unwrap();
+    assert_eq!(s.activations(), [("c".to_string(), false, 2)]);
+}
+
+#[test]
+fn the_node_shows_its_signals_first_and_what_the_run_says_of_it() {
+    use simsandbox_session::diagram::Diagram;
+    let text = model(
+        json!({"activate": "while", "restart": true}),
+        &["c/activate", "c/restart"],
+    );
+    let (mut f, _) = simsandbox_file::ModelFile::from_json(&text).unwrap();
+    f.resolve_models().unwrap();
+    let r = registry();
+    let mut d = Diagram::new(&f, &r);
+    let c = d.node("c").unwrap();
+    let ports: Vec<&str> = d.nodes[c].inputs.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(ports[..2], ["activate", "restart"]);
+    assert_eq!(
+        d.nodes[c].settings.get("activate").map(String::as_str),
+        Some("while")
+    );
+    // Held at the start (the gate is low), running from t = 3.
+    let mut s = Session::load("m", &text, &r).unwrap();
+    s.run_until(1.0).unwrap();
+    d.live_activations(&s.activations());
+    assert_eq!(d.nodes[c].status.as_deref(), Some("held"));
+    s.run_until(4.0).unwrap();
+    d.live_activations(&s.activations());
+    assert_eq!(d.nodes[c].status.as_deref(), Some("started again once"));
 }
 
 #[test]

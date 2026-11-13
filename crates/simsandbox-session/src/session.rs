@@ -2133,13 +2133,23 @@ impl Session {
         reached
     }
 
-    /// Every parameter: the declared ones (the model's, then each
-    /// instance's), then every block's in flat block order.
     /// The kernel model being run.
     pub fn sim_model(&self) -> &simsandbox_core::graph::Model {
         self.sim.model()
     }
 
+    /// Each activated use (ADR 0088), by path: whether it is held now
+    /// and how often it has started again since the run began.
+    pub fn activations(&self) -> Vec<(String, bool, u64)> {
+        self.sim
+            .activations()
+            .into_iter()
+            .map(|(name, held, starts)| (name.to_string(), held, starts))
+            .collect()
+    }
+
+    /// Every parameter: the declared ones (the model's, then each
+    /// instance's), then every block's in flat block order.
     pub fn params(&self) -> Vec<ParamRow> {
         let model = self.sim.model();
         let mut rows = Vec::new();

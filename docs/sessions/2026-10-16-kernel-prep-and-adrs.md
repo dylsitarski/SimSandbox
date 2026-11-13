@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-13: ADR 0088 point 8: activation ports first with the mode, live `held` / start count on activated uses' nodes (kernel start count in snapshots, `Session::activations`, `Diagram::live_activations`).
 - 2026-11-13: ADR 0088 step 2: activation of used models (kernel `Activation` and `Simulator::gate`, hidden `activate`/`restart` input blocks in the loader, Inspector controls and node ports, `tests/activation.rs`).
 - 2026-11-13: ADR 0088 written with the owner (activation; modes generalised from impulses to steps at the owner's request; `restart` as an input so resuming or starting again can depend on a condition; events within a step deferred on the same wire) and step 1 built: `BlockEntry::activate`, `Activate` and the study's held state, `Edit::SetActivate` and the "Runs" picker, tests; ADR As built, concept list, headless guide, STATUS, CHANGELOG
 - 2026-11-13: units keep the name they were written with (owner): `Unit::name` (interned), `Display` prints it, `unnamed`; three tests' expectations of base-unit text updated. Slow checks investigated (owner): timings of five debug profiles (performance.md); `[profile.dev] opt-level = 1` for our crates; the disk had filled from a 22 GB `target/` (cleared)
@@ -205,6 +206,7 @@
 
 ## Decided
 
+- 2026-11-13 (mine, ADR 0088 point 8): the start count lives in the kernel's snapshot so rewinds take it back; a study's node does not show whether it holds results.
 - 2026-11-13 (mine, ADR 0088 step 2): `"restart": true` on the use (the input exists only when written); the signals are hidden `input.value` blocks of the used model named `activate` and `restart`, so it may not have blocks of those names; wires into them are written by path (`c/activate`), as for any input of a use; fusion stops at an activated use's boundary; restarted blocks start at their clock's present time.
 - 2026-11-13 (mine, ADR 0088 step 1): the file form is a string (`"activate": "while"`); the `activate` input exists only when a mode is written (no optional inputs in the kernel); a study over a table's rows is not activated yet.
 - 2026-11-13 (owner, ADR 0088): activation by an `activate` input with modes `rise` (default), `fall`, `change`, `while`; held outputs keep their last values; a `restart` input on used models so resuming or starting again can depend on a condition; events within a step later, as a capability of the signal's source on the same wire; studies first, then used models. Mine: time goes on for the whole model.
