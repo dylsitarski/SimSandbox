@@ -3,8 +3,7 @@ name = "simsandbox-app"
 description = "SimSandbox desktop app (eframe + egui + wgpu, ADR 0008)"
 version.workspace = true
 edition.workspace = true
-# egui 0.36 needs Rust 1.95; the other crates keep the workspace minimum.
-rust-version = "1.95"
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

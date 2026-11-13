@@ -8,7 +8,7 @@ SimSandbox is a small, solver-agnostic kernel that only knows how to **connect, 
 
 ## Quick start
 
-Requires stable Rust 1.95+ for the desktop app and the CLI, 1.86+ for the libraries ([setup guide](docs/guides/development-setup.md)).
+Requires stable Rust 1.97+ ([setup guide](docs/guides/development-setup.md)).
 
 ```sh
 cargo test --workspace

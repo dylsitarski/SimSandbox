@@ -3,8 +3,7 @@ name = "simsandbox-views"
 description = "SimSandbox views: recorded signals, the view registry and the built-in views (ADR 0015)"
 version.workspace = true
 edition.workspace = true
-# egui 0.36 needs Rust 1.95, like simsandbox-app.
-rust-version = "1.95"
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

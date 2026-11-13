@@ -272,7 +272,7 @@ impl Choice {
             return one != 0.0;
         }
         let best = many < one;
-        if call % RETRY == 0 {
+        if call.is_multiple_of(RETRY) {
             !best
         } else {
             best

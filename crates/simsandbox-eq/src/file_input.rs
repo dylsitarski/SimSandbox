@@ -598,7 +598,7 @@ mod tests {
         let mut bytes = b"\x93NUMPY\x01\x00".to_vec();
         let mut header =
             "{'descr': '<f8', 'fortran_order': False, 'shape': (2, 2, 3), }".to_string();
-        while (10 + header.len() + 1) % 64 != 0 {
+        while !(10 + header.len() + 1).is_multiple_of(64) {
             header.push(' ');
         }
         header.push('\n');

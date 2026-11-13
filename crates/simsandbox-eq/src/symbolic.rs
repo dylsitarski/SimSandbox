@@ -2111,6 +2111,36 @@ fn lower(
 }
 
 impl EquationSet {
+    /// How many phases of cells of its programs run compiled code.
+    pub fn compiled_phases(&self) -> usize {
+        [
+            Some(&self.outputs),
+            Some(&self.rates),
+            self.init.as_ref(),
+            self.rules_program.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(Program::compiled)
+        .sum()
+    }
+
+    /// Run every phase on the interpreter, for comparing with the
+    /// compiled code.
+    pub fn interpret(&mut self) {
+        for p in [
+            Some(&mut self.outputs),
+            Some(&mut self.rates),
+            self.init.as_mut(),
+            self.rules_program.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            p.interpret();
+        }
+    }
+
     /// Compile the phases of cells of its programs (ADR 0084 point 6):
     /// `compiler` is given each phase's view and may return code to run
     /// in its place, which must give the interpreter's bits. Returns how
@@ -4442,10 +4472,24 @@ impl EquationSet {
         } else {
             (Copies::none(), Copies::none())
         };
-        let init = (!array_init.is_empty()).then(|| {
+        let mut init = (!array_init.is_empty()).then(|| {
             let steps: Vec<(usize, &Expr)> = init_steps.iter().map(|(v, e)| (*v, e)).collect();
             Program::with_layout(&spans, size, &steps)
         });
+        let mut rules_program = rules_program;
+        // Large arrays' phases compiled, once their arrays are placed
+        // (ADR 0084).
+        for p in [
+            Some(&mut outputs),
+            Some(&mut rates),
+            init.as_mut(),
+            rules_program.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            simsandbox_compiled::compile(p);
+        }
         let scratch = RefCell::new([
             outputs.registers(),
             rates.registers(),

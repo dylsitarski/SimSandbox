@@ -95,14 +95,14 @@ fn sum_split(cells: &[f64], split: bool) -> f64 {
     // side by side (vector instructions) instead of one waiting for the last.
     let chunk = |c: &[f64]| -> f64 {
         let mut lanes = [0.0f64; 4];
-        let mut quads = c.chunks_exact(4);
-        for q in &mut quads {
+        let (quads, rest) = c.as_chunks::<4>();
+        for q in quads {
             lanes[0] += q[0];
             lanes[1] += q[1];
             lanes[2] += q[2];
             lanes[3] += q[3];
         }
-        for (lane, &x) in lanes.iter_mut().zip(quads.remainder()) {
+        for (lane, &x) in lanes.iter_mut().zip(rest) {
             *lane += x;
         }
         (lanes[0] + lanes[1]) + (lanes[2] + lanes[3])
@@ -1979,6 +1979,23 @@ impl Program {
             }
         }
         compiled
+    }
+
+    /// How many of its phases run compiled code.
+    pub fn compiled(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|s| matches!(s, Step::Cells(p) if p.compiled.is_some()))
+            .count()
+    }
+
+    /// Drop compiled code: every phase back on the interpreter.
+    pub fn interpret(&mut self) {
+        for step in &mut self.steps {
+            if let Step::Cells(p) = step {
+                p.compiled = None;
+            }
+        }
     }
 
     /// The runs of registers a step reads, as (first, count).

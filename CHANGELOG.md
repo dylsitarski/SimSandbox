@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Typed equations on large grids are compiled to machine code when built (Cranelift, two cells at a time): Gray–Scott at 512 × 512 evaluates in 0.74 ms instead of 1.75 ms on one core, with the same results bit for bit. `SIMSANDBOX_INTERPRET=1` runs the interpreter instead. Building SimSandbox now needs Rust 1.97.
 - Typed equations on large grids run their cell-by-cell work as fewer passes where an array is read both by a stencil and cell by cell (Gray–Scott: one pass, not four), 1.2–1.3× faster again, the same results bit for bit.
 - Typed equations evaluate large grids about twice as fast (Gray–Scott at 512 × 512: 5.0 ms to 2.5 ms on one core), with the same results bit for bit.
 - Stencils (`lap`, and first derivatives `ddx(u)`, `dd(u, x)`) multiply by 1/h² or 1/(2h) instead of dividing by h² or 2h, a further 1.3× on Gray–Scott (2.0 ms). Results of models using them change in their last bits, once; they are the same on every machine as before.

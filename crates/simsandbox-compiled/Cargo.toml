@@ -1,0 +1,25 @@
+[package]
+name = "simsandbox-compiled"
+description = "SimSandbox compiled typed equations: phases of cells compiled by Cranelift in the process, the same bits as the interpreter (ADR 0084)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+simsandbox-expr = { path = "../simsandbox-expr" }
+cranelift-codegen = "=0.137.0"
+cranelift-frontend = "=0.137.0"
+cranelift-jit = "=0.137.0"
+cranelift-module = "=0.137.0"
+cranelift-native = "=0.137.0"
+
+# The workspace's lints, but for unsafe code: calling compiled code and
+# keeping its memory need it, here only, each use marked where it is.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

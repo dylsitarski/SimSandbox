@@ -248,6 +248,18 @@ Microseconds per evaluation, one core (`taskset -c 0`), best of five; for WebAss
 
 Two lanes are 1.3–1.6× one lane and 2.0–2.8× the interpreter; compile time is unchanged (6–10 ms). A second model using every kind of operation (value, gradient and periodic edges, a first derivative, both shifts, a comparison, a power, a function, an axis) gives the interpreter's bits through both routes, with and without vector code. What remains is LLVM's scheduling and unrolling, and wider vectors: Cranelift's x86 back end has 128-bit vectors only, where fused Rust built for this CPU (`-C target-cpu=native`) uses AVX's four lanes (5–20% more, 2026-11-07). Matching fused Rust exactly needs LLVM: [ADR 0089](../decisions/0089-native-code-for-typed-equations.md) proposes generating Rust and compiling it where a toolchain is installed.
 
+## Compiled typed equations in the build (2026-11-13)
+
+The owner put Cranelift with vector code into the build (Q55). `simsandbox-eq` compiles the phases of every typed-equations program large enough to have them (`simsandbox-compiled`), once its arrays are placed; compiled code is kept by the phase it was compiled from, so a model built again compiles nothing. `fused_speed`, µs per evaluation, the same build:
+
+| Grid | Interpreted (`SIMSANDBOX_INTERPRET=1`) | Compiled | Fused Rust | Compiled, four cores |
+|---|---|---|---|---|
+| 128 × 128 | 74 | 41 | 29 | 39 |
+| 256 × 256 | 416 | 173 | 127–135 | 181 |
+| 512 × 512 | 1752 | 741 | 489–510 | 449 |
+
+Compiled is 1.4–1.5× fused Rust on one core (the spike's 1.3× had its kernel's layout; here the rates' copies and the program around them count too). Every example's outputs and renders are the same bytes as before (90 and 24); a test builds Gray–Scott (256 × 256, shared among cores) and a model using every kind of operation both ways and requires the same rates and outputs, with parameters as given and moved.
+
 ## Implicit methods on 2D grids (2026-11-13)
 
 TR-BDF2 on Gray–Scott at 128 × 128 (`grid_cost` on a copy of the example with `"method": {"name": "trbdf2"}`) cost 520 ms a step, 300–330 ms of it in `faer`'s sparse LU with partial pivoting. A better ordering for that LU gained at most 28% (its fill is bounded by AᵀA's structure, which COLAMD already orders for). [ADR 0087](../decisions/0087-implicit-lu-on-the-matrix-pattern.md): our own multifrontal LU on the pattern of A + Aᵀ, pivots on the diagonal, nested dissection: 165 ms a step (factorising 75 ms, solves 5 ms each). `crates/simsandbox-eq/examples/lu_speed.rs` compares the two LUs on a 2D grid, a chain and a ring; 1D systems cost the same as before (`typed_speed`).

@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-13: Cranelift with vector code in the build: `crates/simsandbox-compiled` (from the spike), compiled by `simsandbox-eq` for every large program, kept by phase; `tests/compiled.rs`; workspace Rust minimum 1.97 (every crate, the Python package); lints the new minimum brought (`is_multiple_of`, `as_chunks`) fixed.
 - 2026-11-13: two-lane vector code in the spike's Cranelift route (1.3× fused Rust, the same bits; a mixed model checks every kind of operation through both compiled routes); ADR 0089 drafted (proposed): generated Rust compiled where a toolchain exists.
 - 2026-11-13: ADR 0084 point 6 comparison in `spikes/compiled-routes`: Cranelift JIT, generated WebAssembly in Wasmtime, a hand-written WebAssembly Gray–Scott and fused Rust against the interpreter (time, compile time, bits, size); the `PhaseView`/`PhaseKernel` hook and `kept` analysis in `simsandbox-expr`; phases merge where an only-read array is read both ways; Q54 resolved, Q55 opened.
 - 2026-11-13: stencils multiply by 1/h² and 1/(2h) in both evaluation paths; `fused_speed`'s fused kernel follows; Gray–Scott 512 × 512 at 1965 µs (from 5050 at the start of the day).
@@ -210,6 +211,8 @@
 
 ## Decided
 
+- 2026-11-13 (owner): Cranelift with vector code into the build; native code switches on when a toolchain is found (ADR 0089).
+- 2026-11-13 (mine): compiled phases kept by their view (a model rebuilt compiles nothing), at most 512; `SIMSANDBOX_INTERPRET=1` to compare; the compiled crate allows unsafe code in its `jit` module only; one Rust minimum (1.97) for every crate.
 - 2026-11-13 (owner): measure vector code in the compiled route first, then draft the ADR for generated Rust compiled on demand.
 - 2026-11-13 (mine, ADR 0089 draft): native code is a setting of the machine, not of the model (it changes no result); the generator works from `PhaseView`; checked once against the interpreter before use; falls back to Cranelift or the interpreter.
 - 2026-11-13 (mine, ADR 0084 comparison): the spike lives outside the workspace (`spikes/`, its own `[workspace]`, target ignored) so Cranelift and Wasmtime stay out of the build and CI; compiled code calls the interpreter's own functions for `^` and functions so bits match; route 3 copies arrays per call (its memory is its own), and that cost is reported with the time inside.

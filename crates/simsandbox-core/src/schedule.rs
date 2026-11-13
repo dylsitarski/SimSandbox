@@ -39,7 +39,7 @@ impl Trigger {
     /// absorbs rounding in the times. Call once per step, in order.
     pub fn due(&mut self, t: f64, step: u64, eps: f64) -> bool {
         match &self.every {
-            Every::Steps(n) => step % *n == 0,
+            Every::Steps(n) => step.is_multiple_of(*n),
             Every::Seconds(dt) => {
                 if t + eps < self.next_time {
                     return false;

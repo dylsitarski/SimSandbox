@@ -4,7 +4,7 @@ _Last updated: 2026-10-22_
 
 ## Toolchain
 
-SimSandbox needs stable Rust 1.86 or newer; the crates that use egui (the desktop app, the CLI, `simsandbox-views` and `simsandbox-session`) need 1.95 or newer. `rust-toolchain.toml` makes `rustup` select stable with `rustfmt` and `clippy`. Python 3 is needed for `scripts/check_docs.py`, and Python 3.10 or newer with `maturin` for the Python package (`python/`, [README](../../python/README.md)).
+SimSandbox needs stable Rust 1.97 or newer (Cranelift, which compiles typed equations in `simsandbox-compiled`, needs 1.97; egui 1.95). `rust-toolchain.toml` makes `rustup` select stable with `rustfmt` and `clippy`. Python 3 is needed for `scripts/check_docs.py`, and Python 3.10 or newer with `maturin` for the Python package (`python/`, [README](../../python/README.md)).
 
 | Platform | Install |
 | --- | --- |
