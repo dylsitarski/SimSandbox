@@ -4,8 +4,10 @@
 //! PNG.
 
 use crate::raster::{Canvas, Image, Textures};
+use crate::session::InputEvent;
 use crate::views::{grid, Views};
 use crate::Session;
+use simsandbox_core::registry::Registry;
 use simsandbox_views::Recorded;
 use simsandbox_views::ViewRegistry;
 
@@ -99,6 +101,37 @@ pub fn render(
         None => tiles(ui, &mut views, &recorded),
     });
     Ok((image, warnings))
+}
+
+/// Run a model file and draw its views, as every headless interface does:
+/// load `text`, replay `track` if there is any (a run file's recorded
+/// input), run to `t_end` (the file's if not given, else
+/// [`DEFAULT_T_END`](crate::run::DEFAULT_T_END)) and [`render`] with the
+/// built-in views. Warnings are added to `warnings` as they arise, the
+/// model's before the views', so a caller can show them even when a later
+/// step fails. `title` names the model in the session and in a replay
+/// error.
+pub fn render_run(
+    title: &str,
+    text: &str,
+    registry: &Registry,
+    t_end: Option<f64>,
+    track: Vec<InputEvent>,
+    o: &RenderOptions,
+    warnings: &mut Vec<String>,
+) -> Result<Image, String> {
+    let mut s = Session::load(title, text, registry)?;
+    if !track.is_empty() {
+        s.replay(track).map_err(|e| format!("{title}: {e}"))?;
+    }
+    warnings.extend(s.warnings.iter().cloned());
+    let t_end = t_end
+        .or(s.file.run.t_end)
+        .unwrap_or(crate::run::DEFAULT_T_END);
+    s.run_until(t_end).map_err(|e| e.to_string())?;
+    let (image, more) = render(&s, crate::examples::view_registry(), o)?;
+    warnings.extend(more);
+    Ok(image)
 }
 
 /// Draw a model file's diagram, as the node canvas shows it, fitted to
@@ -434,6 +467,50 @@ mod tests {
         assert!(render(&s, view_registry(), &o)
             .unwrap_err()
             .contains("no view 99"));
+    }
+
+    #[test]
+    fn a_file_run_and_rendered_in_one_call_is_the_session_drawn() {
+        let e = &EXAMPLES[0];
+        let o = RenderOptions {
+            width: 200.0,
+            height: 100.0,
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        let img = render_run(
+            "m",
+            e.text,
+            &registry(),
+            Some(1.0),
+            Vec::new(),
+            &o,
+            &mut warnings,
+        )
+        .unwrap();
+        let mut s = Session::load("m", e.text, &registry()).unwrap();
+        s.run_until(1.0).unwrap();
+        let (by_hand, more) = render(&s, view_registry(), &o).unwrap();
+        assert_eq!(img.rgba, by_hand.rgba);
+        let expected: Vec<String> = s.warnings.iter().cloned().chain(more).collect();
+        assert_eq!(warnings, expected);
+        // Recorded input that does not apply is an error naming the model.
+        let track = vec![InputEvent {
+            t: 0.5,
+            key: "nope.y".into(),
+            value: 1.0,
+        }];
+        let e = render_run(
+            "m",
+            e.text,
+            &registry(),
+            Some(1.0),
+            track,
+            &o,
+            &mut warnings,
+        )
+        .unwrap_err();
+        assert!(e.starts_with("m: "), "{e}");
     }
 
     /// A field over three axes drawn by a heat map, a surface and a

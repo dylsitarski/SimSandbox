@@ -10,6 +10,8 @@
 - W5 ([ADR 0097](../decisions/0097-implicit-steps-relative-tolerances-and-fallback.md)) and W4 ([ADR 0096](../decisions/0096-the-native-cache.md)), at the owner's request. 602 workspace tests pass, among them the native build from end to end; clippy and fmt clean; the Python tests were not run.
 - Reproduced with the CLI: a spring formula block on a mass is not fused and runs 5% off under a `Quantitative` label (W1); 200 000 nested parentheses abort `check` with a stack overflow (W2); unit exponents wrap at ±128 (W3); `t` drifts by accumulation.
 
+- Second priority begun: the typed-equations reference, held to the code by a test and given by `describe` (W11); run files and render shared by the three interfaces (W10; the Python tests were built and run for it: 30 pass); STATUS's history archived, two guides brought up to date. 610 workspace tests pass.
+
 ## Decided
 
 - Owner: the Phase 2 gate before further typed-equation features (Q57).
@@ -21,7 +23,7 @@
 
 ## Left open
 
-- The review's second and later priorities; ADRs 0090, 0092 and 0093 to build; tolerances per state for implicit methods (ADR 0097 point 6).
+- The review's W6, W7, W8, W9 and the kernel tidy; its third and fourth priorities; ADRs 0090, 0092 and 0093 to build; tolerances per state for implicit methods (ADR 0097 point 6).
 
 ## Notes for the next session
 

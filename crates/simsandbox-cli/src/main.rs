@@ -35,13 +35,12 @@ use simsandbox_core::graph::Model;
 use simsandbox_core::sim::Simulator;
 use simsandbox_eq::systems::Lorenz;
 use simsandbox_eq::{Integrator, OdeBlock};
-use simsandbox_file::runs::RunFile;
-use simsandbox_file::ModelFile;
 use simsandbox_session::examples::{registry, view_registry};
-use simsandbox_session::render::{png, render, render_diagram, RenderOptions};
+use simsandbox_session::render::{png, render_diagram, render_run, RenderOptions};
 use simsandbox_session::run::{run_keeping, run_probes, start_from, Keep, DEFAULT_T_END};
+use simsandbox_session::runs::{self, is_run_file};
 use simsandbox_session::session::InputEvent;
-use simsandbox_session::{describe, probe, Session};
+use simsandbox_session::{describe, probe};
 use std::collections::BTreeMap;
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
@@ -109,109 +108,14 @@ fn read(path: &str) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))
 }
 
-/// Whether `path` names a run file (ADR 0059).
-fn is_run_file(path: &str) -> bool {
-    path.ends_with(".run.json")
-}
-
-/// A run file and the text of the model it names (relative to it).
-fn read_run(path: &str) -> Result<(RunFile, String, String), String> {
-    let run = RunFile::from_json(&read(path)?).map_err(|e| format!("{path}: {e}"))?;
-    let model_path = std::path::Path::new(path)
-        .parent()
-        .unwrap_or(std::path::Path::new(""))
-        .join(&run.model);
-    let model_path = model_path.to_string_lossy().into_owned();
-    let model = read(&model_path).map_err(|e| format!("{path}: its model: {e}"))?;
-    Ok((run, model_path, model))
-}
-
-fn events(track: &[(f64, String, f64)]) -> Vec<InputEvent> {
-    track
-        .iter()
-        .map(|(t, key, value)| InputEvent {
-            t: *t,
-            key: key.clone(),
-            value: *value,
-        })
-        .collect()
-}
-
 /// The model text to run and the recorded input to replay with it
-/// (ADR 0059): a run file's model with the run's seed, settings and
-/// schedule (warning if the model changed since the run was made); or a
-/// model file, with `--inputs RUN` applying that run's schedule and track.
+/// ([`runs::model_and_track`]), its warnings on standard error.
 fn model_and_track(path: &str, inputs: Option<&str>) -> Result<(String, Vec<InputEvent>), String> {
-    if is_run_file(path) {
-        if inputs.is_some() {
-            return Err("--inputs applies a run to a model file; this is a run file".into());
-        }
-        let (run, model_path, text) = read_run(path)?;
-        let (file, _) = ModelFile::from_json(&text).map_err(|e| format!("{model_path}: {e}"))?;
-        let folder = std::path::Path::new(&model_path).parent();
-        let loaded = simsandbox_file::load_any(&text, &registry(), folder)
-            .map_err(|e| format!("{model_path}: {e}"))?;
-        if !run.fits(&loaded).map_err(|e| e.to_string())? {
-            eprintln!(
-                "warning: {path}: {model_path} has changed since this run was recorded; \
-                 replaying it anyway"
-            );
-        }
-        if let Some(note) = run.version_note() {
-            eprintln!("warning: {path}: {note}");
-        }
-        return Ok((run.apply_to(&file).to_json(), events(&run.track)));
+    let r = runs::model_and_track(path, inputs, &registry())?;
+    for w in &r.warnings {
+        eprintln!("warning: {w}");
     }
-    let text = read(path)?;
-    let Some(run_path) = inputs else {
-        return Ok((text, Vec::new()));
-    };
-    let run = RunFile::from_json(&read(run_path)?).map_err(|e| format!("{run_path}: {e}"))?;
-    let (mut file, _) = ModelFile::from_json(&text).map_err(|e| format!("{path}: {e}"))?;
-    file.run.inputs = run.inputs.clone();
-    Ok((file.to_json(), events(&run.track)))
-}
-
-/// Check a run file (ADR 0059): its model is found and checked with the
-/// run's settings and schedule, the recorded input names parameters that
-/// can be set, and a model changed since the run was made is a warning.
-fn check_run(path: &str) -> Result<Value, String> {
-    let fail = |message: String| serde_json::json!({"ok": false, "errors": [{"message": message}], "warnings": []});
-    let (run, model_path, text) = match read_run(path) {
-        Ok(r) => r,
-        Err(e) => return Ok(fail(e)),
-    };
-    let (file, _) = match ModelFile::from_json(&text) {
-        Ok(f) => f,
-        Err(e) => return Ok(fail(format!("{model_path}: {e}"))),
-    };
-    let replay = run.apply_to(&file).to_json();
-    let mut report = describe::check(&replay, &registry());
-    if report["ok"] != true {
-        return Ok(report);
-    }
-    let mut warnings: Vec<Value> = report["warnings"].as_array().cloned().unwrap_or_default();
-    if let Ok(loaded) = simsandbox_file::load_any(&text, &registry(), None) {
-        if !run.fits(&loaded).unwrap_or(false) {
-            warnings.push(Value::from(format!(
-                "{model_path} has changed since this run was recorded"
-            )));
-        }
-        if let Some(note) = run.version_note() {
-            warnings.push(Value::from(note));
-        }
-    }
-    match Session::load(path, &replay, &registry()) {
-        Ok(mut s) => {
-            if let Err(e) = s.replay(events(&run.track)) {
-                return Ok(fail(e));
-            }
-            warnings.extend(s.warnings.iter().cloned().map(Value::from));
-        }
-        Err(e) => return Ok(fail(e)),
-    }
-    report["warnings"] = Value::from(warnings);
-    Ok(report)
+    Ok((r.text, r.track))
 }
 
 fn print_json(v: &Value) -> Result<(), String> {
@@ -250,7 +154,8 @@ fn run_file(args: &[String]) -> Result<(), String> {
     // inputs or probes, as one model on several clocks, as the app runs it
     // (step 5).
     let composed = if is_run_file(path) {
-        read_run(path).is_ok_and(|(_, _, t)| simsandbox_file::compose::is_composition(&t))
+        runs::read_run(std::path::Path::new(path))
+            .is_ok_and(|r| simsandbox_file::compose::is_composition(&r.text))
     } else {
         simsandbox_file::compose::is_composition(&read(path)?)
     };
@@ -465,7 +370,7 @@ fn check(args: &[String]) -> Result<(), String> {
         return Err(USAGE.into());
     };
     let report = if is_run_file(path) {
-        check_run(path)?
+        runs::check_run(path, &registry())
     } else {
         describe::check(&read(path)?, &registry())
     };
@@ -570,28 +475,11 @@ fn render_file(args: &[String]) -> Result<(), String> {
         let image = render_diagram(&file, &registry(), &o)?;
         return std::fs::write(out, png(&image)?).map_err(|e| format!("{out}: {e}"));
     }
-    let mut s = Session::load(path, &text, &registry())?;
-    if !track.is_empty() {
-        s.replay(track).map_err(|e| format!("{path}: {e}"))?;
-    }
-    for w in &s.warnings {
-        eprintln!("warning: {path}: {w}");
-    }
-    let t_end = flags
-        .positive("--t-end")?
-        .or(s.file.run.t_end)
-        .unwrap_or(DEFAULT_T_END);
-    s.run_until(t_end).map_err(|e| e.to_string())?;
+    let t_end = flags.positive("--t-end")?;
     let o = RenderOptions {
-        width: flags
-            .positive("--width")?
-            .map_or(defaults.width, |v| v as f32),
-        height: flags
-            .positive("--height")?
-            .map_or(defaults.height, |v| v as f32),
-        scale: flags
-            .positive("--scale")?
-            .map_or(defaults.scale, |v| v as f32),
+        width: size("--width", defaults.width)?,
+        height: size("--height", defaults.height)?,
+        scale: size("--scale", defaults.scale)?,
         view: flags
             .get("--view")
             .map(|v| {
@@ -605,11 +493,13 @@ fn render_file(args: &[String]) -> Result<(), String> {
         data: false,
         values: false,
     };
-    let (image, warnings) = render(&s, view_registry(), &o)?;
+    // Warnings reach standard error even if the run or the drawing fails.
+    let mut warnings = Vec::new();
+    let image = render_run(path, &text, &registry(), t_end, track, &o, &mut warnings);
     for w in warnings {
         eprintln!("warning: {path}: {w}");
     }
-    std::fs::write(out, png(&image)?).map_err(|e| format!("{out}: {e}"))
+    std::fs::write(out, png(&image?)?).map_err(|e| format!("{out}: {e}"))
 }
 
 /// Run a model file to a time and write the file that starts from the
@@ -711,8 +601,8 @@ fn run_lorenz(args: &[String]) -> Result<(), String> {
 /// where blocks read the files their settings name (ADR 0063).
 fn model_folder(path: &str) -> Option<std::path::PathBuf> {
     let model = if is_run_file(path) {
-        let run = RunFile::from_json(&read(path).ok()?).ok()?;
-        std::path::Path::new(path).parent()?.join(run.model)
+        let run = runs::RunFile::from_json(&read(path).ok()?).ok()?;
+        runs::model_beside(std::path::Path::new(path), &run)
     } else {
         std::path::PathBuf::from(path)
     };

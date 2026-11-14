@@ -8,11 +8,11 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
+use simsandbox_session::describe as catalogue;
 use simsandbox_session::examples::{registry, view_registry, EXAMPLES};
-use simsandbox_session::render::{png, render as render_views, RenderOptions};
+use simsandbox_session::render::{png, render_run, RenderOptions};
 use simsandbox_session::run::{run_keeping as run_model, run_probes as run_model_probes};
 use simsandbox_session::session::InputEvent;
-use simsandbox_session::{describe as catalogue, Session};
 
 create_exception!(
     _native,
@@ -82,6 +82,19 @@ fn model_hash(text: &str) -> PyResult<String> {
 #[pyfunction]
 fn made_with() -> &'static str {
     simsandbox_session::run::MADE_WITH
+}
+
+/// The note for a run file that records `made_with` when this build is
+/// not the one that made it (ADR 0082); `None` when it is.
+#[pyfunction]
+fn version_note(made_with: &str) -> Option<String> {
+    simsandbox_session::runs::version_note(made_with)
+}
+
+/// Now as a run file records `created`: RFC 3339 in UTC, to the second.
+#[pyfunction]
+fn utc_now() -> String {
+    simsandbox_session::runs::utc_now()
 }
 
 /// The run file's JSON Schema.
@@ -331,9 +344,10 @@ fn run_probes<'py>(
 }
 
 /// Run a model file to `t_end` (the file's, if not given) and draw its
-/// views as a PNG.
+/// views as a PNG. `track` is recorded input replayed with it (ADR 0058),
+/// as for [`run`].
 #[pyfunction]
-#[pyo3(signature = (text, t_end=None, view=None, width=1200.0, height=800.0, scale=1.0, light=false))]
+#[pyo3(signature = (text, t_end=None, view=None, width=1200.0, height=800.0, scale=1.0, light=false, track=None))]
 #[allow(clippy::too_many_arguments)]
 fn render<'py>(
     py: Python<'py>,
@@ -344,14 +358,11 @@ fn render<'py>(
     height: f32,
     scale: f32,
     light: bool,
+    track: Option<Vec<(f64, String, f64)>>,
 ) -> PyResult<(Bound<'py, PyBytes>, Vec<String>)> {
+    let track = simsandbox_session::runs::events(&track.unwrap_or_default());
     let (image, warnings) = py
         .detach(|| -> Result<_, String> {
-            let mut s = Session::load("model", text, &registry())?;
-            let t = t_end
-                .or(s.file.run.t_end)
-                .unwrap_or(simsandbox_session::run::DEFAULT_T_END);
-            s.run_until(t).map_err(|e| e.to_string())?;
             let o = RenderOptions {
                 width,
                 height,
@@ -363,8 +374,8 @@ fn render<'py>(
                 data: false,
                 values: false,
             };
-            let (image, mut warnings) = render_views(&s, view_registry(), &o)?;
-            warnings.splice(0..0, s.warnings.iter().cloned());
+            let mut warnings = Vec::new();
+            let image = render_run("model", text, &registry(), t_end, track, &o, &mut warnings)?;
             Ok((png(&image)?, warnings))
         })
         .map_err(ModelError::new_err)?;
@@ -549,6 +560,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(model_hash, m)?)?;
     m.add_function(wrap_pyfunction!(made_with, m)?)?;
     m.add_function(wrap_pyfunction!(run_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(version_note, m)?)?;
+    m.add_function(wrap_pyfunction!(utc_now, m)?)?;
     m.add_function(wrap_pyfunction!(render, m)?)?;
     m.add_function(wrap_pyfunction!(render_diagram, m)?)?;
     m.add_function(wrap_pyfunction!(start_from, m)?)?;

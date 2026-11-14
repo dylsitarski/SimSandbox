@@ -713,6 +713,7 @@ class Model:
         data: bool = True,
         values: bool = False,
         expand: "list[str] | None" = None,
+        inputs: "Iterable[tuple[float, str, float]] | Run | None" = None,
     ) -> bytes:
         """Run to ``t_end`` and draw the model's views (``controls.views``,
         or ``view`` alone) as a PNG, as the app shows them; with
@@ -723,7 +724,9 @@ class Model:
         the file lists in ``controls.expand``. The model's diagram
         includes its filters and views (ADR 0050) unless ``data`` is false.
         A diagram shows the values of the nodes the file opens
-        (``controls.open``), or of every node with ``values``. Writes it to ``path`` if given; returns the PNG bytes."""
+        (``controls.open``), or of every node with ``values``. ``inputs`` are
+        changes made during the run, as for :meth:`run`: ``(t, key, value)``
+        tuples or a :class:`Run` (the CLI's ``--inputs``). Writes it to ``path`` if given; returns the PNG bytes."""
         if inside is not None and not diagram:
             raise ValueError("inside draws a used model's diagram: add diagram=True")
         if expand and not diagram:
@@ -733,6 +736,8 @@ class Model:
         if diagram:
             if t_end is not None or view is not None:
                 raise ValueError("t_end and view do not apply to a diagram")
+            if inputs is not None:
+                raise ValueError("inputs change a run; a diagram is drawn without one")
             with _in_folder(self.folder):
                 image = _native.render_diagram(
                     self.to_json(),
@@ -747,9 +752,10 @@ class Model:
                 )
             warnings = []
         else:
+            model, track = self._with_inputs(inputs)
             with _in_folder(self.folder):
                 image, warnings = _native.render(
-                    self.to_json(), t_end, view, float(width), float(height), float(scale), light
+                    model.to_json(), t_end, view, float(width), float(height), float(scale), light, track
                 )
         for w in warnings:
             import warnings as _w
@@ -833,15 +839,11 @@ class Run:
         )
         run.created = data.get("created", "")
         run.made_with = data.get("made_with", "")
-        if run.made_with != _native.made_with():
+        note = _native.version_note(run.made_with)
+        if note is not None:
             import warnings as _w
 
-            made = run.made_with or "a SimSandbox that did not record its version"
-            _w.warn(
-                f"{os.fspath(path)}: recorded with {made}, replayed with {_native.made_with()}: "
-                "results can differ where the changelog says a version changed them",
-                stacklevel=2,
-            )
+            _w.warn(f"{os.fspath(path)}: {note}", stacklevel=2)
         with _in_folder(model.folder):
             run.stale = _native.model_hash(model.to_json()) != data["model_hash"]
         if run.stale:
@@ -881,11 +883,7 @@ class Run:
             data["name"] = self.name
         if self.note:
             data["note"] = self.note
-        import datetime
-
-        data["created"] = self.created or datetime.datetime.now(datetime.timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        data["created"] = self.created or _native.utc_now()
         data["seed"] = self.seed
         settings = {"dt": self.dt}
         if self.t_end is not None:

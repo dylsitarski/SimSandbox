@@ -427,6 +427,22 @@ def test_inputs_schedules_and_runs_replay_the_same(tmp_path):
         m.run(inputs=[(0.5, "push.z", 1.0)])
 
 
+def test_views_render_with_a_runs_input():
+    m = ss.Model(CART)
+    m.data["controls"] = {"views": [{"type": "plot.xy", "bind": {"x": "t", "y": "cart.v"}}]}
+    size = {"width": 300, "height": 200}
+    still = m.render(**size)
+    pushed = m.render(inputs=[(0.5, "push.y", 10.0)], **size)
+    assert pushed[1:4] == b"PNG" and pushed != still
+    # A run's schedule and recorded input draw the same as given by hand.
+    run = ss.Run(m, track=[(0.5, "push.y", 10.0)])
+    assert m.render(inputs=run, **size) == pushed
+    with pytest.raises(ss.ModelError, match="no parameter 'push.z'"):
+        m.render(inputs=[(0.5, "push.z", 1.0)], **size)
+    with pytest.raises(ValueError, match="diagram"):
+        m.render(diagram=True, inputs=run)
+
+
 def test_probes_record_on_their_own_schedule_and_write_files(tmp_path):
     m = ss.Model.example("Cruise control")
     m.add_probe("speed", ["car.v"], every={"steps": 10}, keep={"all": True}, to="speed.csv")

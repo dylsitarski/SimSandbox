@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- `simsandbox render` with a malformed size or time option and a model that cannot load reports the option first.
 - Implicit methods (`backward_euler`, `trbdf2`) measure convergence and the Jacobian's perturbations against the size of the state, not against 1 (ADR 0097): a system in small units (nanoamperes, micrometres) is solved as accurately as in units of 1 (a stiff nonlinear test in units of 1e-9: error 0.018 before, 0.000079 now, as in units of 1). Results of implicit runs change where every state is below 1, and for systems written in code and fused groups, whose structure is now found whole; every example gives the same bytes.
 - An implicit stage that does not converge with the step's Jacobian goes on with fresh ones instead of stopping the run; Robertson's reactions, which failed, now match the published values. A step that still fails is an error that says why (not converged, or values that are not numbers) and leaves the state as it was.
 - `dopri5` meeting rates that are not numbers shortens its step and, if none is short enough, says so after a few dozen tries, instead of trying the full step 10 000 times and reporting "step size underflow".
@@ -84,6 +85,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Python: `Model.render(inputs=…)` renders after a run with changes made during it, as `(t, key, value)` tuples or a `Run` (the CLI's `render --inputs`).
 - A reference for the typed-equations language (`docs/reference/typed-equations.md`): every statement, the expression grammar, units, every function, and the faults found while writing it. `simsandbox describe eq.equations` and `ss.describe("eq.equations")` give it whole under `reference`; a test parses every example in it and fails when a function is missing from it.
 - Activated parts on the canvas (ADR 0088): `activate` and `restart` come first among a node's inputs with the mode beside `activate`, and while the model runs an activated use's node says `held` or how often it started again.
 - Activation of used models (ADR 0088): `"activate": "while"` (or `rise`, `fall`, `change`) and `"restart": true` on a use give it `activate` and `restart` inputs, wired as `c/activate`; while `activate` is low under `while` the used model is held (its outputs keep their last values), and on an edge or a rise of `restart` it starts again from its starting values. In the app: "Runs" and "restart input" in the use's Inspector, and the two ports on its node.

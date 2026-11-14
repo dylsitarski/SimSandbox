@@ -9,6 +9,7 @@ use eframe::egui;
 use simsandbox_core::registry::Registry;
 use simsandbox_session::diagram::{Diagram, Edit, Scope};
 use simsandbox_session::examples::{registry, EXAMPLES};
+use simsandbox_session::runs;
 use simsandbox_session::session::{ParamRow, Session};
 use simsandbox_session::views::Views;
 use simsandbox_views::{Available, History, ViewState, ViewType};
@@ -2010,7 +2011,7 @@ impl SimApp {
             ui.weak("Save the model to keep runs beside it.");
             return;
         };
-        let runs = runs_beside(&model);
+        let runs = runs::runs_beside(&model);
         if runs.is_empty() {
             ui.weak("No saved runs of this model.");
         }
@@ -2066,7 +2067,7 @@ impl SimApp {
             .as_deref()
             .and_then(Path::file_name)
             .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-        let (name, note, created) = (name.to_string(), note.to_string(), utc_now());
+        let (name, note, created) = (name.to_string(), note.to_string(), runs::utc_now());
         live.call(move |s, _| s.run_file(&model, &name, &note, &created))
     }
 
@@ -2129,33 +2130,22 @@ impl SimApp {
                 return;
             }
         };
-        let model_name = model
-            .file_name()
-            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-        let dir = model.parent().unwrap_or(Path::new(""));
-        let file = simsandbox_file::runs::run_file_name(&model_name, name);
-        let mut path = dir.join(&file);
-        let mut k = 2;
-        while path.exists() {
-            let stem = file.trim_end_matches(".run.json");
-            path = dir.join(format!("{stem}-{k}.run.json"));
-            k += 1;
-        }
-        if !run_fits_disk(&run, &model, &self.registry) {
+        let path = runs::new_run_path(&model, name);
+        if !runs::fits_disk(&run, &model, &self.registry) {
             self.log.warn(format!(
                 "{}: the model changed since this run started (unsaved or since saved); \
                  the run opens with a warning. Save the model, restart and record again for one that fits",
                 path.display()
             ));
         }
-        match std::fs::write(&path, run.to_json()) {
+        match runs::write_run(&path, &run) {
             Ok(()) => self.log.info(format!(
                 "Saved run '{name}' ({} scheduled, {} recorded) to {}",
                 run.inputs.len(),
                 run.track.len(),
                 path.display()
             )),
-            Err(e) => self.error = Some(format!("{}: {e}", path.display())),
+            Err(e) => self.error = Some(e),
         }
     }
 
@@ -2163,27 +2153,27 @@ impl SimApp {
     /// seed, settings and schedule, then restart and replay its input.
     fn open_run(&mut self, path: &Path) {
         let fail = |e: String| format!("{}: {e}", path.display());
-        let run = match std::fs::read_to_string(path)
-            .map_err(|e| e.to_string())
-            .and_then(|t| simsandbox_file::runs::RunFile::from_json(&t).map_err(|e| e.to_string()))
-        {
-            Ok(run) => run,
+        // The app's wording of a model that cannot be read or is not one.
+        let its_model =
+            |model: &Path, e: String| fail(format!("its model {}: {e}", model.display()));
+        let runs::Opened {
+            run,
+            model_path: model,
+            text,
+        } = match runs::read_run(path) {
+            Ok(opened) => opened,
             Err(e) => {
-                self.error = Some(fail(e));
+                self.error = Some(match e {
+                    runs::ReadError::Run { message, .. } => fail(message),
+                    runs::ReadError::Model { model, message, .. } => its_model(&model, message),
+                });
                 return;
             }
         };
-        let model = path.parent().unwrap_or(Path::new("")).join(&run.model);
-        let file = match std::fs::read_to_string(&model)
-            .map_err(|e| format!("its model {}: {e}", model.display()))
-            .and_then(|t| {
-                simsandbox_file::ModelFile::from_json(&t)
-                    .map(|(f, _)| f)
-                    .map_err(|e| format!("its model {}: {e}", model.display()))
-            }) {
-            Ok(f) => f,
+        let file = match simsandbox_file::ModelFile::from_json(&text) {
+            Ok((f, _)) => f,
             Err(e) => {
-                self.error = Some(fail(e));
+                self.error = Some(its_model(&model, e.to_string()));
                 return;
             }
         };
@@ -2199,7 +2189,7 @@ impl SimApp {
             return;
         }
         self.mark_saved();
-        if !run_fits_disk(&run, &model, &self.registry) {
+        if !runs::fits_disk(&run, &model, &self.registry) {
             self.log.warn(format!(
                 "{}: the model changed since this run was recorded; replaying it anyway",
                 path.display()
@@ -2208,15 +2198,7 @@ impl SimApp {
         if let Some(note) = run.version_note() {
             self.log.warn(format!("{}: {note}", path.display()));
         }
-        let track: Vec<simsandbox_session::session::InputEvent> = run
-            .track
-            .iter()
-            .map(|(t, key, value)| simsandbox_session::session::InputEvent {
-                t: *t,
-                key: key.clone(),
-                value: *value,
-            })
-            .collect();
+        let track = runs::events(&run.track);
         let replay = self
             .session
             .as_ref()
@@ -5563,65 +5545,6 @@ fn write_ppm(path: &Path, image: &egui::ColorImage) -> std::io::Result<()> {
     std::fs::write(path, bytes)
 }
 
-/// The run files beside `model` that name it (ADR 0059), by name.
-fn runs_beside(model: &Path) -> Vec<(PathBuf, simsandbox_file::runs::RunFile)> {
-    let Some(model_name) = model.file_name().map(|n| n.to_string_lossy().into_owned()) else {
-        return Vec::new();
-    };
-    let dir = match model.parent() {
-        Some(d) if !d.as_os_str().is_empty() => d,
-        _ => Path::new("."),
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut runs: Vec<_> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.to_string_lossy().ends_with(".run.json"))
-        .filter_map(|p| {
-            let text = std::fs::read_to_string(&p).ok()?;
-            let run = simsandbox_file::runs::RunFile::from_json(&text).ok()?;
-            (run.model == model_name).then_some((p, run))
-        })
-        .collect();
-    runs.sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.0.cmp(&b.0)));
-    runs
-}
-
-/// Whether the model saved at `model` is the one `run` was made with.
-fn run_fits_disk(run: &simsandbox_file::runs::RunFile, model: &Path, registry: &Registry) -> bool {
-    std::fs::read_to_string(model)
-        .ok()
-        .and_then(|t| simsandbox_file::load_any(&t, registry, model.parent()).ok())
-        .and_then(|l| run.fits(&l).ok())
-        .unwrap_or(false)
-}
-
-/// Now as RFC 3339 in UTC, to the second.
-fn utc_now() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs()) as i64;
-    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60
-    )
-}
-
 /// What typed equations' native code is doing (ADR 0089), when anything:
 /// being built, in use, or not used for a difference or a failed build.
 fn native_status(ui: &mut egui::Ui) {
@@ -6529,12 +6452,12 @@ mod tests {
         assert_eq!(live.call(|s, _| s.recorded().len()).unwrap(), 3);
 
         app.save_run("pull", "dragged right");
-        let runs = runs_beside(&model);
+        let runs = runs::runs_beside(&model);
         assert_eq!(runs.len(), 1);
         let (path, run) = &runs[0];
         assert!(path.ends_with("drag.pull.run.json"));
         assert_eq!((run.name.as_str(), run.track.len()), ("pull", 3));
-        assert!(run_fits_disk(run, &model, &app.registry));
+        assert!(runs::fits_disk(run, &model, &app.registry));
         // Opening it replays the drag bit for bit.
         app.open_run(path);
         assert!(app.error.is_none(), "{:?}", app.error);
@@ -6548,7 +6471,7 @@ mod tests {
         app.use_as_schedule(&run, "pull");
         let m = app.session.as_ref().unwrap().model();
         assert_eq!(m.file.run.inputs.len(), 3);
-        assert!(utc_now().ends_with('Z') && utc_now().len() == 20);
+        assert!(runs::utc_now().ends_with('Z') && runs::utc_now().len() == 20);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
