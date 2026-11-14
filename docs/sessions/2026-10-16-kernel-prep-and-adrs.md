@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-14: handoff after dylsitarski/SimSandbox#2 merged: `scripts/compare_outputs.sh` (the byte comparison used all session, now in the repository; it reports a killed run as FAILED: `resonance-map`'s JSON output needs over 13 GB and was killed on both sides in every comparison, counted as the same before, now a known limitation; the session's "90 outputs" included the agent's own timing models, the examples give 48), the setup guide's sections on it and on cloud sessions' memory and disk, STATUS's Next up without the finished fused-speed item.
 - 2026-11-13: `check` reports `code` per block (`Block::code` with a `None` default, forwarded by `OdeBlock` and `ExplicitBlock` from `EquationSet::code`; `PhaseKernel::describe`); tests in `describe.rs` and `tests/native.rs`.
 - 2026-11-13: ADR 0089 built and accepted: `simsandbox-compiled::native` (generator from phase views, cache, one build thread, `libloading`, bit check on first call), the app's default and toolbar status, `tests/native.rs`, `fused_speed` waits for libraries.
 - 2026-11-13: Cranelift with vector code in the build: `crates/simsandbox-compiled` (from the spike), compiled by `simsandbox-eq` for every large program, kept by phase; `tests/compiled.rs`; workspace Rust minimum 1.97 (every crate, the Python package); lints the new minimum brought (`is_multiple_of`, `as_chunks`) fixed.

@@ -1,6 +1,6 @@
 # Status
 
-_Last updated: 2026-11-13_
+_Last updated: 2026-11-14_
 
 **Phase:** 2 · Breadth ([roadmap](roadmap.md#phase-2--breadth), order and scope in [ADR 0057](decisions/0057-phase-2-plan.md)). **Gate:** an interactive cart-pole replayed bit for bit. Items 1 (inputs) and 2 (typed arrays, implicit methods) done; probes, nested models and experiments were added on the way. Phase 1's gate (the grazing model, an ODE and agents in one graph) was met 2026-10-22 and confirmed by the owner on Linux and Windows on 2026-10-23; Phase 0's (Lorenz live with sliders) on 2026-10-16.
 
@@ -232,18 +232,18 @@ _Last updated: 2026-11-13_
 
 ## Next up
 
-In priority order (the owner, 2026-11-08: ADR 0079 stage 3 first, which finishes ADR 0078; the Phase 2 gate's items listed so the path to Phase 3 shows; ADR 0079 stages 4–5 after the gate work unless a model needs them sooner). Each item should end with tests and updated docs.
+Items 1 and 2 have only parts that wait for a model to need them, so item 3 is the next to start (2026-11-13). In priority order (the owner, 2026-11-08: ADR 0079 stage 3 first, which finishes ADR 0078; the Phase 2 gate's items listed so the path to Phase 3 shows; ADR 0079 stages 4–5 after the gate work unless a model needs them sooner). Each item should end with tests and updated docs.
 
 1. **Shapes as lists of axes** ([ADR 0081](decisions/0081-shapes-are-lists-of-axes.md), accepted 2026-11-07): stages 1–2 built 2026-11-08, stage 4's rows ports with ADR 0079 stage 1b 2026-11-08, stage 3 (views by axis roles: pick, reduce, facet) with ADR 0086 2026-11-12. Left: populations move to tables with item 6's stage 5.
 2. **Activation** ([ADR 0088](decisions/0088-activation.md), accepted 2026-11-13): steps 1 (studies) and 2 (used models) and the canvas (point 8) built 2026-11-13; left: events within a step, when a model needs them (step 3).
-3. **Typed equations at fused speed** ([ADR 0084](decisions/0084-where-typed-equations-stop.md) point 6): the interpreter runs phases in blocks of cells, stencils by runs and multiplying by 1/h², one phase where an array is read both whole and cell by cell (Gray–Scott 512 × 512 on one core: 5050 → 1537 µs; fused Rust 471); the compiled-route comparison is done (2026-11-13, [performance](design/performance.md#compiled-routes-adr-0084-point-6-2026-11-13)): Cranelift with two-lane vector code is in the build (2026-11-13, `simsandbox-compiled`): 1.4–1.5× from fused code, the same bits; native code ([ADR 0089](decisions/0089-native-code-for-typed-equations.md), 2026-11-13) reaches fused speed where a Rust toolchain is installed, built in the background by the app; `check` reports per block which code runs. Exactness as labelled levels ([ADR 0082](decisions/0082-exactness-is-labelled.md), accepted 2026-11-08) is built when the first block that is not exact arrives.
-4. **Rigid bodies and a scene view** (Phase 2 item 3, [roadmap](roadmap.md#phase-2--breadth), the gate): a spike between MuJoCo and Rapier, then its ADR; bodies in a 2D/3D scene view that can be grabbed; the interactive cart-pole, replayed bit for bit and checkable headless.
-5. **One plugin interface for user-defined blocks and views** (Phase 2 item 4, [Q28](open-questions.md), [Q37](open-questions.md)), after the WebAssembly spike of item 3.
-6. **Tables of members, stage 5** ([ADR 0079](decisions/0079-tables-of-members.md)), after the gate work unless a model needs it sooner: agents as models (neighbour queries, birth and death as rules; populations and `agents.grazers` move to tables, [Q26](open-questions.md)). Stage 4 (time on changing tables) was built as ADR 0085 step 3 (2026-11-12).
-7. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
+3. **Rigid bodies and a scene view** (Phase 2 item 3, [roadmap](roadmap.md#phase-2--breadth), the gate): a spike between MuJoCo and Rapier, then its ADR; bodies in a 2D/3D scene view that can be grabbed; the interactive cart-pole, replayed bit for bit and checkable headless.
+4. **One plugin interface for user-defined blocks and views** (Phase 2 item 4, [Q28](open-questions.md), [Q37](open-questions.md)). The WebAssembly measurement it waited for is done ([performance](design/performance.md#compiled-routes-adr-0084-point-6-2026-11-13), 2026-11-13): a block written by hand in WebAssembly runs in Wasmtime at 2.3–2.4× hand-written Rust's time, plus copying its inputs and outputs at each call.
+5. **Tables of members, stage 5** ([ADR 0079](decisions/0079-tables-of-members.md)), after the gate work unless a model needs it sooner: agents as models (neighbour queries, birth and death as rules; populations and `agents.grazers` move to tables, [Q26](open-questions.md)). Stage 4 (time on changing tables) was built as ADR 0085 step 3 (2026-11-12).
+6. An MCP server over the headless commands ([Q29](open-questions.md)), when the owner wants one.
 
 ## Known limitations
 
+- `run --format json` of `examples/resonance-map.ssbx.json` (a study of 200 × 120 = 24,000 points) needs more than 13 GB and is killed on a 16 GB machine; its CSV output and render are fine. Found 2026-11-14 with `scripts/compare_outputs.sh`, not yet investigated (likely each point's results held as JSON values). Byte comparisons before 2026-11-14 counted this output as the same because both sides were killed.
 - A loop of same-instant dependence through rows or populations is refused (a state must break it), and code-built `EquationGroup`s refuse members with direct feedthrough ([ADR 0040](decisions/0040-feedthrough-and-algebraic-loops.md)). Loops are solved with a finite-difference Jacobian each time, which costs one pass per loop value per Newton iteration.
 - Physical (acausal) ports are not implemented, and will not be in typed equations: acausal physics is to come from Modelica through FMI import ([ADR 0084](decisions/0084-where-typed-equations-stop.md)), not built yet.
 - One model uses several cores only for array phases of at least 2^20 cell operations (about 512 × 512 cells on this 4-core machine), and only cell-by-cell work: integrators' vector updates run on one core below 2^20 state values, Dormand–Prince's at any size (sums over 2^20 cells or more use several, ADR 0077) ([performance](design/performance.md)).
