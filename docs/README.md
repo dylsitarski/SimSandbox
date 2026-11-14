@@ -1,6 +1,6 @@
 # Documentation system
 
-_Last updated: 2026-10-23_
+_Last updated: 2026-11-14_
 
 This page is the map of every document in the repository and the rules for keeping them current. The repository is the single source of truth for SimSandbox ([ADR 0005](decisions/0005-repository-as-source-of-truth.md)).
 
@@ -17,7 +17,7 @@ This page is the map of every document in the repository and the rules for keepi
 | Type | Purpose | Changes when | Style |
 | --- | --- | --- | --- |
 | Entry point | Orientation and session protocol for agents and contributors | The workflow changes | Imperative checklist |
-| Status | The current state of the project: done, in progress, next, limits | Every working session | Short lists, dated |
+| Status | The current state of the project: done, in progress, next, limits. **Done recently** holds a week; older entries move to the status archive | Every working session | Short lists, dated |
 | Vision | Why the project exists, pillars, scope and non-goals | Rarely; a change needs an ADR | Prose |
 | Roadmap | Phases, gates and the task list for each phase | A task finishes or the plan changes | Checklists |
 | Architecture | How the system is built and why it is shaped that way | The design changes | Spec, with diagrams as needed |
@@ -49,6 +49,7 @@ This page is the map of every document in the repository and the rules for keepi
 | Document | Type | What it covers |
 | --- | --- | --- |
 | [STATUS.md](STATUS.md) | Status | Current state and next tasks |
+| [status-archive.md](status-archive.md) | Status | Done entries older than a week, moved from STATUS.md; not edited |
 | [vision.md](vision.md) | Vision | Purpose, three pillars, scope, non-goals |
 | [roadmap.md](roadmap.md) | Roadmap | Phases 0–3, gates, task checklists |
 | [open-questions.md](open-questions.md) | Open questions | Decisions not yet made |
