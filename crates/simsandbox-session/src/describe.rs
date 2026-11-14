@@ -153,6 +153,9 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
         v["note"] =
             json!("Defined by its 'equations' lines: the interface below is the example's.");
     }
+    if let Some(text) = &info.reference {
+        v["reference"] = json!(text);
+    }
     if !info.files.is_empty() {
         v["files"] = json!(info.files);
         v["note"] = json!(
@@ -252,7 +255,17 @@ pub fn units() -> Value {
 /// Everything a model can be built from.
 pub fn catalogue(r: &Registry, views: &ViewRegistry) -> Value {
     json!({
-        "block_types": r.type_names().map(|n| block_type(r, n)).collect::<Vec<_>>(),
+        // A type's reference is long: the catalogue says where it is.
+        "block_types": r
+            .type_names()
+            .map(|n| {
+                let mut v = block_type(r, n);
+                if v.get("reference").is_some() {
+                    v["reference"] = json!(format!("simsandbox describe {n} gives the whole reference"));
+                }
+                v
+            })
+            .collect::<Vec<_>>(),
         "view_types": views.types().iter().map(view_type).collect::<Vec<_>>(),
         "filter_types": filter_types(),
         "units": units(),

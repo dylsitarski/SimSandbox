@@ -84,6 +84,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- A reference for the typed-equations language (`docs/reference/typed-equations.md`): every statement, the expression grammar, units, every function, and the faults found while writing it. `simsandbox describe eq.equations` and `ss.describe("eq.equations")` give it whole under `reference`; a test parses every example in it and fails when a function is missing from it.
 - Activated parts on the canvas (ADR 0088): `activate` and `restart` come first among a node's inputs with the mode beside `activate`, and while the model runs an activated use's node says `held` or how often it started again.
 - Activation of used models (ADR 0088): `"activate": "while"` (or `rise`, `fall`, `change`) and `"restart": true` on a use give it `activate` and `restart` inputs, wired as `c/activate`; while `activate` is low under `while` the used model is held (its outputs keep their last values), and on an edge or a rise of `restart` it starts again from its starting values. In the app: "Runs" and "restart input" in the use's Inspector, and the two ports on its node.
 - Activation of studies (ADR 0088): `"activate": "rise"` (or `fall`, `change`, `while`) on a study gives it an `activate` input; it runs once on that edge of the wired signal, or while it is high, and holds its results otherwise. In the app: "Runs" in the study's Inspector form.

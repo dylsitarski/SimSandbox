@@ -123,6 +123,10 @@ pub struct TypeInfo {
     /// Settings that name files (ADR 0063): read from the model's folder,
     /// and part of a run's model hash by their contents.
     pub files: Vec<String>,
+    /// For a type with a language of its own (typed equations), its whole
+    /// reference as text, so that it is found from `describe` alone
+    /// (ADR 0039).
+    pub reference: Option<String>,
 }
 
 impl TypeInfo {
@@ -136,6 +140,11 @@ impl TypeInfo {
     pub fn method(mut self, name: &str, options: &[&str]) -> Self {
         self.methods
             .push((name.into(), options.iter().map(|o| o.to_string()).collect()));
+        self
+    }
+
+    pub fn reference(mut self, text: &str) -> Self {
+        self.reference = Some(text.into());
         self
     }
 

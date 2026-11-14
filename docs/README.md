@@ -26,6 +26,7 @@ This page is the map of every document in the repository and the rules for keepi
 | Open questions | Undecided questions, each with options and an owner | A question is raised or resolved (resolution becomes an ADR) | Table |
 | Risks | Known risks and mitigations | A risk changes | Table |
 | Guide | How to do a recurring task | The task changes | Steps |
+| Reference | The whole of one language or format as the code reads it, held to the code by a test | The code changes | Tables and examples that parse |
 | Research | Background findings that informed decisions | New research | Prose with sources |
 | Session note | What one working session did, decided and left open | Created once per session; not edited later | Fixed template |
 | Changelog | User-visible changes per release | Any user-visible change | Keep a Changelog |
@@ -187,6 +188,7 @@ This page is the map of every document in the repository and the rules for keepi
 
 | Document | Type | What it covers |
 | --- | --- | --- |
+| [reference/typed-equations.md](reference/typed-equations.md) | Reference | The typed-equations language: statements, expressions, units, functions, limits; given by `describe eq.equations`; examples parsed by a test |
 | [research/market-landscape.md](research/market-landscape.md) | Research | Existing tools and the gap SimSandbox targets |
 | [research/2026-11-14-code-review.md](research/2026-11-14-code-review.md) | Research | Whole-project review of 2026-11-14: vision, correctness, structure, performance, usability; work items W1–W13 |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
