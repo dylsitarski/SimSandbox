@@ -2603,13 +2603,15 @@ fn order(domains: &[Domain], links: &[Link]) -> (Vec<usize>, Vec<String>) {
                 .map(|l| domains[l.from].name())
                 .collect();
             late.dedup();
+            // As the one simulator runs them (ADR 0090). The runner in
+            // parts, kept for comparison until it is deleted, takes such an
+            // output a step late and says so itself.
             loops.push(format!(
-                "{} evaluates before {}, which it reads: at a shared instant it takes their \
-                 samples after its own outputs, so an output of {} depending on them at the \
-                 same instant sees them one step late",
+                "{} and {} read each other: values pass between them at the instants they \
+                 share, and an output of one depending on the other at the same instant is \
+                 solved with it there (run.loops)",
                 domains[u].name(),
                 late.join(", "),
-                domains[u].name()
             ));
             u
         });

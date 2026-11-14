@@ -12,6 +12,7 @@
 
 - Second priority begun: the typed-equations reference, held to the code by a test and given by `describe` (W11); run files and render shared by the three interfaces (W10; the Python tests were built and run for it: 30 pass); STATUS's history archived, two guides brought up to date. 610 workspace tests pass.
 - The canvas's interaction moved to the app (W9), headless images the same bytes.
+- One engine for nested models (W7, ADR 0090 points 1 and 2): headless runs on the merged simulator, both engines compared over every fixture. 613 workspace tests pass.
 
 ## Decided
 
@@ -24,10 +25,11 @@
 
 ## Left open
 
-- The review's W6, W7 (in hand), W8 and the kernel tidy; its third and fourth priorities; ADRs 0090, 0092 and 0093 to build; tolerances per state for implicit methods (ADR 0097 point 6).
+- The review's W6, W8 and the kernel tidy; ADR 0090 point 3 (deleting the runner in parts); its third and fourth priorities; ADRs 0090, 0092 and 0093 to build; tolerances per state for implicit methods (ADR 0097 point 6).
 
 ## Notes for the next session
 
+- Work given to helpers in working copies of their own (`.claude/worktrees/`, ignored) starts from the repository's first branch, not the current one: tell them the commit to move to. Each copy builds its own `target` (6–7 GB); two filled the disk until the finished ones were removed.
 - Robertson's problem showed two faults the review had not: the step's Jacobian at a start with no intermediate species sends Newton's method off to infinity (hence fresh Jacobians at every iteration as the fallback, not one retry), and the structure probed at the start misses every product with a factor of 0.
 - A perturbation relative to each state alone is wrong, though it looks more accurate: a state near 0 beside one near 1 changes the rates by less than their rounding, and the Jacobian's entry is noise. Hence a floor shared by the system.
 - The permission checks of the native cache read mode bits only; tests ran as root.

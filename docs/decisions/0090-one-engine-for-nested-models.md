@@ -1,6 +1,6 @@
 # 0090 — One engine for models that use models: the merged simulator
 
-- **Status:** Accepted (the owner left the choice to the agent, 2026-11-14); not built yet
+- **Status:** Accepted (the owner left the choice to the agent, 2026-11-14); points 1 and 2 built 2026-11-14
 - **Date:** 2026-11-14
 - **Builds on:** [ADR 0066](0066-models-nest-as-blocks.md), [ADR 0088](0088-activation.md); resolves [Q58](../open-questions.md); [review](../research/2026-11-14-code-review.md) W7
 
@@ -31,5 +31,17 @@ A. The merged simulator is the one engine.
 - Headless runs of compositions linked one way may be 1.5–2.5× slower until point 4; models that feed each other already meet at every instant in both engines.
 - Loading a composition once instead of twice (review, section 4).
 - Documents to update when built: [architecture overview](../architecture/overview.md) (data flow, point 9), [headless guide](../guides/headless.md), [performance](../design/performance.md).
+
+## As built (2026-11-14, points 1 and 2)
+
+- `simsandbox run` and Python's `run` of a model that uses models step the merged simulator (`simsandbox-session/src/compose/merged.rs`) and write the same output as before. The runner in parts (`compose/parts.rs`) is compiled for tests only, where every fixture and example that uses models runs on both engines and is compared bit for bit: times, values, populations, labels, notes.
+- **A correction to the Context above:** activation did work in the runner in parts, each part being a `Simulator` with the kernel's gate. It was not a gap in behaviour.
+- **The engines differ in three cases**, all recorded in [ADR 0066](0066-models-nest-as-blocks.md) ("Difference from the headless runner") and each now held by a test. Headless runs give the app's results in them from now on:
+  1. A loop of links through outputs between models on their own clocks is solved within the instant, where the runner in parts took it a step late and warned.
+  2. The same between two models on new data.
+  3. A model on new data that reads `t`, read by a faster model, is evaluated at every instant, not only at deliveries.
+- Every example gives the same bytes headless (two use models on other clocks; neither has such a loop).
+- **Speed**, best of three: models linked one way are slower as expected (a chain of five 0.045 → 0.114 s, one feeding two 0.033 → 0.068 s); models feeding each other and the examples within 0.01 s of before. Point 4 (run-ahead in the merged engine) waits for a model that needs it.
+- Left: point 3, deleting the runner in parts, when the owner is content with the comparison.
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none.
