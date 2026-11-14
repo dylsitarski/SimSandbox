@@ -1,6 +1,6 @@
 # 0093 — Views from primitive parts: a scene is layers of primitives drawn from signals and tables
 
-- **Status:** Proposed (drafted at the owner's request, 2026-11-14; the owner has decided that only what the cart-pole needs is built before the Phase 2 gate)
+- **Status:** Accepted (owner, 2026-11-14; only what the cart-pole needs is built before the Phase 2 gate); not built yet
 - **Date:** 2026-11-14
 - **Builds on:** [ADR 0015](0015-pluggable-views.md) (views, slots), [ADR 0058](0058-inputs-live-scheduled-replayed.md) (views that send input), [ADR 0079](0079-tables-of-members.md) (tables, rows by id), [ADR 0086](0086-views-by-axis-roles-and-mesh-views.md) (rows and meshes in views), [ADR 0057](0057-phase-2-plan.md) (the gate's scene view); answers [Q60](../open-questions.md)
 
@@ -21,7 +21,7 @@ What exists already carries most of it: models compute anything, including value
 | C. A scene graph of the view's own (nodes with state, transforms, materials) or an embedded engine's | Familiar from game engines; transforms compose | A second model beside the model, with its own state and calculations outside units, replay and the hash; the "game engine" [ADR 0057](0057-phase-2-plan.md) keeps out of scope |
 | D. Views as code (a plugin draws what it likes) | Unlimited | Not buildable by wiring; nothing an agent can check before running; belongs to Phase 2 item 4, and is easier to design after B shows what a view needs |
 
-## Decision (proposed)
+## Decision
 
 B.
 

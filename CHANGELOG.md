@@ -6,6 +6,12 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- One block with states is now solved together with the formula, conversion and input blocks it is wired to (ADR 0095), as two or more blocks with states already were. Before, a formula in a loop with a single block reached it a step late: a mass and a spring written as a formula block were 5% off at t = 5 with RK4 and dt = 0.01, under the label `Quantitative`. Results of such models change (they are more accurate); every example gives the same bytes.
+- Equation blocks wired in a circle and stepped apart (different methods, `fusion: off`, different clocks) give a note in `run` and `check` output saying so and how to solve them together.
+- An expression deeper than 1000 levels (parentheses, signs, powers, or a chain of more than about 1000 operators) is an error at its column; before, a long enough one stopped SimSandbox with a stack overflow. Units nest at most 32 groups.
+- A unit whose power of a base unit would pass ±127 is refused, in unit text and in equations; before, the power wrapped round (`m^100*m^100/m^56` was read as `1/m^112`).
+- The JSON Schema lists `activate` and `restart` on blocks and `open` and `expand` in `controls`, which the reader accepted and the schema refused.
+
 - `simsandbox run --format json` writes results as it goes: large runs (a long run of a large study) need no more memory than their results, where building the whole document needed several times that and could run out (a 200 × 120 study run to t = 30: 2.2 GB, was killed past 13.6 GB). The output is the same bytes.
 - `check` reports how each typed-equations block runs (`code`: `interpreted`, `compiled`, `native`, or why not native), per model in models that use models.
 - Native code for typed equations (ADR 0089): where a Rust toolchain is installed, the app builds Rust generated from large grids' equations in the background and switches to it once it gives the same bits (Gray–Scott at hand-written Rust's speed). The toolbar says when it builds and when it is in use. `SIMSANDBOX_NATIVE` (`off`, `cache`, `build`) and `SIMSANDBOX_CACHE` set it anywhere; the CLI and Python use libraries already built.

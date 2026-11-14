@@ -1584,4 +1584,36 @@ mod tests {
         assert_eq!(timed.rows(), 3);
         assert!(run(example("lorenz"), &registry(), Some(-1.0), None).is_err());
     }
+
+    /// Equation blocks wired in a circle and stepped apart say so in the
+    /// run's notes (ADR 0095): with fusion off, or different methods.
+    /// Solved together they say nothing.
+    #[test]
+    fn blocks_in_a_loop_stepped_apart_are_noted() {
+        let text = |fusion: &str, method: &str| {
+            format!(
+                r#"{{"format": 1, "run": {{"dt": 0.01, "t_end": 0.1}}, {fusion} "blocks": [
+                  {{"name": "a", "type": "eq.equations", "equations": ["input u", "dx/dt = -u"]}},
+                  {{"name": "b", "type": "eq.equations", {method}
+                   "equations": ["input u", "dy/dt = u"]}},
+                  {{"name": "c", "type": "eq.equations", "equations": ["input u", "dz/dt = u - z"]}}
+                ], "connections": [{{"from": "a.x", "to": "b.u"}}, {{"from": "b.y", "to": "a.u"}},
+                                   {{"from": "a.x", "to": "c.u"}}]}}"#
+            )
+        };
+        let notes = |fusion: &str, method: &str| {
+            run(&text(fusion, method), &registry(), None, None)
+                .unwrap()
+                .notes
+        };
+        assert!(notes("", "").is_empty());
+        for n in [
+            notes(r#""fusion": "off","#, ""),
+            notes("", r#""method": {"name": "euler"},"#),
+        ] {
+            // The loop is a and b; c only listens.
+            assert_eq!(n.len(), 1, "{n:?}");
+            assert!(n[0].starts_with("a, b depend on each other and are stepped apart"));
+        }
+    }
 }

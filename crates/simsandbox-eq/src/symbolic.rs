@@ -49,7 +49,9 @@ use simsandbox_core::table::RowsFrame;
 use simsandbox_core::units::Unit;
 use simsandbox_core::{Result, SimError};
 use simsandbox_expr::program::Span;
-use simsandbox_expr::units::{dim_text, dimension_with, from_si, in_si, Dim, NO_DIM};
+use simsandbox_expr::units::{
+    dim_div, dim_pow, dim_text, dimension_with, from_si, in_si, Dim, DIM_TOO_HIGH, NO_DIM,
+};
 use simsandbox_expr::{
     is_reserved, parse, Along, ArrayOp, Ast, Edge, Expr, Line as GridLine, Op, Outside, Program,
     MAX_AXES,
@@ -3612,7 +3614,9 @@ impl EquationSet {
                             ),
                         ));
                     }
-                    std::array::from_fn(|i| d[i] - 2 * axis_dims[first][i])
+                    dim_pow(axis_dims[first], 2)
+                        .and_then(|h2| dim_div(d, h2))
+                        .ok_or_else(|| (col, DIM_TOO_HIGH.to_string()))?
                 }
                 "spacing" => match args[0].0 {
                     Ast::Name(n, _) => axis_dim_of(n),
@@ -3623,7 +3627,7 @@ impl EquationSet {
                 "solve" => {
                     // A x = b: x in b's unit over A's.
                     let b = args.get(1).map_or(NO_DIM, |a| a.1);
-                    std::array::from_fn(|i| b[i] - d[i])
+                    dim_div(b, d).ok_or_else(|| (col, DIM_TOO_HIGH.to_string()))?
                 }
                 n if n.starts_with("dd") => {
                     let axis = if n == "dd" {
@@ -3632,7 +3636,7 @@ impl EquationSet {
                         &n[2..]
                     };
                     let a = axis_dim_of(axis);
-                    std::array::from_fn(|i| d[i] - a[i])
+                    dim_div(d, a).ok_or_else(|| (col, DIM_TOO_HIGH.to_string()))?
                 }
                 "at" => {
                     if args[1..].iter().any(|a| a.1 != NO_DIM) {
@@ -3701,7 +3705,9 @@ impl EquationSet {
                         let x = unit_of(n).dim.0;
                         (
                             format!("d{n}/dt"),
-                            std::array::from_fn(|i| x[i] - Unit::SECOND.dim.0[i]),
+                            dim_div(x, Unit::SECOND.dim.0).ok_or_else(|| {
+                                definition_error(line.number, 1, DIM_TOO_HIGH.to_string())
+                            })?,
                         )
                     }
                     Lhs::Map(n) => (format!("{n}[n+1]"), unit_of(n).dim.0),
@@ -3742,7 +3748,9 @@ impl EquationSet {
                     )?,
                     EdgeKind::Gradient(ast) => balance(
                         ast,
-                        std::array::from_fn(|i| d[i] - axis_dims[e.axis][i]),
+                        dim_div(d, axis_dims[e.axis]).ok_or_else(|| {
+                            definition_error(e.line, e.column, DIM_TOO_HIGH.to_string())
+                        })?,
                         &format!("{}'s edge gradient", e.array),
                         e.line,
                         e.column,

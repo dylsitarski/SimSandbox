@@ -16,3 +16,5 @@ Thumbs.db
 __pycache__/
 *.pyc
 /spikes/*/target
+# Downloaded Python wheels (two were committed by accident, removed 2026-11-14)
+*.whl

@@ -21,18 +21,27 @@ const BASE_SYMBOLS: [&str; 7] = ["m", "kg", "s", "A", "K", "mol", "cd"];
 impl Dimension {
     pub const NONE: Dimension = Dimension([0; 7]);
 
-    fn combine(self, other: Dimension, sign: i8) -> Dimension {
+    /// The product (`sign` 1) or quotient (−1) of two dimensions; `None`
+    /// when a power leaves what is kept (±127).
+    fn combine(self, other: Dimension, sign: i8) -> Option<Dimension> {
         let mut out = self.0;
         for (o, b) in out.iter_mut().zip(other.0) {
-            *o += sign * b;
+            *o = o.checked_add(sign.checked_mul(b)?)?;
         }
-        Dimension(out)
+        Some(Dimension(out))
     }
 
-    fn pow(self, n: i8) -> Dimension {
-        Dimension(self.0.map(|e| e * n))
+    fn pow(self, n: i8) -> Option<Dimension> {
+        let mut out = self.0;
+        for o in &mut out {
+            *o = o.checked_mul(n)?;
+        }
+        Some(Dimension(out))
     }
 }
+
+/// What a unit says when a power of a base unit leaves ±127.
+const TOO_HIGH: &str = "a power of a base unit beyond ±127";
 
 /// A unit: a dimension and the factor that converts a value in this unit to SI,
 /// and the name it was written with (`V`, `N*s/m`), which it is shown by.
@@ -111,7 +120,7 @@ impl Unit {
         }
         let chars: Vec<char> = cleaned.chars().collect();
         let mut at = 0;
-        let unit = expression(&chars, &mut at).map_err(fail)?;
+        let unit = expression(&chars, &mut at, 0).map_err(fail)?;
         if at < chars.len() {
             return Err(fail(format!("unexpected '{}'", chars[at])));
         }
@@ -135,21 +144,43 @@ impl Unit {
         self.compatible(other).then(|| self.scale / other.scale)
     }
 
-    fn powi(self, n: i8) -> Unit {
-        Unit {
-            dim: self.dim.pow(n),
+    fn powi(self, n: i8) -> Option<Unit> {
+        Some(Unit {
+            dim: self.dim.pow(n)?,
             scale: self.scale.powi(n as i32),
             name: None,
-        }
+        })
+    }
+
+    /// The product of two units; `None` when a power of a base unit
+    /// leaves ±127, which no checked unit has.
+    pub fn checked_mul(self, rhs: Unit) -> Option<Unit> {
+        Some(Unit {
+            dim: self.dim.combine(rhs.dim, 1)?,
+            scale: self.scale * rhs.scale,
+            name: None,
+        })
+    }
+
+    /// The quotient of two units; `None` as [`Unit::checked_mul`].
+    pub fn checked_div(self, rhs: Unit) -> Option<Unit> {
+        Some(Unit {
+            dim: self.dim.combine(rhs.dim, -1)?,
+            scale: self.scale / rhs.scale,
+            name: None,
+        })
     }
 }
+
+/// How deep parentheses may nest in a unit.
+const MAX_GROUPS: usize = 32;
 
 /// Temperature scales with an offset, refused by name.
 const TEMPERATURES: [&str; 6] = ["°C", "°F", "degC", "degF", "celsius", "fahrenheit"];
 
 /// `factor (('*' | '·' | '/') factor)*`, left to right.
-fn expression(c: &[char], at: &mut usize) -> std::result::Result<Unit, String> {
-    let mut unit = factor(c, at)?;
+fn expression(c: &[char], at: &mut usize, depth: usize) -> std::result::Result<Unit, String> {
+    let mut unit = factor(c, at, depth)?;
     let mut divided = false;
     while let Some(&op) = c.get(*at) {
         if !matches!(op, '*' | '·' | '/') {
@@ -159,25 +190,29 @@ fn expression(c: &[char], at: &mut usize) -> std::result::Result<Unit, String> {
             return Err("'a/b*c' is ambiguous: write 'a*c/b' or 'a/(b*c)'".into());
         }
         *at += 1;
-        let next = factor(c, at)?;
-        if op == '/' {
+        let next = factor(c, at, depth)?;
+        unit = if op == '/' {
             divided = true;
-            unit = unit / next;
+            unit.checked_div(next)
         } else {
-            unit = unit * next;
+            unit.checked_mul(next)
         }
+        .ok_or(TOO_HIGH)?;
     }
     Ok(unit)
 }
 
 /// A symbol, a number or a group, with an optional power.
-fn factor(c: &[char], at: &mut usize) -> std::result::Result<Unit, String> {
+fn factor(c: &[char], at: &mut usize, depth: usize) -> std::result::Result<Unit, String> {
     let start = *at;
     let base = match c.get(*at) {
         None => return Err("a unit is missing at the end".into()),
         Some('(') => {
+            if depth >= MAX_GROUPS {
+                return Err(format!("more than {MAX_GROUPS} groups inside each other"));
+            }
             *at += 1;
-            let inner = expression(c, at)?;
+            let inner = expression(c, at, depth + 1)?;
             if c.get(*at) != Some(&')') {
                 return Err("a '(' is not closed".into());
             }
@@ -235,7 +270,7 @@ fn factor(c: &[char], at: &mut usize) -> std::result::Result<Unit, String> {
     let n = text
         .parse::<i8>()
         .map_err(|_| format!("'^{text}': a power is a whole number"))?;
-    Ok(base.powi(n))
+    base.powi(n).ok_or_else(|| TOO_HIGH.into())
 }
 
 /// A symbol, whole or as an SI prefix and a symbol that takes one.
@@ -464,23 +499,19 @@ pub fn prefixes() -> &'static [(&'static str, f64)] {
 
 impl Mul for Unit {
     type Output = Unit;
+    /// Panics when a power of a base unit leaves ±127: for units known to
+    /// be small. Text from a user goes through [`Unit::parse`] and
+    /// [`Unit::checked_mul`], which refuse instead.
     fn mul(self, rhs: Unit) -> Unit {
-        Unit {
-            dim: self.dim.combine(rhs.dim, 1),
-            scale: self.scale * rhs.scale,
-            name: None,
-        }
+        self.checked_mul(rhs).expect(TOO_HIGH)
     }
 }
 
 impl Div for Unit {
     type Output = Unit;
+    /// Panics as multiplication does.
     fn div(self, rhs: Unit) -> Unit {
-        Unit {
-            dim: self.dim.combine(rhs.dim, -1),
-            scale: self.scale / rhs.scale,
-            name: None,
-        }
+        self.checked_div(rhs).expect(TOO_HIGH)
     }
 }
 
@@ -767,5 +798,23 @@ mod tests {
         }
         // ft: foot, not femtotonne.
         assert_eq!(hidden, ["ft"]);
+    }
+
+    /// Powers beyond ±127 and groups nested beyond reason are refused,
+    /// not wrapped or left to overflow the stack.
+    #[test]
+    fn refuses_powers_and_nesting_beyond_what_is_kept() {
+        assert_eq!(Unit::parse("m^100/m^50").unwrap().dim.0[0], 50);
+        for text in ["m^100*m^100", "1/m^100/m^100", "(m^64)^2", "(m^-2)^100"] {
+            let e = Unit::parse(text).unwrap_err().to_string();
+            assert!(e.contains("beyond ±127"), "{text}: {e}");
+        }
+        let nested = |n: usize| format!("{}m{}", "(".repeat(n), ")".repeat(n));
+        assert!(Unit::parse(&nested(MAX_GROUPS))
+            .unwrap()
+            .same_as(&Unit::METER));
+        let e = Unit::parse(&nested(200_000)).unwrap_err().to_string();
+        assert!(e.contains("groups inside each other"), "{e}");
+        assert_eq!(Unit::METER.checked_mul(Unit::parse("m^127").unwrap()), None);
     }
 }

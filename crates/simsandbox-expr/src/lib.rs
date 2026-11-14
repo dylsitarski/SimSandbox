@@ -590,7 +590,17 @@ struct Parser {
     pos: usize,
     /// Read [`REDUCTIONS`] as calls ([`parse_reductions`]).
     reductions: bool,
+    /// How deep the tree being built is here: nested signs, powers and
+    /// parentheses, and the operators of a chain (`a + b + c` nests to
+    /// the left). Bounded by [`MAX_DEPTH`].
+    depth: usize,
 }
+
+/// The deepest tree an expression may give. Everything that walks a tree
+/// (evaluation, units, lowering, dropping it) recurses once per level, so
+/// without a bound a long enough line overflows the stack instead of
+/// giving an error.
+pub const MAX_DEPTH: usize = 1000;
 
 /// Reductions of a run over time (ADR 0067, ADR 0070), calls in
 /// [`parse_reductions`]: `min` and `max` with one argument, the others
@@ -624,6 +634,21 @@ impl Parser {
         t
     }
 
+    /// One level deeper, or the error that it is too deep.
+    fn enter(&mut self) -> Result<(), Error> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return err(
+                self.col(),
+                format!(
+                    "the expression is too long or too deeply nested (more than {MAX_DEPTH} \
+                     levels): give parts of it names of their own"
+                ),
+            );
+        }
+        Ok(())
+    }
+
     fn expect(&mut self, c: char) -> Result<(), Error> {
         match self.next() {
             (Tok::Sym(s), _) if s == c => Ok(()),
@@ -651,22 +676,27 @@ impl Parser {
     /// Sums: term (('+' | '-') term)*
     fn expr(&mut self) -> Result<Ast, Error> {
         let mut lhs = self.term()?;
+        let before = self.depth;
         while let Tok::Sym(c @ ('+' | '-')) = *self.peek() {
             self.next();
+            self.enter()?;
             let rhs = self.term()?;
             let op = if c == '+' { Op::Add } else { Op::Sub };
             lhs = Ast::Bin(op, Box::new(lhs), Box::new(rhs));
         }
+        self.depth = before;
         Ok(lhs)
     }
 
     /// Products: unary (('*' | '/') unary)*
     fn term(&mut self) -> Result<Ast, Error> {
         let mut lhs = self.unary()?;
+        let before = self.depth;
         loop {
             match *self.peek() {
                 Tok::Sym(c @ ('*' | '/')) => {
                     self.next();
+                    self.enter()?;
                     let rhs = self.unary()?;
                     let op = if c == '*' { Op::Mul } else { Op::Div };
                     lhs = Ast::Bin(op, Box::new(lhs), Box::new(rhs));
@@ -675,13 +705,23 @@ impl Parser {
                 Tok::Num(_) | Tok::Name(_) | Tok::Sym('(') => {
                     return err(self.col(), "missing operator (write 2*x, not 2x)");
                 }
-                _ => return Ok(lhs),
+                _ => {
+                    self.depth = before;
+                    return Ok(lhs);
+                }
             }
         }
     }
 
     /// Signs: ('-' | '+') unary | power
     fn unary(&mut self) -> Result<Ast, Error> {
+        self.enter()?;
+        let ast = self.signed()?;
+        self.depth -= 1;
+        Ok(ast)
+    }
+
+    fn signed(&mut self) -> Result<Ast, Error> {
         match *self.peek() {
             Tok::Sym('-') => {
                 self.next();
@@ -811,6 +851,7 @@ fn parse_with(src: &str, dotted: bool, reductions: bool) -> Result<Ast, Error> {
         toks: lex(src, dotted)?,
         pos: 0,
         reductions,
+        depth: 0,
     };
     if p.peek() == &Tok::End {
         return err(1, "empty expression");
@@ -966,5 +1007,34 @@ mod tests {
         assert!(e.message.contains("only typed equations with a grid"));
         // Unknown functions are still refused when parsing.
         assert!(error("foo(x)").message.contains("unknown function"));
+    }
+
+    /// Everything that walks a tree recurses once per level, so a tree
+    /// may not be deeper than [`MAX_DEPTH`]: a longer line is an error at
+    /// its column, not a stack overflow.
+    #[test]
+    fn too_deep_an_expression_is_an_error() {
+        // Parentheses, signs, powers, and the chains that nest to the left.
+        let deep = [
+            format!("{}x{}", "(".repeat(200_000), ")".repeat(200_000)),
+            format!("{}x", "-".repeat(200_000)),
+            format!("x{}", "^x".repeat(200_000)),
+            format!("x{}", " + x".repeat(200_000)),
+            format!("x{}", "*x".repeat(200_000)),
+            format!("sin({}x{})", "sin(".repeat(200_000), ")".repeat(200_000)),
+        ];
+        for src in &deep {
+            let e = parse(src).unwrap_err();
+            assert!(e.message.contains("too deeply nested"), "{e}");
+        }
+        // Long, but within the bound: parsed and evaluated (x = 2).
+        let n = MAX_DEPTH - 100;
+        let sum = format!("x{}", " + x".repeat(n - 1));
+        let nested = format!("{}x{}", "(".repeat(n), ")".repeat(n));
+        assert_eq!(eval(&sum), 2.0 * n as f64);
+        assert_eq!(eval(&nested), 2.0);
+        // Sums beside each other do not add up: each is its own depth.
+        let wide = format!("({sum})*({sum})");
+        assert_eq!(eval(&wide), 4.0 * (n * n) as f64);
     }
 }

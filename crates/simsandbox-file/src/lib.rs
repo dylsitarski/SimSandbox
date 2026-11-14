@@ -2705,11 +2705,13 @@ impl ModelFile {
         if self.fusion == Fusion::Off {
             return Ok(fused);
         }
-        // Automatic: union connected candidates, then fuse each set with
-        // two or more blocks with states. Stateless equation blocks
-        // (formulas, conversions) join the set they connect, whatever its
-        // method, but never merge two sets with different methods
-        // (ADR 0051).
+        // Automatic: union connected candidates, then fuse each set of two
+        // or more blocks that has a block with states. Stateless equation
+        // blocks (formulas, conversions) join the set they connect,
+        // whatever its method, but never merge two sets with different
+        // methods (ADR 0051); one block with states and a formula it is
+        // wired to are a set (ADR 0095): apart, the formula's values would
+        // reach the block a step late.
         let candidate = |i: usize| {
             let e = &self.blocks[i];
             !taken.contains(&e.name.as_str()) && model.is_fusable(ids[&e.name])
@@ -2785,7 +2787,7 @@ impl ModelFile {
         }
         for set in sets
             .into_values()
-            .filter(|s| s.iter().filter(|&&i| !algebraic(i)).count() > 1)
+            .filter(|s| s.len() > 1 && s.iter().any(|&i| !algebraic(i)))
         {
             let first = *set.iter().find(|&&i| !algebraic(i)).expect("filtered");
             let members = set.iter().map(|&i| ids[&self.blocks[i].name]).collect();
