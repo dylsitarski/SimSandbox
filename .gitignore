@@ -18,3 +18,5 @@ __pycache__/
 /spikes/*/target
 # Downloaded Python wheels (two were committed by accident, removed 2026-11-14)
 *.whl
+# Working copies of agents at work on this repository
+/.claude/worktrees/
