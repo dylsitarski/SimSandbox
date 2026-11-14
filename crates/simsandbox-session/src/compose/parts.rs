@@ -4,8 +4,10 @@
 //! an instant several share, they evaluate in link order, each taking the
 //! latest samples of the probes feeding it, and its probes sample.
 //!
-//! What headless runs use until they move to the merged simulator
-//! ([`super::merged`], ADR 0090 point 1).
+//! No run uses it any more: headless runs go through the merged simulator
+//! ([`super::merged`], ADR 0090 point 1). Kept until deleted per ADR 0090
+//! point 3, and built only for the tests that compare the two engines bit
+//! for bit (point 2).
 
 use super::Composed;
 use crate::run::{Keep, Output, Population, Results, Thin, DEFAULT_T_END};

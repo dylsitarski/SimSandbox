@@ -110,7 +110,9 @@ impl Thin {
         keep
     }
 
-    /// Forget the latest step; whether it was kept.
+    /// Forget the latest step; whether it was kept. For the run in parts,
+    /// kept for tests until deleted (ADR 0090 point 3).
+    #[cfg(test)]
     pub fn undo(&mut self) -> bool {
         self.seen -= 1;
         self.behind = false;

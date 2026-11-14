@@ -80,7 +80,7 @@ impl Part {
     }
 }
 
-/// [`super::run_composition_keeping`] as the merged simulator gives it.
+/// [`super::run_composition_keeping`] on the merged simulator.
 pub(super) fn run(
     text: &str,
     registry: &Registry,

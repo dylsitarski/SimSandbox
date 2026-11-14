@@ -1,7 +1,7 @@
-//! Running a model that uses model files headless (ADR 0066): every clock
-//! domain on its own clock, in exact ticks ([`parts`]). The same run as
-//! one simulator with clocks ([`merged`], ADR 0090) is compared with it
-//! bit for bit by the tests here, before headless runs move to it.
+//! Running a model that uses model files headless (ADR 0066): as one
+//! simulator with clocks ([`merged`], ADR 0090), each model stepping at
+//! its own instants and taking its inputs only then, its results given at
+//! its own times under its own name.
 
 use crate::run::{Keep, Results};
 use serde_json::{json, Value};
@@ -9,8 +9,8 @@ use simsandbox_core::parallel::Parallel;
 use simsandbox_core::registry::Registry;
 use simsandbox_file::compose::load_composition;
 
-#[cfg(test)]
 mod merged;
+#[cfg(test)]
 mod parts;
 
 /// What a run produced: each domain's results at its own times, by its
@@ -209,7 +209,7 @@ pub fn run_composition(
     run_composition_with(text, registry, t_end, Parallel::Auto)
 }
 
-/// [`run_composition`], the models stepping between instants on several
+/// [`run_composition`], the models stepping at one instant on several
 /// cores as `parallel` says (ADR 0066 step 6); the same bits either way.
 pub fn run_composition_with(
     text: &str,
@@ -229,7 +229,7 @@ pub fn run_composition_keeping(
     parallel: Parallel,
     keep: &Keep,
 ) -> Result<Composed, String> {
-    parts::run_in_parts(text, registry, t_end, parallel, keep, true)
+    merged::run(text, registry, t_end, parallel, keep)
 }
 
 #[cfg(test)]

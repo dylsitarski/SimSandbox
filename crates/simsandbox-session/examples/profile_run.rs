@@ -4,7 +4,9 @@
 //!
 //! ```sh
 //! cargo run --release -p simsandbox-session --example profile_run -- FILE [T_END] [--signals A,B] [--every N]
-//! (`--merged`: a model using models run as one simulator, as the app runs it)
+//! (`--merged`: a model using models recorded as one model at every instant,
+//! as the app runs it, not each model at its own times; one simulator either
+//! way, ADR 0090)
 //! valgrind --tool=callgrind target/release/examples/profile_run FILE [T_END]
 //! ```
 
