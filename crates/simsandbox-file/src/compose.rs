@@ -741,6 +741,17 @@ pub fn load_merged(
     registry: &Registry,
     folder: Option<&Path>,
 ) -> Result<Loaded, FileError> {
+    load_merged_with(text, registry, folder).map(|(loaded, _)| loaded)
+}
+
+/// [`load_merged`], with the composition it was merged from: its domains
+/// in the order of the merged model's clocks, for a headless run to give
+/// each model's results at its own times (ADR 0090).
+pub fn load_merged_with(
+    text: &str,
+    registry: &Registry,
+    folder: Option<&Path>,
+) -> Result<(Loaded, Composition), FileError> {
     let c = load_composition(text, registry, folder)?;
     let (file, _) = ModelFile::from_json(text)?;
     runs_alone(&file)?;
@@ -880,7 +891,7 @@ pub fn load_merged(
             loaded.warnings.push(w.clone());
         }
     }
-    Ok(loaded)
+    Ok((loaded, c))
 }
 
 fn digest(bytes: &[u8]) -> String {
