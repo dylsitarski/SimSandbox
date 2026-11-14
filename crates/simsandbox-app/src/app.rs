@@ -113,7 +113,7 @@ pub struct SimApp {
     /// diagram or by clicking a curve.
     picked: Vec<(Option<String>, String)>,
     /// The diagram's selection when last looked at, to tell a new pick.
-    last_canvas: Option<simsandbox_session::canvas::Selection>,
+    last_canvas: Option<crate::canvas::Selection>,
     /// List values formulas set too.
     show_computed: bool,
     /// What the study picked last can vary: its name, its model's text and
@@ -1869,7 +1869,7 @@ impl SimApp {
         }
         self.picked = vec![(None, top.to_string())];
         if self.diagram.scope == simsandbox_session::diagram::Scope::Model {
-            let selection = simsandbox_session::canvas::Selection::Block(top.to_string());
+            let selection = crate::canvas::Selection::Block(top.to_string());
             self.diagram.canvas.selected = Some(selection.clone());
             self.last_canvas = Some(selection);
         }
@@ -5532,7 +5532,7 @@ Lines starting with # are comments.";
 
 /// A compact display of a value: up to 6 significant digits.
 fn format_value(v: f64) -> String {
-    simsandbox_session::canvas::format_number(v)
+    simsandbox_session::diagram_paint::format_number(v)
 }
 
 /// Write an image as binary PPM (no image dependency needed).
@@ -5950,8 +5950,7 @@ mod tests {
             .inside_values(&["tuning".to_string()], "car")
             .unwrap();
         assert!(values.iter().any(|v| v.name == "m"), "{values:?}");
-        app.diagram.canvas.selected =
-            Some(simsandbox_session::canvas::Selection::Block("car".into()));
+        app.diagram.canvas.selected = Some(crate::canvas::Selection::Block("car".into()));
         // SIMSANDBOX_SHOT=FILE.png writes the Inspector as drawn, to look at.
         if let Ok(path) = std::env::var("SIMSANDBOX_SHOT_INSIDE") {
             let o = simsandbox_session::render::RenderOptions {
@@ -5986,9 +5985,7 @@ mod tests {
             "{names:?}"
         );
         assert!(app.study_keys(&file, "best").is_empty());
-        app.diagram.canvas.selected = Some(simsandbox_session::canvas::Selection::Block(
-            "tuning".into(),
-        ));
+        app.diagram.canvas.selected = Some(crate::canvas::Selection::Block("tuning".into()));
         // SIMSANDBOX_SHOT=FILE.png writes the Inspector as drawn, to look at.
         if let Ok(path) = std::env::var("SIMSANDBOX_SHOT") {
             let o = simsandbox_session::render::RenderOptions {
@@ -6013,9 +6010,7 @@ mod tests {
             .find(|e| e.name.starts_with("Searching"))
             .unwrap();
         app.open_text(e.name, e.text);
-        app.diagram.canvas.selected = Some(simsandbox_session::canvas::Selection::Block(
-            "trials".into(),
-        ));
+        app.diagram.canvas.selected = Some(crate::canvas::Selection::Block("trials".into()));
         let o = simsandbox_session::render::RenderOptions {
             width: 520.0,
             height: 900.0,
@@ -6060,7 +6055,7 @@ mod tests {
 
     #[test]
     fn blocks_added_on_the_diagram_are_set_in_the_inspector_before_they_run() {
-        use simsandbox_session::canvas::Selection;
+        use crate::canvas::Selection;
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES
             .iter()
@@ -6223,7 +6218,7 @@ mod tests {
 
     #[test]
     fn a_clicked_curve_selects_its_block_until_the_diagram_picks_another() {
-        use simsandbox_session::canvas::Selection;
+        use crate::canvas::Selection;
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES
             .iter()
@@ -6251,7 +6246,7 @@ mod tests {
 
     #[test]
     fn a_block_picked_in_a_model_expanded_in_place_shows_its_values() {
-        use simsandbox_session::canvas::Selection;
+        use crate::canvas::Selection;
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES
             .iter()
@@ -6272,7 +6267,7 @@ mod tests {
 
     #[test]
     fn the_inspector_draws_selection_search_and_computed_values() {
-        use simsandbox_session::canvas::Selection;
+        use crate::canvas::Selection;
         let mut app = SimApp::new(None, None, None, None);
         let e = EXAMPLES
             .iter()

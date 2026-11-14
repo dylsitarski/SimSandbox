@@ -12,6 +12,7 @@
 //! documentation and visual checks, at a fixed size.
 
 mod app;
+mod canvas;
 mod diagram;
 mod dock;
 mod inspector;

@@ -1,6 +1,7 @@
-//! The node canvas (ADR 0042): a [`Diagram`] drawn with egui's painter,
-//! and the mouse and keyboard turned into [`Edit`]s. The app applies the
-//! edits; headless rendering draws the same canvas without input.
+//! The node canvas (ADR 0042): a [`Diagram`] painted by
+//! `simsandbox_session::diagram_paint`, and the mouse and keyboard turned
+//! into [`Edit`]s. The app applies the edits; headless rendering paints the
+//! same diagram without input.
 //!
 //! - Drag the background to pan; scroll to zoom around the pointer.
 //! - Drag a block to move it; click to select it or a wire.
@@ -16,10 +17,14 @@
 //!   on a view's slot shows that signal there; a filter dropped on a block
 //!   input is refused with an offer to promote it to a block and connect.
 
-use crate::diagram::{Diagram, Edit, Node, NodeKind, Scope, HEADER, NODE_WIDTH, ROW, VALUE_ROW};
-use egui::{Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui;
+use egui::{FontId, Pos2, Rect, Sense, Vec2};
 use simsandbox_core::block::{Causality, Shape};
 use simsandbox_core::registry::Registry;
+use simsandbox_session::diagram::{Diagram, Edit, Node, NodeKind, Scope, NODE_WIDTH, VALUE_ROW};
+use simsandbox_session::diagram_paint::{
+    format_number, open_key, open_nodes, title, unit_key, unit_setting, Marks, View, SHOW_VALUES,
+};
 use std::collections::BTreeSet;
 
 /// What is selected.
@@ -85,8 +90,7 @@ pub enum Request {
     Collapse(String),
 }
 
-/// Values show on nodes from this zoom up, and can be edited from this one.
-const SHOW_VALUES: f32 = 0.55;
+/// Values on nodes can be edited from this zoom up.
 const EDIT_VALUES: f32 = 0.75;
 
 /// A wire being drawn: from a port, to the pointer.
@@ -100,11 +104,9 @@ struct Dragging {
 }
 
 /// The canvas's view and interaction state, kept between frames.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Canvas {
-    /// Screen offset of the canvas origin from the panel's corner.
-    pan: Vec2,
-    zoom: f32,
+    view: View,
     /// The panel size the view was fitted to; refitted when the panel
     /// changes size until the user pans or zooms.
     fitted: Option<Vec2>,
@@ -124,346 +126,169 @@ pub struct Canvas {
     /// Nodes whose values are shown (ADR 0055): model-level names, and
     /// `subsystem::block` inside a subsystem.
     pub open: BTreeSet<String>,
-    /// Show every node's values.
-    open_all: bool,
     /// The value being typed on a node: its key (`unit:block:from` for a
     /// conversion's unit) and the text so far.
     editing: Option<(String, String)>,
 }
 
-impl Default for Canvas {
-    fn default() -> Self {
-        Self {
-            pan: Vec2::ZERO,
-            zoom: 1.0,
-            fitted: None,
-            user_moved: false,
-            selected: None,
-            moving: Vec::new(),
-            band: None,
-            wiring: None,
-            menu: None,
-            rename: String::new(),
-            offer: None,
-            open: BTreeSet::new(),
-            open_all: false,
-            editing: None,
-        }
-    }
-}
-
-/// Port dot radius and how close counts as on it, in points at zoom 1.
-const DOT: f32 = 4.5;
+/// How close to a port counts as on it, in points at zoom 1.
 const REACH: f32 = 9.0;
 
 impl Canvas {
-    /// A canvas showing every node's values.
-    pub fn all_open() -> Self {
-        Self {
-            open_all: true,
-            ..Self::default()
-        }
-    }
-
-    /// A canvas showing the values of these nodes (`controls.open`).
-    pub fn opening(open: &[String]) -> Self {
-        Self {
-            open: open.iter().cloned().collect(),
-            ..Self::default()
-        }
-    }
-
     /// Fit the diagram to the panel on the next frame.
     pub fn refit(&mut self) {
         self.fitted = None;
         self.user_moved = false;
     }
 
-    fn to_screen(&self, origin: Pos2, p: [f64; 2]) -> Pos2 {
-        origin + self.pan + Vec2::new(p[0] as f32, p[1] as f32) * self.zoom
-    }
-
-    fn to_canvas(&self, origin: Pos2, p: Pos2) -> [f64; 2] {
-        let v = (p - origin - self.pan) / self.zoom;
-        [v.x as f64, v.y as f64]
-    }
-
-    fn fit(&mut self, d: &Diagram, rect: Rect) {
-        let Some([x0, y0, x1, y1]) = d.bounds() else {
-            self.pan = Vec2::splat(40.0);
-            self.zoom = 1.0;
-            return;
-        };
-        let margin = 40.0;
-        let w = (x1 - x0) as f32;
-        let h = (y1 - y0) as f32;
-        self.zoom = ((rect.width() - 2.0 * margin) / w)
-            .min((rect.height() - 2.0 * margin) / h)
-            .clamp(0.3, 1.3);
-        let size = Vec2::new(w, h) * self.zoom;
-        self.pan = (rect.size() - size) / 2.0 - Vec2::new(x0 as f32, y0 as f32) * self.zoom;
-    }
-
-    /// Draw the diagram filling `ui`'s space. With `interactive`, handle
-    /// input and return the edits and requests the user made; `diagram`
-    /// node positions follow drags as they happen.
+    /// Draw the diagram filling `ui`'s space, handle input and return the
+    /// edits and requests the user made; `diagram` node positions follow
+    /// drags as they happen.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         d: &mut Diagram,
         registry: &Registry,
-        interactive: bool,
     ) -> (Vec<Edit>, Vec<Request>) {
         let mut edits = Vec::new();
         let mut requests = Vec::new();
-        let sense = if interactive {
-            Sense::click_and_drag()
-        } else {
-            Sense::hover()
-        };
-        for n in &mut d.nodes {
-            let key = open_key(&d.scope, &n.name);
-            n.open = !n.values.is_empty() && (self.open_all || self.open.contains(&key));
-        }
-        let (rect, response) = ui.allocate_exact_size(ui.available_size(), sense);
+        open_nodes(d, |key| self.open.contains(key));
+        let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         let origin = rect.min;
         let resized = self.fitted.is_some_and(|s| s != rect.size()) && !self.user_moved;
         if (self.fitted.is_none() || resized) && rect.width() > 1.0 {
-            self.fit(d, rect);
+            self.view.fit(d, rect);
             self.fitted = Some(rect.size());
         }
         let painter = ui.painter_at(rect);
         let visuals = ui.visuals().clone();
-        painter.rect_filled(rect, CornerRadius::ZERO, visuals.extreme_bg_color);
-        self.grid(&painter, rect, visuals.faint_bg_color);
+        self.view.background(&painter, rect, &visuals);
 
         let pointer = response.hover_pos().or(response.interact_pointer_pos());
-        if interactive {
-            self.input(ui, &response, d, origin, pointer, &mut edits, &mut requests);
-        }
+        self.input(ui, &response, d, origin, pointer, &mut edits, &mut requests);
 
-        // Expanded uses under everything (ADR 0066 step 4d): an outline
-        // coloured by its clock, titled with its path, model and clock.
-        let z = self.zoom;
-        for o in &d.outlines {
-            let r = Rect::from_min_max(
-                self.to_screen(origin, [o.rect[0], o.rect[1]]),
-                self.to_screen(origin, [o.rect[2], o.rect[3]]),
-            );
-            let tint = clock_colour(&o.clock, &visuals);
-            painter.rect_filled(r, 6.0 * z, tint.gamma_multiply(0.08));
-            painter.rect_stroke(
-                r,
-                6.0 * z,
-                Stroke::new(1.5, tint.gamma_multiply(0.8)),
-                StrokeKind::Inside,
-            );
-            painter.text(
-                r.min + Vec2::new(8.0 * z, 6.0 * z),
-                egui::Align2::LEFT_TOP,
-                format!("{} · {} · {}", o.path, o.label, o.clock),
-                egui::FontId::proportional(12.0 * z),
-                visuals.text_color(),
-            );
-        }
+        let nodes: &[String] = match &self.selected {
+            Some(Selection::Block(b)) => std::slice::from_ref(b),
+            Some(Selection::Many(v)) => v,
+            _ => &[],
+        };
+        let marks = Marks {
+            nodes,
+            wire: match &self.selected {
+                Some(Selection::Wire(key)) => Some(key),
+                _ => None,
+            },
+            wiring: self.wiring.as_ref().map(|g| (g.node, g.port, g.causality)),
+            lifted: self.wiring.as_ref().and_then(|g| g.lifted.as_deref()),
+            band: self.band,
+            pointer,
+            editing: self.editing.as_ref().map(|(key, _)| key.as_str()),
+        };
+        self.view.paint(&painter, &visuals, rect, d, &marks);
 
-        // Wires under nodes.
-        for w in &d.wires {
-            let lifted = self
-                .wiring
-                .as_ref()
-                .is_some_and(|g| g.lifted.as_deref() == Some(w.to_name.as_str()));
-            if lifted && !w.is_data() {
-                continue;
-            }
-            let selected = self.selected == Some(Selection::Wire(w.key()));
-            let field = d.nodes[w.from.0].outputs[w.from.1].shape != Shape::Scalar;
-            let width = if field { 3.5 } else { 2.0 } * self.zoom.sqrt();
-            let colour = if selected {
-                visuals.selection.stroke.color
-            } else {
-                visuals.widgets.inactive.fg_stroke.color
-            };
-            let path = self.wire_path(d, origin, w);
-            if w.is_data() {
-                // Recorded data, read after each step (ADR 0050).
-                let colour = if selected {
-                    colour
-                } else {
-                    visuals.hyperlink_color.gamma_multiply(0.8)
-                };
-                painter.extend(egui::Shape::dashed_line(
-                    &path,
-                    Stroke::new(width * 0.8, colour),
-                    6.0 * self.zoom,
-                    4.0 * self.zoom,
-                ));
-            } else {
-                painter.add(egui::Shape::line(path, Stroke::new(width, colour)));
-            }
-        }
-        if let (Some(g), Some(p)) = (&self.wiring, pointer) {
-            let at = self.to_screen(origin, d.nodes[g.node].port_at(g.causality, g.port));
-            let (a, b) = match g.causality {
-                Causality::Output => (at, p),
-                Causality::Input => (p, at),
-            };
-            let below = a.y.max(b.y);
-            painter.add(egui::Shape::line(
-                route(a, b, below, self.zoom),
-                visuals.selection.stroke,
-            ));
-        }
+        // Hover help: the error, or a port's unit and shape.
         for (i, n) in d.nodes.iter().enumerate() {
-            let selected = self.is_selected(&n.name);
-            self.node(&painter, &visuals, origin, d, i, selected);
-            if interactive {
-                // Hover help: the error, or a port's unit and shape.
-                let r = self.node_rect(origin, n);
-                if let Some(p) = pointer.filter(|p| r.expand(REACH).contains(*p)) {
-                    let value = self.value_under(d, origin, p).filter(|&(k, _)| k == i);
-                    let unit = self.unit_under(d, origin, p).filter(|&(k, _)| k == i);
-                    let tip = if let Some(e) = &n.error {
-                        Some(e.clone())
-                    } else if self.expander(origin, n).is_some_and(|r| r.contains(p)) {
-                        Some(if n.open {
-                            "Hide its values".to_string()
-                        } else {
-                            format!("Show its values ({})", n.values.len())
-                        })
-                    } else if let Some((_, k)) = value {
-                        let v = &n.values[k];
-                        let mut tip = if let Some(from) = &v.driven {
-                            format!(
-                                "{}: driven by {from}, whose value it takes (ADR 0075); drag \
-                                 the wire off its dot to set it again",
-                                v.key
-                            )
-                        } else if let Some(e) = &v.exposed {
-                            format!(
-                                "{}: the model's parameter {e}, set by each model or study \
-                                 using this one; its own value is changed in the Inspector",
-                                v.key
-                            )
-                        } else if self.zoom >= EDIT_VALUES {
-                            format!(
-                                "{}: double-click to change it (a number, or '= expression' \
-                                 of the parameters)",
-                                v.key
-                            )
-                        } else {
-                            format!("{}: zoom in to change it here", v.key)
-                        };
-                        if d.exposable(i) {
-                            tip.push_str(if v.exposed.is_some() {
-                                "\nClick the ring to make it the block's own again"
-                            } else {
-                                "\nClick the ring to expose it: models using this one set it"
-                            });
-                        }
-                        if d.scope != Scope::Model {
-                            tip.push_str(
-                                "\nThe default of every use of this subsystem; changing it \
-                                 restarts the run",
-                            );
-                            if !v.overridden.is_empty() {
-                                tip.push_str(&format!(
-                                    "\n* Set by its own value in {}",
-                                    v.overridden.join(", ")
-                                ));
-                            }
-                        }
-                        Some(tip)
-                    } else if let Some((_, c)) = unit {
-                        let setting = unit_setting(n, c).unwrap_or_default();
-                        Some(if self.zoom >= EDIT_VALUES {
-                            format!("The unit it converts {setting}: double-click to change it")
-                        } else {
-                            format!("The unit it converts {setting}: zoom in to change it here")
-                        })
-                    } else if n.is_observer() && self.port_under(d, origin, p).is_none() {
-                        Some(observer_help(n))
+            let r = self.view.node_rect(origin, n);
+            if let Some(p) = pointer.filter(|p| r.expand(REACH).contains(*p)) {
+                let value = self.value_under(d, origin, p).filter(|&(k, _)| k == i);
+                let unit = self.unit_under(d, origin, p).filter(|&(k, _)| k == i);
+                let tip = if let Some(e) = &n.error {
+                    Some(e.clone())
+                } else if self.view.expander(origin, n).is_some_and(|r| r.contains(p)) {
+                    Some(if n.open {
+                        "Hide its values".to_string()
                     } else {
-                        self.port_under(d, origin, p)
-                            .filter(|&(k, _, _)| k == i)
-                            .map(|(k, port, c)| {
-                                let q = match c {
-                                    Causality::Input => &d.nodes[k].inputs[port],
-                                    Causality::Output => &d.nodes[k].outputs[port],
-                                };
-                                let mut tip = port_help(&n.name, q, c);
-                                if d.exposable(k) {
-                                    let kind = match c {
-                                        Causality::Input => "in",
-                                        Causality::Output => "out",
-                                    };
-                                    tip.push_str(&match d.exposed_as(k, kind, &q.name) {
-                                        Some(e) => format!(
-                                            "\nExposed as {e} to models using this one: \
-                                             click to hide it"
-                                        ),
-                                        None => "\nClick to expose it to models using this \
-                                                 one; drag to wire it"
-                                            .to_string(),
-                                    });
-                                }
-                                tip
-                            })
+                        format!("Show its values ({})", n.values.len())
+                    })
+                } else if let Some((_, k)) = value {
+                    let v = &n.values[k];
+                    let mut tip = if let Some(from) = &v.driven {
+                        format!(
+                            "{}: driven by {from}, whose value it takes (ADR 0075); drag \
+                                 the wire off its dot to set it again",
+                            v.key
+                        )
+                    } else if let Some(e) = &v.exposed {
+                        format!(
+                            "{}: the model's parameter {e}, set by each model or study \
+                                 using this one; its own value is changed in the Inspector",
+                            v.key
+                        )
+                    } else if self.view.zoom >= EDIT_VALUES {
+                        format!(
+                            "{}: double-click to change it (a number, or '= expression' \
+                                 of the parameters)",
+                            v.key
+                        )
+                    } else {
+                        format!("{}: zoom in to change it here", v.key)
                     };
-                    if let Some(tip) = tip {
-                        response.clone().on_hover_text_at_pointer(tip);
+                    if d.exposable(i) {
+                        tip.push_str(if v.exposed.is_some() {
+                            "\nClick the ring to make it the block's own again"
+                        } else {
+                            "\nClick the ring to expose it: models using this one set it"
+                        });
                     }
+                    if d.scope != Scope::Model {
+                        tip.push_str(
+                            "\nThe default of every use of this subsystem; changing it \
+                                 restarts the run",
+                        );
+                        if !v.overridden.is_empty() {
+                            tip.push_str(&format!(
+                                "\n* Set by its own value in {}",
+                                v.overridden.join(", ")
+                            ));
+                        }
+                    }
+                    Some(tip)
+                } else if let Some((_, c)) = unit {
+                    let setting = unit_setting(n, c).unwrap_or_default();
+                    Some(if self.view.zoom >= EDIT_VALUES {
+                        format!("The unit it converts {setting}: double-click to change it")
+                    } else {
+                        format!("The unit it converts {setting}: zoom in to change it here")
+                    })
+                } else if n.is_observer() && self.port_under(d, origin, p).is_none() {
+                    Some(observer_help(n))
+                } else {
+                    self.port_under(d, origin, p)
+                        .filter(|&(k, _, _)| k == i)
+                        .map(|(k, port, c)| {
+                            let q = match c {
+                                Causality::Input => &d.nodes[k].inputs[port],
+                                Causality::Output => &d.nodes[k].outputs[port],
+                            };
+                            let mut tip = port_help(&n.name, q, c);
+                            if d.exposable(k) {
+                                let kind = match c {
+                                    Causality::Input => "in",
+                                    Causality::Output => "out",
+                                };
+                                tip.push_str(&match d.exposed_as(k, kind, &q.name) {
+                                    Some(e) => format!(
+                                        "\nExposed as {e} to models using this one: \
+                                             click to hide it"
+                                    ),
+                                    None => "\nClick to expose it to models using this \
+                                                 one; drag to wire it"
+                                        .to_string(),
+                                });
+                            }
+                            tip
+                        })
+                };
+                if let Some(tip) = tip {
+                    response.clone().on_hover_text_at_pointer(tip);
                 }
             }
         }
-        if let (Some(a), Some(b)) = (self.band, pointer) {
-            let r = Rect::from_two_pos(a, b);
-            painter.rect_filled(
-                r,
-                CornerRadius::ZERO,
-                visuals.selection.bg_fill.gamma_multiply(0.2),
-            );
-            painter.rect_stroke(
-                r,
-                CornerRadius::ZERO,
-                visuals.selection.stroke,
-                StrokeKind::Inside,
-            );
-        }
-        if d.nodes.is_empty() {
-            let empty = "Empty model: right-click to add a block";
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                empty,
-                FontId::proportional(14.0),
-                visuals.weak_text_color(),
-            );
-        }
 
-        if interactive {
-            self.value_editor(ui, d, origin, &mut requests);
-            self.context_menu(&response, d, registry, &mut edits, &mut requests);
-            self.promote_offer(ui, &mut edits);
-        }
+        self.value_editor(ui, d, origin, &mut requests);
+        self.context_menu(&response, d, registry, &mut edits, &mut requests);
+        self.promote_offer(ui, &mut edits);
         (edits, requests)
-    }
-
-    fn grid(&self, painter: &egui::Painter, rect: Rect, colour: Color32) {
-        let step = 40.0 * self.zoom;
-        if step < 8.0 {
-            return;
-        }
-        let start = rect.min + Vec2::new(self.pan.x.rem_euclid(step), self.pan.y.rem_euclid(step));
-        let mut x = start.x;
-        while x < rect.max.x {
-            let mut y = start.y;
-            while y < rect.max.y {
-                painter.circle_filled(Pos2::new(x, y), 1.2, colour);
-                y += step;
-            }
-            x += step;
-        }
     }
 
     fn is_selected(&self, name: &str) -> bool {
@@ -474,289 +299,6 @@ impl Canvas {
         }
     }
 
-    fn node_rect(&self, origin: Pos2, n: &Node) -> Rect {
-        Rect::from_min_size(
-            self.to_screen(origin, n.at),
-            Vec2::new(NODE_WIDTH as f32, n.height() as f32) * self.zoom,
-        )
-    }
-
-    fn node(
-        &self,
-        painter: &egui::Painter,
-        visuals: &egui::Visuals,
-        origin: Pos2,
-        d: &Diagram,
-        i: usize,
-        selected: bool,
-    ) {
-        let n = &d.nodes[i];
-        let z = self.zoom;
-        let r = self.node_rect(origin, n);
-        let radius = CornerRadius::same((6.0 * z).round().clamp(0.0, 255.0) as u8);
-        // A study runs its model many times: drawn as a stack of cards
-        // (ADR 0070).
-        let study = n.kind == NodeKind::Block && n.type_name == simsandbox_file::STUDY;
-        if study {
-            // Below the node and narrower, clear of the ports at its sides.
-            for k in [2.0, 1.0] {
-                let card = r
-                    .translate(Vec2::new(0.0, 4.0 * k * z))
-                    .shrink2(Vec2::new(8.0 * k * z, 0.0));
-                painter.rect_filled(card, radius, visuals.window_fill);
-                painter.rect_stroke(card, radius, visuals.window_stroke, StrokeKind::Inside);
-            }
-        }
-        painter.rect_filled(r, radius, visuals.window_fill);
-        let header = Rect::from_min_size(r.min, Vec2::new(r.width(), HEADER as f32 * z));
-        let header_fill = match n.kind {
-            NodeKind::Block if study => {
-                STUDY_HEADER.gamma_multiply(if visuals.dark_mode { 0.55 } else { 0.3 })
-            }
-            NodeKind::Block => visuals.widgets.inactive.bg_fill,
-            NodeKind::Use => visuals.selection.bg_fill.gamma_multiply(0.7),
-            NodeKind::Filter => visuals.hyperlink_color.gamma_multiply(0.3),
-            NodeKind::View => visuals.hyperlink_color.gamma_multiply(0.15),
-            NodeKind::Probe => visuals.warn_fg_color.gamma_multiply(0.18),
-            NodeKind::Recorder => visuals.error_fg_color.gamma_multiply(0.18),
-        };
-        painter.rect_filled(
-            header,
-            CornerRadius {
-                nw: radius.nw,
-                ne: radius.ne,
-                sw: 0,
-                se: 0,
-            },
-            header_fill,
-        );
-        let border = if n.error.is_some() {
-            Stroke::new(2.0, visuals.error_fg_color)
-        } else if selected {
-            Stroke::new(2.0, visuals.selection.stroke.color)
-        } else {
-            visuals.window_stroke
-        };
-        // A probe feeding a block is part of the model: drawn solid.
-        if n.is_observer() && !n.settings.contains_key("feeds") {
-            // Dashed: on the data layer, not part of the model.
-            let colour = if n.error.is_some() || selected {
-                border.color
-            } else {
-                visuals.hyperlink_color
-            };
-            let c = [
-                r.left_top(),
-                r.right_top(),
-                r.right_bottom(),
-                r.left_bottom(),
-                r.left_top(),
-            ];
-            painter.extend(egui::Shape::dashed_line(
-                &c,
-                Stroke::new(border.width.max(1.2), colour),
-                5.0 * z,
-                3.0 * z,
-            ));
-        } else {
-            painter.rect_stroke(r, radius, border, StrokeKind::Inside);
-        }
-        if n.kind == NodeKind::Use || study {
-            // A second outline: there is a model inside, to open.
-            painter.rect_stroke(
-                r.shrink(3.0 * z),
-                radius,
-                Stroke::new(1.0, border.color),
-                StrokeKind::Inside,
-            );
-        }
-        let text = visuals.text_color();
-        let weak = visuals.weak_text_color();
-        let pad = 8.0 * z;
-        let title = title(n);
-        painter.text(
-            r.min + Vec2::new(pad, 5.0 * z),
-            egui::Align2::LEFT_TOP,
-            &title,
-            FontId::proportional(14.0 * z),
-            visuals.strong_text_color(),
-        );
-        let kind = if n.error.is_some() {
-            "cannot be built (hover)".to_string()
-        } else {
-            match n.kind {
-                NodeKind::Block if study => format!("study {}", n.method),
-                NodeKind::Block => format!("{} · {}", n.type_name, n.method),
-                // A model file used here: its file and its clock.
-                NodeKind::Use => format!("{} · {}", n.method, n.type_name),
-                NodeKind::Filter => format!("filter · {}", n.method),
-                NodeKind::View => format!("view · {}", n.method),
-                NodeKind::Probe => n.method.clone(),
-                NodeKind::Recorder => format!("rewind · {}", n.method),
-            }
-        };
-        // What the run says of it now first: held, started again (ADR 0088).
-        let kind = match &n.status {
-            Some(status) => format!("{status} · {kind}"),
-            None => kind,
-        };
-        painter.text(
-            r.min + Vec2::new(pad, 22.0 * z),
-            egui::Align2::LEFT_TOP,
-            fit(&kind, ((NODE_WIDTH as f32 - 16.0) / 6.0) as usize),
-            FontId::proportional(10.5 * z),
-            weak,
-        );
-        for (c, ports) in [
-            (Causality::Input, &n.inputs),
-            (Causality::Output, &n.outputs),
-        ] {
-            for (k, p) in ports.iter().enumerate() {
-                let at = self.to_screen(origin, n.port_at(c, k));
-                let field = p.shape != Shape::Scalar;
-                let colour = if field {
-                    visuals.hyperlink_color
-                } else {
-                    visuals.widgets.active.fg_stroke.color
-                };
-                if field {
-                    let s = Vec2::splat(DOT * z);
-                    painter.rect_filled(
-                        Rect::from_center_size(at, s * 2.0),
-                        CornerRadius::ZERO,
-                        colour,
-                    );
-                } else {
-                    painter.circle_filled(at, DOT * z, colour);
-                }
-                // Exposed to the models using this one: ringed (ADR 0074),
-                // wherever the model is drawn.
-                let kind = match c {
-                    Causality::Input => "in",
-                    Causality::Output => "out",
-                };
-                let ringed = d.exposed_as(i, kind, &p.name).is_some();
-                if ringed {
-                    painter.circle_stroke(
-                        at,
-                        (DOT + 3.5) * z,
-                        Stroke::new(1.5 * z, visuals.selection.stroke.color),
-                    );
-                }
-                // Clear of the ring.
-                let pad = if ringed { pad + 4.0 * z } else { pad };
-                let (offset, align) = match c {
-                    Causality::Input => (Vec2::new(pad, 0.0), egui::Align2::LEFT_CENTER),
-                    Causality::Output => (Vec2::new(-pad, 0.0), egui::Align2::RIGHT_CENTER),
-                };
-                let max = if n.inputs.is_empty() || n.outputs.is_empty() {
-                    24
-                } else {
-                    12
-                };
-                // A view's slot also names what it reads without a wire
-                // (`x · t`).
-                let label = match n.kind {
-                    NodeKind::View => {
-                        let head = format!("{}: ", p.name);
-                        let more: Vec<&str> = n
-                            .unreached
-                            .iter()
-                            .filter_map(|u| u.strip_prefix(&head))
-                            .collect();
-                        if more.is_empty() {
-                            p.name.clone()
-                        } else {
-                            format!("{} · {}", p.name, more.join(", "))
-                        }
-                    }
-                    // An activated part's mode beside its port (ADR 0088).
-                    _ if c == Causality::Input && p.name == "activate" => {
-                        match n.settings.get("activate") {
-                            Some(mode) => format!("activate · {mode}"),
-                            None => p.name.clone(),
-                        }
-                    }
-                    // A probe names its file beside its input.
-                    NodeKind::Probe => match (c, n.settings.get("to")) {
-                        (Causality::Input, Some(to)) => format!("{} · {to}", p.name),
-                        _ => p.name.clone(),
-                    },
-                    // A conversion shows its units (ADR 0045).
-                    _ => match unit_setting(n, c).filter(|_| k == 0) {
-                        Some(setting) => {
-                            let unit = n.settings.get(setting).unwrap_or(&p.unit);
-                            if self
-                                .editing
-                                .as_ref()
-                                .is_some_and(|(key, _)| *key == unit_key(&n.name, setting))
-                            {
-                                p.name.clone()
-                            } else {
-                                match c {
-                                    Causality::Input => format!("{} [{unit}]", p.name),
-                                    Causality::Output => format!("[{unit}] {}", p.name),
-                                }
-                            }
-                        }
-                        None => p.name.clone(),
-                    },
-                };
-                painter.text(
-                    at + offset,
-                    align,
-                    fit(&label, max),
-                    FontId::proportional(12.0 * z),
-                    text,
-                );
-            }
-        }
-        if let Some(e) = self.expander(origin, n) {
-            // A triangle: right while closed, down while open, after how
-            // many values there are.
-            let c = e.center();
-            let h = 4.0 * z;
-            let points = if n.open {
-                vec![
-                    c + Vec2::new(-h, -h * 0.6),
-                    c + Vec2::new(h, -h * 0.6),
-                    c + Vec2::new(0.0, h * 0.8),
-                ]
-            } else {
-                vec![
-                    c + Vec2::new(-h * 0.6, -h),
-                    c + Vec2::new(h * 0.8, 0.0),
-                    c + Vec2::new(-h * 0.6, h),
-                ]
-            };
-            painter.add(egui::Shape::convex_polygon(points, text, Stroke::NONE));
-            if !n.open {
-                painter.text(
-                    Pos2::new(e.min.x, c.y),
-                    egui::Align2::RIGHT_CENTER,
-                    n.values.len().to_string(),
-                    FontId::proportional(10.5 * z),
-                    weak,
-                );
-            }
-        }
-        self.values(painter, visuals, origin, d, i);
-    }
-
-    /// Where a node's values are opened and closed: the top-right corner
-    /// of its header, on nodes with values, when they can be shown.
-    fn expander(&self, origin: Pos2, n: &Node) -> Option<Rect> {
-        if n.values.is_empty() || self.zoom < SHOW_VALUES {
-            return None;
-        }
-        let r = self.node_rect(origin, n);
-        let s = 18.0 * self.zoom;
-        Some(Rect::from_min_size(
-            Pos2::new(r.max.x - s - 4.0 * self.zoom, r.min.y + 4.0 * self.zoom),
-            Vec2::splat(s),
-        ))
-    }
-
     /// The conversion unit label under `p`: node and which port.
     fn unit_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, Causality)> {
         d.nodes.iter().enumerate().rev().find_map(|(i, n)| {
@@ -764,139 +306,13 @@ impl Canvas {
                 .into_iter()
                 .find(|&c| {
                     unit_setting(n, c).is_some()
-                        && self.unit_rect(origin, n, c).is_some_and(|r| r.contains(p))
+                        && self
+                            .view
+                            .unit_rect(origin, n, c)
+                            .is_some_and(|r| r.contains(p))
                 })
                 .map(|c| (i, c))
         })
-    }
-
-    /// Where a conversion's unit is written beside port 0.
-    fn unit_rect(&self, origin: Pos2, n: &Node, c: Causality) -> Option<Rect> {
-        let count = match c {
-            Causality::Input => n.inputs.len(),
-            Causality::Output => n.outputs.len(),
-        };
-        if count == 0 {
-            return None;
-        }
-        let z = self.zoom;
-        let at = self.to_screen(origin, n.port_at(c, 0));
-        let half = NODE_WIDTH as f32 * z / 2.0;
-        let pad = 8.0 * z;
-        let h = ROW as f32 * z;
-        Some(match c {
-            Causality::Input => Rect::from_min_size(
-                Pos2::new(at.x + pad, at.y - h / 2.0),
-                Vec2::new(half - pad, h),
-            ),
-            Causality::Output => Rect::from_min_size(
-                Pos2::new(at.x - half, at.y - h / 2.0),
-                Vec2::new(half - pad, h),
-            ),
-        })
-    }
-
-    /// A node's parameter values, below its ports (ADR 0053).
-    fn values(
-        &self,
-        painter: &egui::Painter,
-        visuals: &egui::Visuals,
-        origin: Pos2,
-        d: &Diagram,
-        i: usize,
-    ) {
-        let n = &d.nodes[i];
-        let exposable = d.exposable(i);
-        if n.value_rows() == 0 || self.zoom < SHOW_VALUES {
-            return;
-        }
-        let z = self.zoom;
-        let pad = 8.0 * z;
-        let top = self.to_screen(origin, n.value_at(0));
-        painter.line_segment(
-            [
-                top + Vec2::new(pad, 0.0),
-                top + Vec2::new(NODE_WIDTH as f32 * z - pad, 0.0),
-            ],
-            Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
-        );
-        let font = FontId::proportional(11.0 * z);
-        // While a wire is drawn from an output, every value is a place to
-        // drop it (ADR 0075).
-        let wiring = self
-            .wiring
-            .as_ref()
-            .is_some_and(|g| g.causality == Causality::Output && g.lifted.is_none());
-        for (k, v) in n.values.iter().enumerate().take(n.value_rows()) {
-            let port = self.to_screen(origin, n.value_port(k));
-            if v.driven.is_some() {
-                painter.circle_filled(port, DOT * z * 0.8, visuals.widgets.active.fg_stroke.color);
-            } else if wiring && n.is_block() {
-                painter.circle_stroke(
-                    port,
-                    DOT * z * 0.8,
-                    Stroke::new(1.0 * z, visuals.weak_text_color()),
-                );
-            }
-            if self.editing.as_ref().is_some_and(|(key, _)| *key == v.key) {
-                continue;
-            }
-            let y = self.to_screen(origin, n.value_at(k)).y + VALUE_ROW as f32 * z / 2.0;
-            let mut left = Pos2::new(top.x + pad, y);
-            // Its toggle (ADR 0074): a ring, filled while it is exposed.
-            if exposable {
-                let at = self.toggle_at(origin, n, k);
-                let colour = visuals.selection.stroke.color;
-                if v.exposed.is_some() {
-                    painter.circle_filled(at, 2.5 * z, colour);
-                    painter.circle_stroke(at, 4.5 * z, Stroke::new(1.5 * z, colour));
-                } else {
-                    painter.circle_stroke(
-                        at,
-                        4.5 * z,
-                        Stroke::new(1.0 * z, visuals.weak_text_color()),
-                    );
-                }
-                left.x = at.x + 8.0 * z;
-            }
-            let mut name = if v.initial {
-                format!("{} ↻", v.name)
-            } else {
-                v.name.clone()
-            };
-            if let Some(e) = v.exposed.as_ref().filter(|e| **e != v.name) {
-                name = format!("{name} as {e}");
-            }
-            painter.text(
-                left,
-                egui::Align2::LEFT_CENTER,
-                fit(&name, 12),
-                font.clone(),
-                visuals.weak_text_color(),
-            );
-            // `*`: some uses of the subsystem set their own.
-            let mark = if v.overridden.is_empty() { "" } else { " *" };
-            // Driven: its source, not a number to change (ADR 0075).
-            let shown = match &v.driven {
-                Some(from) => format!("from {from}"),
-                None => format!("{} {}{mark}", format_number(v.value), v.unit),
-            };
-            painter.text(
-                Pos2::new(top.x + NODE_WIDTH as f32 * z - pad, y),
-                egui::Align2::RIGHT_CENTER,
-                fit(shown.trim(), 16),
-                font.clone(),
-                visuals.text_color(),
-            );
-        }
-    }
-
-    /// The centre of the toggle exposing value `k` of `n` (ADR 0074): at
-    /// the left of its row.
-    fn toggle_at(&self, origin: Pos2, n: &Node, k: usize) -> Pos2 {
-        let z = self.zoom;
-        let row = self.to_screen(origin, n.value_at(k));
-        row + Vec2::new(14.0 * z, VALUE_ROW as f32 * z / 2.0)
     }
 
     /// The exposure toggle under `p` (ADR 0074): the port itself, or a
@@ -913,20 +329,20 @@ impl Canvas {
         }
         let (i, k) = self.value_under(d, origin, p)?;
         let n = &d.nodes[i];
-        (d.exposable(i) && self.toggle_at(origin, n, k).distance(p) <= 7.0 * self.zoom)
+        (d.exposable(i) && self.view.toggle_at(origin, n, k).distance(p) <= 7.0 * self.view.zoom)
             .then(|| (i, "par", n.values[k].name.clone()))
     }
 
     /// The value row under `p`: node and value.
     fn value_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, usize)> {
-        if self.zoom < SHOW_VALUES {
+        if self.view.zoom < SHOW_VALUES {
             return None;
         }
         d.nodes.iter().enumerate().rev().find_map(|(i, n)| {
             (0..n.value_rows()).find_map(|k| {
                 let r = Rect::from_min_size(
-                    self.to_screen(origin, n.value_at(k)),
-                    Vec2::new(NODE_WIDTH as f32, VALUE_ROW as f32) * self.zoom,
+                    self.view.to_screen(origin, n.value_at(k)),
+                    Vec2::new(NODE_WIDTH as f32, VALUE_ROW as f32) * self.view.zoom,
                 );
                 r.contains(p).then_some((i, k))
             })
@@ -945,7 +361,7 @@ impl Canvas {
         let Some((key, mut text)) = self.editing.take() else {
             return;
         };
-        let z = self.zoom;
+        let z = self.view.zoom;
         // A conversion's unit, or a value.
         let unit = key
             .strip_prefix("unit:")
@@ -959,7 +375,7 @@ impl Canvas {
                 };
                 let Some(r) = d
                     .node(block)
-                    .and_then(|i| self.unit_rect(origin, &d.nodes[i], c))
+                    .and_then(|i| self.view.unit_rect(origin, &d.nodes[i], c))
                 else {
                     return;
                 };
@@ -981,7 +397,7 @@ impl Canvas {
                 }) else {
                     return;
                 };
-                let at = self.to_screen(origin, d.nodes[i].value_at(k));
+                let at = self.view.to_screen(origin, d.nodes[i].value_at(k));
                 Rect::from_min_size(
                     at + Vec2::new(NODE_WIDTH as f32 * z * 0.45, 0.0),
                     Vec2::new(NODE_WIDTH as f32 * z * 0.5, VALUE_ROW as f32 * z),
@@ -1037,7 +453,7 @@ impl Canvas {
 
     /// The port under `p`: (node, port, causality).
     fn port_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, usize, Causality)> {
-        let reach = REACH * self.zoom.max(0.7);
+        let reach = REACH * self.view.zoom.max(0.7);
         let mut best = None;
         let mut best_dist = reach;
         for (i, n) in d.nodes.iter().enumerate() {
@@ -1046,7 +462,7 @@ impl Canvas {
                 (Causality::Output, n.outputs.len()),
             ] {
                 for k in 0..count {
-                    let dist = self.to_screen(origin, n.port_at(c, k)).distance(p);
+                    let dist = self.view.to_screen(origin, n.port_at(c, k)).distance(p);
                     if dist < best_dist {
                         best_dist = dist;
                         best = Some((i, k, c));
@@ -1061,37 +477,7 @@ impl Canvas {
         // The topmost (last drawn) first.
         (0..d.nodes.len())
             .rev()
-            .find(|&i| self.node_rect(origin, &d.nodes[i]).contains(p))
-    }
-
-    /// A wire's path on screen: a curve when it runs forwards, else
-    /// around underneath both blocks.
-    fn wire_path(&self, d: &Diagram, origin: Pos2, w: &crate::diagram::Wire) -> Vec<Pos2> {
-        let a = self.to_screen(
-            origin,
-            d.nodes[w.from.0].port_at(Causality::Output, w.from.1),
-        );
-        let b = self.to_screen(origin, self.wire_end(d, w));
-        let below = self
-            .node_rect(origin, &d.nodes[w.from.0])
-            .max
-            .y
-            .max(self.node_rect(origin, &d.nodes[w.to.0]).max.y);
-        route(a, b, below, self.zoom)
-    }
-
-    /// Where a wire ends, in canvas units: its input, or the value it
-    /// drives (ADR 0075), at the node's side when values are not drawn.
-    fn wire_end(&self, d: &Diagram, w: &crate::diagram::Wire) -> [f64; 2] {
-        let n = &d.nodes[w.to.0];
-        if !w.param {
-            return n.port_at(Causality::Input, w.to.1);
-        }
-        if self.zoom >= SHOW_VALUES && w.to.1 < n.value_rows() {
-            n.value_port(w.to.1)
-        } else {
-            [n.at[0], n.at[1] + crate::diagram::HEADER / 2.0]
-        }
+            .find(|&i| self.view.node_rect(origin, &d.nodes[i]).contains(p))
     }
 
     /// The name a wire into value `k` of node `i` ends at (ADR 0075),
@@ -1104,15 +490,16 @@ impl Canvas {
 
     /// The value row whose port is under `p` (ADR 0075): node and value.
     fn value_port_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, usize)> {
-        if self.zoom < SHOW_VALUES {
+        if self.view.zoom < SHOW_VALUES {
             return None;
         }
-        let reach = REACH * self.zoom.max(0.7);
+        let reach = REACH * self.view.zoom.max(0.7);
         d.nodes.iter().enumerate().rev().find_map(|(i, n)| {
             (n.is_block() && !n.is_observer())
                 .then(|| {
-                    (0..n.value_rows())
-                        .find(|&k| self.to_screen(origin, n.value_port(k)).distance(p) <= reach)
+                    (0..n.value_rows()).find(|&k| {
+                        self.view.to_screen(origin, n.value_port(k)).distance(p) <= reach
+                    })
                 })
                 .flatten()
                 .map(|k| (i, k))
@@ -1123,7 +510,8 @@ impl Canvas {
         d.wires
             .iter()
             .find(|w| {
-                self.wire_path(d, origin, w)
+                self.view
+                    .wire_path(d, origin, w)
                     .windows(2)
                     .any(|s| segment_distance(p, s[0], s[1]) < 5.0)
             })
@@ -1147,10 +535,10 @@ impl Canvas {
             let factor = pinch * (scroll / 200.0).exp();
             if (factor - 1.0).abs() > 1e-4 {
                 self.user_moved = true;
-                let before = self.to_canvas(origin, p);
-                self.zoom = (self.zoom * factor).clamp(0.2, 3.0);
-                let after = self.to_screen(origin, before);
-                self.pan += p - after;
+                let before = self.view.to_canvas(origin, p);
+                self.view.zoom = (self.view.zoom * factor).clamp(0.2, 3.0);
+                let after = self.view.to_screen(origin, before);
+                self.view.pan += p - after;
             }
         }
         if response.drag_started_by(egui::PointerButton::Primary) {
@@ -1211,7 +599,7 @@ impl Canvas {
                         .iter()
                         .enumerate()
                         .filter(|(_, n)| group.contains(&n.name))
-                        .map(|(k, n)| (k, p - self.to_screen(origin, n.at)))
+                        .map(|(k, n)| (k, p - self.view.to_screen(origin, n.at)))
                         .collect();
                 } else if ui.input(|i| i.modifiers.shift) {
                     self.band = Some(p);
@@ -1221,10 +609,10 @@ impl Canvas {
         if response.dragged_by(egui::PointerButton::Primary) {
             if let (false, Some(p)) = (self.moving.is_empty(), pointer) {
                 for &(i, grab) in &self.moving {
-                    d.nodes[i].at = self.to_canvas(origin, p - grab);
+                    d.nodes[i].at = self.view.to_canvas(origin, p - grab);
                 }
             } else if self.wiring.is_none() && self.band.is_none() {
-                self.pan += response.drag_delta();
+                self.view.pan += response.drag_delta();
                 self.user_moved = true;
             }
         }
@@ -1241,7 +629,7 @@ impl Canvas {
                 let inside: Vec<String> = d
                     .nodes
                     .iter()
-                    .filter(|n| n.is_block() && r.intersects(self.node_rect(origin, n)))
+                    .filter(|n| n.is_block() && r.intersects(self.view.node_rect(origin, n)))
                     .map(|n| n.name.clone())
                     .collect();
                 self.selected = match inside.len() {
@@ -1322,7 +710,7 @@ impl Canvas {
             d.nodes
                 .iter()
                 .rev()
-                .find(|n| self.expander(origin, n).is_some_and(|r| r.contains(p)))
+                .find(|n| self.view.expander(origin, n).is_some_and(|r| r.contains(p)))
                 .map(|n| open_key(&d.scope, &n.name))
         };
         if response.clicked() {
@@ -1379,13 +767,13 @@ impl Canvas {
                 let v = &d.nodes[i].values[k];
                 // An exposed value is the model's parameter: changed in the
                 // Inspector, not over the block's own (ADR 0074).
-                if self.zoom >= EDIT_VALUES && v.exposed.is_none() && v.driven.is_none() {
+                if self.view.zoom >= EDIT_VALUES && v.exposed.is_none() && v.driven.is_none() {
                     self.editing = Some((v.key.clone(), format_number(v.value)));
                 }
             } else if let Some((i, c)) = p.and_then(|p| self.unit_under(d, origin, p)) {
                 // A conversion's unit (ADR 0045).
                 let n = &d.nodes[i];
-                if let (Some(setting), true) = (unit_setting(n, c), self.zoom >= EDIT_VALUES) {
+                if let (Some(setting), true) = (unit_setting(n, c), self.view.zoom >= EDIT_VALUES) {
                     let now = n.settings.get(setting).cloned().unwrap_or_default();
                     self.editing = Some((unit_key(&n.name, setting), now));
                 }
@@ -1403,7 +791,7 @@ impl Canvas {
                     }
                     self.rename = n.name[n.name.find(':').map_or(0, |k| k + 1)..].to_string();
                 }
-                self.menu = Some((self.to_canvas(origin, p), on));
+                self.menu = Some((self.view.to_canvas(origin, p), on));
             }
         }
         let delete =
@@ -1710,7 +1098,7 @@ impl Canvas {
                         edits.push(Edit::AddProbe { at });
                         ui.close();
                     }
-                    if d.node(crate::observers::RECORDER).is_none()
+                    if d.node(simsandbox_session::observers::RECORDER).is_none()
                         && ui
                             .button("Add recorder")
                             .on_hover_text(
@@ -1792,7 +1180,7 @@ impl Canvas {
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_max_width(320.0);
-                    ui.label(crate::observers::feeds_model(&filter));
+                    ui.label(simsandbox_session::observers::feeds_model(&filter));
                     ui.horizontal(|ui| {
                         if ui.button("Promote and connect").clicked() {
                             edits.push(Edit::PromoteConnect {
@@ -1813,43 +1201,11 @@ impl Canvas {
     }
 
     /// The offer to promote a filter, if one is open: filter and input.
-    pub fn offered(&self) -> Option<(&str, &str)> {
+    #[cfg(test)]
+    fn offered(&self) -> Option<(&str, &str)> {
         self.offer
             .as_ref()
             .map(|(f, t, _)| (f.as_str(), t.as_str()))
-    }
-}
-
-/// The header colour of a study's node (ADR 0070): apart from blocks,
-/// used models and the data layer.
-const STUDY_HEADER: Color32 = Color32::from_rgb(150, 90, 200);
-
-/// A colour for a clock: the same clock, the same colour; a shared clock
-/// in the selection colour.
-fn clock_colour(clock: &str, visuals: &egui::Visuals) -> Color32 {
-    if clock.contains("shared") {
-        return visuals.selection.bg_fill;
-    }
-    let h = clock.bytes().fold(2166136261u32, |h, b| {
-        (h ^ u32::from(b)).wrapping_mul(16777619)
-    });
-    let hue = (h % 360) as f32 / 360.0;
-    egui::ecolor::Hsva::new(hue, 0.55, 0.85, 1.0).into()
-}
-
-/// What a node is called on the canvas.
-fn title(n: &Node) -> String {
-    match n.kind {
-        NodeKind::Recorder => "Recorder".into(),
-        NodeKind::Filter | NodeKind::Probe => {
-            n.name[n.name.find(':').map_or(0, |i| i + 1)..].to_string()
-        }
-        NodeKind::View => {
-            let k = n.name["view:".len()..].parse::<usize>().unwrap_or(0);
-            format!("View {}", k + 1)
-        }
-        // Inside an expanded use its own name; the outline gives the path.
-        _ => n.name.rsplit('/').next().unwrap_or(&n.name).to_string(),
     }
 }
 
@@ -1898,7 +1254,7 @@ fn observer_help(n: &Node) -> String {
     }
 }
 
-fn port_help(block: &str, p: &crate::diagram::Port, c: Causality) -> String {
+fn port_help(block: &str, p: &simsandbox_session::diagram::Port, c: Causality) -> String {
     let dir = match c {
         Causality::Input => "input",
         Causality::Output => "output",
@@ -1925,122 +1281,18 @@ fn port_help(block: &str, p: &crate::diagram::Port, c: Causality) -> String {
     format!("{block}.{} ({dir}): {shape}, {unit}", p.name)
 }
 
-/// A compact display of a value: up to 6 significant digits.
-/// The setting a conversion block's port shows its unit from (ADR 0045):
-/// `from` beside its input, `to` beside its output.
-fn unit_setting(n: &Node, c: Causality) -> Option<&'static str> {
-    if n.type_name != simsandbox_eq::convert::CONVERT || n.error.is_some() {
-        return None;
-    }
-    Some(match c {
-        Causality::Input => "from",
-        Causality::Output => "to",
-    })
-}
-
-/// How `controls.open` names a node: by name on the model level,
-/// `subsystem::block` inside one.
-pub fn open_key(scope: &Scope, name: &str) -> String {
-    match scope {
-        Scope::Model => name.to_string(),
-    }
-}
-
-/// The editing key of a conversion's unit.
-fn unit_key(block: &str, setting: &str) -> String {
-    format!("unit:{block}:{setting}")
-}
-
-pub fn format_number(v: f64) -> String {
-    if v == 0.0 {
-        "0".into()
-    } else if (1e-4..1e6).contains(&v.abs()) {
-        let digits = (5 - v.abs().log10().floor() as i32).clamp(0, 9) as usize;
-        let s = format!("{v:.digits$}");
-        if s.contains('.') {
-            s.trim_end_matches('0').trim_end_matches('.').to_string()
-        } else {
-            s
-        }
-    } else {
-        format!("{v:e}")
-    }
-}
-
-/// Shorten text to `max` characters with an ellipsis.
-fn fit(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
-        t.push('…');
-        t
-    }
-}
-
-/// The points of a wire from output `a` to input `b`: an S-curve when `b`
-/// is to the right of `a`; otherwise out to the right, down below
-/// `below` (the lower block's bottom), across and back in from the left.
-fn route(a: Pos2, b: Pos2, below: f32, zoom: f32) -> Vec<Pos2> {
-    let out = 18.0 * zoom;
-    if b.x >= a.x + 2.0 * out {
-        let dx = ((b.x - a.x) / 2.0).max(40.0 * zoom);
-        let curve = [a, a + Vec2::new(dx, 0.0), b - Vec2::new(dx, 0.0), b];
-        return egui::epaint::CubicBezierShape::from_points_stroke(
-            curve,
-            false,
-            Color32::TRANSPARENT,
-            Stroke::NONE,
-        )
-        .flatten(Some(0.5));
-    }
-    let y = below + out;
-    let corners = [
-        a,
-        Pos2::new(a.x + out, a.y),
-        Pos2::new(a.x + out, y),
-        Pos2::new(b.x - out, y),
-        Pos2::new(b.x - out, b.y),
-        b,
-    ];
-    rounded(&corners, 8.0 * zoom)
-}
-
-/// A polyline with its inner corners rounded by quadratic arcs of radius
-/// about `r`.
-fn rounded(p: &[Pos2], r: f32) -> Vec<Pos2> {
-    let mut out = vec![p[0]];
-    for k in 1..p.len() - 1 {
-        let (prev, at, next) = (p[k - 1], p[k], p[k + 1]);
-        let r = r.min(prev.distance(at) / 2.0).min(next.distance(at) / 2.0);
-        let a = at + (prev - at).normalized() * r;
-        let b = at + (next - at).normalized() * r;
-        for i in 0..=6 {
-            let t = i as f32 / 6.0;
-            let q = a.lerp(at, t).lerp(at.lerp(b, t), t);
-            out.push(q);
-        }
-    }
-    out.push(p[p.len() - 1]);
-    out
-}
-
 fn segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
     let ab = b - a;
     let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
     (a + ab * t).distance(p)
 }
 
-/// Port rows of a node, for tests and layout.
-pub fn rows(n: &Node) -> usize {
-    n.inputs.len().max(n.outputs.len()).max(1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::examples::{registry, EXAMPLES};
     use simsandbox_file::ModelFile;
+    use simsandbox_session::diagram_paint::rows;
+    use simsandbox_session::examples::{registry, EXAMPLES};
 
     /// Run the canvas for a frame with `events`, at 800 × 600.
     fn frame(
@@ -2069,7 +1321,7 @@ mod tests {
         };
         let mut out = (Vec::new(), Vec::new());
         let mut output = ctx.run_ui(input, |ui| {
-            out = canvas.show(ui, d, &r, true);
+            out = canvas.show(ui, d, &r);
         });
         output.textures_delta.clear();
         out
@@ -2119,7 +1371,7 @@ mod tests {
             Causality::Output => n.outputs.iter().position(|p| p.name == port),
         }
         .unwrap();
-        c.to_screen(Pos2::ZERO, n.port_at(causality, k))
+        c.view.to_screen(Pos2::ZERO, n.port_at(causality, k))
     }
 
     #[test]
@@ -2131,15 +1383,18 @@ mod tests {
         let (f, _) = ModelFile::from_json(e.text).unwrap();
         let mut d = Diagram::new(&f, &registry());
         let ctx = egui::Context::default();
-        let mut c = Canvas::all_open();
+        let mut c = Canvas {
+            open: d.nodes.iter().map(|n| n.name.clone()).collect(),
+            ..Canvas::default()
+        };
         frame(&ctx, &mut c, &mut d.clone(), vec![]);
         // Zoomed in enough to show values (ADR 0053).
-        c.zoom = c.zoom.max(SHOW_VALUES);
+        c.view.zoom = c.view.zoom.max(SHOW_VALUES);
         frame(&ctx, &mut c, &mut d.clone(), vec![]);
         let value = |c: &Canvas, d: &Diagram, node: &str, name: &str| {
             let n = &d.nodes[d.node(node).unwrap()];
             let k = n.values.iter().position(|v| v.name == name).unwrap();
-            c.to_screen(Pos2::ZERO, n.value_port(k))
+            c.view.to_screen(Pos2::ZERO, n.value_port(k))
         };
         // push.F onto held's value F: a wire that drives it (ADR 0075).
         let a = screen(&c, &d, "push", Causality::Output, "F");
@@ -2169,13 +1424,15 @@ mod tests {
         let (mut d, mut c, ctx) = cruise();
         let n = d.node("car").unwrap();
         let start = d.nodes[n].at;
-        let grab = c.to_screen(Pos2::ZERO, [start[0] + 60.0, start[1] + 10.0]);
+        let grab = c
+            .view
+            .to_screen(Pos2::ZERO, [start[0] + 60.0, start[1] + 10.0]);
         let edits = drag(&ctx, &mut c, &mut d, grab, grab + Vec2::new(100.0, 50.0));
         let [Edit::Move { block, at }] = &edits[..] else {
             panic!("{edits:?}");
         };
         assert_eq!(block, "car");
-        let dx = (at[0] - start[0]) * c.zoom as f64;
+        let dx = (at[0] - start[0]) * c.view.zoom as f64;
         assert!((dx - 100.0).abs() < 1.0, "{dx}");
         assert_eq!(d.nodes[n].at, *at);
     }
@@ -2229,7 +1486,7 @@ mod tests {
                 Vec::new(),
             ));
         let mut d = Diagram::new(&f, &registry());
-        d.observe(&f, &crate::examples::view_registry());
+        d.observe(&f, &simsandbox_session::examples::view_registry());
         let ctx = egui::Context::default();
         let mut c = Canvas::default();
         frame(&ctx, &mut c, &mut d, vec![]);
@@ -2260,7 +1517,7 @@ mod tests {
             .unwrap()
             .clone();
         c.selected = Some(Selection::Wire(w.key()));
-        let p = c.to_screen(Pos2::ZERO, [0.0, 0.0]);
+        let p = c.view.to_screen(Pos2::ZERO, [0.0, 0.0]);
         let (edits, _) = frame(
             &ctx,
             &mut c,
@@ -2289,11 +1546,11 @@ mod tests {
         let (mut d, mut c, ctx) = cruise();
         let n = d.node("car").unwrap();
         // Fitted at this size the zoom is high enough to edit; make sure.
-        c.zoom = c.zoom.max(1.0);
+        c.view.zoom = c.view.zoom.max(1.0);
         frame(&ctx, &mut c, &mut d, vec![]);
         // Closed: no values until its triangle is clicked.
         assert_eq!(d.nodes[n].value_rows(), 0);
-        let e = c.expander(Pos2::ZERO, &d.nodes[n]).unwrap().center();
+        let e = c.view.expander(Pos2::ZERO, &d.nodes[n]).unwrap().center();
         let mut asked = Vec::new();
         for events in [
             vec![egui::Event::PointerMoved(e)],
@@ -2311,7 +1568,7 @@ mod tests {
         // (A new context, so that click does not count towards a double.)
         let ctx = egui::Context::default();
         let at = d.nodes[n].value_at(0);
-        let p = c.to_screen(Pos2::ZERO, [at[0] + 100.0, at[1] + 8.0]);
+        let p = c.view.to_screen(Pos2::ZERO, [at[0] + 100.0, at[1] + 8.0]);
         let click = |pressed| press(p, pressed);
         for events in [
             vec![egui::Event::PointerMoved(p)],
@@ -2356,7 +1613,7 @@ mod tests {
             }]
         );
         // Zoomed out, values are not shown or edited.
-        c.zoom = 0.4;
+        c.view.zoom = 0.4;
         assert!(c.value_under(&d, Pos2::ZERO, p).is_none());
     }
 
@@ -2371,11 +1628,12 @@ mod tests {
         frame(&ctx, &mut c, &mut d, vec![]);
         let n = d.node("b_cm").unwrap();
         // Zoomed in, with the conversion in view.
-        c.zoom = 1.0;
+        c.view.zoom = 1.0;
         let at = d.nodes[n].at;
-        c.pan = Vec2::new(100.0 - at[0] as f32, 100.0 - at[1] as f32);
+        c.view.pan = Vec2::new(100.0 - at[0] as f32, 100.0 - at[1] as f32);
         frame(&ctx, &mut c, &mut d, vec![]);
         let p = c
+            .view
             .unit_rect(Pos2::ZERO, &d.nodes[n], Causality::Output)
             .unwrap()
             .center();
@@ -2415,7 +1673,9 @@ mod tests {
     fn clicking_selects_and_delete_removes() {
         let (mut d, mut c, ctx) = cruise();
         let n = &d.nodes[d.node("cruise").unwrap()];
-        let p = c.to_screen(Pos2::ZERO, [n.at[0] + 50.0, n.at[1] + 5.0]);
+        let p = c
+            .view
+            .to_screen(Pos2::ZERO, [n.at[0] + 50.0, n.at[1] + 5.0]);
         frame(&ctx, &mut c, &mut d, vec![egui::Event::PointerMoved(p)]);
         frame(&ctx, &mut c, &mut d, vec![press(p, true), press(p, false)]);
         assert_eq!(c.selected, Some(Selection::Block("cruise".into())));
@@ -2439,17 +1699,22 @@ mod tests {
     fn zooming_keeps_the_point_under_the_pointer() {
         let (mut d, mut c, ctx) = cruise();
         let p = Pos2::new(300.0, 200.0);
-        let before = c.to_canvas(Pos2::ZERO, p);
+        let before = c.view.to_canvas(Pos2::ZERO, p);
         frame(&ctx, &mut c, &mut d, vec![egui::Event::PointerMoved(p)]);
-        let zoom = c.zoom;
+        let zoom = c.view.zoom;
         frame(
             &ctx,
             &mut c,
             &mut d,
             vec![egui::Event::Zoom(1.5), egui::Event::PointerMoved(p)],
         );
-        assert!((c.zoom / zoom - 1.5).abs() < 1e-3, "{} {}", c.zoom, zoom);
-        let after = c.to_canvas(Pos2::ZERO, p);
+        assert!(
+            (c.view.zoom / zoom - 1.5).abs() < 1e-3,
+            "{} {}",
+            c.view.zoom,
+            zoom
+        );
+        let after = c.view.to_canvas(Pos2::ZERO, p);
         assert!((before[0] - after[0]).abs() < 0.5 && (before[1] - after[1]).abs() < 0.5);
         assert_eq!(rows(&d.nodes[0]), 1);
     }
@@ -2475,14 +1740,16 @@ mod tests {
         // Dragging one moves both.
         let before: Vec<[f64; 2]> = d.nodes.iter().map(|n| n.at).collect();
         let n = &d.nodes[0];
-        let grab = c.to_screen(Pos2::ZERO, [n.at[0] + 60.0, n.at[1] + 10.0]);
+        let grab = c
+            .view
+            .to_screen(Pos2::ZERO, [n.at[0] + 60.0, n.at[1] + 10.0]);
         let edits = drag(&ctx, &mut c, &mut d, grab, grab + Vec2::new(30.0, 0.0));
         assert_eq!(edits.len(), 2, "{edits:?}");
         for (k, n) in d.nodes.iter().enumerate() {
             assert!(n.at[0] > before[k][0]);
         }
         // Delete removes both.
-        let p = c.to_screen(
+        let p = c.view.to_screen(
             Pos2::ZERO,
             [d.nodes[0].at[0] + 60.0, d.nodes[0].at[1] + 10.0],
         );
@@ -2504,7 +1771,9 @@ mod tests {
         let (mut d, mut c, ctx) = cruise();
         for name in ["car", "cruise"] {
             let n = &d.nodes[d.node(name).unwrap()];
-            let p = c.to_screen(Pos2::ZERO, [n.at[0] + 50.0, n.at[1] + 5.0]);
+            let p = c
+                .view
+                .to_screen(Pos2::ZERO, [n.at[0] + 50.0, n.at[1] + 5.0]);
             frame(&ctx, &mut c, &mut d, vec![egui::Event::PointerMoved(p)]);
             let pr = |pressed| egui::Event::PointerButton {
                 pos: p,

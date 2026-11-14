@@ -10,11 +10,11 @@
 //! (Ctrl+Z, Ctrl+Shift+Z) step through the canvas's edits, keeping
 //! parameter values changed since.
 
+use crate::canvas::{type_menu, Canvas, Request, Selection};
 use crate::live::Model;
 use eframe::egui;
 use simsandbox_core::registry::Registry;
 use simsandbox_file::{FilterEntry, ModelFile, ProbeEntry, ViewEntry};
-use simsandbox_session::canvas::{type_menu, Canvas, Request, Selection};
 use simsandbox_session::diagram::{apply_in, Diagram, Edit, NodeKind, Scope};
 use simsandbox_session::edit_use::{self, Edited, How, Target};
 use simsandbox_session::undo::{canvas_state, change, Change};
@@ -280,7 +280,7 @@ impl DiagramTab {
             .collect();
         let (_, d) = self.inside_cache.as_mut().expect("built above");
         d.live_values(&rows);
-        let (mut edits, requests) = self.canvas.show(ui, d, registry, true);
+        let (mut edits, requests) = self.canvas.show(ui, d, registry);
         let mut opened = None;
         // Nothing of it runs (the inside of a study, ADR 0070): its values
         // are the model's, changed in the file.
@@ -843,7 +843,7 @@ impl DiagramTab {
             });
         }
         let d = self.cache.as_mut().expect("built above");
-        let (made, requests) = self.canvas.show(ui, d, registry, true);
+        let (made, requests) = self.canvas.show(ui, d, registry);
         edits.extend(made);
         let d = self.cache.as_ref().expect("built above");
         // Moving a model to a file or back, after the requests (ADR 0068).

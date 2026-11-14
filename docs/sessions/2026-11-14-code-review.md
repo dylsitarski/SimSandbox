@@ -11,6 +11,7 @@
 - Reproduced with the CLI: a spring formula block on a mass is not fused and runs 5% off under a `Quantitative` label (W1); 200 000 nested parentheses abort `check` with a stack overflow (W2); unit exponents wrap at ±128 (W3); `t` drifts by accumulation.
 
 - Second priority begun: the typed-equations reference, held to the code by a test and given by `describe` (W11); run files and render shared by the three interfaces (W10; the Python tests were built and run for it: 30 pass); STATUS's history archived, two guides brought up to date. 610 workspace tests pass.
+- The canvas's interaction moved to the app (W9), headless images the same bytes.
 
 ## Decided
 
@@ -23,7 +24,7 @@
 
 ## Left open
 
-- The review's W6, W7, W8, W9 and the kernel tidy; its third and fourth priorities; ADRs 0090, 0092 and 0093 to build; tolerances per state for implicit methods (ADR 0097 point 6).
+- The review's W6, W7 (in hand), W8 and the kernel tidy; its third and fourth priorities; ADRs 0090, 0092 and 0093 to build; tolerances per state for implicit methods (ADR 0097 point 6).
 
 ## Notes for the next session
 

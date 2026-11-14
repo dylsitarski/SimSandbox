@@ -180,14 +180,10 @@ pub fn render_diagram(
         d.expand(file, registry, &expanded);
     }
     // The nodes the file opens, or all.
-    let mut canvas = if o.values {
-        crate::canvas::Canvas::all_open()
-    } else {
-        crate::canvas::Canvas::opening(&file.controls.open)
-    };
-    Ok(paint(o, |ui| {
-        canvas.show(ui, &mut d, registry, false);
-    }))
+    crate::diagram_paint::open_nodes(&mut d, |key| {
+        o.values || file.controls.open.iter().any(|open| open == key)
+    });
+    Ok(paint(o, |ui| crate::diagram_paint::show(ui, &d)))
 }
 
 fn check(o: &RenderOptions) -> Result<(), String> {

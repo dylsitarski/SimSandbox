@@ -1328,14 +1328,14 @@ fn apply_in_level(
     // Which nodes are open follows renames and deletions (ADR 0055).
     let open = |file: &mut ModelFile| match edit {
         Edit::Delete { block } => {
-            let key = crate::canvas::open_key(scope, block);
+            let key = crate::diagram_paint::open_key(scope, block);
             file.controls.open.retain(|k| *k != key);
         }
         Edit::Rename { from, to } => {
-            let key = crate::canvas::open_key(scope, from);
+            let key = crate::diagram_paint::open_key(scope, from);
             for k in &mut file.controls.open {
                 if *k == key {
-                    *k = crate::canvas::open_key(scope, to);
+                    *k = crate::diagram_paint::open_key(scope, to);
                 }
             }
         }
@@ -1464,7 +1464,7 @@ fn edit_level(
             b.params.insert(param.clone(), ParamValue::Number(*value));
             Ok(format!(
                 "{block}.{param} is now {}",
-                crate::canvas::format_number(*value)
+                crate::diagram_paint::format_number(*value)
             ))
         }
         Edit::SetFormula {
