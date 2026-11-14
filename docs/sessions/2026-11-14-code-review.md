@@ -10,11 +10,13 @@
 
 ## Decided
 
-- Nothing. The report's work items wait for the owner.
+- Owner: the Phase 2 gate before further typed-equation features (Q57).
+- [ADR 0090](../decisions/0090-one-engine-for-nested-models.md), accepted: the merged simulator is the one engine for nested models (the owner left the choice to the agent).
+- Proposed for the owner: [ADR 0091](../decisions/0091-equations-first-hosting-for-existing-codes.md), [ADR 0092](../decisions/0092-what-a-model-file-may-read.md).
 
 ## Left open
 
-- Q56–Q59 in [open questions](../open-questions.md); work items W1–W13 in the report, not yet placed in STATUS's Next up.
+- Q56, Q59 and Q60 (views from primitives before the gate?) in [open questions](../open-questions.md); work items W1–W13 in the report, not yet placed in STATUS's Next up.
 
 ## Notes for the next session
 

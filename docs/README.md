@@ -160,6 +160,9 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0087-implicit-lu-on-the-matrix-pattern.md](decisions/0087-implicit-lu-on-the-matrix-pattern.md) | Decision record | Implicit methods' own sparse LU on the matrix's pattern, faer's as fallback |
 | [decisions/0088-activation.md](decisions/0088-activation.md) | Decision record | Activation of used models and studies: `activate` modes and `restart` |
 | [decisions/0089-native-code-for-typed-equations.md](decisions/0089-native-code-for-typed-equations.md) | Decision record | Native code for typed equations: generated Rust compiled where a toolchain exists |
+| [decisions/0090-one-engine-for-nested-models.md](decisions/0090-one-engine-for-nested-models.md) | Decision record | One engine for nested models: the merged simulator |
+| [decisions/0091-equations-first-hosting-for-existing-codes.md](decisions/0091-equations-first-hosting-for-existing-codes.md) | Decision record | Proposed: typed equations first; hosting for existing codes |
+| [decisions/0092-what-a-model-file-may-read.md](decisions/0092-what-a-model-file-may-read.md) | Decision record | Proposed: reads confined to a project folder and granted folders |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 

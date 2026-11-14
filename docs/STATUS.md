@@ -235,6 +235,8 @@ _Last updated: 2026-11-14_
 
 ## Next up
 
+Owner, 2026-11-14, after the [review](research/2026-11-14-code-review.md): the Phase 2 gate (item 3) comes before any further typed-equation feature; whether views from primitives come before it is [Q60](open-questions.md). Decided: one engine for nested models ([ADR 0090](decisions/0090-one-engine-for-nested-models.md), to build). Proposed, for the owner: [ADR 0091](decisions/0091-equations-first-hosting-for-existing-codes.md) (equations first), [ADR 0092](decisions/0092-what-a-model-file-may-read.md) (what a model may read). The review's small trust fixes (W1–W3, W12, the committed wheels) fit before item 3.
+
 Items 1 and 2 have only parts that wait for a model to need them, so item 3 is the next to start (2026-11-13). In priority order (the owner, 2026-11-08: ADR 0079 stage 3 first, which finishes ADR 0078; the Phase 2 gate's items listed so the path to Phase 3 shows; ADR 0079 stages 4–5 after the gate work unless a model needs them sooner). Each item should end with tests and updated docs.
 
 1. **Shapes as lists of axes** ([ADR 0081](decisions/0081-shapes-are-lists-of-axes.md), accepted 2026-11-07): stages 1–2 built 2026-11-08, stage 4's rows ports with ADR 0079 stage 1b 2026-11-08, stage 3 (views by axis roles: pick, reduce, facet) with ADR 0086 2026-11-12. Left: populations move to tables with item 6's stage 5.
