@@ -33,6 +33,7 @@ _Last updated: 2026-11-14_
 
 ## Done recently
 
+- 2026-11-14: whole-project [code review](research/2026-11-14-code-review.md): findings and work items W1–W13, none acted on yet. First to weigh: W1, a stateless block in a loop with one block with states is not fused and runs a step late under a `Quantitative` label (a spring formula on a mass: 5% off at t = 5, reproduced); questions Q56–Q59 for the owner.
 - 2026-11-14: builds a quarter of the size: debug info as line tables for our crates and none for dependencies (fresh test build 20 → 5.7 GB, 350 → 220 s; a rebuild after an edit 31 → 14 s; the same for the Python package, 2.7 → 1.5 GB); the comparison script builds both sides in one folder ([performance](design/performance.md#build-size-2026-11-14)).
 - 2026-11-14: `run --format json` writes results as it goes instead of building the whole JSON document first: `resonance-map` run to t = 30 (5.4 GB of JSON) peaks at 2.2 GB of memory, as CSV does, where it was killed past 13.6 GB; the same bytes for every example.
 - 2026-11-13: `check` reports how each block made from equations runs (`code`: interpreted, compiled, native, or why not native).

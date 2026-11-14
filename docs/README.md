@@ -179,8 +179,10 @@ This page is the map of every document in the repository and the rules for keepi
 | Document | Type | What it covers |
 | --- | --- | --- |
 | [research/market-landscape.md](research/market-landscape.md) | Research | Existing tools and the gap SimSandbox targets |
+| [research/2026-11-14-code-review.md](research/2026-11-14-code-review.md) | Research | Whole-project review of 2026-11-14: vision, correctness, structure, performance, usability; work items W1–W13 |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
+| [sessions/2026-11-14-code-review.md](sessions/2026-11-14-code-review.md) | Session note | Whole-project code review; report in research/ |
 | [sessions/2026-10-16-kernel-prep-and-adrs.md](sessions/2026-10-16-kernel-prep-and-adrs.md) | Session note | Kernel prep for files and UI; ADRs 0007–0013; model file format; desktop app shell; parameter panel; phase and 3D views; saved views; ADR 0015 |
 | [sessions/2026-10-15-project-inception.md](sessions/2026-10-15-project-inception.md) | Session note | Market research through the first commit |
 

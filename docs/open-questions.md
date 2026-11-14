@@ -1,6 +1,6 @@
 # Open questions
 
-_Last updated: 2026-11-13_
+_Last updated: 2026-11-14_
 
 Decisions not yet made. When one is resolved, write an ADR, link it in the **Resolved** table and remove the row from **Open**.
 
@@ -8,6 +8,10 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Options | Needed by | Notes |
 | --- | --- | --- | --- | --- |
+| Q59 | Whether a model file may read paths outside its own folder (`file` uses, data files accept absolute and `../` paths) | (a) Yes (as now); (b) refused unless an option allows it; (c) allowed in the app, confined headless | Before models are shared between people | Raised by the [review](research/2026-11-14-code-review.md) |
+| Q58 | Which engine runs models that use models: the headless parts runner or the merged simulator with clocks, which the app, studies and render use | (a) Keep both, compared over every composition example; (b) merged only; (c) parts only | Before either gains features | [review](research/2026-11-14-code-review.md) W7 |
+| Q57 | Whether the Phase 2 gate (rigid bodies, then the plugin interface) starts before any further typed-equation feature | (a) Gate first; (b) structural work items first (W6–W10); (c) as models need | Now | [review](research/2026-11-14-code-review.md); ADR 0057 sets the order |
+| Q56 | Whether SimSandbox is for now an equation sandbox that later hosts other solvers, or a host first: the vision says host, the code is a sandbox (no solver wrapped, no plugin interface) | (a) State the sandbox-first order in the vision and roadmap; (b) turn to hosting now; (c) leave as is | Before the next roadmap revision | [review](research/2026-11-14-code-review.md) section 1 |
 | Q52 | How a study keeps each run's series, now that experiments are studies (ADR 0071) and `keep: "series"` is refused | (a) A 2D output per signal, runs × samples, on a common time grid; (b) a probe inside the studied model writing a file per run; (c) not at all: reduce, or run the model alone at that point | When someone needs whole runs of a study | Experiments kept them headless (`Results.series`) until 2026-11-04; nothing used them besides tests |
 | Q43 | Re-reading a data file that changes while its model is open (`input.file`, ADR 0063) | (a) Read when the model is built only (as built 2026-10-30): reopen or edit to re-read; (b) re-read on Restart; (c) watch the file and offer to reload | When the owner reads files that change, e.g. another model's streamed probe | Step 5 (several models in one session) links models by probes directly, which may make this rare |
 | Q42 | Whether probe CSV files write units in their header (`car.v [m/s]`) | (a) No (as now): reading one back needs `unit.COLUMN` settings; (b) yes: `input.file` reads them with no settings, but pandas column names carry the unit; (c) a sidecar file with units and field shapes | Before probe files are read back often | `input.file` already reads `name [unit]` headers (ADR 0048: units from the source when it has any). The session would need each recorded signal's unit |
