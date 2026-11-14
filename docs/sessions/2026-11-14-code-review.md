@@ -14,6 +14,7 @@
 - The canvas's interaction moved to the app (W9), headless images the same bytes.
 - One engine for nested models (W7, ADR 0090 points 1 and 2): headless runs on the merged simulator, both engines compared over every fixture. 613 workspace tests pass.
 - The old runner deleted (ADR 0090 point 3); Python's run files through the shared code (the owner: the change of bytes is once). 610 workspace tests and 31 Python tests pass.
+- Loading a model that uses models: three builds of each used model to two, each build a third of the work (state names).
 
 ## Decided
 
@@ -30,6 +31,7 @@
 
 ## Notes for the next session
 
+- `valgrind --tool=callgrind` on a release example is the profiler that works here (no `perf`); wall times of fresh processes loading large grids are dominated by first-touch memory and mislead.
 - Work given to helpers in working copies of their own (`.claude/worktrees/`, ignored) starts from the repository's first branch, not the current one: tell them the commit to move to. Each copy builds its own `target` (6–7 GB); two filled the disk until the finished ones were removed.
 - Robertson's problem showed two faults the review had not: the step's Jacobian at a start with no intermediate species sends Newton's method off to infinity (hence fresh Jacobians at every iteration as the fallback, not one retry), and the structure probed at the start misses every product with a factor of 0.
 - A perturbation relative to each state alone is wrong, though it looks more accurate: a state near 0 beside one near 1 changes the rates by less than their rounding, and the Jacobian's entry is noise. Hence a floor shared by the system.

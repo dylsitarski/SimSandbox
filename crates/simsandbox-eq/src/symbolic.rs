@@ -80,6 +80,32 @@ impl Kind {
     }
 }
 
+/// `name[k]`: the name of one element of an array (a state's cell, a
+/// parameter's). Written out by hand, not with `format!`: a grid of 512 ×
+/// 512 cells names half a million states each time its block is built,
+/// which was over half of what building it cost.
+fn element_name(name: &str, k: usize) -> String {
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    let mut rest = k;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let mut s = String::with_capacity(name.len() + 2 + digits.len() - at);
+    s.push_str(name);
+    s.push('[');
+    for &d in &digits[at..] {
+        s.push(d as char);
+    }
+    s.push(']');
+    s
+}
+
 /// Method name of map blocks.
 pub const ITERATE: &str = "iterate";
 /// Method name of formula blocks.
@@ -2738,7 +2764,7 @@ impl EquationSet {
                         }
                     };
                     for k in 0..cells {
-                        let e = format!("{n}[{k}]");
+                        let e = element_name(&n, k);
                         if let Some(u) = units.get(&n).copied() {
                             units.insert(e.clone(), u);
                         }
@@ -4322,7 +4348,7 @@ impl EquationSet {
         // parameter is all its elements.
         let param_names = |n: &str| -> Vec<String> {
             match array_params.iter().find(|(a, _)| a == n) {
-                Some((_, cells)) => (0..*cells).map(|k| format!("{n}[{k}]")).collect(),
+                Some((_, cells)) => (0..*cells).map(|k| element_name(n, k)).collect(),
                 None if param_specs.iter().any(|p| p.name == n) => vec![n.to_string()],
                 None => Vec::new(),
             }
@@ -4547,7 +4573,7 @@ impl EquationSet {
             .flat_map(|s| {
                 if !axes_of_name(s).is_empty() {
                     (0..len_of(s))
-                        .map(|k| format!("{s}[{k}]"))
+                        .map(|k| element_name(s, k))
                         .collect::<Vec<_>>()
                 } else {
                     vec![s.clone()]
@@ -6708,5 +6734,13 @@ mod tests {
             "c = at(u, 1, 3)"
         ])
         .contains("along y is a whole number from 0 to 2"));
+    }
+
+    #[test]
+    fn element_names_are_as_format_writes_them() {
+        for k in [0, 1, 9, 10, 99, 100, 262_143, 1_000_000, usize::MAX] {
+            assert_eq!(element_name("T", k), format!("T[{k}]"));
+        }
+        assert_eq!(element_name("θ_1", 42), "θ_1[42]");
     }
 }

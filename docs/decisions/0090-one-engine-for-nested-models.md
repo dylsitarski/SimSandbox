@@ -43,6 +43,7 @@ A. The merged simulator is the one engine.
 - Every example gives the same bytes headless (two use models on other clocks; neither has such a loop).
 - **Speed**, best of three: models linked one way are slower as expected (a chain of five 0.045 → 0.114 s, one feeding two 0.033 → 0.068 s); models feeding each other and the examples within 0.01 s of before. Point 4 (run-ahead in the merged engine) waits for a model that needs it.
 - **Point 3** (owner, 2026-11-14: "Delete the old runner"): the runner in parts is deleted (1 043 lines, and the comparison with it). Its tests now state what the one engine does, the three cases above among them (`loops_of_links_are_solved_within_the_instant`, `a_model_on_new_data_answers_in_the_same_instant`). Every example the same bytes after as before.
-- Left: a composition is still loaded twice (`load_merged_with` calls `load_composition`); point 4.
+- **Loading** (2026-11-14, the owner: "fix the twice-loaded composition"): each used model's blocks were built three times when a model using models was loaded: once as its own domain, and twice more for the merged model, which built every use alone again to check it as a subsystem before building it in place. The check is skipped for the merged form, whose parts were just built and checked: two builds, and each cheaper (below).
+- Left: the two builds that remain (the domain, which the loader reads to plan clocks, links and outputs, and the merged model, which runs). One build would mean moving built blocks from one model into another under new names, which blocks cannot do; point 4.
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none.

@@ -809,8 +809,12 @@ pub fn load_merged_with(
         merged.run.dt = shortest;
     }
     // Activated parts (ADR 0088): fusion stops at their edges.
+    // Every use was built and checked on its own as a domain above, so the
+    // subsystems they are put in place as are not built alone again.
     let mut loaded = with_activated(&l.activations, "", || {
-        with_subsystems(|| load_in(&merged.to_json(), registry, folder.as_deref()))
+        with_subsystems(|| {
+            already_checked(|| load_in(&merged.to_json(), registry, folder.as_deref()))
+        })
     })?;
     register_activations(&mut loaded, &l.activations, "")?;
     let mut clocks: Vec<simsandbox_core::graph::Clock> = c
@@ -909,6 +913,27 @@ fn with_subsystems<R>(f: impl FnOnce() -> R) -> R {
 
 pub(crate) fn subsystems_allowed() -> bool {
     SUBSYSTEMS.with(std::cell::Cell::get)
+}
+
+thread_local! {
+    /// Whether the file being loaded on this thread holds only what was
+    /// built and checked already: the merged form of a model that uses
+    /// models, each of whose parts [`load_composition`] built on its own.
+    static CHECKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` loading a file whose subsystems were each built and checked
+/// before: they are not built alone a second time (building a model of
+/// large grids is most of what loading it costs).
+fn already_checked<R>(f: impl FnOnce() -> R) -> R {
+    let before = CHECKED.with(|s| s.replace(true));
+    let r = f();
+    CHECKED.with(|s| s.set(before));
+    r
+}
+
+pub(crate) fn subsystems_checked() -> bool {
+    CHECKED.with(std::cell::Cell::get)
 }
 
 thread_local! {

@@ -305,3 +305,11 @@ The checks had become slow: `cargo test --workspace` ran for 77 s after a 187 s 
 
 Optimising dependencies (faer, the UI crates) costs most of the build time and buys nothing in the tests, whose time is in typed equations, integrators and meshes. The chosen profile halves an edit-and-test cycle (109 s → 58 s) and adds 37 s to a run from nothing (CI, which keeps no cache). All 572 tests passed in every configuration; Rust keeps IEEE floating point at every optimisation level, so results are the same bits.
 
+## Loading models of large grids (2026-11-14)
+
+Found while removing a repeated build from the loading of models that use models ([ADR 0090](../decisions/0090-one-engine-for-nested-models.md)), by callgrind on a 512 × 512 Gray–Scott block (2 states, 524 288 state values):
+
+- **Naming the states was over half of building the block**: `T[0]`, `T[1]`, … for every cell with `format!`, 1.1 of 1.7 thousand million instructions. Written out by hand (`element_name`) the build is 0.57 thousand million, a third.
+- **A model using models built each used model three times**; now twice (ADR 0090, as built).
+- Together, loading a model that uses four such models: 11.5 → 5.1 thousand million instructions; `simsandbox run` of it for one step 1.71 → 1.12 s. Results the same bytes.
+- Still large in a build, not yet looked at: the half million names themselves (0.26), `ArrIns::touches` and `gather_places` (0.23), `Program::reads` (0.15), compiling (0.19, the first time).

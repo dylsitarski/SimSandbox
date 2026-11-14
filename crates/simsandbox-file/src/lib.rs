@@ -1985,8 +1985,12 @@ fn load_in_folder(
         connection_origins,
         checks,
     } = file.flatten()?;
-    for c in &checks {
-        c.verify(registry, folder)?;
+    // Each subsystem built alone, used or not; not again for a file whose
+    // parts were built and checked before it was put together.
+    if !compose::subsystems_checked() {
+        for c in &checks {
+            c.verify(registry, folder)?;
+        }
     }
     // Errors name the place in the file as written.
     let origin = |e: FileError| origin(e, &block_origins, &connection_origins);
