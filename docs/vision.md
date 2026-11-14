@@ -8,7 +8,7 @@ It is a small, solver-agnostic kernel that only knows how to connect, schedule a
 
 New models are built first from typed equations, the language SimSandbox owns; codes and models that already exist join the same graph as wrapped blocks, without being rewritten ([ADR 0091](decisions/0091-equations-first-hosting-for-existing-codes.md)).
 
-**First audience:** hobbyists who want to build and play with simulations on their own machine ([ADR 0009](decisions/0009-hobbyists-first.md)). Students and researchers follow in later phases.
+**Audience:** hobbyists who want to build and play with simulations on their own machine, researchers who need results they can defend, and engineers where the same capabilities serve them; none comes first ([ADR 0094](decisions/0094-the-full-audience.md)).
 
 ## The three pillars
 

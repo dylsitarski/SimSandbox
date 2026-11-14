@@ -14,10 +14,11 @@
 - [ADR 0090](../decisions/0090-one-engine-for-nested-models.md), accepted: the merged simulator is the one engine for nested models (the owner left the choice to the agent).
 - Owner accepted [ADR 0091](../decisions/0091-equations-first-hosting-for-existing-codes.md) (equations first; vision, roadmap and risks revised) and [ADR 0092](../decisions/0092-what-a-model-file-may-read.md) (what a model may read).
 - Owner: views from primitives are designed first, and only what the cart-pole needs is built before the gate. Drafted: [ADR 0093](../decisions/0093-scenes-from-primitive-layers.md), Proposed.
+- Owner: the full audience, none first ([ADR 0094](../decisions/0094-the-full-audience.md), superseding ADR 0009).
 
 ## Left open
 
-- ADR 0093 to accept or change; Q61 (the first audience) in [open questions](../open-questions.md); work items W1–W13 in the report, not yet placed in STATUS's Next up.
+- ADR 0093 to accept or change (frames added at the owner's question); see also [open questions](../open-questions.md); work items W1–W13 in the report, not yet placed in STATUS's Next up.
 
 ## Notes for the next session
 

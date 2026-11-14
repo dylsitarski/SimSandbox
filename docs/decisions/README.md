@@ -14,7 +14,7 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0006](0006-apache-2-license.md) | Apache-2.0 license | Accepted | 2026-10-15 |
 | [0007](0007-json-model-files.md) | JSON model files with a block-type registry | Accepted | 2026-10-16 |
 | [0008](0008-native-egui-ui.md) | All-native desktop UI with egui and wgpu | Accepted | 2026-10-16 |
-| [0009](0009-hobbyists-first.md) | Hobbyists are the first audience | Accepted | 2026-10-16 |
+| [0009](0009-hobbyists-first.md) | Hobbyists are the first audience | Superseded by 0094 | 2026-10-16 |
 | [0010](0010-live-loop-pacing.md) | Pace the live loop by wall-clock time | Superseded by 0035 | 2026-10-16 |
 | [0011](0011-parameter-entry.md) | Typed parameter entry; ranges are suggestions | Accepted | 2026-10-16 |
 | [0012](0012-controls-in-model-files.md) | Exploration controls are saved in model files | Accepted | 2026-10-16 |
@@ -92,7 +92,8 @@ Architecture decision records (ADRs) capture one significant decision each: the 
 | [0090](0090-one-engine-for-nested-models.md) | One engine for models that use models: the merged simulator; headless runs move to it, the parts runner is compared over every example, then deleted | Accepted | 2026-11-14 |
 | [0091](0091-equations-first-hosting-for-existing-codes.md) | Typed equations are the primary way to build models; hosting (plugins, FMI, wrapped solvers) is for codes that exist | Accepted | 2026-11-14 |
 | [0092](0092-what-a-model-file-may-read.md) | A model reads inside its project folder (a marker file, else its own folder) and folders the user grants outside the file | Accepted | 2026-11-14 |
-| [0093](0093-scenes-from-primitive-layers.md) | Views from primitive parts: `plot.scene`, layers of primitives whose attributes are bound to constants, signals or a table's rows; grabbing sends the pointer and the picked row as recorded input; 2D and four primitives before the Phase 2 gate | Proposed | 2026-11-14 |
+| [0093](0093-scenes-from-primitive-layers.md) | Views from primitive parts: `plot.scene`, layers of primitives whose attributes are bound to constants, signals or a table's rows; named frames (poses from signals, chained) for relative coordinates and viewing from a moving frame; grabbing sends the pointer and the picked row as recorded input; 2D and four primitives before the Phase 2 gate | Proposed | 2026-11-14 |
+| [0094](0094-the-full-audience.md) | The audience is hobbyists, researchers and engineers together; none comes first | Accepted | 2026-11-14 |
 | [0087](0087-implicit-lu-on-the-matrix-pattern.md) | Implicit methods factorise with our own LU on the pattern of A + Aᵀ, pivots on the diagonal, nested dissection or minimum degree, falling back to faer's LU with partial pivoting when a pivot is too small | Accepted | 2026-11-13 |
 | [0066](0066-models-nest-as-blocks.md) | Models nest: a model's blocks may be uses of model files, on their own clocks (default) or their parent's; links through probes at any depth; 128-bit exact ticks; rewind per clock with recorded link values | Accepted | 2026-11-02 |
 | [0065](0065-several-models-with-own-clocks.md) | Several models with their own clocks: compositions reference model files as named uses; links only through probes into input blocks; clocks ordered in exact ticks; editing a used model asks: edit the original, copy locally or save as new | Superseded by 0066 | 2026-11-02 |

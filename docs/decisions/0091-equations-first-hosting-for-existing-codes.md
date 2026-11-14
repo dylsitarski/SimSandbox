@@ -27,7 +27,7 @@ A.
 
 ## Consequences
 
-- Revised on acceptance (2026-11-14): the vision (second paragraph, non-goals), the roadmap (Phase 2 item 4) and the [risks](../risks.md) (owning numerics added). Whether [ADR 0009](0009-hobbyists-first.md)'s audience still holds is [Q61](../open-questions.md).
+- Revised on acceptance (2026-11-14): the vision (second paragraph, non-goals), the roadmap (Phase 2 item 4) and the [risks](../risks.md) (owning numerics added). The audience was then widened by [ADR 0094](0094-the-full-audience.md).
 - The plugin interface (Phase 2 item 4) is designed for existing codes first: a block written elsewhere, not a second way to write equations.
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none.
