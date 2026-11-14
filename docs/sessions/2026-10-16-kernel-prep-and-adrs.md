@@ -5,6 +5,7 @@
 
 ## Done
 
+- 2026-11-14 (owner: fix before the handoff): `Results::write_json` and `Composed::write_json` stream `run --format json` (`run::stream`), the same bytes as the document built whole (tested for every example, tables' rows and populations included); `resonance-map` to t = 30 peaks at 2.2 GB, was killed past 13.6 GB. STATUS item 4 reworded: WebAssembly was ruled out for compiling typed equations, not for plugins (Q28 open).
 - 2026-11-14: handoff after dylsitarski/SimSandbox#2 merged: `scripts/compare_outputs.sh` (the byte comparison used all session, now in the repository; it reports a killed run as FAILED: `resonance-map`'s JSON output needs over 13 GB and was killed on both sides in every comparison, counted as the same before, now a known limitation; the session's "90 outputs" included the agent's own timing models, the examples give 48), the setup guide's sections on it and on cloud sessions' memory and disk, STATUS's Next up without the finished fused-speed item.
 - 2026-11-13: `check` reports `code` per block (`Block::code` with a `None` default, forwarded by `OdeBlock` and `ExplicitBlock` from `EquationSet::code`; `PhaseKernel::describe`); tests in `describe.rs` and `tests/native.rs`.
 - 2026-11-13: ADR 0089 built and accepted: `simsandbox-compiled::native` (generator from phase views, cache, one build thread, `libloading`, bit check on first call), the app's default and toolbar status, `tests/native.rs`, `fused_speed` waits for libraries.

@@ -9,7 +9,7 @@
 # the working tree, runs each example to t = 30 as CSV and JSON and renders
 # it, and prints a DIFF or RDIFF line per difference, FAILED for a run
 # that failed or was killed on either side, and a summary:
-#   outputs same=47 diff=0 failed=1 renders same=24 diff=0
+#   outputs same=48 diff=0 failed=0 renders same=24 diff=0
 # Release builds of both take several GB of disk; they are removed at the
 # end unless KEEP=1.
 set -euo pipefail
