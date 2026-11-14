@@ -297,9 +297,7 @@ fn run_file(args: &[String]) -> Result<(), String> {
     }
     let mut out = BufWriter::new(io::stdout().lock());
     let written = if json {
-        serde_json::to_writer(&mut out, &r.to_json())
-            .map_err(io::Error::other)
-            .and_then(|()| writeln!(out))
+        r.write_json(&mut out).and_then(|()| writeln!(out))
     } else {
         for p in r.populations.iter().filter(|p| !p.rows) {
             eprintln!(
@@ -339,9 +337,7 @@ fn run_composition_file(
     }
     let mut out = BufWriter::new(io::stdout().lock());
     let written = if json && !flags.has("--model") {
-        serde_json::to_writer(&mut out, &c.to_json())
-            .map_err(io::Error::other)
-            .and_then(|()| writeln!(out))
+        c.write_json(&mut out).and_then(|()| writeln!(out))
     } else {
         let names: Vec<&str> = c.models.iter().map(|(n, _)| n.as_str()).collect();
         let name = match (flags.get("--model"), names.as_slice()) {
@@ -361,9 +357,7 @@ fn run_composition_file(
             eprintln!("note: {name}: {n}");
         }
         if json {
-            serde_json::to_writer(&mut out, &r.to_json())
-                .map_err(io::Error::other)
-                .and_then(|()| writeln!(out))
+            r.write_json(&mut out).and_then(|()| writeln!(out))
         } else {
             r.write_csv(&mut out)
         }

@@ -42,6 +42,26 @@ impl Composed {
         })
     }
 
+    /// [`Composed::to_json`] written as it goes, the same bytes, without the
+    /// whole document in memory.
+    pub fn write_json(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+        use crate::run::stream::{field, object, val};
+        w.write_all(b"{")?;
+        field(w, true, "made_with")?;
+        val(w, &simsandbox_file::runs::MADE_WITH)?;
+        field(w, false, "models")?;
+        object(
+            w,
+            self.models.iter().map(|(n, r)| (n.as_str(), r)),
+            |w, r| r.write_json(w),
+        )?;
+        field(w, false, "tick")?;
+        val(w, &self.tick)?;
+        field(w, false, "warnings")?;
+        val(w, &self.warnings)?;
+        w.write_all(b"}")
+    }
+
     /// JSON: each model's results as `run --format json` gives one model's.
     pub fn to_json(&self) -> Value {
         let models: serde_json::Map<String, Value> = self

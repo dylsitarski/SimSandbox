@@ -272,6 +272,20 @@ Rust generated from Gray–Scott's phases, built for this CPU with the installed
 
 Native code is fused code's speed (faster on small grids: built for this CPU, AVX; within 1.1× at 512 × 512, where memory bounds both). Building a library took under a second for Gray–Scott.
 
+## Build size (2026-11-14)
+
+The cloud machines filled their disk several times on 2026-11-13. A fresh build of everything `cargo test --workspace` needs was 20 GB: 14.1 GB of test executables (43, each a linked binary with every crate's full debug info), 2.1 GB of libraries, the rest incremental caches, examples and build scripts. Debug info for our crates as line tables only (file and line in panics and backtraces) and none for dependencies (`Cargo.toml`, and `python/Cargo.toml` for the Python package):
+
+| | Full debug info | Line tables, none for dependencies |
+|---|---|---|
+| Fresh test build | 20 GB, 350 s | 5.7 GB, 220 s |
+| Test executables | 14.1 GB | 2.8 GB |
+| Rebuild after editing `symbolic.rs` | about 31 s | 14 s |
+| `cargo test --workspace` | 27 s | 26 s |
+| Python package build and clippy | 2.7 GB, 133 s | 1.5 GB, 112 s |
+
+Also measured and not taken: the Python package sharing the workspace's `target/` saved 0.3 GB, its lock file and features differing; the comparison script's two release builds sharing one folder were taken (0.7 GB instead of 1.4, the second build 51 s instead of 189 s).
+
 ## Implicit methods on 2D grids (2026-11-13)
 
 TR-BDF2 on Gray–Scott at 128 × 128 (`grid_cost` on a copy of the example with `"method": {"name": "trbdf2"}`) cost 520 ms a step, 300–330 ms of it in `faer`'s sparse LU with partial pivoting. A better ordering for that LU gained at most 28% (its fill is bounded by AᵀA's structure, which COLAMD already orders for). [ADR 0087](../decisions/0087-implicit-lu-on-the-matrix-pattern.md): our own multifrontal LU on the pattern of A + Aᵀ, pivots on the diagonal, nested dissection: 165 ms a step (factorising 75 ms, solves 5 ms each). `crates/simsandbox-eq/examples/lu_speed.rs` compares the two LUs on a 2D grid, a chain and a ring; 1D systems cost the same as before (`typed_speed`).

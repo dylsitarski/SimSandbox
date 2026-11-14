@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- `simsandbox run --format json` writes results as it goes: large runs (a long run of a large study) need no more memory than their results, where building the whole document needed several times that and could run out (a 200 × 120 study run to t = 30: 2.2 GB, was killed past 13.6 GB). The output is the same bytes.
 - `check` reports how each typed-equations block runs (`code`: `interpreted`, `compiled`, `native`, or why not native), per model in models that use models.
 - Native code for typed equations (ADR 0089): where a Rust toolchain is installed, the app builds Rust generated from large grids' equations in the background and switches to it once it gives the same bits (Gray–Scott at hand-written Rust's speed). The toolbar says when it builds and when it is in use. `SIMSANDBOX_NATIVE` (`off`, `cache`, `build`) and `SIMSANDBOX_CACHE` set it anywhere; the CLI and Python use libraries already built.
 - Typed equations on large grids are compiled to machine code when built (Cranelift, two cells at a time): Gray–Scott at 512 × 512 evaluates in 0.74 ms instead of 1.75 ms on one core, with the same results bit for bit. `SIMSANDBOX_INTERPRET=1` runs the interpreter instead. Building SimSandbox now needs Rust 1.97.

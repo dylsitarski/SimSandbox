@@ -6562,6 +6562,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         app.path = Some(dir.join("cruise.ssbx.json"));
         let live = app.session.as_ref().unwrap();
+        // Paused: running live, a slow machine passes t = 2 before the
+        // probe is wired.
+        live.set_running(false);
         live.call(|s, _| s.run_until(1.0)).unwrap().unwrap();
         canvas_edits(&mut app, vec![Edit::AddProbe { at: [600.0, 0.0] }]);
         canvas_edits(

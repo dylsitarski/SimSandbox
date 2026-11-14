@@ -5,6 +5,9 @@
 
 ## Done
 
+- 2026-11-14 (owner asked for ways to stop the disk filling): debug info as line tables for our crates and none for dependencies, in the workspace and the Python package; the comparison script's builds share one folder; measured in performance.md (Build size).
+- 2026-11-14 (owner: fix before the handoff): `Results::write_json` and `Composed::write_json` stream `run --format json` (`run::stream`), the same bytes as the document built whole (tested for every example, tables' rows and populations included); `resonance-map` to t = 30 peaks at 2.2 GB, was killed past 13.6 GB. STATUS item 4 reworded: WebAssembly was ruled out for compiling typed equations, not for plugins (Q28 open).
+- 2026-11-14: handoff after dylsitarski/SimSandbox#2 merged: `scripts/compare_outputs.sh` (the byte comparison used all session, now in the repository; it reports a killed run as FAILED: `resonance-map`'s JSON output needs over 13 GB and was killed on both sides in every comparison, counted as the same before, now a known limitation; the session's "90 outputs" included the agent's own timing models, the examples give 48), the setup guide's sections on it and on cloud sessions' memory and disk, STATUS's Next up without the finished fused-speed item.
 - 2026-11-13: `check` reports `code` per block (`Block::code` with a `None` default, forwarded by `OdeBlock` and `ExplicitBlock` from `EquationSet::code`; `PhaseKernel::describe`); tests in `describe.rs` and `tests/native.rs`.
 - 2026-11-13: ADR 0089 built and accepted: `simsandbox-compiled::native` (generator from phase views, cache, one build thread, `libloading`, bit check on first call), the app's default and toolbar status, `tests/native.rs`, `fused_speed` waits for libraries.
 - 2026-11-13: Cranelift with vector code in the build: `crates/simsandbox-compiled` (from the spike), compiled by `simsandbox-eq` for every large program, kept by phase; `tests/compiled.rs`; workspace Rust minimum 1.97 (every crate, the Python package); lints the new minimum brought (`is_multiple_of`, `as_chunks`) fixed.
@@ -214,6 +217,7 @@
 ## Decided
 
 - 2026-11-13 (owner): Cranelift with vector code into the build; native code switches on when a toolchain is found (ADR 0089).
+- 2026-11-14 (mine): line tables, not no debug info, for our crates (panics keep file and line); the Python package keeps its own `target/` (sharing saved 0.3 GB of 1.5).
 - 2026-11-13 (mine): `code` is a default method of `Block` (like `reads_time`), not a capability trait: one optional string; a block's programs are named only when they differ.
 - 2026-11-13 (mine, ADR 0089): the app builds native code; the CLI and Python only use libraries already built (a short-lived process would leave builds running), `SIMSANDBOX_NATIVE=build` to build there too; each library is checked against Cranelift's code (itself checked against the interpreter) on its first call; `check` per block not done yet.
 - 2026-11-13 (mine): compiled phases kept by their view (a model rebuilt compiles nothing), at most 512; `SIMSANDBOX_INTERPRET=1` to compare; the compiled crate allows unsafe code in its `jit` module only; one Rust minimum (1.97) for every crate.

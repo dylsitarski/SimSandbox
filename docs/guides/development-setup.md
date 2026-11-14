@@ -1,6 +1,6 @@
 # Development setup
 
-_Last updated: 2026-10-22_
+_Last updated: 2026-11-13_
 
 ## Toolchain
 
@@ -46,6 +46,18 @@ cargo run --release -p simsandbox-app -- examples/lorenz.ssbx.json --view 3d   #
 The difference matters for any model with real work per step. Gray–Scott (a 128 × 128 grid) takes 1.5–2.2 ms a step in a release build and about 27 ms in a debug build (measured 2026-11-06 with `profile_steps`). The app steps for at most 7 ms of each 8.3 ms tick and drops what it cannot do, so in a debug build it plays Gray–Scott at about 57× instead of the 200× it asks for; in a release build it keeps up. Small models (Lorenz, the cruise control) keep up either way. Tests run in debug builds; the checks in [AGENTS.md](../../AGENTS.md) need no `--release`. The two builds keep separate outputs, so switching does not rebuild the other.
 
 Since 2026-11-13 the debug build optimises SimSandbox's own crates a little (`[profile.dev] opt-level = 1` in `Cargo.toml`) and leaves dependencies unoptimised: `cargo test --workspace` runs in about 27 s instead of 77 s, a rebuild after an edit costs the same, and a build from nothing takes about 4.5 minutes instead of 3 ([performance](../design/performance.md#test-builds-2026-11-13)). Debug assertions and overflow checks stay on; a debugger may show fewer local variables. `target/` grows with every build (incremental caches, release and debug outputs: 22 GB after a long session); `cargo clean` empties it when the disk fills.
+
+### Checking that results stay the same bits
+
+A change to how models are evaluated (the interpreter, compiled code, a solver, a reduction) should leave results bit for bit unless it is meant not to. `scripts/compare_outputs.sh [BASE]` builds the CLI at `BASE` (default `HEAD`, in a git worktree) and from the working tree, runs every example to t = 30 as CSV and JSON and renders it, and prints `DIFF` or `RDIFF` for each difference, `FAILED` for a run that failed or was killed on either side (never counted as the same), and a summary (`outputs same=48 diff=0 failed=0 renders same=24 diff=0` for the examples). Before 2026-11-14 `resonance-map`'s JSON output was killed for memory, so a base older than that reports it as failed. The two release builds take several GB; they are removed afterwards unless `KEEP=1`. When results are meant to change (the 1/h² stencils, 2026-11-13), measure by how much in each differing output ([performance](../design/performance.md)) and say so in CHANGELOG.
+
+`SIMSANDBOX_INTERPRET=1` runs typed equations on the interpreter (the reference), and `SIMSANDBOX_NATIVE=off|cache|build` sets native code ([headless guide](headless.md#speed-of-typed-equations)), for comparing the ways they run.
+
+### Cloud agent sessions
+
+The cloud machines have about 4 cores, a memory limit shared by every process and a fixed disk allowance:
+- Build with `-j3` (`cargo test --workspace -j3`), and run the workspace tests, the comparison script and the Python checks one after another: together they get processes killed for lack of memory.
+- Disk: a fresh debug build of everything `cargo test --workspace` needs is about 6 GB (line tables only, 2026-11-14; it was 20 GB with full debug info), the Python package's build 1.5 GB, the comparison script's 0.7 GB. `target/` still grows with edits, since Cargo keeps old builds of changed crates (stale test binaries in `target/debug/deps`, `target/debug/incremental`): when the disk is short, `cargo clean` and rebuild (about 4 minutes), or remove `target/release`, `target/debug/examples` and `target/debug/incremental` first.
 
 The app can save a screenshot and exit, for documentation and for checking it renders on machines without a display:
 

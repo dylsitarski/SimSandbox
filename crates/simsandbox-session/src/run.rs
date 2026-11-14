@@ -267,6 +267,102 @@ impl Results {
     /// order); populations as a list over rows of points; a table's rows
     /// (`over_rows`, ADR 0079) as lists over rows of the version, the ids
     /// and the values. JSON has no infinities or NaN: they become null.
+    /// [`Results::to_json`] written as it goes, the same bytes, for results
+    /// too large to hold as a JSON document (a long run of a large study
+    /// is gigabytes of numbers, and several times that as one).
+    pub fn write_json(&self, w: &mut dyn Write) -> io::Result<()> {
+        use stream::{field, list, numbers, object, val};
+        // Keys in serde_json's (sorted) order.
+        w.write_all(b"{")?;
+        field(w, true, "index")?;
+        object(
+            w,
+            self.index.iter().map(|(n, v)| (n.as_str(), v)),
+            |w, v| numbers(w, v),
+        )?;
+        field(w, false, "labels")?;
+        val(w, &self.labels.map(crate::describe::labels))?;
+        field(w, false, "made_with")?;
+        val(w, &simsandbox_file::runs::MADE_WITH)?;
+        field(w, false, "notes")?;
+        val(w, &self.notes)?;
+        field(w, false, "outputs")?;
+        object(
+            w,
+            self.outputs.iter().map(|o| (o.name.as_str(), o)),
+            |w, o| {
+                w.write_all(b"{")?;
+                field(w, true, "shape")?;
+                val(w, &crate::describe::shape_with_axes(&o.shape, &o.axes))?;
+                field(w, false, "values")?;
+                if o.shape == Shape::Scalar {
+                    numbers(w, &o.values)?;
+                } else {
+                    list(w, o.values.chunks(o.shape.len().max(1)), |w, c| {
+                        numbers(w, c)
+                    })?;
+                }
+                w.write_all(b"}")
+            },
+        )?;
+        field(w, false, "over_rows")?;
+        object(
+            w,
+            self.populations
+                .iter()
+                .filter(|p| p.rows)
+                .map(|p| (p.name.as_str(), p)),
+            |w, p| {
+                let parts: Vec<_> = (0..p.frames.len()).map(|k| p.rows_at(k)).collect();
+                w.write_all(b"{")?;
+                field(w, true, "dim")?;
+                val(w, &p.dim)?;
+                field(w, false, "ids")?;
+                list(w, parts.iter(), |w, f| {
+                    let ids = f.map_or(&[][..], |f| f.1);
+                    list(w, ids.iter(), |w, &i| val(w, &(i as u64)))
+                })?;
+                field(w, false, "values")?;
+                list(w, parts.iter(), |w, f| {
+                    let v = f.map_or(&[][..], |f| f.2);
+                    match p.dim {
+                        1 => numbers(w, v),
+                        d => list(w, v.chunks(d), |w, c| numbers(w, c)),
+                    }
+                })?;
+                field(w, false, "versions")?;
+                list(w, parts.iter(), |w, f| match f {
+                    Some(f) => val(w, &f.0),
+                    None => w.write_all(b"null"),
+                })?;
+                w.write_all(b"}")
+            },
+        )?;
+        field(w, false, "populations")?;
+        object(
+            w,
+            self.populations
+                .iter()
+                .filter(|p| !p.rows)
+                .map(|p| (p.name.as_str(), p)),
+            |w, p| {
+                w.write_all(b"{")?;
+                field(w, true, "dim")?;
+                val(w, &p.dim)?;
+                field(w, false, "frames")?;
+                list(w, p.frames.iter(), |w, f| {
+                    list(w, f.chunks(p.dim), |w, c| numbers(w, c))
+                })?;
+                w.write_all(b"}")
+            },
+        )?;
+        field(w, false, "rows")?;
+        val(w, &self.rows())?;
+        field(w, false, "warnings")?;
+        val(w, &self.warnings)?;
+        w.write_all(b"}")
+    }
+
     pub fn to_json(&self) -> Value {
         let list = |v: &[f64]| Value::Array(v.iter().map(|&x| number(x)).collect());
         let index: serde_json::Map<String, Value> = self
@@ -348,6 +444,71 @@ impl Results {
 
 fn number(v: f64) -> Value {
     serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number)
+}
+
+/// Writing JSON as it goes: the bytes `serde_json::to_writer` gives for the
+/// same [`Value`], each piece written by serde_json itself, without the
+/// whole document in memory (a [`Value`] per number takes four times the
+/// numbers' own memory and more). Objects' keys in serde_json's order:
+/// sorted, a repeated key's last value kept.
+pub(crate) mod stream {
+    use super::number;
+    use std::collections::BTreeMap;
+    use std::io::{self, Write};
+
+    /// A small value, as serde_json writes it.
+    pub fn val(w: &mut dyn Write, v: &impl serde::Serialize) -> io::Result<()> {
+        serde_json::to_writer(&mut *w, v).map_err(io::Error::other)
+    }
+
+    /// A list of numbers (`null` for infinities and NaN).
+    pub fn numbers(w: &mut dyn Write, v: &[f64]) -> io::Result<()> {
+        list(w, v.iter(), |w, &x| val(w, &number(x)))
+    }
+
+    /// A list of `items`, each written by `f`.
+    pub fn list<T>(
+        w: &mut dyn Write,
+        items: impl Iterator<Item = T>,
+        mut f: impl FnMut(&mut dyn Write, T) -> io::Result<()>,
+    ) -> io::Result<()> {
+        w.write_all(b"[")?;
+        for (k, item) in items.enumerate() {
+            if k > 0 {
+                w.write_all(b",")?;
+            }
+            f(w, item)?;
+        }
+        w.write_all(b"]")
+    }
+
+    /// An object of `entries` by key, each value written by `f`.
+    pub fn object<'a, T>(
+        w: &mut dyn Write,
+        entries: impl Iterator<Item = (&'a str, T)>,
+        mut f: impl FnMut(&mut dyn Write, T) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let sorted: BTreeMap<&str, T> = entries.collect();
+        w.write_all(b"{")?;
+        for (k, (key, item)) in sorted.into_iter().enumerate() {
+            if k > 0 {
+                w.write_all(b",")?;
+            }
+            val(w, &key)?;
+            w.write_all(b":")?;
+            f(w, item)?;
+        }
+        w.write_all(b"}")
+    }
+
+    /// A field of an object being written by hand, keys in sorted order.
+    pub fn field(w: &mut dyn Write, first: bool, key: &str) -> io::Result<()> {
+        if !first {
+            w.write_all(b",")?;
+        }
+        val(w, &key)?;
+        w.write_all(b":")
+    }
 }
 
 /// Run a model file: to `t_end` in steps of `dt` (each defaulting to the
@@ -1275,6 +1436,45 @@ pub fn start_from(
 mod tests {
     use super::*;
     use crate::examples::{registry, EXAMPLES};
+
+    /// Results written as they go are the same bytes as the JSON document
+    /// built whole, for every example (compositions too): numbers, rows of
+    /// tables, populations, labels, notes.
+    #[test]
+    fn json_written_as_it_goes_is_the_same_bytes() {
+        let r = registry();
+        // Examples reading files (tables' starting rows, networks) read them
+        // from a folder of their own.
+        let dir = std::env::temp_dir().join(format!("ssb-json-{}", std::process::id()));
+        let (mut over_rows, mut populations) = (false, false);
+        std::fs::create_dir_all(&dir).unwrap();
+        for e in EXAMPLES {
+            for (name, text) in e.files {
+                std::fs::write(dir.join(name), text).unwrap();
+            }
+            let folder = (!e.files.is_empty()).then_some(dir.as_path());
+            let (whole, streamed) = simsandbox_core::registry::in_folder(folder, || {
+                if simsandbox_file::compose::is_composition(e.text) {
+                    let c = crate::compose::run_composition(e.text, &r, Some(0.5)).unwrap();
+                    let mut s = Vec::new();
+                    c.write_json(&mut s).unwrap();
+                    (serde_json::to_vec(&c.to_json()).unwrap(), s)
+                } else {
+                    let res = run(e.text, &r, Some(0.5), None).unwrap();
+                    let mut s = Vec::new();
+                    res.write_json(&mut s).unwrap();
+                    (serde_json::to_vec(&res.to_json()).unwrap(), s)
+                }
+            });
+            assert!(whole == streamed, "{}: differs", e.name);
+            let v: Value = serde_json::from_slice(&streamed).unwrap();
+            over_rows |= v["over_rows"].as_object().is_some_and(|m| !m.is_empty());
+            populations |= v["populations"].as_object().is_some_and(|m| !m.is_empty());
+        }
+        // Tables' rows and populations were among them.
+        assert!(over_rows && populations);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn example(part: &str) -> &'static str {
         EXAMPLES
