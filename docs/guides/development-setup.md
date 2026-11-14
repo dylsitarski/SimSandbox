@@ -57,7 +57,7 @@ A change to how models are evaluated (the interpreter, compiled code, a solver, 
 
 The cloud machines have about 4 cores, a memory limit shared by every process and a fixed disk allowance:
 - Build with `-j3` (`cargo test --workspace -j3`), and run the workspace tests, the comparison script and the Python checks one after another: together they get processes killed for lack of memory.
-- `target/` grows past 20 GB with debug, release and example builds. When the disk fills, remove `target/debug/incremental`, `target/debug/examples` and `target/release` first (rebuilt quickly); removing `target/debug/deps` costs a full rebuild (about 5 minutes).
+- Disk: a fresh debug build of everything `cargo test --workspace` needs is about 6 GB (line tables only, 2026-11-14; it was 20 GB with full debug info), the Python package's build 1.5 GB, the comparison script's 0.7 GB. `target/` still grows with edits, since Cargo keeps old builds of changed crates (stale test binaries in `target/debug/deps`, `target/debug/incremental`): when the disk is short, `cargo clean` and rebuild (about 4 minutes), or remove `target/release`, `target/debug/examples` and `target/debug/incremental` first.
 
 The app can save a screenshot and exit, for documentation and for checking it renders on machines without a display:
 

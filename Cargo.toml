@@ -37,8 +37,17 @@ all = { level = "warn", priority = -1 }
 # stay unoptimised: optimising them (faer, the UI) tripled cold builds and
 # made the tests no faster. Floating point is IEEE at every level, so
 # results are the same bits.
+#
+# Debug info: line tables for our crates (file and line in panics and
+# backtraces), none for dependencies. Full debug info in every test and
+# example binary made a fresh build 20 GB (test executables 14 GB) and is
+# 5.7 GB so; the build 350 s → 220 s, a rebuild after an edit 31 s → 14 s,
+# the tests as fast (measured 2026-11-14). For a debugger's variables, build
+# with CARGO_PROFILE_DEV_DEBUG=true.
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 0
+debug = false

@@ -33,3 +33,14 @@ unsafe_code = "forbid"
 all = { level = "warn", priority = -1 }
 
 [workspace]
+
+# As the workspace's (../Cargo.toml): our crates a little optimised, with
+# line tables (file and line in panics) but no full debug info, and
+# dependencies with none, which keeps the build a fraction of the size.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 0
+debug = false

@@ -33,6 +33,7 @@ _Last updated: 2026-11-14_
 
 ## Done recently
 
+- 2026-11-14: builds a quarter of the size: debug info as line tables for our crates and none for dependencies (fresh test build 20 → 5.7 GB, 350 → 220 s; a rebuild after an edit 31 → 14 s; the same for the Python package, 2.7 → 1.5 GB); the comparison script builds both sides in one folder ([performance](design/performance.md#build-size-2026-11-14)).
 - 2026-11-14: `run --format json` writes results as it goes instead of building the whole JSON document first: `resonance-map` run to t = 30 (5.4 GB of JSON) peaks at 2.2 GB of memory, as CSV does, where it was killed past 13.6 GB; the same bytes for every example.
 - 2026-11-13: `check` reports how each block made from equations runs (`code`: interpreted, compiled, native, or why not native).
 - 2026-11-13: native code for typed equations ([ADR 0089](decisions/0089-native-code-for-typed-equations.md)): generated Rust built with the installed toolchain, cached, checked bit for bit, the app's default; Gray–Scott at fused speed (512 × 512: 516 µs, fused 471).
