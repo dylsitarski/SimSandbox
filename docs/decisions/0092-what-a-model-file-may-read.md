@@ -1,6 +1,6 @@
 # 0092 — What a model file may read: its project folder, and folders the user grants
 
-- **Status:** Proposed (asked by the owner, 2026-11-14: limit what a model reads without forcing copies of shared data)
+- **Status:** Accepted (owner, 2026-11-14); not built yet
 - **Date:** 2026-11-14
 - **Builds on:** [ADR 0063](0063-probes-on-wires.md), [ADR 0066](0066-models-nest-as-blocks.md); answers [Q59](../open-questions.md)
 
@@ -16,7 +16,7 @@ A model file names other files: models it uses (`file`), data (`input.file`, `st
 | B. The model's own folder only | Simple | Copies of shared data; models in sibling folders cannot share |
 | C. A project folder, plus folders the user grants | Models of one project share data without copies; reads outside need the user's word, given outside the model file | A marker file and a grant to explain |
 
-## Decision (proposed)
+## Decision
 
 C.
 

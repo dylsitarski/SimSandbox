@@ -1,6 +1,6 @@
 # 0091 — Typed equations are the primary way to build models; hosting is for codes that exist
 
-- **Status:** Proposed (the owner's leaning, 2026-11-14: "I am thinking that perhaps"; to accept or change)
+- **Status:** Accepted (owner, 2026-11-14)
 - **Date:** 2026-11-14
 - **Builds on:** [ADR 0084](0084-where-typed-equations-stop.md); would revise the [vision](../vision.md); answers [Q56](../open-questions.md)
 
@@ -16,7 +16,7 @@ The vision describes a host: a small kernel, every kind of physics a block type 
 | B. Host first, as the vision says | Least numerics to own | Contradicts thirty days of work; new models would wait for a plugin interface |
 | C. Leave the documents as they are | No work | Agents are told to follow a vision the code does not follow |
 
-## Decision (proposed)
+## Decision
 
 A.
 
@@ -27,7 +27,7 @@ A.
 
 ## Consequences
 
-- On acceptance: revise the vision (first paragraph, "Where the value is", non-goals), the roadmap and the [risks](../risks.md) (owning numerics is a larger risk; being a thin wrapper a smaller one); say whether [ADR 0009](0009-hobbyists-first.md)'s audience still holds.
+- Revised on acceptance (2026-11-14): the vision (second paragraph, non-goals), the roadmap (Phase 2 item 4) and the [risks](../risks.md) (owning numerics added). Whether [ADR 0009](0009-hobbyists-first.md)'s audience still holds is [Q61](../open-questions.md).
 - The plugin interface (Phase 2 item 4) is designed for existing codes first: a block written elsewhere, not a second way to write equations.
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none.

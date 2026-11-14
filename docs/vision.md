@@ -1,10 +1,12 @@
 # Vision
 
-_Last updated: 2026-11-03_
+_Last updated: 2026-11-14_
 
 SimSandbox is a desktop environment for building, connecting and exploring simulations of all kinds — from typed equations and physical networks to rigid bodies, agent populations, CFD and ML models — for fun, for learning and for research.
 
 It is a small, solver-agnostic kernel that only knows how to connect, schedule and step blocks, with every kind of physics, math and ML a block type supplied by a domain (plugins later); a model is a graph of blocks and is itself a block ([ADR 0070](decisions/0070-studies-are-blocks.md)). Users build models from deliberately chosen methods, and each method is labelled for speed and accuracy, so it is always clear whether a model is fit for play, exploration or research.
+
+New models are built first from typed equations, the language SimSandbox owns; codes and models that already exist join the same graph as wrapped blocks, without being rewritten ([ADR 0091](decisions/0091-equations-first-hosting-for-existing-codes.md)).
 
 **First audience:** hobbyists who want to build and play with simulations on their own machine ([ADR 0009](decisions/0009-hobbyists-first.md)). Students and researchers follow in later phases.
 
@@ -33,7 +35,7 @@ Everything a person can do in SimSandbox, an AI agent can do without the window,
 
 ## Non-goals
 
-- Replacing mature solvers. SimSandbox wraps OpenFOAM, MuJoCo, Modelica tools and ML frameworks; it does not compete with them ([solver backends](architecture/solver-backends.md)).
+- Rebuilding what a mature solver does well when it can be wrapped: OpenFOAM, MuJoCo, Modelica tools and ML frameworks join as blocks ([solver backends](architecture/solver-backends.md)). SimSandbox does own the numerics its equation language needs ([ADR 0091](decisions/0091-equations-first-hosting-for-existing-codes.md)).
 - Being a browser product. Desktop-first; a web viewer only if demand appears ([ADR 0003](decisions/0003-desktop-first.md)).
 - Promising a real-time method for every model.
 - Commercial optimisation for now. The project is judged on usefulness and interest; see [market landscape](research/market-landscape.md).
