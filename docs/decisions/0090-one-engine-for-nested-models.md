@@ -1,6 +1,6 @@
 # 0090 — One engine for models that use models: the merged simulator
 
-- **Status:** Accepted (the owner left the choice to the agent, 2026-11-14); points 1 and 2 built 2026-11-14
+- **Status:** Accepted (the owner left the choice to the agent, 2026-11-14); points 1 to 3 built 2026-11-14
 - **Date:** 2026-11-14
 - **Builds on:** [ADR 0066](0066-models-nest-as-blocks.md), [ADR 0088](0088-activation.md); resolves [Q58](../open-questions.md); [review](../research/2026-11-14-code-review.md) W7
 
@@ -42,6 +42,7 @@ A. The merged simulator is the one engine.
   3. A model on new data that reads `t`, read by a faster model, is evaluated at every instant, not only at deliveries.
 - Every example gives the same bytes headless (two use models on other clocks; neither has such a loop).
 - **Speed**, best of three: models linked one way are slower as expected (a chain of five 0.045 → 0.114 s, one feeding two 0.033 → 0.068 s); models feeding each other and the examples within 0.01 s of before. Point 4 (run-ahead in the merged engine) waits for a model that needs it.
-- Left: point 3, deleting the runner in parts, when the owner is content with the comparison.
+- **Point 3** (owner, 2026-11-14: "Delete the old runner"): the runner in parts is deleted (1 043 lines, and the comparison with it). Its tests now state what the one engine does, the three cases above among them (`loops_of_links_are_solved_within_the_instant`, `a_model_on_new_data_answers_in_the_same_instant`). Every example the same bytes after as before.
+- Left: a composition is still loaded twice (`load_merged_with` calls `load_composition`); point 4.
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none.

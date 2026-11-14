@@ -2,7 +2,8 @@
 //! may name a `file` in place of a `type`. Each use runs on its own clock
 //! and may itself use files, to any depth; uses are linked by probes into
 //! input blocks. Loading walks the tree and gives a flat list of clock
-//! domains (each one `Simulator`) and of links; running is the session's.
+//! domains and of links, and all of it as one model with clocks
+//! ([`load_merged`], ADR 0090); running is the session's.
 
 use crate::{invalid, load_in, BlockEntry, FileError, Loaded, ModelFile, Subsystem, UseClock};
 use simsandbox_core::block::Shape;
@@ -60,14 +61,6 @@ impl Domain {
     }
 }
 
-/// Where a scalar comes from in a domain's model.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Source {
-    pub block: BlockId,
-    pub port: String,
-    pub index: usize,
-}
-
 /// A probe that feeds links: its full name (`vehicle/speed`), when it
 /// samples, and the domain it records from.
 #[derive(Debug, Clone)]
@@ -84,7 +77,6 @@ pub struct Link {
     pub probe: usize,
     pub signal: String,
     pub from: usize,
-    pub source: Source,
     pub to: usize,
     pub block: String,
     pub id: BlockId,
@@ -2404,7 +2396,7 @@ impl Loader<'_> {
                 ),
             ));
         }
-        let (source, unit) = scalar(&self.domains[from].loaded, inner).ok_or_else(|| {
+        let unit = scalar(&self.domains[from].loaded, inner).ok_or_else(|| {
             invalid(
                 format!("{at}.from"),
                 format!("{signal} is not a scalar output"),
@@ -2477,7 +2469,6 @@ impl Loader<'_> {
             probe,
             signal,
             from,
-            source,
             to,
             block,
             id,
@@ -2553,8 +2544,8 @@ fn set_params(
     Ok(())
 }
 
-/// Find `block.port` or `block.port[i]`, a scalar, in a built model.
-fn scalar(loaded: &Loaded, signal: &str) -> Option<(Source, simsandbox_core::units::Unit)> {
+/// The unit of `block.port` or `block.port[i]`, a scalar, in a built model.
+fn scalar(loaded: &Loaded, signal: &str) -> Option<simsandbox_core::units::Unit> {
     let (block, port) = signal.split_once('.')?;
     let (port, index) = match port.strip_suffix(']').and_then(|p| p.rsplit_once('[')) {
         Some((p, i)) => (p, i.parse().ok()?),
@@ -2568,16 +2559,7 @@ fn scalar(loaded: &Loaded, signal: &str) -> Option<(Source, simsandbox_core::uni
         Shape::Vector(n) => index < n && signal.ends_with(']'),
         _ => false,
     };
-    fits.then(|| {
-        (
-            Source {
-                block: id,
-                port: port.into(),
-                index,
-            },
-            p.unit,
-        )
-    })
+    fits.then_some(p.unit)
 }
 
 /// Domains in the order they evaluate at a shared instant: each after the
@@ -2603,9 +2585,7 @@ fn order(domains: &[Domain], links: &[Link]) -> (Vec<usize>, Vec<String>) {
                 .map(|l| domains[l.from].name())
                 .collect();
             late.dedup();
-            // As the one simulator runs them (ADR 0090). The runner in
-            // parts, kept for comparison until it is deleted, takes such an
-            // output a step late and says so itself.
+            // As the one simulator runs them (ADR 0090).
             loops.push(format!(
                 "{} and {} read each other: values pass between them at the instants they \
                  share, and an output of one depending on the other at the same instant is \

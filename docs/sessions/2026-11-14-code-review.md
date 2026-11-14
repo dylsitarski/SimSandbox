@@ -13,6 +13,7 @@
 - Second priority begun: the typed-equations reference, held to the code by a test and given by `describe` (W11); run files and render shared by the three interfaces (W10; the Python tests were built and run for it: 30 pass); STATUS's history archived, two guides brought up to date. 610 workspace tests pass.
 - The canvas's interaction moved to the app (W9), headless images the same bytes.
 - One engine for nested models (W7, ADR 0090 points 1 and 2): headless runs on the merged simulator, both engines compared over every fixture. 613 workspace tests pass.
+- The old runner deleted (ADR 0090 point 3); Python's run files through the shared code (the owner: the change of bytes is once). 610 workspace tests and 31 Python tests pass.
 
 ## Decided
 
@@ -25,7 +26,7 @@
 
 ## Left open
 
-- The review's W6, W8 and the kernel tidy; ADR 0090 point 3 (deleting the runner in parts); its third and fourth priorities; ADRs 0090, 0092 and 0093 to build; tolerances per state for implicit methods (ADR 0097 point 6).
+- The review's W6, W8 and the kernel tidy; its third and fourth priorities; ADRs 0090, 0092 and 0093 to build; tolerances per state for implicit methods (ADR 0097 point 6).
 
 ## Notes for the next session
 

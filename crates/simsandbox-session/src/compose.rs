@@ -10,8 +10,6 @@ use simsandbox_core::registry::Registry;
 use simsandbox_file::compose::load_composition;
 
 mod merged;
-#[cfg(test)]
-mod parts;
 
 /// What a run produced: each domain's results at its own times, by its
 /// name (`.` for the top level's own blocks, else its path, `plant`), in
@@ -234,7 +232,6 @@ pub fn run_composition_keeping(
 
 #[cfg(test)]
 mod tests {
-    use super::parts::{run_in_parts, Plan, LAG, OUTSIDE};
     use super::*;
     use crate::examples::{registry, EXAMPLES};
     use serde_json::json;
@@ -256,242 +253,6 @@ mod tests {
             run_composition(&model.to_string(), &registry(), None)
         })
         .unwrap()
-    }
-
-    thread_local! {
-        /// Set around a fixture the two engines give differently on
-        /// purpose (ADR 0090 point 2): they must then differ.
-        static DIFFERENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-
-    /// `f` with every fixture it runs expected to differ between the
-    /// engines.
-    fn differing<R>(f: impl FnOnce() -> R) -> R {
-        DIFFERENT.with(|d| d.set(true));
-        let r = f();
-        DIFFERENT.with(|d| d.set(false));
-        r
-    }
-
-    /// Every fixture the tests here run is run on both engines first (ADR
-    /// 0090 point 2), in the thread's folder: they give the same, bit for
-    /// bit, or the test fails with the first difference.
-    fn compared(text: &str, t_end: Option<f64>, keep: &Keep) {
-        let folder = simsandbox_core::registry::current_folder();
-        let agree = engines_agree(text, folder.as_deref(), t_end, keep);
-        if DIFFERENT.with(std::cell::Cell::get) {
-            assert!(agree.is_err(), "the engines now agree on {text}");
-        } else if let Err(e) = agree {
-            panic!("the engines differ: {e}\n  in {text}");
-        }
-    }
-
-    /// [`super::run_composition`], compared on both engines first.
-    fn run_composition(
-        text: &str,
-        registry: &Registry,
-        t_end: Option<f64>,
-    ) -> Result<Composed, String> {
-        compared(text, t_end, &Keep::default());
-        super::run_composition(text, registry, t_end)
-    }
-
-    /// [`super::run_composition_with`], compared on both engines first.
-    fn run_composition_with(
-        text: &str,
-        registry: &Registry,
-        t_end: Option<f64>,
-        parallel: Parallel,
-    ) -> Result<Composed, String> {
-        compared(text, t_end, &Keep::default());
-        super::run_composition_with(text, registry, t_end, parallel)
-    }
-
-    /// [`super::run_composition_keeping`], compared on both engines first.
-    fn run_composition_keeping(
-        text: &str,
-        registry: &Registry,
-        t_end: Option<f64>,
-        parallel: Parallel,
-        keep: &Keep,
-    ) -> Result<Composed, String> {
-        compared(text, t_end, keep);
-        super::run_composition_keeping(text, registry, t_end, parallel, keep)
-    }
-
-    /// Run `text` on the merged simulator and in parts (ADR 0090 point 2)
-    /// and compare all they give, bit for bit: the models, each one's
-    /// times, outputs, populations, labels and notes, the tick and the
-    /// warnings; or that both refuse it alike. `Err` describes the first
-    /// difference.
-    fn engines_agree(
-        text: &str,
-        folder: Option<&Path>,
-        t_end: Option<f64>,
-        keep: &Keep,
-    ) -> Result<(), String> {
-        let (one, apart) = simsandbox_core::registry::in_folder(folder, || {
-            (
-                merged::run(text, &registry(), t_end, Parallel::Auto, keep),
-                run_in_parts(text, &registry(), t_end, Parallel::Auto, keep, true),
-            )
-        });
-        let (one, apart) = match (one, apart) {
-            (Ok(a), Ok(b)) => (a, b),
-            (Err(a), Err(b)) if a == b => return Ok(()),
-            (Err(a), Err(b)) => return Err(format!("errors: merged '{a}', in parts '{b}'")),
-            (Err(a), Ok(_)) => return Err(format!("only merged fails: {a}")),
-            (Ok(_), Err(b)) => return Err(format!("only the run in parts fails: {b}")),
-        };
-        let names = |c: &Composed| c.models.iter().map(|m| m.0.clone()).collect::<Vec<_>>();
-        if names(&one) != names(&apart) {
-            return Err(format!(
-                "models: merged {:?}, in parts {:?}",
-                names(&one),
-                names(&apart)
-            ));
-        }
-        if one.tick.to_bits() != apart.tick.to_bits() {
-            return Err(format!(
-                "tick: merged {}, in parts {}",
-                one.tick, apart.tick
-            ));
-        }
-        for ((name, a), (_, b)) in one.models.iter().zip(&apart.models) {
-            let (ta, tb) = (&a.index[0].1, &b.index[0].1);
-            if bits(ta) != bits(tb) {
-                let k = ta
-                    .iter()
-                    .zip(tb)
-                    .position(|(x, y)| x.to_bits() != y.to_bits())
-                    .unwrap_or(ta.len().min(tb.len()));
-                return Err(format!(
-                    "model {name}: times differ at row {k}: merged {:?} of {} rows, in parts {:?} of {} rows",
-                    ta.get(k),
-                    ta.len(),
-                    tb.get(k),
-                    tb.len()
-                ));
-            }
-            let list = |r: &Results| -> Vec<String> {
-                r.outputs
-                    .iter()
-                    .map(|o| format!("{} {:?} {:?}", o.name, o.shape, o.axes))
-                    .chain(
-                        r.populations
-                            .iter()
-                            .map(|p| format!("{} {} {}", p.name, p.dim, p.rows)),
-                    )
-                    .collect()
-            };
-            if list(a) != list(b) {
-                return Err(format!(
-                    "model {name}: outputs: merged {:?}, in parts {:?}",
-                    list(a),
-                    list(b)
-                ));
-            }
-            for (x, y) in a.outputs.iter().zip(&b.outputs) {
-                if bits(&x.values) != bits(&y.values) {
-                    let n = x.shape.len().max(1);
-                    let k = x
-                        .values
-                        .iter()
-                        .zip(&y.values)
-                        .position(|(p, q)| p.to_bits() != q.to_bits())
-                        .unwrap_or(x.values.len().min(y.values.len()));
-                    return Err(format!(
-                        "model {name}: {} differs first at t = {:?} (row {}): merged {:?}, in parts {:?}",
-                        x.name,
-                        ta.get(k / n),
-                        k / n,
-                        x.values.get(k),
-                        y.values.get(k)
-                    ));
-                }
-            }
-            for (x, y) in a.populations.iter().zip(&b.populations) {
-                let same = x.frames.len() == y.frames.len()
-                    && x.frames
-                        .iter()
-                        .zip(&y.frames)
-                        .all(|(p, q)| bits(p) == bits(q));
-                if !same {
-                    let k = x
-                        .frames
-                        .iter()
-                        .zip(&y.frames)
-                        .position(|(p, q)| bits(p) != bits(q));
-                    return Err(format!(
-                        "model {name}: {} differs first at t = {:?}",
-                        x.name,
-                        k.and_then(|k| ta.get(k))
-                    ));
-                }
-            }
-            if a.labels != b.labels {
-                return Err(format!(
-                    "model {name}: labels: merged {:?}, in parts {:?}",
-                    a.labels, b.labels
-                ));
-            }
-            if a.notes != b.notes || a.warnings != b.warnings {
-                return Err(format!(
-                    "model {name}: notes: merged {:?} {:?}, in parts {:?} {:?}",
-                    a.notes, a.warnings, b.notes, b.warnings
-                ));
-            }
-        }
-        if one.warnings != apart.warnings {
-            return Err(format!(
-                "warnings: merged {:?}, in parts {:?}",
-                one.warnings, apart.warnings
-            ));
-        }
-        Ok(())
-    }
-
-    /// Every model file under `examples/` that uses models gives the same
-    /// on both engines, bit for bit (ADR 0090 point 2): all its results to
-    /// its own end, and thinned.
-    #[test]
-    fn both_engines_give_the_same_over_every_example() {
-        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-        let mut files: Vec<PathBuf> = Vec::new();
-        for dir in [examples.clone(), examples.join("networks")] {
-            for entry in std::fs::read_dir(&dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.extension().is_some_and(|e| e == "json") {
-                    files.push(path);
-                }
-            }
-        }
-        files.sort();
-        let mut compared = Vec::new();
-        let mut differ = Vec::new();
-        for path in &files {
-            let text = std::fs::read_to_string(path).unwrap();
-            if !simsandbox_file::compose::is_composition(&text) {
-                continue;
-            }
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
-            let thinned = Keep {
-                signals: None,
-                every: 7,
-            };
-            for (what, t_end, keep) in [
-                ("whole", None, Keep::default()),
-                ("to 2 s, every 7th", Some(2.0), thinned),
-            ] {
-                if let Err(e) = engines_agree(&text, path.parent(), t_end, &keep) {
-                    differ.push(format!("{name} ({what}): {e}"));
-                }
-            }
-            compared.push(name);
-        }
-        eprintln!("compared on both engines: {compared:?}");
-        assert!(compared.len() >= 2, "{compared:?}");
-        assert!(differ.is_empty(), "{}", differ.join("\n"));
     }
 
     /// Each model's rows as kept with `every` (and its last), and its
@@ -658,10 +419,6 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.starts_with("loop between models")));
-        assert!(!composed
-            .warnings
-            .iter()
-            .any(|w| w.contains("saw that model")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1767,29 +1524,12 @@ mod tests {
                 {"name": "q", "record": ["b/sum.z"]}]}})
     }
 
-    /// The merged simulator's own run of a fixture, whichever engine
-    /// headless runs use.
-    fn merged_in(dir: &Path, model: &Value) -> Composed {
-        simsandbox_core::registry::in_folder(Some(dir), || {
-            merged::run(
-                &model.to_string(),
-                &registry(),
-                None,
-                Parallel::Auto,
-                &Keep::default(),
-            )
-        })
-        .unwrap()
-    }
-
-    /// Where the engines differ on purpose (ADR 0066 as built, "Difference
-    /// from the headless runner"; ADR 0090 point 2), each case held here:
-    /// a loop of links through outputs is solved within the instant as one
-    /// simulator, where the run in parts broke it a step late; and a model
-    /// on new data whose formulas read `t` is evaluated at every instant
-    /// of the others, not only at deliveries.
+    /// A loop of links through outputs is solved within the instant
+    /// (ADR 0066 as built, ADR 0090), on one clock and at the instants two
+    /// clocks share; and a model on new data whose formulas read `t` is
+    /// evaluated at every instant of the others, not only at deliveries.
     #[test]
-    fn the_engines_differ_only_where_recorded() {
+    fn loops_of_links_are_solved_within_the_instant() {
         let dir = temp_dir("differences");
         // a's y = x + w and b's v = u/2, each feeding the other: y = 2 x.
         write(
@@ -1825,29 +1565,19 @@ mod tests {
                 {"name": "p", "record": ["a/count.y"]},
                 {"name": "q", "record": ["b/g.v"]}]}})
         };
-        for file in ["b.ssbx.json", "slow.ssbx.json"] {
-            differing(|| run_in(&dir, &looped(file)));
-        }
-        let solved = merged_in(&dir, &looped("b.ssbx.json"));
+        let solved = run_in(&dir, &looped("b.ssbx.json"));
         let a = solved.model("a").unwrap();
         for (x, y) in series(a, "a/count.x").iter().zip(series(a, "a/count.y")) {
             assert!((y - 2.0 * x).abs() < 1e-6, "{y} at x = {x}");
         }
-        // In parts, y at an instant held b's answer to the y before: with
-        // the warning that it saw it late, which one simulator never gives.
-        let late = simsandbox_core::registry::in_folder(Some(&dir), || {
-            run_in_parts(
-                &looped("b.ssbx.json").to_string(),
-                &registry(),
-                None,
-                Parallel::Auto,
-                &Keep::default(),
-                true,
-            )
-        })
-        .unwrap();
-        assert!(late.warnings.iter().any(|w| w.contains("saw that model")));
-        assert!(!solved.warnings.iter().any(|w| w.contains("saw that model")));
+        // The same with another `dt` in b's file: without states it runs
+        // on new data, answering at each of a's instants.
+        let slow = run_in(&dir, &looped("slow.ssbx.json"));
+        let a = slow.model("a").unwrap();
+        assert_eq!(slow.model("b").unwrap().rows(), a.rows());
+        for (x, y) in series(a, "a/count.x").iter().zip(series(a, "a/count.y")) {
+            assert!((y - 2.0 * x).abs() < 1e-6, "{y} at x = {x}");
+        }
         // A model on new data reading `t`, read by a third at every step:
         // between deliveries its output moves with `t` as one simulator.
         on_data_files(&dir);
@@ -1870,7 +1600,18 @@ mod tests {
             "controls": {"probes": [
                 {"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.3}},
                 {"name": "q", "record": ["d/f.y"]}]}});
-        differing(|| run_in(&dir, &timed));
+        let moved = run_in(&dir, &timed);
+        // b reads x as last delivered to d (every 0.3 s) plus the time now.
+        let t = &moved.model("a").unwrap().index[0].1;
+        let x = series(moved.model("a").unwrap(), "a/count.x");
+        let u = series(moved.model("b").unwrap(), "b/u.y");
+        assert_eq!(u.len(), 13);
+        for (n, u) in u.iter().enumerate() {
+            let want = x[3 * (n / 3)] + t[n];
+            assert!((u - want).abs() < 1e-12, "{u} at t = {}", t[n]);
+        }
+        // d itself is recorded at its deliveries.
+        assert_eq!(moved.model("d").unwrap().rows(), 5);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1922,17 +1663,11 @@ mod tests {
         let apart = with(Parallel::Never);
         assert_eq!(all(&with(Parallel::Always)), all(&apart));
         assert_eq!(all(&with(Parallel::Auto)), all(&apart));
-        // Unlinked: two groups, each run on a thread of its own from start
-        // to end.
+        // Unlinked.
         let mut unlinked = c.clone();
         unlinked["connections"] = json!([]);
         unlinked["controls"] = json!({});
         let text = unlinked.to_string();
-        let loaded = simsandbox_core::registry::in_folder(Some(&dir), || {
-            load_composition(&text, &registry(), None)
-        })
-        .unwrap();
-        assert_eq!(Plan::of(&loaded).groups(2), [vec![0], vec![1]]);
         let with = |p: Parallel| {
             simsandbox_core::registry::in_folder(Some(&dir), || {
                 run_composition_with(&text, &registry(), None, p)
@@ -1942,36 +1677,6 @@ mod tests {
         let apart = with(Parallel::Never);
         assert_eq!(all(&with(Parallel::Always)), all(&apart));
         assert_eq!(all(&with(Parallel::Auto)), all(&apart));
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn groups_follow_links_and_keep_their_numbering() {
-        let dir = temp_dir("groups");
-        let c = pair(&dir, 0.1, 0.3);
-        let text = c.to_string();
-        let loaded = simsandbox_core::registry::in_folder(Some(&dir), || {
-            load_composition(&text, &registry(), None)
-        })
-        .unwrap();
-        let plan = Plan::of(&loaded);
-        // Linked both ways: one group, all of it.
-        assert_eq!(plan.groups(2), [vec![0, 1]]);
-        // Feeding each other: one part.
-        assert_eq!(plan.parts(2), [vec![0, 1]]);
-        let (all, global) = plan.part(&[0, 1]);
-        assert_eq!(all.links.len(), plan.links.len());
-        assert_eq!(global, (0..plan.links.len()).collect::<Vec<_>>());
-        assert_eq!(all.order, plan.order);
-        // One model alone keeps its links to the other, that end outside.
-        let (one, _) = plan.part(&[1]);
-        assert_eq!(one.links.len(), plan.links.len());
-        assert!(one
-            .links
-            .iter()
-            .all(|l| (l.from == OUTSIDE) != (l.to == OUTSIDE)));
-        assert_eq!(one.names, [plan.names[1].clone()]);
-        assert!(one.probes.iter().all(|p| p.domain == 0));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2339,11 +2044,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Activated uses (ADR 0088) run the same on both engines: on their
-    /// parent's clock in each mode and with `restart`, and on a clock of
-    /// their own through a probe link.
+    /// Activated uses (ADR 0088) run headless: on their parent's clock in
+    /// each mode and with `restart`, and on a clock of their own through a
+    /// probe link.
     #[test]
-    fn activated_uses_run_the_same_on_both_engines() {
+    fn activated_uses_run_on_their_parents_clock_and_their_own() {
         let model = |extra: Value, wires: &[&str]| -> Value {
             let mut c = json!({"name": "c", "model": "counter", "clock": "shared"});
             for (k, v) in extra.as_object().unwrap() {
@@ -2799,11 +2504,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Linked one way, models run ahead of the models they feed, in parts
-    /// on threads of their own (ADR 0066 step 6): the same bits as all
-    /// meeting at every instant.
+    /// A chain linked one way beside a pair feeding each other: a model
+    /// on new data answers when either of its feeders delivers.
     #[test]
-    fn models_linked_one_way_run_ahead_with_the_same_bits() {
+    fn a_model_on_new_data_with_two_feeders_answers_either() {
         let dir = temp_dir("one-way");
         on_data_files(&dir);
         write(
@@ -2838,49 +2542,7 @@ mod tests {
                 {"name": "r", "record": ["d/f.y"]},
                 {"name": "s", "record": ["f/count.x"]},
                 {"name": "t", "record": ["g/sum.z"], "every": {"steps": 2}}]}});
-        let text = model.to_string();
-        let run = |parallel, split| {
-            simsandbox_core::registry::in_folder(Some(&dir), || {
-                run_in_parts(&text, &registry(), None, parallel, &Keep::default(), split)
-            })
-            .unwrap()
-        };
-        simsandbox_core::registry::in_folder(Some(&dir), || {
-            compared(&text, None, &Keep::default());
-        });
-        let loaded = simsandbox_core::registry::in_folder(Some(&dir), || {
-            load_composition(&text, &registry(), None)
-        })
-        .unwrap();
-        let plan = Plan::of(&loaded);
-        let names = &plan.names;
-        let parts: Vec<Vec<&str>> = plan
-            .parts(names.len())
-            .iter()
-            .map(|p| p.iter().map(|&u| names[u].as_str()).collect())
-            .collect();
-        assert_eq!(
-            parts,
-            [vec!["a"], vec!["b"], vec!["d"], vec!["e"], vec!["f", "g"]]
-        );
-        let together = run(Parallel::Never, false);
-        for (parallel, lag) in [
-            (Parallel::Never, 0),
-            (Parallel::Auto, 0),
-            (Parallel::Always, 200),
-        ] {
-            // With feeders lagging, the parts they feed must wait for them.
-            LAG.store(lag, std::sync::atomic::Ordering::Relaxed);
-            let apart = run(parallel, true);
-            LAG.store(0, std::sync::atomic::Ordering::Relaxed);
-            for ((name, one), (_, other)) in together.models.iter().zip(&apart.models) {
-                assert_eq!(bits(&one.index[0].1), bits(&other.index[0].1), "{name} t");
-                for (o, p) in one.outputs.iter().zip(&other.outputs) {
-                    assert_eq!(bits(&o.values), bits(&p.values), "{}", o.name);
-                }
-            }
-            assert_eq!(together.warnings, apart.warnings);
-        }
+        let together = run_in(&dir, &model);
         // d answers when either feeder delivers, so it ran.
         assert!(together.model("e").unwrap().rows() > 1);
         assert!(series(together.model("d").unwrap(), "d/f.y")
@@ -2951,16 +2613,11 @@ mod tests {
                 {"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.3}},
                 {"name": "q", "record": ["e/f.y"]},
                 {"name": "r", "record": ["d/f.y"]}]}});
-        // Here the engines differ on purpose (ADR 0090 point 2): the run
-        // in parts gave d one more pass with e's answer (d/f.y = 0.45 at
-        // t = 0.3) and warned that an output saw samples a step late; as
-        // one simulator the loop is solved within the instant (0.6).
-        differing(|| {
-            for every in [1, 2, 3] {
-                keeps_the_same(&dir, &looped, None, every);
-            }
-        });
-        let solved = merged_in(&dir, &looped);
+        // The loop is solved within the instant.
+        for every in [1, 2, 3] {
+            keeps_the_same(&dir, &looped, None, every);
+        }
+        let solved = run_in(&dir, &looped);
         let d = series(solved.model("d").unwrap(), "d/f.y");
         let e = series(solved.model("e").unwrap(), "e/f.y");
         // d = u + e/4 and e = 2 d: d = 2 u, with u = 0.3 at t = 0.3.
@@ -2969,10 +2626,6 @@ mod tests {
             (e.last().unwrap() - 2.0 * d.last().unwrap()).abs() < 1e-12,
             "{e:?}"
         );
-        assert!(!composed
-            .warnings
-            .iter()
-            .any(|w| w.contains("saw that model")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -3280,68 +2933,6 @@ mod tests {
         ok["outputs"] = json!([{"name": "speed", "from": "car.v"}]);
         let report = crate::describe::check(&ok.to_string(), &registry());
         assert_eq!(report["declared_outputs"][0]["from"], "car.v", "{report}");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn one_simulator_with_clocks_runs_as_models_apart() {
-        let dir = temp_dir("merged");
-        cruise_files(&dir);
-        // The cruise control from two files, linked both ways.
-        run_in(
-            &dir,
-            &with(
-                json!({"format": 1, "run": {"t_end": 20},
-                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
-                cruise_links("plant", "controller"),
-            ),
-        );
-        // Clocks of 0.1 s and 0.3 s, each reading the other.
-        let mut two = pair(&dir, 0.1, 0.3);
-        two["run"] = json!({"t_end": 3});
-        run_in(&dir, &two);
-        // A shared plant beside a controller on its own clock.
-        run_in(
-            &dir,
-            &with(
-                json!({"format": 1, "run": {"dt": 0.05, "t_end": 20}, "fusion": "off",
-                   "blocks": [shared("plant", "car.ssbx.json"), {"name": "controller", "file": "cruise.ssbx.json", "clock": {"dt": 0.5}}]}),
-                cruise_links("plant", "controller"),
-            ),
-        );
-        // Nested: a vehicle file of linked models, used with a top level
-        // reading it.
-        write(
-            &dir,
-            "vehicle.ssbx.json",
-            &with(
-                json!({"format": 1,
-                   "blocks": [use_of("plant", "car.ssbx.json"), use_of("controller", "cruise.ssbx.json")]}),
-                cruise_links("plant", "controller"),
-            ),
-        );
-        run_in(
-            &dir,
-            &json!({"format": 1, "run": {"t_end": 5, "dt": 0.1},
-            "blocks": [
-                {"name": "watch", "type": "input.value", "settings": {"unit": "m/s"}},
-                {"name": "odo", "type": "eq.equations", "method": {"name": "euler"},
-                 "equations": ["input v [m/s]", "state d [m]", "dd/dt = v"], "params": {"d0": 0}},
-                use_of("vehicle", "vehicle.ssbx.json")],
-            "connections": [
-                {"from": "watch.y", "to": "odo.v"},
-                {"from": "probe:v.vehicle/plant/car.v", "to": "watch"}],
-            "controls": {"probes": [{"name": "v", "record": ["vehicle/plant/car.v"]}]}}),
-        );
-        // A model on new data: the same values at its deliveries.
-        on_data_files(&dir);
-        run_in(
-            &dir,
-            &json!({"format": 1, "run": {"t_end": 1.2},
-            "blocks": [use_of("a", "a.ssbx.json"), use_of("d", "double.ssbx.json")],
-            "connections": [{"from": "probe:p.a/count.x", "to": "d/u"}],
-            "controls": {"probes": [{"name": "p", "record": ["a/count.x"], "every": {"seconds": 0.3}}]}}),
-        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

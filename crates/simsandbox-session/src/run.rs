@@ -109,15 +109,6 @@ impl Thin {
         self.behind = !keep;
         keep
     }
-
-    /// Forget the latest step; whether it was kept. For the run in parts,
-    /// kept for tests until deleted (ADR 0090 point 3).
-    #[cfg(test)]
-    pub fn undo(&mut self) -> bool {
-        self.seen -= 1;
-        self.behind = false;
-        self.seen.is_multiple_of(self.every)
-    }
 }
 
 /// One fixed-size output, `block.port`, at every row.

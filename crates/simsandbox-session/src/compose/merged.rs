@@ -1,7 +1,7 @@
 //! A headless run of a model that uses model files as one simulator with
 //! clocks (ADR 0090): [`simsandbox_file::compose::load_merged_with`]'s
 //! model stepped from instant to instant, each model's outputs recorded
-//! at its own instants under its own name, as the run in parts gave them.
+//! at its own instants under its own name.
 
 use super::Composed;
 use crate::run::{Keep, Output, Population, Results, Thin, DEFAULT_T_END};
