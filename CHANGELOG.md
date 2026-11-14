@@ -6,6 +6,12 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Implicit methods (`backward_euler`, `trbdf2`) measure convergence and the Jacobian's perturbations against the size of the state, not against 1 (ADR 0097): a system in small units (nanoamperes, micrometres) is solved as accurately as in units of 1 (a stiff nonlinear test in units of 1e-9: error 0.018 before, 0.000079 now, as in units of 1). Results of implicit runs change where every state is below 1, and for systems written in code and fused groups, whose structure is now found whole; every example gives the same bytes.
+- An implicit stage that does not converge with the step's Jacobian goes on with fresh ones instead of stopping the run; Robertson's reactions, which failed, now match the published values. A step that still fails is an error that says why (not converged, or values that are not numbers) and leaves the state as it was.
+- `dopri5` meeting rates that are not numbers shortens its step and, if none is short enough, says so after a few dozen tries, instead of trying the full step 10 000 times and reporting "step size underflow".
+- The native cache (ADR 0096): libraries are named by the processor they were built for as well, so a cache carried to another machine is not run there (libraries built before are built again); on Unix nothing is loaded from a cache other users can write to, and SimSandbox makes its cache for the user alone; the 200 libraries used most recently are kept.
+- Compiled typed equations check the arrays of every call against what they were compiled for.
+
 - One block with states is now solved together with the formula, conversion and input blocks it is wired to (ADR 0095), as two or more blocks with states already were. Before, a formula in a loop with a single block reached it a step late: a mass and a spring written as a formula block were 5% off at t = 5 with RK4 and dt = 0.01, under the label `Quantitative`. Results of such models change (they are more accurate); every example gives the same bytes.
 - Equation blocks wired in a circle and stepped apart (different methods, `fusion: off`, different clocks) give a note in `run` and `check` output saying so and how to solve them together.
 - An expression deeper than 1000 levels (parentheses, signs, powers, or a chain of more than about 1000 operators) is an error at its column; before, a long enough one stopped SimSandbox with a stack overflow. Units nest at most 32 groups.

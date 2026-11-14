@@ -68,7 +68,7 @@ Large grids in typed equations run compiled, with the same results bit for bit w
 | `SIMSANDBOX_NATIVE=off` | No native code: Cranelift's code only |
 | `SIMSANDBOX_NATIVE=cache` | Native libraries already built are used, none built (the CLI's and Python's default) |
 | `SIMSANDBOX_NATIVE=build` | Missing libraries are built in the background with the installed Rust toolchain (the app's default); a run uses one once it is built and has given the same bits |
-| `SIMSANDBOX_CACHE=DIR` | Where native libraries are kept (default: the platform's cache folder, under `simsandbox/native`) |
+| `SIMSANDBOX_CACHE=DIR` | Where native libraries are kept (default: the platform's cache folder, under `simsandbox/native`): a folder of your own. On Unix nothing is loaded from a cache that other users can write to; the 200 libraries used most recently are kept ([ADR 0096](../decisions/0096-the-native-cache.md)) |
 
 `check` reports how each block runs (`code`). Moving parameters (sliders, `--set`, driven parameters) never compiles anything; editing an equation, a grid's cells or an edge kind does (milliseconds for Cranelift; for a native library, in the background while the run goes on).
 

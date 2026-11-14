@@ -11,6 +11,18 @@
 //! interchanges ([`crate::sparse_lu`], ADR 0087), or, when a pivot is too
 //! small for that, by `faer`'s LU with partial pivoting.
 //!
+//! A stage that fails with the step's Jacobian (the iteration creeps, or
+//! runs off to values that are not numbers) goes on with the Jacobian
+//! taken afresh at every iteration: from where it got to, or from its
+//! start. If that fails too, the step is an error and the state is left
+//! as it was before the step. A stage that converges with the step's
+//! first Jacobian never takes another, so such runs give the same
+//! numbers as before this was added.
+//!
+//! Tolerances and perturbations are relative to the size of the state
+//! (its largest value), not to 1, so the same system written in other
+//! units (amperes or nanoamperes) converges the same way.
+//!
 //! Nothing numeric is carried from one step to the next: a step's result
 //! depends only on its start, so a run replays bit for bit. Only the
 //! structure is kept ([`Workspace`]): given by the system (typed
@@ -33,11 +45,61 @@ pub enum Scheme {
     TrBdf2,
 }
 
-/// Newton's iterations per stage before giving up.
+/// Newton's iterations per stage with one Jacobian.
 const MAX_ITERATIONS: usize = 50;
+/// Newton's iterations of a stage that failed with the step's Jacobian,
+/// each with the Jacobian taken afresh.
+const MAX_FRESH: usize = 20;
 /// A stage has converged when the last correction is this small,
-/// relative to the state (and absolutely, near 0).
+/// relative to the largest value of the stage's solution and of its
+/// right side (the state the stage starts from): to the size of the
+/// system's numbers, whatever its units, and still meaningful for a value
+/// passing through 0.
 const TOLERANCE: f64 = 1e-10;
+/// A state is perturbed by this much of its size to find the Jacobian
+/// (about the square root of the rounding error), or of the floor below
+/// when it is smaller.
+const PERTURBATION: f64 = 1.5e-8;
+
+/// The least size a state is perturbed relative to: 1, or the largest
+/// state when all are smaller (a system in small units), or 1 when all
+/// are 0. A state at or near 0 beside others cannot be perturbed relative
+/// to itself: the change in the rates would be lost in their rounding.
+fn perturbation_floor(x: &[f64]) -> f64 {
+    let largest = x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    if largest > 0.0 && largest < 1.0 {
+        largest
+    } else {
+        1.0
+    }
+}
+
+/// Why a stage gave no solution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Failure {
+    /// Newton's corrections did not shrink to the tolerance.
+    NotConverged,
+    /// A correction was NaN or infinite.
+    NotANumber,
+}
+
+impl Failure {
+    fn error(self) -> SimError {
+        SimError::Block(
+            match self {
+                Failure::NotConverged => {
+                    "an implicit step did not converge (Newton's method, also with the Jacobian \
+                     taken afresh at every iteration): take a shorter step or more substeps"
+                }
+                Failure::NotANumber => {
+                    "an implicit step gave values that are not numbers (NaN or infinite): the \
+                     equations cannot be evaluated near this state, or the step is too long"
+                }
+            }
+            .into(),
+        )
+    }
+}
 
 /// The Jacobian's structure and how it is coloured and ordered; kept
 /// between steps, because it never changes the numbers a step gives.
@@ -178,20 +240,33 @@ impl Structure {
             .map_err(|e| SimError::Block(format!("implicit method: {e}")))
     }
 
-    /// The structure of `f` found by perturbing each state alone at `x`:
-    /// a rate that changes depends on that state.
+    /// The structure of `f` found by perturbing each state alone: a rate
+    /// that changes depends on that state. Not at `x` itself but beside
+    /// it, every state moved a little and each by a different amount: at
+    /// `x` a product hides what it depends on wherever its other factor
+    /// is 0 (a reaction `k·a·b` starting with no `b`), and equal states
+    /// hide what their difference multiplies. A rate that is not a number
+    /// beside `x` counts as depending on everything, which is safe.
     fn probe(f: &Rhs<'_>, t: f64, x: &[f64]) -> Vec<Vec<usize>> {
         let n = x.len();
+        let floor = perturbation_floor(x);
+        // Between 1 and 2 thousandths of each state's size, by the
+        // golden ratio's multiples: no two alike.
+        let delta: Vec<f64> = (0..n)
+            .map(|j| {
+                1e-3 * x[j].abs().max(floor) * (1.0 + (j as f64 * 0.618_033_988_749_895).fract())
+            })
+            .collect();
+        let mut xp: Vec<f64> = x.iter().zip(&delta).map(|(v, d)| v + d).collect();
         let mut f0 = vec![0.0; n];
-        f(t, x, &mut f0);
+        f(t, &xp, &mut f0);
         let mut deps: Vec<Vec<usize>> = vec![Vec::new(); n];
-        let mut xp = x.to_vec();
         let mut f1 = vec![0.0; n];
         for j in 0..n {
-            let delta = 1e-3 * x[j].abs().max(1.0);
-            xp[j] = x[j] + delta;
+            let kept = xp[j];
+            xp[j] = kept + delta[j];
             f(t, &xp, &mut f1);
-            xp[j] = x[j];
+            xp[j] = kept;
             for i in 0..n {
                 if f1[i] != f0[i] {
                     deps[i].push(j);
@@ -211,10 +286,11 @@ fn factorise(s: &Structure, f: &Rhs<'_>, t: f64, x: &[f64], f0: &[f64], ch: f64)
     let mut xp = x.to_vec();
     let mut f1 = vec![0.0; n];
     let mut jac: Vec<Vec<f64>> = s.rows_of.iter().map(|r| vec![0.0; r.len()]).collect();
+    let floor = perturbation_floor(x);
     for colour in &s.colours {
         let deltas: Vec<f64> = colour
             .iter()
-            .map(|&j| 1.5e-8 * x[j].abs().max(1.0))
+            .map(|&j| PERTURBATION * x[j].abs().max(floor))
             .collect();
         for (&j, d) in colour.iter().zip(&deltas) {
             xp[j] = x[j] + d;
@@ -247,18 +323,20 @@ fn factorise(s: &Structure, f: &Rhs<'_>, t: f64, x: &[f64], f0: &[f64], ch: f64)
         .map_err(|e| SimError::Block(format!("implicit method: the matrix is singular ({e:?})")))
 }
 
-/// Solve `y − c·h·f(t, y) = r` for `y` by Newton's method from `y`.
-fn stage(
+/// Newton's iterations for `y − c·h·f(t, y) = r` from `y` with one
+/// factorised matrix.
+fn iterate(
     f: &Rhs<'_>,
     (s, lu): (&Structure, &Factor),
     t: f64,
     ch: f64,
     r: &[f64],
     y: &mut [f64],
-) -> Result<()> {
+) -> std::result::Result<(), Failure> {
     let n = y.len();
     let mut fy = vec![0.0; n];
     let mut g = vec![0.0; n];
+    let right = r.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     for _ in 0..MAX_ITERATIONS {
         f(t, y, &mut fy);
         for i in 0..n {
@@ -266,26 +344,117 @@ fn stage(
         }
         lu.solve(s, &mut g);
         let mut size = 0.0f64;
-        let mut scale = 1.0f64;
+        let mut scale = right;
         for i in 0..n {
             y[i] -= g[i];
             size = size.max(g[i].abs());
             scale = scale.max(y[i].abs());
         }
-        if !size.is_finite() {
-            break;
+        // `max` passes over NaN, so each correction is looked at.
+        if !(size.is_finite() && g.iter().all(|v| v.is_finite())) {
+            return Err(Failure::NotANumber);
         }
         if size <= TOLERANCE * scale {
             return Ok(());
         }
     }
-    Err(SimError::Block(
-        "an implicit step did not converge (Newton's method): take a shorter step or more substeps"
-            .into(),
-    ))
+    Err(Failure::NotConverged)
 }
 
-/// Advance `x` from `t` to `t + dt` in `substeps` steps of `scheme`.
+/// What solves a stage: the structure, the factorised matrix `I − c·h·J`
+/// (replaced when a stage takes the Jacobian afresh, and then used for
+/// the rest of the step) and `c·h`.
+struct Solver<'a> {
+    s: &'a Structure,
+    lu: Factor,
+    ch: f64,
+}
+
+/// Solve `y − c·h·f(t, y) = r` for `y` by Newton's method from `y`:
+/// with the step's matrix, and if that fails with the Jacobian taken
+/// afresh at every iteration, from where the first got to, or from the
+/// start again if it ran off to values that are not numbers.
+fn stage(f: &Rhs<'_>, solver: &mut Solver<'_>, t: f64, r: &[f64], y: &mut [f64]) -> Result<()> {
+    let from = y.to_vec();
+    let failure = match iterate(f, (solver.s, &solver.lu), t, solver.ch, r, y) {
+        Ok(()) => return Ok(()),
+        Err(failure) => failure,
+    };
+    if failure == Failure::NotANumber {
+        y.copy_from_slice(&from);
+    }
+    let n = y.len();
+    let right = r.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    let mut fy = vec![0.0; n];
+    let mut g = vec![0.0; n];
+    for _ in 0..MAX_FRESH {
+        f(t, y, &mut fy);
+        if fy.iter().any(|v| !v.is_finite()) {
+            return Err(Failure::NotANumber.error());
+        }
+        solver.lu = factorise(solver.s, f, t, y, &fy, solver.ch)?;
+        for i in 0..n {
+            g[i] = y[i] - solver.ch * fy[i] - r[i];
+        }
+        solver.lu.solve(solver.s, &mut g);
+        let mut size = 0.0f64;
+        let mut scale = right;
+        for i in 0..n {
+            y[i] -= g[i];
+            size = size.max(g[i].abs());
+            scale = scale.max(y[i].abs());
+        }
+        if !(size.is_finite() && g.iter().all(|v| v.is_finite())) {
+            return Err(Failure::NotANumber.error());
+        }
+        if size <= TOLERANCE * scale {
+            return Ok(());
+        }
+    }
+    Err(failure.error())
+}
+
+/// One step of `scheme` from `t0` to `t0 + h`, replacing `x` by the
+/// result. `f0` is `f(t0, x)` (TR-BDF2 reads it).
+fn substep(
+    scheme: Scheme,
+    f: &Rhs<'_>,
+    solver: &mut Solver<'_>,
+    (t0, h): (f64, f64),
+    f0: &[f64],
+    x: &mut [f64],
+) -> Result<()> {
+    let n = x.len();
+    let gamma = 2.0 - std::f64::consts::SQRT_2;
+    let mut r = vec![0.0; n];
+    match scheme {
+        Scheme::BackwardEuler => {
+            r.copy_from_slice(x);
+            stage(f, solver, t0 + h, &r, x)?;
+        }
+        Scheme::TrBdf2 => {
+            let ch = solver.ch;
+            // Trapezoid to t + γh: y − (γh/2)f(y) = x + (γh/2)f(x).
+            for i in 0..n {
+                r[i] = x[i] + ch * f0[i];
+            }
+            let mut y = x.to_vec();
+            stage(f, solver, t0 + gamma * h, &r, &mut y)?;
+            // BDF2 to t + h: z − c·h·f(z) = (y − (1−γ)²·x) / (γ(2−γ)).
+            let w = gamma * (2.0 - gamma);
+            for i in 0..n {
+                r[i] = (y[i] - (1.0 - gamma).powi(2) * x[i]) / w;
+            }
+            let mut z = y;
+            stage(f, solver, t0 + h, &r, &mut z)?;
+            x.copy_from_slice(&z);
+        }
+    }
+    Ok(())
+}
+
+/// Advance `x` from `t` to `t + dt` in `substeps` steps of `scheme`. On an
+/// error `x` is as it was given.
 pub fn advance(
     (scheme, substeps): (Scheme, usize),
     f: &Rhs<'_>,
@@ -308,42 +477,28 @@ pub fn advance(
     let s = ws.structure.as_ref().expect("set above");
     let steps = substeps.max(1);
     let h = dt / steps as f64;
-    let gamma = 2.0 - std::f64::consts::SQRT_2;
     let c = match scheme {
         Scheme::BackwardEuler => 1.0,
-        Scheme::TrBdf2 => gamma / 2.0,
+        Scheme::TrBdf2 => (2.0 - std::f64::consts::SQRT_2) / 2.0,
     };
-    // One Jacobian and factorisation per communication step.
+    // One Jacobian and factorisation per communication step, unless a
+    // stage needs another.
     let mut f0 = vec![0.0; n];
     f(t, x, &mut f0);
-    let lu = factorise(s, f, t, x, &f0, c * h)?;
-    let mut r = vec![0.0; n];
+    let mut solver = Solver {
+        s,
+        lu: factorise(s, f, t, x, &f0, c * h)?,
+        ch: c * h,
+    };
+    let start = x.to_vec();
     for k in 0..steps {
         let t0 = t + k as f64 * h;
-        match scheme {
-            Scheme::BackwardEuler => {
-                r.copy_from_slice(x);
-                stage(f, (s, &lu), t0 + h, h, &r, x)?;
-            }
-            Scheme::TrBdf2 => {
-                // Trapezoid to t + γh: y − (γh/2)f(y) = x + (γh/2)f(x).
-                if k > 0 {
-                    f(t0, x, &mut f0);
-                }
-                for i in 0..n {
-                    r[i] = x[i] + c * h * f0[i];
-                }
-                let mut y = x.to_vec();
-                stage(f, (s, &lu), t0 + gamma * h, c * h, &r, &mut y)?;
-                // BDF2 to t + h: z − c·h·f(z) = (y − (1−γ)²·x) / (γ(2−γ)).
-                let w = gamma * (2.0 - gamma);
-                for i in 0..n {
-                    r[i] = (y[i] - (1.0 - gamma).powi(2) * x[i]) / w;
-                }
-                let mut z = y;
-                stage(f, (s, &lu), t0 + h, c * h, &r, &mut z)?;
-                x.copy_from_slice(&z);
-            }
+        if k > 0 && scheme == Scheme::TrBdf2 {
+            f(t0, x, &mut f0);
+        }
+        if let Err(e) = substep(scheme, f, &mut solver, (t0, h), &f0, x) {
+            x.copy_from_slice(&start);
+            return Err(e);
         }
     }
     Ok(())
