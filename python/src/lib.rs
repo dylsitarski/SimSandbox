@@ -97,6 +97,16 @@ fn utc_now() -> String {
     simsandbox_session::runs::utc_now()
 }
 
+/// A run file's text read and written as every interface does (ADR 0059):
+/// unknown fields and a newer format are refused, and the text returned
+/// is the one form run files are saved in, whatever wrote `text`.
+#[pyfunction]
+fn run_file(text: &str) -> PyResult<String> {
+    simsandbox_session::runs::RunFile::from_json(text)
+        .map(|run| run.to_json())
+        .map_err(|e| ModelError::new_err(e.to_string()))
+}
+
 /// The run file's JSON Schema.
 #[pyfunction]
 fn run_schema() -> &'static str {
@@ -562,6 +572,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_schema, m)?)?;
     m.add_function(wrap_pyfunction!(version_note, m)?)?;
     m.add_function(wrap_pyfunction!(utc_now, m)?)?;
+    m.add_function(wrap_pyfunction!(run_file, m)?)?;
     m.add_function(wrap_pyfunction!(render, m)?)?;
     m.add_function(wrap_pyfunction!(render_diagram, m)?)?;
     m.add_function(wrap_pyfunction!(start_from, m)?)?;

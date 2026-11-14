@@ -427,6 +427,41 @@ def test_inputs_schedules_and_runs_replay_the_same(tmp_path):
         m.run(inputs=[(0.5, "push.z", 1.0)])
 
 
+def test_run_files_are_read_and_written_as_every_interface_does(tmp_path):
+    m = ss.Model(CART)
+    m.save(tmp_path / "cart.ssbx.json")
+    # A schedule written with whole numbers and keys in another order, and
+    # a name outside ASCII: saved in the one form run files have.
+    run = ss.Run(
+        m,
+        inputs=[{"to": 3, "set": "push.y", "t": 1}],
+        track=[(0.5, "push.y", 10.0)],
+        name="poussée",
+        model_path=tmp_path / "cart.ssbx.json",
+    )
+    path = tmp_path / "cart.push.run.json"
+    run.save(path)
+    text = path.read_text(encoding="utf-8")
+    assert '"name": "poussée"' in text
+    assert text.index('"t": 1.0') < text.index('"set": "push.y"') < text.index('"to": 3.0')
+    # Reading it and writing it again gives the same bytes.
+    again = ss.Run.load(path)
+    assert again.to_json(model_path="cart.ssbx.json") + "\n" == text
+    assert again.inputs == [{"t": 1.0, "set": "push.y", "to": 3.0}]
+    assert np.array_equal(again.replay()["cart.v"], run.replay()["cart.v"])
+    # A field run files do not have, or a newer format, is refused on
+    # reading, as the CLI and the app refuse it.
+    import json as _json
+
+    data = _json.loads(text)
+    (tmp_path / "extra.run.json").write_text(_json.dumps({**data, "nope": 1}))
+    with pytest.raises(ss.ModelError, match="extra.run.json.*nope"):
+        ss.Run.load(tmp_path / "extra.run.json")
+    (tmp_path / "newer.run.json").write_text(_json.dumps({**data, "format": 2}))
+    with pytest.raises(ss.ModelError, match="newer.run.json"):
+        ss.Run.load(tmp_path / "newer.run.json")
+
+
 def test_views_render_with_a_runs_input():
     m = ss.Model(CART)
     m.data["controls"] = {"views": [{"type": "plot.xy", "bind": {"x": "t", "y": "cart.v"}}]}

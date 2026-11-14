@@ -820,9 +820,13 @@ class Run:
         """Read a run file and the model it names (relative to it). Warns
         if the model changed since the run was made."""
         with open(path, encoding="utf-8") as f:
-            data = json.loads(f.read())
-        if data.get("format") != 1:
-            raise ModelError(f"{os.fspath(path)}: run file format {data.get('format')!r} is not 1")
+            text = f.read()
+        # Read as the CLI and the app read it: unknown fields and a newer
+        # format are refused.
+        try:
+            data = json.loads(_native.run_file(text))
+        except ModelError as e:
+            raise ModelError(f"{os.fspath(path)}: {e}") from None
         model_path = os.path.join(os.path.dirname(os.fspath(path)), data["model"])
         model = Model.load(model_path)
         settings = data.get("run", {})
@@ -869,7 +873,9 @@ class Run:
 
     def to_json(self, model_path: str | None = None) -> str:
         """The run file's text; ``model_path`` is the model relative to
-        where the run file goes."""
+        where the run file goes. Written by the same code as the app's and
+        checked as a run file is when read, so a run saved here and one
+        saved in the app with the same contents are the same bytes."""
         target = model_path or (os.path.basename(self.model_path) if self.model_path else None)
         if target is None:
             raise ValueError("a run refers to its model file: save the model and pass model_path")
@@ -893,7 +899,7 @@ class Run:
             data["inputs"] = self.inputs
         if self.track:
             data["track"] = [list(e) for e in self.track]
-        return json.dumps(data, indent=2)
+        return _native.run_file(json.dumps(data)).rstrip("\n")
 
     def save(self, path: str | os.PathLike) -> None:
         """Write the run file at ``path``. The model must be saved: the run
