@@ -1,6 +1,6 @@
 # Typed equations: the language
 
-_Last updated: 2026-11-14_
+_Last updated: 2026-11-15_
 
 The lines of an `eq.equations` block's `equations` ([ADR 0017](../decisions/0017-typed-equations.md)), the primary way to build a model ([ADR 0091](../decisions/0091-equations-first-hosting-for-existing-codes.md)). This page is the whole language as the code reads it; the decisions behind each part are in the ADRs it links. Every block of lines marked `ssbx` here is parsed by a test (`crates/simsandbox-eq/tests/reference.rs`), which also checks that every function is listed, so the page cannot fall behind the code.
 
@@ -91,8 +91,8 @@ param NAME[table] [unit] [= expression]   a value per row, which does not change
 ```
 
 - A default is a plain number, not an expression.
-- Every other name used in an equation, a grid's ends, an array's initial value or an edge value is a parameter too, with default 1, in order of first use. (A name used only in a [rule](#rules-between-steps) is not found: declare it.)
-- A value per row is kept with the rows and filled from the table's `start` file; it is an output of the block and has no entry among the parameters. It needs a block with states.
+- Every other name used in an equation, a grid's ends, an array's initial value, an edge value or a [rule](#rules-between-steps) is a parameter too, with default 1, in order of first use (those used only in rules after the others).
+- A value per row is kept with the rows and filled from the table's `start` file; it is an output of the block and has no entry among the parameters. It needs a block with states (`dx/dt = …`, `x' = …` or `x[n+1] = …`).
 
 ### `state`
 
@@ -114,6 +114,7 @@ NAME = expression [unit]          a formula: an output computed at every instant
 ```
 
 - A formula may use formulas defined above it; a state's equation may use any formula.
+- In a map, `x[n]` is `x`, the present value, in every equation and in the [rules](#rules-between-steps); an initial value uses no state.
 - A formula is over the axes its right side uses; a state's right side over fewer axes than the state is spread over them.
 
 ```ssbx
@@ -155,7 +156,7 @@ start NAME = N                     N rows to begin with
 start NAME = file "rows.csv"       rows from a file
 ```
 
-[ADR 0079](../decisions/0079-tables-of-members.md). A table is an axis whose rows have ids and change only between steps, by [rules](#rules-between-steps). A quantity over a table is over it alone. A CSV file has a header of names (a unit may follow in brackets), an optional `id` column, and a column for each state over the table it sets. Files are found from the model's folder.
+[ADR 0079](../decisions/0079-tables-of-members.md). A table has one `start` at most. A table is an axis whose rows have ids and change only between steps, by [rules](#rules-between-steps). A quantity over a table is over it alone. A CSV file has a header of names (a unit may follow in brackets), an optional `id` column, and a column for each state over the table it sets. Files are found from the model's folder.
 
 ```ssbx
 table pts max 12
@@ -179,7 +180,7 @@ start CELLS = grid x 0 .. 1 by 8, y 0 .. 1 by 8
 start CELLS = file "part.msh" at x, y, z
 ```
 
-[ADR 0085](../decisions/0085-meshes-are-tables-of-cells.md). Shapes: `segment`, `triangle`, `quad`, `tetra`, `hexa`, `prism`, `pyramid`, `simplex d`, `box d` (d from 1 to 6). A starting grid makes the points and the cells (simplices, or boxes for `quad`, `hexa`, `box d`); a mesh file is Gmsh ASCII. Each coordinate a start names must be a state over the points table. Prisms and pyramids have no `sides` yet.
+[ADR 0085](../decisions/0085-meshes-are-tables-of-cells.md). Shapes: `segment`, `triangle`, `quad`, `tetra`, `hexa`, `prism`, `pyramid`, `simplex d`, `box d` (d from 1 to 6). A starting grid makes the points and the cells (simplices, or boxes for `quad`, `hexa`, `box d`); a mesh file is Gmsh ASCII. A grid or a mesh file starts `cells` (`cells c of pts: segment` for a line of them), not `edges`. Each coordinate a start names must be a state over the points table. Prisms and pyramids have no `sides` yet.
 
 ```ssbx
 table pts
@@ -194,14 +195,15 @@ dp/dt = -outflow(Q, segs)
 
 ```ssbx
 table pts
-state x[pts]
-state y[pts]
+state x[pts] [m]
+state y[pts] [m]
 x[n+1] = x
 y[n+1] = y
 cells c of pts: quad
 start c = grid x 0 .. 1 by 2, y 0 .. 1 by 2
 sides f of c
-A = measure(c, x, y)
+A = measure(c, x, y) [m^2]
+L = measure(f, x, y) [m]
 ```
 
 ### Rules between steps
@@ -265,7 +267,7 @@ Applied cell by cell to arrays; arguments over different axes spread over all of
 | `lap(T)` | The sum of second differences along each of `T`'s axes, which need one unit | `T`'s over the axis's squared |
 | `ddx(T)`, `dd(T, x)` | The central difference along axis `x` (`dd` followed by the axis's name, or the axis second) | `T`'s over the axis's |
 | `prev(T)`, `next(T)`, `prev(T, x)` | The neighbouring cell's value along the axis (named when `T` has several). Beyond an end: the held value, the end cell's plus the gradient times the spacing, or the far end | `T`'s |
-| `spacing(x)` | The width of axis `x`'s cells, one value | The axis's |
+| `spacing(x)` | The width of grid axis `x`'s cells, one value (a table's rows have none) | The axis's |
 | `sum(e)` `mean(e)` `minof(e)` `maxof(e)` | One value over all cells; over more than 4096 cells sums add in fixed chunks, the same bits on any machine ([ADR 0077](../decisions/0077-sums-in-fixed-chunks.md)) | `e`'s |
 | `sum(e, x)` and the others | The same along one axis, over those left | `e`'s |
 | `argminof(e)` `argmaxof(e)` | The cell's number, counted from 0 (the first of equals); with an axis, the place along it | None |
@@ -280,18 +282,18 @@ Applied cell by cell to arrays; arguments over different axes spread over all of
 | --- | --- | --- |
 | `id(tbl)` | Each row's id | None |
 | `rows(tbl)` | The number of rows now | None |
-| `of(T, i)` | `T` in the row whose id is `i`; NaN if there is none | `T`'s |
+| `of(T, i)` | `T` in the row whose id is `i`; NaN if there is none | `T`'s; `i` has none |
 | `from_end(T, e)`, `to_end(T, e)` | `T` (over the points) at each edge's first and second end | `T`'s |
 | `corner(T, c, k)` | `T` at corner `k` of each cell | `T`'s |
 | `outflow(F, e)` | Over an edge table: for each point, the flows `F` leaving along its edges less those arriving. Over sides: for each cell, the sum of `F` over its sides, outward | `F`'s |
 | `centre(T, c)` | The mean of `T` over each row's corners | `T`'s |
-| `measure(c, x, y)` | Each row's length, area or volume from its corners' coordinates | See the limits below |
-| `normal(f, k, x, y)` | Component `k` of each side's unit normal, outward from its inner cell | None |
+| `measure(c, x, y)` | Each row's length, area or volume from its corners' coordinates | The coordinates', which need one unit, to the power of the shape's dimension: a segment's length in it, an area in its square, a volume in its cube, a point (a segment's side) none |
+| `normal(f, k, x, y)` | Component `k` (a whole number from 0) of each side's unit normal, outward from its inner cell | None; the coordinates need one unit |
 | `inner(u, f)`, `outer(u, f)` | `u` (over the cells) in the cell on each side of a side | `u`'s |
 | `across(u, f)` | `u` in the outer cell, or at the boundary the inner | `u`'s |
 | `boundary(f)` | 1 for a side on the boundary, else 0 | None |
 
-`lap`, `dd`, `prev`, `next` and `on` work along grids, not tables: rows have no neighbours by place, only by the edges and sides that join them.
+`lap`, `dd`, `prev`, `next`, `spacing` and `on` work along grids, not tables: rows have no neighbours by place, only by the edges and sides that join them. Where a call's later arguments name a table or an axis, or are a plain number (a corner, a component), they have no unit to check.
 
 A study's `reduce` formulas have functions of their own over a run in time (`final`, `mean`, `min`, `max`, `amplitude`, `period`, `first_time`, `at_times`, `at_samples`; [headless guide](../guides/headless.md)); they are not part of this language.
 
@@ -299,19 +301,12 @@ A study's `reduce` formulas have functions of their own over a run in time (`fin
 
 - **Ports**: the inputs; then each state and each formula as an output of its name; then each grid axis as an output of its cells' centres; then each table of cells started from a grid or mesh as an output of its corners.
 - **Shapes**: one value; a line of cells (one axis); a grid (two); a tensor (more, up to 8); rows (over a table).
-- **Parameters**: those declared, in order (with `x0` for `state x = …` and `m[0]`, `m[1]`, … for a parameter per cell); then every other name in order of first use; then `x0` for each scalar state without one.
+- **Parameters**: those declared, in order (with `x0` for `state x = …` and `m[0]`, `m[1]`, … for a parameter per cell); then every other name in order of first use (in the equations, the grids' ends, initial values and edge values, then in the rules); then `x0` for each scalar state without one.
 
 `simsandbox check FILE` reports all of these for a model as written.
 
 ## Known limits and faults
 
-Found while writing this page (2026-11-14); each is a fault to fix, not a rule to rely on.
+A fault to fix, not a rule to rely on (found 2026-11-15).
 
-- `measure` has no unit where units are checked: `A = measure(c, x, y) [m^2]` is refused. Its coordinates' units are not looked at.
-- Arguments after the first are not unit-checked in `of`, `on`, `corner`, `from_end`, `to_end`, `inner`, `outer`, `across`, `outflow`.
-- A name used only in a rule is not made a parameter: it is an unknown name unless declared.
-- `param g[table]` needs a line written `d…/dt =` or `…[n+1] =`: with only `x' = …` states it is refused.
-- `x[n]` for the present value is read only on the right of a map's equations, not in rules or initial values.
-- `start EDGES = grid …` is refused with a message about a state `x[]`.
-- `spacing(table)` gives 1 instead of an error; `normal`'s component is not checked to be a whole number.
-- A repeated `start` for one table silently takes the last.
+- A rule's condition and values are not unit-checked: `remove pts where age > lim` is accepted with `age` in seconds and `lim` in metres, and a value given to a new row is not held to its state's unit.

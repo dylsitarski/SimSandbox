@@ -256,6 +256,10 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- Typed equations: `measure(c, x, y)` is in the coordinates' unit to the cells' dimension (`[m^2]` for a quad's area; it had no unit, so such a line was refused where units are checked), `normal` is dimensionless, and both want their coordinates in one unit; the id in `of(T, i)` has no unit.
+- Typed equations: a name used only in a rule (`remove pts where age > lim`) is a parameter like any other, after those of the equations; it was an unknown name.
+- Typed equations: `param g[table]` works in a block whose states are written `x' = …` or `d x / dt = …`; a map's rules may write `x[n]` for the present value.
+- Typed equations: errors where there was a wrong message or none: `start` of an edge table as a grid, `spacing` of a table, a normal's component that is not a whole number, a second `start` for one table (the last was taken silently), and a line number for an error in what `param g[table]` stands for.
 - A model's diagram and Inspector could not build typed equations that start a table or mesh from a file ("cannot be built"); they now read the files from the model's folder.
 - A model integrating states over table rows in time (meshes, networks) with an end time was run as an iteration in rounds; it runs in time.
 - Outputs of states over cells, sides or edges (ADR 0085) gave the cells' corner ids instead of the states' values, in views and in `run` output.

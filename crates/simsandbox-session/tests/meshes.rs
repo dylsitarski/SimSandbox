@@ -121,6 +121,33 @@ fn every_shape_has_its_measure_sides_and_outward_normals() {
     );
 }
 
+/// With units (ADR 0045), a measure is in the coordinates' unit to the
+/// power of the cells' dimension, and shown in the unit written.
+#[test]
+fn measures_have_units() {
+    let eqs: Vec<String> = [
+        "table pts",
+        "state x[pts] [cm]",
+        "state y[pts] [cm]",
+        "x[n+1] = x",
+        "y[n+1] = y",
+        "cells c of pts: quad",
+        "start c = grid x 0 .. 2 by 2, y 0 .. 1 by 1",
+        "sides f of c",
+        "area = sum(measure(c, x, y)) [cm^2]",
+        "si = sum(measure(c, x, y))",
+        "around = sum(boundary(f)*measure(f, x, y)) [mm]",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let y = run(&block(&eqs), &registry(), None, None).unwrap();
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-12 * b.abs();
+    assert!(close(last(&y, "m.area"), 2.0), "{}", last(&y, "m.area"));
+    assert!(close(last(&y, "m.si"), 2e-4), "{}", last(&y, "m.si"));
+    assert!(close(last(&y, "m.around"), 60.0));
+}
+
 #[test]
 fn sides_keep_their_ids_when_cells_go() {
     // Remove the cells right of x = 1 after the first step: sides still

@@ -375,8 +375,9 @@ struct Axis {
 /// the row through rules and set by the table's starting file. Written as
 /// a state over the rows that holds (`dg/dt = 0`, or `g[n+1] = g` in a
 /// block of maps), so it is stored, rewound and passed on as states are.
-/// Lines are kept in place, so errors keep their line numbers.
-fn row_params(lines: &[String]) -> Vec<String> {
+/// Lines are kept in place, so errors keep their line numbers; the
+/// holding lines come after them, each with the line of its `param`.
+fn row_params(lines: &[String]) -> (Vec<String>, Vec<usize>) {
     let tables: Vec<&str> = lines
         .iter()
         .filter_map(|l| {
@@ -387,18 +388,10 @@ fn row_params(lines: &[String]) -> Vec<String> {
                 .and_then(|r| r.split_whitespace().next())
         })
         .collect();
-    let lhs = |l: &str| l.split_once('=').map(|(a, _)| a.trim().to_string());
-    let continuous = lines
-        .iter()
-        .filter_map(|l| lhs(l))
-        .any(|a| a.starts_with('d') && a.ends_with("/dt"));
-    let maps = lines
-        .iter()
-        .filter_map(|l| lhs(l))
-        .any(|a| a.ends_with("[n+1]"));
+    let (continuous, maps) = dynamics(lines);
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut held = Vec::new();
-    for l in lines {
+    for (k, l) in lines.iter().enumerate() {
         let t = l.trim();
         let over_rows = t.strip_prefix("param ").and_then(|rest| {
             let head = rest.split_once('=').map_or(rest, |(h, _)| h);
@@ -417,19 +410,53 @@ fn row_params(lines: &[String]) -> Vec<String> {
                     format!("state {rest} = 1")
                 };
                 out.push(line);
-                held.push(n);
+                held.push((n, k + 1));
             }
             _ => out.push(l.clone()),
         }
     }
-    for n in held {
+    let mut from = Vec::with_capacity(held.len());
+    for (n, line) in held {
         out.push(if continuous {
             format!("d{n}/dt = 0")
         } else {
             format!("{n}[n+1] = {n}")
         });
+        from.push(line);
     }
-    out
+    (out, from)
+}
+
+/// The words that begin a statement other than an equation.
+const STATEMENTS: [&str; 14] = [
+    "grid", "table", "edges", "cells", "sides", "start", "remove", "add", "split", "merge", "edge",
+    "state", "param", "input",
+];
+
+/// What follows `word` on a line that is its statement. `param = 2` and
+/// the like are equations defining such a name.
+fn statement(line: &str, word: &str) -> Option<String> {
+    let rest = line.strip_prefix(word)?.strip_prefix(' ')?;
+    (!rest.trim_start().starts_with('=')).then(|| rest.to_string())
+}
+
+/// Whether the lines give a continuous state (`dx/dt = …`, `x' = …`) and
+/// whether a map's (`x[n+1] = …`), by the equations' left sides as
+/// [`read_lhs`] reads them.
+fn dynamics(lines: &[String]) -> (bool, bool) {
+    let (mut continuous, mut maps) = (false, false);
+    for l in lines {
+        let t = l.trim();
+        if t.starts_with('#') || STATEMENTS.iter().any(|w| statement(t, w).is_some()) {
+            continue;
+        }
+        match l.split_once('=').and_then(|(lhs, _)| read_lhs(lhs)) {
+            Some(Lhs::State(_)) => continuous = true,
+            Some(Lhs::Map(_)) => maps = true,
+            _ => {}
+        }
+    }
+    (continuous, maps)
 }
 
 /// The most rows a table has unless it says (`table pts max 200`).
@@ -1372,6 +1399,11 @@ fn mesh_expansion(name: &str, args: &[Ast], grid: &[Axis]) -> std::result::Resul
                     "'normal' takes a component's number second, e.g. normal(f, 0, x, y)".into(),
                 );
             };
+            if k.fract() != 0.0 || *k < 0.0 {
+                return Err(format!(
+                    "a normal's component is a whole number from 0, not {k}: normal(f, 0, x, y)"
+                ));
+            }
             let c = grid[f].sides_of.expect("sides");
             crate::mesh::normal(
                 &grid[f].name,
@@ -1739,13 +1771,24 @@ fn axes_of(
             Ok(axes)
         }
         "spacing" => {
-            if args.len() != 1 || axis_named(&args[0]).is_none() {
-                return Err((
+            let axis = args
+                .first()
+                .and_then(axis_named)
+                .filter(|_| args.len() == 1);
+            match axis {
+                Some(a) if grid[a].table.is_some() => Err((
+                    col,
+                    format!(
+                        "'spacing' takes a grid's axis; {} is a table, whose rows have no spacing",
+                        names[a]
+                    ),
+                )),
+                Some(_) => Ok(Vec::new()),
+                None => Err((
                     col,
                     format!("'spacing' takes an axis: spacing({})", names[0]),
-                ));
+                )),
             }
-            Ok(Vec::new())
         }
         "on" => {
             count(args.len() == 3, "a quantity and two axes, e.g. on(J, p, q)")?;
@@ -2238,12 +2281,35 @@ impl EquationSet {
         lines: &[String],
         rows: &std::collections::BTreeMap<String, usize>,
     ) -> Result<Self> {
-        let lines = &row_params(lines);
-        // `param = 2` and the like are equations defining such a name.
-        let keyword = |line: &str, word: &str| -> Option<String> {
-            let rest = line.strip_prefix(word)?.strip_prefix(' ')?;
-            (!rest.trim_start().starts_with('=')).then(|| rest.to_string())
-        };
+        let written = lines.len();
+        let (lines, from) = row_params(lines);
+        Self::parse_lines(name, &lines, rows).map_err(|e| {
+            // A mistake on a line holding a parameter over rows is one of
+            // its `param` line: the line written.
+            let SimError::InvalidDefinition(m) = &e else {
+                return e;
+            };
+            let at = m
+                .strip_prefix("line ")
+                .and_then(|r| r.split_once(", column "))
+                .and_then(|(l, r)| Some((l.parse::<usize>().ok()?, r.split_once(": ")?.1)));
+            match at {
+                Some((l, what)) if l > written => definition_error(from[l - written - 1], 1, what),
+                _ => e,
+            }
+        })
+    }
+
+    /// The lines as [`row_params`] gives them, compiled.
+    fn parse_lines(
+        name: &str,
+        lines: &[String],
+        rows: &std::collections::BTreeMap<String, usize>,
+    ) -> Result<Self> {
+        let keyword = statement;
+        // A map's rules may write a state's present value `x[n]`, as its
+        // equations may.
+        let (_, maps) = dynamics(lines);
         // Units by name, as declared (ADR 0045).
         let mut units: std::collections::HashMap<String, Unit> = Default::default();
         // The grid first (ADR 0060): declarations further down refer to
@@ -2272,6 +2338,8 @@ impl EquationSet {
                 cell_decls.insert(name, (of, shape));
             }
         }
+        // Each table's `start` line: one at most.
+        let mut started: std::collections::HashMap<String, usize> = Default::default();
         for (k, text) in lines.iter().enumerate() {
             let Some(rest) = keyword(text.trim(), "start") else {
                 continue;
@@ -2281,6 +2349,17 @@ impl EquationSet {
             let Some((t, n)) = rest.split_once('=') else {
                 return Err(definition_error(k + 1, 1, usage));
             };
+            if let Some(first) = started.insert(t.trim().to_string(), k + 1) {
+                return Err(definition_error(
+                    k + 1,
+                    1,
+                    format!(
+                        "{} has two starts, on lines {first} and {}: give it one",
+                        t.trim(),
+                        k + 1
+                    ),
+                ));
+            }
             if n.trim() == "chain" {
                 chains.insert(t.trim().to_string(), k + 1);
                 continue;
@@ -2517,15 +2596,23 @@ impl EquationSet {
             grid.push(a);
         }
         let axes: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
-        if let Some((t, (_, line))) = grid_starts.iter().find(|(t, _)| {
-            !grid
+        // Declared with `cells` (an edge table has the segment's shape
+        // too, but starts as a chain or from a file).
+        if let Some((t, (_, line))) = grid_starts
+            .iter()
+            .find(|(t, _)| !cell_decls.contains_key(*t))
+        {
+            let edges = grid
                 .iter()
-                .any(|a| &a.name == *t && a.shape.is_some() && a.sides_of.is_none())
-        }) {
+                .any(|a| &a.name == t && a.shape.is_some() && a.sides_of.is_none());
             return Err(definition_error(
                 *line,
                 1,
-                format!("'{t}' is not a table of cells: a grid starts cells ('cells {t} of pts: triangle')"),
+                if edges {
+                    format!("'{t}' is an edge table, which starts as a chain or from a file ('start {t} = chain', 'start {t} = file \"wires.csv\"'): a grid starts cells ('cells {t} of pts: segment')")
+                } else {
+                    format!("'{t}' is not a table of cells: a grid starts cells ('cells {t} of pts: triangle')")
+                },
             ));
         }
         if let Some((t, line)) = chains.iter().find(|(t, _)| {
@@ -2591,8 +2678,14 @@ impl EquationSet {
                 .into_iter()
                 .find(|w| keyword(trimmed, w).is_some())
             {
-                let rest = keyword(trimmed, word).expect("found");
-                rule_lines.push(read_rule(text, word, &rest, number)?);
+                // `[n]` blanked, so columns stay put.
+                let text = if maps {
+                    text.replace("[n]", "   ")
+                } else {
+                    text.clone()
+                };
+                let rest = keyword(text.trim(), word).expect("found");
+                rule_lines.push(read_rule(&text, word, &rest, number)?);
                 continue;
             }
             if let Some(rest) = keyword(trimmed, "edge") {
@@ -3168,6 +3261,19 @@ impl EquationSet {
             EdgeKind::Value(a) | EdgeKind::Gradient(a) => Some(a),
             EdgeKind::Periodic => None,
         }));
+        // Then the rules' conditions and values (a transfer's name, `copy`
+        // or `mean`, is not a quantity).
+        for r in &rule_lines {
+            used.push(&r.cond);
+            let transfers = matches!(r.kind, RuleKind::Split | RuleKind::Merge);
+            for (_, ast, _) in r.add.iter().flat_map(|a| &a.1) {
+                let transfer = transfers
+                    && matches!(ast, Ast::Name(n, _) if matches!(n.as_str(), "mean" | "copy" | "share" | "sum"));
+                if !transfer {
+                    used.push(ast);
+                }
+            }
+        }
         for ast in used {
             for (n, _) in ast.names() {
                 if !known(&n) && !params.contains(&n) {
@@ -3249,12 +3355,18 @@ impl EquationSet {
             }
         }
         if kind == Kind::Map {
-            if let Some(line) = parsed
+            let uses_n = |a: &Ast| a.names().iter().any(|(n, _)| n == "n");
+            let in_rule = |r: &&RuleLine| {
+                uses_n(&r.cond) || r.add.iter().flat_map(|a| &a.1).any(|g| uses_n(&g.1))
+            };
+            let line = parsed
                 .iter()
-                .find(|l| l.ast.names().iter().any(|(n, _)| n == "n"))
-            {
+                .find(|l| uses_n(&l.ast))
+                .map(|l| l.number)
+                .or_else(|| rule_lines.iter().find(in_rule).map(|r| r.line));
+            if let Some(line) = line {
                 return Err(definition_error(
-                    line.number,
+                    line,
                     1,
                     "'n' is the step number in maps and cannot be used in equations yet",
                 ));
@@ -3614,6 +3726,24 @@ impl EquationSet {
                 .position(|a| *a == name)
                 .map_or(NO_DIM, |i| axis_dims[i])
         };
+        // A mesh's coordinates are in one unit.
+        let one_unit = |name: &str,
+                        coords: &[(&Ast, Dim)],
+                        col: usize|
+         -> std::result::Result<Dim, (usize, String)> {
+            let first = coords.first().map_or(NO_DIM, |a| a.1);
+            match coords.iter().find(|a| a.1 != first) {
+                Some((a, d)) => Err((
+                    a.names().first().map_or(col, |n| n.1),
+                    format!(
+                        "'{name}' takes coordinates in one unit, not {} and {}",
+                        dim_text(first),
+                        dim_text(*d)
+                    ),
+                )),
+                None => Ok(first),
+            }
+        };
         // Array operations' units: a stencil divides by the axis unit.
         let apply_dim = |name: &str,
                          args: &[(&Ast, Dim)],
@@ -3672,6 +3802,32 @@ impl EquationSet {
                 }
                 // A cell number (ADR 0070).
                 "argminof" | "argmaxof" => NO_DIM,
+                "of" => {
+                    if args.get(1).is_some_and(|a| a.1 != NO_DIM) {
+                        return Err((col, "a row's id has no unit".into()));
+                    }
+                    d
+                }
+                // A length, area or volume: the coordinates' unit to the
+                // power of the cells' dimension (a point counts 1).
+                "measure" => {
+                    let power = match args[0].0 {
+                        Ast::Name(n, _) => grid.iter().find(|g| &g.name == n),
+                        _ => None,
+                    }
+                    .and_then(|g| g.shape)
+                    .map_or(0, |s| s.dim());
+                    let x = one_unit(name, args.get(1..).unwrap_or_default(), col)?;
+                    dim_pow(x, power as i8).ok_or_else(|| (col, DIM_TOO_HIGH.to_string()))?
+                }
+                // A direction.
+                "normal" => {
+                    one_unit(name, args.get(2..).unwrap_or_default(), col)?;
+                    NO_DIM
+                }
+                // The first argument's: `centre(T, c)` and a value read
+                // elsewhere (`from_end(T, e)`, `inner(u, f)`); those after
+                // it name tables and axes or are plain numbers.
                 _ => d,
             })
         };
@@ -6734,6 +6890,220 @@ mod tests {
             "c = at(u, 1, 3)"
         ])
         .contains("along y is a whole number from 0 to 2"));
+    }
+
+    /// Quads over [0, 2] × [0, 1] with their sides, coordinates in metres.
+    const QUADS: [&str; 8] = [
+        "table pts",
+        "state x[pts] [m]",
+        "state y[pts] [m]",
+        "x[n+1] = x",
+        "y[n+1] = y",
+        "cells c of pts: quad",
+        "start c = grid x 0 .. 2 by 2, y 0 .. 1 by 1",
+        "sides f of c",
+    ];
+
+    fn with<'a>(base: &[&'a str], extra: &[&'a str]) -> Vec<&'a str> {
+        base.iter().chain(extra).copied().collect()
+    }
+
+    #[test]
+    fn a_measure_is_in_the_coordinates_unit_to_the_cells_dimension() {
+        let s = set(&with(
+            &QUADS,
+            &[
+                "A = measure(c, x, y) [m^2]",
+                "L = measure(f, x, y) [m]",
+                "V = sum(measure(c, x, y))",
+                "nx = normal(f, 0, x, y) + 1",
+                "xc = centre(x, c) [m]",
+            ],
+        ))
+        .unwrap();
+        // Without a unit written, the right side's.
+        let v = s.spec().ports.iter().find(|p| p.name == "V").unwrap();
+        assert_eq!(v.unit.dim, unit("m^2").dim);
+        let e = error(&with(&QUADS, &["A = measure(c, x, y) [m]"]));
+        assert!(e.contains("A is in m but the right side is in m^2"), "{e}");
+        // A segment's side is a point, which counts 1.
+        set(&[
+            "table pts",
+            "state x[pts] [m]",
+            "x[n+1] = x",
+            "cells c of pts: segment",
+            "start c = grid x 0 .. 1 by 2",
+            "sides p of c",
+            "L = measure(c, x) [m]",
+            "k = measure(p, x) + 1",
+        ])
+        .unwrap();
+        // The coordinates share one unit.
+        let mut mixed = QUADS.to_vec();
+        mixed[2] = "state y[pts] [s]";
+        let e = error(&with(&mixed, &["A = measure(c, x, y)"]));
+        assert!(
+            e.starts_with(
+                "line 9, column 19: 'measure' takes coordinates in one unit, not m and s"
+            ),
+            "{e}"
+        );
+        let e = error(&with(&mixed, &["nx = normal(f, 0, x, y)"]));
+        assert!(
+            e.contains("'normal' takes coordinates in one unit, not m and s"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_row_s_id_has_no_unit() {
+        let rows = [
+            "table pts",
+            "start pts = 2",
+            "state a[pts] [K] = 1",
+            "a[n+1] = a",
+        ];
+        set(&with(&rows, &["param i = 1", "b = of(a, i) [K]"])).unwrap();
+        let e = error(&with(&rows, &["param i [m] = 1", "b = of(a, i)"]));
+        assert!(
+            e.starts_with("line 6, column 5: a row's id has no unit"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn names_used_only_in_rules_are_parameters_after_the_others() {
+        let s = set(&[
+            "table pts max 12",
+            "start pts = 3",
+            "state age[pts] = id(pts)",
+            "age[n+1] = age + step",
+            "remove pts where age > lim",
+            "add pts where rows(pts) < low: age = fresh",
+            "edges segs of pts",
+            "start segs = chain",
+            "split segs where 0: age = copy",
+        ])
+        .unwrap();
+        let names: Vec<&str> = s.spec().params.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["step", "lim", "low", "fresh"]);
+        assert!(s.spec().params.iter().all(|p| p.default == 1.0));
+    }
+
+    #[test]
+    fn a_parameter_over_rows_holds_beside_states_however_written() {
+        for rate in ["x' = -g*x", "d x / dt = -g*x", "dx/dt = -g*x"] {
+            let s = set(&[
+                "table pts",
+                "start pts = 2",
+                "state x[pts] = 1",
+                rate,
+                "param g[pts] = 2",
+            ])
+            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+            assert_eq!(s.tables()[0].columns, ["x", "g"], "{rate}");
+        }
+        // A mistake on the line that holds it is one of its `param` line.
+        let e = error(&[
+            "table pts",
+            "start pts = 2",
+            "state x[pts] = 1",
+            "x' = -x",
+            "param g[pts] = 2",
+            "g = 3",
+        ]);
+        assert_eq!(e, "line 5, column 1: 'g' is defined twice");
+    }
+
+    #[test]
+    fn a_map_s_rules_read_the_present_value_as_its_equations_do() {
+        let lines = |now: &str| {
+            [
+                "table pts max 12".to_string(),
+                "start pts = 3".to_string(),
+                "state age[pts] = id(pts)".to_string(),
+                format!("age[n+1] = {now} + 1"),
+                format!("remove pts where {now} > 6"),
+                format!("add pts from pts where {now} < 1.5: age = {now}/2"),
+            ]
+        };
+        let a = EquationSet::parse("m", &lines("age[n]")).unwrap();
+        let b = EquationSet::parse("m", &lines("age")).unwrap();
+        assert_eq!(a.code(), b.code());
+        // Columns stay put.
+        let e = error(&[
+            "table pts",
+            "start pts = 3",
+            "state age[pts]",
+            "age[n+1] = age",
+            "remove pts where age[n] > sum(2)",
+        ]);
+        assert!(e.starts_with("line 5, column 27:"), "{e}");
+        let e = error(&[
+            "table pts",
+            "start pts = 3",
+            "state age[pts]",
+            "age[n+1] = age",
+            "remove pts where age > n",
+        ]);
+        assert!(e.contains("'n' is the step number"), "{e}");
+    }
+
+    #[test]
+    fn a_grid_starts_cells_not_edges() {
+        let e = error(&[
+            "table pts",
+            "start pts = 3",
+            "state p[pts]",
+            "p[n+1] = p",
+            "edges segs of pts",
+            "start segs = grid x 0 .. 1 by 2",
+        ]);
+        assert!(
+            e.starts_with(
+                "line 6, column 1: 'segs' is an edge table, which starts as a chain or from a file"
+            ),
+            "{e}"
+        );
+        // Cells that are segments start from a grid.
+        set(&[
+            "table pts",
+            "state x[pts]",
+            "x[n+1] = x",
+            "cells segs of pts: segment",
+            "start segs = grid x 0 .. 1 by 2",
+        ])
+        .unwrap();
+    }
+
+    #[test]
+    fn rows_have_no_spacing_and_a_normal_s_component_is_a_whole_number() {
+        let e = error(&with(&QUADS, &["h = spacing(pts)"]));
+        assert!(
+            e.starts_with("line 9, column 5: 'spacing' takes a grid's axis; pts is a table"),
+            "{e}"
+        );
+        let e = error(&with(&QUADS, &["k = normal(f, 0.7, x, y)"]));
+        assert!(
+            e.contains("a normal's component is a whole number from 0, not 0.7"),
+            "{e}"
+        );
+        set(&with(&QUADS, &["k = normal(f, 1, x, y)"])).unwrap();
+    }
+
+    #[test]
+    fn a_table_has_one_start() {
+        let e = error(&[
+            "table pts",
+            "start pts = 2",
+            "start pts = 3",
+            "state a[pts]",
+            "a[n+1] = a",
+        ]);
+        assert_eq!(
+            e,
+            "line 3, column 1: pts has two starts, on lines 2 and 3: give it one"
+        );
     }
 
     #[test]

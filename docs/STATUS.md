@@ -1,6 +1,6 @@
 # Status
 
-_Last updated: 2026-11-14_
+_Last updated: 2026-11-15_
 
 **Phase:** 2 · Breadth ([roadmap](roadmap.md#phase-2--breadth), order and scope in [ADR 0057](decisions/0057-phase-2-plan.md)). **Gate:** an interactive cart-pole replayed bit for bit. Items 1 (inputs) and 2 (typed arrays, implicit methods) done; probes, nested models and experiments were added on the way. Phase 1's gate (the grazing model, an ODE and agents in one graph) was met 2026-10-22 and confirmed by the owner on Linux and Windows on 2026-10-23; Phase 0's (Lorenz live with sliders) on 2026-10-16.
 
@@ -35,6 +35,7 @@ _Last updated: 2026-11-14_
 
 The last week; older entries are in the [status archive](status-archive.md), user-visible changes in the [changelog](../CHANGELOG.md).
 
+- 2026-11-15: the eight faults of typed equations listed in the reference are fixed, each with a test that failed before: `measure` and `normal` have units and want coordinates in one unit; `of`'s id has none; names used only in rules are parameters; `param g[table]` works beside states written `x' = …`; a map's rules read `x[n]`; `start EDGES = grid` and `spacing(table)` say what is wrong; a normal's component is a whole number; a table has one `start`. No model that parsed changes: every example the same bytes. First step of review W6.
 - 2026-11-14: loading a model that uses models built each used model three times; now twice, and a block of a large grid builds in a third of the work (its half million state names were written with `format!`): [performance](design/performance.md#loading-models-of-large-grids-2026-11-14). The same bytes for every example. One build instead of two needs blocks that can move between models under new names ([ADR 0090](decisions/0090-one-engine-for-nested-models.md), as built).
 - 2026-11-14: the old runner of models that use models is deleted ([ADR 0090](decisions/0090-one-engine-for-nested-models.md) point 3, the owner's word): 1 500 lines less, its tests now stating what the one engine does. Every example the same bytes.
 - 2026-11-14: Python's `Run.load` and `Run.save` go through the run-file code of the CLI and the app (owner: the change of bytes is once): one written form whatever saves a run, and the same refusals on reading. This finishes review W10.
@@ -113,7 +114,7 @@ Items 1 and 2 have only parts that wait for a model to need them, so item 3 is t
 - Physical (acausal) ports are not implemented, and will not be in typed equations: acausal physics is to come from Modelica through FMI import ([ADR 0084](decisions/0084-where-typed-equations-stop.md)), not built yet.
 - One model uses several cores only for array phases of at least 2^20 cell operations (about 512 × 512 cells on this 4-core machine), and only cell-by-cell work: integrators' vector updates run on one core below 2^20 state values, Dormand–Prince's at any size (sums over 2^20 cells or more use several, ADR 0077) ([performance](design/performance.md)).
 - The master uses a fixed step with no coupling-error estimate, iteration or rollback.
-- Typed equations: eight small faults found while writing the reference, listed at [its end](reference/typed-equations.md#known-limits-and-faults) (`measure` has no unit where units are checked; a name used only in a rule is not made a parameter; `param g[table]` with only `x' = …` states is refused; others). To fix with the front end's restructuring (review W6), each with a test.
+- Typed equations: a rule's condition and values are not unit-checked ([reference](reference/typed-equations.md#known-limits-and-faults)); `copy` and `share` are not reserved, so a parameter of either name cannot be a split's or merge's value; of several bad `start … = grid` lines, which is reported is not fixed.
 - Implicit methods test convergence against the largest state: a system whose states differ by many orders of magnitude has no tolerance per state yet (`rtol`, `atol` options, [ADR 0097](decisions/0097-implicit-steps-relative-tolerances-and-fallback.md) point 6). Their working arrays are allocated at each step, and fused groups find their structure by probing ([review](research/2026-11-14-code-review.md), section 4).
 - `FusedSystem::rhs` and the master's fused-group right-hand side allocate per call; fine for small models, revisit before real-time use with large groups.
 - Inside a fused group, inputs from blocks outside the group are held over each step (no extrapolation yet, ADR 0023). Changing the fusion switch in the app rebuilds the model and restarts the run.
