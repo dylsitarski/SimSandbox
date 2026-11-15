@@ -3,10 +3,10 @@
 use super::lower::lower;
 use super::shapes::{ast_name, axes_of, cells_of, fit, line_of, needed, number, union, Shapes};
 use super::statements::{
-    column_of, definition_error, dynamics, is_name, name_and_unit, quoted_file, read_cells,
-    read_edges, read_grid, read_lhs, read_rule, read_table, read_unit, row_params, split_dims,
-    split_top, split_unit, start_meshes, starting_sides, statement, CheckedRule, EdgeKind,
-    EdgeLine, Lhs, Line, MeshSpec, RuleLine, StartCsv, Written, DEFAULT_MAX_ROWS,
+    as_read, column_of, definition_error, is_name, name_and_unit, quoted_file, read_edges,
+    read_unit, row_params, split_dims, split_top, start_meshes, starting_sides, statements,
+    CheckedRule, EdgeKind, EdgeLine, Lhs, Line, MeshSpec, RuleLine, StartCsv, StartHow, StartLine,
+    Statement, Written,
 };
 use super::{
     element_name, Axis, CellTransfer, Copies, EquationSet, Kind, Layout, RowsSource, RuleKind,
@@ -62,10 +62,7 @@ impl EquationSet {
         lines: &[String],
         rows: &std::collections::BTreeMap<String, usize>,
     ) -> Result<Self> {
-        let keyword = statement;
-        // A map's rules may write a state's present value `x[n]`, as its
-        // equations may.
-        let (_, maps) = dynamics(lines);
+        let statements = statements(lines);
         // Units by name, as declared (ADR 0045).
         let mut units: std::collections::HashMap<String, Unit> = Default::default();
         // The grid first (ADR 0060): declarations further down refer to
@@ -88,79 +85,69 @@ impl EquationSet {
         // pts: triangle`), read first: a grid start makes the points too.
         let mut cell_decls: std::collections::HashMap<String, (String, crate::mesh::CellShape)> =
             Default::default();
-        for (k, text) in lines.iter().enumerate() {
-            if let Some(rest) = keyword(text.trim(), "cells") {
-                let (name, of, _, shape) = read_cells(&rest, k + 1)?;
+        for s in &statements {
+            if let Statement::Cells { read, .. } = s {
+                let (name, of, _, shape) = as_read(read)?.clone();
                 cell_decls.insert(name, (of, shape));
             }
         }
         // Each table's `start` line: one at most.
         let mut started: std::collections::HashMap<String, usize> = Default::default();
-        for (k, text) in lines.iter().enumerate() {
-            let Some(rest) = keyword(text.trim(), "start") else {
+        for s in &statements {
+            let Statement::Start { line, read } = s else {
                 continue;
             };
-            let usage =
-                "write a table's starting rows as 'start pts = 5' (edges: 'start segs = chain'; cells: 'start tri = grid x 0 .. 1 by 8, y 0 .. 1 by 8')";
-            let Some((t, n)) = rest.split_once('=') else {
-                return Err(definition_error(k + 1, 1, usage));
-            };
-            if let Some(first) = started.insert(t.trim().to_string(), k + 1) {
+            let line = *line;
+            let start = as_read(read)?;
+            let t = &start.table;
+            if let Some(first) = started.insert(t.clone(), line) {
                 return Err(definition_error(
-                    k + 1,
+                    line,
                     1,
-                    format!(
-                        "{} has two starts, on lines {first} and {}: give it one",
-                        t.trim(),
-                        k + 1
-                    ),
+                    format!("{t} has two starts, on lines {first} and {line}: give it one"),
                 ));
             }
-            if n.trim() == "chain" {
-                chains.insert(t.trim().to_string(), k + 1);
-                continue;
-            }
-            // Rows from a CSV file (ADR 0069 step 3); cells from a mesh
-            // file are below.
-            if let (Some(file), false) = (quoted_file(n), cell_decls.contains_key(t.trim())) {
-                let path = file.map_err(|()| {
-                    definition_error(
-                        k + 1,
-                        1,
-                        "write a table's file as 'start pts = file \"nodes.csv\"'",
-                    )
-                })?;
-                let t = t.trim().to_string();
-                let is_edges = lines.iter().any(|l| {
-                    l.trim()
-                        .strip_prefix("edges ")
-                        .and_then(|r| r.split_whitespace().next())
-                        == Some(t.as_str())
-                });
-                // Compiled again for the rows a run has (the file is read
-                // when first compiled, in the model's folder, as a mesh is).
-                if let Some(&n) = rows.get(&t) {
-                    if !is_edges {
-                        starts.insert(t, (n, k + 1));
+            match &start.how {
+                StartHow::Chain => {
+                    chains.insert(t.clone(), line);
+                }
+                // Rows from a CSV file (ADR 0069 step 3); cells from a mesh
+                // file are below.
+                StartHow::File { csv, .. } if !cell_decls.contains_key(t) => {
+                    let path = csv.clone().map_err(|()| {
+                        definition_error(
+                            line,
+                            1,
+                            "write a table's file as 'start pts = file \"nodes.csv\"'",
+                        )
+                    })?;
+                    let t = t.clone();
+                    let is_edges = statements
+                        .iter()
+                        .any(|s| matches!(s, Statement::Edges { first: Some(f), .. } if *f == t));
+                    // Compiled again for the rows a run has (the file is read
+                    // when first compiled, in the model's folder, as a mesh is).
+                    if let Some(&n) = rows.get(&t) {
+                        if !is_edges {
+                            starts.insert(t, (n, line));
+                        }
+                        continue;
                     }
-                    continue;
+                    let csv = StartCsv::load(&path).map_err(|e| definition_error(line, 1, e))?;
+                    if !is_edges {
+                        starts.insert(t.clone(), (csv.rows, line));
+                    }
+                    csv_starts.insert(t, (csv, line));
                 }
-                let csv = StartCsv::load(&path).map_err(|e| definition_error(k + 1, 1, e))?;
-                if !is_edges {
-                    starts.insert(t.clone(), (csv.rows, k + 1));
+                StartHow::File { mesh: spec, .. } | StartHow::Grid(spec) => {
+                    let spec = spec.clone().map_err(|e| definition_error(line, 1, e))?;
+                    grid_starts.insert(t.clone(), (spec, line));
                 }
-                csv_starts.insert(t, (csv, k + 1));
-                continue;
+                StartHow::Rows(n) => {
+                    starts.insert(t.clone(), (*n, line));
+                }
+                StartHow::Unknown => return Err(StartLine::unknown(line)),
             }
-            if let Some(spec) = MeshSpec::parse(n.trim()) {
-                let spec = spec.map_err(|e| definition_error(k + 1, 1, e))?;
-                grid_starts.insert(t.trim().to_string(), (spec, k + 1));
-                continue;
-            }
-            let Ok(n) = n.trim().parse::<usize>() else {
-                return Err(definition_error(k + 1, 1, usage));
-            };
-            starts.insert(t.trim().to_string(), (n, k + 1));
         }
         // Starting meshes, when first compiled (later the rows are known).
         let fresh: std::collections::HashMap<String, (MeshSpec, usize)> = grid_starts
@@ -169,9 +156,10 @@ impl EquationSet {
             .map(|(c, v)| (c.clone(), v.clone()))
             .collect();
         let meshes = start_meshes(&fresh, &cell_decls)?;
-        for (k, text) in lines.iter().enumerate() {
-            let (a, unit) = if let Some(rest) = keyword(text.trim(), "table") {
-                let (t, max) = read_table(&rest, k + 1)?;
+        for s in &statements {
+            let (a, unit, number) = if let Statement::Table { line, read } = s {
+                let number = *line;
+                let (t, max) = as_read(read)?.clone();
                 // Its points made by a grid of cells over it (ADR 0085).
                 let made: Vec<(&String, &(MeshSpec, usize))> = grid_starts
                     .iter()
@@ -212,7 +200,7 @@ impl EquationSet {
                 (
                     Axis {
                         name: t,
-                        line: k + 1,
+                        line: number,
                         lo: Ast::Num(-0.5),
                         hi: Ast::Num(cells as f64 - 0.5),
                         cells,
@@ -222,33 +210,10 @@ impl EquationSet {
                         sides_of: None,
                     },
                     None,
+                    number,
                 )
-            } else if let Some((word, rest)) = ["edges", "cells", "sides"]
-                .into_iter()
-                .find_map(|w| keyword(text.trim(), w).map(|r| (w, r)))
-            {
-                // `edges segs of pts [max 200]` (ADR 0079 stage 2), `cells
-                // tri of pts [max 200]: triangle` and `sides f of tri [max
-                // 200]` (ADR 0085).
-                let (t, of, max, shape) = match word {
-                    "cells" => read_cells(&rest, k + 1)?,
-                    _ => {
-                        let usage = format!(
-                            "write {word} as '{word} segs of pts' or '{word} segs of pts max 200'"
-                        );
-                        let words: Vec<&str> = rest.split_whitespace().collect();
-                        let (e, m, max) = match words[..] {
-                            [e, "of", m] => (e, m, DEFAULT_MAX_ROWS),
-                            [e, "of", m, "max", n] => match n.parse::<usize>() {
-                                Ok(x) if x >= 1 => (e, m, x),
-                                _ => return Err(definition_error(k + 1, 1, usage)),
-                            },
-                            _ => return Err(definition_error(k + 1, 1, usage)),
-                        };
-                        let (t, _) = read_table(e, k + 1)?;
-                        (t, m.to_string(), max, crate::mesh::CellShape::Segment)
-                    }
-                };
+            } else if let Some((word, number, read)) = s.join() {
+                let (t, of, max, shape) = as_read(read)?.clone();
                 let m = &of;
                 let found = grid.iter().position(|g| &g.name == m && g.table.is_some());
                 // Sides lie between cells; edges and cells join points.
@@ -256,14 +221,14 @@ impl EquationSet {
                     let Some(c) = found.filter(|&c| {
                         grid[c].shape.is_some() && grid[c].sides_of.is_none() && grid[c].name != t
                     }) else {
-                        return Err(definition_error(k + 1, 1, format!(
+                        return Err(definition_error(number, 1, format!(
                             "'{m}' is not a table of cells declared above: sides lie between cells ('cells {m} of pts: triangle' first)"
                         )));
                     };
                     let cs = grid[c].shape.expect("cells");
                     let Some((side, _)) = cs.sides() else {
                         return Err(definition_error(
-                            k + 1,
+                            number,
                             1,
                             format!(
                                 "the sides of {} come later: their sides are of two shapes",
@@ -274,7 +239,7 @@ impl EquationSet {
                     (grid[c].ends_of, Some(c), side)
                 } else {
                     let Some(p) = found.filter(|&p| grid[p].ends_of.is_none()) else {
-                        return Err(definition_error(k + 1, 1, format!(
+                        return Err(definition_error(number, 1, format!(
                             "'{m}' is not a table declared above: {word} join the rows of one ('table {m}' first)"
                         )));
                     };
@@ -316,7 +281,7 @@ impl EquationSet {
                 (
                     Axis {
                         name: t,
-                        line: k + 1,
+                        line: number,
                         lo: Ast::Num(-0.5),
                         hi: Ast::Num(cells as f64 - 0.5),
                         cells,
@@ -326,28 +291,30 @@ impl EquationSet {
                         sides_of,
                     },
                     None,
+                    number,
                 )
-            } else if let Some(rest) = keyword(text.trim(), "grid") {
-                read_grid(text, &rest, k + 1)?
+            } else if let Statement::Grid { line, read } = s {
+                let (a, unit) = as_read(read)?.clone();
+                (a, unit, *line)
             } else {
                 continue;
             };
             if grid.len() == MAX_AXES {
                 return Err(definition_error(
-                    k + 1,
+                    number,
                     1,
                     format!("a block has at most {MAX_AXES} axes"),
                 ));
             }
             if grid.iter().any(|g| g.name == a.name) {
                 return Err(definition_error(
-                    k + 1,
+                    number,
                     1,
                     format!("the axis {} is declared twice", a.name),
                 ));
             }
             if let Some(u) = unit {
-                units.insert(a.name.clone(), read_unit(&u, k + 1, 1)?);
+                units.insert(a.name.clone(), read_unit(&u, number, 1)?);
             }
             grid.push(a);
         }
@@ -418,291 +385,269 @@ impl EquationSet {
         let mut array_params: Vec<(String, usize)> = Vec::new();
         // Units given for a rate, `dx/dt = … [m/s]`: unit, line, column.
         let mut rates: Vec<(String, Unit, usize, usize)> = Vec::new();
-        for (k, text) in lines.iter().enumerate() {
-            let number = k + 1;
-            let trimmed = text.trim();
-            if trimmed.is_empty()
-                || trimmed.starts_with('#')
-                || ["grid", "table", "edges", "cells", "sides", "start"]
-                    .iter()
-                    .any(|w| keyword(trimmed, w).is_some())
-            {
-                continue;
-            }
-            // Rules that change a table between steps (ADR 0079).
-            if let Some(word) = ["remove", "add", "split", "merge"]
-                .into_iter()
-                .find(|w| keyword(trimmed, w).is_some())
-            {
-                // `[n]` blanked, so columns stay put.
-                let text = if maps {
-                    text.replace("[n]", "   ")
-                } else {
-                    text.clone()
-                };
-                let rest = keyword(text.trim(), word).expect("found");
-                rule_lines.push(read_rule(&text, word, &rest, number)?);
-                continue;
-            }
-            if let Some(rest) = keyword(trimmed, "edge") {
-                edges.extend(read_edges(text, &rest, number, &axes)?);
-                continue;
-            }
-            if let Some(rest) = keyword(trimmed, "state") {
-                // `state x [m] = 0`, `state x [m]`, `state x = 0`, and
-                // arrays `state T[x] [K] = expression`.
-                let (head, value) = match rest.split_once('=') {
-                    Some((h, v)) => (h, Some(v)),
-                    None => (rest.as_str(), None),
-                };
-                let (head, array) = split_dims(head, &axes, number)?;
-                let (n, unit) = name_and_unit(&head);
-                if !is_name(&n) || n == "t" || is_reserved(&n) || axes.contains(&n.as_str()) {
-                    return Err(definition_error(
-                        number,
-                        1,
-                        format!("'{n}' cannot be a state name"),
-                    ));
+        for s in &statements {
+            match s {
+                Statement::Blank
+                | Statement::Grid { .. }
+                | Statement::Table { .. }
+                | Statement::Edges { .. }
+                | Statement::Cells { .. }
+                | Statement::Sides { .. }
+                | Statement::Start { .. } => {}
+                Statement::Rule { read } => rule_lines.push(as_read(read)?.clone()),
+                Statement::Edge { line, text, rest } => {
+                    edges.extend(read_edges(text, rest, *line, &axes)?);
                 }
-                if state_decls.iter().any(|d| d.0 == n) {
-                    return Err(definition_error(
-                        number,
-                        1,
-                        format!("'{n}' is declared twice"),
-                    ));
-                }
-                if let Some(u) = unit {
-                    units.insert(n.clone(), read_unit(&u, number, 1)?);
-                }
-                if let Some(dims) = array {
-                    let init = value.map(|v| (v.to_string(), number, column_of(text, v.trim())));
-                    array_init.push((n.clone(), init));
-                    shapes.insert(n.clone(), dims);
-                } else if let Some(v) = value {
-                    let v = v.trim().parse::<f64>().map_err(|_| {
-                        definition_error(number, 1, format!("'{}' is not a number", v.trim()))
-                    })?;
-                    let p = format!("{n}0");
-                    if declared.iter().any(|d| d.0 == p) {
+                Statement::State { line, text, rest } => {
+                    let number = *line;
+                    // `state x [m] = 0`, `state x [m]`, `state x = 0`, and
+                    // arrays `state T[x] [K] = expression`.
+                    let (head, value) = match rest.split_once('=') {
+                        Some((h, v)) => (h, Some(v)),
+                        None => (rest.as_str(), None),
+                    };
+                    let (head, array) = split_dims(head, &axes, number)?;
+                    let (n, unit) = name_and_unit(&head);
+                    if !is_name(&n) || n == "t" || is_reserved(&n) || axes.contains(&n.as_str()) {
                         return Err(definition_error(
                             number,
                             1,
-                            format!("{p} is declared twice (here as the initial value of {n})"),
+                            format!("'{n}' cannot be a state name"),
                         ));
                     }
-                    declared.push((p, v, number));
-                }
-                state_decls.push((n, number));
-                continue;
-            }
-            if let Some(rest) = keyword(trimmed, "param") {
-                let rest = rest.as_str();
-                // `param k [N/m] = 4`, `param k [N/m]`, `param k = 4`; an
-                // array's values from a file, `param m[k] [kg] = file
-                // "masses.csv"` (ADR 0069 step 3).
-                let mut from_file = None;
-                let (head, value) = match rest.split_once('=') {
-                    Some((h, v)) if quoted_file(v).is_some() => {
-                        let path = quoted_file(v).expect("checked").map_err(|()| {
-                            definition_error(
-                                number,
-                                1,
-                                "write an array's file as 'param m[k] = file \"m.csv\"'",
-                            )
-                        })?;
-                        let csv =
-                            StartCsv::load(&path).map_err(|e| definition_error(number, 1, e))?;
-                        from_file = Some(csv);
-                        (h, 1.0)
-                    }
-                    Some((h, v)) => {
-                        let v = v.trim().parse::<f64>().map_err(|_| {
-                            definition_error(number, 1, format!("'{}' is not a number", v.trim()))
-                        })?;
-                        (h, v)
-                    }
-                    None => (rest, 1.0),
-                };
-                // `param m[k] [kg] = 1000` (ADR 0069): a value per cell,
-                // each its own parameter `m[0]`, `m[1]`, ….
-                let (head, array) = split_dims(head, &axes, number)?;
-                let head = head.as_str();
-                let (n, unit) = name_and_unit(head);
-                if !is_name(&n) || n == "t" || is_reserved(&n) || axes.contains(&n.as_str()) {
-                    return Err(definition_error(
-                        number,
-                        1,
-                        format!("'{n}' cannot be a parameter name"),
-                    ));
-                }
-                if let Some(d) = declared.iter().find(|d| d.0 == n) {
-                    let state = n
-                        .strip_suffix('0')
-                        .filter(|x| state_decls.iter().any(|s| s.0 == *x));
-                    let why = match state {
-                        Some(x) => format!(
-                            "{n} is declared twice (line {} gives it as the initial value of {x})",
-                            d.2
-                        ),
-                        None => format!("'{n}' is declared twice"),
-                    };
-                    return Err(definition_error(number, 1, why));
-                }
-                if let Some(u) = unit {
-                    units.insert(n.clone(), read_unit(&u, number, 1)?);
-                }
-                if from_file.is_some() && array.is_none() {
-                    return Err(definition_error(
-                        number,
-                        1,
-                        format!("'{n}' is one value: a file gives an array's values ('param {n}[k] = file …')"),
-                    ));
-                }
-                if let Some(dims) = array {
-                    let cells = cells_of(&dims, &grid);
-                    // From a file: the column named after it, or its only
-                    // column; a value per cell, in the cells' order.
-                    let values: Option<Vec<f64>> = match &from_file {
-                        None => None,
-                        Some(csv) => {
-                            let col = csv
-                                .columns
-                                .iter()
-                                .find(|c| c.0 == n)
-                                .or(if csv.columns.len() == 1 {
-                                    csv.columns.first()
-                                } else {
-                                    None
-                                })
-                                .ok_or_else(|| {
-                                    definition_error(
-                                        number,
-                                        1,
-                                        format!("{} has no column '{n}'", csv.path),
-                                    )
-                                })?;
-                            if col.2.len() != cells {
-                                return Err(definition_error(
-                                    number,
-                                    1,
-                                    format!(
-                                        "{} has {} values of {n}, for {cells} cells",
-                                        csv.path,
-                                        col.2.len()
-                                    ),
-                                ));
-                            }
-                            let f = match (&col.1, units.get(&n)) {
-                                (Some(u), Some(want)) => {
-                                    let given = read_unit(u, number, 1)?;
-                                    if given.dim != want.dim {
-                                        return Err(definition_error(
-                                            number,
-                                            1,
-                                            format!(
-                                                "{}: '{n}' is in {u}, which is not {n}'s unit",
-                                                csv.path
-                                            ),
-                                        ));
-                                    }
-                                    given.scale / want.scale
-                                }
-                                _ => 1.0,
-                            };
-                            Some(col.2.iter().map(|v| v * f).collect())
-                        }
-                    };
-                    for k in 0..cells {
-                        let e = element_name(&n, k);
-                        if let Some(u) = units.get(&n).copied() {
-                            units.insert(e.clone(), u);
-                        }
-                        let v = values.as_ref().map_or(value, |v| v[k]);
-                        declared.push((e, v, number));
-                    }
-                    array_params.push((n.clone(), cells));
-                    shapes.insert(n, dims);
-                    continue;
-                }
-                declared.push((n, value, number));
-                continue;
-            }
-            if let Some(names) = keyword(trimmed, "input") {
-                for item in split_top(&names)
-                    .into_iter()
-                    .filter(|n| !n.trim().is_empty())
-                {
-                    let (item, array) = split_dims(item, &axes, number)?;
-                    let (item, unit) = name_and_unit(&item);
-                    // Names may also be separated by spaces (no units then).
-                    let parts: Vec<&str> = item.split(' ').filter(|n| !n.is_empty()).collect();
-                    if (unit.is_some() || array.is_some()) && parts.len() != 1 {
+                    if state_decls.iter().any(|d| d.0 == n) {
                         return Err(definition_error(
                             number,
                             1,
-                            "separate inputs with commas when giving units or grids: 'input F [N], q[x] [W/m^3]'",
+                            format!("'{n}' is declared twice"),
                         ));
                     }
                     if let Some(u) = unit {
-                        units.insert(item.clone(), read_unit(&u, number, 1)?);
+                        units.insert(n.clone(), read_unit(&u, number, 1)?);
                     }
-                    for n in parts {
-                        if !is_name(n) || n == "t" || is_reserved(n) || axes.contains(&n) {
+                    if let Some(dims) = array {
+                        let init =
+                            value.map(|v| (v.to_string(), number, column_of(text, v.trim())));
+                        array_init.push((n.clone(), init));
+                        shapes.insert(n.clone(), dims);
+                    } else if let Some(v) = value {
+                        let v = v.trim().parse::<f64>().map_err(|_| {
+                            definition_error(number, 1, format!("'{}' is not a number", v.trim()))
+                        })?;
+                        let p = format!("{n}0");
+                        if declared.iter().any(|d| d.0 == p) {
                             return Err(definition_error(
                                 number,
                                 1,
-                                format!("'{n}' cannot be an input name"),
+                                format!("{p} is declared twice (here as the initial value of {n})"),
                             ));
                         }
-                        if inputs.iter().any(|i| i == n) {
+                        declared.push((p, v, number));
+                    }
+                    state_decls.push((n, number));
+                    continue;
+                }
+                Statement::Param { line, rest } => {
+                    let number = *line;
+                    let rest = rest.as_str();
+                    // `param k [N/m] = 4`, `param k [N/m]`, `param k = 4`; an
+                    // array's values from a file, `param m[k] [kg] = file
+                    // "masses.csv"` (ADR 0069 step 3).
+                    let mut from_file = None;
+                    let (head, value) = match rest.split_once('=') {
+                        Some((h, v)) if quoted_file(v).is_some() => {
+                            let path = quoted_file(v).expect("checked").map_err(|()| {
+                                definition_error(
+                                    number,
+                                    1,
+                                    "write an array's file as 'param m[k] = file \"m.csv\"'",
+                                )
+                            })?;
+                            let csv = StartCsv::load(&path)
+                                .map_err(|e| definition_error(number, 1, e))?;
+                            from_file = Some(csv);
+                            (h, 1.0)
+                        }
+                        Some((h, v)) => {
+                            let v = v.trim().parse::<f64>().map_err(|_| {
+                                definition_error(
+                                    number,
+                                    1,
+                                    format!("'{}' is not a number", v.trim()),
+                                )
+                            })?;
+                            (h, v)
+                        }
+                        None => (rest, 1.0),
+                    };
+                    // `param m[k] [kg] = 1000` (ADR 0069): a value per cell,
+                    // each its own parameter `m[0]`, `m[1]`, ….
+                    let (head, array) = split_dims(head, &axes, number)?;
+                    let head = head.as_str();
+                    let (n, unit) = name_and_unit(head);
+                    if !is_name(&n) || n == "t" || is_reserved(&n) || axes.contains(&n.as_str()) {
+                        return Err(definition_error(
+                            number,
+                            1,
+                            format!("'{n}' cannot be a parameter name"),
+                        ));
+                    }
+                    if let Some(d) = declared.iter().find(|d| d.0 == n) {
+                        let state = n
+                            .strip_suffix('0')
+                            .filter(|x| state_decls.iter().any(|s| s.0 == *x));
+                        let why = match state {
+                            Some(x) => format!(
+                                "{n} is declared twice (line {} gives it as the initial value of {x})",
+                                d.2
+                            ),
+                            None => format!("'{n}' is declared twice"),
+                        };
+                        return Err(definition_error(number, 1, why));
+                    }
+                    if let Some(u) = unit {
+                        units.insert(n.clone(), read_unit(&u, number, 1)?);
+                    }
+                    if from_file.is_some() && array.is_none() {
+                        return Err(definition_error(
+                            number,
+                            1,
+                            format!("'{n}' is one value: a file gives an array's values ('param {n}[k] = file …')"),
+                        ));
+                    }
+                    if let Some(dims) = array {
+                        let cells = cells_of(&dims, &grid);
+                        // From a file: the column named after it, or its only
+                        // column; a value per cell, in the cells' order.
+                        let values: Option<Vec<f64>> = match &from_file {
+                            None => None,
+                            Some(csv) => {
+                                let col = csv
+                                    .columns
+                                    .iter()
+                                    .find(|c| c.0 == n)
+                                    .or(if csv.columns.len() == 1 {
+                                        csv.columns.first()
+                                    } else {
+                                        None
+                                    })
+                                    .ok_or_else(|| {
+                                        definition_error(
+                                            number,
+                                            1,
+                                            format!("{} has no column '{n}'", csv.path),
+                                        )
+                                    })?;
+                                if col.2.len() != cells {
+                                    return Err(definition_error(
+                                        number,
+                                        1,
+                                        format!(
+                                            "{} has {} values of {n}, for {cells} cells",
+                                            csv.path,
+                                            col.2.len()
+                                        ),
+                                    ));
+                                }
+                                let f = match (&col.1, units.get(&n)) {
+                                    (Some(u), Some(want)) => {
+                                        let given = read_unit(u, number, 1)?;
+                                        if given.dim != want.dim {
+                                            return Err(definition_error(
+                                                number,
+                                                1,
+                                                format!(
+                                                    "{}: '{n}' is in {u}, which is not {n}'s unit",
+                                                    csv.path
+                                                ),
+                                            ));
+                                        }
+                                        given.scale / want.scale
+                                    }
+                                    _ => 1.0,
+                                };
+                                Some(col.2.iter().map(|v| v * f).collect())
+                            }
+                        };
+                        for k in 0..cells {
+                            let e = element_name(&n, k);
+                            if let Some(u) = units.get(&n).copied() {
+                                units.insert(e.clone(), u);
+                            }
+                            let v = values.as_ref().map_or(value, |v| v[k]);
+                            declared.push((e, v, number));
+                        }
+                        array_params.push((n.clone(), cells));
+                        shapes.insert(n, dims);
+                        continue;
+                    }
+                    declared.push((n, value, number));
+                    continue;
+                }
+                Statement::Input { line, rest: names } => {
+                    let number = *line;
+                    for item in split_top(names)
+                        .into_iter()
+                        .filter(|n| !n.trim().is_empty())
+                    {
+                        let (item, array) = split_dims(item, &axes, number)?;
+                        let (item, unit) = name_and_unit(&item);
+                        // Names may also be separated by spaces (no units then).
+                        let parts: Vec<&str> = item.split(' ').filter(|n| !n.is_empty()).collect();
+                        if (unit.is_some() || array.is_some()) && parts.len() != 1 {
                             return Err(definition_error(
                                 number,
                                 1,
-                                format!("'{n}' is an input twice"),
+                                "separate inputs with commas when giving units or grids: 'input F [N], q[x] [W/m^3]'",
                             ));
                         }
-                        inputs.push(n.to_string());
-                        if let Some(dims) = &array {
-                            shapes.insert(n.to_string(), dims.clone());
+                        if let Some(u) = unit {
+                            units.insert(item.clone(), read_unit(&u, number, 1)?);
+                        }
+                        for n in parts {
+                            if !is_name(n) || n == "t" || is_reserved(n) || axes.contains(&n) {
+                                return Err(definition_error(
+                                    number,
+                                    1,
+                                    format!("'{n}' cannot be an input name"),
+                                ));
+                            }
+                            if inputs.iter().any(|i| i == n) {
+                                return Err(definition_error(
+                                    number,
+                                    1,
+                                    format!("'{n}' is an input twice"),
+                                ));
+                            }
+                            inputs.push(n.to_string());
+                            if let Some(dims) = &array {
+                                shapes.insert(n.to_string(), dims.clone());
+                            }
                         }
                     }
+                    continue;
                 }
-                continue;
-            }
-            let Some((lhs, rhs)) = text.split_once('=') else {
-                return Err(definition_error(
-                    number,
-                    1,
-                    "expected an equation such as 'dx/dt = -k*x' or 'E = x^2'",
-                ));
-            };
-            let lhs_kind = read_lhs(lhs).ok_or_else(|| {
-                definition_error(
-                    number,
-                    1,
-                    format!("'{}' is not 'dx/dt', 'x'', 'x[n+1]' or a name", lhs.trim()),
-                )
-            })?;
-            let offset = lhs.chars().count() + 1;
-            let (rhs, unit) = split_unit(rhs);
-            if let Some((u, col)) = unit {
-                // The unit of the left side as written (ADR 0049).
-                let unit = read_unit(&u, number, offset + col)?;
-                match &lhs_kind {
-                    Lhs::State(n) => rates.push((n.clone(), unit, number, offset + col)),
-                    Lhs::Map(n) | Lhs::Defined(n) => {
-                        if let Some(d) = units.get(n).filter(|d| d.dim != unit.dim) {
-                            return Err(definition_error(
-                                number,
-                                offset + col,
-                                format!("{n} is declared in {d}, not {unit}"),
-                            ));
+                Statement::Equation { line, read } => {
+                    let number = *line;
+                    let eq = as_read(read)?;
+                    if let Some((unit, column)) = eq.unit {
+                        match &eq.lhs {
+                            Lhs::State(n) => rates.push((n.clone(), unit, number, column)),
+                            Lhs::Map(n) | Lhs::Defined(n) => {
+                                if let Some(d) = units.get(n).filter(|d| d.dim != unit.dim) {
+                                    return Err(definition_error(
+                                        number,
+                                        column,
+                                        format!("{n} is declared in {d}, not {unit}"),
+                                    ));
+                                }
+                                units.entry(n.clone()).or_insert(unit);
+                            }
                         }
-                        units.entry(n.clone()).or_insert(unit);
                     }
+                    sides.push((number, eq.offset, eq.lhs.clone(), eq.rhs.clone()));
                 }
             }
-            sides.push((number, offset, lhs_kind, rhs));
         }
         if sides.is_empty() {
             return Err(SimError::InvalidDefinition(

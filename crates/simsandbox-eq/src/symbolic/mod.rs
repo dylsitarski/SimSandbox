@@ -351,6 +351,7 @@ struct Layout {
 }
 
 /// A grid axis (ADR 0060): `grid x [m] = a .. b, n`.
+#[derive(Clone)]
 struct Axis {
     name: String,
     line: usize,
