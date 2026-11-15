@@ -6,6 +6,7 @@
 ## Done
 
 - The eight faults fixed, each with a test that failed before; the reference corrected. 620 workspace tests pass; every example the same bytes.
+- Stage 1: `symbolic.rs` split into `symbolic/` (eight files), moves only.
 
 ## Decided
 
@@ -13,7 +14,7 @@
 
 ## Left open
 
-- W6's stages: the file split into modules, typed statements, one function table, `parse_with_rows` in steps.
+- W6's stages left: typed statements, one function table, `parse_with_rows` in steps.
 - Three smaller faults found on the way, in [STATUS](../STATUS.md)'s known limitations.
 
 ## Notes for the next session
