@@ -39,17 +39,20 @@
 //!   `km` and `m` mix correctly inside a block; ports carry the declared
 //!   unit, and connections need equal units (convert with `units.convert`).
 
+mod declare;
 mod evaluate;
 mod explicit;
 mod lower;
 mod parse;
 mod shapes;
+mod starts;
 mod statements;
 #[cfg(test)]
 mod tests;
 
 pub use explicit::ExplicitBlock;
-pub use statements::{StartCsv, DEFAULT_MAX_ROWS};
+pub use starts::StartCsv;
+pub use statements::DEFAULT_MAX_ROWS;
 
 use simsandbox_core::block::BlockSpec;
 use simsandbox_core::registry::MethodSettings;

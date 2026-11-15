@@ -1,16 +1,15 @@
 //! Building an [`EquationSet`] from the lines of a definition.
 
+use super::declare::{declare, Declared};
 use super::lower::lower;
-use super::shapes::{ast_name, axes_of, cells_of, fit, line_of, needed, number, union, Shapes};
+use super::shapes::{ast_name, axes_of, cells_of, fit, line_of, needed, number, union};
+use super::starts::{MeshSpec, Starts};
 use super::statements::{
-    as_read, column_of, definition_error, is_name, name_and_unit, quoted_file, read_edges,
-    read_unit, row_params, split_dims, split_top, start_meshes, starting_sides, statements,
-    CheckedRule, EdgeKind, EdgeLine, Lhs, Line, MeshSpec, RuleLine, StartCsv, StartHow, StartLine,
-    Statement, Written,
+    definition_error, read_unit, row_params, statements, CheckedRule, EdgeKind, Lhs, RuleLine,
 };
 use super::{
-    element_name, Axis, CellTransfer, Copies, EquationSet, Kind, Layout, RowsSource, RuleKind,
-    RuleRun, TableRows,
+    element_name, CellTransfer, Copies, EquationSet, Kind, Layout, RowsSource, RuleKind, RuleRun,
+    TableRows,
 };
 use simsandbox_core::block::{BlockSpec, Domain, ParamSpec, PortSpec, Shape, TimeSemantics};
 use simsandbox_core::units::Unit;
@@ -19,9 +18,7 @@ use simsandbox_expr::program::Span;
 use simsandbox_expr::units::{
     dim_div, dim_pow, dim_text, dimension_with, from_si, in_si, Dim, DIM_TOO_HIGH, NO_DIM,
 };
-use simsandbox_expr::{
-    is_reserved, parse, ArrayOp, Ast, Edge, Expr, Line as GridLine, Op, Program, MAX_AXES,
-};
+use simsandbox_expr::{parse, ArrayOp, Ast, Edge, Expr, Line as GridLine, Op, Program};
 use std::cell::RefCell;
 impl EquationSet {
     /// Build from the lines of a definition, as a Block named `name`.
@@ -63,700 +60,35 @@ impl EquationSet {
         rows: &std::collections::BTreeMap<String, usize>,
     ) -> Result<Self> {
         let statements = statements(lines);
-        // Units by name, as declared (ADR 0045).
-        let mut units: std::collections::HashMap<String, Unit> = Default::default();
-        // The grid first (ADR 0060): declarations further down refer to
-        // its axes wherever they are written. The first axis is x (the
-        // fastest in the grid's cells), the second y.
-        let mut grid: Vec<Axis> = Vec::new();
-        // Tables' starting rows (ADR 0079): `start pts = 5`.
-        let mut starts: std::collections::HashMap<String, (usize, usize)> = Default::default();
-        // Edge tables starting as a chain (ADR 0079 stage 2): `start segs
-        // = chain`, an edge from each starting row to the next.
-        let mut chains: std::collections::HashMap<String, usize> = Default::default();
-        // Tables starting from a CSV file (ADR 0069 step 3).
-        let mut csv_starts: std::collections::HashMap<String, (std::sync::Arc<StartCsv>, usize)> =
-            Default::default();
-        // Cells starting as a grid (ADR 0085): `start tri = grid x 0 .. 1
-        // by 8, y 0 .. 1 by 8`, which also makes their points.
-        let mut grid_starts: std::collections::HashMap<String, (MeshSpec, usize)> =
-            Default::default();
-        // Each cell table's points and shape, as declared (`cells tri of
-        // pts: triangle`), read first: a grid start makes the points too.
-        let mut cell_decls: std::collections::HashMap<String, (String, crate::mesh::CellShape)> =
-            Default::default();
-        for s in &statements {
-            if let Statement::Cells { read, .. } = s {
-                let (name, of, _, shape) = as_read(read)?.clone();
-                cell_decls.insert(name, (of, shape));
-            }
-        }
-        // Each table's `start` line: one at most.
-        let mut started: std::collections::HashMap<String, usize> = Default::default();
-        for s in &statements {
-            let Statement::Start { line, read } = s else {
-                continue;
-            };
-            let line = *line;
-            let start = as_read(read)?;
-            let t = &start.table;
-            if let Some(first) = started.insert(t.clone(), line) {
-                return Err(definition_error(
-                    line,
-                    1,
-                    format!("{t} has two starts, on lines {first} and {line}: give it one"),
-                ));
-            }
-            match &start.how {
-                StartHow::Chain => {
-                    chains.insert(t.clone(), line);
-                }
-                // Rows from a CSV file (ADR 0069 step 3); cells from a mesh
-                // file are below.
-                StartHow::File { csv, .. } if !cell_decls.contains_key(t) => {
-                    let path = csv.clone().map_err(|()| {
-                        definition_error(
-                            line,
-                            1,
-                            "write a table's file as 'start pts = file \"nodes.csv\"'",
-                        )
-                    })?;
-                    let t = t.clone();
-                    let is_edges = statements
-                        .iter()
-                        .any(|s| matches!(s, Statement::Edges { first: Some(f), .. } if *f == t));
-                    // Compiled again for the rows a run has (the file is read
-                    // when first compiled, in the model's folder, as a mesh is).
-                    if let Some(&n) = rows.get(&t) {
-                        if !is_edges {
-                            starts.insert(t, (n, line));
-                        }
-                        continue;
-                    }
-                    let csv = StartCsv::load(&path).map_err(|e| definition_error(line, 1, e))?;
-                    if !is_edges {
-                        starts.insert(t.clone(), (csv.rows, line));
-                    }
-                    csv_starts.insert(t, (csv, line));
-                }
-                StartHow::File { mesh: spec, .. } | StartHow::Grid(spec) => {
-                    let spec = spec.clone().map_err(|e| definition_error(line, 1, e))?;
-                    grid_starts.insert(t.clone(), (spec, line));
-                }
-                StartHow::Rows(n) => {
-                    starts.insert(t.clone(), (*n, line));
-                }
-                StartHow::Unknown => return Err(StartLine::unknown(line)),
-            }
-        }
-        // Starting meshes, when first compiled (later the rows are known).
-        let fresh: std::collections::HashMap<String, (MeshSpec, usize)> = grid_starts
-            .iter()
-            .filter(|(c, _)| !rows.contains_key(*c))
-            .map(|(c, v)| (c.clone(), v.clone()))
-            .collect();
-        let meshes = start_meshes(&fresh, &cell_decls)?;
-        for s in &statements {
-            let (a, unit, number) = if let Statement::Table { line, read } = s {
-                let number = *line;
-                let (t, max) = as_read(read)?.clone();
-                // Its points made by a grid of cells over it (ADR 0085).
-                let made: Vec<(&String, &(MeshSpec, usize))> = grid_starts
-                    .iter()
-                    .filter(|(c, _)| cell_decls.get(*c).is_some_and(|o| o.0 == t))
-                    .collect();
-                // One grid, or cells of several shapes from one file.
-                let one_file = made
-                    .iter()
-                    .all(|m| matches!(m.1 .0, MeshSpec::File { .. }) && m.1 .0 == made[0].1 .0);
-                if made.len() > 1 && !one_file {
-                    return Err(definition_error(
-                        made[1].1 .1,
-                        1,
-                        format!("{t}'s points come from one starting grid or file, not two"),
-                    ));
-                }
-                if let (Some(&(c, (_, line))), Some(_)) = (made.first(), starts.get(&t)) {
-                    return Err(definition_error(
-                        *line,
-                        1,
-                        format!("{t}'s rows come from {c}'s starting mesh: give it no 'start {t}'"),
-                    ));
-                }
-                let start = match made.first() {
-                    Some((c, _)) => meshes
-                        .get(*c)
-                        .map_or(0, |m| m.0.first().map_or(0, Vec::len)),
-                    None => starts.get(&t).map_or(0, |s| s.0),
-                };
-                if start > max {
-                    return Err(definition_error(
-                        starts[&t].1,
-                        1,
-                        format!("{t} starts with {start} rows but has at most {max}"),
-                    ));
-                }
-                let cells = rows.get(&t).copied().unwrap_or(start);
-                (
-                    Axis {
-                        name: t,
-                        line: number,
-                        lo: Ast::Num(-0.5),
-                        hi: Ast::Num(cells as f64 - 0.5),
-                        cells,
-                        table: Some(max),
-                        ends_of: None,
-                        shape: None,
-                        sides_of: None,
-                    },
-                    None,
-                    number,
-                )
-            } else if let Some((word, number, read)) = s.join() {
-                let (t, of, max, shape) = as_read(read)?.clone();
-                let m = &of;
-                let found = grid.iter().position(|g| &g.name == m && g.table.is_some());
-                // Sides lie between cells; edges and cells join points.
-                let (ends, sides_of, shape) = if word == "sides" {
-                    let Some(c) = found.filter(|&c| {
-                        grid[c].shape.is_some() && grid[c].sides_of.is_none() && grid[c].name != t
-                    }) else {
-                        return Err(definition_error(number, 1, format!(
-                            "'{m}' is not a table of cells declared above: sides lie between cells ('cells {m} of pts: triangle' first)"
-                        )));
-                    };
-                    let cs = grid[c].shape.expect("cells");
-                    let Some((side, _)) = cs.sides() else {
-                        return Err(definition_error(
-                            number,
-                            1,
-                            format!(
-                                "the sides of {} come later: their sides are of two shapes",
-                                cs.name()
-                            ),
-                        ));
-                    };
-                    (grid[c].ends_of, Some(c), side)
-                } else {
-                    let Some(p) = found.filter(|&p| grid[p].ends_of.is_none()) else {
-                        return Err(definition_error(number, 1, format!(
-                            "'{m}' is not a table declared above: {word} join the rows of one ('table {m}' first)"
-                        )));
-                    };
-                    (Some(p), None, shape)
-                };
-                if let Some(&(_, line)) = starts.get(&t) {
-                    return Err(definition_error(
-                        line,
-                        1,
-                        format!("{t} starts as a chain or a grid ('start {t} = chain', 'start {t} = grid …'), not a number of rows"),
-                    ));
-                }
-                if let (Some((_, line)), true) = (
-                    csv_starts.get(&t),
-                    shape != crate::mesh::CellShape::Segment || word == "sides" || word == "cells",
-                ) {
-                    return Err(definition_error(
-                        *line,
-                        1,
-                        format!("{t} starts from a mesh file ('start {t} = file \"part.msh\" at x, y'): a CSV file starts tables and edges"),
-                    ));
-                }
-                let start = match (chains.get(&t), grid_starts.get(&t)) {
-                    _ if csv_starts.contains_key(&t) => csv_starts[&t].0.rows,
-                    (Some(_), _) if shape == crate::mesh::CellShape::Segment && word != "sides" => {
-                        starts
-                            .get(&grid[ends.expect("points")].name)
-                            .map_or(0, |s| s.0)
-                            .saturating_sub(1)
-                    }
-                    (_, Some(_)) => meshes.get(&t).map_or(0, |m| m.1.len()),
-                    _ => match sides_of {
-                        // Sides of starting cells, found as they will be.
-                        Some(c) => starting_sides(&grid, c, &chains, &meshes, &starts)?,
-                        None => 0,
-                    },
-                };
-                let cells = rows.get(&t).copied().unwrap_or(start);
-                (
-                    Axis {
-                        name: t,
-                        line: number,
-                        lo: Ast::Num(-0.5),
-                        hi: Ast::Num(cells as f64 - 0.5),
-                        cells,
-                        table: Some(max),
-                        ends_of: ends,
-                        shape: Some(shape),
-                        sides_of,
-                    },
-                    None,
-                    number,
-                )
-            } else if let Statement::Grid { line, read } = s {
-                let (a, unit) = as_read(read)?.clone();
-                (a, unit, *line)
-            } else {
-                continue;
-            };
-            if grid.len() == MAX_AXES {
-                return Err(definition_error(
-                    number,
-                    1,
-                    format!("a block has at most {MAX_AXES} axes"),
-                ));
-            }
-            if grid.iter().any(|g| g.name == a.name) {
-                return Err(definition_error(
-                    number,
-                    1,
-                    format!("the axis {} is declared twice", a.name),
-                ));
-            }
-            if let Some(u) = unit {
-                units.insert(a.name.clone(), read_unit(&u, number, 1)?);
-            }
-            grid.push(a);
-        }
-        let axes: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
-        // Declared with `cells` (an edge table has the segment's shape
-        // too, but starts as a chain or from a file).
-        if let Some((t, (_, line))) = grid_starts
-            .iter()
-            .find(|(t, _)| !cell_decls.contains_key(*t))
-        {
-            let edges = grid
-                .iter()
-                .any(|a| &a.name == t && a.shape.is_some() && a.sides_of.is_none());
-            return Err(definition_error(
-                *line,
-                1,
-                if edges {
-                    format!("'{t}' is an edge table, which starts as a chain or from a file ('start {t} = chain', 'start {t} = file \"wires.csv\"'): a grid starts cells ('cells {t} of pts: segment')")
-                } else {
-                    format!("'{t}' is not a table of cells: a grid starts cells ('cells {t} of pts: triangle')")
+        let Declared {
+            grid,
+            start_rows,
+            starts:
+                Starts {
+                    rows: starts,
+                    chains,
+                    csv: csv_starts,
+                    specs: grid_starts,
+                    cells: cell_decls,
+                    meshes,
                 },
-            ));
-        }
-        if let Some((t, line)) = chains.iter().find(|(t, _)| {
-            !grid.iter().any(|a| {
-                &a.name == *t
-                    && a.shape == Some(crate::mesh::CellShape::Segment)
-                    && a.sides_of.is_none()
-            })
-        }) {
-            return Err(definition_error(
-                *line,
-                1,
-                format!("'{t}' is not an edge table: a chain joins the rows of one ('edges {t} of pts')"),
-            ));
-        }
-        if let Some((t, (_, line))) = starts
-            .iter()
-            .find(|(t, _)| !grid.iter().any(|a| &a.name == *t && a.table.is_some()))
-        {
-            return Err(definition_error(
-                *line,
-                1,
-                format!("'{t}' is not a table: declare it with 'table {t}'"),
-            ));
-        }
+            mut units,
+            kind,
+            equations: parsed,
+            places,
+            states,
+            defined,
+            inputs,
+            params: declared,
+            state_decls,
+            arrays: mut shapes,
+            array_params,
+            edges,
+            rules: rule_lines,
+        } = declare(&statements, rows)?;
+        let _ = (&chains, &starts);
+        let axes: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
         let is_table = |i: usize| grid[i].table.is_some();
-
-        // Then the left-hand sides, which decide the kind of block, and
-        // the declarations.
-        let mut sides = Vec::new();
-        let mut inputs: Vec<String> = Vec::new();
-        // Declared parameters with their defaults.
-        let mut declared: Vec<(String, f64, usize)> = Vec::new();
-        // `state` declarations (ADR 0049): name and line.
-        let mut state_decls: Vec<(String, usize)> = Vec::new();
-        // Each array's axes (an axis is over itself), and array states'
-        // initial values as written (expression, line, column).
-        let mut shapes: Shapes = axes
-            .iter()
-            .enumerate()
-            .map(|(i, a)| (a.to_string(), vec![i]))
-            .collect();
-        let mut array_init: Vec<(String, Option<Written>)> = Vec::new();
-        let mut edges: Vec<EdgeLine> = Vec::new();
-        let mut rule_lines: Vec<RuleLine> = Vec::new();
-        // Array parameters (ADR 0069): name and number of cells.
-        let mut array_params: Vec<(String, usize)> = Vec::new();
-        // Units given for a rate, `dx/dt = … [m/s]`: unit, line, column.
-        let mut rates: Vec<(String, Unit, usize, usize)> = Vec::new();
-        for s in &statements {
-            match s {
-                Statement::Blank
-                | Statement::Grid { .. }
-                | Statement::Table { .. }
-                | Statement::Edges { .. }
-                | Statement::Cells { .. }
-                | Statement::Sides { .. }
-                | Statement::Start { .. } => {}
-                Statement::Rule { read } => rule_lines.push(as_read(read)?.clone()),
-                Statement::Edge { line, text, rest } => {
-                    edges.extend(read_edges(text, rest, *line, &axes)?);
-                }
-                Statement::State { line, text, rest } => {
-                    let number = *line;
-                    // `state x [m] = 0`, `state x [m]`, `state x = 0`, and
-                    // arrays `state T[x] [K] = expression`.
-                    let (head, value) = match rest.split_once('=') {
-                        Some((h, v)) => (h, Some(v)),
-                        None => (rest.as_str(), None),
-                    };
-                    let (head, array) = split_dims(head, &axes, number)?;
-                    let (n, unit) = name_and_unit(&head);
-                    if !is_name(&n) || n == "t" || is_reserved(&n) || axes.contains(&n.as_str()) {
-                        return Err(definition_error(
-                            number,
-                            1,
-                            format!("'{n}' cannot be a state name"),
-                        ));
-                    }
-                    if state_decls.iter().any(|d| d.0 == n) {
-                        return Err(definition_error(
-                            number,
-                            1,
-                            format!("'{n}' is declared twice"),
-                        ));
-                    }
-                    if let Some(u) = unit {
-                        units.insert(n.clone(), read_unit(&u, number, 1)?);
-                    }
-                    if let Some(dims) = array {
-                        let init =
-                            value.map(|v| (v.to_string(), number, column_of(text, v.trim())));
-                        array_init.push((n.clone(), init));
-                        shapes.insert(n.clone(), dims);
-                    } else if let Some(v) = value {
-                        let v = v.trim().parse::<f64>().map_err(|_| {
-                            definition_error(number, 1, format!("'{}' is not a number", v.trim()))
-                        })?;
-                        let p = format!("{n}0");
-                        if declared.iter().any(|d| d.0 == p) {
-                            return Err(definition_error(
-                                number,
-                                1,
-                                format!("{p} is declared twice (here as the initial value of {n})"),
-                            ));
-                        }
-                        declared.push((p, v, number));
-                    }
-                    state_decls.push((n, number));
-                    continue;
-                }
-                Statement::Param { line, rest } => {
-                    let number = *line;
-                    let rest = rest.as_str();
-                    // `param k [N/m] = 4`, `param k [N/m]`, `param k = 4`; an
-                    // array's values from a file, `param m[k] [kg] = file
-                    // "masses.csv"` (ADR 0069 step 3).
-                    let mut from_file = None;
-                    let (head, value) = match rest.split_once('=') {
-                        Some((h, v)) if quoted_file(v).is_some() => {
-                            let path = quoted_file(v).expect("checked").map_err(|()| {
-                                definition_error(
-                                    number,
-                                    1,
-                                    "write an array's file as 'param m[k] = file \"m.csv\"'",
-                                )
-                            })?;
-                            let csv = StartCsv::load(&path)
-                                .map_err(|e| definition_error(number, 1, e))?;
-                            from_file = Some(csv);
-                            (h, 1.0)
-                        }
-                        Some((h, v)) => {
-                            let v = v.trim().parse::<f64>().map_err(|_| {
-                                definition_error(
-                                    number,
-                                    1,
-                                    format!("'{}' is not a number", v.trim()),
-                                )
-                            })?;
-                            (h, v)
-                        }
-                        None => (rest, 1.0),
-                    };
-                    // `param m[k] [kg] = 1000` (ADR 0069): a value per cell,
-                    // each its own parameter `m[0]`, `m[1]`, ….
-                    let (head, array) = split_dims(head, &axes, number)?;
-                    let head = head.as_str();
-                    let (n, unit) = name_and_unit(head);
-                    if !is_name(&n) || n == "t" || is_reserved(&n) || axes.contains(&n.as_str()) {
-                        return Err(definition_error(
-                            number,
-                            1,
-                            format!("'{n}' cannot be a parameter name"),
-                        ));
-                    }
-                    if let Some(d) = declared.iter().find(|d| d.0 == n) {
-                        let state = n
-                            .strip_suffix('0')
-                            .filter(|x| state_decls.iter().any(|s| s.0 == *x));
-                        let why = match state {
-                            Some(x) => format!(
-                                "{n} is declared twice (line {} gives it as the initial value of {x})",
-                                d.2
-                            ),
-                            None => format!("'{n}' is declared twice"),
-                        };
-                        return Err(definition_error(number, 1, why));
-                    }
-                    if let Some(u) = unit {
-                        units.insert(n.clone(), read_unit(&u, number, 1)?);
-                    }
-                    if from_file.is_some() && array.is_none() {
-                        return Err(definition_error(
-                            number,
-                            1,
-                            format!("'{n}' is one value: a file gives an array's values ('param {n}[k] = file …')"),
-                        ));
-                    }
-                    if let Some(dims) = array {
-                        let cells = cells_of(&dims, &grid);
-                        // From a file: the column named after it, or its only
-                        // column; a value per cell, in the cells' order.
-                        let values: Option<Vec<f64>> = match &from_file {
-                            None => None,
-                            Some(csv) => {
-                                let col = csv
-                                    .columns
-                                    .iter()
-                                    .find(|c| c.0 == n)
-                                    .or(if csv.columns.len() == 1 {
-                                        csv.columns.first()
-                                    } else {
-                                        None
-                                    })
-                                    .ok_or_else(|| {
-                                        definition_error(
-                                            number,
-                                            1,
-                                            format!("{} has no column '{n}'", csv.path),
-                                        )
-                                    })?;
-                                if col.2.len() != cells {
-                                    return Err(definition_error(
-                                        number,
-                                        1,
-                                        format!(
-                                            "{} has {} values of {n}, for {cells} cells",
-                                            csv.path,
-                                            col.2.len()
-                                        ),
-                                    ));
-                                }
-                                let f = match (&col.1, units.get(&n)) {
-                                    (Some(u), Some(want)) => {
-                                        let given = read_unit(u, number, 1)?;
-                                        if given.dim != want.dim {
-                                            return Err(definition_error(
-                                                number,
-                                                1,
-                                                format!(
-                                                    "{}: '{n}' is in {u}, which is not {n}'s unit",
-                                                    csv.path
-                                                ),
-                                            ));
-                                        }
-                                        given.scale / want.scale
-                                    }
-                                    _ => 1.0,
-                                };
-                                Some(col.2.iter().map(|v| v * f).collect())
-                            }
-                        };
-                        for k in 0..cells {
-                            let e = element_name(&n, k);
-                            if let Some(u) = units.get(&n).copied() {
-                                units.insert(e.clone(), u);
-                            }
-                            let v = values.as_ref().map_or(value, |v| v[k]);
-                            declared.push((e, v, number));
-                        }
-                        array_params.push((n.clone(), cells));
-                        shapes.insert(n, dims);
-                        continue;
-                    }
-                    declared.push((n, value, number));
-                    continue;
-                }
-                Statement::Input { line, rest: names } => {
-                    let number = *line;
-                    for item in split_top(names)
-                        .into_iter()
-                        .filter(|n| !n.trim().is_empty())
-                    {
-                        let (item, array) = split_dims(item, &axes, number)?;
-                        let (item, unit) = name_and_unit(&item);
-                        // Names may also be separated by spaces (no units then).
-                        let parts: Vec<&str> = item.split(' ').filter(|n| !n.is_empty()).collect();
-                        if (unit.is_some() || array.is_some()) && parts.len() != 1 {
-                            return Err(definition_error(
-                                number,
-                                1,
-                                "separate inputs with commas when giving units or grids: 'input F [N], q[x] [W/m^3]'",
-                            ));
-                        }
-                        if let Some(u) = unit {
-                            units.insert(item.clone(), read_unit(&u, number, 1)?);
-                        }
-                        for n in parts {
-                            if !is_name(n) || n == "t" || is_reserved(n) || axes.contains(&n) {
-                                return Err(definition_error(
-                                    number,
-                                    1,
-                                    format!("'{n}' cannot be an input name"),
-                                ));
-                            }
-                            if inputs.iter().any(|i| i == n) {
-                                return Err(definition_error(
-                                    number,
-                                    1,
-                                    format!("'{n}' is an input twice"),
-                                ));
-                            }
-                            inputs.push(n.to_string());
-                            if let Some(dims) = &array {
-                                shapes.insert(n.to_string(), dims.clone());
-                            }
-                        }
-                    }
-                    continue;
-                }
-                Statement::Equation { line, read } => {
-                    let number = *line;
-                    let eq = as_read(read)?;
-                    if let Some((unit, column)) = eq.unit {
-                        match &eq.lhs {
-                            Lhs::State(n) => rates.push((n.clone(), unit, number, column)),
-                            Lhs::Map(n) | Lhs::Defined(n) => {
-                                if let Some(d) = units.get(n).filter(|d| d.dim != unit.dim) {
-                                    return Err(definition_error(
-                                        number,
-                                        column,
-                                        format!("{n} is declared in {d}, not {unit}"),
-                                    ));
-                                }
-                                units.entry(n.clone()).or_insert(unit);
-                            }
-                        }
-                    }
-                    sides.push((number, eq.offset, eq.lhs.clone(), eq.rhs.clone()));
-                }
-            }
-        }
-        if sides.is_empty() {
-            return Err(SimError::InvalidDefinition(
-                "no equations: write lines like 'dx/dt = -k*x', 'x[n+1] = r*x*(1 - x)' or 'y = a*x^2'"
-                    .into(),
-            ));
-        }
-        let continuous = sides.iter().find(|s| matches!(s.2, Lhs::State(_)));
-        let map = sides.iter().find(|s| matches!(s.2, Lhs::Map(_)));
-        let kind = match (continuous, map) {
-            (Some(_), Some(m)) => {
-                return Err(definition_error(
-                    m.0,
-                    1,
-                    "a block is either continuous (dx/dt) or a map (x[n+1]), not both",
-                ))
-            }
-            (Some(_), None) => Kind::Continuous,
-            (None, Some(_)) => Kind::Map,
-            (None, None) => Kind::Formulas,
-        };
-        let mut parsed = Vec::new();
-        for (number, offset, lhs, rhs) in sides {
-            // In maps, x[n] is the current value: blank out "[n]" so columns stay put.
-            let rhs = if kind == Kind::Map {
-                rhs.replace("[n]", "   ")
-            } else {
-                rhs
-            };
-            let ast =
-                parse(&rhs).map_err(|e| definition_error(number, offset + e.column, e.message))?;
-            parsed.push(Line {
-                number,
-                offset,
-                lhs,
-                ast,
-            });
-        }
-
-        // Names of states and defined quantities, checked for clashes.
-        let mut states: Vec<String> = Vec::new();
-        let mut defined: Vec<String> = Vec::new();
-        for line in &parsed {
-            let n = match &line.lhs {
-                Lhs::State(n) | Lhs::Map(n) | Lhs::Defined(n) => n,
-            };
-            if n == "t" || is_reserved(n) {
-                return Err(definition_error(
-                    line.number,
-                    1,
-                    format!("'{n}' is a reserved name"),
-                ));
-            }
-            if states.contains(n)
-                || defined.contains(n)
-                || inputs.contains(n)
-                || axes.contains(&n.as_str())
-            {
-                return Err(definition_error(
-                    line.number,
-                    1,
-                    format!("'{n}' is defined twice"),
-                ));
-            }
-            match &line.lhs {
-                Lhs::State(_) | Lhs::Map(_) => states.push(n.clone()),
-                Lhs::Defined(_) => defined.push(n.clone()),
-            }
-        }
-        // Every declared state has dynamics, and a rate's unit gives its
-        // state's (ADR 0049).
-        for (n, number) in &state_decls {
-            if !states.contains(n) {
-                let how = if defined.contains(n) {
-                    format!("'{n}' is defined by '{n} = …', so it is not a state")
-                } else {
-                    format!("{n} is declared as a state but no line gives d{n}/dt or {n}[n+1]")
-                };
-                return Err(definition_error(*number, 1, how));
-            }
-        }
-        for (n, rate, number, column) in &rates {
-            let from_rate = *rate * Unit::SECOND;
-            match units.get(n) {
-                Some(x) if x.dim != from_rate.dim => {
-                    return Err(definition_error(
-                        *number,
-                        *column,
-                        format!(
-                            "d{n}/dt is in {rate}, so {n} would be in {}, but {n} is in {x}",
-                            Unit::new(from_rate.dim.0, 1.0)
-                        ),
-                    ));
-                }
-                Some(_) => {}
-                None => {
-                    // A unit without a name (km/h times s) becomes SI.
-                    let named = !from_rate
-                        .to_string()
-                        .starts_with(|c: char| c.is_ascii_digit());
-                    let x = if named {
-                        from_rate
-                    } else {
-                        Unit::new(from_rate.dim.0, 1.0)
-                    };
-                    units.insert(n.clone(), x);
-                }
-            }
-        }
         // Each defined quantity's axes (ADR 0080): those its right side
         // uses, found in any order of the lines.
         for _ in 0..=parsed.len() {
@@ -807,8 +139,8 @@ impl EquationSet {
         let line_of_name = |n: &str| -> usize {
             state_decls
                 .iter()
-                .find(|d| d.0 == n)
-                .map(|d| d.1)
+                .find(|d| d.name == n)
+                .map(|d| d.line)
                 .or_else(|| {
                     parsed.iter().find_map(|l| match &l.lhs {
                         Lhs::Defined(d) | Lhs::State(d) | Lhs::Map(d) if d == n => Some(l.number),
@@ -869,7 +201,7 @@ impl EquationSet {
             }
             let why = if dims.len() > 1 {
                 format!("{n} is over a table's rows and other axes: a quantity over rows has only them (for now)")
-            } else if array_params.iter().any(|a| &a.0 == n) {
+            } else if array_params.iter().any(|a| &a.name == n) {
                 format!("a parameter has a value per cell, not per row: a value per row is a state, 'state {n}[{}]'", axes[dims[0]])
             } else {
                 continue;
@@ -878,11 +210,14 @@ impl EquationSet {
         }
         // Array states' initial values, edge values and the grid's ends.
         let mut inits: Vec<(String, Ast, usize, usize)> = Vec::new();
-        for (n, init) in &array_init {
-            if let Some((src, number, col)) = init {
+        let mut init_states: Vec<usize> = Vec::new();
+        for d in state_decls.iter().filter(|d| d.array) {
+            let n = &d.name;
+            if let Some((src, number, col)) = &d.init {
                 let ast = parse(src)
                     .map_err(|e| definition_error(*number, col + e.column - 1, e.message))?;
                 inits.push((n.clone(), ast, *number, *col));
+                init_states.push(d.state);
             }
         }
         for e in &edges {
@@ -938,7 +273,7 @@ impl EquationSet {
         // Declared parameters, then every other name in order of first use.
         let known = |n: &str| {
             n == "t"
-                || array_params.iter().any(|a| a.0 == n)
+                || array_params.iter().any(|a| a.name == n)
                 || states.iter().any(|s| s == n)
                 || defined.iter().any(|s| s == n)
                 || inputs.iter().any(|s| s == n)
@@ -1034,7 +369,7 @@ impl EquationSet {
                 &|n| {
                     is_param(n)
                         || axes.contains(&n)
-                        || array_params.iter().any(|a| a.0 == n)
+                        || array_params.iter().any(|a| a.name == n)
                         || grid_starts.values().any(|(m, _)| m.names().iter().any(|c| c == n))
                 },
                 "an initial value is written with parameters, the axes and a starting mesh's coordinates",
@@ -1081,7 +416,6 @@ impl EquationSet {
                 .and_then(|d| d.first().copied())
                 .filter(|&a| is_table(a))
         };
-        states.sort_by_key(|n| row_table(n).is_some());
         // A starting grid gives its points' coordinates: states over them
         // (ADR 0085).
         for (c, (g, line)) in &grid_starts {
@@ -1747,16 +1081,12 @@ impl EquationSet {
         // another (ADR 0069).
         let array_param_vars: Vec<usize> = array_params
             .iter()
-            .map(|(n, cells)| {
-                let first = params
-                    .iter()
-                    .position(|p| *p == format!("{n}[0]"))
-                    .expect("declared");
+            .map(|a| {
                 spans.push(Span {
-                    at: spans[param_vars[first]].at,
-                    len: *cells,
+                    at: spans[param_vars[a.first]].at,
+                    len: a.cells,
                 });
-                scales.push(unit_of(n).scale);
+                scales.push(unit_of(&a.name).scale);
                 spans.len() - 1
             })
             .collect();
@@ -1793,7 +1123,7 @@ impl EquationSet {
             if let Some(i) = params.iter().position(|p| p == n) {
                 return Some(param_vars[i]);
             }
-            if let Some(i) = array_params.iter().position(|a| a.0 == n) {
+            if let Some(i) = array_params.iter().position(|a| a.name == n) {
                 return Some(array_param_vars[i]);
             }
             if let Some(i) = axes.iter().position(|a| *a == n) {
@@ -1897,12 +1227,11 @@ impl EquationSet {
         };
         // In the unit of the variable it is stored in.
         let stored = |e: Expr, var: usize| from_si(in_si(e, &scales), scales[var]);
-        let mut rhs: Vec<Option<Expr>> = vec![None; states.len()];
+        let mut rhs: Vec<(usize, Expr)> = Vec::new();
         let mut defined_exprs = Vec::new();
-        for line in &parsed {
+        for (line, &i) in parsed.iter().zip(&places) {
             match &line.lhs {
                 Lhs::State(n) | Lhs::Map(n) => {
-                    let i = states.iter().position(|s| s == n).expect("state listed");
                     let own = axes_of_name(n);
                     let e = resolve(
                         &line.ast,
@@ -1911,7 +1240,7 @@ impl EquationSet {
                         line.number,
                         line.offset,
                     )?;
-                    rhs[i] = Some(stored(e, state_vars[i]));
+                    rhs.push((i, stored(e, state_vars[i])));
                 }
                 Lhs::Defined(_) => {
                     let k = defined_exprs.len();
@@ -1966,8 +1295,7 @@ impl EquationSet {
             }
         }
         let mut init_steps = grid_steps.clone();
-        for (n, ast, line, col) in &inits {
-            let i = states.iter().position(|s| s == n).expect("an array state");
+        for ((n, ast, line, col), &i) in inits.iter().zip(&init_states) {
             // A plain number is in the state's unit, as for `state x [m] = 0`.
             let x = match number(ast) {
                 Some(v) => Expr::Num(v),
@@ -2016,31 +1344,7 @@ impl EquationSet {
                     axis: i,
                     name: a.name.clone(),
                     max,
-                    start: match (a.ends_of, a.sides_of, grid_starts.get(&a.name)) {
-                        (_, Some(c), _) => {
-                            starting_sides(&grid, c, &chains, &meshes, &starts).unwrap_or(0)
-                        }
-                        (_, _, Some(_)) => meshes.get(&a.name).map_or(0, |m| m.1.len()),
-                        (Some(_), _, _) if csv_starts.contains_key(&a.name) => {
-                            csv_starts[&a.name].0.rows
-                        }
-                        // A chain: an edge from each starting row to the next.
-                        (Some(m), _, _) if chains.contains_key(&a.name) => starts
-                            .get(&grid[m].name)
-                            .map_or(0, |s| s.0)
-                            .saturating_sub(1),
-                        (Some(_), _, _) => 0,
-                        // Points made by a grid of cells over them.
-                        (None, _, _) => grid_starts
-                            .iter()
-                            .find(|(c, _)| cell_decls.get(*c).is_some_and(|o| o.0 == a.name))
-                            .map_or_else(
-                                || starts.get(&a.name).map_or(0, |s| s.0),
-                                |(c, _)| {
-                                    meshes.get(c).map_or(0, |m| m.0.first().map_or(0, Vec::len))
-                                },
-                            ),
-                    },
+                    start: start_rows[i],
                     rows: a.cells,
                     columns: states
                         .iter()
@@ -2204,8 +1508,8 @@ impl EquationSet {
         // or through quantities above it (ADR 0040, ADR 0075). An array
         // parameter is all its elements.
         let param_names = |n: &str| -> Vec<String> {
-            match array_params.iter().find(|(a, _)| a == n) {
-                Some((_, cells)) => (0..*cells).map(|k| element_name(n, k)).collect(),
+            match array_params.iter().find(|a| a.name == n) {
+                Some(a) => (0..a.cells).map(|k| element_name(n, k)).collect(),
                 None if param_specs.iter().any(|p| p.name == n) => vec![n.to_string()],
                 None => Vec::new(),
             }
@@ -2369,10 +1673,9 @@ impl EquationSet {
                 .enumerate()
                 .map(|(k, e)| (defined_vars[k], e)),
         );
-        let rhs: Vec<Expr> = rhs
-            .into_iter()
-            .map(|r| r.expect("one equation per state"))
-            .collect();
+        // One per state, in state order.
+        rhs.sort_by_key(|r| r.0);
+        let rhs: Vec<Expr> = rhs.into_iter().map(|r| r.1).collect();
         let mut rate_steps = output_steps.clone();
         rate_steps.extend(rhs.iter().enumerate().map(|(k, e)| (rate_vars[k], e)));
         let rate_steps = needed(rate_steps, &rate_vars);
@@ -2398,7 +1701,7 @@ impl EquationSet {
         } else {
             (Copies::none(), Copies::none())
         };
-        let mut init = (!array_init.is_empty()).then(|| {
+        let mut init = state_decls.iter().any(|d| d.array).then(|| {
             let steps: Vec<(usize, &Expr)> = init_steps.iter().map(|(v, e)| (*v, e)).collect();
             Program::with_layout(&spans, size, &steps)
         });
