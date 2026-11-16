@@ -3,9 +3,9 @@
 //! and tables, and the parameters found.
 
 use super::declare::{axis_names, row_table, Declared};
-use super::rules::{check_rules, CheckedRule};
+use super::rules::{check_rules, CheckedRule, RuleLine};
 use super::shapes::{axes_of, cells_of, union, Shapes};
-use super::statements::{definition_error, EdgeKind, Lhs, RuleLine};
+use super::statements::{definition_error, EdgeKind, Lhs};
 use super::{Axis, Kind, RuleKind};
 use simsandbox_core::Result;
 use simsandbox_expr::{parse, Ast};

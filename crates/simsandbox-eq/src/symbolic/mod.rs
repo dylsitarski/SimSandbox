@@ -39,6 +39,7 @@
 //!   `km` and `m` mix correctly inside a block; ports carry the declared
 //!   unit, and connections need equal units (convert with `units.convert`).
 
+mod axes;
 mod declare;
 mod evaluate;
 mod explicit;

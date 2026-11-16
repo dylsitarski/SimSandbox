@@ -1,68 +1,12 @@
 //! Reading the lines of a definition: which statement a line is, and
 //! its pieces (tables, cells, meshes, rules, grids, edges, units, left sides).
 
+use super::rules::{read_rule, RuleLine};
 use super::starts::{quoted_file, MeshSpec};
-use super::{Axis, RuleKind};
+use super::Axis;
 use simsandbox_core::units::Unit;
 use simsandbox_core::{Result, SimError};
 use simsandbox_expr::{is_reserved, parse, Ast};
-/// Parameters over a table's rows (ADR 0069, ADR 0079 point 2), `param
-/// g[pipes] [S] = 2`: a value per row that does not change, kept with
-/// the row through rules and set by the table's starting file. Written as
-/// a state over the rows that holds (`dg/dt = 0`, or `g[n+1] = g` in a
-/// block of maps), so it is stored, rewound and passed on as states are.
-/// Lines are kept in place, so errors keep their line numbers; the
-/// holding lines come after them, each with the line of its `param`.
-pub(super) fn row_params(lines: &[String]) -> (Vec<String>, Vec<usize>) {
-    let tables: Vec<&str> = lines
-        .iter()
-        .filter_map(|l| {
-            let l = l.trim();
-            ["table ", "edges ", "cells ", "sides "]
-                .iter()
-                .find_map(|w| l.strip_prefix(w))
-                .and_then(|r| r.split_whitespace().next())
-        })
-        .collect();
-    let (continuous, maps) = dynamics(lines);
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
-    let mut held = Vec::new();
-    for (k, l) in lines.iter().enumerate() {
-        let t = l.trim();
-        let over_rows = t.strip_prefix("param ").and_then(|rest| {
-            let head = rest.split_once('=').map_or(rest, |(h, _)| h);
-            let (n, dims) = head.split_once('[')?;
-            let (dims, _) = dims.split_once(']')?;
-            dims.split(',')
-                .any(|d| tables.contains(&d.trim()))
-                .then(|| n.trim().to_string())
-        });
-        match over_rows {
-            Some(n) if continuous || maps => {
-                let rest = t.strip_prefix("param ").expect("checked");
-                let line = if rest.contains('=') {
-                    format!("state {rest}")
-                } else {
-                    format!("state {rest} = 1")
-                };
-                out.push(line);
-                held.push((n, k + 1));
-            }
-            _ => out.push(l.clone()),
-        }
-    }
-    let mut from = Vec::with_capacity(held.len());
-    for (n, line) in held {
-        out.push(if continuous {
-            format!("d{n}/dt = 0")
-        } else {
-            format!("{n}[n+1] = {n}")
-        });
-        from.push(line);
-    }
-    (out, from)
-}
-
 /// The words that begin a statement other than an equation.
 const STATEMENTS: [&str; 14] = [
     "grid", "table", "edges", "cells", "sides", "start", "remove", "add", "split", "merge", "edge",
@@ -149,96 +93,6 @@ pub(super) fn read_cells(
     };
     let (name, _) = read_table(name, line)?;
     Ok((name, of.to_string(), max, shape))
-}
-
-/// A column's value in an `add` rule: its name, expression and column.
-pub(super) type Given = (String, Ast, usize);
-
-/// A rule changing a table between steps (ADR 0079), as written.
-#[derive(Clone)]
-pub(super) struct RuleLine {
-    pub(super) line: usize,
-    pub(super) kind: RuleKind,
-    pub(super) table: String,
-    /// `remove pts where cond`: `None`; `add pts [from s] [where c]: …`:
-    /// the axis rows come from, if any, and the values given.
-    pub(super) add: Option<(Option<String>, Vec<Given>)>,
-    /// The condition (`where`), 1 if none.
-    pub(super) cond: Ast,
-    pub(super) cond_column: usize,
-}
-
-/// `remove pts where cond` or `add pts [from s] [where cond][: c = e, …]`.
-pub(super) fn read_rule(text: &str, word: &str, rest: &str, line: usize) -> Result<RuleLine> {
-    let usage = match word {
-        "remove" => "write 'remove pts where condition'",
-        "split" | "merge" => "write 'split segs where condition' or 'merge segs where condition: c = mean' (each column mean, copy, share, sum or a value)",
-        _ => "write 'add pts: c = value', 'add pts where condition: …' or 'add pts from k where condition: c = value'",
-    };
-    let kind = match word {
-        "remove" => RuleKind::Remove,
-        "split" => RuleKind::Split,
-        "merge" => RuleKind::Merge,
-        _ => RuleKind::Add,
-    };
-    let bad = |m: String| definition_error(line, 1, m);
-    let parse_at = |src: &str| -> Result<(Ast, usize)> {
-        let col = column_of(text, src.trim());
-        parse(src)
-            .map(|a| (a, col))
-            .map_err(|e| definition_error(line, col + e.column - 1, e.message))
-    };
-    let (head, assigns) = match (word, rest.split_once(':')) {
-        ("add" | "split" | "merge", Some((h, a))) => (h, Some(a)),
-        _ => (rest, None),
-    };
-    let (head, cond) = match head.split_once(" where ") {
-        Some((h, c)) => (h, Some(c)),
-        None => (head, None),
-    };
-    let words: Vec<&str> = head.split_whitespace().collect();
-    let (table, from) = match (word, &words[..]) {
-        (_, [t]) => (t.to_string(), None),
-        ("add", [t, "from", s]) => (t.to_string(), Some(s.to_string())),
-        _ => return Err(bad(usage.into())),
-    };
-    if word != "add" && cond.is_none() {
-        return Err(bad(usage.into()));
-    }
-    let (cond, cond_column) = match cond {
-        Some(c) => parse_at(c)?,
-        None => (Ast::Num(1.0), 1),
-    };
-    let add = if word != "remove" {
-        let mut values = Vec::new();
-        for item in assigns.map(split_top).unwrap_or_default() {
-            if item.trim().is_empty() {
-                continue;
-            }
-            let Some((n, e)) = item.split_once('=') else {
-                return Err(bad(usage.into()));
-            };
-            // A transfer by name (ADR 0079 point 4), for split and merge.
-            if word != "add" && matches!(e.trim(), "mean" | "copy" | "share" | "sum") {
-                let col = column_of(text, e.trim());
-                values.push((n.trim().to_string(), Ast::Name(e.trim().into(), col), col));
-                continue;
-            }
-            let (ast, col) = parse_at(e)?;
-            values.push((n.trim().to_string(), ast, col));
-        }
-        Some((from, values))
-    } else {
-        None
-    };
-    Ok(RuleLine {
-        line,
-        kind,
-        table,
-        add,
-        cond,
-        cond_column,
-    })
 }
 
 /// An expression as written: its text, line and column.

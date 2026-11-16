@@ -4,10 +4,100 @@
 
 use super::declare::Declared;
 use super::shaped::{Arrays, Init};
-use super::statements::{definition_error, Given, RuleLine};
+use super::statements::{column_of, definition_error, split_top};
 use super::{CellTransfer, RuleKind};
 use simsandbox_core::{Result, SimError};
-use simsandbox_expr::{Ast, Op};
+use simsandbox_expr::{parse, Ast, Op};
+
+/// A column's value in an `add` rule: its name, expression and column.
+pub(super) type Given = (String, Ast, usize);
+
+/// A rule changing a table between steps (ADR 0079), as written.
+#[derive(Clone)]
+pub(super) struct RuleLine {
+    pub(super) line: usize,
+    pub(super) kind: RuleKind,
+    pub(super) table: String,
+    /// `remove pts where cond`: `None`; `add pts [from s] [where c]: …`:
+    /// the axis rows come from, if any, and the values given.
+    pub(super) add: Option<(Option<String>, Vec<Given>)>,
+    /// The condition (`where`), 1 if none.
+    pub(super) cond: Ast,
+    pub(super) cond_column: usize,
+}
+
+/// `remove pts where cond` or `add pts [from s] [where cond][: c = e, …]`.
+pub(super) fn read_rule(text: &str, word: &str, rest: &str, line: usize) -> Result<RuleLine> {
+    let usage = match word {
+        "remove" => "write 'remove pts where condition'",
+        "split" | "merge" => "write 'split segs where condition' or 'merge segs where condition: c = mean' (each column mean, copy, share, sum or a value)",
+        _ => "write 'add pts: c = value', 'add pts where condition: …' or 'add pts from k where condition: c = value'",
+    };
+    let kind = match word {
+        "remove" => RuleKind::Remove,
+        "split" => RuleKind::Split,
+        "merge" => RuleKind::Merge,
+        _ => RuleKind::Add,
+    };
+    let bad = |m: String| definition_error(line, 1, m);
+    let parse_at = |src: &str| -> Result<(Ast, usize)> {
+        let col = column_of(text, src.trim());
+        parse(src)
+            .map(|a| (a, col))
+            .map_err(|e| definition_error(line, col + e.column - 1, e.message))
+    };
+    let (head, assigns) = match (word, rest.split_once(':')) {
+        ("add" | "split" | "merge", Some((h, a))) => (h, Some(a)),
+        _ => (rest, None),
+    };
+    let (head, cond) = match head.split_once(" where ") {
+        Some((h, c)) => (h, Some(c)),
+        None => (head, None),
+    };
+    let words: Vec<&str> = head.split_whitespace().collect();
+    let (table, from) = match (word, &words[..]) {
+        (_, [t]) => (t.to_string(), None),
+        ("add", [t, "from", s]) => (t.to_string(), Some(s.to_string())),
+        _ => return Err(bad(usage.into())),
+    };
+    if word != "add" && cond.is_none() {
+        return Err(bad(usage.into()));
+    }
+    let (cond, cond_column) = match cond {
+        Some(c) => parse_at(c)?,
+        None => (Ast::Num(1.0), 1),
+    };
+    let add = if word != "remove" {
+        let mut values = Vec::new();
+        for item in assigns.map(split_top).unwrap_or_default() {
+            if item.trim().is_empty() {
+                continue;
+            }
+            let Some((n, e)) = item.split_once('=') else {
+                return Err(bad(usage.into()));
+            };
+            // A transfer by name (ADR 0079 point 4), for split and merge.
+            if word != "add" && matches!(e.trim(), "mean" | "copy" | "share" | "sum") {
+                let col = column_of(text, e.trim());
+                values.push((n.trim().to_string(), Ast::Name(e.trim().into(), col), col));
+                continue;
+            }
+            let (ast, col) = parse_at(e)?;
+            values.push((n.trim().to_string(), ast, col));
+        }
+        Some((from, values))
+    } else {
+        None
+    };
+    Ok(RuleLine {
+        line,
+        kind,
+        table,
+        add,
+        cond,
+        cond_column,
+    })
+}
 
 /// A column's value in a rule: its name, expression, line and column.
 pub(super) type Value = (String, Ast, usize, usize);
