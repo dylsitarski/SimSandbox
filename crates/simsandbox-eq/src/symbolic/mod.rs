@@ -42,13 +42,20 @@
 mod declare;
 mod evaluate;
 mod explicit;
+mod interface;
+mod layout;
 mod lower;
 mod parse;
+mod program;
+mod rules;
+mod shaped;
 mod shapes;
 mod starts;
 mod statements;
+mod tables;
 #[cfg(test)]
 mod tests;
+mod units;
 
 pub use explicit::ExplicitBlock;
 pub use starts::StartCsv;

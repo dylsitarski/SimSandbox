@@ -2,7 +2,7 @@
 //! its pieces (tables, cells, meshes, rules, grids, edges, units, left sides).
 
 use super::starts::{quoted_file, MeshSpec};
-use super::{Axis, CellTransfer, RuleKind};
+use super::{Axis, RuleKind};
 use simsandbox_core::units::Unit;
 use simsandbox_core::{Result, SimError};
 use simsandbox_expr::{is_reserved, parse, Ast};
@@ -153,16 +153,6 @@ pub(super) fn read_cells(
 
 /// A column's value in an `add` rule: its name, expression and column.
 pub(super) type Given = (String, Ast, usize);
-
-/// A rule as checked: its table and source axes (by place), the rule, and
-/// each column's value (name, expression, line, column).
-pub(super) type CheckedRule<'a> = (
-    usize,
-    Option<usize>,
-    &'a RuleLine,
-    Vec<(String, Ast, usize, usize)>,
-    Vec<(bool, usize, CellTransfer)>,
-);
 
 /// A rule changing a table between steps (ADR 0079), as written.
 #[derive(Clone)]
