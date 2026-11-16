@@ -203,6 +203,14 @@ impl Names<'_> {
                 format!("'{n}' cannot be a parameter name"),
             ));
         }
+        // A parameter per cell is its elements among the parameters.
+        if self.array_params.iter().any(|a| a.name == n) {
+            return Err(definition_error(
+                number,
+                1,
+                format!("'{n}' is declared twice"),
+            ));
+        }
         if let Some(d) = self.params.iter().find(|d| d.0 == n) {
             let state = n
                 .strip_suffix('0')
@@ -559,6 +567,7 @@ pub(super) fn declare(
             || defined.contains(n)
             || inputs.contains(n)
             || axes.contains(&n.as_str())
+            || array_params.iter().any(|a| &a.name == n)
         {
             return Err(definition_error(
                 line.number,

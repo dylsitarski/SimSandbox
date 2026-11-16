@@ -1102,3 +1102,52 @@ fn element_names_are_as_format_writes_them() {
     }
     assert_eq!(element_name("θ_1", 42), "θ_1[42]");
 }
+
+/// Three mistakes found while the front end was taken apart: each is an
+/// error at its line, where one stopped the program and two were taken
+/// silently.
+#[test]
+fn more_points_than_a_table_holds_and_names_given_twice_are_errors() {
+    let error = |lines: &[&str]| {
+        let lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        match EquationSet::parse("b", &lines) {
+            Err(e) => e.to_string().replace("invalid definition: ", ""),
+            Ok(_) => "accepted".into(),
+        }
+    };
+    // A starting grid of 3 × 3 points over a table of at most 3 rows.
+    let e = error(&[
+        "table pts max 3",
+        "state x[pts]",
+        "state y[pts]",
+        "x[n+1] = x",
+        "y[n+1] = y",
+        "cells c of pts: quad",
+        "start c = grid x 0 .. 1 by 2, y 0 .. 1 by 2",
+    ]);
+    assert!(
+        e.ends_with(
+            "line 7, column 1: pts starts with 9 rows (the points of c's starting mesh) but \
+             has at most 3"
+        ),
+        "{e}"
+    );
+    // A parameter per cell declared twice, and defined as a formula too.
+    let e = error(&[
+        "grid k = 2",
+        "param m[k] = 1",
+        "param m[k] = 1",
+        "y = sum(m)",
+    ]);
+    assert!(
+        e.ends_with("line 3, column 1: 'm' is declared twice"),
+        "{e}"
+    );
+    let e = error(&["grid k = 2", "param m[k] = 1", "m = 3"]);
+    assert!(e.ends_with("line 3, column 1: 'm' is defined twice"), "{e}");
+    // What stays allowed: the table large enough, the parameter once.
+    assert_eq!(
+        error(&["grid k = 2", "param m[k] = 1", "y = sum(m)"]),
+        "accepted"
+    );
+}

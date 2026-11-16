@@ -256,6 +256,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- Typed equations: a starting grid or mesh with more points than its table's `max` is an error at the `start` line; it stopped SimSandbox. A parameter per cell (`param m[k]`) declared twice, or also defined by an equation, is refused as declared or defined twice; it was accepted, with its elements twice among the parameters.
 - Typed equations: `measure(c, x, y)` is in the coordinates' unit to the cells' dimension (`[m^2]` for a quad's area; it had no unit, so such a line was refused where units are checked), `normal` is dimensionless, and both want their coordinates in one unit; the id in `of(T, i)` has no unit.
 - Typed equations: a name used only in a rule (`remove pts where age > lim`) is a parameter like any other, after those of the equations; it was an unknown name.
 - Typed equations: `param g[table]` works in a block whose states are written `x' = …` or `d x / dt = …`; a map's rules may write `x[n]` for the present value.

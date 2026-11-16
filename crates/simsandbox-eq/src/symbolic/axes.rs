@@ -59,10 +59,19 @@ fn table_axis(
         None => starts.rows.get(&t).map_or(0, |s| s.0),
     };
     if start > max {
+        // Its own `start` line, or that of the cells whose mesh makes its
+        // rows.
+        let (line, why) = match (starts.rows.get(&t), made.first()) {
+            (Some(s), _) => (s.1, String::new()),
+            (None, Some((c, (_, line)))) => {
+                (*line, format!(" (the points of {c}'s starting mesh)"))
+            }
+            (None, None) => (number, String::new()),
+        };
         return Err(definition_error(
-            starts.rows[&t].1,
+            line,
             1,
-            format!("{t} starts with {start} rows but has at most {max}"),
+            format!("{t} starts with {start} rows{why} but has at most {max}"),
         ));
     }
     let cells = rows.get(&t).copied().unwrap_or(start);
