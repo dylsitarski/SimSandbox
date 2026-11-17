@@ -3,7 +3,7 @@
 
 use crate::filters::Filters;
 use crate::probe::{ProbeSpec, Trigger};
-use simsandbox_core::block::{MethodLabels, Shape, TimeSemantics};
+use simsandbox_core::block::{MethodLabels, TimeSemantics};
 use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::Simulator;
@@ -11,15 +11,15 @@ use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
 use simsandbox_file::{FilterEntry, FusedGroup, ModelFile, ParamPlan, ProbeEntry, ViewEntry};
 use simsandbox_views::cut::Geometry;
-use simsandbox_views::{
-    Available, Coordinate, FieldShape, History, MeshInfo, MeshShape, SignalRef,
-};
+use simsandbox_views::{Coordinate, FieldShape, History, SignalRef};
 use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+mod catalogue;
 mod inputs;
 mod rewind;
 
+use catalogue::Catalogue;
 pub use inputs::InputEvent;
 pub(crate) use inputs::{set_key, Track};
 use rewind::Rewind;
@@ -212,23 +212,6 @@ impl MemoryUse {
     }
 }
 
-/// Where a recorded signal comes from: an element of an output port.
-#[derive(Clone)]
-struct Source {
-    block: BlockId,
-    port: String,
-    index: usize,
-}
-
-/// A whole output port recorded as a field (a grid or a point set).
-#[derive(Clone)]
-struct FieldSource {
-    block: BlockId,
-    port: String,
-    /// Values per frame; `None` for a population, whose frames vary.
-    len: Option<usize>,
-}
-
 /// One parameter as the panel shows it.
 #[derive(Clone, Debug)]
 pub struct ParamRow {
@@ -305,13 +288,6 @@ pub struct Session {
     /// known (a model without saved views, before the app shows any):
     /// everything.
     view_reads: Option<Vec<String>>,
-    /// Every scalar and per-sample field a step yields, in sample order:
-    /// what probes take from and views can bind.
-    layout_scalars: Vec<String>,
-    layout_fields: Vec<(String, FieldShape)>,
-    /// Which fields place which others' cells, among everything a step
-    /// yields.
-    all_coordinates: Vec<Coordinate>,
     /// Filters with an input from a probe, each with its own clock and
     /// recording (ADR 0063), in dependency order.
     derived: Vec<Derived>,
@@ -326,27 +302,8 @@ pub struct Session {
     /// What the history keeps of each sample: places in the layout.
     keep_signals: Vec<usize>,
     keep_fields: Vec<usize>,
-    sources: Vec<Source>,
-    /// Names of the scalar output signals, in `sources` order.
-    output_names: Vec<String>,
-    /// Grid and point-set outputs and their shapes.
-    base_fields: Vec<(String, FieldShape)>,
-    /// Coordinates among the grid outputs.
-    base_coordinates: Vec<Coordinate>,
-    /// Grids with one row, which views can draw over time.
-    lines: Vec<String>,
-    /// Grid and point-set outputs, recorded whole (ADR 0016).
-    field_sources: Vec<FieldSource>,
-    /// Names of the recorded grids and point sets, and the model's block
-    /// types: what views can bind besides scalars.
-    grids: Vec<String>,
-    points: Vec<String>,
-    /// Fields over a table's rows, one value each (ADR 0086).
-    rows: Vec<String>,
-    /// Meshes views can draw, and how (ADR 0086).
-    meshes: Vec<MeshInfo>,
-    mesh_shapes: Vec<(String, MeshShape)>,
-    block_types: Vec<String>,
+    /// What a step yields, the filters, and what views can bind.
+    catalogue: Catalogue,
     /// Where the app pauses (the file's `run.t_end`); cleared once reached so
     /// Run continues past it (ADR 0013).
     stop_at: Option<f64>,
@@ -372,11 +329,6 @@ pub struct Session {
     evaluate_later: bool,
     /// The recorder and its snapshots (ADR 0064).
     rewind: Rewind,
-    /// Filters as written, for saving and editing (ADR 0030, ADR 0032).
-    filter_entries: Vec<FilterEntry>,
-    /// Filters compiled: expressions recorded after the output signals,
-    /// cut fields after the recorded fields.
-    filters: Filters,
     /// The schedule and the recorded live input (ADR 0058).
     track: Track,
     /// The history lacks what views read now for its samples up to this
@@ -412,150 +364,7 @@ impl Session {
             simsandbox_file::load_in(text, registry, folder)
         }
         .map_err(|e| e.to_string())?;
-        let mut names = Vec::new();
-        let mut sources = Vec::new();
-        let mut fields = Vec::new();
-        let mut field_sources = Vec::new();
-        let mut meshes: Vec<MeshInfo> = Vec::new();
-        let mut mesh_shapes: Vec<(String, MeshShape)> = Vec::new();
-        let mut coordinates: Vec<Coordinate> = Vec::new();
-        let mut block_types = Vec::new();
-        for entry in &loaded.flat.blocks {
-            let id = loaded.ids[&entry.name];
-            let block = loaded.model.block(id).map_err(|e| e.to_string())?;
-            if !block_types.contains(&entry.type_name) {
-                block_types.push(entry.type_name.clone());
-            }
-            let spec = block.spec();
-            for port in spec.outputs() {
-                // Every output can be recorded; what is, wiring decides
-                // (ADR 0063).
-                let key = format!("{}.{}", entry.name, port.name);
-                let field = match port.shape {
-                    Shape::Grid { nx, ny } => Some(FieldShape::Grid { nx, ny }),
-                    Shape::Points { count, dim } => Some(FieldShape::Points { count, dim }),
-                    Shape::Population { dim } => Some(FieldShape::Population { dim }),
-                    Shape::Tensor { rank, dims } => Some(FieldShape::Tensor { rank, dims }),
-                    // Recorded with their ids (ADR 0079 stage 1c).
-                    Shape::Rows { dim } => Some(FieldShape::Rows { dim }),
-                    Shape::Scalar | Shape::Vector(_) => None,
-                };
-                if let Some(shape) = field {
-                    for c in &port.coordinate {
-                        coordinates.push(Coordinate {
-                            name: key.clone(),
-                            of: format!("{}.{}", entry.name, c.port),
-                            axis: c.axis,
-                        });
-                    }
-                    // A mesh's cells, with the fields over its cells and
-                    // points (ADR 0086).
-                    if let Some(m) = &port.mesh {
-                        let table = |o: &simsandbox_core::block::PortSpec| {
-                            o.axis_names
-                                .first()
-                                .cloned()
-                                .filter(|_| matches!(o.shape, Shape::Rows { dim: 1 }))
-                        };
-                        let points = spec
-                            .outputs()
-                            .find(|o| Some(&o.name) == m.coordinates.first())
-                            .and_then(table);
-                        let over = |t: Option<String>| -> Vec<String> {
-                            spec.outputs()
-                                .filter(|o| t.is_some() && table(o) == t)
-                                .map(|o| format!("{}.{}", entry.name, o.name))
-                                .collect()
-                        };
-                        let qualified: Vec<String> = m
-                            .coordinates
-                            .iter()
-                            .map(|c| format!("{}.{}", entry.name, c))
-                            .collect();
-                        meshes.push(MeshInfo {
-                            cells: key.clone(),
-                            coordinates: qualified.clone(),
-                            over_cells: over(port.axis_names.first().cloned()),
-                            over_points: over(points)
-                                .into_iter()
-                                .filter(|f| !qualified.contains(f))
-                                .collect(),
-                        });
-                        mesh_shapes.push((
-                            key.clone(),
-                            MeshShape {
-                                dim: m.dim,
-                                faces: m.faces.clone(),
-                                coordinates: qualified,
-                            },
-                        ));
-                    }
-                    // Rows of one table place each other, by id (ADR 0086):
-                    // any of its quantities can be the other's axis.
-                    if let (Shape::Rows { dim: 1 }, Some(table)) =
-                        (port.shape, port.axis_names.first())
-                    {
-                        for other in spec.outputs().filter(|o| {
-                            o.name != port.name
-                                && matches!(o.shape, Shape::Rows { dim: 1 })
-                                && o.axis_names.first() == Some(table)
-                        }) {
-                            coordinates.push(Coordinate {
-                                name: key.clone(),
-                                of: format!("{}.{}", entry.name, other.name),
-                                axis: 0,
-                            });
-                        }
-                    }
-                    fields.push((key, shape));
-                    field_sources.push(FieldSource {
-                        block: id,
-                        port: port.name.clone(),
-                        len: (!port.shape.is_variable()).then(|| port.shape.len()),
-                    });
-                    continue;
-                }
-                for index in 0..port.shape.len() {
-                    names.push(match port.shape {
-                        Shape::Vector(_) => format!("{key}[{index}]"),
-                        _ => key.clone(),
-                    });
-                    sources.push(Source {
-                        block: id,
-                        port: port.name.clone(),
-                        index,
-                    });
-                }
-            }
-        }
-        // Declared outputs of used models (ADR 0066 step 4b) are recorded
-        // under their names too, from the same outputs.
-        for (alias, target) in &loaded.aliases {
-            if let Some(k) = names.iter().position(|n| n == target) {
-                names.push(alias.clone());
-                sources.push(sources[k].clone());
-            } else if let Some(k) = fields.iter().position(|(n, _)| n == target) {
-                fields.push((alias.clone(), fields[k].1));
-                field_sources.push(field_sources[k].clone());
-            }
-        }
-        // A coordinate needs the field it places, recorded, of the same
-        // shape, or a line along its axis (ADR 0080).
-        coordinates.retain(|c| {
-            let shape = |n: &str| fields.iter().find(|(f, _)| f == n).map(|(_, s)| *s);
-            match (shape(&c.name), shape(&c.of)) {
-                (Some(a), Some(b)) if a == b => true,
-                (Some(FieldShape::Grid { nx: n, ny: 1 }), Some(FieldShape::Grid { nx, ny })) => {
-                    n == if c.axis == 0 { nx } else { ny }
-                }
-                // Along one axis of a field of more (ADR 0086).
-                (
-                    Some(FieldShape::Grid { nx: n, ny: 1 }),
-                    Some(FieldShape::Tensor { rank, dims }),
-                ) => c.axis < rank && dims[c.axis] == n,
-                _ => false,
-            }
-        });
+        let catalogue = Catalogue::of(&loaded)?;
         // Where a run only data drives ends (ADR 0067 step 4).
         let data_end = crate::run::data_end(&loaded.model);
         let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
@@ -592,9 +401,6 @@ impl Session {
             probes: Vec::new(),
             view_reads: (!start_file.controls.views.is_empty())
                 .then(|| view_reads(&start_file.controls.views)),
-            layout_scalars: Vec::new(),
-            layout_fields: Vec::new(),
-            all_coordinates: Vec::new(),
             keep_signals: Vec::new(),
             keep_fields: Vec::new(),
             derived: Vec::new(),
@@ -602,23 +408,10 @@ impl Session {
             view_probes: Vec::new(),
             record_all_probes: false,
             probe_dir: None,
-            sources,
-            output_names: names,
-            base_fields: fields,
-            base_coordinates: coordinates,
-            lines: Vec::new(),
-            field_sources,
-            grids: Vec::new(),
-            points: Vec::new(),
-            rows: Vec::new(),
-            meshes,
-            mesh_shapes,
-            block_types,
+            catalogue,
             rewind: Rewind::new(start_file.controls.recorder.clone(), sim.snapshot()),
             memory_mb: DEFAULT_MEMORY_MB,
             sim,
-            filter_entries: Vec::new(),
-            filters: Filters::default(),
             track: Track::new(schedule, Vec::new()),
             gaps_until: None,
             start_file,
@@ -634,11 +427,14 @@ impl Session {
         session.iterates = !session.timeless && session.only_rounds();
         session.rounds_pending = session.iterates;
         session.unevaluated = !crate::study::studies_run()
-            && session.block_types.iter().any(|t| t == crate::study::STUDY);
+            && session
+                .catalogue
+                .block_types
+                .iter()
+                .any(|t| t == crate::study::STUDY);
         session.check_schedule()?;
         let (filters, problems) = session.compile_filters(&entries);
-        session.filter_entries = kept_entries(&filters, &entries);
-        session.filters = filters;
+        session.catalogue.set_filters(filters, &entries);
         for p in problems {
             session
                 .warnings
@@ -661,43 +457,6 @@ impl Session {
     /// The file as it was when the current run started.
     pub fn start_file(&self) -> &ModelFile {
         &self.start_file
-    }
-
-    /// Names of the recorded grids, point sets, one-row grids and the
-    /// model's block types: what views can bind besides scalars.
-    /// Every scalar a step yields, which views can bind (ADR 0063).
-    pub fn bindable_scalars(&self) -> &[String] {
-        &self.layout_scalars
-    }
-
-    /// The 2D grids a cut filter can take, recorded or not (ADR 0063).
-    pub fn cut_inputs(&self) -> Vec<String> {
-        self.layout_fields
-            .iter()
-            .filter(|(_, s)| matches!(s, FieldShape::Grid { nx, ny } if *nx >= 2 && *ny >= 2))
-            .filter(|(n, _)| !self.all_coordinates.iter().any(|c| &c.name == n))
-            .map(|(n, _)| n.clone())
-            .collect()
-    }
-
-    /// Which fields place which others' cells, among all a step yields.
-    pub fn all_coordinates(&self) -> &[Coordinate] {
-        &self.all_coordinates
-    }
-
-    /// The meshes views can draw (ADR 0086).
-    pub fn meshes(&self) -> &[MeshInfo] {
-        &self.meshes
-    }
-
-    pub fn bindable(&self) -> [&[String]; 5] {
-        [
-            &self.grids,
-            &self.points,
-            &self.lines,
-            &self.block_types,
-            &self.rows,
-        ]
     }
 
     /// The recorded signals, for reading.
@@ -875,30 +634,31 @@ impl Session {
     fn kept(&self) -> (Vec<usize>, Vec<usize>) {
         let Some(reads) = &self.view_reads else {
             return (
-                (0..self.layout_scalars.len()).collect(),
-                (0..self.layout_fields.len()).collect(),
+                (0..self.catalogue.layout_scalars.len()).collect(),
+                (0..self.catalogue.layout_fields.len()).collect(),
             );
         };
         let mut want: std::collections::BTreeSet<String> = reads.iter().cloned().collect();
         // Filters with clocks of their own read probes and each other.
-        let derived = crate::observers::clocked(&self.filter_entries);
+        let derived = crate::observers::clocked(&self.catalogue.filter_entries);
         let model = |f: &&FilterEntry| !derived.iter().any(|d| d.name == f.name);
-        for f in self.filter_entries.iter().filter(model) {
+        for f in self.catalogue.filter_entries.iter().filter(model) {
             want.extend(crate::observers::filter_reads(f));
         }
-        for c in &self.filters.cuts {
+        for c in &self.catalogue.filters.cuts {
             want.extend(
-                self.all_coordinates
+                self.catalogue
+                    .all_coordinates
                     .iter()
                     .filter(|k| k.of == c.input)
                     .map(|k| k.name.clone()),
             );
         }
-        let signals = (0..self.layout_scalars.len())
-            .filter(|&i| want.contains(&self.layout_scalars[i]))
+        let signals = (0..self.catalogue.layout_scalars.len())
+            .filter(|&i| want.contains(&self.catalogue.layout_scalars[i]))
             .collect();
-        let fields = (0..self.layout_fields.len())
-            .filter(|&i| want.contains(&self.layout_fields[i].0))
+        let fields = (0..self.catalogue.layout_fields.len())
+            .filter(|&i| want.contains(&self.catalogue.layout_fields[i].0))
             .collect();
         (signals, fields)
     }
@@ -912,17 +672,19 @@ impl Session {
     /// mark the samples before as gaps, unless recomputed.
     fn replay_history(&mut self, old: &History, recompute: bool, fills: &BTreeMap<usize, Pending>) {
         let signal_at: Vec<Option<usize>> = self
+            .catalogue
             .layout_scalars
             .iter()
             .map(|n| old.names().iter().position(|m| m == n))
             .collect();
         let field_at: Vec<Option<usize>> = self
+            .catalogue
             .layout_fields
             .iter()
             .map(|(n, _)| old.fields().iter().position(|f| &f.name == n))
             .collect();
-        let outputs = self.output_names.len();
-        let base = self.base_fields.len();
+        let outputs = self.catalogue.output_names.len();
+        let base = self.catalogue.base_fields.len();
         let lacks = self
             .keep_signals
             .iter()
@@ -955,200 +717,36 @@ impl Session {
             let cuts;
             if recompute {
                 values.truncate(outputs);
-                self.append_derived(t, &mut values);
+                self.catalogue
+                    .append_derived(t, &mut values, || self.param_values());
                 frames.truncate(base);
-                cuts = self.sample_cuts(&frames);
+                cuts = self.catalogue.sample_cuts(&frames);
                 frames.extend(cuts.iter().map(Vec::as_slice));
             }
             self.push_kept(t, &values, &frames);
         }
     }
 
-    /// What views can bind: everything a step yields (ADR 0063), whether
-    /// or not the history `h` records it now; and the model's block types.
-    pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
-        let _ = h;
-        Available {
-            scalars: &self.layout_scalars,
-            grids: &self.grids,
-            points: &self.points,
-            block_types: &self.block_types,
-            lines: &self.lines,
-            rows: &self.rows,
-            meshes: &self.meshes,
-            coordinates: &self.all_coordinates,
-            derived: &self.derived_names,
-        }
-    }
-
-    /// The names of the recorded scalar signals: outputs, then
-    /// expression filters.
-    fn scalar_names(&self) -> Vec<String> {
-        self.output_names
-            .iter()
-            .cloned()
-            .chain(self.filters.exprs.iter().map(|f| f.name.clone()))
-            .collect()
-    }
-
-    /// Compile filters for this model; problems are `name: reason`.
-    /// Filters on probes are compiled with their probes (ADR 0063).
-    fn compile_filters(&self, entries: &[FilterEntry]) -> (Filters, Vec<String>) {
-        let entries: Vec<FilterEntry> = entries
-            .iter()
-            .filter(|e| {
-                !crate::observers::clocked(entries)
-                    .iter()
-                    .any(|d| d.name == e.name)
-            })
-            .cloned()
-            .collect();
-        let entries = &entries[..];
-        let params = param_keys(&self.flat, &self.ids, self.sim.model());
-        Filters::compile(entries, &self.output_names, &params, &self.base_fields)
-    }
-
     /// The layout of a sample and an empty history keeping what is wired.
     fn build_history(&mut self) {
-        let names = self.scalar_names();
-        let mut fields = self.base_fields.clone();
-        let mut coordinates = self.base_coordinates.clone();
-        let scalars = names;
-        let mut labels = Vec::new();
-        for c in &self.filters.cuts {
-            fields.extend(c.fields());
-            let coordinate = c.coordinate();
-            // For labels only the coordinates' names matter.
-            let mut g = Geometry::cells(c.nx, c.ny);
-            for k in coordinates.iter().filter(|k| k.of == c.input && k.axis < 2) {
-                g.names[k.axis] = Some(k.name.clone());
-            }
-            labels.extend(c.labels(&g));
-            coordinates.extend(c.lines().into_iter().map(|l| Coordinate {
-                name: coordinate.clone(),
-                of: l,
-                axis: 0,
-            }));
-        }
-        let index = "t";
-        let all: Vec<&(String, FieldShape)> = fields.iter().collect();
-        // What views can draw: grids and tensors, points and populations.
-        let of_kind = |grid: bool| -> Vec<String> {
-            all.iter()
-                .filter(|(_, s)| {
-                    if grid {
-                        // Fields of more axes too: views leave the others
-                        // over (ADR 0086).
-                        matches!(s, FieldShape::Grid { .. } | FieldShape::Tensor { .. })
-                    } else {
-                        matches!(s, FieldShape::Points { .. } | FieldShape::Population { .. })
-                    }
-                })
-                .map(|(n, _)| n.clone())
-                .collect()
-        };
-        self.grids = of_kind(true);
-        self.points = of_kind(false);
-        self.lines = all
-            .iter()
-            .filter(|(_, s)| matches!(s, FieldShape::Grid { ny: 1, .. }))
-            .map(|(n, _)| n.clone())
-            .collect();
-        self.rows = all
-            .iter()
-            .filter(|(_, s)| matches!(s, FieldShape::Rows { dim: 1 }))
-            .map(|(n, _)| n.clone())
-            .collect();
-        self.layout_scalars = scalars;
-        self.layout_fields = fields;
-        self.all_coordinates = coordinates;
+        let labels = self.catalogue.lay_out();
         (self.keep_signals, self.keep_fields) = self.kept();
+        let c = &self.catalogue;
         let kept_fields: Vec<(String, FieldShape)> = self
             .keep_fields
             .iter()
-            .map(|&i| self.layout_fields[i].clone())
+            .map(|&i| c.layout_fields[i].clone())
             .collect();
         let mut h = History::with_fields(
-            index,
+            "t",
             self.keep_signals
                 .iter()
-                .map(|&i| self.layout_scalars[i].clone())
+                .map(|&i| c.layout_scalars[i].clone())
                 .collect(),
             kept_fields,
         );
         h.set_field_budget(self.share());
-        // Coordinates among what it records.
-        let recorded = |n: &str| h.fields().iter().any(|f| f.name == n);
-        let coordinates = self
-            .all_coordinates
-            .iter()
-            .filter(|c| recorded(&c.name) && recorded(&c.of))
-            .cloned()
-            .collect();
-        h.set_coordinates(coordinates);
-        for (name, label) in labels {
-            h.set_label(&name, &label);
-        }
-        // Outputs' units, for views that print them.
-        let model = self.sim.model();
-        let unit = |block: BlockId, port: &str| {
-            model
-                .block(block)
-                .ok()
-                .and_then(|b| b.spec().outputs().find(|p| p.name == port).map(|p| p.unit))
-                .filter(|u| *u != Unit::DIMENSIONLESS)
-                .map(|u| u.to_string())
-        };
-        for (name, s) in self.output_names.iter().zip(&self.sources) {
-            if let Some(u) = unit(s.block, &s.port) {
-                h.set_unit(name, &u);
-            }
-        }
-        for ((name, _), f) in self.base_fields.iter().zip(&self.field_sources) {
-            if let Some(u) = unit(f.block, &f.port) {
-                h.set_unit(name, &u);
-            }
-            // Its axes' names, for views that leave some over (ADR 0086).
-            let axes = model
-                .block(f.block)
-                .ok()
-                .and_then(|b| {
-                    b.spec()
-                        .outputs()
-                        .find(|p| p.name == f.port)
-                        .map(|p| p.axis_names.clone())
-                })
-                .unwrap_or_default();
-            if !axes.is_empty() {
-                h.set_axes(name, axes);
-            }
-        }
-        for (name, m) in &self.mesh_shapes {
-            h.set_mesh(name, m.clone());
-        }
-        // A cut's lines have its grid's unit; its coordinate, the unit of
-        // the grid's coordinate along the cut.
-        for c in &self.filters.cuts {
-            if let Some(u) = h.unit(&c.input).map(str::to_string) {
-                for l in c.lines() {
-                    h.set_unit(&l, &u);
-                }
-            }
-            let axis = match c.settings.mode {
-                simsandbox_views::cut::Mode::AlongX => Some(0),
-                simsandbox_views::cut::Mode::AlongY => Some(1),
-                simsandbox_views::cut::Mode::Free => None,
-            };
-            let along = axis.and_then(|a| {
-                self.all_coordinates
-                    .iter()
-                    .find(|k| k.of == c.input && k.axis == a)
-                    .and_then(|k| h.unit(&k.name).map(str::to_string))
-            });
-            if let Some(u) = along {
-                h.set_unit(&c.coordinate(), &u);
-            }
-        }
+        c.describe(&mut h, labels, self.sim.model());
         self.replace_history(h);
     }
 
@@ -1157,7 +755,10 @@ impl Session {
     fn reset_probes(&mut self) {
         let mut specs: Vec<ProbeSpec> = Vec::new();
         {
-            let (scalars, fields) = (&self.layout_scalars, &self.layout_fields);
+            let (scalars, fields) = (
+                &self.catalogue.layout_scalars,
+                &self.catalogue.layout_fields,
+            );
             let recorded =
                 |n: &str| scalars.iter().any(|m| m == n) || fields.iter().any(|(f, _)| f == n);
             for p in &self.probes {
@@ -1282,7 +883,10 @@ impl Session {
         let mut names: Vec<&str> = Vec::new();
         // Probes take from every sample a step yields (ADR 0063), not
         // from what the history keeps.
-        let (scalars, field_list) = (&self.layout_scalars, &self.layout_fields);
+        let (scalars, field_list) = (
+            &self.catalogue.layout_scalars,
+            &self.catalogue.layout_fields,
+        );
         let mut built = Vec::new();
         for spec in &specs {
             if let Err(e) = spec.check() {
@@ -1311,7 +915,8 @@ impl Session {
             // Coordinates of what it records, when it records them too.
             let has = |n: &str| spec.record.iter().any(|r| r == n);
             ph.set_coordinates(
-                self.all_coordinates
+                self.catalogue
+                    .all_coordinates
                     .iter()
                     .filter(|c| has(&c.name) && has(&c.of))
                     .cloned()
@@ -1362,7 +967,8 @@ impl Session {
         let mut old: Vec<Derived> = std::mem::take(&mut self.derived);
         self.derived_names.clear();
         let params = param_keys(&self.flat, &self.ids, self.sim.model());
-        let mut waiting: Vec<FilterEntry> = crate::observers::clocked(&self.filter_entries);
+        let mut waiting: Vec<FilterEntry> =
+            crate::observers::clocked(&self.catalogue.filter_entries);
         let mut notes = Vec::new();
         let recorded_to = self.history.read().times().last().copied();
         while !waiting.is_empty() {
@@ -1469,9 +1075,14 @@ impl Session {
                     Src::Probe(i)
                 }
             };
-            let (at, field) = match self.layout_scalars.iter().position(|n| *n == r) {
+            let (at, field) = match self.catalogue.layout_scalars.iter().position(|n| *n == r) {
                 Some(i) => (i, false),
-                None => match self.layout_fields.iter().position(|(n, _)| *n == r) {
+                None => match self
+                    .catalogue
+                    .layout_fields
+                    .iter()
+                    .position(|(n, _)| *n == r)
+                {
                     Some(i) => (i, true),
                     None => {
                         return Err(format!(
@@ -1514,7 +1125,7 @@ impl Session {
                     .find(|f| f.name == i.name)
                     .map(|f| f.shape)
             }
-            _ => Some(self.layout_fields[i.at].1),
+            _ => Some(self.catalogue.layout_fields[i.at].1),
         };
         let grids: Vec<(String, FieldShape)> = inputs
             .iter()
@@ -1611,7 +1222,7 @@ impl Session {
             return;
         }
         let params = self.param_values();
-        let coordinates = self.all_coordinates.clone();
+        let coordinates = self.catalogue.all_coordinates.clone();
         let mut produced = vec![false; self.derived.len()];
         for j in 0..self.derived.len() {
             let (before, rest) = self.derived.split_at_mut(j);
@@ -1790,35 +1401,6 @@ impl Session {
             .map(|p| p.history.clone())
     }
 
-    /// The frames of the cut filters, in order, given the frames of the
-    /// fields they read.
-    fn cut_frames<'a>(&self, frame: impl Fn(&str) -> Option<&'a [f64]>) -> Vec<Vec<f64>> {
-        let coordinates = &self.all_coordinates;
-        self.filters
-            .cuts
-            .iter()
-            .flat_map(|c| match frame(&c.input) {
-                Some(input) => {
-                    let g = c.geometry(coordinates, &frame);
-                    c.frames(&g, input)
-                }
-                // Recorded as NaN.
-                None => vec![Vec::new(); c.settings.count() + 1],
-            })
-            .collect()
-    }
-
-    /// The per-sample cut frames from the frames of the base fields.
-    fn sample_cuts(&self, before: &[&[f64]]) -> Vec<Vec<f64>> {
-        let fields = &self.base_fields;
-        self.cut_frames(|name| {
-            fields
-                .iter()
-                .position(|(f, _)| f == name)
-                .and_then(|i| before.get(i).copied())
-        })
-    }
-
     pub fn time(&self) -> f64 {
         self.sim.time()
     }
@@ -1832,7 +1414,11 @@ impl Session {
     /// model as it was before it.
     pub fn step(&mut self) -> Result<(), SimError> {
         self.apply_due();
-        let studied = self.block_types.iter().any(|t| t == simsandbox_file::STUDY);
+        let studied = self
+            .catalogue
+            .block_types
+            .iter()
+            .any(|t| t == simsandbox_file::STUDY);
         let before = studied.then(|| self.sim.snapshot());
         let states_before = self.iterates.then(|| self.state_bits());
         if let Err(e) = self.sim.step(self.dt) {
@@ -2263,18 +1849,6 @@ impl Session {
         result.map(|_| ())
     }
 
-    /// Where a filter's node sits on the data layer (ADR 0050): saved with
-    /// the filters, without evaluating them again.
-    pub fn place_filter(&mut self, name: &str, at: Option<[f64; 2]>) -> Result<(), String> {
-        let f = self
-            .filter_entries
-            .iter_mut()
-            .find(|f| f.name == name)
-            .ok_or_else(|| format!("no filter '{name}'"))?;
-        f.canvas = at.map(|p| p.map(|v| (v * 10.0).round() / 10.0));
-        Ok(())
-    }
-
     /// Whether any block starts from a saved state instead of its
     /// parameters.
     pub fn has_start_states(&self) -> bool {
@@ -2333,7 +1907,7 @@ impl Session {
         if let Some(v) = views {
             self.file.controls.views = v;
         }
-        self.file.controls.filters = self.filter_entries.clone();
+        self.file.controls.filters = self.catalogue.filter_entries.clone();
         self.file.controls.recorder = self.rewind.recorder().cloned();
         self.file.controls.probes = self.probe_entries();
         Ok(self.file.to_json())
@@ -2414,8 +1988,8 @@ impl Session {
     fn sample_now(&self) -> Pending {
         let t = self.sim.time();
         let values = self.sample(t);
-        let before = frames(&self.sim, &self.field_sources);
-        let cuts = self.sample_cuts(&before);
+        let before = self.catalogue.frames(&self.sim);
+        let cuts = self.catalogue.sample_cuts(&before);
         let mut all: Vec<Vec<f64>> = before.iter().map(|f| f.to_vec()).chain(cuts).collect();
         for (i, f) in all.iter_mut().enumerate() {
             if !self.keep_fields.contains(&i) {
@@ -2440,57 +2014,15 @@ impl Session {
     fn record(&mut self) {
         let t = self.sim.time();
         let values = self.sample(t);
-        let owned: Vec<Vec<f64>> = frames(&self.sim, &self.field_sources)
+        let owned: Vec<Vec<f64>> = self
+            .catalogue
+            .frames(&self.sim)
             .into_iter()
             .map(<[f64]>::to_vec)
             .collect();
         let frames: Vec<&[f64]> = owned.iter().map(Vec::as_slice).collect();
-        let cuts = self.sample_cuts(&frames);
+        let cuts = self.catalogue.sample_cuts(&frames);
         self.push(t, &values, &frames, &cuts);
-    }
-
-    /// One sample: the output signals, then the expression filters computed
-    /// from them, earlier filters, the current parameter values and `t`.
-    fn sample(&self, t: f64) -> Vec<f64> {
-        let mut values = self.output_values();
-        self.append_derived(t, &mut values);
-        values
-    }
-
-    fn append_derived(&self, t: f64, values: &mut Vec<f64>) {
-        let exprs = &self.filters.exprs;
-        if exprs.is_empty() {
-            return;
-        }
-        // Slots: t, the output signals, the expression filters, then every
-        // parameter.
-        let outputs = self.sources.len();
-        let mut vars = Vec::with_capacity(1 + outputs + exprs.len() + 16);
-        vars.push(t);
-        vars.extend_from_slice(&values[..outputs]);
-        vars.extend(std::iter::repeat_n(0.0, exprs.len()));
-        vars.extend(self.param_values());
-        for (k, f) in exprs.iter().enumerate() {
-            let v = f.expr.eval(&vars);
-            vars[1 + outputs + k] = v;
-            values.push(v);
-        }
-    }
-
-    /// Every parameter's value, in [`Session::params`] order.
-    fn param_values(&self) -> Vec<f64> {
-        let model = self.sim.model();
-        self.flat
-            .blocks
-            .iter()
-            .flat_map(|e| model.params(self.ids[&e.name]).unwrap_or(&[]))
-            .copied()
-            .collect()
-    }
-
-    /// The filters as written (ADR 0032).
-    pub fn filters(&self) -> &[FilterEntry] {
-        &self.filter_entries
     }
 
     /// Replace the filters. All must be usable, or nothing changes and the
@@ -2500,7 +2032,7 @@ impl Session {
         let mut problems = Vec::new();
         let mut names = Vec::new();
         for e in &entries {
-            if names.contains(&e.name) || self.output_names.contains(&e.name) {
+            if names.contains(&e.name) || self.catalogue.output_names.contains(&e.name) {
                 problems.push(format!("{}: the name is already used", e.name));
             }
             names.push(e.name.clone());
@@ -2510,8 +2042,7 @@ impl Session {
         if !problems.is_empty() {
             return Err(problems);
         }
-        self.filter_entries = kept_entries(&filters, &entries);
-        self.filters = filters;
+        self.catalogue.set_filters(filters, &entries);
         // Replay the recorded outputs and fields through the new filters;
         // probes start afresh from now.
         drop(self.history_mut());
@@ -2520,19 +2051,6 @@ impl Session {
         self.replay_history(&old, true, &BTreeMap::new());
         self.reset_probes();
         Ok(())
-    }
-
-    fn output_values(&self) -> Vec<f64> {
-        self.sources
-            .iter()
-            .map(|src| {
-                self.sim
-                    .output(src.block, &src.port)
-                    .and_then(|v| v.get(src.index))
-                    .copied()
-                    .unwrap_or(f64::NAN)
-            })
-            .collect()
     }
 }
 
@@ -2560,20 +2078,6 @@ fn derived_cuts(
                 c.frames(&g, input)
             }
             None => vec![Vec::new(); c.settings.count() + 1],
-        })
-        .collect()
-}
-
-/// The filters as saved: the model's, compiled, with their inputs written
-/// out; those on probes as given (ADR 0063); in the given order.
-fn kept_entries(filters: &Filters, given: &[FilterEntry]) -> Vec<FilterEntry> {
-    let compiled = filters.entries(given);
-    let derived = crate::observers::clocked(given);
-    given
-        .iter()
-        .filter_map(|g| match &g.probe {
-            _ if derived.iter().any(|d| d.name == g.name) => Some(g.clone()),
-            _ => compiled.iter().find(|c| c.name == g.name).cloned(),
         })
         .collect()
 }
@@ -2792,19 +2296,6 @@ pub fn default_cut(h: &History, name: &str, input: &str) -> FilterEntry {
         ]
         .into(),
     }
-}
-
-/// The current value of every recorded field (empty if missing, which the
-/// history records as NaN).
-fn frames<'a>(sim: &'a Simulator, sources: &[FieldSource]) -> Vec<&'a [f64]> {
-    sources
-        .iter()
-        .map(|f| {
-            sim.output(f.block, &f.port)
-                .filter(|v| f.len.is_none_or(|n| v.len() == n))
-                .unwrap_or(&[])
-        })
-        .collect()
 }
 
 /// Every parameter as `"block.param"`, in the order [`Session::params`]
