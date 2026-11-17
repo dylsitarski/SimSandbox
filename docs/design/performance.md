@@ -313,3 +313,65 @@ Found while removing a repeated build from the loading of models that use models
 - **A model using models built each used model three times**; now twice (ADR 0090, as built).
 - Together, loading a model that uses four such models: 11.5 → 5.1 thousand million instructions; `simsandbox run` of it for one step 1.71 → 1.12 s. Results the same bytes.
 - Still large in a build, not yet looked at: the half million names themselves (0.26), `ArrIns::touches` and `gather_places` (0.23), `Program::reads` (0.15), compiling (0.19, the first time).
+
+## The step loop and recording (2026-11-17)
+
+The [code review of 2026-11-14](../research/2026-11-14-code-review.md) §4 listed, unmeasured, constant-factor waste in the kernel's step loop (`sim.rs`, `loops.rs`, `hold.rs`) and the session's recording. Measured first, on small models where overhead and not arithmetic dominates:
+
+- **Cases:** through a `Session` (`profile_steps`, the app's path): the examples cruise-control, lorenz, coupled-oscillators (filters), pendulum, units, forced-spring (models on their own clocks), platoon, heat-rod, the bridge network (tables), grazing (agents) and cruise-search (a study, held still after its search), and from `scripts/profile_cases.py` many-blocks (40 cars) and linked (a probe feeding two models on their own clocks); linked also with its probe on 2001 listed times. Headless (`profile_run`): small ODE, fused, many-blocks, linked, cruise-control, units.
+- **Instructions per step:** callgrind's total for 2N steps less that for N (N from 300 to 4000), over N: loading drops out, and the count is the same from run to run. Linked cases are within about 5% only: the pool's idle threads count instructions while they wait.
+- **Wall time:** best of five, the same builds.
+
+Where the instructions went, before (inclusive shares):
+
+- **cruise-control:** the fused group's right-hand side 70%, of which its output plan 38% (`EquationSet::outputs` 31%: the PI block was evaluated once for each of its two feedthrough outputs); `Session::record` 8% (looking every recorded output up by name, `Simulator::output`, 4%).
+- **many-blocks:** the group's right-hand side 61%, its output plan 32%; `record` 6%; finding each block's fused group (`group_of` over every group's members) 2%.
+- **cruise-search:** `Simulator::step` 77% (the study block evaluated once per output, from its cache), `record` 16%, the snapshot taken before each step and dropped after it 6%.
+
+Changed, each with the same results (every example's and case's output, `run --format json` and renders, compared byte for byte; the session's tests):
+
+| Change | Where | Gain |
+|---|---|---|
+| A block's feedthrough outputs next to each other in the order share one evaluation, when the block is not wired to itself (within a loop's pass, always) | `loops.rs`, `OutputPlan::new` | the largest: cruise-control −15%, many-blocks −18%, cruise-search −28% |
+| Fused group members' numbers of states and outputs kept in the plan, not asked of the spec at each evaluation | `sim.rs`, `GroupPlan` | 2–8% on fused models |
+| Recorded signals and fields found by place once (`Simulator::outputs_of`), not by name each step; fields borrowed from the simulator, not copied | `session/catalogue.rs`, `Session::record` | 5–29% through a session |
+| A sample-and-hold keeps its trigger instead of cloning its schedule (a whole list of times) every step | `hold.rs` | linked with 2001 listed times −23% |
+| Group membership kept per block; clocks borrowed, not cloned, at each instant | `sim.rs`, `step`, `advance` | many-blocks −3%, others ≤1% |
+| The snapshot before a step taken only when a study is watched (`watch_studies`), the only case in which it can be given up and the step undone; the app's worker watches, so it still takes it | `Session::step` | cruise-search −11% |
+| The output plan's working array, the group's combined state and the recording's kept signals kept between steps | `loops.rs`, `sim.rs`, `recording.rs` | about 1–8% each |
+
+Instructions per step, before → after:
+
+| Case | Before | After | |
+|---|---|---|---|
+| lorenz | 2 929 | 2 065 | −30% |
+| pendulum | 3 838 | 2 539 | −34% |
+| cruise-control | 23 791 | 16 915 | −29% |
+| units | 24 262 | 19 872 | −18% |
+| coupled-oscillators | 29 443 | 25 539 | −13% |
+| forced-spring | 21 988 | 19 277 | −12% |
+| platoon | 72 032 | 52 759 | −27% |
+| heat-rod | 59 368 | 57 791 | −3% |
+| bridge | 50 362 | 47 188 | −6% |
+| grazing | 627 902 | 570 183 | −9% |
+| cruise-search | 54 360 | 26 936 | −50% |
+| linked | 61 458 | 54 384 | −12% |
+| linked, 2001 listed times | 75 868 | 52 965 | −30% |
+| many-blocks | 834 997 | 589 822 | −29% |
+| Headless: small ODE | 1 442 | 1 440 | 0 |
+| Headless: fused | 24 497 | 21 761 | −11% |
+| Headless: cruise-control | 22 826 | 17 155 | −25% |
+| Headless: units | 23 267 | 20 494 | −12% |
+| Headless: many-blocks | 820 338 | 619 108 | −25% |
+| Headless: linked | 56 397 | 53 846 | −5% |
+
+Wall time, best of five (seconds): through a session, cruise-control 200 000 steps 0.402 → 0.272, lorenz 1 000 000 steps 0.243 → 0.168, coupled-oscillators 0.482 → 0.380, units 0.407 → 0.312, forced-spring 0.421 → 0.365, platoon 100 000 steps 0.650 → 0.432, many-blocks 5 000 steps 0.380 → 0.279, cruise-search 100 000 steps 0.689 → 0.371, linked 0.352 → 0.300, linked with listed times 0.409 → 0.302; headless, fused 0.733 → 0.577, many-blocks 0.886 → 0.702, cruise-control 0.358 → 0.270, units 0.378 → 0.330, small ODE 0.021 and study 0.014 → 0.012 unchanged within noise.
+
+Measured and left:
+
+- **Members read in place:** a fused group still gathers its members' blocks, parameters and inputs into three small vectors per step. Reading them where they are, through an enum, cost as much at every access in the right-hand side as the allocations saved (coupled-oscillators +3%, fused +3%).
+- **Slots and units per instant** (`step_here`) with several clocks: under 1% (forced-spring).
+- **Comparing block types with "study"** each step, and **`state_bits` twice per step** for maps that iterate: under 0.1% and about 1% (cruise-search).
+- **The `Vec`s `push_kept` builds for fields:** none is allocated when nothing is kept; the rest is the history's own `push_sample`.
+- **Not measured, no case uses them:** an activated part's `clone` per step in `gate` (no example has one), and `run_derived` copying its inputs per sample (only filters with clocks of their own on probes).
+- **Out of this pass:** typed equations' own evaluation (`simsandbox-expr`, `EquationSet::outputs` and `rhs`), now most of every small model's step; its allocations per call show in forced-spring (`sin`).
