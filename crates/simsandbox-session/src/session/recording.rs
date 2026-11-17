@@ -89,6 +89,9 @@ pub(super) struct Recording {
     /// time: wired after they were recorded (ADR 0063). Filled on demand
     /// by [`Session::recompute`].
     gaps_until: Option<f64>,
+    /// The kept signals of the sample being recorded, in an array kept
+    /// between samples.
+    kept: Vec<f64>,
 }
 
 impl Recording {
@@ -101,6 +104,7 @@ impl Recording {
             keep_signals: Vec::new(),
             keep_fields: Vec::new(),
             gaps_until: None,
+            kept: Vec::new(),
         }
     }
 
@@ -168,7 +172,10 @@ impl Recording {
     /// for the window: a sample that finds the history being read is
     /// appended later.
     pub(super) fn push_kept(&mut self, index: f64, values: &[f64], frames: &[&[f64]]) {
-        let values: Vec<f64> = self.keep_signals.iter().map(|&i| values[i]).collect();
+        self.kept.clear();
+        self.kept
+            .extend(self.keep_signals.iter().map(|&i| values[i]));
+        let values = &self.kept;
         let frames: Vec<&[f64]> = self
             .keep_fields
             .iter()
@@ -179,12 +186,12 @@ impl Recording {
                 let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
                 h.push_sample(p.index, &p.values, &frames);
             }
-            h.push_sample(index, &values, &frames);
+            h.push_sample(index, values, &frames);
             return;
         }
         self.pending.push(Pending {
             index,
-            values,
+            values: values.clone(),
             frames: frames.iter().map(|f| f.to_vec()).collect(),
         });
     }
