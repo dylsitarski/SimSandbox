@@ -1,5 +1,14 @@
 //! The window: open and save a model, run, pause, rewind, change parameters,
 //! and watch it plot live.
+//!
+//! This module holds `SimApp`, its construction, the frame (`eframe::App`)
+//! and the dock of tabs; the parts live beside it, by pane or concern:
+//! `files` (open, save, the unsaved-changes question), `toolbar` (toolbar,
+//! status bar, menus), `run_menu` (Runs menu, Save run), `inspector` (the
+//! Inspector and Controls panes), `param_rows` (their rows and fields),
+//! `forms` (forms of particular blocks), `views` (view tiles),
+//! `diagram_tab` (the canvas and its outcomes), `editors` (equation editor
+//! and Data window) and `data` (the Data window's contents).
 
 use crate::diagram::{DiagramTab, Outcome};
 use crate::dock::{Dock, Pane};
@@ -16,21 +25,26 @@ use simsandbox_views::{Available, History, ViewState, ViewType};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-mod editors;
-use editors::*;
+
 mod data;
-use data::*;
 mod diagram_tab;
+mod editors;
 mod files;
 mod forms;
+mod inspector;
+mod param_rows;
 mod run_menu;
+#[cfg(test)]
+mod tests;
 mod toolbar;
 mod views;
+
+// What the parts share; methods of `SimApp` need no import.
+use data::*;
+use editors::*;
 use forms::*;
-mod param_rows;
-use param_rows::*;
-mod inspector;
 use inspector::*;
+use param_rows::*;
 
 /// A screenshot request for documentation and visual checks
 /// (`--screenshot FILE --after SECONDS`).
@@ -679,6 +693,3 @@ fn write_ppm(path: &Path, image: &egui::ColorImage) -> std::io::Result<()> {
     }
     std::fs::write(path, bytes)
 }
-
-#[cfg(test)]
-mod tests;
