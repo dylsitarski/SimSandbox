@@ -752,10 +752,6 @@ impl Block for ExplicitBlock {
             .then_some(&self.set as &dyn Equations)
     }
 
-    fn reads_time(&self) -> Option<bool> {
-        Some(self.set.reads_time)
-    }
-
     fn code(&self) -> Option<String> {
         Some(self.set.code())
     }

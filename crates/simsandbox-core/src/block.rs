@@ -425,6 +425,12 @@ pub struct BlockSpec {
     /// Kernel-owned populations of rows that grow and shrink (ADR 0034).
     pub tables: Vec<TableSpec>,
     pub time: TimeSemantics,
+    /// Whether its outputs or next state depend on the time itself, beyond
+    /// its state, inputs and parameters (ADR 0083): `Some(false)` for a
+    /// block that never reads `t`, so a model of such blocks with only
+    /// maps iterates instead of running in time. `None`: not said, as for
+    /// most blocks.
+    pub reads_time: Option<bool>,
 }
 
 impl BlockSpec {
@@ -527,15 +533,6 @@ pub trait Block: Send {
     /// sample times of recorded data (ADR 0067 step 4): a model with no
     /// states is evaluated there. `None` for most blocks.
     fn instants(&self) -> Option<&[f64]> {
-        None
-    }
-
-    /// Whether its outputs or next state depend on the time itself, beyond
-    /// its state, inputs and parameters (ADR 0083): `Some(false)` for a
-    /// block that never reads `t`, so a model of such blocks with only
-    /// maps iterates instead of running in time. `None`: not said, as for
-    /// most blocks.
-    fn reads_time(&self) -> Option<bool> {
         None
     }
 

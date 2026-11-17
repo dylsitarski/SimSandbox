@@ -84,6 +84,7 @@ impl HeatRod {
                 states: (0..n).map(|i| format!("T{i}")).collect(),
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
+                reads_time: None,
             },
         }
     }
@@ -210,6 +211,7 @@ impl Grass {
                 states: (0..n * n).map(|i| format!("G{i}")).collect(),
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
+                reads_time: None,
             },
         }
     }
@@ -313,6 +315,7 @@ impl Orbits {
                     .collect(),
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
+                reads_time: None,
             },
         }
     }

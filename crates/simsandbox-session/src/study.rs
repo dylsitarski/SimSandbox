@@ -584,6 +584,9 @@ impl StudyBlock {
                 },
                 states,
                 tables: Vec::new(),
+                // Its runs have their own time; its results depend on its
+                // inputs and parameters only (ADR 0083).
+                reads_time: Some(false),
             },
             activate,
             method: MethodSpec {
@@ -1007,12 +1010,6 @@ impl Block for StudyBlock {
         let values = self.evaluate(io.inputs, io.params)?;
         io.outputs.copy_from_slice(&values);
         Ok(())
-    }
-
-    /// Its runs have their own time; its results depend on its inputs and
-    /// parameters only (ADR 0083).
-    fn reads_time(&self) -> Option<bool> {
-        Some(false)
     }
 }
 

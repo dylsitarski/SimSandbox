@@ -234,6 +234,7 @@ impl FileInput {
                 states: Vec::new(),
                 tables: Vec::new(),
                 time: TimeSemantics::Stateless,
+                reads_time: None,
             },
             method: MethodSpec {
                 name: READ.into(),

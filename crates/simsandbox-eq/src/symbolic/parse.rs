@@ -64,7 +64,6 @@ impl EquationSet {
         let tables = tables(&declared, &shaped, &units)?;
         let Interface {
             spec,
-            reads_time,
             initial,
             inputs_in,
             rows_out,
@@ -81,7 +80,6 @@ impl EquationSet {
         } = programs(&declared, &registers, &steps);
         Ok(Self {
             kind: declared.kind,
-            reads_time,
             spec,
             layout: registers.layout,
             outputs,

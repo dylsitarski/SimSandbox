@@ -126,8 +126,6 @@ pub const EVALUATE: &str = "evaluate";
 /// A system of typed equations.
 pub struct EquationSet {
     kind: Kind,
-    /// Whether any equation, edge value or initial value reads `t`.
-    reads_time: bool,
     spec: BlockSpec,
     /// Where the values of `t`, the states, inputs and parameters go in
     /// the registers (each run of them is contiguous), and where the

@@ -45,6 +45,7 @@ impl Walkers {
                 states: vec![],
                 tables: vec![TableSpec::new("walkers", &["x"])],
                 time: TimeSemantics::FixedStep { dt: 1.0 },
+                reads_time: None,
             },
             method: method(),
         }
@@ -113,6 +114,7 @@ impl Census {
                 states: vec![],
                 tables: vec![],
                 time: TimeSemantics::FixedStep { dt: 1.0 },
+                reads_time: None,
             },
             method: method(),
         }

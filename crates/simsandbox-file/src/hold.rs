@@ -49,6 +49,7 @@ impl SampleHold {
                     .collect(),
                 tables: Vec::new(),
                 time: TimeSemantics::DiscreteEvent,
+                reads_time: None,
             },
             method: MethodSpec {
                 name: "hold".into(),

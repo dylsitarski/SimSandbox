@@ -34,6 +34,7 @@ impl Decay {
                 states: vec!["x".into()],
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
+                reads_time: None,
             },
             method: MethodSpec {
                 name: "euler".into(),
@@ -192,6 +193,7 @@ impl Gain {
                 states: vec![],
                 tables: Vec::new(),
                 time: TimeSemantics::Stateless,
+                reads_time: None,
             },
             method: Decay::new().method,
         }

@@ -15,8 +15,6 @@ use simsandbox_core::units::Unit;
 /// [`interface`] establishes.
 pub(super) struct Interface {
     pub(super) spec: BlockSpec,
-    /// Whether anything reads `t` (ADR 0083).
-    pub(super) reads_time: bool,
     /// For each state: its number of values, and the parameter holding
     /// its initial value (scalar states).
     pub(super) initial: Vec<(usize, Option<usize>)>,
@@ -388,8 +386,8 @@ pub(super) fn interface(
                 Kind::Map => TimeSemantics::DiscreteEvent,
                 Kind::Formulas => TimeSemantics::Stateless,
             },
+            reads_time: Some(reads_time(d, s)),
         },
-        reads_time: reads_time(d, s),
         initial,
         inputs_in,
         rows_out,

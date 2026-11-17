@@ -555,7 +555,7 @@ impl Session {
                     // time: rows that change by rules each round. A block
                     // integrated in time runs in time, whatever holds its
                     // states (rows of tables, ADR 0085 step 3).
-                    b.reads_time() == Some(false)
+                    b.spec().reads_time == Some(false)
                         && b.instants().is_none()
                         && b.spec().time != TimeSemantics::Continuous
                         && (b.spec().states.is_empty()

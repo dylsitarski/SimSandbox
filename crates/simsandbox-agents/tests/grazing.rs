@@ -47,6 +47,7 @@ impl ConstantGrass {
                 states: vec![],
                 tables: vec![],
                 time: TimeSemantics::Stateless,
+                reads_time: None,
             },
             method: MethodSpec {
                 name: "constant".into(),
