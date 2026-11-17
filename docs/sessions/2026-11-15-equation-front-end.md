@@ -13,6 +13,7 @@
 - 2026-11-17: `centre` told of its own arguments; `Session` split into five parts (W8, first half), its public surface unchanged.
 - 2026-11-17: `app.rs` split by pane, modal state in one enum (W8 complete).
 - 2026-11-17: the bugs W8 brought up fixed (flush, the modal holding raw input, the close that never comes); the app run under Xvfb and compared by screenshot.
+- 2026-11-17: the kernel tidy ([ADR 0098](../decisions/0098-the-kernel-holds-the-contract.md)); the review's second priority complete.
 
 ## Decided
 
@@ -20,7 +21,7 @@
 
 ## Left open
 
-- The kernel tidy; the review's third and fourth priorities; the app as taken apart, to try in the window.
+- The review's third and fourth priorities; the app as taken apart, to try in the window; what ADR 0098 left in the kernel, for the plugin interface's design.
 
 ## Notes for the next session
 

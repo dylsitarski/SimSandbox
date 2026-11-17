@@ -1,6 +1,6 @@
 # Block contract
 
-_Last updated: 2026-11-03_
+_Last updated: 2026-11-17_
 
 Every simulation, from a pendulum to a CFD solver to a neural network, is wrapped as a **Block**. Blocks in the same domain are fused and solved together using that domain's native approach; different domains are coupled through an FMI-style step interface run by a co-simulation master. Rationale and rejected alternatives: [ADR 0002](../decisions/0002-layered-block-contract.md). Code: `crates/simsandbox-core/src/block.rs`.
 
@@ -13,9 +13,10 @@ Every simulation, from a pendulum to a CFD solver to a neural network, is wrappe
 | Parameters | Named, unit-aware, with default, suggested range, description and an `initial_condition` flag (applies on restart); become entry fields and optional sliders ([ADR 0011](../decisions/0011-parameter-entry.md)) | Yes (`ParamSpec`) |
 | State | Named variables owned by the kernel as a flat `f64` slice, so snapshots and rewind work uniformly; external Blocks must save and restore their own | Kernel-owned state, yes |
 | Tables | Named populations of rows (columns of `f64`, a stable id per row) that grow and shrink, owned by the kernel beside the fixed state and included in snapshots ([ADR 0034](../decisions/0034-agent-domain.md)). Declared as `BlockSpec::tables` (`TableSpec`), held as `Table` (`crates/simsandbox-core/src/table.rs`), filled by `Block::init_tables` and changed through `StepIo::tables`; ids restart at 0 on restart | Yes |
-| Time semantics | Continuous with events (as in FMI 3.0); fixed-step, discrete-event and stateless as special cases | Declared (`TimeSemantics`); the master steps every `dt`, or to instants listed in advance: a block's `instants()` (recorded data's sample times) and a use's `clock: {"times"}` ([ADR 0067](../decisions/0067-experiments-and-time-from-data.md) step 4); events found during a run are not built. A block may say it never reads the time itself (`reads_time()` is `Some(false)`): a model of such blocks whose states are all maps iterates in the app instead of being paced ([ADR 0083](../decisions/0083-rounds-are-not-seconds.md)) |
+| Time semantics | Continuous with events (as in FMI 3.0); fixed-step, discrete-event and stateless as special cases | Declared (`TimeSemantics`); the master steps every `dt`, or to instants listed in advance: a block's `BlockSpec::instants` (recorded data's sample times) and a use's `clock: {"times"}` ([ADR 0067](../decisions/0067-experiments-and-time-from-data.md) step 4); events found during a run are not built. A block may say it never reads the time itself (`BlockSpec::reads_time` is `Some(false)`): a model of such blocks whose states are all maps iterates in the app instead of being paced ([ADR 0083](../decisions/0083-rounds-are-not-seconds.md)) |
 | Method | The method being run, with speed and accuracy labels | Yes (`MethodSpec`, `MethodLabels`) |
-| Code | For a block whose code SimSandbox makes from its equations, how they run: `interpreted`, `compiled`, `native` ([ADR 0084](../decisions/0084-where-typed-equations-stop.md), [ADR 0089](../decisions/0089-native-code-for-typed-equations.md)); `check` lists it | `Block::code()`, `None` by default (blocks written in Rust) |
+
+A spec is written with its builder: `BlockSpec::new(name, domain)` then `.input`, `.output`, `.port`, `.param` (`ParamSpec::new`), `.state`, `.table`, `.time`; `MethodSpec::new` gives the method and its labels. The smallest complete Block, a decay run by Euler's method, is the example on `Block` in `block.rs` (about 25 lines, run by its doc test) ([ADR 0098](../decisions/0098-the-kernel-holds-the-contract.md)).
 
 ## Model definition and methods
 
@@ -30,8 +31,9 @@ A Block separates **what** is simulated from **how** it is computed. The model d
 | `Rollback` | No | Cheap undo of a rejected step | Iterative coupling and step rejection | Trait only |
 | `Derivatives` | No | Jacobian of the right-hand side | Implicit coupling, sensitivities, parameter fitting | Trait only |
 | `Realtime` | No | Guaranteed worst-case step time | Admits it into real-time models | Trait only |
+| `GeneratedCode` | No | For a block whose code SimSandbox makes from its equations, how they run now: `interpreted`, `compiled`, `native` ([ADR 0084](../decisions/0084-where-typed-equations-stop.md), [ADR 0089](../decisions/0089-native-code-for-typed-equations.md)); it changes as native code is built | `check` lists it (`code`) | Yes (typed equations) |
 
-Capabilities are discovered through `as_equations()`, `as_rollback()`, `as_derivatives()` and `as_realtime()`, which default to `None`. How users define their own Blocks without rebuilding (Python, WebAssembly, Julia) is decided later ([Q28](../open-questions.md), [ADR 0038](../decisions/0038-phase-1-revised.md)); any such Block keeps its state in the kernel. Out-of-process Blocks (OpenFOAM, Julia, untrusted code) will implement the same traits through a gRPC adapter.
+Capabilities are discovered through `as_equations()`, `as_rollback()`, `as_derivatives()`, `as_realtime()` and `as_generated_code()`, which default to `None`. What a block is, fixed once it is built, is data on its `BlockSpec`; what a domain needs of some blocks while they run is a capability, not a method of `Block` ([ADR 0098](../decisions/0098-the-kernel-holds-the-contract.md)). How users define their own Blocks without rebuilding (Python, WebAssembly, Julia) is decided later ([Q28](../open-questions.md), [ADR 0038](../decisions/0038-phase-1-revised.md)); any such Block keeps its state in the kernel. Out-of-process Blocks (OpenFOAM, Julia, untrusted code) will implement the same traits through a gRPC adapter.
 
 ## Coupling
 
