@@ -187,7 +187,7 @@ pub(super) fn axes_of(
         FromEnd | ToEnd => tables::ends_axes(&c, false),
         Corner => tables::ends_axes(&c, true),
         Outflow => tables::outflow_axes(&c),
-        Centre => meshes::expansion_axes(&c, meshes::centre_expansion),
+        Centre => meshes::centre_axes(&c),
         Measure => meshes::expansion_axes(&c, meshes::measure_expansion),
         Normal => meshes::expansion_axes(&c, meshes::normal_expansion),
         Inner | Outer | Across => meshes::sides_axes(&c, false),

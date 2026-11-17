@@ -88,6 +88,25 @@ pub(in crate::symbolic) fn normal_expansion(
     )
 }
 
+/// `centre(T, c)`'s axes: `c`'s rows, of a quantity over the points they
+/// join. Checked here, before the expansion, so a mistake is told of
+/// `centre`'s own arguments, not of the `corner` calls it stands for.
+pub(in crate::symbolic) fn centre_axes(c: &Check) -> Axes {
+    let e = centre_expansion(c.args, c.grid).map_err(|m| (c.col, m))?;
+    let cells = table(&c.args[1], c.grid).expect("checked: a table of cells");
+    let points = c.grid[cells].ends_of.expect("cells join points");
+    if c.of(&c.args[0])? != [points] {
+        return Err((
+            c.col,
+            format!(
+                "'centre' takes a quantity over {}, whose rows {} joins, e.g. centre(x, {})",
+                c.grid[points].name, c.grid[cells].name, c.grid[cells].name
+            ),
+        ));
+    }
+    c.of(&e)
+}
+
 /// An expansion's axes: those of the expression it stands for.
 pub(in crate::symbolic) fn expansion_axes(
     c: &Check,

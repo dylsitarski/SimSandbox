@@ -1310,3 +1310,34 @@ fn every_array_function_has_a_name_and_only_those() {
         );
     }
 }
+
+/// `centre` is told of its own arguments, not of the `corner` calls it
+/// stands for.
+#[test]
+fn centre_takes_a_quantity_over_its_cells_points() {
+    let lines = |t: &str| {
+        let l = [
+            "table pts".to_string(),
+            "state x[pts]".to_string(),
+            "state y[pts]".to_string(),
+            "x[n+1] = x".to_string(),
+            "y[n+1] = y".to_string(),
+            "cells c of pts: quad".to_string(),
+            "start c = grid x 0 .. 1 by 2, y 0 .. 1 by 2".to_string(),
+            "state u[c] = 1".to_string(),
+            "u[n+1] = u".to_string(),
+            format!("m = centre({t}, c)"),
+        ];
+        EquationSet::parse("m", &l)
+    };
+    assert!(lines("x").is_ok());
+    for t in ["3", "u"] {
+        let e = lines(t).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            e.ends_with(
+                "'centre' takes a quantity over pts, whose rows c joins, e.g. centre(x, c)"
+            ),
+            "{t}: {e}"
+        );
+    }
+}

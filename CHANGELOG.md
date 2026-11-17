@@ -257,6 +257,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- Typed equations: `centre(T, c)` with `T` not over the points `c` joins says so of `centre`; the message named `corner`, the call it stands for.
 - Typed equations: a rule is held to units as an equation is, where any line has one: its condition compares like with like and has no unit, and each value is in its column's unit. A plain number a rule gives is in its column's unit (`h = 2` with `h` in km is 2 km, as `state h [km] = 2` is); it was taken in SI units, 2 m. A split's or merge's `copy`, `share`, `mean` or `sum` is the transfer only when written alone: `(share)` is a quantity named `share`, which could not be given before. Of several wrong `start` lines, the first written is reported, the same on every run.
 - Typed equations: a starting grid or mesh with more points than its table's `max` is an error at the `start` line; it stopped SimSandbox. A parameter per cell (`param m[k]`) declared twice, or also defined by an equation, is refused as declared or defined twice; it was accepted, with its elements twice among the parameters.
 - Typed equations: `measure(c, x, y)` is in the coordinates' unit to the cells' dimension (`[m^2]` for a quad's area; it had no unit, so such a line was refused where units are checked), `normal` is dimensionless, and both want their coordinates in one unit; the id in `of(T, i)` has no unit.
