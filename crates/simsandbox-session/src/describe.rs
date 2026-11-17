@@ -156,6 +156,9 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
     if let Some(text) = &info.reference {
         v["reference"] = json!(text);
     }
+    if name == simsandbox_eq::registry::EQUATIONS {
+        v["functions"] = functions();
+    }
     if !info.files.is_empty() {
         v["files"] = json!(info.files);
         v["note"] = json!(
@@ -166,6 +169,28 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
         v["interface"] = block(b.as_ref());
     }
     v
+}
+
+/// The functions typed equations know, so that an agent has the list
+/// without reading the reference: those of numbers with their number of
+/// arguments, and those of arrays with how each is called, what it gives
+/// and its unit.
+fn functions() -> Value {
+    json!({
+        "of_numbers": simsandbox_expr::Func::ALL
+            .iter()
+            .map(|(name, f)| json!({"name": name, "arity": f.arity()}))
+            .collect::<Vec<_>>(),
+        "of_arrays": simsandbox_eq::symbolic::FUNCTIONS
+            .iter()
+            .map(|f| json!({
+                "name": f.name,
+                "signature": f.signature,
+                "gives": f.gives,
+                "unit": f.unit,
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 fn slot_kind(k: SlotKind) -> &'static str {
@@ -397,6 +422,39 @@ mod tests {
         assert_eq!(sheep["settings"][0]["name"], "update");
         let all = catalogue(&r, &view_registry());
         assert!(all["view_types"].as_array().unwrap().len() >= 8);
+    }
+
+    #[test]
+    fn typed_equations_list_every_function() {
+        let r = registry();
+        let typed = block_type(&r, simsandbox_eq::registry::EQUATIONS);
+        let listed = |kind: &str| -> Vec<String> {
+            typed["functions"][kind]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let numbers = listed("of_numbers");
+        for (name, _) in simsandbox_expr::Func::ALL {
+            assert!(numbers.iter().any(|n| n == name), "{name}");
+        }
+        assert_eq!(numbers.len(), simsandbox_expr::Func::ALL.len());
+        let arrays = listed("of_arrays");
+        for name in simsandbox_expr::ARRAY_OPS {
+            assert!(arrays.iter().any(|n| n == name), "{name}");
+        }
+        assert!(arrays.iter().any(|n| n == simsandbox_eq::symbolic::DD_AXIS));
+        assert_eq!(arrays.len(), simsandbox_expr::ARRAY_OPS.len() + 1);
+        for f in typed["functions"]["of_arrays"].as_array().unwrap() {
+            for key in ["signature", "gives", "unit"] {
+                assert!(f[key].as_str().is_some_and(|s| !s.is_empty()), "{f}");
+            }
+        }
+        assert_eq!(typed["functions"]["of_numbers"][0]["arity"], 1);
+        // Only typed equations have a language of their own.
+        assert!(block_type(&r, "eq.grass").get("functions").is_none());
     }
 
     #[test]
