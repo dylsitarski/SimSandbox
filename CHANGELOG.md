@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Typed equations and implicit methods do less work per evaluation, with the same results: a grid summed along an axis about 30% fewer instructions a step, backward Euler and TR-BDF2 on small systems about 20% (their working arrays are kept between steps), tables with edges (the bridge network) about 20%.
 - Small models step faster, with the same results: 10–50% fewer instructions per step in the step loop and in a session's recording (a model of many blocks about 30%, a study about 50%).
 - For blocks written in Rust (ADR 0098): study designs, probe schedules and the hold block moved from `simsandbox_core` to `simsandbox_file` (`sampling`, `schedule`, `hold`); `Block::reads_time()` and `Block::instants()` are the `BlockSpec` fields `reads_time` and `instants`; `Block::code()` is the `GeneratedCode` capability (`Block::as_generated_code()`). `BlockSpec::new` and its builder, `ParamSpec::new` and `MethodSpec::new` write a spec in a few lines.
 - In the app, a question or form covering the window ("Save run…", unsaved changes) holds dropped files and Ctrl+O, Ctrl+S and Ctrl+Shift+S: they do nothing until it is answered; they acted behind it. Closing the window while "Save run…" is open asks about unsaved changes in place of the form, instead of under it.

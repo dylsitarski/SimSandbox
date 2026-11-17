@@ -375,3 +375,40 @@ Measured and left:
 - **The `Vec`s `push_kept` builds for fields:** none is allocated when nothing is kept; the rest is the history's own `push_sample`.
 - **Not measured, no case uses them:** an activated part's `clone` per step in `gate` (no example has one), and `run_derived` copying its inputs per sample (only filters with clocks of their own on probes).
 - **Out of this pass:** typed equations' own evaluation (`simsandbox-expr`, `EquationSet::outputs` and `rhs`), now most of every small model's step; its allocations per call show in forced-spring (`sin`).
+
+## Typed equations' per-evaluation costs (2026-11-17)
+
+The second part of the [review](../research/2026-11-14-code-review.md) §4: what typed equations and the implicit methods pay at every evaluation besides their arithmetic. Measured as [above](#the-step-loop-and-recording-2026-11-17) (callgrind's instructions for 2N steps less those for N, over N; wall time best of five through a `Session`, `profile_steps`), on cases where these costs show: the examples gray-scott (128 × 128), heat-rod-typed and the bridge network (tables); Gray–Scott at 64 × 64 with a sum along an axis broadcast back into the rates (`sum(v, y)`, `maxof(u, x)`: Gather and Along at every evaluation); TR-BDF2 on the typed and the built-in heat rods and on Gray–Scott at 48 × 48, backward Euler on the bridge; Gray–Scott at 256 × 256 and 512 × 512 (above 2^20 cell operations a phase: shared among the cores, so wall time only).
+
+Changed, each with the same results (every example's and profiling case's output, `run --format json` and renders, and this pass's cases, compared byte for byte; 636 tests):
+
+| Change | Where | Gain |
+|---|---|---|
+| Gather and Along walk their places with an odometer instead of building a table of them (a `Vec` per cell for Along) at every evaluation; a line along the first axis is reduced in place | `expr/program.rs` | Gray–Scott with a sum along an axis −29% |
+| The implicit methods' working arrays (residuals, the Jacobian's columns, the stages, the LU's fronts, updates and factor, a solve's array) kept in their `Workspace`, each set where a fresh one was allocated; the Jacobian's values written straight into the matrix's pattern | `eq/implicit.rs`, `eq/sparse_lu.rs` (`Work`) | heat rods with TR-BDF2 −22% and −24%, Gray–Scott 48 × 48 −7% |
+| Take writes in place when its result shares no registers with what it reads (known when compiled) | `expr/program.rs` | bridge −4%, with backward Euler −6% |
+| Edges' ends found among ascending ids by binary search, not by a `HashMap` built twice a step; other ids still by the map | `eq/symbolic/evaluate.rs` | bridge −11%, with backward Euler −3% |
+| A table block's inputs built in one array reserved at their length | `eq/symbolic/evaluate.rs` | bridge −9% |
+
+Instructions per step, before → after:
+
+| Case | Before | After | |
+|---|---|---|---|
+| gray-scott 128 × 128 | 3 597 333 | 3 597 389 | 0 |
+| Gray–Scott 64 × 64, sum along an axis | 3 069 909 | 2 190 717 | −29% |
+| heat-rod-typed | 108 804 | 109 493 | +0.6% |
+| bridge | 47 212 | 36 577 | −23% |
+| heat-rod-typed, TR-BDF2 | 143 652 | 111 488 | −22% |
+| heat-rod, TR-BDF2 | 131 746 | 99 667 | −24% |
+| bridge, backward Euler | 174 985 | 144 265 | −18% |
+| Gray–Scott 48 × 48, TR-BDF2 | 113 528 549 | 105 550 185 | −7% |
+
+Wall time, best of five (seconds): Gray–Scott with a sum along an axis 3 000 steps 0.778 → 0.593, bridge 200 000 steps 0.782 → 0.593, with backward Euler 100 000 steps 1.465 → 1.150, heat-rod-typed with TR-BDF2 100 000 steps 1.242 → 0.949, heat-rod with TR-BDF2 1.116 → 0.846, Gray–Scott 48 × 48 with TR-BDF2 20 steps 0.896 → 0.887; unchanged within noise: gray-scott 3 000 steps 0.773 → 0.761, 256 × 256 1 000 steps 1.587 → 1.571, 512 × 512 200 steps 1.343 → 1.296. The previous pass's cases are as they were, within 1% (heat-rod-typed's +0.6% and the typed-equation cases' +0.3–0.9% are in the interpreter's `Program::one`, compiled a little differently: about 17 instructions more per evaluation).
+
+Measured and left:
+
+- **A pool for phases of cells.** Above 2^20 cell operations a phase starts its threads at every evaluation (`std::thread::scope`): three threads started and joined cost about 95 µs alone on this machine. The project's own `Pool` takes only owned work, and without `unsafe` (forbidden in the workspace) borrowed arrays cannot be lent to long-lived threads, so only a dependency (rayon) could keep them. Tried with `rayon_core::scope` in `parallel::each` and measured, then taken out: Gray–Scott per evaluation (`fused_speed`, four cores) 512 × 512 377–434 µs against 360–432 without, 256 × 256 161–196 against 195–209; through a session 512 × 512 1.28 s against 1.20–1.34 s, 256 × 256 1.60 against 1.58. The calling thread works on its own share while the others start, which hides most of their start. The same finding as 2026-11-06 (rayon no faster for phases; the owner then chose no new dependency), so none was added.
+- **Phases' setup per run** (`Phase::run_in`'s operand list and splits, "about 8 vectors per run" in the review): under 1% of a step at 64 × 64 and 128 × 128 (gray-scott: 25 thousand of 3.6 million instructions).
+- **A sparsity hook for fused groups.** A fused group's structure is probed once per run (n + 1 evaluations of the group, kept in the `Workspace`), not per step: two coupled 40 × 40 typed grids with TR-BDF2 (3 200 states) take 0.24 s for the first step against 0.05–0.06 s for the next; the difference is the probe and building the LU's structure once (`sparse_lu::Symbolic::new`: 0.6 of 6.2 thousand million instructions over five steps). The steady cost there is the Jacobian's colouring, which the coupling through `mean` makes dense: a hook giving the exact structure would find the same.
+- **`FusedSystem::rhs`** (`EquationGroup`, built in code) still allocates per call; no model file reaches it (only a test builds one). The master's fused-group right-hand side keeps its arrays since the [previous pass](#the-step-loop-and-recording-2026-11-17).
+- **Still per evaluation, not taken:** the LU's fronts zeroed for assembly (10% of Gray–Scott 48 × 48 with TR-BDF2; they must start at zero); `faer`'s pivoting LU, used when the LU on the pattern refuses a pivot (the bridge with backward Euler), allocating inside `faer`; a table block's states and inputs gathered into fresh arrays twice a step (the rest of the bridge's allocations, about a fifth of its step); `EquationSet::outputs` copying the states into the outputs (15% of gray-scott).

@@ -15,6 +15,7 @@
 - 2026-11-17: the bugs W8 brought up fixed (flush, the modal holding raw input, the close that never comes); the app run under Xvfb and compared by screenshot.
 - 2026-11-17: the kernel tidy ([ADR 0098](../decisions/0098-the-kernel-holds-the-contract.md)); the review's second priority complete.
 - 2026-11-17: the review's third priority begun: the step loop and recording, measured first with callgrind, ten commits, 10–50% fewer instructions per step, the same bits ([performance](../design/performance.md#the-step-loop-and-recording-2026-11-17)). Next: cell phases in `simsandbox-expr` (a thread pool, static index tables, implicit methods' buffers), then the views and the app.
+- 2026-11-17: the review's third priority, second part: typed equations' per-evaluation costs, measured first, five commits, the same bits ([performance](../design/performance.md#typed-equations-per-evaluation-costs-2026-11-17)): Gather and Along without tables, the implicit methods' arrays in the `Workspace`, Take in place, tables' ids searched and their inputs built once. A thread pool for phases needs rayon (no `unsafe`): tried, no faster, not added. Next: the views and the app.
 
 ## Decided
 
@@ -22,7 +23,7 @@
 
 ## Left open
 
-- The rest of the review's third priority (cell phases, views and app) and its fourth; the app as taken apart, to try in the window; what ADR 0098 left in the kernel, for the plugin interface's design.
+- The rest of the review's third priority (views and app) and its fourth; the app as taken apart, to try in the window; what ADR 0098 left in the kernel, for the plugin interface's design.
 
 ## Notes for the next session
 
