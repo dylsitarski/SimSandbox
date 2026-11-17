@@ -71,6 +71,23 @@ pub enum Discard {
     Close,
 }
 
+/// The dialog over the window: an egui modal, which blocks the window
+/// under it until answered, so one at a time. A question about unsaved
+/// changes takes the place of a Save run form left open. The equation
+/// editor and the Data window are not here: they are ordinary windows,
+/// open beside each other and under a dialog (a new model's question
+/// keeps the editor it applies).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Modal {
+    /// "Save run…": the run's name and note.
+    SaveRun { name: String, note: String },
+    /// Waiting for an answer before doing this: save, discard or cancel.
+    Unsaved(Discard),
+    /// Doing what the person agreed to discard the changes for; it stays
+    /// once the window is told to close.
+    Discarding,
+}
+
 pub struct SimApp {
     /// The "+ parameter" fields: name, value, unit.
     new_param: [String; 3],
@@ -94,8 +111,6 @@ pub struct SimApp {
     /// Values keys are driving (ADR 0058), by input block, while a key is
     /// held or until its release is sent.
     key_values: HashMap<String, f64>,
-    /// "Save run…" while open: the run's name and note.
-    run_dialog: Option<(String, String)>,
     registry: Registry,
     /// The open model, running on its worker thread (ADR 0035).
     session: Option<Live>,
@@ -153,10 +168,8 @@ pub struct SimApp {
     /// worker (for the toolbar's marker).
     unsaved: std::sync::Arc<std::sync::atomic::AtomicBool>,
     last_unsaved_check: Instant,
-    /// Waiting for an answer: save, discard or cancel.
-    asking: Option<Discard>,
-    /// Set while doing what the person agreed to discard for.
-    discard_ok: bool,
+    /// The dialog open over the window, if any.
+    modal: Option<Modal>,
     screenshot: Option<ScreenshotRequest>,
     screenshot_requested: bool,
     /// Frames drawn before the window is maximized: once it is showing,
@@ -206,7 +219,6 @@ impl SimApp {
             probe_dir: None,
             dock_settled: None,
             key_values: HashMap::new(),
-            run_dialog: None,
             registry: registry(),
             session: None,
             speed: 1.0,
@@ -234,8 +246,7 @@ impl SimApp {
             baseline: None,
             unsaved: Default::default(),
             last_unsaved_check: Instant::now(),
-            asking: None,
-            discard_ok: false,
+            modal: None,
             maximize_in: screenshot.is_none().then_some(2),
             screenshot,
             screenshot_requested: false,

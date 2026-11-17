@@ -40,7 +40,10 @@ impl SimApp {
             .on_hover_text("Write this run's schedule and recorded input beside the model, to replay it later or headless")
             .clicked()
         {
-            self.run_dialog = Some((String::new(), String::new()));
+            self.modal = Some(Modal::SaveRun {
+                name: String::new(),
+                note: String::new(),
+            });
             ui.close();
         }
         if ui
@@ -142,7 +145,7 @@ impl SimApp {
 
     /// The name and note asked by "Save run…".
     pub(super) fn run_dialog(&mut self, ctx: &egui::Context) {
-        let Some((name, note)) = self.run_dialog.as_mut() else {
+        let Some(Modal::SaveRun { name, note }) = self.modal.as_mut() else {
             return;
         };
         let mut answer = None;
@@ -175,10 +178,11 @@ impl SimApp {
         });
         match answer {
             Some(true) => {
-                let (name, note) = self.run_dialog.take().unwrap_or_default();
-                self.save_run(name.trim(), note.trim());
+                if let Some(Modal::SaveRun { name, note }) = self.modal.take() {
+                    self.save_run(name.trim(), note.trim());
+                }
             }
-            Some(false) => self.run_dialog = None,
+            Some(false) => self.modal = None,
             None => {}
         }
     }

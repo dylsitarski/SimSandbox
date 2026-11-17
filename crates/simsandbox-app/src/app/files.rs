@@ -90,16 +90,16 @@ impl SimApp {
     /// (Save, Don't save, Cancel) and return true; the action runs once
     /// answered.
     pub(super) fn ask_first(&mut self, action: Discard) -> bool {
-        if self.discard_ok || !self.has_unsaved() {
+        if self.modal == Some(Modal::Discarding) || !self.has_unsaved() {
             return false;
         }
-        self.asking = Some(action);
+        self.modal = Some(Modal::Unsaved(action));
         true
     }
 
     /// Do what was asked about, the changes saved or let go.
     pub(super) fn proceed(&mut self, ctx: &egui::Context, action: Discard) {
-        self.discard_ok = true;
+        self.modal = Some(Modal::Discarding);
         match action {
             Discard::OpenPath(p) => self.open_path(&p),
             Discard::OpenDialog => self.open_dialog(),
@@ -111,12 +111,14 @@ impl SimApp {
                 return;
             }
         }
-        self.discard_ok = false;
+        if self.modal == Some(Modal::Discarding) {
+            self.modal = None;
+        }
     }
 
     /// The question about unsaved changes, while one is pending.
     pub(super) fn unsaved_dialog(&mut self, ctx: &egui::Context) {
-        let Some(action) = self.asking.clone() else {
+        let Some(Modal::Unsaved(action)) = self.modal.clone() else {
             return;
         };
         let title = self
@@ -144,7 +146,7 @@ impl SimApp {
         });
         match answer {
             Some(0) => {
-                self.asking = None;
+                self.modal = None;
                 self.save();
                 // A cancelled Save as leaves the changes: stop there.
                 if !self.has_unsaved() {
@@ -152,10 +154,10 @@ impl SimApp {
                 }
             }
             Some(1) => {
-                self.asking = None;
+                self.modal = None;
                 self.proceed(ctx, action);
             }
-            Some(_) => self.asking = None,
+            Some(_) => self.modal = None,
             None => {}
         }
     }
@@ -163,12 +165,11 @@ impl SimApp {
     /// Ask before the window closes on unsaved changes.
     pub(super) fn guard_close(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().close_requested())
-            && !self.discard_ok
-            && self.asking.is_none()
+            && !matches!(self.modal, Some(Modal::Discarding | Modal::Unsaved(_)))
             && self.has_unsaved()
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.asking = Some(Discard::Close);
+            self.modal = Some(Modal::Unsaved(Discard::Close));
         }
     }
 

@@ -1722,7 +1722,7 @@ fn replacing_a_changed_model_asks_first() {
     assert!(!app.has_unsaved(), "a model just opened");
     // Opening something else needs no question yet.
     app.open_example(1);
-    assert!(app.asking.is_none());
+    assert_eq!(app.modal, None);
     let live = app.session.as_ref().unwrap();
     let id = live.call(|s, _| s.ids["a"]).unwrap();
     live.call(move |s, _| s.set_param(id, "kappa", 0.7))
@@ -1732,14 +1732,14 @@ fn replacing_a_changed_model_asks_first() {
     // Now it asks, and nothing is replaced until answered.
     let title = app.session.as_ref().unwrap().model().title.clone();
     app.open_example(0);
-    assert_eq!(app.asking, Some(Discard::Example(0)));
+    assert_eq!(app.modal, Some(Modal::Unsaved(Discard::Example(0))));
     assert_eq!(app.session.as_ref().unwrap().model().title, title);
     // "Don't save": it goes ahead.
-    app.asking = None;
+    app.modal = None;
     app.proceed(&egui::Context::default(), Discard::Example(0));
     assert_ne!(app.session.as_ref().unwrap().model().title, title);
     assert!(!app.has_unsaved());
-    assert!(!app.discard_ok);
+    assert_ne!(app.modal, Some(Modal::Discarding));
 
     // Saving clears the question; canvas edits make changes too.
     let dir = std::env::temp_dir().join(format!("simsandbox-unsaved-{}", std::process::id()));
@@ -1769,7 +1769,7 @@ fn replacing_a_changed_model_asks_first() {
     // A new model from the equation editor asks too.
     app.editor = editor(None, NEW_MODEL);
     app.apply_equations();
-    assert_eq!(app.asking, Some(Discard::NewModel));
+    assert_eq!(app.modal, Some(Modal::Unsaved(Discard::NewModel)));
     assert!(app.editor.is_some());
     std::fs::remove_dir_all(&dir).unwrap();
 }
