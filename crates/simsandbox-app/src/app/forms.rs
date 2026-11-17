@@ -97,13 +97,16 @@ pub(super) fn use_activation(ui: &mut egui::Ui, b: &simsandbox_file::BlockEntry)
     out
 }
 
+/// A study's form (ADR 0070): when it runs, its design, what it varies,
+/// its results, Search… and the sample as JSON. Typed changes wait in
+/// `edits` until applied.
 pub(super) fn study_fields(
     ui: &mut egui::Ui,
     b: &simsandbox_file::BlockEntry,
     edits: &mut HashMap<String, String>,
     keys: &[StudyKey],
 ) -> Vec<Edit> {
-    use simsandbox_file::{Design, Sampling, Seeds, SweepControl};
+    use simsandbox_file::Sampling;
     let mut out = Vec::new();
     if b.type_name != simsandbox_file::STUDY {
         return out;
@@ -115,6 +118,42 @@ pub(super) fn study_fields(
         .and_then(|t| serde_json::from_str(t).ok())
         .unwrap_or_else(|| saved.clone());
     // When it runs (ADR 0088).
+    study_activation(ui, b, &mut out);
+    let mut t = Touched::default();
+    study_design(ui, b, &mut s, &mut t);
+    // What it varies.
+    study_params(ui, b, &mut s, keys, &mut t);
+    // Its named results.
+    study_results(ui, &mut s, &mut t);
+    if t.changed {
+        edits.insert(id.clone(), serde_json::to_string(&s).unwrap_or_default());
+    }
+    if t.commit {
+        edits.remove(&id);
+        if s != saved {
+            out.push(Edit::SetSample {
+                block: b.name.clone(),
+                sample: serde_json::to_string(&s).unwrap_or_default(),
+            });
+        }
+    }
+    out.extend(search_fields(ui, b, &s, edits, keys));
+    // Everything, as written in the file.
+    sample_json(ui, b, &saved, edits, &mut out);
+    out
+}
+
+/// What a part of a study's form did this frame: changed the sample,
+/// and whether to apply it now (a choice made, a field left).
+#[derive(Default)]
+struct Touched {
+    changed: bool,
+    commit: bool,
+}
+
+/// When a study runs (ADR 0088): on a change of its inputs, or on its
+/// 'activate' input.
+fn study_activation(ui: &mut egui::Ui, b: &simsandbox_file::BlockEntry, out: &mut Vec<Edit>) {
     ui.horizontal(|ui| {
         let now = b.activate.clone();
         let label = |m: &Option<String>| match m.as_deref() {
@@ -148,11 +187,20 @@ pub(super) fn study_fields(
                  or changes, or keeps running while it is high, and holds its results otherwise",
             );
     });
-    let mut changed = false;
-    let mut commit = false;
+}
+
+/// How many runs the study makes and of what, then its design: how it
+/// picks points, how many, seeds and replicates.
+fn study_design(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    s: &mut simsandbox_file::Sampling,
+    t: &mut Touched,
+) {
+    use simsandbox_file::{Design, Seeds};
     let runs = match s.design {
         Design::Rows => "a run per row".to_string(),
-        _ => format!("{} runs", study_runs(&s)),
+        _ => format!("{} runs", study_runs(s)),
     };
     ui.weak(match (&b.model, &b.file) {
         (Some(m), _) => {
@@ -163,11 +211,6 @@ pub(super) fn study_fields(
         }
         _ => "Names no model to study".into(),
     });
-    let range_of = |key: &str| {
-        keys.iter()
-            .find(|(k, _, _)| k == key)
-            .map_or([0.0, 1.0], |(_, r, _)| *r)
-    };
     egui::Grid::new(("study-form", &b.name))
         .num_columns(2)
         .spacing([8.0, 4.0])
@@ -205,8 +248,8 @@ pub(super) fn study_fields(
                                     p.points = None;
                                 }
                             }
-                            changed = true;
-                            commit = true;
+                            t.changed = true;
+                            t.commit = true;
                         }
                     }
                 });
@@ -220,9 +263,9 @@ pub(super) fn study_fields(
                 let r = ui.add(egui::DragValue::new(&mut n).range(1..=simsandbox_file::MAX_SAMPLES));
                 if r.changed() {
                     s.count = Some(n);
-                    changed = true;
+                    t.changed = true;
                 }
-                commit |= r.drag_stopped() || r.lost_focus();
+                t.commit |= r.drag_stopped() || r.lost_focus();
                 ui.end_row();
             }
             if matches!(s.design, Design::Random | Design::LatinHypercube) {
@@ -231,9 +274,9 @@ pub(super) fn study_fields(
                 let r = ui.add(egui::DragValue::new(&mut seed));
                 if r.changed() {
                     s.seed = Some(seed);
-                    changed = true;
+                    t.changed = true;
                 }
-                commit |= r.drag_stopped() || r.lost_focus();
+                t.commit |= r.drag_stopped() || r.lost_focus();
                 ui.end_row();
             }
             if s.design == Design::File {
@@ -244,9 +287,9 @@ pub(super) fn study_fields(
                     .on_hover_text("A CSV from the model's folder: a column per parameter, by path; an id column optional");
                 if r.changed() {
                     s.file = (!f.trim().is_empty()).then_some(f);
-                    changed = true;
+                    t.changed = true;
                 }
-                commit |= r.lost_focus();
+                t.commit |= r.lost_focus();
                 ui.end_row();
             }
             // A table's rows run once each (ADR 0079 stage 1d).
@@ -258,9 +301,9 @@ pub(super) fn study_fields(
                     .on_hover_text("Runs of each point, each replicate with a seed of its own");
                 if r.changed() {
                     s.replicates = (reps > 1).then_some(reps);
-                    changed = true;
+                    t.changed = true;
                 }
-                commit |= r.drag_stopped() || r.lost_focus();
+                t.commit |= r.drag_stopped() || r.lost_focus();
                 ui.end_row();
             }
             ui.label("seeds");
@@ -275,14 +318,30 @@ pub(super) fn study_fields(
                         (Seeds::PerPoint, "one per point"),
                     ] {
                         if ui.selectable_value(&mut s.seeds, v, l).clicked() {
-                            changed = true;
-                            commit = true;
+                            t.changed = true;
+                            t.commit = true;
                         }
                     }
                 });
             ui.end_row();
         });
-    // What it varies.
+}
+
+/// The parameters a study varies, each with its range (and points on a
+/// grid), or the note saying where they come from.
+fn study_params(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    s: &mut simsandbox_file::Sampling,
+    keys: &[StudyKey],
+    t: &mut Touched,
+) {
+    use simsandbox_file::{Design, SweepControl};
+    let range_of = |key: &str| {
+        keys.iter()
+            .find(|(k, _, _)| k == key)
+            .map_or([0.0, 1.0], |(_, r, _)| *r)
+    };
     if s.design == Design::File {
         ui.weak("The file's columns are the parameters it varies.");
     } else if s.design == Design::List {
@@ -322,8 +381,8 @@ pub(super) fn study_fields(
                                 if ui.selectable_label(*key == p.param, l).clicked() && *key != p.param {
                                     p.param = key.clone();
                                     p.range = ranged.then_some(*range);
-                                    changed = true;
-                                    commit = true;
+                                    t.changed = true;
+                                    t.commit = true;
                                 }
                             }
                         });
@@ -340,9 +399,9 @@ pub(super) fn study_fields(
                     let z = ui.add(egui::DragValue::new(&mut hi).speed(speed)).on_hover_text("To");
                     if a.changed() || z.changed() {
                         p.range = Some([lo, hi]);
-                        changed = true;
+                        t.changed = true;
                     }
-                    commit |= a.drag_stopped() || a.lost_focus() || z.drag_stopped() || z.lost_focus();
+                    t.commit |= a.drag_stopped() || a.lost_focus() || z.drag_stopped() || z.lost_focus();
                     if s.design == Design::Grid {
                         let mut n = p.points.unwrap_or(0);
                         let r = ui
@@ -352,9 +411,9 @@ pub(super) fn study_fields(
                             .on_hover_text("Values along this parameter (auto: 400 for one parameter, 100 each for several)");
                         if r.changed() {
                             p.points = (n >= 2).then_some(n);
-                            changed = true;
+                            t.changed = true;
                         }
-                        commit |= r.drag_stopped() || r.lost_focus();
+                        t.commit |= r.drag_stopped() || r.lost_focus();
                     } else {
                         ui.label("");
                     }
@@ -366,8 +425,8 @@ pub(super) fn study_fields(
             });
         if let Some(k) = remove {
             s.params.remove(k);
-            changed = true;
-            commit = true;
+            t.changed = true;
+            t.commit = true;
         }
         let unused = keys
             .iter()
@@ -383,12 +442,15 @@ pub(super) fn study_fields(
                     range: ranged.then_some(*range),
                     points: None,
                 });
-                changed = true;
-                commit = true;
+                t.changed = true;
+                t.commit = true;
             }
         }
     }
-    // Its named results.
+}
+
+/// The study's named results: each run reduced to values.
+fn study_results(ui: &mut egui::Ui, s: &mut simsandbox_file::Sampling, t: &mut Touched) {
     ui.strong("results").on_hover_text(
         "Each run reduced to named values, e.g. max(car.v) or first_time(abs(cruise.e) < 0.5); \
          without any, each output's final value",
@@ -402,14 +464,14 @@ pub(super) fn study_fields(
             if r.changed() {
                 renamed = Some((name.clone(), n));
             }
-            commit |= r.lost_focus();
+            t.commit |= r.lost_focus();
             ui.label("=");
             let width = (ui.available_width() - 30.0).max(120.0);
             let r = ui.add_sized([width, 20.0], egui::TextEdit::singleline(formula));
             if r.changed() {
-                changed = true;
+                t.changed = true;
             }
-            commit |= r.lost_focus();
+            t.commit |= r.lost_focus();
             if ui
                 .small_button("×")
                 .on_hover_text("Drop this result")
@@ -422,13 +484,13 @@ pub(super) fn study_fields(
     if let Some((from, to)) = renamed {
         if let Some(f) = s.reduce.remove(&from) {
             s.reduce.insert(to, f);
-            changed = true;
+            t.changed = true;
         }
     }
     if let Some(n) = dropped {
         s.reduce.remove(&n);
-        changed = true;
-        commit = true;
+        t.changed = true;
+        t.commit = true;
     }
     if ui
         .small_button("+ result")
@@ -440,27 +502,23 @@ pub(super) fn study_fields(
             k += 1;
         }
         s.reduce.insert(format!("r{k}"), "final(t)".into());
-        changed = true;
-        commit = true;
+        t.changed = true;
+        t.commit = true;
     }
-    if changed {
-        edits.insert(id.clone(), serde_json::to_string(&s).unwrap_or_default());
-    }
-    if commit {
-        edits.remove(&id);
-        if s != saved {
-            out.push(Edit::SetSample {
-                block: b.name.clone(),
-                sample: serde_json::to_string(&s).unwrap_or_default(),
-            });
-        }
-    }
-    out.extend(search_fields(ui, b, &s, edits, keys));
-    // Everything, as written in the file.
+}
+
+/// The whole sample as written in the file, edited as JSON.
+fn sample_json(
+    ui: &mut egui::Ui,
+    b: &simsandbox_file::BlockEntry,
+    saved: &simsandbox_file::Sampling,
+    edits: &mut HashMap<String, String>,
+    out: &mut Vec<Edit>,
+) {
     egui::CollapsingHeader::new("sample as JSON")
         .id_salt(("study-json", &b.name))
         .show(ui, |ui| {
-            let now = serde_json::to_string_pretty(&saved).unwrap_or_default();
+            let now = serde_json::to_string_pretty(saved).unwrap_or_default();
             let jid = format!("sample:{}", b.name);
             let mut text = edits.get(&jid).cloned().unwrap_or_else(|| now.clone());
             let r = ui.add(
@@ -482,7 +540,6 @@ pub(super) fn study_fields(
                 }
             }
         });
-    out
 }
 
 /// "Search…" (ADR 0078 point 7): a strategy model written to drive this
