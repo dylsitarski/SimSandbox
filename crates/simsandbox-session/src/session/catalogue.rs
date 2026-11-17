@@ -2,7 +2,7 @@
 //! filters computed from them), how a sample is taken from the simulator,
 //! and what views and interfaces can bind.
 
-use super::{param_keys, Session};
+use super::{param_keys, param_values, Session};
 use crate::filters::Filters;
 use simsandbox_core::block::{BlockSpec, MeshOf, PortSpec, Shape};
 use simsandbox_core::graph::{BlockId, Model};
@@ -554,7 +554,7 @@ impl Session {
             rows: &c.rows,
             meshes: &c.meshes,
             coordinates: &c.all_coordinates,
-            derived: &self.derived_names,
+            derived: self.probes.derived_names(),
         }
     }
 
@@ -593,12 +593,6 @@ impl Session {
 
     /// Every parameter's value, in [`Session::params`] order.
     pub(super) fn param_values(&self) -> Vec<f64> {
-        let model = self.sim.model();
-        self.flat
-            .blocks
-            .iter()
-            .flat_map(|e| model.params(self.ids[&e.name]).unwrap_or(&[]))
-            .copied()
-            .collect()
+        param_values(&self.sim, &self.flat, &self.ids)
     }
 }

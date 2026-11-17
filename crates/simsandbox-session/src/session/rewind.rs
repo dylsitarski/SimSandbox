@@ -1,10 +1,9 @@
 //! Rewind (ADR 0064): the recorder's snapshots, their budget, and going
 //! back to one, or running again from one to fill the history's gaps.
 
-use super::{Derived, Pending, Session, SharedHistory};
-use crate::filters::Filters;
+use super::{Pending, Session};
 use simsandbox_core::sim::{Simulator, Snapshot};
-use simsandbox_file::{FilterEntry, RecorderEntry};
+use simsandbox_file::RecorderEntry;
 use simsandbox_views::history::thin;
 use simsandbox_views::History;
 use std::collections::BTreeMap;
@@ -224,35 +223,8 @@ impl Session {
             .or_else(|| crate::run::data_end(self.sim.model()))
             .filter(|&end| end > t0);
         self.history_mut().truncate_after(t0);
-        for p in &mut self.probes {
-            p.flush(true);
-            p.history.write().truncate_after(t0);
-            p.trigger.seek(Some(t0), eps);
-            if let Some(w) = &mut p.stream {
-                let _ = w.truncate_after(Some(t0));
-            }
-        }
         // Filters with clocks of their own hold what their sources
         // recorded by then (ADR 0063).
-        for j in 0..self.derived.len() {
-            let mut d = std::mem::replace(
-                &mut self.derived[j],
-                Derived {
-                    entry: FilterEntry::expression("", "0", Vec::new()),
-                    key: Vec::new(),
-                    filters: Filters::default(),
-                    inputs: Vec::new(),
-                    sources: Vec::new(),
-                    held: Vec::new(),
-                    history: SharedHistory::new(History::new(Vec::new())),
-                    pending: Vec::new(),
-                    now: None,
-                },
-            );
-            d.flush(true);
-            d.history.write().truncate_after(t0);
-            self.reseed(&mut d);
-            self.derived[j] = d;
-        }
+        self.probes.rewind(t0, eps);
     }
 }
