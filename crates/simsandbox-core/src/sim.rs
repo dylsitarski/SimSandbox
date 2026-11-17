@@ -464,6 +464,8 @@ pub struct Simulator {
     gates: Vec<[f64; 2]>,
     starts: Vec<u64>,
     held: Vec<bool>,
+    /// Per Block: whether it is a member of a fused group, which steps it.
+    grouped: Vec<bool>,
 }
 
 /// Stands in for a Block lent to a thread of the pool for one instant;
@@ -809,7 +811,11 @@ impl Simulator {
             gates: Vec::new(),
             starts: Vec::new(),
             held: vec![false; blocks],
+            grouped: Vec::new(),
         };
+        sim.grouped = (0..blocks)
+            .map(|b| sim.model.group_of(BlockId(b)).is_some())
+            .collect();
         sim.gates = vec![[f64::NAN; 2]; sim.model.activations.len()];
         sim.starts = vec![0; sim.model.activations.len()];
         sim.late = (0..sim.model.blocks.len())
@@ -1088,13 +1094,7 @@ impl Simulator {
             seed: 0,
         };
         for (bi, block) in self.model.blocks.iter_mut().enumerate() {
-            if self.held[bi]
-                || self
-                    .model
-                    .groups
-                    .iter()
-                    .any(|g| g.members.contains(&BlockId(bi)))
-            {
+            if self.held[bi] || self.grouped[bi] {
                 continue;
             }
             block.do_step(
@@ -1278,10 +1278,10 @@ impl Simulator {
         if !self.changed.is_empty() {
             self.refresh_changed()?;
         }
-        let clocks = self.model.clocks.clone();
         let Some((tick, now)) = self.next_tick() else {
             return Ok(());
         };
+        let clocks = &self.model.clocks;
         // The clocks with an instant now (`listed` those at a listed time),
         // and each stepping one's step: its `dt`, or to its listed time.
         let listed: Vec<bool> = (0..clocks.len())
@@ -1299,24 +1299,25 @@ impl Simulator {
                 }
             })
             .collect();
+        // On new data, blocks step only to their own listed instants: their
+        // data's samples, which only a step brings (ADR 0067 step 4).
+        let stepping: Vec<bool> = (0..clocks.len())
+            .map(|c| reaching[c] && (!clocks[c].on_data || listed[c]))
+            .collect();
         // Activated parts (ADR 0088) at this instant of their clocks.
-        let clock_steps = |c: usize| reaching[c] && (!clocks[c].on_data || listed[c]);
-        self.gate(&clock_steps)?;
+        self.gate(&|c: usize| stepping[c])?;
         for (b, a) in self.active.iter_mut().enumerate() {
             *a = reaching[self.model.clock_of[b]] && !self.held[b];
         }
-        // On new data, blocks step only to their own listed instants: their
-        // data's samples, which only a step brings (ADR 0067 step 4).
-        let stepping = |c: usize| reaching[c] && (!clocks[c].on_data || listed[c]);
         // Each clock stepping now is a unit: its blocks and fused groups,
         // which touch nothing of another clock's, their inputs held. Units
         // run on several cores when worth it, with the same bits (ADR 0066
         // step 6).
         // Held blocks (ADR 0088) are not stepped either.
-        let in_group: Vec<bool> = (0..self.model.blocks.len())
-            .map(|b| self.model.group_of(BlockId(b)).is_some() || self.held[b])
+        let in_group: Vec<bool> = (self.grouped.iter().zip(&self.held))
+            .map(|(&g, &h)| g || h)
             .collect();
-        let clocks_now: Vec<usize> = (0..clocks.len()).filter(|&c| stepping(c)).collect();
+        let clocks_now: Vec<usize> = (0..stepping.len()).filter(|&c| stepping[c]).collect();
         let parallel = self.costs.worth(self.parallel, &clocks_now);
         let result = if parallel {
             self.step_lent(&clocks_now, &dts, &in_group)
@@ -1324,13 +1325,13 @@ impl Simulator {
             self.step_here(&clocks_now, &dts, &in_group)
         };
         result?;
-        for (c, clock) in clocks.iter().enumerate() {
+        for (c, clock) in self.model.clocks.iter().enumerate() {
             if listed[c] {
                 // At its listed time exactly; one on data counts its
                 // instants too.
                 self.clock_t[c] = now;
                 self.clock_taken[c] += 1;
-            } else if stepping(c) {
+            } else if stepping[c] {
                 self.clock_t[c] += clock.dt;
                 self.clock_taken[c] += 1;
             }
