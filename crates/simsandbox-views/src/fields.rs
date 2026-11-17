@@ -4,7 +4,7 @@
 
 use crate::builtin::{bindings, finite_runs, scroll_to_zoom, series_colour, widened};
 use crate::colour::{sequential, trail_start};
-use crate::history::{FieldShape, History, SignalRef, TIME};
+use crate::history::{FieldShape, History, SignalRef, Stamp, TIME};
 use crate::slice::{slice, Slicing, MAX_FACETS};
 use crate::view::{
     always, Available, Bindings, Context, Preset, Slot, SlotKind, StyleProperty, Swap, View,
@@ -601,6 +601,15 @@ fn heat_axes(input: &ViewInput<'_>, field: usize, samples: &[usize]) -> Option<(
 struct Heatmap {
     textures: Vec<egui::TextureHandle>,
     slicing: Slicing,
+    /// What the textures show: the field's history's stamp, the bindings,
+    /// the slicing, and the log scale, trail length and number of facets.
+    kept: Option<(Stamp, Bindings, Slicing, [u64; 3])>,
+    /// Each texture's extent, `[x0, x1, y0, y1]`, and the colour scale.
+    extents: Vec<[f64; 4]>,
+    range: (f64, f64),
+    /// Times the textures were coloured and uploaded.
+    #[cfg(test)]
+    uploads: usize,
 }
 
 impl View for Heatmap {
@@ -628,19 +637,55 @@ impl View for Heatmap {
         let facet = self.slicing.facet_axis(&names, &keep);
         let places = facet.map_or(1, |a| dims[a].min(MAX_FACETS));
         let log = input.style("log_colour") != 0.0;
-        // Each facet's picture, coloured on one scale.
-        let mut pictures = Vec::new();
-        for p in 0..places {
-            let Some(frames) = Frames::of(h, field, &samples, &x, &y, &self.slicing, p) else {
-                return;
-            };
-            let Some(image) = heat_image(&frames, &x, &y) else {
-                return;
-            };
-            pictures.push(image);
+        // Coloured and uploaded only when the field, the bindings or the
+        // view's choices changed: a paused heat map uploads nothing.
+        let key = (
+            h.stamp(),
+            input.bind.clone(),
+            self.slicing.clone(),
+            [
+                u64::from(log),
+                input.style("trail_length").to_bits(),
+                places as u64,
+            ],
+        );
+        if self.kept.as_ref() != Some(&key) || self.textures.len() != places {
+            // Each facet's picture, coloured on one scale.
+            let mut pictures = Vec::new();
+            for p in 0..places {
+                let Some(frames) = Frames::of(h, field, &samples, &x, &y, &self.slicing, p) else {
+                    return;
+                };
+                let Some(image) = heat_image(&frames, &x, &y) else {
+                    return;
+                };
+                pictures.push(image);
+            }
+            let all: Vec<f64> = pictures.iter().flat_map(|p| p.1.iter().copied()).collect();
+            self.range = scale_range(&all, log);
+            let (lo, hi) = self.range;
+            self.textures.truncate(places);
+            self.extents.clear();
+            for (p, (size, values, extent)) in pictures.iter().enumerate() {
+                let image = colour_scaled(*size, values, log, lo, hi);
+                let options = egui::TextureOptions::NEAREST;
+                match self.textures.get_mut(p) {
+                    Some(t) => t.set(image, options),
+                    None => self.textures.push(ui.ctx().load_texture(
+                        format!("plot.heatmap{p}"),
+                        image,
+                        options,
+                    )),
+                }
+                self.extents.push(*extent);
+            }
+            self.kept = Some(key);
+            #[cfg(test)]
+            {
+                self.uploads += 1;
+            }
         }
-        let all: Vec<f64> = pictures.iter().flat_map(|p| p.1.iter().copied()).collect();
-        let (lo, hi) = scale_range(&all, log);
+        let (lo, hi) = self.range;
         let shown = |v: f64| if log { v.exp() } else { v };
         ui.weak(format!(
             "{}: {} (dark) to {} (bright){}",
@@ -649,7 +694,6 @@ impl View for Heatmap {
             fmt(shown(hi)),
             if log { ", log scale" } else { "" }
         ));
-        self.textures.truncate(places);
         let columns = (places as f64).sqrt().ceil() as usize;
         let size = ui.available_size();
         let rows = places.div_ceil(columns);
@@ -657,23 +701,9 @@ impl View for Heatmap {
             size.x / columns as f32 - 4.0,
             (size.y / rows as f32 - if places > 1 { 18.0 } else { 0.0 }).max(40.0),
         );
-        let mut draw = |ui: &mut egui::Ui, p: usize| {
-            let (size, values, [x0, x1, y0, y1]) = &pictures[p];
-            let image = colour_scaled(*size, values, log, lo, hi);
-            let options = egui::TextureOptions::NEAREST;
-            let texture = match self.textures.get_mut(p) {
-                Some(t) => {
-                    t.set(image, options);
-                    t.clone()
-                }
-                None => {
-                    let t = ui
-                        .ctx()
-                        .load_texture(format!("plot.heatmap{p}"), image, options);
-                    self.textures.push(t.clone());
-                    t
-                }
-            };
+        let draw = |ui: &mut egui::Ui, p: usize| {
+            let [x0, x1, y0, y1] = self.extents[p];
+            let texture = &self.textures[p];
             let mut plot = Plot::new(("plot.heatmap", p))
                 .x_axis_label(axis_label(h, field, &x))
                 .y_axis_label(axis_label(h, field, &y))
@@ -1042,6 +1072,57 @@ mod tests {
         let k = axis(Dim::Grid(2), &[0.5, 1.5, 2.5]);
         let frames = Frames::of(&h, 0, &[0], &k, &i, &Slicing::default(), 0).unwrap();
         assert_eq!(frames.value(&k, &i, 2, 1), 201.0);
+    }
+
+    #[test]
+    fn a_still_heat_map_uploads_nothing_until_its_field_or_scale_changes() {
+        let shape = FieldShape::Grid { nx: 8, ny: 6 };
+        let mut h = History::with_fields("t", vec![], vec![("g".into(), shape)]);
+        let frame = |t: f64| -> Vec<f64> { (0..48).map(|i| t + i as f64).collect() };
+        h.push_sample(0.0, &[], &[&frame(0.0)]);
+        let reg = ViewRegistry::builtin();
+        let t = reg.get("plot.heatmap").unwrap();
+        let bind = bindings(&[("field", "g")]);
+        let ctx = egui::Context::default();
+        let mut view = Heatmap::default();
+        // Texture images sent to the GPU over `frames` frames.
+        let frames = |view: &mut Heatmap,
+                      h: &History,
+                      style: &std::collections::BTreeMap<String, f64>,
+                      n| {
+            let input = crate::view::view_input(&bind, style, t, h.into());
+            let mut sent = 0;
+            for _ in 0..n {
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(400.0, 300.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(raw, |ui| view.show(ui, &input));
+                sent += out
+                    .textures_delta
+                    .set
+                    .iter()
+                    .filter(|(id, _)| view.textures.iter().any(|t| t.id() == **id))
+                    .count();
+                out.textures_delta.clear();
+            }
+            sent
+        };
+        let plain = std::collections::BTreeMap::new();
+        assert_eq!(frames(&mut view, &h, &plain, 1), 1);
+        // Paused: drawn again from the texture it has.
+        assert_eq!(frames(&mut view, &h, &plain, 5), 0);
+        assert_eq!(view.uploads, 1);
+        // A new frame of the field is uploaded once.
+        h.push_sample(1.0, &[], &[&frame(1.0)]);
+        assert_eq!(frames(&mut view, &h, &plain, 3), 1);
+        // So is a change of scale.
+        let log: std::collections::BTreeMap<String, f64> = [("log_colour".to_string(), 1.0)].into();
+        assert_eq!(frames(&mut view, &h, &log, 3), 1);
+        assert_eq!(view.uploads, 3);
     }
 
     fn line_history() -> History {
