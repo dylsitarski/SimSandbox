@@ -334,6 +334,16 @@ pub fn paired(signals: &[(&History, SignalRef)]) -> Paired {
     Paired { t, columns }
 }
 
+/// A history's identity and its number of changes ([`History::stamp`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    id: u64,
+    changes: u64,
+}
+
+/// Each history's own number.
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub struct History {
     /// What the index is: `t`.
     index: String,
@@ -356,6 +366,7 @@ pub struct History {
     /// Keep only this many of the newest samples, forgetting older ones,
     /// instead of thinning (a probe's `keep`, ADR 0062).
     last: Option<usize>,
+    stamp: Stamp,
     /// Values held in population frames, which vary in size.
     population_values: usize,
     /// The field values it keeps before thinning, unless told otherwise.
@@ -408,13 +419,28 @@ impl History {
             population_values: 0,
             field_budget: FIELD_VALUES,
             own_limit: false,
+            stamp: Stamp {
+                id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                changes: 0,
+            },
         }
+    }
+
+    /// Which history this is and how often it has changed: the same stamp
+    /// means the same samples, so a view can keep what it drew from them.
+    pub fn stamp(&self) -> Stamp {
+        self.stamp
+    }
+
+    fn changed(&mut self) {
+        self.stamp.changes += 1;
     }
 
     /// Keep about `bytes` of field values before thinning (ADR 0062 step
     /// 5: its share of the app's memory budget), unless a limit of its
     /// own was set. 256 MB by default.
     pub fn set_field_budget(&mut self, bytes: usize) {
+        self.changed();
         self.field_budget = (bytes / 8).max(1);
         if !self.own_limit {
             let per: usize = self.fields.iter().map(|f| f.shape.len()).sum();
@@ -436,6 +462,7 @@ impl History {
 
     /// Keep every sample instead of thinning long histories.
     pub fn keep_all(&mut self) {
+        self.changed();
         self.max_samples = usize::MAX;
         self.last = None;
         self.own_limit = true;
@@ -444,6 +471,7 @@ impl History {
     /// Thin when longer than `samples` (at least 2), instead of the limit
     /// the fields' size sets.
     pub fn thin_past(&mut self, samples: usize) {
+        self.changed();
         self.max_samples = samples.max(2);
         self.last = None;
         self.own_limit = true;
@@ -452,6 +480,7 @@ impl History {
     /// Keep only the newest `samples` (at least 1), forgetting the oldest,
     /// instead of thinning.
     pub fn keep_last(&mut self, samples: usize) {
+        self.changed();
         self.last = Some(samples.max(1));
         self.max_samples = usize::MAX;
         self.own_limit = true;
@@ -464,16 +493,19 @@ impl History {
 
     /// Declare which fields are coordinates of which (ADR 0024).
     pub fn set_coordinates(&mut self, coordinates: Vec<Coordinate>) {
+        self.changed();
         self.coordinates = coordinates;
     }
 
     /// Give signal or field `name` its unit, as written (`m/s`).
     pub fn set_unit(&mut self, name: &str, unit: &str) {
+        self.changed();
         self.units.insert(name.into(), unit.into());
     }
 
     /// Name the axes of field `name` (the first fastest), as its port does.
     pub fn set_axes(&mut self, name: &str, axes: Vec<String>) {
+        self.changed();
         self.axes.insert(name.into(), axes);
     }
 
@@ -500,6 +532,7 @@ impl History {
 
     /// Declare field `name` a mesh's cells (ADR 0086).
     pub fn set_mesh(&mut self, name: &str, mesh: MeshShape) {
+        self.changed();
         self.meshes.insert(name.into(), mesh);
     }
 
@@ -520,6 +553,7 @@ impl History {
 
     /// Show `name` as `label` in legends and on axes.
     pub fn set_label(&mut self, name: &str, label: &str) {
+        self.changed();
         self.labels.insert(name.into(), label.into());
     }
 
@@ -587,11 +621,13 @@ impl History {
     /// Record one sample of scalar signals; `values` has one entry per
     /// signal. Use [`History::push_sample`] when there are fields.
     pub fn push(&mut self, t: f64, values: &[f64]) {
+        self.changed();
         self.push_sample(t, values, &[]);
     }
 
     /// Record one sample: scalar values and one frame per field.
     pub fn push_sample(&mut self, t: f64, values: &[f64], frames: &[&[f64]]) {
+        self.changed();
         debug_assert_eq!(values.len(), self.names.len());
         let per_sample = self.fields.iter_mut();
         self.times.push(t);
@@ -658,6 +694,7 @@ impl History {
 
     /// Drop every sample after `t` (rewind).
     pub fn truncate_after(&mut self, t: f64) {
+        self.changed();
         let keep = self.times.partition_point(|&x| x <= t);
         self.times.truncate(keep);
         for p in &mut self.points {
@@ -670,6 +707,7 @@ impl History {
     }
 
     pub fn clear(&mut self) {
+        self.changed();
         self.times.clear();
         for p in &mut self.points {
             p.clear();
