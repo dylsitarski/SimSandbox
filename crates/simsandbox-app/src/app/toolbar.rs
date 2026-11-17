@@ -531,6 +531,16 @@ impl SimApp {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
         }
+        // While a question or form covers the window, its shortcuts are
+        // taken and do nothing: egui's modals hold the pointer, not keys.
+        if self.modal.is_some() {
+            ui.input_mut(|i| {
+                for s in [&save_as, &save, &open] {
+                    i.consume_shortcut(s);
+                }
+            });
+            return;
+        }
         // The more specific shortcut first, so Ctrl+Shift+S is not taken as Ctrl+S.
         if ui.input_mut(|i| i.consume_shortcut(&save_as)) && self.session.is_some() {
             self.save_as_dialog();

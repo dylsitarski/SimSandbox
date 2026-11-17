@@ -90,7 +90,8 @@ impl SimApp {
     /// (Save, Don't save, Cancel) and return true; the action runs once
     /// answered.
     pub(super) fn ask_first(&mut self, action: Discard) -> bool {
-        if self.modal == Some(Modal::Discarding) || !self.has_unsaved() {
+        if matches!(self.modal, Some(Modal::Discarding | Modal::Closing(_))) || !self.has_unsaved()
+        {
             return false;
         }
         self.modal = Some(Modal::Unsaved(action));
@@ -107,7 +108,8 @@ impl SimApp {
             Discard::NewModel => self.apply_equations(),
             Discard::Close => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                // Stay permissive: the window is closing.
+                // Let the close through, for a few frames.
+                self.modal = Some(Modal::Closing(super::CLOSING_FRAMES));
                 return;
             }
         }
@@ -162,9 +164,18 @@ impl SimApp {
         }
     }
 
-    /// Ask before the window closes on unsaved changes.
+    /// Ask before the window closes on unsaved changes. A close agreed to
+    /// is let through; if it has not come within a few frames, the
+    /// question is back for the next.
     pub(super) fn guard_close(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.viewport().close_requested())
+        let requested = ctx.input(|i| i.viewport().close_requested());
+        if let Some(Modal::Closing(frames)) = self.modal {
+            if !requested {
+                self.modal = frames.checked_sub(1).map(Modal::Closing);
+            }
+            return;
+        }
+        if requested
             && !matches!(self.modal, Some(Modal::Discarding | Modal::Unsaved(_)))
             && self.has_unsaved()
         {
@@ -503,8 +514,13 @@ impl SimApp {
         }
     }
 
+    /// Open a file dropped on the window, unless a question or form
+    /// covers it: egui's modals hold the pointer, not dropped files.
     pub(super) fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if self.modal.is_some() {
+            return;
+        }
         if let Some(f) = dropped.first() {
             let path = f.path().to_string_lossy().into_owned();
             self.open_path(&path);

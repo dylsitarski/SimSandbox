@@ -1773,3 +1773,98 @@ fn replacing_a_changed_model_asks_first() {
     assert!(app.editor.is_some());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// One frame of `f` with `input`, as the window gives it.
+fn frame(input: egui::RawInput, mut f: impl FnMut(&egui::Context)) {
+    let ctx = egui::Context::default();
+    ctx.run_ui(input, |ui| f(&ui.ctx().clone()))
+        .textures_delta
+        .clear();
+}
+
+/// A file dropped on the window, as the integration hands it over.
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+/// While a question or form covers the window, a dropped file and the
+/// file shortcuts do nothing; without one they act.
+#[test]
+fn a_modal_holds_dropped_files_and_shortcuts() {
+    let dir = std::env::temp_dir().join(format!("simsandbox-modal-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("lorenz.ssbx.json");
+    std::fs::write(&file, include_str!("../../../../examples/lorenz.ssbx.json")).unwrap();
+    let drop = || egui::RawInput {
+        dropped_files: vec![std::sync::Arc::new(Dropped(file.clone()))],
+        ..Default::default()
+    };
+    let mut app = SimApp::new(None, None, None, None);
+    app.modal = Some(Modal::SaveRun {
+        name: "push".into(),
+        note: String::new(),
+    });
+    frame(drop(), |ctx| app.handle_dropped_files(ctx));
+    assert_eq!(app.path, None);
+    assert!(matches!(app.modal, Some(Modal::SaveRun { .. })));
+    // Ctrl+S taken, nothing saved: the form stays.
+    let ctrl_s = egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::S,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        }],
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    ctx.run_ui(ctrl_s, |ui| {
+        app.shortcuts(ui);
+        assert!(!ui.input(|i| i.events.iter().any(|e| matches!(
+            e,
+            egui::Event::Key {
+                key: egui::Key::S,
+                ..
+            }
+        ))));
+    })
+    .textures_delta
+    .clear();
+    assert!(matches!(app.modal, Some(Modal::SaveRun { .. })));
+    // Without the form, the dropped file opens.
+    app.modal = None;
+    frame(drop(), |ctx| app.handle_dropped_files(ctx));
+    assert_eq!(app.path.as_deref(), Some(file.as_path()));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A close agreed to with unsaved changes is let through for a few
+/// frames; a window still open after them asks again.
+#[test]
+fn a_close_that_never_comes_asks_again() {
+    let mut app = SimApp::new(None, None, None, None);
+    app.open_example(0);
+    app.speed = 2.0;
+    assert!(app.has_unsaved());
+    let ctx = egui::Context::default();
+    app.proceed(&ctx, Discard::Close);
+    assert!(matches!(app.modal, Some(Modal::Closing(_))));
+    // While the close is awaited, replacing the model does not ask.
+    assert!(!app.ask_first(Discard::NewModel));
+    for _ in 0..=CLOSING_FRAMES {
+        frame(egui::RawInput::default(), |ctx| app.guard_close(ctx));
+    }
+    assert_eq!(app.modal, None);
+    assert!(app.ask_first(Discard::NewModel));
+    assert_eq!(app.modal, Some(Modal::Unsaved(Discard::NewModel)));
+}

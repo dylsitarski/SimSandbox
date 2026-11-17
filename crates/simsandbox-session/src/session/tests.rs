@@ -969,6 +969,34 @@ mod probe_tests {
             .collect()
     }
 
+    /// `flush(false)` says samples are left while a probe's recording is
+    /// being read, though the history's could be appended.
+    #[test]
+    fn flushing_tells_of_a_probes_samples_left() {
+        let mut s = example("Cruise control");
+        s.record_all_probes();
+        s.set_probes(vec![spec(
+            "speed",
+            &["car.v"],
+            Every::Steps(1),
+            Keep::default(),
+        )])
+        .unwrap();
+        s.restart().unwrap();
+        let history = s.shared_history();
+        let probe = s.probe("speed").unwrap();
+        let (h, p) = (history.read(), probe.read());
+        s.step().unwrap();
+        // Both read: nothing can be appended.
+        assert!(!s.flush(false));
+        drop(h);
+        // The history is free, the probe still read.
+        assert!(!s.flush(false));
+        drop(p);
+        assert!(s.flush(false));
+        assert_eq!(probe.read().len(), history.read().len());
+    }
+
     #[test]
     fn a_probe_records_a_subset_on_its_own_schedule() {
         // Cruise control, 0.05 s steps; a probe of the speed every 0.5 s.

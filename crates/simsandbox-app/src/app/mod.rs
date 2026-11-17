@@ -83,10 +83,18 @@ pub enum Modal {
     SaveRun { name: String, note: String },
     /// Waiting for an answer before doing this: save, discard or cancel.
     Unsaved(Discard),
-    /// Doing what the person agreed to discard the changes for; it stays
-    /// once the window is told to close.
+    /// Doing what the person agreed to discard the changes for, for the
+    /// length of that action.
     Discarding,
+    /// The window told to close, the changes let go: the close is let
+    /// through for these many frames more, then, if the window is still
+    /// open (a close that never came), unsaved changes are asked about
+    /// again.
+    Closing(u8),
 }
+
+/// Frames a close agreed to is waited for (see [`Modal::Closing`]).
+const CLOSING_FRAMES: u8 = 4;
 
 pub struct SimApp {
     /// The "+ parameter" fields: name, value, unit.

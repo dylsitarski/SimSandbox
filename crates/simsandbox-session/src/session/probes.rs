@@ -44,22 +44,7 @@ impl Extra {
     /// Append any pending samples, waiting for readers if `wait`.
     /// Returns whether none are left.
     pub(super) fn flush(&mut self, wait: bool) -> bool {
-        if self.pending.is_empty() {
-            return true;
-        }
-        let guard = if wait {
-            Some(self.history.write())
-        } else {
-            self.history.try_write()
-        };
-        let Some(mut h) = guard else {
-            return false;
-        };
-        for p in self.pending.drain(..) {
-            let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
-            h.push_sample(p.index, &p.values, &frames);
-        }
-        true
+        super::recording::append(&self.history, &mut self.pending, wait)
     }
 }
 
@@ -116,23 +101,9 @@ impl Derived {
         )
     }
 
+    /// As [`Extra::flush`].
     fn flush(&mut self, wait: bool) -> bool {
-        if self.pending.is_empty() {
-            return true;
-        }
-        let guard = if wait {
-            Some(self.history.write())
-        } else {
-            self.history.try_write()
-        };
-        let Some(mut h) = guard else {
-            return false;
-        };
-        for p in self.pending.drain(..) {
-            let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
-            h.push_sample(p.index, &p.values, &frames);
-        }
-        true
+        super::recording::append(&self.history, &mut self.pending, wait)
     }
 }
 

@@ -46,6 +46,28 @@ pub(super) struct Pending {
     pub(super) frames: Vec<Vec<f64>>,
 }
 
+/// Append `pending` to `history`, waiting for its readers if `wait`, else
+/// only if none is reading. Returns whether none are left: the one way a
+/// probe's or a filter's recording takes the samples that waited.
+pub(super) fn append(history: &SharedHistory, pending: &mut Vec<Pending>, wait: bool) -> bool {
+    if pending.is_empty() {
+        return true;
+    }
+    let guard = if wait {
+        Some(history.write())
+    } else {
+        history.try_write()
+    };
+    let Some(mut h) = guard else {
+        return false;
+    };
+    for p in pending.drain(..) {
+        let frames: Vec<&[f64]> = p.frames.iter().map(Vec::as_slice).collect();
+        h.push_sample(p.index, &p.values, &frames);
+    }
+    true
+}
+
 /// The session's recording part: the history, one sample per step of
 /// what views read from the model and what filters read (ADR 0015,
 /// ADR 0063), shared with the window, with the samples waiting while the

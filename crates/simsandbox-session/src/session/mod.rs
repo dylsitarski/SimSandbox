@@ -277,13 +277,15 @@ impl Session {
     }
 
     /// Append pending samples: waiting for the window if `wait`, else only
-    /// if it is not reading. Returns whether none are left.
+    /// if it is not reading. Returns whether none are left, in the history
+    /// and in every probe's and filter's recording.
     pub fn flush(&mut self, wait: bool) -> bool {
         let probes_done = self.probes.flush(wait);
         if !self.recording.has_pending() {
             return probes_done;
         }
-        self.recording.flush(wait)
+        // Both flushed, whichever has samples left.
+        self.recording.flush(wait) && probes_done
     }
 
     /// Record one sample: scalar values, the frames of the fields before

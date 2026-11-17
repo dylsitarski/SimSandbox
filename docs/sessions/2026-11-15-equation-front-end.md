@@ -12,6 +12,7 @@
 - 2026-11-17: stage 3, one table of the array functions (`symbolic/functions/`), matched exhaustively by the three passes; `describe` lists the functions. W6 complete.
 - 2026-11-17: `centre` told of its own arguments; `Session` split into five parts (W8, first half), its public surface unchanged.
 - 2026-11-17: `app.rs` split by pane, modal state in one enum (W8 complete).
+- 2026-11-17: the bugs W8 brought up fixed (flush, the modal holding raw input, the close that never comes); the app run under Xvfb and compared by screenshot.
 
 ## Decided
 
@@ -23,6 +24,6 @@
 
 ## Notes for the next session
 
-- The app cannot start under Xvfb here (`libxkbcommon-x11` missing); compare the shapes egui draws (`Context::run_ui`) before and after a change instead, as the app split did.
+- The app runs under Xvfb (`xvfb-run -a target/release/simsandbox-app FILE --screenshot X.ppm --after 2`) once `libxkbcommon-x11-0` and `mesa-vulkan-drivers` are installed ([development setup](../guides/development-setup.md#testing-gpu-code-without-a-gpu)); this environment lacked them (installed by hand 2026-11-17; the environment's setup script fails, so a new container lacks them again). Running the app builds native code into `~/.cache/simsandbox/native`, after which `check` reports `native`: compare `check` output with `SIMSANDBOX_NATIVE=off`.
 - The comparison of old and new front end over a corpus of definitions (harvested from examples, the reference and tests, then mutated) found what the tests did not: build such a corpus before the next change of this size. Some error choices depend on `HashMap` order and differ from run to run; compare those without line and column.
 - The safety net for work on the front end: `cargo test --workspace` (bit-for-bit tests against the interpreter and across routes), `crates/simsandbox-eq/tests/reference.rs`, and the hashes of every example's renders, runs and checks before and after.
