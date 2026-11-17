@@ -4,7 +4,7 @@
 use super::explicit::two_mut;
 use super::{EquationSet, Kind, Layout, RowsSource, RuleRun, TableRows};
 use crate::ode::OdeSystem;
-use simsandbox_core::block::{BlockSpec, Equations};
+use simsandbox_core::block::{BlockSpec, Equations, GeneratedCode};
 use simsandbox_core::table::RowsFrame;
 use simsandbox_core::Result;
 use simsandbox_expr::{Outside, Program};
@@ -480,13 +480,19 @@ impl Equations for EquationSet {
     }
 }
 
+impl GeneratedCode for EquationSet {
+    fn code(&self) -> String {
+        EquationSet::code(self)
+    }
+}
+
 impl OdeSystem for EquationSet {
     fn spec(&self) -> &BlockSpec {
         &self.spec
     }
 
-    fn code(&self) -> Option<String> {
-        Some(EquationSet::code(self))
+    fn as_generated_code(&self) -> Option<&dyn GeneratedCode> {
+        Some(self)
     }
 
     /// Exact: each rate's dependencies on the states, read from the

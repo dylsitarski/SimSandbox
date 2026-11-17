@@ -3,8 +3,8 @@
 use super::{CellTransfer, EquationSet, Kind, RuleKind, RuleRun, EVALUATE, ITERATE};
 use crate::ode::OdeSystem;
 use simsandbox_core::block::{
-    AccuracyClass, Block, BlockSpec, Equations, MethodLabels, MethodSpec, SpeedClass, StepContext,
-    StepIo,
+    AccuracyClass, Block, BlockSpec, Equations, GeneratedCode, MethodLabels, MethodSpec,
+    SpeedClass, StepContext, StepIo,
 };
 use simsandbox_core::registry::MethodSettings;
 use simsandbox_core::table::RowsFrame;
@@ -752,7 +752,7 @@ impl Block for ExplicitBlock {
             .then_some(&self.set as &dyn Equations)
     }
 
-    fn code(&self) -> Option<String> {
-        Some(self.set.code())
+    fn as_generated_code(&self) -> Option<&dyn GeneratedCode> {
+        Some(&self.set)
     }
 }

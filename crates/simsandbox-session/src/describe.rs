@@ -360,7 +360,7 @@ pub fn check(text: &str, r: &Registry) -> Value {
 
 /// How each block whose code SimSandbox makes from equations runs, by
 /// name as `full` gives it: `interpreted`, `compiled`, `native`, or
-/// `compiled` and why not native ([`simsandbox_core::block::Block::code`]).
+/// `compiled` and why not native ([`simsandbox_core::block::GeneratedCode`]).
 pub(crate) fn code(
     model: &simsandbox_core::graph::Model,
     ids: &std::collections::BTreeMap<String, simsandbox_core::graph::BlockId>,
@@ -368,7 +368,7 @@ pub(crate) fn code(
 ) -> serde_json::Map<String, Value> {
     ids.iter()
         .filter_map(|(name, &id)| {
-            let code = model.block(id).ok()?.code()?;
+            let code = model.block(id).ok()?.as_generated_code()?.code();
             Some((full(name), Value::String(code)))
         })
         .collect()

@@ -1,5 +1,7 @@
 use crate::integrators::Integrator;
-use simsandbox_core::block::{Block, BlockSpec, Equations, MethodSpec, StepContext, StepIo};
+use simsandbox_core::block::{
+    Block, BlockSpec, Equations, GeneratedCode, MethodSpec, StepContext, StepIo,
+};
 use simsandbox_core::Result;
 
 /// A model definition in the equation domain: equations plus metadata.
@@ -19,8 +21,9 @@ pub trait OdeSystem: Equations + Send {
         None
     }
 
-    /// How its equations run ([`Block::code`]).
-    fn code(&self) -> Option<String> {
+    /// How its equations run, if SimSandbox makes its code
+    /// ([`Block::as_generated_code`]).
+    fn as_generated_code(&self) -> Option<&dyn GeneratedCode> {
         None
     }
 }
@@ -106,8 +109,8 @@ impl Block for OdeBlock {
         Some(self.system.as_ref())
     }
 
-    fn code(&self) -> Option<String> {
-        self.system.code()
+    fn as_generated_code(&self) -> Option<&dyn GeneratedCode> {
+        self.system.as_generated_code()
     }
 }
 

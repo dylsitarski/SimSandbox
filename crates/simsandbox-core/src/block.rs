@@ -5,7 +5,7 @@
 //! - Every Block implements the required [`Block`] trait, which is enough for
 //!   the co-simulation master to step it as a black box.
 //! - Optional capability traits ([`Equations`], [`Rollback`], [`Derivatives`],
-//!   [`Realtime`]) are exposed through the `as_*` accessors. The kernel checks
+//!   [`Realtime`], [`GeneratedCode`]) are exposed through the `as_*` accessors. The kernel checks
 //!   them to decide how to schedule a Block, e.g. fusing equation Blocks of the
 //!   same domain into one system.
 //! - The kernel owns Block state as a flat `[f64]` slice so snapshots, rewind
@@ -532,11 +532,7 @@ pub trait Block: Send {
     fn as_realtime(&self) -> Option<&dyn Realtime> {
         None
     }
-
-    /// How its equations run, for blocks whose code SimSandbox makes from
-    /// them (typed equations: `interpreted`, `compiled`, `native`; ADR
-    /// 0084, 0089). `None` for blocks written in Rust.
-    fn code(&self) -> Option<String> {
+    fn as_generated_code(&self) -> Option<&dyn GeneratedCode> {
         None
     }
 }
@@ -572,4 +568,12 @@ pub trait Derivatives {
 /// real-time models.
 pub trait Realtime {
     fn worst_case_step(&self) -> Duration;
+}
+
+/// Capability: SimSandbox makes the Block's code from its equations (typed
+/// equations, ADR 0084, ADR 0089). Blocks written in Rust do not have it.
+pub trait GeneratedCode {
+    /// How that code runs now (`interpreted`, `compiled`, `native`), for
+    /// `check`; it changes while the model runs, as a native build ends.
+    fn code(&self) -> String;
 }
