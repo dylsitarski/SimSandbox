@@ -42,6 +42,7 @@ use std::fmt;
 pub mod compose;
 pub mod layout;
 pub mod runs;
+pub mod sampling;
 pub mod subsystems;
 pub use subsystems::{
     Declared, Derived, InputPort, OutputPort, ParamDecl, ParamPlan, ParamValue, Subsystem,
@@ -465,7 +466,7 @@ impl Sampling {
         model: &Model,
         ids: &BTreeMap<String, BlockId>,
     ) -> Result<Plan, FileError> {
-        use simsandbox_core::sampling as design;
+        use crate::sampling as design;
         // From a file: its columns are the parameters (ADR 0067).
         let from_file = match (self.design, &self.file) {
             (Design::File, Some(name)) => Some(read_points(file, name)?),
