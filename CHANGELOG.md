@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Small models step faster, with the same results: 10–50% fewer instructions per step in the step loop and in a session's recording (a model of many blocks about 30%, a study about 50%).
 - For blocks written in Rust (ADR 0098): study designs, probe schedules and the hold block moved from `simsandbox_core` to `simsandbox_file` (`sampling`, `schedule`, `hold`); `Block::reads_time()` and `Block::instants()` are the `BlockSpec` fields `reads_time` and `instants`; `Block::code()` is the `GeneratedCode` capability (`Block::as_generated_code()`). `BlockSpec::new` and its builder, `ParamSpec::new` and `MethodSpec::new` write a spec in a few lines.
 - In the app, a question or form covering the window ("Save run…", unsaved changes) holds dropped files and Ctrl+O, Ctrl+S and Ctrl+Shift+S: they do nothing until it is answered; they acted behind it. Closing the window while "Save run…" is open asks about unsaved changes in place of the form, instead of under it.
 - Models of large grids load about three times faster (a 512 × 512 grid's block was mostly spent naming its states), and a model that uses models builds each of them twice instead of three times: loading one that uses four 512 × 512 models takes less than half the work, and a one-step `simsandbox run` of it 1.12 s instead of 1.71 s. The same results.
