@@ -4,6 +4,38 @@
 
 use super::*;
 
+/// What the inspector's rows and forms collect in a frame, carried out
+/// once it is drawn.
+#[derive(Default)]
+struct Collected {
+    changes: Vec<(ParamRow, f64)>,
+    controls: Vec<(String, simsandbox_file::ParamControl)>,
+    /// Edits that go through the diagram (a conversion's units, a new
+    /// block's values), at the level they apply to.
+    canvas: Vec<(Scope, Edit)>,
+    /// Edits of the model open on the canvas inside a study.
+    inside: Vec<Edit>,
+    /// A new update order for an agents block (ADR 0034).
+    update: Option<(String, simsandbox_agents::Update)>,
+    /// A block whose equations to open in the editor, and their text.
+    open_editor: Option<(String, String)>,
+}
+
+/// The `Edits` a row adds to: what it changes goes into `$c`, typed text
+/// and errors stay with the app.
+macro_rules! edits {
+    ($app:expr, $c:expr) => {
+        Edits {
+            changes: &mut $c.changes,
+            controls: &mut $c.controls,
+            text: &mut $app.param_edits,
+            pending: &mut $app.pending,
+            error: &mut $app.error,
+            file: &mut $c.canvas,
+        }
+    };
+}
+
 impl SimApp {
     /// Apply typed or dragged parameter values to the running model.
     pub(super) fn apply_changes(&self, changes: Vec<(ParamRow, f64)>) {
@@ -164,10 +196,7 @@ impl SimApp {
             return;
         };
         let m = live.model();
-        let mut update: Option<(String, simsandbox_agents::Update)> = None;
-        let mut changes: Vec<(ParamRow, f64)> = Vec::new();
-        let mut controls: Vec<(String, simsandbox_file::ParamControl)> = Vec::new();
-        let mut open_editor: Option<(String, String)> = None;
+        let mut c = Collected::default();
         // Where a file reader's data is named from (ADR 0063).
         let folder = self
             .path
@@ -175,23 +204,6 @@ impl SimApp {
             .and_then(Path::parent)
             .map(Path::to_path_buf);
         let folder = folder.as_deref();
-        // Edits that go through the diagram (a conversion's units, a new
-        // block's values), at the level they apply to.
-        let mut canvas_edits: Vec<(Scope, Edit)> = Vec::new();
-        // Edits of the model open on the canvas inside a study.
-        let mut inside_edits: Vec<Edit> = Vec::new();
-        macro_rules! edits {
-            () => {
-                Edits {
-                    changes: &mut changes,
-                    controls: &mut controls,
-                    text: &mut self.param_edits,
-                    pending: &mut self.pending,
-                    error: &mut self.error,
-                    file: &mut canvas_edits,
-                }
-            };
-        }
         ui.horizontal(|ui| {
             let width = (ui.available_width() - 100.0).max(80.0);
             ui.add(
@@ -217,38 +229,13 @@ impl SimApp {
                     for row in found {
                         let mut r = row.clone();
                         r.name = r.key.clone();
-                        param_row(ui, &m, &r, Place::Tree, None, edits!());
+                        param_row(ui, &m, &r, Place::Tree, None, edits!(self, c));
                     }
                 });
         } else {
             let o = crate::inspector::organise(&m.params, &m.file, self.show_computed);
             // What was picked last, on the diagram or in a plot (ADR 0053).
-            let canvas = self.diagram.canvas.selected.clone();
-            if canvas != self.last_canvas {
-                self.last_canvas = canvas.clone();
-                // Inside a used model, picks are named inside it: its path
-                // (`car1`, `vehicle/plant`) says where.
-                let scope: Option<String> =
-                    (!self.diagram.inside.is_empty()).then(|| self.diagram.inside.join("/"));
-                // A block in a model expanded in place is named by its path
-                // (`shaken/mass`): inside that use, as when it is opened.
-                self.picked = canvas
-                    .map(|s| s.blocks())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|n| !n.contains(':'))
-                    .map(|n| match n.rsplit_once('/') {
-                        Some((path, name)) => {
-                            let full = match &scope {
-                                Some(s) => format!("{s}/{path}"),
-                                None => path.to_string(),
-                            };
-                            (Some(full), name.to_string())
-                        }
-                        None => (scope.clone(), n),
-                    })
-                    .collect();
-            }
+            self.follow_canvas();
             let picked = self.picked.clone();
             // A study picked: what its model can vary, for its form.
             let keys = match picked.as_slice() {
@@ -267,141 +254,17 @@ impl SimApp {
                 .filter_map(|n| self.studied(&m.file, &n).map(|s| (n, s)))
                 .collect();
             if !picked.is_empty() {
-                let title = match picked.as_slice() {
-                    [(Some(s), name)] => format!("Selected: {name} in {s}"),
-                    [(None, name)] => format!("Selected: {name}"),
-                    many => format!("Selected: {} blocks", many.len()),
-                };
-                let draft = self.diagram.draft_file().cloned();
-                egui::CollapsingHeader::new(egui::RichText::new(title).strong())
-                    .id_salt("selected")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for (scope, name) in &picked {
-                            let at = Scope::Model;
-                            if picked.len() > 1 {
-                                ui.strong(name);
-                            }
-                            let running = block_entry(&m.file, scope.as_deref(), name);
-                            let drafted = draft
-                                .as_ref()
-                                .and_then(|f| block_entry(f, scope.as_deref(), name));
-                            let mut shown = false;
-                            if let Some(b) = running {
-                                if let Some(t) = crate::inspector::selected(
-                                    &m.params,
-                                    &m.file,
-                                    scope.as_deref(),
-                                    name,
-                                ) {
-                                    uses_table(ui, &t, &m.file.controls.params, edits!());
-                                    shown = true;
-                                }
-                                for e in unit_fields(ui, b, &mut self.param_edits) {
-                                    canvas_edits.push((at.clone(), e));
-                                    shown = true;
-                                }
-                                for e in file_fields(ui, b, &mut self.param_edits, folder) {
-                                    canvas_edits.push((at.clone(), e));
-                                }
-                                for e in study_fields(ui, b, &mut self.param_edits, &keys) {
-                                    canvas_edits.push((at.clone(), e));
-                                }
-                                shown |= b.type_name == simsandbox_eq::convert::CONVERT
-                                    || b.type_name == simsandbox_eq::file_input::FILE
-                                    || b.type_name == simsandbox_file::STUDY;
-                            } else if let (Some(b), Some(f)) = (drafted, &draft) {
-                                ui.weak(
-                                    "Not in the running model yet: it joins when the model loads",
-                                )
-                                .on_hover_text(self.diagram.draft_problem().unwrap_or_default());
-                                let d = Diagram::of(f, &at, &self.registry);
-                                if let Some(n) = d.nodes.iter().find(|n| n.name == *name) {
-                                    for e in
-                                        draft_rows(ui, n, &mut self.param_edits, &mut self.error)
-                                    {
-                                        canvas_edits.push((at.clone(), e));
-                                    }
-                                }
-                                for e in unit_fields(ui, b, &mut self.param_edits) {
-                                    canvas_edits.push((at.clone(), e));
-                                }
-                                for e in file_fields(ui, b, &mut self.param_edits, folder) {
-                                    canvas_edits.push((at.clone(), e));
-                                }
-                                for e in study_fields(ui, b, &mut self.param_edits, &keys) {
-                                    canvas_edits.push((at.clone(), e));
-                                }
-                                shown = true;
-                            }
-                            // A block inside a used model: its values by path.
-                            if running.is_none() && drafted.is_none() {
-                                if let Some(t) = crate::inspector::selected(
-                                    &m.params,
-                                    &m.file,
-                                    scope.as_deref(),
-                                    name,
-                                ) {
-                                    uses_table(ui, &t, &m.file.controls.params, edits!());
-                                    shown = true;
-                                } else if let Some(values) = scope.as_deref().and_then(|s| {
-                                    let path: Vec<String> =
-                                        s.split('/').map(str::to_string).collect();
-                                    self.diagram.inside_values(&path, name)
-                                }) {
-                                    // Inside a study: the model's values, as
-                                    // written; a change edits the model.
-                                    ui.weak(
-                                        "Values of the studied model: a change edits the model",
-                                    );
-                                    for e in studied_rows(ui, name, &values, &mut self.param_edits)
-                                    {
-                                        inside_edits.push(e);
-                                    }
-                                    shown = !values.is_empty();
-                                }
-                            }
-                            if !shown {
-                                ui.weak("Nothing to set");
-                            }
-                        }
-                    });
-                ui.add_space(6.0);
+                self.selected_section(ui, &m, &picked, &keys, folder, &mut c);
             }
             let small = m.params.len() <= 16;
-            egui::CollapsingHeader::new(egui::RichText::new("Model").strong())
-                .id_salt("model-params")
-                .default_open(true)
-                .show(ui, |ui| {
-                    egui::Grid::new("model")
-                        .num_columns(4)
-                        .spacing([6.0, 4.0])
-                        .show(ui, |ui| {
-                            for row in &o.model {
-                                let used = o.used_by.get(&row.key);
-                                param_row(ui, &m, row, Place::Tree, used, edits!());
-                            }
-                        });
-                    if let Some(e) = declare_form(ui, &mut self.new_param, &mut self.error) {
-                        canvas_edits.push((Scope::Model, e));
-                    }
-                    // What models using this one see of it (ADR 0073).
-                    for e in offered_outputs(ui, &m) {
-                        canvas_edits.push((Scope::Model, e));
-                    }
-                })
-                .header_response
-                .on_hover_text(
-                    "Parameters of the model itself: block values read them with \
-                     '= expression'",
-                );
+            self.model_section(ui, &m, &o, &mut c);
             for t in &o.tables {
                 let title = format!("{} × {}", t.subsystem, t.uses.len());
                 egui::CollapsingHeader::new(egui::RichText::new(title).strong())
                     .id_salt(("uses", &t.subsystem))
                     .default_open(small || t.rows.len() <= 6)
                     .show(ui, |ui| {
-                        uses_table(ui, t, &m.file.controls.params, edits!());
+                        uses_table(ui, t, &m.file.controls.params, edits!(self, c));
                     })
                     .header_response
                     .on_hover_text(format!(
@@ -411,131 +274,11 @@ impl SimApp {
                     ));
             }
             for g in &o.groups {
-                let entry = m.file.blocks.iter().find(|b| b.name == g.name);
-                let typed = entry
-                    .filter(|b| b.type_name == simsandbox_eq::registry::EQUATIONS)
-                    .map(|b| b.equations.join("\n"));
-                let agents = entry.filter(|b| b.type_name.starts_with("agents."));
-                let convert = entry.filter(|b| b.type_name == simsandbox_eq::convert::CONVERT);
-                let studied = studies.get(&g.name);
-                let kind = match entry.filter(|b| b.is_use()).map(|b| b.file.as_deref()) {
-                    _ if studied.is_some() => {
-                        format!("study of {}", studied.map_or("", |s| s.model.as_str()))
-                    }
-                    Some(Some(file)) => format!("uses {file}"),
-                    Some(None) => format!(
-                        "uses the model {}",
-                        entry.and_then(|b| b.model.as_deref()).unwrap_or_default()
-                    ),
-                    None if g.instance => format!("subsystem {}", g.type_name),
-                    None => g.type_name.clone(),
-                };
-                let header = egui::RichText::new(format!("{}  ({kind})", g.name)).strong();
-                egui::CollapsingHeader::new(header)
-                    .id_salt(("group", &g.name))
-                    .default_open(small || g.rows.len() <= 4)
-                    .show(ui, |ui| {
-                        if agents.is_some() || typed.is_some() {
-                            ui.horizontal(|ui| {
-                                if let Some(b) = agents {
-                                    // The update order is part of the model
-                                    // (ADR 0034).
-                                    let now = simsandbox_agents::Update::from_setting(
-                                        b.update.as_deref(),
-                                    )
-                                    .unwrap_or_default();
-                                    egui::ComboBox::from_id_salt(("update", &g.name))
-                                        .selected_text(now.name())
-                                        .show_ui(ui, |ui| {
-                                            for u in simsandbox_agents::Update::ALL {
-                                                if ui
-                                                    .selectable_label(u == now, u.name())
-                                                    .on_hover_text(u.description())
-                                                    .clicked()
-                                                    && u != now
-                                                {
-                                                    update = Some((g.name.clone(), u));
-                                                }
-                                            }
-                                        })
-                                        .response
-                                        .on_hover_text(
-                                            "The order agents act in each step; it changes \
-                                         results. Changing it restarts the run.",
-                                        );
-                                }
-                                if let Some(text) = &typed {
-                                    if ui
-                                        .small_button("Edit equations…")
-                                        .on_hover_text("Change this block's equations")
-                                        .clicked()
-                                    {
-                                        open_editor = Some((g.name.clone(), text.clone()));
-                                    }
-                                }
-                            });
-                        }
-                        if let Some(b) = convert {
-                            for e in unit_fields(ui, b, &mut self.param_edits) {
-                                canvas_edits.push((Scope::Model, e));
-                            }
-                        }
-                        // When a used model acts (ADR 0088).
-                        if let Some(b) = entry.filter(|b| b.is_use() && studied.is_none()) {
-                            for e in use_activation(ui, b) {
-                                canvas_edits.push((Scope::Model, e));
-                            }
-                        }
-                        // Starting values come last, each marked ↻; a used
-                        // model's parameters nest by path (ADR 0066).
-                        // A study's model, nested: its blocks' values as
-                        // written (ADR 0070).
-                        if let Some(st) = studied {
-                            studied_tree(ui, &g.name, st);
-                        }
-                        let nested = crate::inspector::nest(&g.rows);
-                        nested_rows(ui, &nested, &g.name, &mut |ui, name, row| {
-                            let mut r = row.clone();
-                            r.name = name.to_string();
-                            let used = o.used_by.get(&row.key);
-                            param_row(ui, &m, &r, Place::Tree, used, edits!());
-                        });
-                    });
+                self.group_section(ui, &m, &o, g, &studies, &mut c);
             }
             // Blocks added on the diagram that wait, as a draft, for the
             // model to load.
-            if let Some(f) = self.diagram.draft_file().cloned() {
-                let d = Diagram::of(&f, &Scope::Model, &self.registry);
-                for n in d
-                    .nodes
-                    .iter()
-                    .filter(|n| n.is_block() && !m.file.blocks.iter().any(|b| b.name == n.name))
-                {
-                    let header = egui::RichText::new(format!(
-                        "{}  ({}, not running yet)",
-                        n.name, n.type_name
-                    ))
-                    .strong();
-                    egui::CollapsingHeader::new(header)
-                        .id_salt(("draft", &n.name))
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            for e in draft_rows(ui, n, &mut self.param_edits, &mut self.error) {
-                                canvas_edits.push((Scope::Model, e));
-                            }
-                            if let Some(b) = f.blocks.iter().find(|b| b.name == n.name) {
-                                for e in unit_fields(ui, b, &mut self.param_edits) {
-                                    canvas_edits.push((Scope::Model, e));
-                                }
-                            }
-                        })
-                        .header_response
-                        .on_hover_text(format!(
-                            "Added on the diagram; it joins the run once the model loads: {}",
-                            self.diagram.draft_problem().unwrap_or_default()
-                        ));
-                }
-            }
+            self.draft_sections(ui, &m, &mut c);
             if o.computed > 0 && !self.show_computed {
                 ui.add_space(4.0);
                 ui.weak(format!(
@@ -544,7 +287,316 @@ impl SimApp {
                 ));
             }
         }
-        if let Some((block, text)) = open_editor {
+        self.apply_collected(c);
+    }
+
+    /// The blocks picked on the diagram, when its selection changed since
+    /// last looked at.
+    fn follow_canvas(&mut self) {
+        let canvas = self.diagram.canvas.selected.clone();
+        if canvas != self.last_canvas {
+            self.last_canvas = canvas.clone();
+            // Inside a used model, picks are named inside it: its path
+            // (`car1`, `vehicle/plant`) says where.
+            let scope: Option<String> =
+                (!self.diagram.inside.is_empty()).then(|| self.diagram.inside.join("/"));
+            // A block in a model expanded in place is named by its path
+            // (`shaken/mass`): inside that use, as when it is opened.
+            self.picked = canvas
+                .map(|s| s.blocks())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|n| !n.contains(':'))
+                .map(|n| match n.rsplit_once('/') {
+                    Some((path, name)) => {
+                        let full = match &scope {
+                            Some(s) => format!("{s}/{path}"),
+                            None => path.to_string(),
+                        };
+                        (Some(full), name.to_string())
+                    }
+                    None => (scope.clone(), n),
+                })
+                .collect();
+        }
+    }
+
+    /// The blocks picked: their values and forms, from the running model,
+    /// the diagram's draft or the used model they are inside.
+    fn selected_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        m: &Model,
+        picked: &[(Option<String>, String)],
+        keys: &[StudyKey],
+        folder: Option<&Path>,
+        c: &mut Collected,
+    ) {
+        let title = match picked {
+            [(Some(s), name)] => format!("Selected: {name} in {s}"),
+            [(None, name)] => format!("Selected: {name}"),
+            many => format!("Selected: {} blocks", many.len()),
+        };
+        let draft = self.diagram.draft_file().cloned();
+        egui::CollapsingHeader::new(egui::RichText::new(title).strong())
+            .id_salt("selected")
+            .default_open(true)
+            .show(ui, |ui| {
+                for (scope, name) in picked {
+                    let at = Scope::Model;
+                    if picked.len() > 1 {
+                        ui.strong(name);
+                    }
+                    let running = block_entry(&m.file, scope.as_deref(), name);
+                    let drafted = draft
+                        .as_ref()
+                        .and_then(|f| block_entry(f, scope.as_deref(), name));
+                    let mut shown = false;
+                    if let Some(b) = running {
+                        if let Some(t) =
+                            crate::inspector::selected(&m.params, &m.file, scope.as_deref(), name)
+                        {
+                            uses_table(ui, &t, &m.file.controls.params, edits!(self, c));
+                            shown = true;
+                        }
+                        for e in unit_fields(ui, b, &mut self.param_edits) {
+                            c.canvas.push((at.clone(), e));
+                            shown = true;
+                        }
+                        for e in file_fields(ui, b, &mut self.param_edits, folder) {
+                            c.canvas.push((at.clone(), e));
+                        }
+                        for e in study_fields(ui, b, &mut self.param_edits, keys) {
+                            c.canvas.push((at.clone(), e));
+                        }
+                        shown |= b.type_name == simsandbox_eq::convert::CONVERT
+                            || b.type_name == simsandbox_eq::file_input::FILE
+                            || b.type_name == simsandbox_file::STUDY;
+                    } else if let (Some(b), Some(f)) = (drafted, &draft) {
+                        ui.weak("Not in the running model yet: it joins when the model loads")
+                            .on_hover_text(self.diagram.draft_problem().unwrap_or_default());
+                        let d = Diagram::of(f, &at, &self.registry);
+                        if let Some(n) = d.nodes.iter().find(|n| n.name == *name) {
+                            for e in draft_rows(ui, n, &mut self.param_edits, &mut self.error) {
+                                c.canvas.push((at.clone(), e));
+                            }
+                        }
+                        for e in unit_fields(ui, b, &mut self.param_edits) {
+                            c.canvas.push((at.clone(), e));
+                        }
+                        for e in file_fields(ui, b, &mut self.param_edits, folder) {
+                            c.canvas.push((at.clone(), e));
+                        }
+                        for e in study_fields(ui, b, &mut self.param_edits, keys) {
+                            c.canvas.push((at.clone(), e));
+                        }
+                        shown = true;
+                    }
+                    // A block inside a used model: its values by path.
+                    if running.is_none() && drafted.is_none() {
+                        if let Some(t) =
+                            crate::inspector::selected(&m.params, &m.file, scope.as_deref(), name)
+                        {
+                            uses_table(ui, &t, &m.file.controls.params, edits!(self, c));
+                            shown = true;
+                        } else if let Some(values) = scope.as_deref().and_then(|s| {
+                            let path: Vec<String> = s.split('/').map(str::to_string).collect();
+                            self.diagram.inside_values(&path, name)
+                        }) {
+                            // Inside a study: the model's values, as
+                            // written; a change edits the model.
+                            ui.weak("Values of the studied model: a change edits the model");
+                            for e in studied_rows(ui, name, &values, &mut self.param_edits) {
+                                c.inside.push(e);
+                            }
+                            shown = !values.is_empty();
+                        }
+                    }
+                    if !shown {
+                        ui.weak("Nothing to set");
+                    }
+                }
+            });
+        ui.add_space(6.0);
+    }
+
+    /// The model's own parameters, a form to declare one, and the outputs
+    /// it offers to models using it (ADR 0073).
+    fn model_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        m: &Model,
+        o: &crate::inspector::Organised,
+        c: &mut Collected,
+    ) {
+        egui::CollapsingHeader::new(egui::RichText::new("Model").strong())
+            .id_salt("model-params")
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::Grid::new("model")
+                    .num_columns(4)
+                    .spacing([6.0, 4.0])
+                    .show(ui, |ui| {
+                        for row in &o.model {
+                            let used = o.used_by.get(&row.key);
+                            param_row(ui, m, row, Place::Tree, used, edits!(self, c));
+                        }
+                    });
+                if let Some(e) = declare_form(ui, &mut self.new_param, &mut self.error) {
+                    c.canvas.push((Scope::Model, e));
+                }
+                // What models using this one see of it (ADR 0073).
+                for e in offered_outputs(ui, m) {
+                    c.canvas.push((Scope::Model, e));
+                }
+            })
+            .header_response
+            .on_hover_text(
+                "Parameters of the model itself: block values read them with \
+                 '= expression'",
+            );
+    }
+
+    /// One block or use with its parameters: its update order or
+    /// equations, its form, a study's model, then its values by path.
+    fn group_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        m: &Model,
+        o: &crate::inspector::Organised,
+        g: &crate::inspector::Group,
+        studies: &HashMap<String, std::sync::Arc<Studied>>,
+        c: &mut Collected,
+    ) {
+        let small = m.params.len() <= 16;
+        let entry = m.file.blocks.iter().find(|b| b.name == g.name);
+        let typed = entry
+            .filter(|b| b.type_name == simsandbox_eq::registry::EQUATIONS)
+            .map(|b| b.equations.join("\n"));
+        let agents = entry.filter(|b| b.type_name.starts_with("agents."));
+        let convert = entry.filter(|b| b.type_name == simsandbox_eq::convert::CONVERT);
+        let studied = studies.get(&g.name);
+        let kind = match entry.filter(|b| b.is_use()).map(|b| b.file.as_deref()) {
+            _ if studied.is_some() => {
+                format!("study of {}", studied.map_or("", |s| s.model.as_str()))
+            }
+            Some(Some(file)) => format!("uses {file}"),
+            Some(None) => format!(
+                "uses the model {}",
+                entry.and_then(|b| b.model.as_deref()).unwrap_or_default()
+            ),
+            None if g.instance => format!("subsystem {}", g.type_name),
+            None => g.type_name.clone(),
+        };
+        let header = egui::RichText::new(format!("{}  ({kind})", g.name)).strong();
+        egui::CollapsingHeader::new(header)
+            .id_salt(("group", &g.name))
+            .default_open(small || g.rows.len() <= 4)
+            .show(ui, |ui| {
+                if agents.is_some() || typed.is_some() {
+                    ui.horizontal(|ui| {
+                        if let Some(b) = agents {
+                            // The update order is part of the model
+                            // (ADR 0034).
+                            let now = simsandbox_agents::Update::from_setting(b.update.as_deref())
+                                .unwrap_or_default();
+                            egui::ComboBox::from_id_salt(("update", &g.name))
+                                .selected_text(now.name())
+                                .show_ui(ui, |ui| {
+                                    for u in simsandbox_agents::Update::ALL {
+                                        if ui
+                                            .selectable_label(u == now, u.name())
+                                            .on_hover_text(u.description())
+                                            .clicked()
+                                            && u != now
+                                        {
+                                            c.update = Some((g.name.clone(), u));
+                                        }
+                                    }
+                                })
+                                .response
+                                .on_hover_text(
+                                    "The order agents act in each step; it changes \
+                                     results. Changing it restarts the run.",
+                                );
+                        }
+                        if let Some(text) = &typed {
+                            if ui
+                                .small_button("Edit equations…")
+                                .on_hover_text("Change this block's equations")
+                                .clicked()
+                            {
+                                c.open_editor = Some((g.name.clone(), text.clone()));
+                            }
+                        }
+                    });
+                }
+                if let Some(b) = convert {
+                    for e in unit_fields(ui, b, &mut self.param_edits) {
+                        c.canvas.push((Scope::Model, e));
+                    }
+                }
+                // When a used model acts (ADR 0088).
+                if let Some(b) = entry.filter(|b| b.is_use() && studied.is_none()) {
+                    for e in use_activation(ui, b) {
+                        c.canvas.push((Scope::Model, e));
+                    }
+                }
+                // Starting values come last, each marked ↻; a used
+                // model's parameters nest by path (ADR 0066).
+                // A study's model, nested: its blocks' values as
+                // written (ADR 0070).
+                if let Some(st) = studied {
+                    studied_tree(ui, &g.name, st);
+                }
+                let nested = crate::inspector::nest(&g.rows);
+                nested_rows(ui, &nested, &g.name, &mut |ui, name, row| {
+                    let mut r = row.clone();
+                    r.name = name.to_string();
+                    let used = o.used_by.get(&row.key);
+                    param_row(ui, m, &r, Place::Tree, used, edits!(self, c));
+                });
+            });
+    }
+
+    /// Blocks added on the diagram that wait, as a draft, for the model to
+    /// load.
+    fn draft_sections(&mut self, ui: &mut egui::Ui, m: &Model, c: &mut Collected) {
+        if let Some(f) = self.diagram.draft_file().cloned() {
+            let d = Diagram::of(&f, &Scope::Model, &self.registry);
+            for n in d
+                .nodes
+                .iter()
+                .filter(|n| n.is_block() && !m.file.blocks.iter().any(|b| b.name == n.name))
+            {
+                let header =
+                    egui::RichText::new(format!("{}  ({}, not running yet)", n.name, n.type_name))
+                        .strong();
+                egui::CollapsingHeader::new(header)
+                    .id_salt(("draft", &n.name))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for e in draft_rows(ui, n, &mut self.param_edits, &mut self.error) {
+                            c.canvas.push((Scope::Model, e));
+                        }
+                        if let Some(b) = f.blocks.iter().find(|b| b.name == n.name) {
+                            for e in unit_fields(ui, b, &mut self.param_edits) {
+                                c.canvas.push((Scope::Model, e));
+                            }
+                        }
+                    })
+                    .header_response
+                    .on_hover_text(format!(
+                        "Added on the diagram; it joins the run once the model loads: {}",
+                        self.diagram.draft_problem().unwrap_or_default()
+                    ));
+            }
+        }
+    }
+
+    /// Carry out what the inspector collected this frame.
+    fn apply_collected(&mut self, c: Collected) {
+        if let Some((block, text)) = c.open_editor {
             self.editor = Some(Editor {
                 block: Some(block),
                 text,
@@ -552,14 +604,14 @@ impl SimApp {
             });
         }
 
-        self.apply_edits(changes, controls);
-        for (scope, e) in canvas_edits {
+        self.apply_edits(c.changes, c.controls);
+        for (scope, e) in c.canvas {
             self.edit_at(scope, e);
         }
-        if !inside_edits.is_empty() {
-            self.edit_inside(inside_edits);
+        if !c.inside.is_empty() {
+            self.edit_inside(c.inside);
         }
-        if let Some((block, u)) = update {
+        if let Some((block, u)) = c.update {
             self.rebuild(
                 |file| {
                     if let Some(b) = file.blocks.iter_mut().find(|b| b.name == block) {
