@@ -1,8 +1,8 @@
 //! Parameter access and validation on `Model` and `Simulator`.
 
 use simsandbox_core::block::{
-    AccuracyClass, Block, BlockSpec, Domain, MethodLabels, MethodSpec, ParamSpec, SpeedClass,
-    StepContext, StepIo, TimeSemantics,
+    AccuracyClass, Block, BlockSpec, Domain, MethodSpec, ParamSpec, SpeedClass, StepContext,
+    StepIo, TimeSemantics,
 };
 use simsandbox_core::graph::Model;
 use simsandbox_core::sim::Simulator;
@@ -18,32 +18,13 @@ struct Decay {
 impl Decay {
     fn new() -> Self {
         Self {
-            spec: BlockSpec {
-                name: "decay".into(),
-                domain: Domain::Equations,
-                ports: vec![],
-                params: vec![ParamSpec {
-                    name: "k".into(),
-                    unit: Unit::DIMENSIONLESS,
-                    default: 1.0,
-                    suggested_min: 0.0,
-                    suggested_max: 10.0,
-                    description: "Decay rate".into(),
-                    initial_condition: false,
-                }],
-                states: vec!["x".into()],
-                tables: Vec::new(),
-                time: TimeSemantics::Continuous,
-                reads_time: None,
-                instants: None,
-            },
-            method: MethodSpec {
-                name: "euler".into(),
-                labels: MethodLabels {
-                    speed: SpeedClass::RealTime,
-                    accuracy: AccuracyClass::Qualitative,
-                },
-            },
+            spec: BlockSpec::new("decay", Domain::Equations)
+                .param(
+                    ParamSpec::new("k", Unit::DIMENSIONLESS, 1.0, [0.0, 10.0])
+                        .described("Decay rate"),
+                )
+                .state("x"),
+            method: MethodSpec::new("euler", SpeedClass::RealTime, AccuracyClass::Qualitative),
         }
     }
 }
@@ -176,27 +157,13 @@ impl Gain {
         if let Some(d) = declared {
             y = y.depends_on_params(d);
         }
-        let param = |n: &str| ParamSpec {
-            name: n.into(),
-            unit: Unit::DIMENSIONLESS,
-            default: 1.0,
-            suggested_min: 0.0,
-            suggested_max: 10.0,
-            description: String::new(),
-            initial_condition: false,
-        };
+        let param = |n: &str| ParamSpec::new(n, Unit::DIMENSIONLESS, 1.0, [0.0, 10.0]);
         Self {
-            spec: BlockSpec {
-                name: name.into(),
-                domain: Domain::Equations,
-                ports: vec![y],
-                params: vec![param("g"), param("h")],
-                states: vec![],
-                tables: Vec::new(),
-                time: TimeSemantics::Stateless,
-                reads_time: None,
-                instants: None,
-            },
+            spec: BlockSpec::new(name, Domain::Equations)
+                .port(y)
+                .param(param("g"))
+                .param(param("h"))
+                .time(TimeSemantics::Stateless),
             method: Decay::new().method,
         }
     }

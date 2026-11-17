@@ -76,6 +76,15 @@ pub struct MethodSpec {
     pub labels: MethodLabels,
 }
 
+impl MethodSpec {
+    pub fn new(name: &str, speed: SpeedClass, accuracy: AccuracyClass) -> Self {
+        Self {
+            name: name.into(),
+            labels: MethodLabels { speed, accuracy },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Causality {
     Input,
@@ -403,12 +412,42 @@ pub struct ParamSpec {
     pub initial_condition: bool,
 }
 
+impl ParamSpec {
+    /// A parameter with no description that does not set initial state;
+    /// `suggested` is the slider's initial range.
+    pub fn new(name: &str, unit: Unit, default: f64, suggested: [f64; 2]) -> Self {
+        Self {
+            name: name.into(),
+            unit,
+            default,
+            suggested_min: suggested[0],
+            suggested_max: suggested[1],
+            description: String::new(),
+            initial_condition: false,
+        }
+    }
+
+    pub fn described(mut self, description: &str) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Declare that it sets initial state (applied on restart).
+    pub fn sets_initial_state(mut self) -> Self {
+        self.initial_condition = true;
+        self
+    }
+}
+
 /// How a Block advances in time. Continuous time with events is the general
 /// case (as in FMI 3.0); the others are special cases.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum TimeSemantics {
+    #[default]
     Continuous,
-    FixedStep { dt: f64 },
+    FixedStep {
+        dt: f64,
+    },
     DiscreteEvent,
     Stateless,
 }
@@ -435,6 +474,63 @@ pub struct BlockSpec {
     /// sample times of recorded data (ADR 0067 step 4): a model with no
     /// states is evaluated there. `None` for most blocks.
     pub instants: Option<Vec<f64>>,
+}
+
+/// Built step by step: `BlockSpec::new(name, domain)` then `.input(..)`,
+/// `.output(..)`, `.port(..)`, `.param(..)`, `.state(..)`, `.table(..)`
+/// and `.time(..)`, each adding to what is there.
+impl BlockSpec {
+    /// A Block with no ports, parameters, states or tables, in continuous
+    /// time, saying nothing of `t` or its instants.
+    pub fn new(name: &str, domain: Domain) -> Self {
+        Self {
+            name: name.into(),
+            domain,
+            ports: Vec::new(),
+            params: Vec::new(),
+            states: Vec::new(),
+            tables: Vec::new(),
+            time: TimeSemantics::default(),
+            reads_time: None,
+            instants: None,
+        }
+    }
+
+    pub fn input(self, name: &str, unit: Unit, shape: Shape) -> Self {
+        self.port(PortSpec::input(name, unit, shape))
+    }
+
+    pub fn output(self, name: &str, unit: Unit, shape: Shape) -> Self {
+        self.port(PortSpec::output(name, unit, shape))
+    }
+
+    /// A port with more said of it than `input` or `output` say, such as
+    /// its feedthrough (`PortSpec::depends_on`).
+    pub fn port(mut self, port: PortSpec) -> Self {
+        self.ports.push(port);
+        self
+    }
+
+    pub fn param(mut self, param: ParamSpec) -> Self {
+        self.params.push(param);
+        self
+    }
+
+    /// The next state variable, in slice order.
+    pub fn state(mut self, name: &str) -> Self {
+        self.states.push(name.into());
+        self
+    }
+
+    pub fn table(mut self, table: TableSpec) -> Self {
+        self.tables.push(table);
+        self
+    }
+
+    pub fn time(mut self, time: TimeSemantics) -> Self {
+        self.time = time;
+        self
+    }
 }
 
 impl BlockSpec {
@@ -489,6 +585,50 @@ pub struct StepIo<'a> {
 }
 
 /// The required contract. Enough for the master to step any Block as a black box.
+///
+/// The smallest complete Block, x' = -k x by Euler steps:
+///
+/// ```
+/// use simsandbox_core::block::*;
+/// use simsandbox_core::{graph::Model, sim::Simulator, units::Unit, Result};
+///
+/// struct Decay { spec: BlockSpec, method: MethodSpec }
+///
+/// impl Decay {
+///     fn new(name: &str) -> Self {
+///         let spec = BlockSpec::new(name, Domain::Equations)
+///             .param(ParamSpec::new("k", Unit::DIMENSIONLESS, 1.0, [0.0, 10.0]))
+///             .state("x")
+///             .output("x", Unit::DIMENSIONLESS, Shape::Scalar);
+///         let method = MethodSpec::new("euler", SpeedClass::RealTime, AccuracyClass::Qualitative);
+///         Self { spec, method }
+///     }
+/// }
+///
+/// impl Block for Decay {
+///     fn spec(&self) -> &BlockSpec { &self.spec }
+///     fn method(&self) -> &MethodSpec { &self.method }
+///     fn init(&mut self, _params: &[f64], state: &mut [f64]) -> Result<()> {
+///         state[0] = 1.0;
+///         Ok(())
+///     }
+///     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
+///         io.state[0] -= ctx.dt * io.params[0] * io.state[0];
+///         self.compute_outputs(ctx.t + ctx.dt, io)
+///     }
+///     fn compute_outputs(&self, _t: f64, io: StepIo<'_>) -> Result<()> {
+///         io.outputs[0] = io.state[0];
+///         Ok(())
+///     }
+/// }
+///
+/// let mut model = Model::new();
+/// let id = model.add(Box::new(Decay::new("decay")));
+/// let mut sim = Simulator::new(model, 0.0)?;
+/// sim.step(0.5)?;
+/// assert_eq!(sim.output(id, "x").unwrap(), [0.5]);
+/// # Ok::<(), simsandbox_core::SimError>(())
+/// ```
 pub trait Block: Send {
     fn spec(&self) -> &BlockSpec;
 

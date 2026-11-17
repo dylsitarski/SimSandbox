@@ -584,20 +584,10 @@ mod tests {
     fn feedthrough_must_name_an_input() {
         use crate::block::{BlockSpec, Domain, PortSpec, Shape, TimeSemantics};
         use crate::units::Unit;
-        let spec = BlockSpec {
-            name: "b".into(),
-            domain: Domain::Equations,
-            ports: vec![
-                PortSpec::input("u", Unit::DIMENSIONLESS, Shape::Scalar),
-                PortSpec::output("y", Unit::DIMENSIONLESS, Shape::Scalar).depends_on(&["v"]),
-            ],
-            params: vec![],
-            states: vec![],
-            tables: vec![],
-            time: TimeSemantics::Stateless,
-            reads_time: None,
-            instants: None,
-        };
+        let spec = BlockSpec::new("b", Domain::Equations)
+            .input("u", Unit::DIMENSIONLESS, Shape::Scalar)
+            .port(PortSpec::output("y", Unit::DIMENSIONLESS, Shape::Scalar).depends_on(&["v"]))
+            .time(TimeSemantics::Stateless);
         let err = OutputPlan::new(&[(&spec, "b", &[])], &[], &[]).unwrap_err();
         assert!(err.to_string().contains("b.y depends on 'v'"), "{err}");
     }

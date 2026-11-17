@@ -5,8 +5,8 @@
 use simsandbox_agents::grazers::CELLS;
 use simsandbox_agents::{Grazers, Update};
 use simsandbox_core::block::{
-    AccuracyClass, Block, BlockSpec, Domain, MethodLabels, MethodSpec, ParamSpec, PortSpec, Shape,
-    SpeedClass, StepContext, StepIo, TimeSemantics,
+    AccuracyClass, Block, BlockSpec, Domain, MethodSpec, ParamSpec, Shape, SpeedClass, StepContext,
+    StepIo, TimeSemantics,
 };
 use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::sim::Simulator;
@@ -23,40 +23,27 @@ struct ConstantGrass {
 
 impl ConstantGrass {
     fn new() -> Self {
+        let density = Unit::new([-2, 1, 0, 0, 0, 0, 0], 1.0);
         Self {
-            spec: BlockSpec {
-                name: "field".into(),
-                domain: Domain::External,
-                ports: vec![PortSpec::output(
+            spec: BlockSpec::new("field", Domain::External)
+                .output(
                     "grass",
-                    Unit::new([-2, 1, 0, 0, 0, 0, 0], 1.0),
+                    density,
                     Shape::Grid {
                         nx: CELLS,
                         ny: CELLS,
                     },
-                )],
-                params: vec![ParamSpec {
-                    name: "G".into(),
-                    unit: Unit::new([-2, 1, 0, 0, 0, 0, 0], 1.0),
-                    default: 0.0,
-                    suggested_min: 0.0,
-                    suggested_max: 1.0,
-                    description: "Grass density everywhere".into(),
-                    initial_condition: false,
-                }],
-                states: vec![],
-                tables: vec![],
-                time: TimeSemantics::Stateless,
-                reads_time: None,
-                instants: None,
-            },
-            method: MethodSpec {
-                name: "constant".into(),
-                labels: MethodLabels {
-                    speed: SpeedClass::RealTime,
-                    accuracy: AccuracyClass::Quantitative,
-                },
-            },
+                )
+                .param(
+                    ParamSpec::new("G", density, 0.0, [0.0, 1.0])
+                        .described("Grass density everywhere"),
+                )
+                .time(TimeSemantics::Stateless),
+            method: MethodSpec::new(
+                "constant",
+                SpeedClass::RealTime,
+                AccuracyClass::Quantitative,
+            ),
         }
     }
 }
