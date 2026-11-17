@@ -1,5 +1,12 @@
-//! One open model: the running simulator, its snapshots for rewind, the
-//! recorded signals the views draw from, and its parameters.
+//! One open model as every interface uses it (ADR 0041): the running
+//! simulator, its parameters, and the parts [`Session`] coordinates, one
+//! file each:
+//!
+//! - `catalogue`: what a step yields (outputs, filters) and what views bind;
+//! - `recording`: the history the views draw from and what it keeps;
+//! - `probes`: probes besides the history, and the filters on them;
+//! - `rewind`: the recorder's snapshots, rewinding and recomputing;
+//! - `inputs`: the schedule, live input and its replay.
 
 use simsandbox_core::block::{MethodLabels, TimeSemantics};
 use simsandbox_core::graph::{BlockId, Model};
@@ -7,11 +14,12 @@ use simsandbox_core::registry::Registry;
 use simsandbox_core::sim::Simulator;
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
-use simsandbox_file::{FilterEntry, FusedGroup, ModelFile, ParamPlan, ViewEntry};
+use simsandbox_file::{FusedGroup, ModelFile, ParamPlan, ViewEntry};
 use std::collections::BTreeMap;
 
 mod catalogue;
 mod inputs;
+mod notes;
 mod probes;
 mod recording;
 mod rewind;
@@ -19,6 +27,8 @@ mod rewind;
 use catalogue::Catalogue;
 pub use inputs::InputEvent;
 pub(crate) use inputs::{set_key, Track};
+pub(crate) use notes::{algebraic_note, apart_loops, apart_note};
+pub use notes::{apart_notes, loop_notes};
 use probes::Probes;
 pub use recording::{cut_geometry, cut_inputs, default_cut, view_reads, SharedHistory};
 use recording::{Pending, Recording};
@@ -94,6 +104,11 @@ pub fn drives(model: &simsandbox_core::graph::Model) -> Vec<(String, String)> {
         .collect()
 }
 
+/// One open model (ADR 0041): the CLI, the app's worker and the Python
+/// API all drive it. It holds the file as loaded, the simulator and the
+/// parameters, and coordinates its parts: stepping takes a sample from
+/// the catalogue, records it in the probes and the recording, then lets
+/// the recorder take a snapshot.
 pub struct Session {
     /// Display name, e.g. the file name.
     pub title: String,
@@ -116,8 +131,8 @@ pub struct Session {
     /// The history the views draw from, and what it keeps (ADR 0015,
     /// ADR 0063).
     recording: Recording,
-    /// Probes besides the implicit one, which is `history` (ADR 0062),
-    /// and the filters on them.
+    /// Probes besides the implicit one, which is the recording's history
+    /// (ADR 0062), and the filters on them.
     probes: Probes,
     /// What a step yields, the filters, and what views can bind.
     catalogue: Catalogue,
@@ -323,8 +338,6 @@ impl Session {
         Ok(())
     }
 
-    /// Step until the time reaches `t` (within rounding), recording every
-    /// step: how headless interfaces run a model (ADR 0039).
     /// How long the next step is in simulated time: `dt`, or with several
     /// clocks the time to the next instant of any (ADR 0066 step 4b).
     pub fn step_dt(&self) -> f64 {
@@ -333,6 +346,8 @@ impl Session {
             .map_or(self.dt, |next| (next - self.time()).max(0.0))
     }
 
+    /// Step until the time reaches `t` (within rounding), recording every
+    /// step: how headless interfaces run a model (ADR 0039).
     pub fn run_until(&mut self, t: f64) -> Result<(), SimError> {
         while self.time() < t - 1e-9 * self.dt.max(t.abs()) {
             self.step()?;
@@ -855,152 +870,6 @@ impl Session {
         let cuts = self.catalogue.sample_cuts(&frames);
         self.push(t, &values, &frames, &cuts);
     }
-
-    /// Replace the filters. All must be usable, or nothing changes and the
-    /// problems are returned. The recorded history is kept and the filters
-    /// are recomputed for it, using current parameter values.
-    pub fn set_filters(&mut self, entries: Vec<FilterEntry>) -> Result<(), Vec<String>> {
-        let mut problems = Vec::new();
-        let mut names = Vec::new();
-        for e in &entries {
-            if names.contains(&e.name) || self.catalogue.output_names.contains(&e.name) {
-                problems.push(format!("{}: the name is already used", e.name));
-            }
-            names.push(e.name.clone());
-        }
-        let (filters, more) = self.compile_filters(&entries);
-        problems.extend(more);
-        if !problems.is_empty() {
-            return Err(problems);
-        }
-        self.catalogue.set_filters(filters, &entries);
-        // Replay the recorded outputs and fields through the new filters;
-        // probes start afresh from now.
-        let old = self.recording.take();
-        self.build_history();
-        self.replay_history(&old, true, &BTreeMap::new());
-        self.reset_probes();
-        Ok(())
-    }
-}
-
-/// One note per algebraic loop (ADR 0040), saying how it is solved, and
-/// one per loop of equation blocks stepped apart ([`apart_notes`]).
-pub fn loop_notes(sim: &Simulator) -> Vec<String> {
-    let method = sim.model().loop_method().name();
-    let mut notes: Vec<String> = sim
-        .loops()
-        .into_iter()
-        .map(|l| algebraic_note(&l, method))
-        .collect();
-    notes.extend(apart_notes(sim.model()));
-    notes
-}
-
-/// The note of [`loop_notes`] for one algebraic loop, by its outputs.
-pub(crate) fn algebraic_note(outputs: &[String], method: &str) -> String {
-    format!(
-        "algebraic loop {}: solved at every step by '{method}' (run.loops)",
-        outputs.join(" -> ")
-    )
-}
-
-/// One note per loop of equation blocks that could be solved together
-/// and are not (ADR 0095): blocks wired in a circle, continuous or
-/// stateless, at least one with states, not all in one fused group
-/// (different methods, `fusion: off`, different clocks, an activated
-/// part's edge). Each then reads the others' outputs as they were at the
-/// start of the step, an error of the order of the step whatever the
-/// methods' own accuracy, which their labels do not show.
-pub fn apart_notes(model: &simsandbox_core::graph::Model) -> Vec<String> {
-    apart_loops(model).iter().map(|l| apart_note(l)).collect()
-}
-
-/// The note of [`apart_notes`] for one loop, by its blocks' names.
-pub(crate) fn apart_note(names: &[String]) -> String {
-    format!(
-        "{} depend on each other and are stepped apart: each reads the others' outputs \
-         from the start of the step, an error of the order of run.dt that the accuracy \
-         label does not show. To solve them together give them one method and leave \
-         fusion on, or list them in 'groups'",
-        names.join(", ")
-    )
-}
-
-/// The loops [`apart_notes`] reports, each as its blocks' names.
-pub(crate) fn apart_loops(model: &simsandbox_core::graph::Model) -> Vec<Vec<String>> {
-    let n = model.len();
-    let mut next = vec![Vec::new(); n];
-    let mut prev = vec![Vec::new(); n];
-    for c in model.connections() {
-        let (a, b) = (c.from.block.0, c.to.block.0);
-        if a != b && model.is_fusable(c.from.block) && model.is_fusable(c.to.block) {
-            next[a].push(b);
-            prev[b].push(a);
-        }
-    }
-    // Strongly connected parts (Kosaraju, without recursion): blocks in
-    // the order they are finished going forward, then gathered going
-    // backward from the last finished.
-    let mut order = Vec::with_capacity(n);
-    let mut seen = vec![false; n];
-    for start in 0..n {
-        if seen[start] {
-            continue;
-        }
-        seen[start] = true;
-        let mut stack = vec![(start, 0)];
-        while let Some((v, k)) = stack.last_mut() {
-            if let Some(&w) = next[*v].get(*k) {
-                *k += 1;
-                if !seen[w] {
-                    seen[w] = true;
-                    stack.push((w, 0));
-                }
-            } else {
-                order.push(*v);
-                stack.pop();
-            }
-        }
-    }
-    let mut part = vec![usize::MAX; n];
-    let mut parts: Vec<Vec<usize>> = Vec::new();
-    for &start in order.iter().rev() {
-        if part[start] != usize::MAX {
-            continue;
-        }
-        let k = parts.len();
-        part[start] = k;
-        let mut members = vec![start];
-        let mut at = 0;
-        while at < members.len() {
-            for &w in &prev[members[at]] {
-                if part[w] == usize::MAX {
-                    part[w] = k;
-                    members.push(w);
-                }
-            }
-            at += 1;
-        }
-        parts.push(members);
-    }
-    let id = simsandbox_core::graph::BlockId;
-    let mut notes = Vec::new();
-    for mut members in parts {
-        let together = model
-            .group_of(id(members[0]))
-            .is_some_and(|g| members.iter().all(|&m| model.group_of(id(m)) == Some(g)));
-        if members.len() < 2 || together || members.iter().all(|&m| model.is_algebraic(id(m))) {
-            continue;
-        }
-        members.sort_unstable();
-        let names: Vec<String> = members
-            .iter()
-            .filter_map(|&m| model.block(id(m)).ok().map(|b| b.spec().name.clone()))
-            .collect();
-        notes.push(names);
-    }
-    notes
 }
 
 /// Every parameter's value, in [`Session::params`] order.

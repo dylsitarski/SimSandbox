@@ -1,6 +1,7 @@
 //! The session's tests: loading, running, rewinding, input, probes.
 
 use super::*;
+use simsandbox_file::FilterEntry;
 use simsandbox_views::{History, SignalRef};
 
 mod basics {

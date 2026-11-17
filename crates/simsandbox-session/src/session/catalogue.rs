@@ -576,6 +576,33 @@ impl Session {
         Ok(())
     }
 
+    /// Replace the filters. All must be usable, or nothing changes and the
+    /// problems are returned. The recorded history is kept and the filters
+    /// are recomputed for it, using current parameter values.
+    pub fn set_filters(&mut self, entries: Vec<FilterEntry>) -> Result<(), Vec<String>> {
+        let mut problems = Vec::new();
+        let mut names = Vec::new();
+        for e in &entries {
+            if names.contains(&e.name) || self.catalogue.output_names.contains(&e.name) {
+                problems.push(format!("{}: the name is already used", e.name));
+            }
+            names.push(e.name.clone());
+        }
+        let (filters, more) = self.compile_filters(&entries);
+        problems.extend(more);
+        if !problems.is_empty() {
+            return Err(problems);
+        }
+        self.catalogue.set_filters(filters, &entries);
+        // Replay the recorded outputs and fields through the new filters;
+        // probes start afresh from now.
+        let old = self.recording.take();
+        self.build_history();
+        self.replay_history(&old, true, &BTreeMap::new());
+        self.reset_probes();
+        Ok(())
+    }
+
     /// Compile filters for this model; problems are `name: reason`.
     pub(super) fn compile_filters(&self, entries: &[FilterEntry]) -> (Filters, Vec<String>) {
         let params = param_keys(&self.flat, &self.ids, self.sim.model());
