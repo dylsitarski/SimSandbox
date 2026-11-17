@@ -869,11 +869,6 @@ impl Probes {
 }
 
 impl Session {
-    /// What the history has recorded up to, if anything.
-    fn recorded_to(&self) -> Option<f64> {
-        self.history.read().times().last().copied()
-    }
-
     /// What the probes record may have moved or gone: they start afresh,
     /// without what a step no longer yields.
     pub(super) fn reset_probes(&mut self) {
@@ -927,7 +922,7 @@ impl Session {
 
     /// [`Session::set_probes`] without the filters that read probes.
     fn install_probes(&mut self, specs: Vec<ProbeSpec>) -> Result<(), Vec<String>> {
-        let (share, recorded_to, eps) = (self.share(), self.recorded_to(), self.eps());
+        let (share, recorded_to, eps) = (self.share(), self.recording.recorded_to(), self.eps());
         self.probes
             .install(specs, &self.catalogue, share, recorded_to, eps)
     }
@@ -935,7 +930,7 @@ impl Session {
     /// The filters with an input from a probe (ADR 0063), built again.
     fn build_derived(&mut self) {
         let params = param_keys(&self.flat, &self.ids, self.sim.model());
-        let (share, recorded_to) = (self.share(), self.recorded_to());
+        let (share, recorded_to) = (self.share(), self.recording.recorded_to());
         self.probes.build_derived(
             &self.catalogue,
             &params,

@@ -154,14 +154,14 @@ impl Session {
         if !self.has_gaps() {
             return Ok(());
         }
-        let until = self.gaps_until.expect("has gaps");
-        let first = self.history.read().times()[0];
+        let until = self.recording.gaps_until().expect("has gaps");
+        let first = self.recording.shared().read().times()[0];
         let Some(snap) = self.rewind.latest_by(first) else {
             return Err("recomputing needs the recorder's snapshots (ADR 0064)".into());
         };
         let snap = snap.clone();
-        drop(self.history_mut());
-        let times: Vec<f64> = self.history.read().times().to_vec();
+        drop(self.recording.history_mut());
+        let times: Vec<f64> = self.recording.shared().read().times().to_vec();
         let now = self.sim.snapshot();
         let track = self.track.position();
         let plan = self.plan.clone();
@@ -197,8 +197,8 @@ impl Session {
         if let Some(e) = failed {
             return Err(format!("recomputing failed: {e}"));
         }
-        let old = self.replace_history(History::new(Vec::new()));
-        self.gaps_until = None;
+        let old = self.recording.replace(History::new(Vec::new()));
+        self.recording.clear_gaps();
         self.build_history();
         self.replay_history(&old, false, &fills);
         Ok(())
@@ -222,7 +222,7 @@ impl Session {
             .t_end
             .or_else(|| crate::run::data_end(self.sim.model()))
             .filter(|&end| end > t0);
-        self.history_mut().truncate_after(t0);
+        self.recording.history_mut().truncate_after(t0);
         // Filters with clocks of their own hold what their sources
         // recorded by then (ADR 0063).
         self.probes.rewind(t0, eps);
