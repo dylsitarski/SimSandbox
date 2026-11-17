@@ -205,6 +205,7 @@ impl GroupPlan {
             ys,
             ps,
             computed,
+            ..
         } = scratch;
         for v in [&mut *us, &mut *ys, &mut *ps] {
             if v.len() < m {
@@ -307,13 +308,16 @@ type GroupWork<'a> = (
 
 /// A fused group's working arrays for its right-hand side, kept between
 /// evaluations: each member's inputs, outputs and (when some are driven)
-/// parameters, and a member's outputs as its output plan computes them.
+/// parameters, a member's outputs as its output plan computes them, and
+/// the combined state.
 #[derive(Default)]
 struct GroupScratch {
     us: Vec<Vec<f64>>,
     ys: Vec<Vec<f64>>,
     ps: Vec<Vec<f64>>,
     computed: Vec<f64>,
+    /// The combined state the solver advances.
+    x: Vec<f64>,
 }
 
 /// One Block's part of the run, lent to a unit of work (ADR 0066 step 6).
@@ -366,7 +370,10 @@ impl Unit<'_> {
             )?;
         }
         for (plan, solver, mut members, scratch) in self.groups {
-            let mut x = Vec::with_capacity(plan.len);
+            // The combined state, in an array kept between steps.
+            let mut x = std::mem::take(&mut scratch.x);
+            x.clear();
+            x.reserve(plan.len);
             for m in &members {
                 x.extend_from_slice(m.state);
             }
@@ -377,7 +384,7 @@ impl Unit<'_> {
                     held: members.iter().map(|m| m.inputs).collect(),
                 };
                 let failed = RefCell::new(None);
-                let scratch = RefCell::new(scratch);
+                let scratch = RefCell::new(&mut *scratch);
                 let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
                     let s = &mut **scratch.borrow_mut();
                     if let Err(e) = plan.rhs(&group, t, x, dx, s) {
@@ -406,6 +413,7 @@ impl Unit<'_> {
                     },
                 )?;
             }
+            scratch.x = x;
         }
         Ok(())
     }
@@ -1140,7 +1148,10 @@ impl Simulator {
             if plan.members.first().is_some_and(|&(b, _)| self.held[b]) {
                 continue;
             }
-            let mut x = Vec::with_capacity(plan.len);
+            // The combined state, in an array kept between steps.
+            let mut x = std::mem::take(&mut scratch.x);
+            x.clear();
+            x.reserve(plan.len);
             for &(b, _) in &plan.members {
                 x.extend_from_slice(&self.states[b]);
             }
@@ -1153,9 +1164,9 @@ impl Simulator {
             // The solver's right-hand side cannot fail; a loop that does
             // not converge is reported after the step.
             let failed = RefCell::new(None);
-            let scratch = RefCell::new(scratch);
+            let cell = RefCell::new(&mut *scratch);
             let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
-                let s = &mut **scratch.borrow_mut();
+                let s = &mut **cell.borrow_mut();
                 if let Err(e) = plan.rhs(&inside, t, x, dx, s) {
                     dx.fill(f64::NAN);
                     failed.borrow_mut().get_or_insert(e);
@@ -1181,6 +1192,7 @@ impl Simulator {
                     },
                 )?;
             }
+            scratch.x = x;
         }
         self.t += dt;
         self.step += 1;
