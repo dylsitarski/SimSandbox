@@ -1,7 +1,7 @@
 //! Units (ADR 0045): every quantity's unit, and each equation balanced.
 
 use super::declare::Declared;
-use super::functions::{meshes, tables, Function};
+use super::functions::{linear, meshes, tables, Function};
 use super::shaped::{Arrays, Shaped};
 use super::shapes::{ast_name, number};
 use super::statements::{definition_error, EdgeKind, Lhs};
@@ -106,6 +106,9 @@ impl ArrayDims<'_> {
             Some(Centre | Inner | Outer | Across) => Ok(d),
             // The first argument's: the sides table's name.
             Some(Boundary) => Ok(d),
+            // A pure number.
+            Some(Rcond) => Ok(NO_DIM),
+            Some(Solve) => linear::solve_dim(args, col),
             _ => self.old_apply(name, args, col),
         }
     }
@@ -145,13 +148,6 @@ impl ArrayDims<'_> {
                 Ast::Name(n, _) => self.axis_dim_of(n),
                 _ => NO_DIM,
             },
-            // A pure number.
-            "rcond" => NO_DIM,
-            "solve" => {
-                // A x = b: x in b's unit over A's.
-                let b = args.get(1).map_or(NO_DIM, |a| a.1);
-                dim_div(b, d).ok_or_else(too_high)?
-            }
             n if n.starts_with("dd") => {
                 let axis = if n == "dd" {
                     args.get(1).map_or("", |a| ast_name(a.0))

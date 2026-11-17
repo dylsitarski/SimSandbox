@@ -1,6 +1,6 @@
 //! Lowering a checked syntax tree to an expression with its axes (ADR 0080).
 
-use super::functions::{meshes, tables, Function};
+use super::functions::{linear, meshes, tables, Function};
 use super::shapes::{ast_name, fit, line_of, number, union, Shapes};
 use super::Axis;
 use simsandbox_expr::{Along, ArrayOp, Ast, Expr, MAX_AXES};
@@ -129,6 +129,8 @@ impl Lower<'_> {
             Outer => meshes::cell_lower(self, args, 1),
             Across => meshes::cell_lower(self, args, 3),
             Boundary => meshes::boundary_lower(self, args),
+            Solve => linear::solve_lower(self, args),
+            Rcond => linear::rcond_lower(self, args),
             _ => self.old_apply(name, args),
         }
     }
@@ -153,29 +155,6 @@ impl Lower<'_> {
                     stencil(&Function::by_name(name).expect("checked"), args),
                     shapes[ast_name(&args[0])].clone(),
                 ),
-                "rcond" => {
-                    let (ea, sa) = low(&args[0])?;
-                    let op = ArrayOp::Rcond {
-                        n: grid[sa[0]].cells,
-                        rows: line_of(&sa, sa[0], grid).stride,
-                        cols: line_of(&sa, sa[1], grid).stride,
-                    };
-                    (Expr::Array(op, vec![ea]), Vec::new())
-                }
-                "solve" => {
-                    let ((ea, sa), (eb, sb)) = (low(&args[0])?, low(&args[1])?);
-                    let (r, c) = if sb[0] == sa[0] {
-                        (sa[0], sa[1])
-                    } else {
-                        (sa[1], sa[0])
-                    };
-                    let op = ArrayOp::Solve {
-                        n: grid[r].cells,
-                        rows: line_of(&sa, r, grid).stride,
-                        cols: line_of(&sa, c, grid).stride,
-                    };
-                    (Expr::Array(op, vec![ea, eb]), vec![c])
-                }
                 "on" => {
                     let (e, from) = low(&args[0])?;
                     let (a, b) = (axis_named(&args[1]), axis_named(&args[2]));

@@ -1,7 +1,7 @@
 //! Which axes an expression is over: the checks before lowering, and the
 //! helpers for grids, cells and meshes they use.
 
-use super::functions::{meshes, tables, Check, Function};
+use super::functions::{linear, meshes, tables, Check, Function};
 use super::Axis;
 use simsandbox_expr::{ArrayOp, Ast, Edge, Expr, Line as GridLine, MAX_AXES};
 /// The variables `e` reads, edge values of its stencils included.
@@ -171,6 +171,8 @@ pub(super) fn axes_of(
         Some(Normal) => meshes::expansion_axes(&c, meshes::normal_expansion),
         Some(Inner | Outer | Across) => meshes::sides_axes(&c, false),
         Some(Boundary) => meshes::sides_axes(&c, true),
+        Some(Solve) => linear::solve_axes(&c),
+        Some(Rcond) => linear::rcond_axes(&c),
         _ => old_axes(name, args, col, grid, shapes),
     }
 }
@@ -302,59 +304,6 @@ fn old_axes(
                 return not_over(&format!("'dd' of {}", ast_name(&args[0])), &axes, names[i]);
             }
             Ok(axes)
-        }
-        "rcond" => {
-            // rcond(A): one value, how far A is from singular (ADR 0080).
-            count(args.len() == 1, "a matrix, e.g. rcond(A)")?;
-            let a = of(&args[0])?;
-            if a.len() != 2 || grid[a[0]].cells != grid[a[1]].cells {
-                return Err((
-                    col,
-                    format!(
-                        "rcond(A) needs A over two axes of the same length, not over {}",
-                        if a.is_empty() {
-                            "no axis".to_string()
-                        } else {
-                            list(&a)
-                        }
-                    ),
-                ));
-            }
-            Ok(Vec::new())
-        }
-        "solve" => {
-            // solve(A, b): A over two axes of one length, b over one of
-            // them; the result over the other (ADR 0080).
-            count(args.len() == 2, "a matrix and a vector, e.g. solve(A, b)")?;
-            let (a, b) = (of(&args[0])?, of(&args[1])?);
-            if a.len() != 2 || grid[a[0]].cells != grid[a[1]].cells {
-                return Err((
-                    col,
-                    format!(
-                        "solve(A, b) needs A over two axes of the same length, not over {}",
-                        if a.is_empty() {
-                            "no axis".to_string()
-                        } else {
-                            list(&a)
-                        }
-                    ),
-                ));
-            }
-            match b[..] {
-                [r] if a.contains(&r) => Ok(a.into_iter().filter(|&c| c != r).collect()),
-                _ => Err((
-                    col,
-                    format!(
-                        "solve(A, b) needs b over one of A's axes ({}), not over {}",
-                        list(&a),
-                        if b.is_empty() {
-                            "no axis".to_string()
-                        } else {
-                            list(&b)
-                        }
-                    ),
-                )),
-            }
         }
         d if d.starts_with("dd") => {
             count(args.len() == 1, "1 argument")?;
