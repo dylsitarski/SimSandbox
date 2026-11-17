@@ -1,7 +1,7 @@
 //! Lowering a checked syntax tree to an expression with its axes (ADR 0080).
 
-use super::functions::{tables, Function};
-use super::shapes::{ast_name, fit, line_of, mesh_expansion, number, union, Shapes};
+use super::functions::{meshes, tables, Function};
+use super::shapes::{ast_name, fit, line_of, number, union, Shapes};
 use super::Axis;
 use simsandbox_expr::{Along, ArrayOp, Ast, Expr, MAX_AXES};
 
@@ -122,6 +122,13 @@ impl Lower<'_> {
             Corner => tables::corner_lower(self, args),
             Outflow => tables::outflow_lower(self, args),
             Of => tables::of_lower(self, args),
+            Centre => meshes::expansion_lower(self, args, meshes::centre_expansion),
+            Measure => meshes::expansion_lower(self, args, meshes::measure_expansion),
+            Normal => meshes::expansion_lower(self, args, meshes::normal_expansion),
+            Inner => meshes::cell_lower(self, args, 0),
+            Outer => meshes::cell_lower(self, args, 1),
+            Across => meshes::cell_lower(self, args, 3),
+            Boundary => meshes::boundary_lower(self, args),
             _ => self.old_apply(name, args),
         }
     }
@@ -130,33 +137,8 @@ impl Lower<'_> {
         let (grid, shapes, stencil) = (self.grid, self.shapes, self.stencil);
         let low = |a: &Ast| self.low(a);
         let axis_named = |a: &Ast| self.axis_named(a);
-        let ends = self.ends;
         Ok({
             match name {
-                // A side's cells' values, and whether on the boundary.
-                "inner" | "outer" | "across" | "boundary" => {
-                    let f = axis_named(args.last().expect("checked: a sides table"));
-                    let v = ends[f].as_ref().expect("checked: sides");
-                    let n = v.len() - 4;
-                    match name {
-                        "boundary" => (Expr::Var(v[n + 2]), vec![f]),
-                        _ => {
-                            let (t, _) = low(&args[0])?;
-                            // Across: the outer cell, or on the boundary
-                            // the inner one (ADR 0085 step 3).
-                            let at = v[n + match name {
-                                "inner" => 0,
-                                "outer" => 1,
-                                _ => 3,
-                            }];
-                            (Expr::Array(ArrayOp::Take, vec![t, Expr::Var(at)]), vec![f])
-                        }
-                    }
-                }
-                "centre" | "measure" | "normal" => {
-                    let e = mesh_expansion(name, args, grid).expect("checked: expands");
-                    low(&e)?
-                }
                 "lap" | "prev" | "next" | "spacing" => {
                     let axes = match name {
                         "spacing" => Vec::new(),

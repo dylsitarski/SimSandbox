@@ -8,6 +8,7 @@
 //! without a fallback, so a new function does not compile until each
 //! handles it.
 
+pub(super) mod meshes;
 pub(super) mod tables;
 
 use super::shapes::{axes_of, Shapes};

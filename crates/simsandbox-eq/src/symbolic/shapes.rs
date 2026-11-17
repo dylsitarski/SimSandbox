@@ -1,7 +1,7 @@
 //! Which axes an expression is over: the checks before lowering, and the
 //! helpers for grids, cells and meshes they use.
 
-use super::functions::{tables, Check, Function};
+use super::functions::{meshes, tables, Check, Function};
 use super::Axis;
 use simsandbox_expr::{ArrayOp, Ast, Edge, Expr, Line as GridLine, MAX_AXES};
 /// The variables `e` reads, edge values of its stencils included.
@@ -129,76 +129,6 @@ pub(super) fn fit(
     )
 }
 
-/// `centre`, `measure` and `normal` (ADR 0085) as expressions of
-/// corners: `centre(T, c)`, `measure(c, x[, y[, z]])`, `normal(f, k, x[,
-/// y[, z]])`.
-pub(super) fn mesh_expansion(
-    name: &str,
-    args: &[Ast],
-    grid: &[Axis],
-) -> std::result::Result<Ast, String> {
-    let table = |a: &Ast| -> Option<usize> {
-        match a {
-            Ast::Name(n, _) => grid.iter().position(|g| &g.name == n && g.shape.is_some()),
-            _ => None,
-        }
-    };
-    match name {
-        "centre" => {
-            let (Some(t), Some(c)) = (args.first(), args.get(1).and_then(table)) else {
-                return Err("'centre' takes a quantity over points and cells over them, e.g. centre(x, tri)".into());
-            };
-            if args.len() != 2 {
-                return Err("'centre' takes 2 arguments, e.g. centre(x, tri)".into());
-            }
-            Ok(crate::mesh::centre(
-                t,
-                &grid[c].name,
-                grid[c].shape.expect("cells"),
-            ))
-        }
-        "measure" => {
-            let Some(c) = args.first().and_then(table) else {
-                return Err("'measure' takes cells or sides and their points' coordinates, e.g. measure(tri, x, y)".into());
-            };
-            if args.len() < 2 {
-                return Err(
-                    "'measure' takes the points' coordinates too, e.g. measure(tri, x, y)".into(),
-                );
-            }
-            crate::mesh::measure(&grid[c].name, grid[c].shape.expect("cells"), &args[1..])
-        }
-        _ => {
-            let Some(f) = args
-                .first()
-                .and_then(table)
-                .filter(|&f| grid[f].sides_of.is_some())
-            else {
-                return Err("'normal' takes sides, a component and the coordinates, e.g. normal(f, 0, x, y)".into());
-            };
-            let Some(Ast::Num(k)) = args.get(1) else {
-                return Err(
-                    "'normal' takes a component's number second, e.g. normal(f, 0, x, y)".into(),
-                );
-            };
-            if k.fract() != 0.0 || *k < 0.0 {
-                return Err(format!(
-                    "a normal's component is a whole number from 0, not {k}: normal(f, 0, x, y)"
-                ));
-            }
-            let c = grid[f].sides_of.expect("sides");
-            crate::mesh::normal(
-                &grid[f].name,
-                grid[f].shape.expect("sides"),
-                &grid[c].name,
-                grid[c].shape.expect("cells"),
-                *k as usize,
-                &args[2..],
-            )
-        }
-    }
-}
-
 /// The axes of `ast`'s value (ADR 0080), checking every array operation:
 /// known, with the right arguments. Names not in `shapes` are scalars.
 pub(super) fn axes_of(
@@ -236,6 +166,11 @@ pub(super) fn axes_of(
         Some(FromEnd | ToEnd) => tables::ends_axes(&c, false),
         Some(Corner) => tables::ends_axes(&c, true),
         Some(Outflow) => tables::outflow_axes(&c),
+        Some(Centre) => meshes::expansion_axes(&c, meshes::centre_expansion),
+        Some(Measure) => meshes::expansion_axes(&c, meshes::measure_expansion),
+        Some(Normal) => meshes::expansion_axes(&c, meshes::normal_expansion),
+        Some(Inner | Outer | Across) => meshes::sides_axes(&c, false),
+        Some(Boundary) => meshes::sides_axes(&c, true),
         _ => old_axes(name, args, col, grid, shapes),
     }
 }
@@ -308,36 +243,6 @@ fn old_axes(
         }
     };
     match name.as_str() {
-        "inner" | "outer" | "across" | "boundary" => {
-            // A side's cells (ADR 0085): over the sides.
-            let n = if name == "boundary" { 1 } else { 2 };
-            let usage = match name.as_str() {
-                "boundary" => "a table of sides, e.g. boundary(f)".to_string(),
-                _ => format!("a quantity over cells and their sides, e.g. {name}(u, f)"),
-            };
-            count(args.len() == n, &usage)?;
-            let Some(f) = axis_named(&args[n - 1]).filter(|&f| grid[f].sides_of.is_some()) else {
-                return Err((col, format!("'{name}' takes {usage}")));
-            };
-            if n == 2 {
-                let a = of(&args[0])?;
-                let c = grid[f].sides_of.expect("sides");
-                if a != [c] {
-                    return Err((
-                        col,
-                        format!(
-                            "'{name}' takes a quantity over {}, the cells {} lie between",
-                            grid[c].name, grid[f].name
-                        ),
-                    ));
-                }
-            }
-            Ok(vec![f])
-        }
-        "centre" | "measure" | "normal" => {
-            let e = mesh_expansion(name, args, grid).map_err(|m| (col, m))?;
-            of(&e)
-        }
         "lap" => {
             count(args.len() == 1, "1 argument")?;
             no_rows(named_array()?)

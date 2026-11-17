@@ -1,7 +1,7 @@
 //! Units (ADR 0045): every quantity's unit, and each equation balanced.
 
 use super::declare::Declared;
-use super::functions::{tables, Function};
+use super::functions::{meshes, tables, Function};
 use super::shaped::{Arrays, Shaped};
 use super::shapes::{ast_name, number};
 use super::statements::{definition_error, EdgeKind, Lhs};
@@ -99,6 +99,13 @@ impl ArrayDims<'_> {
             // corner's number after it have none to check.
             Some(Id | Rows | FromEnd | ToEnd | Corner | Outflow) => Ok(d),
             Some(Of) => tables::of_dim(args, col),
+            Some(Measure) => meshes::measure_dim(self, args, col),
+            Some(Normal) => meshes::normal_dim(self, args, col),
+            // T's, u's: the first argument's; the cells, sides or
+            // table after it have none to check.
+            Some(Centre | Inner | Outer | Across) => Ok(d),
+            // The first argument's: the sides table's name.
+            Some(Boundary) => Ok(d),
             _ => self.old_apply(name, args, col),
         }
     }
@@ -162,23 +169,6 @@ impl ArrayDims<'_> {
             }
             // A cell number (ADR 0070).
             "argminof" | "argmaxof" => NO_DIM,
-            // A length, area or volume: the coordinates' unit to the
-            // power of the cells' dimension (a point counts 1).
-            "measure" => {
-                let power = match args[0].0 {
-                    Ast::Name(n, _) => grid.iter().find(|g| &g.name == n),
-                    _ => None,
-                }
-                .and_then(|g| g.shape)
-                .map_or(0, |s| s.dim());
-                let x = self.one_unit(name, args.get(1..).unwrap_or_default(), col)?;
-                dim_pow(x, power as i8).ok_or_else(too_high)?
-            }
-            // A direction.
-            "normal" => {
-                self.one_unit(name, args.get(2..).unwrap_or_default(), col)?;
-                NO_DIM
-            }
             // The first argument's: `centre(T, c)` and a value read
             // elsewhere (`from_end(T, e)`, `inner(u, f)`); those after
             // it name tables and axes or are plain numbers.
