@@ -88,6 +88,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- `simsandbox describe eq.equations` and `ss.describe("eq.equations")` list the language's functions under `functions`: those of numbers with their arity, and the array functions with their signature, what each gives and its unit, from the one table the language itself dispatches by.
 - Python: `Model.render(inputs=…)` renders after a run with changes made during it, as `(t, key, value)` tuples or a `Run` (the CLI's `render --inputs`).
 - A reference for the typed-equations language (`docs/reference/typed-equations.md`): every statement, the expression grammar, units, every function, and the faults found while writing it. `simsandbox describe eq.equations` and `ss.describe("eq.equations")` give it whole under `reference`; a test parses every example in it and fails when a function is missing from it.
 - Activated parts on the canvas (ADR 0088): `activate` and `restart` come first among a node's inputs with the mode beside `activate`, and while the model runs an activated use's node says `held` or how often it started again.

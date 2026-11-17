@@ -157,8 +157,8 @@ fn describe(r: &mut Registry) -> Result<()> {
              other name is a parameter (1 unless set). Units in brackets ('param m [kg] = 2', \
              'E = m*v^2/2 [J]') make every line checked. Arrays on grids with stencils, tables \
              of rows, edges and meshes are in the language too: 'simsandbox describe \
-             eq.equations' gives the whole of it under 'reference'. The method may be left \
-             out.",
+             eq.equations' gives the whole of it under 'reference', and every function with its \
+             signature and unit under 'functions'. The method may be left out.",
         )
         .reference(REFERENCE)
         .method("rk4", &["substeps"])

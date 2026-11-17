@@ -152,6 +152,16 @@ pub(super) fn axes_of(
         }
         Ast::Apply(name, args, col) => (name, args, *col),
     };
+    // The parser makes calls only of array functions, each with an
+    // argument; a call without one is a split's or merge's transfer
+    // (`share`), which is never a quantity's value. Refused here, the
+    // first pass, so no later one meets it.
+    if args.is_empty() {
+        return Err((
+            col,
+            format!("'{name}' alone is a split's or merge's transfer, not a value"),
+        ));
+    }
     if grid.is_empty() {
         return Err((
             col,

@@ -4,7 +4,7 @@ How people and AI agents describe, check, run and render models without the wind
 
 ## Workflow for an agent
 
-1. `simsandbox describe` (or `ss.describe()`): every block type with ports, units, parameters, methods and labels; every view and filter type. `simsandbox describe eq.equations` gives the whole equation language (`reference`), which most models are written in.
+1. `simsandbox describe` (or `ss.describe()`): every block type with ports, units, parameters, methods and labels; every view and filter type. `simsandbox describe eq.equations` gives the whole equation language (`reference`), which most models are written in, and its functions with their signatures and units (`functions`).
 2. Write a model file (or build a `Model` in Python), starting from the closest example.
 3. `simsandbox check FILE`: fix each error at its `path` (`blocks[0].method`) or `line`/`column`, until `"ok": true`.
 4. `simsandbox run FILE --format json` (or `Model.run()`): the numbers, with speed and accuracy labels and notes on algebraic loops and on loops of equation blocks stepped apart ([ADR 0095](../decisions/0095-one-block-with-states-fuses-with-its-formulas.md): each then reads the others a step late, which the labels do not show).
