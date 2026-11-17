@@ -6,12 +6,11 @@ use crate::probe::{ProbeSpec, Trigger};
 use simsandbox_core::block::{MethodLabels, Shape, TimeSemantics};
 use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::registry::Registry;
-use simsandbox_core::sim::{Simulator, Snapshot};
+use simsandbox_core::sim::Simulator;
 use simsandbox_core::units::Unit;
 use simsandbox_core::SimError;
 use simsandbox_file::{FilterEntry, FusedGroup, ModelFile, ParamPlan, ProbeEntry, ViewEntry};
 use simsandbox_views::cut::Geometry;
-use simsandbox_views::history::thin;
 use simsandbox_views::{
     Available, Coordinate, FieldShape, History, MeshInfo, MeshShape, SignalRef,
 };
@@ -19,9 +18,11 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 mod inputs;
+mod rewind;
 
 pub use inputs::InputEvent;
 pub(crate) use inputs::{set_key, Track};
+use rewind::Rewind;
 
 /// The recorded history, shared with the window (ADR 0035): the session
 /// writes it, the window reads it to draw. Cloning shares it.
@@ -185,13 +186,6 @@ struct Pending {
     values: Vec<f64>,
     frames: Vec<Vec<f64>>,
 }
-
-/// When the snapshots grow past this many, or past the recorder's memory
-/// budget (ADR 0064), every other one is dropped: the whole run stays
-/// reachable, at coarser resolution. Gray–Scott (128 × 128, its outputs
-/// computed again on rewind, ADR 0063) takes about 0.26 MB a snapshot, so
-/// the default 256 MB keeps about 1 000.
-const MAX_SNAPSHOTS: usize = 10_000;
 
 /// The app's memory budget by default, in MB (ADR 0062 step 5): shared by
 /// snapshots, the history and probes, a quarter each by default.
@@ -357,10 +351,8 @@ pub struct Session {
     /// Run continues past it (ADR 0013).
     stop_at: Option<f64>,
     sim: Simulator,
-    snapshots: Vec<Snapshot>,
     /// The app's memory budget in MB (ADR 0062 step 5).
     memory_mb: f64,
-    steps_since_snapshot: usize,
     /// Built without running its studies ([`crate::study::without_running_studies`]),
     /// or (evaluated later) changed since last evaluated: [`Session::evaluate`]
     /// brings it up to date.
@@ -378,8 +370,8 @@ pub struct Session {
     /// the caller to [`Session::evaluate`] (the app's worker, ADR 0072),
     /// instead of evaluating it at once.
     evaluate_later: bool,
-    /// The recorder (ADR 0064): without one, no snapshots and no rewind.
-    recorder: Option<simsandbox_file::RecorderEntry>,
+    /// The recorder and its snapshots (ADR 0064).
+    rewind: Rewind,
     /// Filters as written, for saving and editing (ADR 0030, ADR 0032).
     filter_entries: Vec<FilterEntry>,
     /// Filters compiled: expressions recorded after the output signals,
@@ -622,11 +614,9 @@ impl Session {
             meshes,
             mesh_shapes,
             block_types,
-            snapshots: vec![sim.snapshot()],
+            rewind: Rewind::new(start_file.controls.recorder.clone(), sim.snapshot()),
             memory_mb: DEFAULT_MEMORY_MB,
             sim,
-            steps_since_snapshot: 0,
-            recorder: start_file.controls.recorder.clone(),
             filter_entries: Vec::new(),
             filters: Filters::default(),
             track: Track::new(schedule, Vec::new()),
@@ -1221,7 +1211,7 @@ impl Session {
                 _ => None,
             })
             .collect();
-        let indexed = self.recorder.is_some();
+        let indexed = self.rewind.recorder().is_some();
         let mut notes = Vec::new();
         for (i, p) in self.probes.iter_mut().enumerate() {
             let s = &p.spec;
@@ -1860,15 +1850,7 @@ impl Session {
             }
         }
         self.record();
-        let Some(r) = &self.recorder else {
-            return Ok(());
-        };
-        self.steps_since_snapshot += 1;
-        if self.steps_since_snapshot as u64 >= r.every() {
-            self.steps_since_snapshot = 0;
-            self.snapshots.push(self.sim.snapshot());
-            self.fit_snapshots();
-        }
+        self.rewind.stepped(&self.sim, self.memory_mb);
         Ok(())
     }
 
@@ -2164,11 +2146,7 @@ impl Session {
         }
         self.apply_due();
         self.sim.restart(0.0)?;
-        self.snapshots = match self.recorder {
-            Some(_) => vec![self.sim.snapshot()],
-            None => Vec::new(),
-        };
-        self.steps_since_snapshot = 0;
+        self.rewind.restart(&self.sim);
         self.stop_at = self
             .file
             .run
@@ -2356,7 +2334,7 @@ impl Session {
             self.file.controls.views = v;
         }
         self.file.controls.filters = self.filter_entries.clone();
-        self.file.controls.recorder = self.recorder.clone();
+        self.file.controls.recorder = self.rewind.recorder().cloned();
         self.file.controls.probes = self.probe_entries();
         Ok(self.file.to_json())
     }
@@ -2378,22 +2356,6 @@ impl Session {
     pub fn real_time(&self) -> bool {
         self.labels()
             .is_some_and(|l| l.speed == simsandbox_core::block::SpeedClass::RealTime)
-    }
-
-    /// Thin the snapshots to the recorder's budget.
-    fn fit_snapshots(&mut self) {
-        let Some(r) = &self.recorder else {
-            return;
-        };
-        // Its own budget, or its share of the app's.
-        let mb = r.mb.unwrap_or(self.memory_mb / 4.0);
-        let budget = (mb * 1e6 / 8.0) as usize;
-        let held = |s: &[Snapshot]| s.iter().map(Snapshot::values).sum::<usize>();
-        while self.snapshots.len() > 2
-            && (self.snapshots.len() > MAX_SNAPSHOTS || held(&self.snapshots) > budget)
-        {
-            thin(&mut self.snapshots);
-        }
     }
 
     /// A quarter of the memory budget, in bytes: the default share of
@@ -2424,17 +2386,14 @@ impl Session {
         for d in &self.derived {
             d.history.write().set_field_budget(share);
         }
-        self.fit_snapshots();
+        self.rewind.fit(self.memory_mb);
     }
 
     /// What the recordings hold against the memory budget (ADR 0062 step
     /// 5): snapshots, the history, each probe and filter.
     pub fn memory_use(&self) -> MemoryUse {
         let mut parts = vec![
-            (
-                "snapshots".to_string(),
-                8 * self.snapshots.iter().map(Snapshot::values).sum::<usize>(),
-            ),
+            ("snapshots".to_string(), self.rewind.bytes()),
             ("history".to_string(), self.history.read().bytes()),
         ];
         for p in &self.probes {
@@ -2448,34 +2407,6 @@ impl Session {
             held: parts.iter().map(|p| p.1).sum(),
             parts,
         }
-    }
-
-    /// The recorder, if the model has one (ADR 0064).
-    pub fn recorder(&self) -> Option<&simsandbox_file::RecorderEntry> {
-        self.recorder.as_ref()
-    }
-
-    /// Add, change or remove the recorder (ADR 0064). Added during a run,
-    /// it can rewind to now and later; removed, its snapshots go.
-    pub fn set_recorder(&mut self, recorder: Option<simsandbox_file::RecorderEntry>) {
-        match (&self.recorder, &recorder) {
-            (None, Some(_)) => {
-                self.snapshots = vec![self.sim.snapshot()];
-                self.steps_since_snapshot = 0;
-            }
-            (_, None) => self.snapshots.clear(),
-            _ => {}
-        }
-        self.recorder = recorder;
-        self.fit_snapshots();
-        self.update_probe_io();
-    }
-
-    /// Earliest and latest time the run can be rewound to.
-    pub fn history_range(&self) -> (f64, f64) {
-        let first = self.snapshots.first().map_or(self.time(), |s| s.t);
-        let last = self.snapshots.last().map_or(first, |s| s.t);
-        (first, last)
     }
 
     /// Every scalar and every field's frame of the model now, `keep`
@@ -2504,122 +2435,6 @@ impl Session {
     pub fn has_gaps(&self) -> bool {
         let first = self.history.read().times().first().copied();
         matches!((self.gaps_until, first), (Some(g), Some(f)) if g >= f)
-    }
-
-    /// Fill the history's gaps (ADR 0062, ADR 0063: on demand, never
-    /// automatically): run again from the latest snapshot before them,
-    /// replaying the input as recorded, and record what views read now at
-    /// the times of the samples held. The model is put back as it was, at
-    /// the same time; it computes the same values bit for bit, so samples
-    /// recorded before are unchanged. Probes and filters with clocks of
-    /// their own are not filled. Needs the recorder's snapshots.
-    pub fn recompute(&mut self) -> Result<(), String> {
-        if !self.has_gaps() {
-            return Ok(());
-        }
-        let until = self.gaps_until.expect("has gaps");
-        let first = self.history.read().times()[0];
-        let Some(snap) = self.snapshots.iter().rev().find(|s| s.t <= first) else {
-            return Err("recomputing needs the recorder's snapshots (ADR 0064)".into());
-        };
-        let snap = snap.clone();
-        drop(self.history_mut());
-        let times: Vec<f64> = self.history.read().times().to_vec();
-        let now = self.sim.snapshot();
-        let track = self.track.position();
-        let plan = self.plan.clone();
-        let warnings = self.warnings.len();
-        let eps = self.eps();
-        self.sim.restore(&snap);
-        self.track.seek(snap.t, eps);
-        let mut fills: BTreeMap<usize, Pending> = BTreeMap::new();
-        let mut k = times.partition_point(|&t| t < snap.t - eps);
-        let mut failed = None;
-        while k < times.len() && times[k] <= until + eps {
-            let t = self.sim.time();
-            if (times[k] - t).abs() <= eps {
-                fills.insert(k, self.sample_now());
-                k += 1;
-                continue;
-            }
-            if times[k] < t - eps {
-                // A sample between steps (none are, but never loop).
-                k += 1;
-                continue;
-            }
-            self.apply_due();
-            if let Err(e) = self.sim.step(self.dt) {
-                failed = Some(e.to_string());
-                break;
-            }
-        }
-        self.sim.restore(&now);
-        self.track.set_position(track);
-        self.plan = plan;
-        self.warnings.truncate(warnings);
-        if let Some(e) = failed {
-            return Err(format!("recomputing failed: {e}"));
-        }
-        let old = self.replace_history(History::new(Vec::new()));
-        self.gaps_until = None;
-        self.build_history();
-        self.replay_history(&old, false, &fills);
-        Ok(())
-    }
-
-    /// Rewind to the latest snapshot at or before `t`. Everything recorded
-    /// after it is discarded, so running on starts a new branch.
-    /// Without a recorder (ADR 0064) there is nothing to rewind to.
-    pub fn rewind_to(&mut self, t: f64) {
-        if self.snapshots.is_empty() {
-            return;
-        }
-        let keep = self.snapshots.iter().rposition(|s| s.t <= t).unwrap_or(0);
-        self.snapshots.truncate(keep + 1);
-        let snap = &self.snapshots[keep];
-        self.sim.restore(snap);
-        let t0 = snap.t;
-        // Input from then on is ahead again: running on replays it.
-        let eps = self.eps();
-        self.track.seek(t0, eps);
-        self.stop_at = self
-            .file
-            .run
-            .t_end
-            .or_else(|| crate::run::data_end(self.sim.model()))
-            .filter(|&end| end > t0);
-        self.history_mut().truncate_after(t0);
-        for p in &mut self.probes {
-            p.flush(true);
-            p.history.write().truncate_after(t0);
-            p.trigger.seek(Some(t0), eps);
-            if let Some(w) = &mut p.stream {
-                let _ = w.truncate_after(Some(t0));
-            }
-        }
-        // Filters with clocks of their own hold what their sources
-        // recorded by then (ADR 0063).
-        for j in 0..self.derived.len() {
-            let mut d = std::mem::replace(
-                &mut self.derived[j],
-                Derived {
-                    entry: FilterEntry::expression("", "0", Vec::new()),
-                    key: Vec::new(),
-                    filters: Filters::default(),
-                    inputs: Vec::new(),
-                    sources: Vec::new(),
-                    held: Vec::new(),
-                    history: SharedHistory::new(History::new(Vec::new())),
-                    pending: Vec::new(),
-                    now: None,
-                },
-            );
-            d.flush(true);
-            d.history.write().truncate_after(t0);
-            self.reseed(&mut d);
-            self.derived[j] = d;
-        }
-        self.steps_since_snapshot = 0;
     }
 
     fn record(&mut self) {
