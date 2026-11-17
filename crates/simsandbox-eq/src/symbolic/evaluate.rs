@@ -143,6 +143,12 @@ impl EquationSet {
     /// not among the rows.
     pub(super) fn ends_places(&self, tables: &[simsandbox_core::table::Table]) -> Vec<f64> {
         let mut u = Vec::new();
+        self.ends_places_into(tables, &mut u);
+        u
+    }
+
+    /// [`EquationSet::ends_places`] after what `u` holds.
+    fn ends_places_into(&self, tables: &[simsandbox_core::table::Table], u: &mut Vec<f64>) {
         let place_in = |m: usize| Places::new(tables[m].ids());
         for (t, spec) in tables.iter().zip(&self.tables) {
             let Some(m) = spec.ends_of else { continue };
@@ -176,7 +182,6 @@ impl EquationSet {
                 );
             }
         }
-        u
     }
 
     /// The same equations compiled for these numbers of rows, one per
@@ -216,11 +221,12 @@ impl EquationSet {
         tables: &[simsandbox_core::table::Table],
     ) -> Vec<f64> {
         if self.inputs_in.iter().all(|i| i.1.is_none()) {
-            let mut u = inputs.to_vec();
+            let mut u = Vec::with_capacity(self.layout.inputs.max(inputs.len()));
+            u.extend_from_slice(inputs);
             for t in &tables[..self.tables.len()] {
                 u.extend(t.ids().iter().map(|&i| i as f64));
             }
-            u.extend(self.ends_places(tables));
+            self.ends_places_into(tables, &mut u);
             return u;
         }
         let mut u = Vec::with_capacity(self.layout.inputs);
@@ -243,7 +249,7 @@ impl EquationSet {
         for t in &tables[..self.tables.len()] {
             u.extend(t.ids().iter().map(|&i| i as f64));
         }
-        u.extend(self.ends_places(tables));
+        self.ends_places_into(tables, &mut u);
         u
     }
 
