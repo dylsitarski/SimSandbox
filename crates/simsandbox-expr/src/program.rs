@@ -414,11 +414,55 @@ fn gather_places(rank: usize, dims: &[usize; MAX_AXES], strides: &[usize; MAX_AX
     out
 }
 
-/// For each cell of an [`ArrayOp::Along`]'s result, in order, the places of
-/// the argument's cells it reduces, in order along the axis.
-fn along_lines(rank: usize, dims: &[usize; MAX_AXES], axis: usize) -> Vec<Vec<usize>> {
-    let stride: usize = dims[..axis].iter().product();
-    let count = dims[axis];
+/// [`gather_places`] one after another into `f`, without a table: each
+/// evaluation walks them (2026-11-17: building the table at each was a
+/// sixth of a step of a grid summed along an axis).
+fn walk_places(
+    rank: usize,
+    dims: &[usize; MAX_AXES],
+    strides: &[usize; MAX_AXES],
+    mut f: impl FnMut(usize),
+) {
+    let n: usize = dims[..rank].iter().product();
+    if n == 0 {
+        return;
+    }
+    if rank == 0 {
+        f(0);
+        return;
+    }
+    // The first axis in a plain loop; the others counted like an odometer.
+    let (first, step) = (dims[0], strides[0]);
+    let mut at = [0usize; MAX_AXES];
+    let mut base = 0;
+    let mut done = 0;
+    loop {
+        for j in 0..first {
+            f(base + j * step);
+        }
+        done += first;
+        if done >= n {
+            return;
+        }
+        for k in 1..rank {
+            at[k] += 1;
+            base += strides[k];
+            if at[k] < dims[k] {
+                break;
+            }
+            base -= dims[k] * strides[k];
+            at[k] = 0;
+        }
+    }
+}
+
+/// The axes of an [`ArrayOp::Along`]'s argument other than `axis`, with
+/// their strides, and how many: its result's cells are their places.
+fn along_rest(
+    rank: usize,
+    dims: &[usize; MAX_AXES],
+    axis: usize,
+) -> ([usize; MAX_AXES], [usize; MAX_AXES], usize) {
     let mut rest = [1usize; MAX_AXES];
     let mut rest_strides = [0usize; MAX_AXES];
     let mut m = 0;
@@ -431,6 +475,15 @@ fn along_lines(rank: usize, dims: &[usize; MAX_AXES], axis: usize) -> Vec<Vec<us
         }
         s *= d;
     }
+    (rest, rest_strides, m)
+}
+
+/// For each cell of an [`ArrayOp::Along`]'s result, in order, the places of
+/// the argument's cells it reduces, in order along the axis.
+fn along_lines(rank: usize, dims: &[usize; MAX_AXES], axis: usize) -> Vec<Vec<usize>> {
+    let stride: usize = dims[..axis].iter().product();
+    let count = dims[axis];
+    let (rest, rest_strides, m) = along_rest(rank, dims, axis);
     gather_places(m, &rest, &rest_strides)
         .into_iter()
         .map(|base| (0..count).map(|j| base + j * stride).collect())
@@ -606,9 +659,11 @@ impl ArrIns {
                 ref strides,
                 ..
             } => {
-                for (k, at) in gather_places(rank, dims, strides).into_iter().enumerate() {
+                let mut k = 0;
+                walk_places(rank, dims, strides, |at| {
                     r[d + k] = r[a + at];
-                }
+                    k += 1;
+                });
             }
             ArrIns::Rcond {
                 d,
@@ -647,12 +702,24 @@ impl ArrIns {
                 axis,
                 ..
             } => {
-                let mut cells = Vec::with_capacity(dims[axis]);
-                for (k, line) in along_lines(rank, dims, axis).into_iter().enumerate() {
-                    cells.clear();
-                    cells.extend(line.iter().map(|&at| r[a + at]));
-                    r[d + k] = reduce(op, &cells);
-                }
+                let (rest, rest_strides, m) = along_rest(rank, dims, axis);
+                let stride: usize = dims[..axis].iter().product();
+                let count = dims[axis];
+                let mut cells = Vec::new();
+                let mut k = 0;
+                walk_places(m, &rest, &rest_strides, |base| {
+                    // A line along the first axis lies in order: read in
+                    // place, else gathered.
+                    let v = if stride == 1 {
+                        reduce(op, &r[a + base..a + base + count])
+                    } else {
+                        cells.clear();
+                        cells.extend((0..count).map(|j| r[a + base + j * stride]));
+                        reduce(op, &cells)
+                    };
+                    r[d + k] = v;
+                    k += 1;
+                });
             }
             ArrIns::Pick { d, a, n, i } => {
                 let k = r[i].round();
@@ -2115,6 +2182,28 @@ mod tests {
     use crate::parse;
 
     use crate::cells::{Arg, EdgeView, OpKind, PhaseKernel, PhaseView};
+
+    #[test]
+    fn walking_places_gives_the_table_in_order() {
+        let pad = |v: &[usize], fill: usize| {
+            let mut a = [fill; MAX_AXES];
+            a[..v.len()].copy_from_slice(v);
+            a
+        };
+        let shapes: Vec<(usize, [usize; MAX_AXES], [usize; MAX_AXES])> = vec![
+            (0, pad(&[], 1), pad(&[], 0)),
+            (1, pad(&[5], 1), pad(&[1], 0)),
+            (2, pad(&[3, 4], 1), pad(&[4, 1], 0)),
+            (2, pad(&[3, 4], 1), pad(&[0, 1], 0)),
+            (3, pad(&[2, 3, 4], 1), pad(&[12, 1, 3], 0)),
+            (3, pad(&[2, 0, 4], 1), pad(&[1, 2, 0], 0)),
+        ];
+        for (rank, dims, strides) in shapes {
+            let mut walked = Vec::new();
+            walk_places(rank, &dims, &strides, |at| walked.push(at));
+            assert_eq!(walked, gather_places(rank, &dims, &strides), "{dims:?}");
+        }
+    }
 
     /// A phase run cell by cell from its view alone, as a compiler would:
     /// the reference for [`PhaseView`]'s rules.
