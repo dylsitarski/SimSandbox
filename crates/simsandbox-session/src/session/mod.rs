@@ -306,7 +306,9 @@ impl Session {
             .block_types
             .iter()
             .any(|t| t == simsandbox_file::STUDY);
-        let before = studied.then(|| self.sim.snapshot());
+        // Only a watched study can be given up (the app's worker): without
+        // a watcher no step needs undoing, and none is kept.
+        let before = (studied && crate::run::studies_watched()).then(|| self.sim.snapshot());
         let states_before = self.iterates.then(|| self.state_bits());
         if let Err(e) = self.sim.step(self.dt) {
             if let Some(b) = before.filter(|_| crate::run::given_up(&e)) {

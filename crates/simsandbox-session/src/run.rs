@@ -942,6 +942,12 @@ pub fn watch_studies(progress: Option<std::sync::Arc<Progress>>) {
     PROGRESS.with(|p| *p.borrow_mut() = progress);
 }
 
+/// Whether studies run on this thread are watched, and so can be given
+/// up: only then can a step fail with [`given_up`].
+pub(crate) fn studies_watched() -> bool {
+    PROGRESS.with(|p| p.borrow().is_some())
+}
+
 /// What a study given up says: its step failed only to start again from
 /// newer values.
 pub const GIVEN_UP: &str = "study given up for a newer change";
