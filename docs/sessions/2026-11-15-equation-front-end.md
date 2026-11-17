@@ -10,6 +10,7 @@
 - Stages 2 and 4 (2026-11-16): typed statements; `parse_lines` a pipeline of eight phases with typed results; compared with the old code over 16 568 definitions. Three faults it brought to light fixed (a crash on a starting mesh larger than its table; duplicate parameters per cell).
 - 2026-11-17: the three faults left fixed (rules' units, a quantity named like a transfer, the first wrong `start` told); a plain number in a rule now in its column's unit.
 - 2026-11-17: stage 3, one table of the array functions (`symbolic/functions/`), matched exhaustively by the three passes; `describe` lists the functions. W6 complete.
+- 2026-11-17: `centre` told of its own arguments; `Session` split into five parts (W8, first half), its public surface unchanged.
 
 ## Decided
 
@@ -17,7 +18,7 @@
 
 ## Left open
 
-- Nothing of W6. The next review items: W8 (`Session` and `app.rs`), the kernel tidy.
+- W8's second half (`app.rs` by pane, its modal state in one enum); the kernel tidy.
 
 ## Notes for the next session
 
