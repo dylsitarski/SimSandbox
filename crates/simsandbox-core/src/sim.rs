@@ -102,6 +102,9 @@ struct Route {
 struct GroupPlan {
     /// Block index and state offset of each member.
     members: Vec<(usize, usize)>,
+    /// Per member: its number of states and of output values, from its
+    /// spec, which does not change during a run.
+    sizes: Vec<(usize, usize)>,
     /// Per member: its inputs' length and its driven parameters (ADR 0075),
     /// held in its inputs after them.
     driven: Vec<(usize, Vec<usize>)>,
@@ -131,10 +134,13 @@ impl GroupPlan {
     fn new(model: &Model, group: usize, routes: &[Route]) -> Result<Self> {
         let ids: Vec<usize> = model.groups[group].members.iter().map(|b| b.0).collect();
         let mut members = Vec::new();
+        let mut sizes = Vec::new();
         let mut len = 0;
         for &b in &ids {
+            let spec = model.blocks[b].spec();
             members.push((b, len));
-            len += model.blocks[b].spec().states.len();
+            sizes.push((spec.states.len(), spec.output_len()));
+            len += spec.states.len();
         }
         let position = |b: usize| ids.iter().position(|&m| m == b);
         let internal = routes
@@ -164,6 +170,7 @@ impl GroupPlan {
         drop(units);
         Ok(Self {
             members,
+            sizes,
             driven,
             len,
             outputs,
@@ -203,11 +210,11 @@ impl GroupPlan {
             us[k].clear();
             us[k].extend_from_slice(held[k]);
             ys[k].clear();
-            ys[k].resize(blocks[k].spec().output_len(), 0.0);
+            ys[k].resize(self.sizes[k].1, 0.0);
         }
         let state = |k: usize| {
             let off = self.members[k].1;
-            &x[off..off + blocks[k].spec().states.len()]
+            &x[off..off + self.sizes[k].0]
         };
         // A member's parameters with the driven ones as its inputs give
         // them (ADR 0075), in `buf`; its own when none is driven.
@@ -256,7 +263,7 @@ impl GroupPlan {
             }
         }
         for (k, &(_, off)) in self.members.iter().enumerate() {
-            let n = blocks[k].spec().states.len();
+            let n = self.sizes[k].0;
             if let Some(eq) = blocks[k].as_equations() {
                 let ni = driven[k].0;
                 let p: &[f64] = if with(k, &us[k], &mut ps[k]) {
