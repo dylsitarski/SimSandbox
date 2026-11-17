@@ -205,7 +205,10 @@ pub(super) fn start_meshes(
     cell_decls: &std::collections::HashMap<String, (String, crate::mesh::CellShape)>,
 ) -> Result<std::collections::HashMap<String, crate::mesh::Start>> {
     let mut out = std::collections::HashMap::new();
-    for (c, (spec, line)) in specs {
+    // In written order, so the first of several mistakes is the one told.
+    let mut by_line: Vec<_> = specs.iter().collect();
+    by_line.sort_by_key(|(c, (_, line))| (*line, c.as_str()));
+    for (c, (spec, line)) in by_line {
         let Some((pts, shape)) = cell_decls.get(c) else {
             continue;
         };
@@ -306,9 +309,14 @@ impl Starts {
         &'a self,
         points: &'a str,
     ) -> impl Iterator<Item = (&'a String, &'a (MeshSpec, usize))> {
-        self.specs
+        // In written order: the first is the one a message names.
+        let mut made: Vec<_> = self
+            .specs
             .iter()
             .filter(move |(c, _)| self.cells.get(*c).is_some_and(|o| o.0 == points))
+            .collect();
+        made.sort_by_key(|(c, (_, line))| (*line, c.as_str()));
+        made.into_iter()
     }
 
     /// The rows a chain over the table `points` starts with: an edge

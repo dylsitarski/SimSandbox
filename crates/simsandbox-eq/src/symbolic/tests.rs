@@ -1151,3 +1151,136 @@ fn more_points_than_a_table_holds_and_names_given_twice_are_errors() {
         "accepted"
     );
 }
+
+/// A rule is held to units as an equation is (where any line has one):
+/// its condition compares like with like and is a number without a unit,
+/// and each value is in its column's unit.
+#[test]
+fn rules_balance_like_equations() {
+    let lines = |rule: &str| {
+        let mut l = vec![
+            "table pts max 8",
+            "start pts = 3",
+            "state age[pts] [s] = 0",
+            "param tick [s] = 1",
+            "param life [s] = 6",
+            "param reach [m] = 2",
+            "age[n+1] = age + tick",
+        ];
+        l.push(rule);
+        l.iter().map(|s| s.to_string()).collect::<Vec<String>>()
+    };
+    let error = |rule: &str| match EquationSet::parse("m", &lines(rule)) {
+        Err(SimError::InvalidDefinition(m)) => m,
+        Err(e) => panic!("unexpected error {e}"),
+        Ok(_) => "accepted".into(),
+    };
+    assert_eq!(error("remove pts where age > life"), "accepted");
+    assert_eq!(
+        error("remove pts where age > reach"),
+        "line 8, column 24: cannot compare s and m"
+    );
+    assert_eq!(
+        error("remove pts where age"),
+        "line 8, column 18: a rule's condition holds or not: a comparison, or a number \
+         without a unit, not a value in s"
+    );
+    assert_eq!(
+        error("add pts where rows(pts) < 4: age = life/2"),
+        "accepted"
+    );
+    assert_eq!(
+        error("add pts where rows(pts) < 4: age = reach"),
+        "line 8, column 36: age's value is in s but the right side is in m"
+    );
+    // A plain number is in its column's unit, as an initial value is.
+    assert_eq!(error("add pts where rows(pts) < 4: age = 2"), "accepted");
+    // Without units nothing is checked, as for equations.
+    let plain = [
+        "table pts",
+        "start pts = 3",
+        "state age[pts] = 0",
+        "age[n+1] = age + 1",
+        "remove pts where age",
+    ];
+    assert!(set(&plain).is_ok());
+}
+
+/// `copy`, `share`, `mean` and `sum` written alone are transfers; a
+/// quantity of one of those names is given in parentheses, as any
+/// expression is, and is a value like any other.
+#[test]
+fn a_quantity_named_like_a_transfer_is_written_in_parentheses() {
+    let cells = |value: &str| {
+        let lines: Vec<String> = [
+            "table pts",
+            "state x[pts]",
+            "state y[pts]",
+            "x[n+1] = x",
+            "y[n+1] = y",
+            "cells c of pts: triangle",
+            "start c = grid x 0 .. 1 by 2, y 0 .. 1 by 2",
+            "state u[c] = 1",
+            "u[n+1] = u",
+            "param share = 0.25",
+            &format!("split c where u > 0.7: u = {value}"),
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let set = EquationSet::parse("m", &lines).unwrap();
+        let cell_transfer = set.rules[0]
+            .transfers
+            .iter()
+            .find(|t| t.0)
+            .map(|t| t.2)
+            .unwrap();
+        let params: Vec<String> = set.spec().params.iter().map(|p| p.name.clone()).collect();
+        (cell_transfer, params)
+    };
+    let (bare, params) = cells("share");
+    assert!(matches!(bare, CellTransfer::Share), "{bare:?}");
+    assert!(params.contains(&"share".to_string()));
+    let (quantity, _) = cells("(share)");
+    assert!(matches!(quantity, CellTransfer::Given(_)), "{quantity:?}");
+    // Over an edge table's points the same holds; run in
+    // `simsandbox-session`'s tests (`tables.rs`).
+}
+
+/// Of several wrong `start` lines, the first written is told, whatever
+/// their kinds and however the starts are kept.
+#[test]
+fn the_first_wrong_start_is_the_one_told() {
+    let lines = [
+        "table pts",
+        "grid k = 3",
+        "start k = 4",
+        "start pts = chain",
+        "start nowhere = grid x 0 .. 1 by 2",
+        "state a[pts] = 0",
+        "a[n+1] = a",
+    ];
+    let first = error(&lines);
+    assert!(
+        first.starts_with("line 3, column 1: 'k' is not a table"),
+        "{first}"
+    );
+    for _ in 0..20 {
+        assert_eq!(error(&lines), first);
+    }
+    // Two meshes started wrongly: the first by line.
+    let meshes = [
+        "table pts",
+        "state x[pts]",
+        "x[n+1] = x",
+        "cells b of pts: triangle",
+        "cells a of pts: triangle",
+        "start b = grid x 0 .. 1 by 2",
+        "start a = grid x 0 .. 1 by 2",
+    ];
+    let first = error(&meshes);
+    assert!(first.starts_with("line 6, column 1:"), "{first}");
+    for _ in 0..20 {
+        assert_eq!(error(&meshes), first);
+    }
+}

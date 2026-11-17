@@ -12,6 +12,26 @@ use simsandbox_expr::{parse, Ast, Op};
 /// A column's value in an `add` rule: its name, expression and column.
 pub(super) type Given = (String, Ast, usize);
 
+/// What a split or merge may give a column by name (ADR 0079 point 4).
+const TRANSFERS: [&str; 4] = ["mean", "copy", "share", "sum"];
+
+/// A transfer written as a column's value: the word alone, so `(share)`
+/// is a quantity named `share`. Kept as a call without arguments, which
+/// no expression is, so nothing later takes the one for the other.
+fn transfer_value(word: &str, column: usize) -> Ast {
+    Ast::Apply(word.into(), Vec::new(), column)
+}
+
+/// The transfer a column's value names, if it is one.
+pub(super) fn transfer(ast: &Ast) -> Option<&str> {
+    match ast {
+        Ast::Apply(n, args, _) if args.is_empty() && TRANSFERS.contains(&n.as_str()) => {
+            Some(n.as_str())
+        }
+        _ => None,
+    }
+}
+
 /// A rule changing a table between steps (ADR 0079), as written.
 #[derive(Clone)]
 pub(super) struct RuleLine {
@@ -77,9 +97,9 @@ pub(super) fn read_rule(text: &str, word: &str, rest: &str, line: usize) -> Resu
                 return Err(bad(usage.into()));
             };
             // A transfer by name (ADR 0079 point 4), for split and merge.
-            if word != "add" && matches!(e.trim(), "mean" | "copy" | "share" | "sum") {
+            if word != "add" && TRANSFERS.contains(&e.trim()) {
                 let col = column_of(text, e.trim());
-                values.push((n.trim().to_string(), Ast::Name(e.trim().into(), col), col));
+                values.push((n.trim().to_string(), transfer_value(e.trim(), col), col));
                 continue;
             }
             let (ast, col) = parse_at(e)?;
@@ -245,19 +265,17 @@ impl<'a> Checker<'a, '_> {
         for (on_cells, cols) in [(false, &point_cols), (true, &cell_cols)] {
             for (k, col) in cols.iter().enumerate() {
                 let g = given.iter().find(|g| &g.0 == *col);
-                let kind = match g {
+                let kind = match g.map(|g| (transfer(&g.1), g)) {
                     None if on_cells && split => CellTransfer::Copy,
                     None => CellTransfer::Mean,
-                    Some((_, Ast::Name(n, _), c))
-                        if matches!(n.as_str(), "copy" | "share" | "mean" | "sum") =>
-                    {
+                    Some((Some(n), (_, _, c))) => {
                         let ok: &[&str] = match (on_cells, split) {
                             (false, true) => &["mean"],
                             (false, false) => &[],
                             (true, true) => &["copy", "share"],
                             (true, false) => &["mean", "sum", "copy"],
                         };
-                        if !ok.contains(&n.as_str()) {
+                        if !ok.contains(&n) {
                             let what = if split { "split" } else { "merge" };
                             let owner = if on_cells { "a cell" } else { "a new point" };
                             return Err(bad(
@@ -269,14 +287,14 @@ impl<'a> Checker<'a, '_> {
                                 },
                             ));
                         }
-                        match n.as_str() {
+                        match n {
                             "copy" => CellTransfer::Copy,
                             "share" => CellTransfer::Share,
                             "sum" => CellTransfer::Sum,
                             _ => CellTransfer::Mean,
                         }
                     }
-                    Some((_, ast, c)) => {
+                    Some((None, (_, ast, c))) => {
                         if !on_cells && !split {
                             return Err(bad(
                                 r,
@@ -350,10 +368,10 @@ impl<'a> Checker<'a, '_> {
         for col in columns {
             let (ast, c) = match given.iter().find(|g| &g.0 == col) {
                 Some((_, ast, c)) => (ast.clone(), *c),
-                None if r.kind == RuleKind::Split => (Ast::Name("copy".into(), 1), 1),
-                None => (Ast::Name("mean".into(), 1), 1),
+                None if r.kind == RuleKind::Split => (transfer_value("copy", 1), 1),
+                None => (transfer_value("mean", 1), 1),
             };
-            if let Ast::Name(n, _) = &ast {
+            if let Some(n) = transfer(&ast) {
                 if n == "share" || n == "sum" {
                     return Err(bad(
                         r,
@@ -364,9 +382,10 @@ impl<'a> Checker<'a, '_> {
                     ));
                 }
             }
-            let ast = match &ast {
-                Ast::Name(n, _) if n == "copy" => end("from_end", col),
-                Ast::Name(n, _) if n == "mean" => Ast::Bin(
+            let ast = match transfer(&ast) {
+                Some("copy") => end("from_end", col),
+                // `mean`: `share` and `sum` are refused above.
+                Some(_) => Ast::Bin(
                     Op::Div,
                     Box::new(Ast::Bin(
                         Op::Add,
@@ -375,7 +394,7 @@ impl<'a> Checker<'a, '_> {
                     )),
                     Box::new(Ast::Num(2.0)),
                 ),
-                _ => ast,
+                None => ast,
             };
             self.within(r, &ast, c, &[e], &format!("{col}'s value"))?;
             values.push((col.clone(), ast, r.line, c));

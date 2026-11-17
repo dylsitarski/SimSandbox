@@ -212,21 +212,22 @@ pub(super) fn read_axes(
     Ok((grid, start_rows))
 }
 
-/// Every start is of a table that can start so.
+/// Every start is of a table that can start so. Of several that are not,
+/// the first written is the one told.
 pub(super) fn check_starts(grid: &[Axis], starts: &Starts) -> Result<()> {
-    // Declared with `cells` (an edge table has the segment's shape
-    // too, but starts as a chain or from a file).
-    if let Some((t, (_, line))) = starts
+    let mut wrong: Vec<(usize, String)> = Vec::new();
+    // Declared with `cells` (an edge table has the segment's shape too,
+    // but starts as a chain or from a file).
+    for (t, (_, line)) in starts
         .specs
         .iter()
-        .find(|(t, _)| !starts.cells.contains_key(*t))
+        .filter(|(t, _)| !starts.cells.contains_key(*t))
     {
         let edges = grid
             .iter()
             .any(|a| &a.name == t && a.shape.is_some() && a.sides_of.is_none());
-        return Err(definition_error(
+        wrong.push((
             *line,
-            1,
             if edges {
                 format!("'{t}' is an edge table, which starts as a chain or from a file ('start {t} = chain', 'start {t} = file \"wires.csv\"'): a grid starts cells ('cells {t} of pts: segment')")
             } else {
@@ -234,31 +235,32 @@ pub(super) fn check_starts(grid: &[Axis], starts: &Starts) -> Result<()> {
             },
         ));
     }
-    if let Some((t, line)) = starts.chains.iter().find(|(t, _)| {
+    for (t, line) in starts.chains.iter().filter(|(t, _)| {
         !grid.iter().any(|a| {
             &a.name == *t
                 && a.shape == Some(crate::mesh::CellShape::Segment)
                 && a.sides_of.is_none()
         })
     }) {
-        return Err(definition_error(
+        wrong.push((
             *line,
-            1,
             format!(
                 "'{t}' is not an edge table: a chain joins the rows of one ('edges {t} of pts')"
             ),
         ));
     }
-    if let Some((t, (_, line))) = starts
+    for (t, (_, line)) in starts
         .rows
         .iter()
-        .find(|(t, _)| !grid.iter().any(|a| &a.name == *t && a.table.is_some()))
+        .filter(|(t, _)| !grid.iter().any(|a| &a.name == *t && a.table.is_some()))
     {
-        return Err(definition_error(
+        wrong.push((
             *line,
-            1,
             format!("'{t}' is not a table: declare it with 'table {t}'"),
         ));
     }
-    Ok(())
+    match wrong.into_iter().min() {
+        Some((line, message)) => Err(definition_error(line, 1, message)),
+        None => Ok(()),
+    }
 }

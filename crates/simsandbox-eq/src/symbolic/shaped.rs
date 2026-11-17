@@ -291,11 +291,10 @@ fn check_edges(d: &Declared, arrays: &Arrays) -> Result<()> {
     Ok(())
 }
 
-/// Whether a rule's value is a transfer's name (`copy`, `mean`, …), not
-/// a quantity.
+/// Whether a rule's value is a transfer (`copy`, `mean`, …), not a
+/// quantity.
 fn is_transfer(r: &RuleLine, ast: &Ast) -> bool {
-    matches!(r.kind, RuleKind::Split | RuleKind::Merge)
-        && matches!(ast, Ast::Name(n, _) if matches!(n.as_str(), "mean" | "copy" | "share" | "sum"))
+    matches!(r.kind, RuleKind::Split | RuleKind::Merge) && super::rules::transfer(ast).is_some()
 }
 
 /// The parameters: the declared ones, then every other name in order of

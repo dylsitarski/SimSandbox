@@ -248,8 +248,13 @@ pub(super) fn steps(d: &Declared, s: &Shaped, r: &Registers) -> Result<Steps> {
         )?;
         rules.push((*cond_var, e));
         for ((_, ast, line, c), &var) in rule.values.iter().zip(value_vars) {
-            let e = low.resolve(ast, visible, Some(&to), *line, c - 1)?;
-            rules.push((var, low.stored(e, var)));
+            let e = match number(ast) {
+                // A plain number is in its column's unit, as an initial
+                // value is.
+                Some(v) => Expr::Num(v),
+                None => low.stored(low.resolve(ast, visible, Some(&to), *line, c - 1)?, var),
+            };
+            rules.push((var, e));
         }
     }
     Ok(Steps {

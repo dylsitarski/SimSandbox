@@ -1,6 +1,6 @@
 # Typed equations: the language
 
-_Last updated: 2026-11-15_
+_Last updated: 2026-11-17_
 
 The lines of an `eq.equations` block's `equations` ([ADR 0017](../decisions/0017-typed-equations.md)), the primary way to build a model ([ADR 0091](../decisions/0091-equations-first-hosting-for-existing-codes.md)). This page is the whole language as the code reads it; the decisions behind each part are in the ADRs it links. Every block of lines marked `ssbx` here is parsed by a test (`crates/simsandbox-eq/tests/reference.rs`), which also checks that every function is listed, so the page cannot fall behind the code.
 
@@ -57,7 +57,8 @@ A unit is written in square brackets: after a declared name (`param m [kg] = 2`)
 - Unit text: symbols with SI prefixes multiplied, divided and raised to whole powers (`N*s/m`, `kg/m^3`, `1/s`); `simsandbox describe units` lists the symbols. `a/b*c` is refused as ambiguous: `a*c/b`. Temperatures with an offset (`°C`) are refused: use `K`.
 - A block with no unit anywhere is not checked. With one, every line must balance, `t` is in seconds, and a name without a unit is dimensionless.
 - `+`, `-` and comparisons need the same dimension on both sides; a number is dimensionless (`x + 1` with `x` in metres fails); a right side that is exactly `0` balances anything. `^` takes a constant whole power (or a half, of even powers). `sin`, `exp`, `ln` and the like take and give dimensionless values.
-- A plain number as a default, an initial value, an end of a grid or an edge value is in the unit of what it sets.
+- A plain number as a default, an initial value, an end of a grid, an edge value or a rule's value is in the unit of what it sets.
+- A rule balances as an equation does: its condition compares like with like and is a comparison or a number without a unit; each value it gives is in its column's unit.
 - Values are computed in SI and shown in the unit declared.
 
 **Brackets after a name** are a list of axes when they follow it without a space and every item is a declared axis or table; otherwise a unit. With `grid m = 3`, `state x[m]` is an array over axis `m` and `state x [m]` a scalar in metres. Both may be given: `state T[x] [K]`.
@@ -227,6 +228,8 @@ Rules run in the order written, after each step.
 | A state over cells | `copy` (if not given), `share`, or an expression | `mean` (if not given), `sum`, `copy`, or an expression |
 | A state over cells' points | `mean` (if not given), or an expression | left as they are |
 
+A transfer is its word alone; a quantity of the same name is written in parentheses, as any expression may be: with `param share = 0.25`, `u = share` is the transfer and `u = (share)` the parameter.
+
 ```ssbx
 table pts max 12
 start pts = 3
@@ -304,9 +307,3 @@ A study's `reduce` formulas have functions of their own over a run in time (`fin
 - **Parameters**: those declared, in order (with `x0` for `state x = …` and `m[0]`, `m[1]`, … for a parameter per cell); then every other name in order of first use (in the equations, the grids' ends, initial values and edge values, then in the rules); then `x0` for each scalar state without one.
 
 `simsandbox check FILE` reports all of these for a model as written.
-
-## Known limits and faults
-
-A fault to fix, not a rule to rely on (found 2026-11-15).
-
-- A rule's condition and values are not unit-checked: `remove pts where age > lim` is accepted with `age` in seconds and `lim` in metres, and a value given to a new row is not held to its state's unit.

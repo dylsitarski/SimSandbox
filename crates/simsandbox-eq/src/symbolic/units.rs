@@ -265,6 +265,31 @@ fn check_balance(d: &Declared, s: &Shaped, units: &Units, dims: &ArrayDims) -> R
             EdgeKind::Periodic => {}
         }
     }
+    // A rule's condition holds or not: a comparison (1 or 0) or a number
+    // without a unit. Each value is in its column's unit, a plain number
+    // taken in it.
+    for rule in &s.rules {
+        let r = rule.rule;
+        let got = dimension_with(&r.cond, &|m| units.dim_of(m), &|n, a, c| {
+            dims.apply(n, a, c)
+        })
+        .map_err(|(c, m)| definition_error(r.line, r.cond_column + c - 1, m))?;
+        if got != NO_DIM {
+            return Err(definition_error(
+                r.line,
+                r.cond_column,
+                format!(
+                    "a rule's condition holds or not: a comparison, or a number without a \
+                     unit, not a value in {}",
+                    dim_text(got)
+                ),
+            ));
+        }
+        for (col, ast, line, c) in rule.values.iter().filter(|v| number(&v.1).is_none()) {
+            let what = format!("{col}'s value");
+            balance(units, dims, ast, units.dim_of(col), &what, *line, *c)?;
+        }
+    }
     Ok(())
 }
 

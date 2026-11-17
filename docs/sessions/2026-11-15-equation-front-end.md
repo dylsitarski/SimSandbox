@@ -8,6 +8,7 @@
 - The eight faults fixed, each with a test that failed before; the reference corrected. 620 workspace tests pass; every example the same bytes.
 - Stage 1: `symbolic.rs` split into `symbolic/` (eight files), moves only.
 - Stages 2 and 4 (2026-11-16): typed statements; `parse_lines` a pipeline of eight phases with typed results; compared with the old code over 16 568 definitions. Three faults it brought to light fixed (a crash on a starting mesh larger than its table; duplicate parameters per cell).
+- 2026-11-17: the three faults left fixed (rules' units, a quantity named like a transfer, the first wrong `start` told); a plain number in a rule now in its column's unit.
 
 ## Decided
 
@@ -16,7 +17,6 @@
 ## Left open
 
 - W6's stage 3: one table of the language's functions; `axes_of` and `lower` are still one long match each.
-- Three smaller faults found on the way, in [STATUS](../STATUS.md)'s known limitations.
 
 ## Notes for the next session
 
