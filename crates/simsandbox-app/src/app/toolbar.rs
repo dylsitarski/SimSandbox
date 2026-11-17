@@ -4,9 +4,44 @@
 //! log tile.
 
 use super::*;
+use crate::live::Status;
 
 impl SimApp {
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
+        self.file_bar(ui);
+        self.shortcuts(ui);
+        self.key_inputs(ui);
+
+        let Some(live) = self.session.as_ref() else {
+            return;
+        };
+        let m = live.model();
+        let st = live.status();
+        ui.horizontal(|ui| {
+            ui.heading(&m.title);
+            // One line, so a long description cannot widen the window or push
+            // the toolbar down; egui shows the whole text on hover when it is cut.
+            if let Some(d) = &m.description {
+                ui.add(egui::Label::new(d.as_str()).truncate());
+            }
+        });
+        if m.timeless {
+            timeless_note(ui);
+        } else if m.iterates {
+            rounds_note(ui, &st);
+        } else {
+            ui.horizontal(|ui| {
+                self.run_buttons(ui, &m, &st);
+                ui.separator();
+                self.pace_controls(ui, &m, &st);
+            });
+        }
+        self.run_notes(ui, &m, &st);
+    }
+
+    /// The toolbar's first row: examples, a new model, files, the model's
+    /// menus, where it is saved and whether it has unsaved changes.
+    fn file_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.menu_button("Examples", |ui| {
                 for (k, e) in EXAMPLES.iter().enumerate() {
@@ -69,169 +104,142 @@ impl SimApp {
                     .on_hover_text("Changes a save would write: parameters, edits, sliders, views, speed");
             }
         });
-        self.shortcuts(ui);
-        self.key_inputs(ui);
+    }
 
+    /// Run or pause, restart, and start from the current state.
+    fn run_buttons(&mut self, ui: &mut egui::Ui, m: &Model, st: &Status) {
         let Some(live) = self.session.as_ref() else {
             return;
         };
-        let m = live.model();
-        let st = live.status();
-        ui.horizontal(|ui| {
-            ui.heading(&m.title);
-            // One line, so a long description cannot widen the window or push
-            // the toolbar down; egui shows the whole text on hover when it is cut.
-            if let Some(d) = &m.description {
-                ui.add(egui::Label::new(d.as_str()).truncate());
-            }
-        });
-        if m.timeless {
-            // Nothing to run, pause, step or rewind (ADR 0072).
-            ui.horizontal(|ui| {
-                ui.label("Evaluated, not run in time").on_hover_text(
-                    "Nothing in this model changes with time (no states, data, clocks or \
-                     schedule): it is evaluated when opened and again whenever a value it \
-                     reads changes",
-                );
-            });
-        } else if m.iterates {
-            // Rounds, not seconds: nothing to run, pause, pace or rewind
-            // (ADR 0083).
-            ui.horizontal(|ui| {
-                let state = if st.iterating {
-                    ui.ctx().request_repaint_after(Duration::from_millis(50));
-                    "iterating"
-                } else if st.held_still {
-                    "holds still"
-                } else {
-                    "reached its last round"
-                };
-                ui.label(format!("Iterates: round {} — {state}", st.round))
-                    .on_hover_text(
-                        "Only maps that never read time: its steps are rounds, not seconds. \
-                         It runs as fast as it can when opened and again from round 0 whenever \
-                         a value it reads changes, until a round changes nothing or its last \
-                         round (the file's t_end)",
-                    );
-            });
-        } else {
-            ui.horizontal(|ui| {
-                let label = if st.running { "⏸ Pause" } else { "▶ Run" };
-                if ui.button(label).clicked() {
-                    live.set_running(!st.running);
-                }
-                if ui
-                    .button("⏮ Restart")
-                    .on_hover_text("Start again from t = 0 with the current parameter values")
-                    .clicked()
-                {
-                    live.send(None, |s, c| {
-                        if let Err(e) = s.restart() {
-                            c.error(format!("restart failed: {e}"));
-                        }
-                        c.reset_pacer();
-                    });
-                    self.rewind_t = 0.0;
-                }
-                if ui
-                    .button("Start from here")
-                    .on_hover_text(
-                        "Make the current state where the run starts, and restart from it at \
-                         t = 0: e.g. to study a transient from a steady state. Saved with the \
-                         model: initial-condition parameters where they can say it, else a \
-                         start state per block.",
-                    )
-                    .clicked()
-                {
-                    live.send(None, |s, c| {
-                        match s.start_from_now() {
-                            Ok(notes) => {
-                                for n in notes {
-                                    c.info(n);
-                                }
-                            }
-                            Err(e) => c.error(e),
-                        }
-                        c.reset_pacer();
-                    });
-                    self.param_edits.clear();
-                    self.rewind_t = 0.0;
-                }
-                if m.file.blocks.iter().any(|b| b.start.is_some())
-                    && ui
-                        .button("Forget start state")
-                        .on_hover_text("Start every block from its parameters again, and restart")
-                        .clicked()
-                {
-                    live.send(None, |s, c| {
-                        match s.forget_start_states() {
-                            Ok(()) => c.info("Starting from the parameters again"),
-                            Err(e) => c.error(e),
-                        }
-                        c.reset_pacer();
-                    });
-                    self.rewind_t = 0.0;
-                }
-                ui.separator();
-                let r = ui
-                    .add(
-                        egui::Slider::new(&mut self.speed, 0.01..=100.0)
-                            .logarithmic(true)
-                            .clamping(egui::SliderClamping::Never)
-                            .suffix("×")
-                            .text("speed"),
-                    )
-                    .on_hover_text("Simulated seconds per wall-clock second");
-                if self.speed <= 0.0 || !self.speed.is_finite() {
-                    self.speed = 0.01;
-                }
-                if r.changed() {
-                    live.set_speed(self.speed);
-                }
-                ui.separator();
-                ui.label("step");
-                let mut dt = m.dt;
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut dt)
-                            .range(1e-6..=10.0)
-                            .speed(0.001)
-                            .suffix(" s"),
-                    )
-                    .on_hover_text("Communication step: simulated time per step")
-                    .changed()
-                {
-                    live.send(Some("dt"), move |s, _| s.dt = dt);
-                }
-                ui.separator();
-                ui.monospace(format!("t = {:.3} s", st.time));
-                if st.replaying {
-                    ui.separator();
-                    ui.colored_label(ui.visuals().hyperlink_color, "Replaying input")
-                        .on_hover_text(
-                            "Recorded input lies ahead and is applied as the run goes on. \
-                             Any live input from here on takes over (a new branch).",
-                        );
-                }
-                if st.gaps && m.recorder.is_some() {
-                    ui.separator();
-                    if ui
-                        .button("Fill the past")
-                        .on_hover_text(
-                            "Something views show was wired after the run started, so it \
-                             has no past. Run again from the start, replaying the input as \
-                             recorded, to fill it; the run then carries on from where it is.",
-                        )
-                        .clicked()
-                    {
-                        live.send(None, |s, c| match s.recompute() {
-                            Ok(()) => c.info("Filled the past of what views show"),
-                            Err(e) => c.error(e),
-                        });
-                    }
-                }
-            });
+        let label = if st.running { "⏸ Pause" } else { "▶ Run" };
+        if ui.button(label).clicked() {
+            live.set_running(!st.running);
         }
+        if ui
+            .button("⏮ Restart")
+            .on_hover_text("Start again from t = 0 with the current parameter values")
+            .clicked()
+        {
+            live.send(None, |s, c| {
+                if let Err(e) = s.restart() {
+                    c.error(format!("restart failed: {e}"));
+                }
+                c.reset_pacer();
+            });
+            self.rewind_t = 0.0;
+        }
+        if ui
+            .button("Start from here")
+            .on_hover_text(
+                "Make the current state where the run starts, and restart from it at \
+                 t = 0: e.g. to study a transient from a steady state. Saved with the \
+                 model: initial-condition parameters where they can say it, else a \
+                 start state per block.",
+            )
+            .clicked()
+        {
+            live.send(None, |s, c| {
+                match s.start_from_now() {
+                    Ok(notes) => {
+                        for n in notes {
+                            c.info(n);
+                        }
+                    }
+                    Err(e) => c.error(e),
+                }
+                c.reset_pacer();
+            });
+            self.param_edits.clear();
+            self.rewind_t = 0.0;
+        }
+        if m.file.blocks.iter().any(|b| b.start.is_some())
+            && ui
+                .button("Forget start state")
+                .on_hover_text("Start every block from its parameters again, and restart")
+                .clicked()
+        {
+            live.send(None, |s, c| {
+                match s.forget_start_states() {
+                    Ok(()) => c.info("Starting from the parameters again"),
+                    Err(e) => c.error(e),
+                }
+                c.reset_pacer();
+            });
+            self.rewind_t = 0.0;
+        }
+    }
+
+    /// The speed asked for, the step, the time, and replay and gaps in
+    /// what views show.
+    fn pace_controls(&mut self, ui: &mut egui::Ui, m: &Model, st: &Status) {
+        let Some(live) = self.session.as_ref() else {
+            return;
+        };
+        let r = ui
+            .add(
+                egui::Slider::new(&mut self.speed, 0.01..=100.0)
+                    .logarithmic(true)
+                    .clamping(egui::SliderClamping::Never)
+                    .suffix("×")
+                    .text("speed"),
+            )
+            .on_hover_text("Simulated seconds per wall-clock second");
+        if self.speed <= 0.0 || !self.speed.is_finite() {
+            self.speed = 0.01;
+        }
+        if r.changed() {
+            live.set_speed(self.speed);
+        }
+        ui.separator();
+        ui.label("step");
+        let mut dt = m.dt;
+        if ui
+            .add(
+                egui::DragValue::new(&mut dt)
+                    .range(1e-6..=10.0)
+                    .speed(0.001)
+                    .suffix(" s"),
+            )
+            .on_hover_text("Communication step: simulated time per step")
+            .changed()
+        {
+            live.send(Some("dt"), move |s, _| s.dt = dt);
+        }
+        ui.separator();
+        ui.monospace(format!("t = {:.3} s", st.time));
+        if st.replaying {
+            ui.separator();
+            ui.colored_label(ui.visuals().hyperlink_color, "Replaying input")
+                .on_hover_text(
+                    "Recorded input lies ahead and is applied as the run goes on. \
+                     Any live input from here on takes over (a new branch).",
+                );
+        }
+        if st.gaps && m.recorder.is_some() {
+            ui.separator();
+            if ui
+                .button("Fill the past")
+                .on_hover_text(
+                    "Something views show was wired after the run started, so it \
+                     has no past. Run again from the start, replaying the input as \
+                     recorded, to fill it; the run then carries on from where it is.",
+                )
+                .clicked()
+            {
+                live.send(None, |s, c| match s.recompute() {
+                    Ok(()) => c.info("Filled the past of what views show"),
+                    Err(e) => c.error(e),
+                });
+            }
+        }
+    }
+
+    /// What the run is doing: its labels, falling behind the speed asked
+    /// for, memory past the budget, a slow step, and a study's progress.
+    fn run_notes(&self, ui: &mut egui::Ui, m: &Model, st: &Status) {
+        let Some(live) = self.session.as_ref() else {
+            return;
+        };
         ui.horizontal(|ui| {
             if let Some(l) = m.labels {
                 ui.label(format!("Speed class: {:?}", l.speed))
@@ -617,6 +625,38 @@ impl SimApp {
 
 /// A step running longer than this is reported in the toolbar.
 pub(super) const SLOW_STEP: Duration = Duration::from_millis(500);
+
+/// A timeless model: nothing to run, pause, step or rewind (ADR 0072).
+fn timeless_note(ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        ui.label("Evaluated, not run in time").on_hover_text(
+            "Nothing in this model changes with time (no states, data, clocks or \
+             schedule): it is evaluated when opened and again whenever a value it \
+             reads changes",
+        );
+    });
+}
+
+/// A model that iterates: rounds, not seconds (ADR 0083).
+fn rounds_note(ui: &mut egui::Ui, st: &Status) {
+    ui.horizontal(|ui| {
+        let state = if st.iterating {
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
+            "iterating"
+        } else if st.held_still {
+            "holds still"
+        } else {
+            "reached its last round"
+        };
+        ui.label(format!("Iterates: round {} — {state}", st.round))
+            .on_hover_text(
+                "Only maps that never read time: its steps are rounds, not seconds. \
+                 It runs as fast as it can when opened and again from round 0 whenever \
+                 a value it reads changes, until a round changes nothing or its last \
+                 round (the file's t_end)",
+            );
+    });
+}
 
 /// How the model's blocks are solved (ADR 0023): the automatic-fusion switch
 /// and the groups solved together. Returns the switch's new value if the
