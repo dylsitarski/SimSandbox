@@ -3,7 +3,7 @@
 //! own recording, and may write its file as it records.
 
 use super::catalogue::Catalogue;
-use super::{param_keys, param_values, Pending, Session, SharedHistory};
+use super::{param_keys, Pending, Session, SharedHistory};
 use crate::filters::Filters;
 use crate::probe::{ProbeSpec, Trigger};
 use simsandbox_file::{FilterEntry, ProbeEntry};
@@ -907,26 +907,6 @@ impl Session {
             &params,
             share,
             recorded_to,
-            &mut self.warnings,
-        );
-    }
-
-    /// Record a whole sample in the probes and the filters on them, if
-    /// there are any.
-    pub(super) fn push_probes(&mut self, index: f64, values: &[f64], frames: &[&[f64]]) {
-        if self.probes.is_empty() {
-            return;
-        }
-        let (step, eps) = (self.sim.step_count(), self.eps());
-        let (sim, flat, ids) = (&self.sim, &self.flat, &self.ids);
-        self.probes.push(
-            index,
-            values,
-            frames,
-            step,
-            eps,
-            &self.catalogue.all_coordinates,
-            || param_values(sim, flat, ids),
             &mut self.warnings,
         );
     }

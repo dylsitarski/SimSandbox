@@ -1219,6 +1219,13 @@ impl Simulator {
         self.step
     }
 
+    /// Every fixed-length output value of a Block, its ports one after
+    /// another in the order its spec declares them: for readers that find
+    /// a port's place once, not by name at each step.
+    pub fn outputs_of(&self, id: BlockId) -> Option<&[f64]> {
+        self.outputs.get(id.0).map(Vec::as_slice)
+    }
+
     /// Current value of a named output port (of any length for a
     /// variable-length port).
     pub fn output(&self, id: BlockId, port: &str) -> Option<&[f64]> {

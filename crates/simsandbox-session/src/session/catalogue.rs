@@ -18,7 +18,9 @@ use std::collections::BTreeMap;
 pub(super) struct Source {
     block: BlockId,
     port: String,
-    index: usize,
+    /// Its place among the block's fixed-length output values
+    /// ([`Simulator::outputs_of`]), found once.
+    at: usize,
 }
 
 /// A whole output port recorded as a field (a grid or a point set).
@@ -28,6 +30,9 @@ pub(super) struct FieldSource {
     port: String,
     /// Values per frame; `None` for a population, whose frames vary.
     len: Option<usize>,
+    /// Where its values are among the block's fixed-length output values
+    /// ([`Simulator::outputs_of`]); `None` for one of varying length.
+    at: Option<usize>,
 }
 
 /// The session's catalogue: every output of the model (ADR 0063: any can
@@ -109,6 +114,13 @@ impl Catalogue {
     /// decides (ADR 0063).
     fn add_output(&mut self, block: &str, id: BlockId, spec: &BlockSpec, port: &PortSpec) {
         let key = format!("{block}.{}", port.name);
+        // Its place among the block's fixed-length outputs, as the
+        // simulator lays them out (ports in order).
+        let offset: usize = spec
+            .outputs()
+            .take_while(|p| p.name != port.name)
+            .map(|p| p.shape.len())
+            .sum();
         let Some(shape) = field_shape(port.shape) else {
             for index in 0..port.shape.len() {
                 self.output_names.push(match port.shape {
@@ -118,7 +130,7 @@ impl Catalogue {
                 self.sources.push(Source {
                     block: id,
                     port: port.name.clone(),
-                    index,
+                    at: offset + index,
                 });
             }
             return;
@@ -153,6 +165,7 @@ impl Catalogue {
             block: id,
             port: port.name.clone(),
             len: (!port.shape.is_variable()).then(|| port.shape.len()),
+            at: (!port.shape.is_variable()).then_some(offset),
         });
     }
 
@@ -409,8 +422,8 @@ impl Catalogue {
         self.sources
             .iter()
             .map(|src| {
-                sim.output(src.block, &src.port)
-                    .and_then(|v| v.get(src.index))
+                sim.outputs_of(src.block)
+                    .and_then(|v| v.get(src.at))
                     .copied()
                     .unwrap_or(f64::NAN)
             })
@@ -423,9 +436,16 @@ impl Catalogue {
         self.field_sources
             .iter()
             .map(|f| {
-                sim.output(f.block, &f.port)
-                    .filter(|v| f.len.is_none_or(|n| v.len() == n))
-                    .unwrap_or(&[])
+                let fixed = |at: usize| {
+                    let n = f.len.unwrap_or(0);
+                    sim.outputs_of(f.block).and_then(|v| v.get(at..at + n))
+                };
+                match f.at {
+                    Some(at) => fixed(at),
+                    None => sim.output(f.block, &f.port),
+                }
+                .filter(|v| f.len.is_none_or(|n| v.len() == n))
+                .unwrap_or(&[])
             })
             .collect()
     }

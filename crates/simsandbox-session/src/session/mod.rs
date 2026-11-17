@@ -288,19 +288,6 @@ impl Session {
         self.recording.flush(wait) && probes_done
     }
 
-    /// Record one sample: scalar values, the frames of the fields before
-    /// the cuts, then the cuts' frames. It never waits for the window: a
-    /// sample that finds the history being read is appended later.
-    fn push(&mut self, index: f64, values: &[f64], before: &[&[f64]], cuts: &[Vec<f64>]) {
-        let frames: Vec<&[f64]> = before
-            .iter()
-            .copied()
-            .chain(cuts.iter().map(Vec::as_slice))
-            .collect();
-        self.push_probes(index, values, &frames);
-        self.recording.push_kept(index, values, &frames);
-    }
-
     pub fn time(&self) -> f64 {
         self.sim.time()
     }
@@ -859,18 +846,42 @@ impl Session {
         }
     }
 
+    /// Record one sample: scalar values, the frames of the fields before
+    /// the cuts, then the cuts' frames, in the probes and the history.
+    /// Frames are read where the simulator holds them; only what is kept
+    /// is copied. It never waits for the window: a sample that finds the
+    /// history being read is appended later.
     fn record(&mut self) {
         let t = self.sim.time();
         let values = self.sample(t);
-        let owned: Vec<Vec<f64>> = self
-            .catalogue
-            .frames(&self.sim)
-            .into_iter()
-            .map(<[f64]>::to_vec)
-            .collect();
-        let frames: Vec<&[f64]> = owned.iter().map(Vec::as_slice).collect();
-        let cuts = self.catalogue.sample_cuts(&frames);
-        self.push(t, &values, &frames, &cuts);
+        let eps = self.eps();
+        let Self {
+            sim,
+            catalogue,
+            probes,
+            recording,
+            warnings,
+            flat,
+            ids,
+            ..
+        } = self;
+        let mut frames = catalogue.frames(sim);
+        let cuts = catalogue.sample_cuts(&frames);
+        frames.extend(cuts.iter().map(Vec::as_slice));
+        // The probes and the filters on them, if there are any.
+        if !probes.is_empty() {
+            probes.push(
+                t,
+                &values,
+                &frames,
+                sim.step_count(),
+                eps,
+                &catalogue.all_coordinates,
+                || param_values(sim, flat, ids),
+                warnings,
+            );
+        }
+        recording.push_kept(t, &values, &frames);
     }
 }
 
