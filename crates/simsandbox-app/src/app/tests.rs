@@ -1,3 +1,4 @@
+use super::files::*;
 use super::*;
 
 #[test]
