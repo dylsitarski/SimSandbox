@@ -8,6 +8,8 @@
 //!   style properties; a [`view::ViewState`] binds slots to signals and
 //!   draws.
 //! - [`builtin`]: `plot.xy` (any signals on either axis) and `plot.3d`.
+//! - [`decimate`]: long curves thinned to the pixel columns they are drawn
+//!   on.
 //! - [`colour`]: colour encodings shared by views (trail fading, colour by
 //!   value) and trail length.
 //! - [`fields`]: views of grids and point sets: `plot.heatmap`,
@@ -19,6 +21,7 @@
 pub mod builtin;
 pub mod colour;
 pub mod cut;
+pub mod decimate;
 pub mod fields;
 #[cfg(feature = "gpu")]
 pub mod gpu;
