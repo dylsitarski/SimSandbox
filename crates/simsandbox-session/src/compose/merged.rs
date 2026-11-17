@@ -10,9 +10,9 @@ use simsandbox_core::block::{MethodLabels, Shape};
 use simsandbox_core::graph::{BlockId, Model};
 use simsandbox_core::parallel::Parallel;
 use simsandbox_core::registry::Registry;
-use simsandbox_core::schedule::Trigger;
 use simsandbox_core::sim::Simulator;
 use simsandbox_file::compose::{load_merged_with, Composition};
+use simsandbox_file::schedule::Trigger;
 
 /// One model of the run: where its clock stands and what it records.
 struct Part {

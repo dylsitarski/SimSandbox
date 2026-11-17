@@ -26,7 +26,6 @@ pub mod loops;
 pub mod parallel;
 pub mod random;
 pub mod registry;
-pub mod schedule;
 pub mod sim;
 pub mod table;
 pub mod units;

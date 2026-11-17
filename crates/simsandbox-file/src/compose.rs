@@ -5,12 +5,12 @@
 //! domains and of links, and all of it as one model with clocks
 //! ([`load_merged`], ADR 0090); running is the session's.
 
+use crate::schedule::Every;
 use crate::{invalid, load_in, BlockEntry, FileError, Loaded, ModelFile, Subsystem, UseClock};
 use simsandbox_core::block::Shape;
 use simsandbox_core::clock::Ticks;
 use simsandbox_core::graph::BlockId;
 use simsandbox_core::registry::Registry;
-use simsandbox_core::schedule::Every;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

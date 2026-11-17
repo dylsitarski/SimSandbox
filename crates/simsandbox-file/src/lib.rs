@@ -44,6 +44,7 @@ pub mod hold;
 pub mod layout;
 pub mod runs;
 pub mod sampling;
+pub mod schedule;
 pub mod subsystems;
 pub use subsystems::{
     Declared, Derived, InputPort, OutputPort, ParamDecl, ParamPlan, ParamValue, Subsystem,
@@ -803,8 +804,8 @@ pub struct ProbeEntry {
 
 impl ProbeEntry {
     /// When it records, as the kernel samples (every step if not given).
-    pub fn schedule(&self) -> simsandbox_core::schedule::Every {
-        use simsandbox_core::schedule::Every;
+    pub fn schedule(&self) -> crate::schedule::Every {
+        use crate::schedule::Every;
         match &self.every {
             Some(ProbeEvery { steps: Some(n), .. }) => Every::Steps(*n),
             Some(ProbeEvery {
