@@ -92,7 +92,10 @@ struct Port {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Item {
-    One(Port),
+    /// Outputs outside loops of one unit, computed by one evaluation:
+    /// ports next to each other in the order, of a unit not wired to
+    /// itself, whose evaluation would see the same inputs each time.
+    One(Vec<Port>),
     Loop(Vec<Port>),
 }
 
@@ -235,15 +238,36 @@ impl OutputPlan {
                 Ok(if looped {
                     Item::Loop(c.into_iter().map(|i| nodes[i].clone()).collect())
                 } else {
-                    Item::One(nodes[c[0]].clone())
+                    Item::One(vec![nodes[c[0]].clone()])
                 })
             })
             .collect::<Result<Vec<Item>>>()?;
+        // A unit's outputs next to each other in the order are computed
+        // by one evaluation, not one each, when its inputs cannot change
+        // between them: none come from itself.
+        let wired_to_itself = |u: usize| {
+            links.iter().any(|l| l.from == u && l.to == u)
+                || rows_links.iter().any(|l| l.from == u && l.to == u)
+        };
+        let mut merged: Vec<Item> = Vec::with_capacity(items.len());
+        for item in items {
+            if let (Some(Item::One(before)), Item::One(next)) = (merged.last_mut(), &item) {
+                let u = next[0].unit;
+                if before[0].unit == u && !wired_to_itself(u) {
+                    before.extend(next.iter().cloned());
+                    continue;
+                }
+            }
+            merged.push(item);
+        }
         let mut into = vec![Vec::new(); units.len()];
         for l in links {
             into[l.to].push(*l);
         }
-        Ok(Self { items, into })
+        Ok(Self {
+            items: merged,
+            into,
+        })
     }
 
     /// The loops, each as the names of its outputs (`block.port`).
@@ -268,7 +292,9 @@ impl OutputPlan {
         let mut covered = 0;
         for item in &self.items {
             match item {
-                Item::One(p) if p.unit == unit => covered += p.len,
+                Item::One(ports) if ports[0].unit == unit => {
+                    covered += ports.iter().map(|p| p.len).sum::<usize>()
+                }
                 Item::Loop(ports) if ports.iter().any(|p| p.unit == unit) => return false,
                 _ => {}
             }
@@ -304,11 +330,13 @@ impl OutputPlan {
         let mut scratch = Vec::new();
         for item in &self.items {
             match item {
-                Item::One(p) if !on(p.unit) => {}
-                Item::One(p) => {
-                    self.compute(p, outputs, inputs, eval, &mut scratch)?;
-                    outputs[p.unit][p.offset..p.offset + p.len]
-                        .copy_from_slice(&scratch[p.offset..p.offset + p.len]);
+                Item::One(ports) if !on(ports[0].unit) => {}
+                Item::One(ports) => {
+                    self.compute(&ports[0], outputs, inputs, eval, &mut scratch)?;
+                    for p in ports {
+                        outputs[p.unit][p.offset..p.offset + p.len]
+                            .copy_from_slice(&scratch[p.offset..p.offset + p.len]);
+                    }
                 }
                 Item::Loop(ports) if ports.iter().all(|p| on(p.unit)) => {
                     self.solve_loop(method, ports, outputs, inputs, eval)?
@@ -358,8 +386,12 @@ impl OutputPlan {
         scatter(ports, v, outputs);
         let mut out = Vec::with_capacity(v.len());
         let mut scratch = Vec::new();
-        for p in ports {
-            self.compute(p, outputs, inputs, eval, &mut scratch)?;
+        for (k, p) in ports.iter().enumerate() {
+            // Outputs are not written during a pass: the unit before, the
+            // same, computed the same values.
+            if k == 0 || ports[k - 1].unit != p.unit {
+                self.compute(p, outputs, inputs, eval, &mut scratch)?;
+            }
             out.extend_from_slice(&scratch[p.offset..p.offset + p.len]);
         }
         Ok(out)
