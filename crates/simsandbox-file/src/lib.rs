@@ -40,6 +40,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub mod compose;
+pub mod hold;
 pub mod layout;
 pub mod runs;
 pub mod sampling;
@@ -2627,7 +2628,7 @@ impl ModelFile {
                 "'{signal}' varies in length (a population, or a table's rows): a probe records it but cannot pass it on to a block yet"
             ));
         }
-        let hold = simsandbox_core::hold::SampleHold::new(
+        let hold = hold::SampleHold::new(
             &format!("probe:{probe}/{signal}"),
             out.unit,
             out.shape,

@@ -6,13 +6,13 @@
 //! is its state, so rewind and replay are exact. It never joins a fused
 //! group: what it feeds sees a value held over each step.
 
-use crate::block::{
+use simsandbox_core::block::{
     AccuracyClass, Block, BlockSpec, Domain, MethodLabels, MethodSpec, PortSpec, Shape, SpeedClass,
     StepContext, StepIo, TimeSemantics,
 };
-use crate::schedule::{Every, Trigger};
-use crate::units::Unit;
-use crate::Result;
+use simsandbox_core::schedule::{Every, Trigger};
+use simsandbox_core::units::Unit;
+use simsandbox_core::Result;
 
 /// State: whether it samples now, where its schedule stands (next time,
 /// next listed time), then the value held.
