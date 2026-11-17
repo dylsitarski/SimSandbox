@@ -47,6 +47,7 @@ impl Convert {
                 tables: Vec::new(),
                 time: TimeSemantics::Stateless,
                 reads_time: Some(false),
+                instants: None,
             },
             method: MethodSpec {
                 name: EXACT.into(),

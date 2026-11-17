@@ -431,6 +431,10 @@ pub struct BlockSpec {
     /// maps iterates instead of running in time. `None`: not said, as for
     /// most blocks.
     pub reads_time: Option<bool>,
+    /// The times its outputs change at, known before the run, such as the
+    /// sample times of recorded data (ADR 0067 step 4): a model with no
+    /// states is evaluated there. `None` for most blocks.
+    pub instants: Option<Vec<f64>>,
 }
 
 impl BlockSpec {
@@ -526,13 +530,6 @@ pub trait Block: Send {
         None
     }
     fn as_realtime(&self) -> Option<&dyn Realtime> {
-        None
-    }
-
-    /// The times its outputs change at, known before the run, such as the
-    /// sample times of recorded data (ADR 0067 step 4): a model with no
-    /// states is evaluated there. `None` for most blocks.
-    fn instants(&self) -> Option<&[f64]> {
         None
     }
 

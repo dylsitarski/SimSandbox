@@ -59,6 +59,7 @@ impl Input {
                 tables: Vec::new(),
                 time: TimeSemantics::Stateless,
                 reads_time,
+                instants: None,
             },
             method: MethodSpec {
                 name: HELD.into(),

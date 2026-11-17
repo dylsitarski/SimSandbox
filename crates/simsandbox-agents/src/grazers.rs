@@ -198,6 +198,7 @@ impl Grazers {
                 tables: vec![TableSpec::new("animals", &["x", "y", "energy"])],
                 time: TimeSemantics::FixedStep { dt: 0.1 },
                 reads_time: None,
+                instants: None,
             },
             method: crate::rules_method(),
             update,

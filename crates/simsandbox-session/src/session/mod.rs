@@ -556,7 +556,7 @@ impl Session {
                     // integrated in time runs in time, whatever holds its
                     // states (rows of tables, ADR 0085 step 3).
                     b.spec().reads_time == Some(false)
-                        && b.instants().is_none()
+                        && b.spec().instants.is_none()
                         && b.spec().time != TimeSemantics::Continuous
                         && (b.spec().states.is_empty()
                             || b.spec().time == TimeSemantics::DiscreteEvent)
@@ -572,7 +572,7 @@ impl Session {
                 model.block(id).is_ok_and(|b| {
                     b.spec().states.is_empty()
                         && b.spec().tables.is_empty()
-                        && b.instants().is_none()
+                        && b.spec().instants.is_none()
                 })
             })
     }

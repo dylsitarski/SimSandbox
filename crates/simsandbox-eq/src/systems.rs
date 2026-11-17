@@ -66,6 +66,7 @@ impl Lorenz {
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
                 reads_time: None,
+                instants: None,
             },
         }
     }
@@ -148,6 +149,7 @@ impl CoupledOscillator {
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
                 reads_time: None,
+                instants: None,
             },
         }
     }
@@ -233,6 +235,7 @@ impl Pendulum {
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
                 reads_time: None,
+                instants: None,
             },
         }
     }

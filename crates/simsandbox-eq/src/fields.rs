@@ -85,6 +85,7 @@ impl HeatRod {
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
                 reads_time: None,
+                instants: None,
             },
         }
     }
@@ -212,6 +213,7 @@ impl Grass {
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
                 reads_time: None,
+                instants: None,
             },
         }
     }
@@ -316,6 +318,7 @@ impl Orbits {
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
                 reads_time: None,
+                instants: None,
             },
         }
     }

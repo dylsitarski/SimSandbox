@@ -94,6 +94,7 @@ impl EquationGroup {
             tables: Vec::new(),
             time: TimeSemantics::Continuous,
             reads_time: None,
+            instants: None,
         };
         let mut members = Vec::new();
         let mut external = Vec::new();

@@ -587,6 +587,7 @@ impl StudyBlock {
                 // Its runs have their own time; its results depend on its
                 // inputs and parameters only (ADR 0083).
                 reads_time: Some(false),
+                instants: None,
             },
             activate,
             method: MethodSpec {

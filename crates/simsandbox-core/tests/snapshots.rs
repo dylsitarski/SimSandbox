@@ -36,6 +36,7 @@ impl Decay {
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
                 reads_time: None,
+                instants: None,
             },
             method: MethodSpec {
                 name: "euler".into(),

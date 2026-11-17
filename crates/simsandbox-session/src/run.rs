@@ -1140,7 +1140,7 @@ pub(crate) fn sample_times(
         .get(name)
         .and_then(|id| loaded.model.block(*id).ok())
         .ok_or_else(|| format!("at_samples: the model has no block '{name}'"))?;
-    let times = block.instants().ok_or_else(|| {
+    let times = block.spec().instants.as_deref().ok_or_else(|| {
         format!("at_samples: '{name}' is not recorded data (an input.file block)")
     })?;
     let end = t_end + 1e-9 * t_end.abs().max(1.0);

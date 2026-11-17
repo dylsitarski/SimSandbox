@@ -387,6 +387,7 @@ pub(super) fn interface(
                 Kind::Formulas => TimeSemantics::Stateless,
             },
             reads_time: Some(reads_time(d, s)),
+            instants: None,
         },
         initial,
         inputs_in,

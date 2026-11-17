@@ -596,6 +596,7 @@ mod tests {
             tables: vec![],
             time: TimeSemantics::Stateless,
             reads_time: None,
+            instants: None,
         };
         let err = OutputPlan::new(&[(&spec, "b", &[])], &[], &[]).unwrap_err();
         assert!(err.to_string().contains("b.y depends on 'v'"), "{err}");

@@ -35,6 +35,7 @@ impl Decay {
                 tables: Vec::new(),
                 time: TimeSemantics::Continuous,
                 reads_time: None,
+                instants: None,
             },
             method: MethodSpec {
                 name: "euler".into(),
@@ -194,6 +195,7 @@ impl Gain {
                 tables: Vec::new(),
                 time: TimeSemantics::Stateless,
                 reads_time: None,
+                instants: None,
             },
             method: Decay::new().method,
         }

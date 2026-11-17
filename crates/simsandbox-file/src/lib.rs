@@ -1842,7 +1842,7 @@ fn stateless(blocks: &[BlockEntry], model: &Model, ids: &BTreeMap<String, BlockI
     let no_states = |id: &BlockId| {
         model
             .block(*id)
-            .is_ok_and(|x| x.spec().states.is_empty() && x.instants().is_none())
+            .is_ok_and(|x| x.spec().states.is_empty() && x.spec().instants.is_none())
     };
     blocks.iter().all(|b| {
         if b.type_name == STUDY {
@@ -1917,7 +1917,14 @@ pub fn data_times(model: &Model) -> Option<Vec<(u128, f64)>> {
         if !(b.spec().states.is_empty() && b.spec().tables.is_empty()) {
             return None;
         }
-        times.extend(b.instants().unwrap_or(&[]).iter().filter(|t| **t > 0.0));
+        times.extend(
+            b.spec()
+                .instants
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .filter(|t| **t > 0.0),
+        );
     }
     listed(times).ok().flatten()
 }
