@@ -143,22 +143,15 @@ impl EquationSet {
     /// not among the rows.
     pub(super) fn ends_places(&self, tables: &[simsandbox_core::table::Table]) -> Vec<f64> {
         let mut u = Vec::new();
-        let place_in = |m: usize| -> std::collections::HashMap<u64, usize> {
-            tables[m]
-                .ids()
-                .iter()
-                .enumerate()
-                .map(|(k, &i)| (i, k))
-                .collect()
-        };
+        let place_in = |m: usize| Places::new(tables[m].ids());
         for (t, spec) in tables.iter().zip(&self.tables) {
             let Some(m) = spec.ends_of else { continue };
             let place = place_in(m);
-            let at = |place: &std::collections::HashMap<u64, usize>, id: f64| {
+            let at = |place: &Places<'_>, id: f64| {
                 if id < 0.0 {
                     return f64::NAN;
                 }
-                place.get(&(id as u64)).map_or(f64::NAN, |&k| k as f64)
+                place.get(id as u64).map_or(f64::NAN, |k| k as f64)
             };
             for c in 0..spec.corners() {
                 u.extend(t.column(c).iter().map(|&id| at(&place, id)));
@@ -419,6 +412,33 @@ impl EquationSet {
     }
 }
 
+/// Where each of a table's rows lies, by its id: ids in ascending order
+/// (rows added at their end, as tables grow) are searched for, others
+/// looked up in a map. Ids are unique, so both find the same place
+/// (2026-11-17: building the map at every evaluation was a sixth of a
+/// step of the bridge network).
+enum Places<'a> {
+    Ascending(&'a [u64]),
+    Map(std::collections::HashMap<u64, usize>),
+}
+
+impl<'a> Places<'a> {
+    fn new(ids: &'a [u64]) -> Self {
+        if ids.windows(2).all(|w| w[0] < w[1]) {
+            Places::Ascending(ids)
+        } else {
+            Places::Map(ids.iter().enumerate().map(|(k, &i)| (i, k)).collect())
+        }
+    }
+
+    fn get(&self, id: u64) -> Option<usize> {
+        match self {
+            Places::Ascending(ids) => ids.binary_search(&id).ok(),
+            Places::Map(map) => map.get(&id).copied(),
+        }
+    }
+}
+
 impl Equations for EquationSet {
     fn rhs(&self, t: f64, x: &[f64], u: &[f64], p: &[f64], dx: &mut [f64]) {
         let v = &mut self.scratch.borrow_mut()[1];
@@ -505,5 +525,28 @@ impl OdeSystem for EquationSet {
 
     fn initial_state(&self, p: &[f64], x0: &mut [f64]) {
         self.initial_state_with(p, &[], x0)
+    }
+}
+
+#[cfg(test)]
+mod places_tests {
+    use super::Places;
+
+    #[test]
+    fn places_by_id_are_the_same_searched_or_mapped() {
+        for ids in [
+            vec![10u64, 11, 12, 13],
+            vec![13, 10, 12, 11],
+            vec![],
+            vec![7],
+        ] {
+            let p = Places::new(&ids);
+            for (k, &id) in ids.iter().enumerate() {
+                assert_eq!(p.get(id), Some(k), "{ids:?}");
+            }
+            assert_eq!(p.get(99), None);
+        }
+        assert!(matches!(Places::new(&[1, 3, 5]), Places::Ascending(_)));
+        assert!(matches!(Places::new(&[3, 1]), Places::Map(_)));
     }
 }
