@@ -109,6 +109,46 @@ pub struct Workspace {
     /// Explicit methods' working arrays, kept between steps instead of
     /// allocated at each.
     buffers: Vec<Vec<f64>>,
+    /// The implicit methods' working arrays, likewise.
+    arrays: Arrays,
+}
+
+/// The implicit methods' working arrays, kept between steps. Each is set
+/// (filled, or zeroed where a fresh one was) where one was allocated
+/// before, so a step computes the same numbers.
+#[derive(Default)]
+struct Arrays {
+    /// [`factorise`]'s perturbed state and rates, the matrix's values and
+    /// a colour's perturbations.
+    xp: Vec<f64>,
+    f1: Vec<f64>,
+    values: Vec<f64>,
+    deltas: Vec<f64>,
+    /// Newton's rates and corrections, and the state a stage starts from.
+    fy: Vec<f64>,
+    g: Vec<f64>,
+    from: Vec<f64>,
+    /// A substep's right side and stage.
+    r: Vec<f64>,
+    y: Vec<f64>,
+    /// A step's rates at its start, and its start.
+    f0: Vec<f64>,
+    start: Vec<f64>,
+    /// The LU's working arrays, and a factor's storage given back.
+    lu: crate::sparse_lu::Work,
+    spare: Option<crate::sparse_lu::Numeric>,
+}
+
+/// `v` as `n` zeros, as a fresh `vec![0.0; n]`.
+fn zeros(v: &mut Vec<f64>, n: usize) {
+    v.clear();
+    v.resize(n, 0.0);
+}
+
+/// `v` as a copy of `x`, as a fresh `x.to_vec()`.
+fn copy(v: &mut Vec<f64>, x: &[f64]) {
+    v.clear();
+    v.extend_from_slice(x);
 }
 
 impl Workspace {
@@ -134,8 +174,10 @@ struct Structure {
     rows_of: Vec<Vec<usize>>,
     /// Columns perturbed together.
     colours: Vec<Vec<usize>>,
-    /// The matrix's rows, column after column, and its LU's structure.
+    /// The matrix's rows, column after column, where each column starts
+    /// among them, and its LU's structure.
     row_idx: Vec<usize>,
+    col_ptr: Vec<usize>,
     lu: crate::sparse_lu::Symbolic,
     /// `faer`'s, made when a pivot first refuses the LU above.
     fallback: std::sync::OnceLock<std::result::Result<Pivoting, String>>,
@@ -152,9 +194,9 @@ enum Factor {
 
 impl Factor {
     /// Solve in place.
-    fn solve(&self, s: &Structure, x: &mut [f64]) {
+    fn solve(&self, s: &Structure, x: &mut [f64], work: &mut crate::sparse_lu::Work) {
         match self {
-            Factor::Own(f) => s.lu.solve(f, x),
+            Factor::Own(f) => s.lu.solve_with(f, x, work),
             Factor::Pivoted(lu) => {
                 let mut g = faer::Mat::<f64>::from_fn(x.len(), 1, |i, _| x[i]);
                 lu.solve_in_place(g.as_mut());
@@ -215,6 +257,7 @@ impl Structure {
             rows_of,
             colours,
             row_idx,
+            col_ptr,
             lu,
             fallback: std::sync::OnceLock::new(),
         })
@@ -279,45 +322,55 @@ impl Structure {
 
 /// The matrix `I − c·h·J` factorised, `J` by finite differences at
 /// `(t, x)` where the rates are `f0`.
-fn factorise(s: &Structure, f: &Rhs<'_>, t: f64, x: &[f64], f0: &[f64], ch: f64) -> Result<Factor> {
+fn factorise(
+    s: &Structure,
+    f: &Rhs<'_>,
+    (t, x, f0): (f64, &[f64], &[f64]),
+    ch: f64,
+    a: &mut Arrays,
+) -> Result<Factor> {
     let n = x.len();
-    // Values in the pattern's order: column by column, rows ascending.
-    let mut values = Vec::with_capacity(s.rows_of.iter().map(Vec::len).sum());
-    let mut xp = x.to_vec();
-    let mut f1 = vec![0.0; n];
-    let mut jac: Vec<Vec<f64>> = s.rows_of.iter().map(|r| vec![0.0; r.len()]).collect();
+    let Arrays {
+        xp,
+        f1,
+        values,
+        deltas,
+        lu,
+        spare,
+        ..
+    } = a;
+    // Values in the pattern's order: column by column, rows ascending;
+    // each column is in one colour, so every value is written.
+    values.clear();
+    values.resize(s.row_idx.len(), 0.0);
+    copy(xp, x);
+    zeros(f1, n);
     let floor = perturbation_floor(x);
     for colour in &s.colours {
-        let deltas: Vec<f64> = colour
-            .iter()
-            .map(|&j| PERTURBATION * x[j].abs().max(floor))
-            .collect();
-        for (&j, d) in colour.iter().zip(&deltas) {
+        deltas.clear();
+        deltas.extend(colour.iter().map(|&j| PERTURBATION * x[j].abs().max(floor)));
+        for (&j, d) in colour.iter().zip(deltas.iter()) {
             xp[j] = x[j] + d;
         }
-        f(t, &xp, &mut f1);
-        for (&j, d) in colour.iter().zip(&deltas) {
+        f(t, xp, f1);
+        for (&j, d) in colour.iter().zip(deltas.iter()) {
             xp[j] = x[j];
             // xp[j] + d − x[j] is the step actually taken, in floating point.
             let taken = (x[j] + d) - x[j];
+            let at = s.col_ptr[j];
             for (k, &i) in s.rows_of[j].iter().enumerate() {
-                jac[j][k] = (f1[i] - f0[i]) / taken;
+                let identity = if i == j { 1.0 } else { 0.0 };
+                let jac = (f1[i] - f0[i]) / taken;
+                values[at + k] = identity - ch * jac;
             }
         }
     }
-    for (j, rows) in s.rows_of.iter().enumerate() {
-        for (k, &i) in rows.iter().enumerate() {
-            let identity = if i == j { 1.0 } else { 0.0 };
-            values.push(identity - ch * jac[j][k]);
-        }
-    }
-    debug_assert_eq!(values.len(), s.row_idx.len());
-    if let Some(f) = s.lu.factorise(&values) {
+    if let Some(f) = s.lu.factorise_with(values, spare.take(), lu) {
         return Ok(Factor::Own(f));
     }
     // A pivot too small without row interchanges: with them.
     let (pattern, symbolic) = s.pivoted()?;
-    let matrix = SparseColMat::<usize, f64>::new(pattern.clone(), values);
+    let matrix = SparseColMat::<usize, f64>::new(pattern.clone(), values.clone());
     Lu::try_new_with_symbolic(symbolic.clone(), matrix.as_ref())
         .map(|lu| Factor::Pivoted(Box::new(lu)))
         .map_err(|e| SimError::Block(format!("implicit method: the matrix is singular ({e:?})")))
@@ -332,17 +385,21 @@ fn iterate(
     ch: f64,
     r: &[f64],
     y: &mut [f64],
+    a: &mut Arrays,
 ) -> std::result::Result<(), Failure> {
     let n = y.len();
-    let mut fy = vec![0.0; n];
-    let mut g = vec![0.0; n];
+    let Arrays {
+        fy, g, lu: work, ..
+    } = a;
+    zeros(fy, n);
+    zeros(g, n);
     let right = r.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     for _ in 0..MAX_ITERATIONS {
-        f(t, y, &mut fy);
+        f(t, y, fy);
         for i in 0..n {
             g[i] = y[i] - ch * fy[i] - r[i];
         }
-        lu.solve(s, &mut g);
+        lu.solve(s, g, work);
         let mut size = 0.0f64;
         let mut scale = right;
         for i in 0..n {
@@ -374,44 +431,62 @@ struct Solver<'a> {
 /// with the step's matrix, and if that fails with the Jacobian taken
 /// afresh at every iteration, from where the first got to, or from the
 /// start again if it ran off to values that are not numbers.
-fn stage(f: &Rhs<'_>, solver: &mut Solver<'_>, t: f64, r: &[f64], y: &mut [f64]) -> Result<()> {
-    let from = y.to_vec();
-    let failure = match iterate(f, (solver.s, &solver.lu), t, solver.ch, r, y) {
+fn stage(
+    f: &Rhs<'_>,
+    solver: &mut Solver<'_>,
+    t: f64,
+    r: &[f64],
+    y: &mut [f64],
+    a: &mut Arrays,
+) -> Result<()> {
+    copy(&mut a.from, y);
+    let failure = match iterate(f, (solver.s, &solver.lu), t, solver.ch, r, y, a) {
         Ok(()) => return Ok(()),
         Err(failure) => failure,
     };
     if failure == Failure::NotANumber {
-        y.copy_from_slice(&from);
+        y.copy_from_slice(&a.from);
     }
     let n = y.len();
     let right = r.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-    let mut fy = vec![0.0; n];
-    let mut g = vec![0.0; n];
-    for _ in 0..MAX_FRESH {
-        f(t, y, &mut fy);
-        if fy.iter().any(|v| !v.is_finite()) {
-            return Err(Failure::NotANumber.error());
+    // Taken out while `factorise` uses the rest.
+    let mut fy = std::mem::take(&mut a.fy);
+    let mut g = std::mem::take(&mut a.g);
+    zeros(&mut fy, n);
+    zeros(&mut g, n);
+    let done = (|| {
+        for _ in 0..MAX_FRESH {
+            f(t, y, &mut fy);
+            if fy.iter().any(|v| !v.is_finite()) {
+                return Err(Failure::NotANumber.error());
+            }
+            let fresh = factorise(solver.s, f, (t, y, &fy), solver.ch, a)?;
+            if let Factor::Own(old) = std::mem::replace(&mut solver.lu, fresh) {
+                a.spare = Some(old);
+            }
+            for i in 0..n {
+                g[i] = y[i] - solver.ch * fy[i] - r[i];
+            }
+            solver.lu.solve(solver.s, &mut g, &mut a.lu);
+            let mut size = 0.0f64;
+            let mut scale = right;
+            for i in 0..n {
+                y[i] -= g[i];
+                size = size.max(g[i].abs());
+                scale = scale.max(y[i].abs());
+            }
+            if !(size.is_finite() && g.iter().all(|v| v.is_finite())) {
+                return Err(Failure::NotANumber.error());
+            }
+            if size <= TOLERANCE * scale {
+                return Ok(());
+            }
         }
-        solver.lu = factorise(solver.s, f, t, y, &fy, solver.ch)?;
-        for i in 0..n {
-            g[i] = y[i] - solver.ch * fy[i] - r[i];
-        }
-        solver.lu.solve(solver.s, &mut g);
-        let mut size = 0.0f64;
-        let mut scale = right;
-        for i in 0..n {
-            y[i] -= g[i];
-            size = size.max(g[i].abs());
-            scale = scale.max(y[i].abs());
-        }
-        if !(size.is_finite() && g.iter().all(|v| v.is_finite())) {
-            return Err(Failure::NotANumber.error());
-        }
-        if size <= TOLERANCE * scale {
-            return Ok(());
-        }
-    }
-    Err(failure.error())
+        Err(failure.error())
+    })();
+    a.fy = fy;
+    a.g = g;
+    done
 }
 
 /// One step of `scheme` from `t0` to `t0 + h`, replacing `x` by the
@@ -423,34 +498,43 @@ fn substep(
     (t0, h): (f64, f64),
     f0: &[f64],
     x: &mut [f64],
+    a: &mut Arrays,
 ) -> Result<()> {
     let n = x.len();
     let gamma = 2.0 - std::f64::consts::SQRT_2;
-    let mut r = vec![0.0; n];
-    match scheme {
-        Scheme::BackwardEuler => {
-            r.copy_from_slice(x);
-            stage(f, solver, t0 + h, &r, x)?;
-        }
-        Scheme::TrBdf2 => {
-            let ch = solver.ch;
-            // Trapezoid to t + γh: y − (γh/2)f(y) = x + (γh/2)f(x).
-            for i in 0..n {
-                r[i] = x[i] + ch * f0[i];
+    // Taken out while the stages use the rest.
+    let mut r = std::mem::take(&mut a.r);
+    let mut y = std::mem::take(&mut a.y);
+    zeros(&mut r, n);
+    let done = (|| {
+        match scheme {
+            Scheme::BackwardEuler => {
+                r.copy_from_slice(x);
+                stage(f, solver, t0 + h, &r, x, a)?;
             }
-            let mut y = x.to_vec();
-            stage(f, solver, t0 + gamma * h, &r, &mut y)?;
-            // BDF2 to t + h: z − c·h·f(z) = (y − (1−γ)²·x) / (γ(2−γ)).
-            let w = gamma * (2.0 - gamma);
-            for i in 0..n {
-                r[i] = (y[i] - (1.0 - gamma).powi(2) * x[i]) / w;
+            Scheme::TrBdf2 => {
+                let ch = solver.ch;
+                // Trapezoid to t + γh: y − (γh/2)f(y) = x + (γh/2)f(x).
+                for i in 0..n {
+                    r[i] = x[i] + ch * f0[i];
+                }
+                copy(&mut y, x);
+                stage(f, solver, t0 + gamma * h, &r, &mut y, a)?;
+                // BDF2 to t + h: z − c·h·f(z) = (y − (1−γ)²·x) / (γ(2−γ)),
+                // from z = y.
+                let w = gamma * (2.0 - gamma);
+                for i in 0..n {
+                    r[i] = (y[i] - (1.0 - gamma).powi(2) * x[i]) / w;
+                }
+                stage(f, solver, t0 + h, &r, &mut y, a)?;
+                x.copy_from_slice(&y);
             }
-            let mut z = y;
-            stage(f, solver, t0 + h, &r, &mut z)?;
-            x.copy_from_slice(&z);
         }
-    }
-    Ok(())
+        Ok(())
+    })();
+    a.r = r;
+    a.y = y;
+    done
 }
 
 /// Advance `x` from `t` to `t + dt` in `substeps` steps of `scheme`. On an
@@ -474,7 +558,10 @@ pub fn advance(
             .unwrap_or_else(|| Structure::probe(f, t, x));
         ws.structure = Some(Structure::new(n, &deps)?);
     }
-    let s = ws.structure.as_ref().expect("set above");
+    let Workspace {
+        structure, arrays, ..
+    } = ws;
+    let s = structure.as_ref().expect("set above");
     let steps = substeps.max(1);
     let h = dt / steps as f64;
     let c = match scheme {
@@ -483,23 +570,51 @@ pub fn advance(
     };
     // One Jacobian and factorisation per communication step, unless a
     // stage needs another.
-    let mut f0 = vec![0.0; n];
-    f(t, x, &mut f0);
-    let mut solver = Solver {
-        s,
-        lu: factorise(s, f, t, x, &f0, c * h)?,
-        ch: c * h,
-    };
-    let start = x.to_vec();
+    let mut f0 = std::mem::take(&mut arrays.f0);
+    let mut start = std::mem::take(&mut arrays.start);
+    zeros(&mut f0, n);
+    copy(&mut start, x);
+    let done = run(
+        scheme,
+        f,
+        (s, c * h),
+        (t, h, steps),
+        (&mut f0, &start),
+        x,
+        arrays,
+    );
+    arrays.f0 = f0;
+    arrays.start = start;
+    done
+}
+
+/// [`advance`]'s steps, with its rates at the start `f0` and the state it
+/// was given `start`.
+fn run(
+    scheme: Scheme,
+    f: &Rhs<'_>,
+    (s, ch): (&Structure, f64),
+    (t, h, steps): (f64, f64, usize),
+    (f0, start): (&mut [f64], &[f64]),
+    x: &mut [f64],
+    arrays: &mut Arrays,
+) -> Result<()> {
+    f(t, x, f0);
+    let lu = factorise(s, f, (t, x, f0), ch, arrays)?;
+    let mut solver = Solver { s, lu, ch };
     for k in 0..steps {
         let t0 = t + k as f64 * h;
         if k > 0 && scheme == Scheme::TrBdf2 {
-            f(t0, x, &mut f0);
+            f(t0, x, f0);
         }
-        if let Err(e) = substep(scheme, f, &mut solver, (t0, h), &f0, x) {
-            x.copy_from_slice(&start);
+        if let Err(e) = substep(scheme, f, &mut solver, (t0, h), f0, x, arrays) {
+            x.copy_from_slice(start);
             return Err(e);
         }
+    }
+    // The factor's storage, for the next step's.
+    if let Factor::Own(f) = solver.lu {
+        arrays.spare = Some(f);
     }
     Ok(())
 }

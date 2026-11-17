@@ -80,6 +80,18 @@ pub struct Numeric {
     values: Vec<f64>,
 }
 
+/// A factorisation's and a solve's working arrays, kept between calls by
+/// whoever factorises often (the implicit methods, at every step).
+#[derive(Default)]
+pub struct Work {
+    front: Vec<f64>,
+    updates: Vec<Option<Vec<f64>>>,
+    /// Update buffers given back by parents, used again.
+    spare: Vec<Vec<f64>>,
+    /// A solve's right side in the factorisation's order.
+    y: Vec<f64>,
+}
+
 impl Symbolic {
     /// From A's pattern by columns (`col_ptr`, `row_idx`, each column's rows
     /// ascending, the diagonal included or not).
@@ -164,11 +176,34 @@ impl Symbolic {
     /// Factorise A (its values in the pattern's order), or `None` when a
     /// pivot is too small.
     pub fn factorise(&self, values: &[f64]) -> Option<Numeric> {
-        let mut out = vec![0.0; self.size];
-        let mut updates: Vec<Option<Vec<f64>>> = (0..self.snodes.len()).map(|_| None).collect();
-        let mut front = Vec::new();
-        // Update buffers given back by parents, used again.
-        let mut spare: Vec<Vec<f64>> = Vec::new();
+        self.factorise_with(values, None, &mut Work::default())
+    }
+
+    /// [`Symbolic::factorise`] into `into`'s storage if given, with the
+    /// working arrays `work`: the same numbers, without allocating them
+    /// again.
+    pub fn factorise_with(
+        &self,
+        values: &[f64],
+        into: Option<Numeric>,
+        work: &mut Work,
+    ) -> Option<Numeric> {
+        // Every value is written below: each supernode's panel and U's
+        // rows to its right, which lie one after another.
+        let mut out = into.map(|f| f.values).unwrap_or_default();
+        if out.len() != self.size {
+            out.clear();
+            out.resize(self.size, 0.0);
+        }
+        let Work {
+            front,
+            updates,
+            spare,
+            ..
+        } = work;
+        // Updates left by a factorisation that stopped at a small pivot.
+        spare.extend(updates.drain(..).flatten());
+        updates.resize_with(self.snodes.len(), || None);
         for (s, sn) in self.snodes.iter().enumerate() {
             let m = sn.rows.len();
             let k = sn.cols;
@@ -190,7 +225,7 @@ impl Symbolic {
                 }
                 spare.push(u);
             }
-            if !factor_panel(&mut front, m, k) {
+            if !factor_panel(front, m, k) {
                 return None;
             }
             // Keep the factor: the panel (m × k), then U's rows to its right.
@@ -248,7 +283,14 @@ impl Symbolic {
 
     /// Solve A x = b in place.
     pub fn solve(&self, f: &Numeric, b: &mut [f64]) {
-        let mut y: Vec<f64> = self.perm.iter().map(|&i| b[i]).collect();
+        self.solve_with(f, b, &mut Work::default());
+    }
+
+    /// [`Symbolic::solve`] with the working arrays `work`.
+    pub fn solve_with(&self, f: &Numeric, b: &mut [f64], work: &mut Work) {
+        let y = &mut work.y;
+        y.clear();
+        y.extend(self.perm.iter().map(|&i| b[i]));
         let v = &f.values[..];
         // L y = b, supernode by supernode.
         for p in &self.plan {
