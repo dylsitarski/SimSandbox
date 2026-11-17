@@ -1,9 +1,9 @@
 //! Lowering a checked syntax tree to an expression with its axes (ADR 0080).
 
-use super::functions::{linear, meshes, tables, Function};
-use super::shapes::{ast_name, fit, line_of, number, union, Shapes};
+use super::functions::{linear, meshes, reduce, tables, Function};
+use super::shapes::{ast_name, fit, union, Shapes};
 use super::Axis;
-use simsandbox_expr::{Along, ArrayOp, Ast, Expr, MAX_AXES};
+use simsandbox_expr::{Along, Ast, Expr};
 
 /// An expression with its axes, or the mistake found lowering it.
 pub(super) type Lowered = std::result::Result<(Expr, Vec<usize>), simsandbox_expr::Error>;
@@ -131,6 +131,13 @@ impl Lower<'_> {
             Boundary => meshes::boundary_lower(self, args),
             Solve => linear::solve_lower(self, args),
             Rcond => linear::rcond_lower(self, args),
+            Sum => reduce::along_lower(self, args, Along::Sum),
+            Mean => reduce::along_lower(self, args, Along::Mean),
+            MinOf => reduce::along_lower(self, args, Along::MinOf),
+            MaxOf => reduce::along_lower(self, args, Along::MaxOf),
+            ArgMinOf => reduce::along_lower(self, args, Along::ArgMinOf),
+            ArgMaxOf => reduce::along_lower(self, args, Along::ArgMaxOf),
+            At => reduce::at_lower(self, args),
             _ => self.old_apply(name, args),
         }
     }
@@ -163,61 +170,7 @@ impl Lower<'_> {
                     to.sort_unstable();
                     (fit(e, &from, &to, Some((a, b)), grid), to)
                 }
-                "at" => {
-                    let (first, axes) = low(&args[0])?;
-                    if args.len() == 2 && number(&args[1]).is_none() {
-                        // at(T, k), k computed: cell k in storage order.
-                        let (k, _) = low(&args[1])?;
-                        (Expr::Array(ArrayOp::Cell, vec![first, k]), Vec::new())
-                    } else {
-                        // at(T, i, j): cell i + j·(T's first axis), and so on.
-                        let place = args[1..]
-                            .iter()
-                            .zip(&axes)
-                            .map(|(a, &axis)| match a {
-                                Ast::Num(i) => *i as usize * line_of(&axes, axis, grid).stride,
-                                _ => unreachable!("checked: a whole number"),
-                            })
-                            .sum();
-                        (Expr::Array(ArrayOp::At(place), vec![first]), Vec::new())
-                    }
-                }
-                _ => {
-                    let (first, axes) = low(&args[0])?;
-                    if let Some(a) = args.get(1) {
-                        let axis = axis_named(a);
-                        let of = match name {
-                            "sum" => Along::Sum,
-                            "mean" => Along::Mean,
-                            "minof" => Along::MinOf,
-                            "maxof" => Along::MaxOf,
-                            "argminof" => Along::ArgMinOf,
-                            _ => Along::ArgMaxOf,
-                        };
-                        let mut dims = [1; MAX_AXES];
-                        for (k, &x) in axes.iter().enumerate() {
-                            dims[k] = grid[x].cells;
-                        }
-                        let op = ArrayOp::Along {
-                            of,
-                            rank: axes.len(),
-                            dims,
-                            axis: axes.iter().position(|&x| x == axis).expect("checked"),
-                        };
-                        let rest = axes.into_iter().filter(|&x| x != axis).collect();
-                        (Expr::Array(op, vec![first]), rest)
-                    } else {
-                        let op = match name {
-                            "sum" => ArrayOp::Sum,
-                            "mean" => ArrayOp::Mean,
-                            "minof" => ArrayOp::MinOf,
-                            "maxof" => ArrayOp::MaxOf,
-                            "argminof" => ArrayOp::ArgMinOf,
-                            _ => ArrayOp::ArgMaxOf,
-                        };
-                        (Expr::Array(op, vec![first]), Vec::new())
-                    }
-                }
+                _ => unreachable!(),
             }
         })
     }

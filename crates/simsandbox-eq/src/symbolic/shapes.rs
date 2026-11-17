@@ -1,7 +1,7 @@
 //! Which axes an expression is over: the checks before lowering, and the
 //! helpers for grids, cells and meshes they use.
 
-use super::functions::{linear, meshes, tables, Check, Function};
+use super::functions::{linear, meshes, reduce, tables, Check, Function};
 use super::Axis;
 use simsandbox_expr::{ArrayOp, Ast, Edge, Expr, Line as GridLine, MAX_AXES};
 /// The variables `e` reads, edge values of its stencils included.
@@ -173,6 +173,8 @@ pub(super) fn axes_of(
         Some(Boundary) => meshes::sides_axes(&c, true),
         Some(Solve) => linear::solve_axes(&c),
         Some(Rcond) => linear::rcond_axes(&c),
+        Some(Sum | Mean | MinOf | MaxOf | ArgMinOf | ArgMaxOf) => reduce::along_axes(&c),
+        Some(At) => reduce::at_axes(&c),
         _ => old_axes(name, args, col, grid, shapes),
     }
 }
@@ -368,80 +370,7 @@ fn old_axes(
             out.sort_unstable();
             Ok(out)
         }
-        "at" => {
-            let axes = if args.is_empty() {
-                Vec::new()
-            } else {
-                of(&args[0])?
-            };
-            if axes.is_empty() {
-                return Err((
-                    col,
-                    "'at' takes an array and a cell number along each of its axes, e.g. at(T, 0)"
-                        .into(),
-                ));
-            }
-            // `at(T, k)` with a computed cell number (ADR 0070).
-            if args.len() == 2 && number(&args[1]).is_none() {
-                if !of(&args[1])?.is_empty() {
-                    return Err((
-                        col,
-                        "a computed cell number is one value, e.g. at(T, argmaxof(T))".into(),
-                    ));
-                }
-                return Ok(Vec::new());
-            }
-            if args.len() != 1 + axes.len() {
-                let cells = vec!["0"; axes.len()].join(", ");
-                return Err((
-                    col,
-                    format!("'at' takes {} argument(s), the array and a cell number along each of its axes ({}): at(T, {cells})", 1 + axes.len(), list(&axes)),
-                ));
-            }
-            for (&a, i) in axes.iter().zip(&args[1..]) {
-                match i {
-                    Ast::Num(i)
-                        if i.fract() == 0.0 && *i >= 0.0 && (*i as usize) < grid[a].cells => {}
-                    _ => {
-                        return Err((
-                            col,
-                            format!(
-                                "a cell number along {} is a whole number from 0 to {}",
-                                names[a],
-                                grid[a].cells - 1
-                            ),
-                        ))
-                    }
-                }
-            }
-            Ok(Vec::new())
-        }
-        _ => {
-            // The reductions: over all cells, or along one axis (ADR 0080).
-            count(
-                matches!(args.len(), 1 | 2),
-                "an array, and an axis to work along",
-            )?;
-            let axes = of(&args[0])?;
-            if axes.is_empty() {
-                return Err((col, format!("'{name}' takes an array, e.g. {name}(T)")));
-            }
-            let Some(a) = args.get(1) else {
-                return Ok(Vec::new());
-            };
-            match axis_named(a) {
-                Some(i) if axes.contains(&i) => Ok(axes.into_iter().filter(|&x| x != i).collect()),
-                Some(i) => not_over(&format!("'{name}''s array"), &axes, names[i]),
-                None => Err((
-                    col,
-                    format!(
-                        "'{name}(T, {})' works along an axis of T ({})",
-                        names[axes[0]],
-                        list(&axes)
-                    ),
-                )),
-            }
-        }
+        _ => unreachable!(),
     }
 }
 

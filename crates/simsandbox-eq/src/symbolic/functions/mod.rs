@@ -10,6 +10,7 @@
 
 pub(super) mod linear;
 pub(super) mod meshes;
+pub(super) mod reduce;
 pub(super) mod tables;
 
 use super::shapes::{axes_of, Shapes};

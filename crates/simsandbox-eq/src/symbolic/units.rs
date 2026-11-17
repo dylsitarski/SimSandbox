@@ -1,7 +1,7 @@
 //! Units (ADR 0045): every quantity's unit, and each equation balanced.
 
 use super::declare::Declared;
-use super::functions::{linear, meshes, tables, Function};
+use super::functions::{linear, meshes, reduce, tables, Function};
 use super::shaped::{Arrays, Shaped};
 use super::shapes::{ast_name, number};
 use super::statements::{definition_error, EdgeKind, Lhs};
@@ -109,6 +109,11 @@ impl ArrayDims<'_> {
             // A pure number.
             Some(Rcond) => Ok(NO_DIM),
             Some(Solve) => linear::solve_dim(args, col),
+            // e's: the first argument's; an axis after it has none.
+            Some(Sum | Mean | MinOf | MaxOf) => Ok(d),
+            // A cell number (ADR 0070).
+            Some(ArgMinOf | ArgMaxOf) => Ok(NO_DIM),
+            Some(At) => reduce::at_dim(args, col),
             _ => self.old_apply(name, args, col),
         }
     }
@@ -157,17 +162,7 @@ impl ArrayDims<'_> {
                 let a = self.axis_dim_of(axis);
                 dim_div(d, a).ok_or_else(too_high)?
             }
-            "at" => {
-                if args[1..].iter().any(|a| a.1 != NO_DIM) {
-                    return Err((col, "a cell number has no unit".into()));
-                }
-                d
-            }
-            // A cell number (ADR 0070).
-            "argminof" | "argmaxof" => NO_DIM,
-            // The first argument's: `centre(T, c)` and a value read
-            // elsewhere (`from_end(T, e)`, `inner(u, f)`); those after
-            // it name tables and axes or are plain numbers.
+            // prev, next, on: the first argument's.
             _ => d,
         })
     }
