@@ -11,6 +11,7 @@
 - 2026-11-17: the three faults left fixed (rules' units, a quantity named like a transfer, the first wrong `start` told); a plain number in a rule now in its column's unit.
 - 2026-11-17: stage 3, one table of the array functions (`symbolic/functions/`), matched exhaustively by the three passes; `describe` lists the functions. W6 complete.
 - 2026-11-17: `centre` told of its own arguments; `Session` split into five parts (W8, first half), its public surface unchanged.
+- 2026-11-17: `app.rs` split by pane, modal state in one enum (W8 complete).
 
 ## Decided
 
@@ -18,9 +19,10 @@
 
 ## Left open
 
-- W8's second half (`app.rs` by pane, its modal state in one enum); the kernel tidy.
+- The kernel tidy; the review's third and fourth priorities; the app as taken apart, to try in the window.
 
 ## Notes for the next session
 
+- The app cannot start under Xvfb here (`libxkbcommon-x11` missing); compare the shapes egui draws (`Context::run_ui`) before and after a change instead, as the app split did.
 - The comparison of old and new front end over a corpus of definitions (harvested from examples, the reference and tests, then mutated) found what the tests did not: build such a corpus before the next change of this size. Some error choices depend on `HashMap` order and differ from run to run; compare those without line and column.
 - The safety net for work on the front end: `cargo test --workspace` (bit-for-bit tests against the interpreter and across routes), `crates/simsandbox-eq/tests/reference.rs`, and the hashes of every example's renders, runs and checks before and after.

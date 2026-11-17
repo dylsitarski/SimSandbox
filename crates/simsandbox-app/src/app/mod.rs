@@ -179,7 +179,6 @@ pub struct SimApp {
 }
 
 impl SimApp {
-    /// The app shared between the main window and popped-out ones.
     /// The memory budget in MB (ADR 0062 step 5), kept between launches.
     pub fn memory_budget(&self) -> f64 {
         self.memory_mb

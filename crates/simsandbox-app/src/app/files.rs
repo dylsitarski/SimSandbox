@@ -423,13 +423,12 @@ impl SimApp {
     }
 
     pub(super) fn save_to(&mut self, path: &Path) {
-        let Some(live) = self.session.as_ref() else {
+        if self.session.is_none() {
             return;
-        };
+        }
         let result = self
             .saved_text()
             .and_then(|text| std::fs::write(path, text).map_err(|e| e.to_string()));
-        let _ = live;
         // Used model files edited from here go with it (ADR 0066 step 4c).
         let result =
             result.and_then(|()| simsandbox_session::edit_use::save(&mut self.diagram.edited));
