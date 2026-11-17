@@ -8,6 +8,7 @@
 //! without a fallback, so a new function does not compile until each
 //! handles it.
 
+pub(super) mod grids;
 pub(super) mod linear;
 pub(super) mod meshes;
 pub(super) mod reduce;
@@ -333,7 +334,6 @@ pub(super) struct Check<'a> {
     names: Vec<&'a str>,
 }
 
-#[allow(dead_code)] // TEMP: until every family is moved
 impl<'a> Check<'a> {
     pub(super) fn new(
         name: &'a str,

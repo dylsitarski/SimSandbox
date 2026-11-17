@@ -1,7 +1,7 @@
 //! Lowering a checked syntax tree to an expression with its axes (ADR 0080).
 
-use super::functions::{linear, meshes, reduce, tables, Function};
-use super::shapes::{ast_name, fit, union, Shapes};
+use super::functions::{grids, linear, meshes, reduce, tables, Function};
+use super::shapes::{fit, union, Shapes};
 use super::Axis;
 use simsandbox_expr::{Along, Ast, Expr};
 
@@ -12,7 +12,7 @@ pub(super) type Lowered = std::result::Result<(Expr, Vec<usize>), simsandbox_exp
 /// values are.
 pub(super) struct Lower<'a> {
     pub(super) grid: &'a [Axis],
-    shapes: &'a Shapes,
+    pub(super) shapes: &'a Shapes,
     slot: &'a dyn Fn(&str) -> Option<usize>,
     /// Builds `lap`, `dd…`, `prev`, `next` and `spacing`.
     pub(super) stencil: &'a dyn Fn(&Function, &[Ast]) -> Expr,
@@ -110,27 +110,14 @@ impl Lower<'_> {
         }
     }
 
-    /// A call of an array function.
+    /// A call of an array function: each one's instructions are in
+    /// [`super::functions`].
     fn apply(&self, name: &str, args: &[Ast]) -> Lowered {
         use Function::*;
         let f = Function::by_name(name).expect("the parser calls only array functions");
         match f {
-            Id => tables::id_lower(self, args),
-            Rows => tables::rows_lower(self, args),
-            FromEnd => tables::end_lower(self, args, 0),
-            ToEnd => tables::end_lower(self, args, 1),
-            Corner => tables::corner_lower(self, args),
-            Outflow => tables::outflow_lower(self, args),
-            Of => tables::of_lower(self, args),
-            Centre => meshes::expansion_lower(self, args, meshes::centre_expansion),
-            Measure => meshes::expansion_lower(self, args, meshes::measure_expansion),
-            Normal => meshes::expansion_lower(self, args, meshes::normal_expansion),
-            Inner => meshes::cell_lower(self, args, 0),
-            Outer => meshes::cell_lower(self, args, 1),
-            Across => meshes::cell_lower(self, args, 3),
-            Boundary => meshes::boundary_lower(self, args),
-            Solve => linear::solve_lower(self, args),
-            Rcond => linear::rcond_lower(self, args),
+            Lap | Dd | DdAlong(_) | Prev | Next | Spacing => grids::stencil_lower(self, &f, args),
+            On => grids::on_lower(self, args),
             Sum => reduce::along_lower(self, args, Along::Sum),
             Mean => reduce::along_lower(self, args, Along::Mean),
             MinOf => reduce::along_lower(self, args, Along::MinOf),
@@ -138,40 +125,22 @@ impl Lower<'_> {
             ArgMinOf => reduce::along_lower(self, args, Along::ArgMinOf),
             ArgMaxOf => reduce::along_lower(self, args, Along::ArgMaxOf),
             At => reduce::at_lower(self, args),
-            _ => self.old_apply(name, args),
+            Solve => linear::solve_lower(self, args),
+            Rcond => linear::rcond_lower(self, args),
+            Id => tables::id_lower(self, args),
+            Rows => tables::rows_lower(self, args),
+            Of => tables::of_lower(self, args),
+            FromEnd => tables::end_lower(self, args, 0),
+            ToEnd => tables::end_lower(self, args, 1),
+            Corner => tables::corner_lower(self, args),
+            Outflow => tables::outflow_lower(self, args),
+            Centre => meshes::expansion_lower(self, args, meshes::centre_expansion),
+            Measure => meshes::expansion_lower(self, args, meshes::measure_expansion),
+            Normal => meshes::expansion_lower(self, args, meshes::normal_expansion),
+            Inner => meshes::cell_lower(self, args, 0),
+            Outer => meshes::cell_lower(self, args, 1),
+            Across => meshes::cell_lower(self, args, 3),
+            Boundary => meshes::boundary_lower(self, args),
         }
-    }
-
-    fn old_apply(&self, name: &str, args: &[Ast]) -> Lowered {
-        let (grid, shapes, stencil) = (self.grid, self.shapes, self.stencil);
-        let low = |a: &Ast| self.low(a);
-        let axis_named = |a: &Ast| self.axis_named(a);
-        Ok({
-            match name {
-                "lap" | "prev" | "next" | "spacing" => {
-                    let axes = match name {
-                        "spacing" => Vec::new(),
-                        _ => shapes[ast_name(&args[0])].clone(),
-                    };
-                    (
-                        stencil(&Function::by_name(name).expect("checked"), args),
-                        axes,
-                    )
-                }
-                d if d.starts_with("dd") => (
-                    stencil(&Function::by_name(name).expect("checked"), args),
-                    shapes[ast_name(&args[0])].clone(),
-                ),
-                "on" => {
-                    let (e, from) = low(&args[0])?;
-                    let (a, b) = (axis_named(&args[1]), axis_named(&args[2]));
-                    let mut to: Vec<usize> =
-                        from.iter().map(|&x| if x == a { b } else { x }).collect();
-                    to.sort_unstable();
-                    (fit(e, &from, &to, Some((a, b)), grid), to)
-                }
-                _ => unreachable!(),
-            }
-        })
     }
 }

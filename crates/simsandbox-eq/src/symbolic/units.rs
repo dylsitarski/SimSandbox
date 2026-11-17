@@ -1,15 +1,13 @@
 //! Units (ADR 0045): every quantity's unit, and each equation balanced.
 
 use super::declare::Declared;
-use super::functions::{linear, meshes, reduce, tables, Function};
+use super::functions::{grids, linear, meshes, reduce, tables, Function};
 use super::shaped::{Arrays, Shaped};
-use super::shapes::{ast_name, number};
+use super::shapes::number;
 use super::statements::{definition_error, EdgeKind, Lhs};
 use simsandbox_core::units::Unit;
 use simsandbox_core::Result;
-use simsandbox_expr::units::{
-    dim_div, dim_pow, dim_text, dimension_with, Dim, DIM_TOO_HIGH, NO_DIM,
-};
+use simsandbox_expr::units::{dim_div, dim_text, dimension_with, Dim, DIM_TOO_HIGH, NO_DIM};
 use simsandbox_expr::Ast;
 
 /// A dimension, or a mistake with its column.
@@ -94,77 +92,36 @@ impl ArrayDims<'_> {
     fn apply(&self, name: &str, args: &[(&Ast, Dim)], col: usize) -> DimResult {
         use Function::*;
         let d = Self::first(args);
-        match Function::by_name(name) {
-            // T's, F's: the first argument's; a table, its rows or a
-            // corner's number after it have none to check.
-            Some(Id | Rows | FromEnd | ToEnd | Corner | Outflow) => Ok(d),
-            Some(Of) => tables::of_dim(args, col),
-            Some(Measure) => meshes::measure_dim(self, args, col),
-            Some(Normal) => meshes::normal_dim(self, args, col),
-            // T's, u's: the first argument's; the cells, sides or
-            // table after it have none to check.
-            Some(Centre | Inner | Outer | Across) => Ok(d),
-            // The first argument's: the sides table's name.
-            Some(Boundary) => Ok(d),
-            // A pure number.
-            Some(Rcond) => Ok(NO_DIM),
-            Some(Solve) => linear::solve_dim(args, col),
-            // e's: the first argument's; an axis after it has none.
-            Some(Sum | Mean | MinOf | MaxOf) => Ok(d),
+        match Function::by_name(name).expect("the parser calls only array functions") {
+            Lap => grids::lap_dim(self, args, col),
+            Dd => grids::dd_dim(self, args, grids::dd_axis(args), col),
+            DdAlong(axis) => grids::dd_dim(self, args, &axis, col),
+            Spacing => Ok(grids::spacing_dim(self, args)),
+            // T's, e's: the first argument's; axes after it are names,
+            // not values to check.
+            Prev | Next | On => Ok(d),
+            Sum | Mean | MinOf | MaxOf => Ok(d),
             // A cell number (ADR 0070).
-            Some(ArgMinOf | ArgMaxOf) => Ok(NO_DIM),
-            Some(At) => reduce::at_dim(args, col),
-            _ => self.old_apply(name, args, col),
+            ArgMinOf | ArgMaxOf => Ok(NO_DIM),
+            At => reduce::at_dim(args, col),
+            Solve => linear::solve_dim(args, col),
+            // A pure number.
+            Rcond => Ok(NO_DIM),
+            // The first argument's: a table's name, which has no unit.
+            Id | Rows => Ok(d),
+            Of => tables::of_dim(args, col),
+            // T's, F's: the first argument's; the table and a corner's
+            // number after it are not values to check.
+            FromEnd | ToEnd | Corner | Outflow => Ok(d),
+            // T's, u's: the first argument's; the table after it is a
+            // name, not a value to check.
+            Centre | Inner | Outer | Across => Ok(d),
+            // The first argument's: a sides table's name, which has no
+            // unit.
+            Boundary => Ok(d),
+            Measure => meshes::measure_dim(self, args, col),
+            Normal => meshes::normal_dim(self, args, col),
         }
-    }
-
-    fn old_apply(&self, name: &str, args: &[(&Ast, Dim)], col: usize) -> DimResult {
-        let grid = self.arrays.grid;
-        let d = args.first().map_or(NO_DIM, |a| a.1);
-        let too_high = || (col, DIM_TOO_HIGH.to_string());
-        Ok(match name {
-            "lap" => {
-                // Along the array's own axes (ADR 0080).
-                let own = match args[0].0 {
-                    Ast::Name(n, _) => self.arrays.of(n),
-                    _ => Vec::new(),
-                };
-                let Some(&first) = own.first() else {
-                    return Ok(d);
-                };
-                if own
-                    .iter()
-                    .any(|&a| self.axis_dims[a] != self.axis_dims[first])
-                {
-                    let names: Vec<&str> = own.iter().map(|&a| grid[a].name.as_str()).collect();
-                    return Err((
-                        col,
-                        format!(
-                            "lap adds second derivatives along {}, so the axes need the same unit",
-                            names.join(" and ")
-                        ),
-                    ));
-                }
-                dim_pow(self.axis_dims[first], 2)
-                    .and_then(|h2| dim_div(d, h2))
-                    .ok_or_else(too_high)?
-            }
-            "spacing" => match args[0].0 {
-                Ast::Name(n, _) => self.axis_dim_of(n),
-                _ => NO_DIM,
-            },
-            n if n.starts_with("dd") => {
-                let axis = if n == "dd" {
-                    args.get(1).map_or("", |a| ast_name(a.0))
-                } else {
-                    &n[2..]
-                };
-                let a = self.axis_dim_of(axis);
-                dim_div(d, a).ok_or_else(too_high)?
-            }
-            // prev, next, on: the first argument's.
-            _ => d,
-        })
     }
 }
 

@@ -1,7 +1,7 @@
 //! Which axes an expression is over: the checks before lowering, and the
 //! helpers for grids, cells and meshes they use.
 
-use super::functions::{linear, meshes, reduce, tables, Check, Function};
+use super::functions::{grids, linear, meshes, reduce, tables, Check, Function};
 use super::Axis;
 use simsandbox_expr::{ArrayOp, Ast, Edge, Expr, Line as GridLine, MAX_AXES};
 /// The variables `e` reads, edge values of its stencils included.
@@ -130,7 +130,8 @@ pub(super) fn fit(
 }
 
 /// The axes of `ast`'s value (ADR 0080), checking every array operation:
-/// known, with the right arguments. Names not in `shapes` are scalars.
+/// known, with the right arguments (each function's rule is in
+/// [`super::functions`]). Names not in `shapes` are scalars.
 pub(super) fn axes_of(
     ast: &Ast,
     grid: &[Axis],
@@ -159,218 +160,28 @@ pub(super) fn axes_of(
     }
     use Function::*;
     let c = Check::new(name, args, col, grid, shapes);
-    match Function::by_name(name) {
-        Some(Id) => tables::id_axes(&c),
-        Some(Rows) => tables::rows_axes(&c),
-        Some(Of) => tables::of_axes(&c),
-        Some(FromEnd | ToEnd) => tables::ends_axes(&c, false),
-        Some(Corner) => tables::ends_axes(&c, true),
-        Some(Outflow) => tables::outflow_axes(&c),
-        Some(Centre) => meshes::expansion_axes(&c, meshes::centre_expansion),
-        Some(Measure) => meshes::expansion_axes(&c, meshes::measure_expansion),
-        Some(Normal) => meshes::expansion_axes(&c, meshes::normal_expansion),
-        Some(Inner | Outer | Across) => meshes::sides_axes(&c, false),
-        Some(Boundary) => meshes::sides_axes(&c, true),
-        Some(Solve) => linear::solve_axes(&c),
-        Some(Rcond) => linear::rcond_axes(&c),
-        Some(Sum | Mean | MinOf | MaxOf | ArgMinOf | ArgMaxOf) => reduce::along_axes(&c),
-        Some(At) => reduce::at_axes(&c),
-        _ => old_axes(name, args, col, grid, shapes),
-    }
-}
-
-fn old_axes(
-    name: &String,
-    args: &[Ast],
-    col: usize,
-    grid: &[Axis],
-    shapes: &Shapes,
-) -> std::result::Result<Vec<usize>, (usize, String)> {
-    let of = |a: &Ast| axes_of(a, grid, shapes);
-    let names: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
-    let axis_named = |a: &Ast| match a {
-        Ast::Name(n, _) => names.iter().position(|m| m == n),
-        _ => None,
-    };
-    let list = |axes: &[usize]| {
-        axes.iter()
-            .map(|&a| names[a])
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let count = |ok: bool, want: &str| {
-        if ok {
-            Ok(())
-        } else {
-            Err((
-                col,
-                format!("'{name}' takes {want}, got {} argument(s)", args.len()),
-            ))
-        }
-    };
-    // A stencil's array: a declared or defined quantity by name.
-    let named_array = || -> std::result::Result<Vec<usize>, (usize, String)> {
-        match &args[0] {
-            Ast::Name(n, _) if !names.contains(&n.as_str()) && shapes.get(n).is_some_and(|s| !s.is_empty()) => {
-                Ok(shapes[n].clone())
-            }
-            _ => Err((
-                col,
-                format!("'{name}' takes the name of an array, e.g. {name}(T); define one above (D = k*T) for an expression"),
-            )),
-        }
-    };
-    let not_over = |what: &str, axes: &[usize], a: &str| {
-        Err((
-            col,
-            format!(
-                "{what} is over {}, not {a}",
-                if axes.is_empty() {
-                    "no axis".to_string()
-                } else {
-                    list(axes)
-                }
-            ),
-        ))
-    };
-    // Rows have no neighbours by place (ADR 0079: edges come with stage 2).
-    let no_rows = |axes: Vec<usize>| -> std::result::Result<Vec<usize>, (usize, String)> {
-        match axes.iter().find(|&&a| grid[a].table.is_some()) {
-            Some(&a) => Err((
-                col,
-                format!(
-                    "'{name}' works along a grid; {} is a table, whose rows have no neighbours by place",
-                    names[a]
-                ),
-            )),
-            None => Ok(axes),
-        }
-    };
-    match name.as_str() {
-        "lap" => {
-            count(args.len() == 1, "1 argument")?;
-            no_rows(named_array()?)
-        }
-        "prev" | "next" => {
-            count(matches!(args.len(), 1 | 2), "an array and an axis")?;
-            let axes = no_rows(named_array()?)?;
-            // Over two axes, which one is named (ADR 0080).
-            if args.len() == 1 && axes.len() > 1 {
-                let ways: Vec<String> = axes
-                    .iter()
-                    .map(|&a| format!("{name}({}, {})", ast_name(&args[0]), names[a]))
-                    .collect();
-                return Err((
-                    col,
-                    format!(
-                        "{} is over {}: name the axis, {}",
-                        ast_name(&args[0]),
-                        list(&axes),
-                        ways.join(" or ")
-                    ),
-                ));
-            }
-            if let Some(a) = args.get(1) {
-                match axis_named(a) {
-                    Some(i) if axes.contains(&i) => {}
-                    _ => {
-                        return Err((
-                            col,
-                            format!(
-                                "'{name}' runs along an axis of the array ({}): {name}(v, {})",
-                                list(&axes),
-                                names[axes[0]]
-                            ),
-                        ))
-                    }
-                }
-            }
-            Ok(axes)
-        }
-        "dd" => {
-            // dd(T, x): the derivative along a named axis (ADR 0080).
-            count(args.len() == 2, "an array and an axis, e.g. dd(T, x)")?;
-            no_rows(of(&args[0])?)?;
-            let Some(i) = axis_named(&args[1]) else {
-                return Err((
-                    col,
-                    format!(
-                        "'dd(T, {})' differentiates along an axis of the grid ({})",
-                        names[0],
-                        names.join(", ")
-                    ),
-                ));
-            };
-            let axes = named_array()?;
-            if !axes.contains(&i) {
-                return not_over(&format!("'dd' of {}", ast_name(&args[0])), &axes, names[i]);
-            }
-            Ok(axes)
-        }
-        d if d.starts_with("dd") => {
-            count(args.len() == 1, "1 argument")?;
-            no_rows(of(&args[0])?)?;
-            let Some(i) = names.iter().position(|n| *n == &d[2..]) else {
-                return Err((col, format!("'{d}' is a derivative along '{}', which is not an axis of the grid ({}): write dd{} or dd(T, {})", &d[2..], names.join(", "), names[0], names[0])));
-            };
-            let axes = named_array()?;
-            if !axes.contains(&i) {
-                return not_over(&format!("'{d}' of {}", ast_name(&args[0])), &axes, names[i]);
-            }
-            Ok(axes)
-        }
-        "spacing" => {
-            let axis = args
-                .first()
-                .and_then(axis_named)
-                .filter(|_| args.len() == 1);
-            match axis {
-                Some(a) if grid[a].table.is_some() => Err((
-                    col,
-                    format!(
-                        "'spacing' takes a grid's axis; {} is a table, whose rows have no spacing",
-                        names[a]
-                    ),
-                )),
-                Some(_) => Ok(Vec::new()),
-                None => Err((
-                    col,
-                    format!("'spacing' takes an axis: spacing({})", names[0]),
-                )),
-            }
-        }
-        "on" => {
-            count(args.len() == 3, "a quantity and two axes, e.g. on(J, p, q)")?;
-            let axes = no_rows(of(&args[0])?)?;
-            let (Some(a), Some(b)) = (axis_named(&args[1]), axis_named(&args[2])) else {
-                return Err((
-                    col,
-                    "'on(T, a, b)' names two axes: T's axis a, read as b".into(),
-                ));
-            };
-            if !axes.contains(&a) {
-                return not_over("the quantity", &axes, names[a]);
-            }
-            if a != b && axes.contains(&b) {
-                return Err((col, format!("the quantity is over {} already", names[b])));
-            }
-            if grid[a].cells != grid[b].cells {
-                return Err((
-                    col,
-                    format!(
-                        "{} has {} cells and {} has {}: 'on' needs the same number",
-                        names[a], grid[a].cells, names[b], grid[b].cells
-                    ),
-                ));
-            }
-            let mut out: Vec<usize> = axes
-                .into_iter()
-                .map(|x| if x == a { b } else { x })
-                .collect();
-            out.sort_unstable();
-            Ok(out)
-        }
-        _ => unreachable!(),
+    match Function::by_name(name).expect("the parser calls only array functions") {
+        Lap => grids::lap_axes(&c),
+        Dd => grids::dd_axes(&c),
+        DdAlong(axis) => grids::dd_along_axes(&c, &axis),
+        Prev | Next => grids::shift_axes(&c),
+        Spacing => grids::spacing_axes(&c),
+        On => grids::on_axes(&c),
+        Sum | Mean | MinOf | MaxOf | ArgMinOf | ArgMaxOf => reduce::along_axes(&c),
+        At => reduce::at_axes(&c),
+        Solve => linear::solve_axes(&c),
+        Rcond => linear::rcond_axes(&c),
+        Id => tables::id_axes(&c),
+        Rows => tables::rows_axes(&c),
+        Of => tables::of_axes(&c),
+        FromEnd | ToEnd => tables::ends_axes(&c, false),
+        Corner => tables::ends_axes(&c, true),
+        Outflow => tables::outflow_axes(&c),
+        Centre => meshes::expansion_axes(&c, meshes::centre_expansion),
+        Measure => meshes::expansion_axes(&c, meshes::measure_expansion),
+        Normal => meshes::expansion_axes(&c, meshes::normal_expansion),
+        Inner | Outer | Across => meshes::sides_axes(&c, false),
+        Boundary => meshes::sides_axes(&c, true),
     }
 }
 
