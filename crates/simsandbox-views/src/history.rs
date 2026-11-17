@@ -282,41 +282,53 @@ pub fn paired(signals: &[(&History, SignalRef)]) -> Paired {
     if sources.is_empty() {
         sources.extend(signals.first().map(|(h, _)| *h));
     }
-    // For each common time, its sample in every source.
-    let rows: Vec<Vec<usize>> = match sources.as_slice() {
-        [] => Vec::new(),
-        [h] => (0..h.len()).map(|k| vec![k]).collect(),
-        _ => {
-            let base = (0..sources.len())
-                .min_by_key(|&i| sources[i].len())
-                .unwrap_or(0);
-            sources[base]
-                .times()
-                .iter()
-                .enumerate()
-                .filter_map(|(k, &t)| {
-                    sources
-                        .iter()
-                        .enumerate()
-                        .map(|(i, h)| {
-                            if i == base {
-                                return Some(k);
-                            }
-                            let j = h.times().partition_point(|&x| x < t);
-                            (h.times().get(j) == Some(&t)).then_some(j)
-                        })
-                        .collect()
-                })
-                .collect()
+    // One recording: every sample, read in place.
+    if let [h] = sources.as_slice() {
+        let t = h.times().to_vec();
+        let columns = signals
+            .iter()
+            .map(|(g, s)| match s {
+                SignalRef::Time => t.clone(),
+                _ if std::ptr::eq(*g, *h) => h.values(*s),
+                _ => t.clone(),
+            })
+            .collect();
+        return Paired { t, columns };
+    }
+    // For each common time, its sample in every source: one row of
+    // `width` sample numbers per time, in one array.
+    let width = sources.len();
+    let mut rows: Vec<usize> = Vec::new();
+    if let Some(base) = (0..width).min_by_key(|&i| sources[i].len()) {
+        let mut row = vec![0; width];
+        for (k, &t) in sources[base].times().iter().enumerate() {
+            let found = sources.iter().enumerate().all(|(i, h)| {
+                if i == base {
+                    row[i] = k;
+                    return true;
+                }
+                let j = h.times().partition_point(|&x| x < t);
+                row[i] = j;
+                h.times().get(j) == Some(&t)
+            });
+            if found {
+                rows.extend_from_slice(&row);
+            }
         }
-    };
+    }
     let at = |h: &History| sources.iter().position(|s| std::ptr::eq(*s, h));
-    let t: Vec<f64> = rows.iter().map(|r| sources[0].times()[r[0]]).collect();
+    let t: Vec<f64> = rows
+        .chunks_exact(width.max(1))
+        .map(|r| sources[0].times()[r[0]])
+        .collect();
     let columns = signals
         .iter()
         .map(|(h, s)| match (s, at(h)) {
             (SignalRef::Time, _) | (_, None) => t.clone(),
-            (s, Some(i)) => rows.iter().map(|r| h.value(*s, r[i])).collect(),
+            (s, Some(i)) => rows
+                .chunks_exact(width)
+                .map(|r| h.value(*s, r[i]))
+                .collect(),
         })
         .collect();
     Paired { t, columns }
@@ -713,7 +725,11 @@ impl History {
 
     /// All values of a signal, in sample order.
     pub fn values(&self, s: SignalRef) -> Vec<f64> {
-        (0..self.len()).map(|k| self.value(s, k)).collect()
+        match s {
+            SignalRef::Time => self.times.clone(),
+            SignalRef::Signal(i) => self.points[i].iter().map(|p| p.y).collect(),
+            SignalRef::Field(_) => vec![f64::NAN; self.len()],
+        }
     }
 }
 

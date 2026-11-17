@@ -41,6 +41,11 @@ pub fn segments(first: usize, n: usize, key: &ColourKey, chunks: usize) -> Vec<S
             });
         (lo, (hi - lo).max(1e-300))
     };
+    // The scale, once for every segment.
+    let (lo, span) = match key {
+        ColourKey::Constant => (0.0, 1.0),
+        ColourKey::Time(v) | ColourKey::Value(v) => range(v),
+    };
     let chunk = (n - first).div_ceil(chunks.max(1)).max(1);
     let mut out = Vec::new();
     let mut start = first;
@@ -50,14 +55,10 @@ pub fn segments(first: usize, n: usize, key: &ColourKey, chunks: usize) -> Vec<S
         let colour = match key {
             ColourKey::Constant => LINE,
             ColourKey::Time(t) => {
-                let (lo, span) = range(t);
                 let age = ((t[mid] - lo) / span) as f32;
                 LINE.gamma_multiply(0.15 + 0.85 * age.clamp(0.0, 1.0))
             }
-            ColourKey::Value(v) => {
-                let (lo, span) = range(v);
-                sequential(((v[mid] - lo) / span) as f32)
-            }
+            ColourKey::Value(v) => sequential(((v[mid] - lo) / span) as f32),
         };
         out.push(Segment { start, end, colour });
         start = end;
