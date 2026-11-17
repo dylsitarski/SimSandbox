@@ -26,6 +26,9 @@ pub struct SampleHold {
     spec: BlockSpec,
     method: MethodSpec,
     every: Every,
+    /// Its schedule, kept so a step does not copy it (a list of times
+    /// can be long); where it stands is set from the state each step.
+    trigger: Trigger,
 }
 
 impl SampleHold {
@@ -59,14 +62,9 @@ impl SampleHold {
                     accuracy: AccuracyClass::Quantitative,
                 },
             },
+            trigger: Trigger::new(every.clone()),
             every,
         }
-    }
-
-    fn trigger(&self, state: &[f64]) -> Trigger {
-        let mut t = Trigger::new(self.every.clone());
-        t.set_position((state[NEXT_TIME], state[NEXT_INDEX] as usize));
-        t
     }
 }
 
@@ -95,7 +93,8 @@ impl Block for SampleHold {
     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
         let t = ctx.t + ctx.dt;
         let eps = 1e-9 * ctx.dt.max(t.abs());
-        let mut trigger = self.trigger(io.state);
+        let trigger = &mut self.trigger;
+        trigger.set_position((io.state[NEXT_TIME], io.state[NEXT_INDEX] as usize));
         io.state[DUE] = if trigger.due(t, ctx.step + 1, eps) {
             1.0
         } else {
