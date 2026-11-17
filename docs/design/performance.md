@@ -412,3 +412,49 @@ Measured and left:
 - **A sparsity hook for fused groups.** A fused group's structure is probed once per run (n + 1 evaluations of the group, kept in the `Workspace`), not per step: two coupled 40 × 40 typed grids with TR-BDF2 (3 200 states) take 0.24 s for the first step against 0.05–0.06 s for the next; the difference is the probe and building the LU's structure once (`sparse_lu::Symbolic::new`: 0.6 of 6.2 thousand million instructions over five steps). The steady cost there is the Jacobian's colouring, which the coupling through `mean` makes dense: a hook giving the exact structure would find the same.
 - **`FusedSystem::rhs`** (`EquationGroup`, built in code) still allocates per call; no model file reaches it (only a test builds one). The master's fused-group right-hand side keeps its arrays since the [previous pass](#the-step-loop-and-recording-2026-11-17).
 - **Still per evaluation, not taken:** the LU's fronts zeroed for assembly (10% of Gray–Scott 48 × 48 with TR-BDF2; they must start at zero); `faer`'s pivoting LU, used when the LU on the pattern refuses a pivot (the bridge with backward Euler), allocating inside `faer`; a table block's states and inputs gathered into fresh arrays twice a step (the rest of the bridge's allocations, about a fifth of its step); `EquationSet::outputs` copying the states into the outputs (15% of gray-scott).
+
+## The views and the app's frames (2026-11-17)
+
+The third part of the [review](../research/2026-11-14-code-review.md) §4: what the views and the app pay at every frame. Measured first:
+
+- **Frames:** `cargo run --release -p simsandbox-session --example view_frames -- FILE --t-end T [--view K] [--steps S]` runs a model to `T`, then draws its views frame after frame as the app does (egui's frame and its tessellation, without a GPU) and prints the time, the vertices and the texture bytes uploaded per frame; `--steps S` steps the model between frames (running), else it is still (paused). Instructions per frame: callgrind's total for 8 frames less that for 4, over 4. Wall time: the best of three runs of 20 frames, 1200 × 800 points.
+- **Cases:** recordings at the history's limit (99 901 samples of Lorenz, predator-prey and pendulum-drag, `--t-end 999` or `499`), each view alone: Lorenz's three signals against time (`plot.xy`) and its `plot.3d`, predator-prey against time and its phase portrait coloured by time, pendulum-drag against time and the bob's path; Lorenz to t = 5 (500 samples); heat maps of gray-scott (128 × 128), Gray–Scott at 512 × 512 and heat-rod.
+- **The app's worker:** the time `Model::of` (what the worker publishes after each batch of commands) takes, in a test build, for every example and profiling case.
+- **Pictures:** `simsandbox render` of the cases before and after, compared pixel by pixel; screenshots of the app under Xvfb.
+
+Before, a `plot.xy` at the history's limit took 40–80 ms a frame: `paired` built a `Vec` per sample (half the instructions), egui_plot transformed every sample and egui tessellated a line through each (1.2 million vertices for Lorenz). A paused heat map coloured its field and uploaded it every frame (64 KB at 128 × 128, 1 MB at 512 × 512). `Model::of` takes 3–70 µs per example and 0.7 ms for many-blocks (40 cars), in a test build (opt-level 1, dependencies unoptimised).
+
+Changed, each with the same simulation results (no change reaches a simulation):
+
+| Change | Where | Gain |
+|---|---|---|
+| One recording's signals paired in place, several with one array of rows; a coloured line's scale found once, not once per segment | `history.rs` (`paired`), `colour.rs` (`segments`) | Lorenz against time −47%, its `plot.3d` −87%, phase portrait coloured by time −76% |
+| `plot.xy` reads its samples where the history keeps them; a curve with more samples than twice the plot's width in pixels is thinned: of consecutive points in one column (four to a pixel) the first, last, lowest, highest, leftmost and rightmost are kept, in order (`decimate::Columns`) | `builtin.rs`, `decimate.rs` | against time −42% to −71% further, 5 ms a frame instead of 37–70 |
+| `plot.xy` keeps its ranges and thinned lines, and lends them to the plot, while the recordings' stamps (`History::stamp`), the bindings, the trail length, the plot's width and orientation are the same | `builtin.rs` (`Kept`), `history.rs` | paused: a further −82% to −86% |
+| A heat map colours and uploads its textures only when the field's stamp, the bindings, the slicing, the log scale, the trail length or the facets change | `fields.rs` | paused: −88% to −99%, nothing uploaded |
+
+Per frame, instructions (millions) and wall time, before → after:
+
+| Case | Before | After, paused | After, running |
+|---|---|---|---|
+| Lorenz against time | 280.1, 80.7 ms | 15.3, 2.3 ms | 84.7, 9.2 ms |
+| Lorenz `plot.3d` | 202.9, 32.6 ms | 26.8, 4.3 ms | |
+| predator-prey against time | 184.1, 44.9 ms | 8.5, 0.9 ms | |
+| predator-prey coloured by time | 230.7, 46.1 ms | 33.6, 14.4 ms | |
+| pendulum-drag against time | 184.3, 40.5 ms | 8.1, 0.9 ms | |
+| pendulum-drag's path | 94.7, 15.4 ms | 3.9, 0.9 ms | |
+| Lorenz, 500 samples | 2.36, 0.36 ms | 1.49, 0.28 ms | |
+| gray-scott heat map | 5.86, 0.58 ms, 64 KB | 0.72, 0.08 ms, 0 | 9.9, 0.77 ms (as before) |
+| Gray–Scott 512 × 512 heat map | 83.1, 10.9 ms, 1 MB | 0.74, 0.09 ms, 0 | |
+| heat-rod heat map | 8.88, 1.0 ms | 0.44, 0.06 ms | |
+
+Running, Lorenz's frame is the thinning pass over every sample (about 35 instructions a point); predator-prey's view coloured by time thins little, because it draws `prey` against time (see below), whose columns hold a point or two each.
+
+Pictures: renders of a few hundred samples (every example's `render --t-end 1`, in the hash check) are identical. At 50 000–100 000 samples the lines are smoothed a little differently where many overlap: Lorenz against time, 15% of pixels differ, 0.06% by more than 32/255; coupled oscillators 21% and 0.04%; units, predator-prey and pendulum-drag less; none visible at three times the size. One column to a pixel differed by more (1.3% of Lorenz's pixels by more than 32/255: faint stripes in dense areas), two columns 0.2%; four were kept. App screenshots under Xvfb (Lorenz against time and its phase portrait, Gray–Scott) differ only by the run's progress.
+
+Measured and left:
+
+- **Publishing the model only when it changed.** The worker clones the model (`Model::of`) after every batch of commands. Commands that change nothing it publishes are rare: Run, Pause and speed, and the unsaved check once a second (which itself serialises the model, 30–490 µs). A slider or a view's pointer changes a parameter's value, which the published rows hold, so they need it. Once a second at most 0.7 ms (the largest case, in a test build) is under 0.1% of the worker's time.
+- **Phase portraits thinned by columns** keep most points when the path retraces itself (an orbit): pendulum-drag's path draws 3.9 M instructions a frame paused, but predator-prey's coloured view still 33.6 M.
+- **Thinning while running** reads every sample each frame; keeping the columns of the samples already thinned would make it proportional to the new samples. Not done: 9 ms a frame at the history's limit, within the frame.
+- **`plot.3d`** still projects and draws every point (at most 20 000 drawn), 4.3 ms a frame for Lorenz.

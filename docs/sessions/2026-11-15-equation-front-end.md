@@ -17,13 +17,15 @@
 - 2026-11-17: the review's third priority begun: the step loop and recording, measured first with callgrind, ten commits, 10–50% fewer instructions per step, the same bits ([performance](../design/performance.md#the-step-loop-and-recording-2026-11-17)). Next: cell phases in `simsandbox-expr` (a thread pool, static index tables, implicit methods' buffers), then the views and the app.
 - 2026-11-17: the review's third priority, second part: typed equations' per-evaluation costs, measured first, five commits, the same bits ([performance](../design/performance.md#typed-equations-per-evaluation-costs-2026-11-17)): Gather and Along without tables, the implicit methods' arrays in the `Workspace`, Take in place, tables' ids searched and their inputs built once. A thread pool for phases needs rayon (no `unsafe`): tried, no faster, not added. Next: the views and the app.
 
+- 2026-11-17: the review's third priority, third part: the views' frames, measured first (`view_frames`), four commits: `paired` in place, `plot.xy` thinned to pixel columns and kept between frames, heat maps uploaded only on change ([performance](../design/performance.md#the-views-and-the-apps-frames-2026-11-17)). The worker's publish-when-dirty measured and left. Found: `plot.xy` coloured by `t` draws `y` against time (STATUS, known limitations).
+
 ## Decided
 
 - Owner (2026-11-14): the single build of a model that uses models is deferred ([ADR 0090](../decisions/0090-one-engine-for-nested-models.md), as built).
 
 ## Left open
 
-- The rest of the review's third priority (views and app) and its fourth; the app as taken apart, to try in the window; what ADR 0098 left in the kernel, for the plugin interface's design.
+- The review's fourth priority (the third is done: views 2026-11-17; the worker's publishing measured and left); the phase-portrait bug (`plot.xy` coloured by `t` draws `y` against time); the app as taken apart, to try in the window; what ADR 0098 left in the kernel, for the plugin interface's design.
 
 ## Notes for the next session
 
