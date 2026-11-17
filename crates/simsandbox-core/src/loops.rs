@@ -305,14 +305,17 @@ impl OutputPlan {
     /// Make the feedthrough outputs consistent with their inputs. Other
     /// outputs must already be final. `eval(unit, inputs, outputs)`
     /// computes all of a unit's outputs from its inputs (its state held).
+    /// `scratch` holds a unit's outputs as computed, kept by the caller
+    /// between calls.
     pub fn solve(
         &self,
         method: LoopMethod,
         outputs: &mut [Vec<f64>],
         inputs: &mut [Vec<f64>],
         eval: &mut Eval<'_>,
+        scratch: &mut Vec<f64>,
     ) -> Result<()> {
-        self.solve_active(method, outputs, inputs, eval, None)
+        self.solve_active(method, outputs, inputs, eval, None, scratch)
     }
 
     /// [`OutputPlan::solve`] for the units `active` marks only (ADR 0066
@@ -325,14 +328,14 @@ impl OutputPlan {
         inputs: &mut [Vec<f64>],
         eval: &mut Eval<'_>,
         active: Option<&[bool]>,
+        scratch: &mut Vec<f64>,
     ) -> Result<()> {
         let on = |u: usize| active.is_none_or(|a| a[u]);
-        let mut scratch = Vec::new();
         for item in &self.items {
             match item {
                 Item::One(ports) if !on(ports[0].unit) => {}
                 Item::One(ports) => {
-                    self.compute(&ports[0], outputs, inputs, eval, &mut scratch)?;
+                    self.compute(&ports[0], outputs, inputs, eval, scratch)?;
                     for p in ports {
                         outputs[p.unit][p.offset..p.offset + p.len]
                             .copy_from_slice(&scratch[p.offset..p.offset + p.len]);

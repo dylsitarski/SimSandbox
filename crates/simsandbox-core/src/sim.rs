@@ -200,7 +200,12 @@ impl GroupPlan {
             held,
         } = members;
         let m = self.members.len();
-        let GroupScratch { us, ys, ps } = scratch;
+        let GroupScratch {
+            us,
+            ys,
+            ps,
+            computed,
+        } = scratch;
         for v in [&mut *us, &mut *ys, &mut *ps] {
             if v.len() < m {
                 v.resize_with(m, Vec::new);
@@ -243,8 +248,11 @@ impl GroupPlan {
             }
         }
         if !self.outputs.is_empty() {
-            self.outputs
-                .solve(self.method, &mut ys[..m], &mut us[..m], &mut |k, u, y| {
+            self.outputs.solve(
+                self.method,
+                &mut ys[..m],
+                &mut us[..m],
+                &mut |k, u, y| {
                     if let Some(eq) = blocks[k].as_equations() {
                         let n = driven[k].0;
                         let p: &[f64] = if with(k, u, &mut ps[k]) {
@@ -255,7 +263,9 @@ impl GroupPlan {
                         eq.outputs(t, state(k), &u[..n], p, y);
                     }
                     Ok(())
-                })?;
+                },
+                computed,
+            )?;
         }
         for r in &self.internal {
             for i in 0..r.len {
@@ -297,12 +307,13 @@ type GroupWork<'a> = (
 
 /// A fused group's working arrays for its right-hand side, kept between
 /// evaluations: each member's inputs, outputs and (when some are driven)
-/// parameters.
+/// parameters, and a member's outputs as its output plan computes them.
 #[derive(Default)]
 struct GroupScratch {
     us: Vec<Vec<f64>>,
     ys: Vec<Vec<f64>>,
     ps: Vec<Vec<f64>>,
+    computed: Vec<f64>,
 }
 
 /// One Block's part of the run, lent to a unit of work (ADR 0066 step 6).
@@ -450,6 +461,9 @@ pub struct Simulator {
     costs: crate::parallel::Costs,
     /// Each fused group's working arrays, kept between evaluations.
     scratch: Vec<GroupScratch>,
+    /// A block's outputs as [`Simulator::resolve`] computes them, kept
+    /// between steps.
+    resolved: Vec<f64>,
     /// Threads kept for the run, started the first time clocks are worth
     /// stepping on several cores.
     pool: Option<crate::parallel::Pool>,
@@ -806,6 +820,7 @@ impl Simulator {
             parallel: crate::parallel::Parallel::default(),
             costs: crate::parallel::Costs::pooled(clocks),
             scratch: (0..groups).map(|_| GroupScratch::default()).collect(),
+            resolved: Vec::new(),
             pool: None,
             late: Vec::new(),
             gates: Vec::new(),
@@ -989,6 +1004,7 @@ impl Simulator {
         let (states, tables) = (&mut self.states, &mut self.tables);
         let (pin, pout) = (&mut self.population_inputs, &mut self.population_outputs);
         let rows_routes = &self.population_routes;
+        let resolved = &mut self.resolved;
         let active = (!self.model.clocks.is_empty() || self.held.contains(&true))
             .then_some(self.active.as_slice());
         // With several clocks a block computes at its own clock's time.
@@ -1026,6 +1042,7 @@ impl Simulator {
                 )
             },
             active,
+            resolved,
         )
     }
 
