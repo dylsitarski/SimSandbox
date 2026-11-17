@@ -730,19 +730,25 @@ impl ArrIns {
                 };
             }
             ArrIns::Take { d, a, n, i, m } => {
-                // Read every place first: the result may share registers
-                // with them.
-                let picked: Vec<f64> = (0..m)
-                    .map(|k| {
-                        let p = r[i + k].round();
-                        if p >= 0.0 && p < n as f64 {
-                            r[a + p as usize]
-                        } else {
-                            f64::NAN
-                        }
-                    })
-                    .collect();
-                r[d..d + m].copy_from_slice(&picked);
+                let pick = |r: &[f64], k: usize| {
+                    let p = r[i + k].round();
+                    if p >= 0.0 && p < n as f64 {
+                        r[a + p as usize]
+                    } else {
+                        f64::NAN
+                    }
+                };
+                let apart = |at: usize, len: usize| d + m <= at || at + len <= d;
+                if apart(a, n) && apart(i, m) {
+                    for k in 0..m {
+                        r[d + k] = pick(r, k);
+                    }
+                } else {
+                    // Read every place first: the result shares registers
+                    // with them.
+                    let picked: Vec<f64> = (0..m).map(|k| pick(r, k)).collect();
+                    r[d..d + m].copy_from_slice(&picked);
+                }
             }
             ArrIns::Scatter { d, a, al, i, m, n } => {
                 let mut sums = vec![0.0; n];
