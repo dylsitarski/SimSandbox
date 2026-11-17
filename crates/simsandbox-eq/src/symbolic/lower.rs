@@ -1,111 +1,150 @@
 //! Lowering a checked syntax tree to an expression with its axes (ADR 0080).
 
+use super::functions::{tables, Function};
 use super::shapes::{ast_name, fit, line_of, mesh_expansion, number, union, Shapes};
 use super::Axis;
-use simsandbox_expr::{Along, ArrayOp, Ast, Expr, Op, MAX_AXES};
+use simsandbox_expr::{Along, ArrayOp, Ast, Expr, MAX_AXES};
+
+/// An expression with its axes, or the mistake found lowering it.
+pub(super) type Lowered = std::result::Result<(Expr, Vec<usize>), simsandbox_expr::Error>;
+
+/// What lowering needs: the grid, every quantity's axes and where its
+/// values are.
+pub(super) struct Lower<'a> {
+    pub(super) grid: &'a [Axis],
+    shapes: &'a Shapes,
+    slot: &'a dyn Fn(&str) -> Option<usize>,
+    /// Builds `lap`, `dd…`, `prev`, `next` and `spacing`.
+    pub(super) stencil: &'a dyn Fn(&Function, &[Ast]) -> Expr,
+    /// Each table's ids, by axis.
+    pub(super) ids: &'a [Option<usize>],
+    /// Each edge, cell or side table's places, by axis.
+    pub(super) ends: &'a [Option<Vec<usize>>],
+}
+
 /// Lower `ast` to an expression (ADR 0080), with its axes: operands over
 /// different axes are spread over all of them, reductions along an axis
 /// and `on` become array instructions. `stencil` builds `lap`, `dd…`,
 /// `prev`, `next` and `spacing` from their arguments. Checked by
-/// [`axes_of`] first.
+/// [`super::shapes::axes_of`] first.
 pub(super) fn lower(
     ast: &Ast,
     grid: &[Axis],
     shapes: &Shapes,
     slot: &dyn Fn(&str) -> Option<usize>,
-    stencil: &dyn Fn(&str, &[Ast]) -> Expr,
+    stencil: &dyn Fn(&Function, &[Ast]) -> Expr,
     ids: &[Option<usize>],
     ends: &[Option<Vec<usize>>],
-) -> std::result::Result<(Expr, Vec<usize>), simsandbox_expr::Error> {
-    let low = |a: &Ast| lower(a, grid, shapes, slot, stencil, ids, ends);
-    Ok(match ast {
-        Ast::Num(v) => (Expr::Num(*v), Vec::new()),
-        Ast::Name(n, c) => match slot(n) {
-            Some(i) => (Expr::Var(i), shapes.get(n).cloned().unwrap_or_default()),
-            None => {
-                return Err(simsandbox_expr::Error {
-                    column: *c,
-                    message: format!("unknown name '{n}'"),
-                })
+) -> Lowered {
+    Lower {
+        grid,
+        shapes,
+        slot,
+        stencil,
+        ids,
+        ends,
+    }
+    .low(ast)
+}
+
+impl Lower<'_> {
+    /// `ast` lowered, with its axes.
+    pub(super) fn low(&self, ast: &Ast) -> Lowered {
+        let grid = self.grid;
+        let low = |a: &Ast| self.low(a);
+        Ok(match ast {
+            Ast::Num(v) => (Expr::Num(*v), Vec::new()),
+            Ast::Name(n, c) => match (self.slot)(n) {
+                Some(i) => (
+                    Expr::Var(i),
+                    self.shapes.get(n).cloned().unwrap_or_default(),
+                ),
+                None => {
+                    return Err(simsandbox_expr::Error {
+                        column: *c,
+                        message: format!("unknown name '{n}'"),
+                    })
+                }
+            },
+            Ast::Neg(a) => {
+                let (e, axes) = low(a)?;
+                (Expr::Neg(Box::new(e)), axes)
             }
-        },
-        Ast::Neg(a) => {
-            let (e, axes) = low(a)?;
-            (Expr::Neg(Box::new(e)), axes)
-        }
-        Ast::Bin(op, a, b) => {
-            let ((ea, aa), (eb, ab)) = (low(a)?, low(b)?);
-            let to = union(&aa, &ab);
-            (
-                Expr::Bin(
-                    *op,
-                    Box::new(fit(ea, &aa, &to, None, grid)),
-                    Box::new(fit(eb, &ab, &to, None, grid)),
-                ),
-                to,
-            )
-        }
-        Ast::Call(f, args) => {
-            let low: Vec<(Expr, Vec<usize>)> = args
-                .iter()
-                .map(low)
-                .collect::<std::result::Result<_, _>>()?;
-            let to = low.iter().fold(Vec::new(), |t, (_, a)| union(&t, a));
-            let args = low
-                .into_iter()
-                .map(|(e, a)| fit(e, &a, &to, None, grid))
-                .collect();
-            (Expr::Call(*f, args), to)
-        }
-        Ast::Apply(name, args, _) => {
-            let axis_named = |a: &Ast| match a {
-                Ast::Name(n, _) => grid
+            Ast::Bin(op, a, b) => {
+                let ((ea, aa), (eb, ab)) = (low(a)?, low(b)?);
+                let to = union(&aa, &ab);
+                (
+                    Expr::Bin(
+                        *op,
+                        Box::new(fit(ea, &aa, &to, None, grid)),
+                        Box::new(fit(eb, &ab, &to, None, grid)),
+                    ),
+                    to,
+                )
+            }
+            Ast::Call(f, args) => {
+                let low: Vec<(Expr, Vec<usize>)> = args
                     .iter()
-                    .position(|g| &g.name == n)
-                    .expect("checked: an axis"),
-                _ => unreachable!("checked: an axis"),
-            };
-            match name.as_str() {
-                // Each row's id, and the number of rows (ADR 0079).
-                "id" => {
-                    let i = axis_named(&args[0]);
-                    (Expr::Var(ids[i].expect("checked: a table")), vec![i])
-                }
-                "rows" => (
-                    Expr::Num(grid[axis_named(&args[0])].cells as f64),
-                    Vec::new(),
-                ),
-                // T at each edge's end (ADR 0079 stage 2): T's cells at
-                // the places of the edges' `from` (or `to`) rows.
-                "from_end" | "to_end" | "corner" => {
-                    let (t, _) = low(&args[0])?;
-                    let e = axis_named(&args[1]);
-                    let k = match name.as_str() {
-                        "from_end" => 0,
-                        "to_end" => 1,
-                        _ => match &args[2] {
-                            Ast::Num(k) => *k as usize,
-                            _ => unreachable!("checked: a corner's number"),
-                        },
-                    };
-                    let places = ends[e].as_ref().expect("checked: cells")[k];
-                    (
-                        Expr::Array(ArrayOp::Take, vec![t, Expr::Var(places)]),
-                        vec![e],
-                    )
-                }
+                    .map(low)
+                    .collect::<std::result::Result<_, _>>()?;
+                let to = low.iter().fold(Vec::new(), |t, (_, a)| union(&t, a));
+                let args = low
+                    .into_iter()
+                    .map(|(e, a)| fit(e, &a, &to, None, grid))
+                    .collect();
+                (Expr::Call(*f, args), to)
+            }
+            Ast::Apply(name, args, _) => return self.apply(name, args),
+        })
+    }
+
+    /// The axis an argument names: checked to be one.
+    pub(super) fn axis_named(&self, a: &Ast) -> usize {
+        match a {
+            Ast::Name(n, _) => self
+                .grid
+                .iter()
+                .position(|g| &g.name == n)
+                .expect("checked: an axis"),
+            _ => unreachable!("checked: an axis"),
+        }
+    }
+
+    /// A call of an array function.
+    fn apply(&self, name: &str, args: &[Ast]) -> Lowered {
+        use Function::*;
+        let f = Function::by_name(name).expect("the parser calls only array functions");
+        match f {
+            Id => tables::id_lower(self, args),
+            Rows => tables::rows_lower(self, args),
+            FromEnd => tables::end_lower(self, args, 0),
+            ToEnd => tables::end_lower(self, args, 1),
+            Corner => tables::corner_lower(self, args),
+            Outflow => tables::outflow_lower(self, args),
+            Of => tables::of_lower(self, args),
+            _ => self.old_apply(name, args),
+        }
+    }
+
+    fn old_apply(&self, name: &str, args: &[Ast]) -> Lowered {
+        let (grid, shapes, stencil) = (self.grid, self.shapes, self.stencil);
+        let low = |a: &Ast| self.low(a);
+        let axis_named = |a: &Ast| self.axis_named(a);
+        let ends = self.ends;
+        Ok({
+            match name {
                 // A side's cells' values, and whether on the boundary.
                 "inner" | "outer" | "across" | "boundary" => {
                     let f = axis_named(args.last().expect("checked: a sides table"));
                     let v = ends[f].as_ref().expect("checked: sides");
                     let n = v.len() - 4;
-                    match name.as_str() {
+                    match name {
                         "boundary" => (Expr::Var(v[n + 2]), vec![f]),
                         _ => {
                             let (t, _) = low(&args[0])?;
                             // Across: the outer cell, or on the boundary
                             // the inner one (ADR 0085 step 3).
-                            let at = v[n + match name.as_str() {
+                            let at = v[n + match name {
                                 "inner" => 0,
                                 "outer" => 1,
                                 _ => 3,
@@ -118,75 +157,20 @@ pub(super) fn lower(
                     let e = mesh_expansion(name, args, grid).expect("checked: expands");
                     low(&e)?
                 }
-                // Each cell's sum over its sides of F, outwards: + where it
-                // is the inner cell, − where the outer (ADR 0085 step 3).
-                "outflow" => {
-                    let (t, _) = low(&args[0])?;
-                    let f = axis_named(&args[1]);
-                    let c = grid[f].sides_of.or(grid[f].ends_of).expect("checked");
-                    let v = ends[f].as_ref().expect("checked: sides or edges");
-                    // Edges: + at `from`, − at `to` (their first and second
-                    // places); sides: at the inner and the outer cell.
-                    let n = if grid[f].sides_of.is_some() {
-                        v.len() - 4
-                    } else {
-                        0
-                    };
-                    let cells = grid[c].cells;
-                    let to = |at: usize| {
-                        Expr::Array(
-                            ArrayOp::Scatter { cells },
-                            vec![t.clone(), Expr::Var(v[n + at])],
-                        )
-                    };
-                    (
-                        Expr::Bin(Op::Sub, Box::new(to(0)), Box::new(to(1))),
-                        vec![c],
-                    )
-                }
-                "of" => {
-                    // The cell whose id is i: at(T, k), k the first place
-                    // where id(pts) is i, NaN if none.
-                    let (t, axes) = low(&args[0])?;
-                    let (i, _) = low(&args[1])?;
-                    let id = || Box::new(Expr::Var(ids[axes[0]].expect("checked: a table")));
-                    let near = |op: Op, by: f64| {
-                        Expr::Bin(
-                            op,
-                            id(),
-                            Box::new(Expr::Bin(
-                                Op::Add,
-                                Box::new(i.clone()),
-                                Box::new(Expr::Num(by)),
-                            )),
-                        )
-                    };
-                    let is = Expr::Bin(
-                        Op::Mul,
-                        Box::new(near(Op::Gt, -0.5)),
-                        Box::new(near(Op::Lt, 0.5)),
-                    );
-                    let place = Expr::Bin(
-                        Op::Add,
-                        Box::new(Expr::Array(ArrayOp::ArgMaxOf, vec![is.clone()])),
-                        Box::new(Expr::Bin(
-                            Op::Div,
-                            Box::new(Expr::Num(0.0)),
-                            Box::new(Expr::Array(ArrayOp::MaxOf, vec![is])),
-                        )),
-                    );
-                    (Expr::Array(ArrayOp::Cell, vec![t, place]), Vec::new())
-                }
                 "lap" | "prev" | "next" | "spacing" => {
-                    let axes = match name.as_str() {
+                    let axes = match name {
                         "spacing" => Vec::new(),
                         _ => shapes[ast_name(&args[0])].clone(),
                     };
-                    (stencil(name, args), axes)
+                    (
+                        stencil(&Function::by_name(name).expect("checked"), args),
+                        axes,
+                    )
                 }
-                d if d.starts_with("dd") => {
-                    (stencil(name, args), shapes[ast_name(&args[0])].clone())
-                }
+                d if d.starts_with("dd") => (
+                    stencil(&Function::by_name(name).expect("checked"), args),
+                    shapes[ast_name(&args[0])].clone(),
+                ),
                 "rcond" => {
                     let (ea, sa) = low(&args[0])?;
                     let op = ArrayOp::Rcond {
@@ -241,7 +225,7 @@ pub(super) fn lower(
                     let (first, axes) = low(&args[0])?;
                     if let Some(a) = args.get(1) {
                         let axis = axis_named(a);
-                        let of = match name.as_str() {
+                        let of = match name {
                             "sum" => Along::Sum,
                             "mean" => Along::Mean,
                             "minof" => Along::MinOf,
@@ -262,7 +246,7 @@ pub(super) fn lower(
                         let rest = axes.into_iter().filter(|&x| x != axis).collect();
                         (Expr::Array(op, vec![first]), rest)
                     } else {
-                        let op = match name.as_str() {
+                        let op = match name {
                             "sum" => ArrayOp::Sum,
                             "mean" => ArrayOp::Mean,
                             "minof" => ArrayOp::MinOf,
@@ -274,6 +258,6 @@ pub(super) fn lower(
                     }
                 }
             }
-        }
-    })
+        })
+    }
 }

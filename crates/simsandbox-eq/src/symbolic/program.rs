@@ -3,6 +3,7 @@
 //! outputs, the rates, the initial values and the rules.
 
 use super::declare::Declared;
+use super::functions::Function;
 use super::layout::Registers;
 use super::lower::lower;
 use super::shaped::Shaped;
@@ -44,7 +45,7 @@ struct Lowering<'a> {
 impl Lowering<'_> {
     /// The stencils, along an array's own axes (ADR 0080). Their
     /// arguments are checked by [`super::shapes::axes_of`] first.
-    fn stencil(&self, name: &str, args: &[Ast]) -> Expr {
+    fn stencil(&self, f: &Function, args: &[Ast]) -> Expr {
         let (d, r) = (self.d, self.r);
         let grid = &d.grid;
         let first_name = ast_name(&args[0]);
@@ -53,7 +54,7 @@ impl Lowering<'_> {
                 .position(|a| a.name == n)
                 .expect("checked: an axis")
         };
-        if name == "spacing" {
+        if *f == Function::Spacing {
             return Expr::Var(r.spacing_of(axis_named(first_name)));
         }
         let own = self.s.arrays.of(first_name);
@@ -70,13 +71,13 @@ impl Lowering<'_> {
             };
             Expr::Array(op, vec![Expr::Var(a), Expr::Var(r.spacing_of(axis))])
         };
-        if name == "lap" {
+        if *f == Function::Lap {
             // The sum of the second derivatives along each axis.
             return own[1..].iter().fold(along(own[0], true), |sum, &i| {
                 Expr::Bin(Op::Add, Box::new(sum), Box::new(along(i, true)))
             });
         }
-        if name == "prev" || name == "next" {
+        if let Function::Prev | Function::Next = f {
             let axis = match args.get(1) {
                 Some(Ast::Name(n, _)) => axis_named(n),
                 _ => own[0],
@@ -84,14 +85,14 @@ impl Lowering<'_> {
             let op = ArrayOp::Shift {
                 line: line_of(&own, axis, grid),
                 edges: r.edges_of(d, first_name, axis),
-                up: name == "next",
+                up: *f == Function::Next,
             };
             return Expr::Array(op, vec![Expr::Var(a), Expr::Var(r.spacing_of(axis))]);
         }
-        let axis = if name == "dd" {
-            ast_name(&args[1])
-        } else {
-            &name[2..]
+        let axis = match f {
+            Function::Dd => ast_name(&args[1]),
+            Function::DdAlong(axis) => axis,
+            _ => unreachable!("not a stencil"),
         };
         along(axis_named(axis), false)
     }
@@ -112,7 +113,7 @@ impl Lowering<'_> {
             &d.grid,
             &s.arrays.shapes,
             &|n| r.slot_of(d, s, n, visible),
-            &|name, args| self.stencil(name, args),
+            &|f, args| self.stencil(f, args),
             &r.ids,
             &r.ends,
         )

@@ -43,6 +43,7 @@ mod axes;
 mod declare;
 mod evaluate;
 mod explicit;
+mod functions;
 mod interface;
 mod layout;
 mod lower;
@@ -59,6 +60,7 @@ mod tests;
 mod units;
 
 pub use explicit::ExplicitBlock;
+pub use functions::{FunctionInfo, DD_AXIS, FUNCTIONS};
 pub use starts::StartCsv;
 pub use statements::DEFAULT_MAX_ROWS;
 

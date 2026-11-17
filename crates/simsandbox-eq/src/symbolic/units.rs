@@ -1,6 +1,7 @@
 //! Units (ADR 0045): every quantity's unit, and each equation balanced.
 
 use super::declare::Declared;
+use super::functions::{tables, Function};
 use super::shaped::{Arrays, Shaped};
 use super::shapes::{ast_name, number};
 use super::statements::{definition_error, EdgeKind, Lhs};
@@ -12,7 +13,7 @@ use simsandbox_expr::units::{
 use simsandbox_expr::Ast;
 
 /// A dimension, or a mistake with its column.
-type DimResult = std::result::Result<Dim, (usize, String)>;
+pub(super) type DimResult = std::result::Result<Dim, (usize, String)>;
 
 /// Every quantity's unit: what [`units`] establishes. A block that
 /// declares none is dimensionless throughout, `t` included, as typed
@@ -54,13 +55,18 @@ impl Units<'_> {
 
 /// The dimensions of array operations: a stencil divides by its axis's
 /// unit.
-struct ArrayDims<'a> {
-    arrays: &'a Arrays<'a>,
-    axis_dims: &'a [Dim],
+pub(super) struct ArrayDims<'a> {
+    pub(super) arrays: &'a Arrays<'a>,
+    pub(super) axis_dims: &'a [Dim],
 }
 
 impl ArrayDims<'_> {
-    fn axis_dim_of(&self, name: &str) -> Dim {
+    /// The first argument's dimension (none without arguments).
+    pub(super) fn first(args: &[(&Ast, Dim)]) -> Dim {
+        args.first().map_or(NO_DIM, |a| a.1)
+    }
+
+    pub(super) fn axis_dim_of(&self, name: &str) -> Dim {
         self.arrays
             .grid
             .iter()
@@ -69,7 +75,7 @@ impl ArrayDims<'_> {
     }
 
     /// A mesh's coordinates are in one unit.
-    fn one_unit(&self, name: &str, coords: &[(&Ast, Dim)], col: usize) -> DimResult {
+    pub(super) fn one_unit(&self, name: &str, coords: &[(&Ast, Dim)], col: usize) -> DimResult {
         let first = coords.first().map_or(NO_DIM, |a| a.1);
         match coords.iter().find(|a| a.1 != first) {
             Some((a, d)) => Err((
@@ -86,6 +92,18 @@ impl ArrayDims<'_> {
 
     /// The dimension of `name` applied to `args` (each with its own).
     fn apply(&self, name: &str, args: &[(&Ast, Dim)], col: usize) -> DimResult {
+        use Function::*;
+        let d = Self::first(args);
+        match Function::by_name(name) {
+            // T's, F's: the first argument's; a table, its rows or a
+            // corner's number after it have none to check.
+            Some(Id | Rows | FromEnd | ToEnd | Corner | Outflow) => Ok(d),
+            Some(Of) => tables::of_dim(args, col),
+            _ => self.old_apply(name, args, col),
+        }
+    }
+
+    fn old_apply(&self, name: &str, args: &[(&Ast, Dim)], col: usize) -> DimResult {
         let grid = self.arrays.grid;
         let d = args.first().map_or(NO_DIM, |a| a.1);
         let too_high = || (col, DIM_TOO_HIGH.to_string());
@@ -144,12 +162,6 @@ impl ArrayDims<'_> {
             }
             // A cell number (ADR 0070).
             "argminof" | "argmaxof" => NO_DIM,
-            "of" => {
-                if args.get(1).is_some_and(|a| a.1 != NO_DIM) {
-                    return Err((col, "a row's id has no unit".into()));
-                }
-                d
-            }
             // A length, area or volume: the coordinates' unit to the
             // power of the cells' dimension (a point counts 1).
             "measure" => {

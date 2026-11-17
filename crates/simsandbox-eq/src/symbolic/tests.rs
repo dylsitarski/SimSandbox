@@ -1284,3 +1284,29 @@ fn the_first_wrong_start_is_the_one_told() {
         assert_eq!(error(&meshes), first);
     }
 }
+
+#[test]
+fn every_array_function_has_a_name_and_only_those() {
+    use super::functions::Function;
+    for name in simsandbox_expr::ARRAY_OPS {
+        assert!(Function::by_name(name).is_some(), "{name}");
+    }
+    for f in FUNCTIONS.iter().filter(|f| f.name != DD_AXIS) {
+        assert!(Function::by_name(f.name).is_some(), "{}", f.name);
+    }
+    assert_eq!(Function::by_name("dd"), Some(Function::Dd));
+    assert_eq!(
+        Function::by_name("ddx"),
+        Some(Function::DdAlong("x".into()))
+    );
+    // The `dd<axis>` rule is the parser's.
+    for name in [
+        "ddx", "dd_y", "ddé", "dd", "dd1", "d", "ddd", "sin", "copy", "max", "",
+    ] {
+        assert_eq!(
+            Function::by_name(name).is_some(),
+            simsandbox_expr::is_array_op(name),
+            "{name}"
+        );
+    }
+}

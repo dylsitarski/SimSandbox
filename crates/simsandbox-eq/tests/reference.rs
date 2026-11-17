@@ -73,3 +73,40 @@ fn every_function_is_in_the_reference() {
     assert!(REFERENCE.contains(&format!("at most {} axes", simsandbox_expr::MAX_AXES)));
     assert!(REFERENCE.contains(&format!("at most {} levels", simsandbox_expr::MAX_DEPTH)));
 }
+
+#[test]
+fn the_function_table_is_the_parser_s_and_the_reference_s() {
+    use simsandbox_eq::symbolic::{DD_AXIS, FUNCTIONS};
+    use simsandbox_expr::{is_array_op, ARRAY_OPS};
+    let mut table: Vec<&str> = FUNCTIONS.iter().map(|f| f.name).collect();
+    // Each name once, and `dd` followed by an axis's name as one entry.
+    let n = table.len();
+    table.sort_unstable();
+    table.dedup();
+    assert_eq!(table.len(), n, "a function is listed twice");
+    let axis = table.iter().position(|n| *n == DD_AXIS).expect("dd<axis>");
+    table.remove(axis);
+    let mut ops: Vec<&str> = ARRAY_OPS.to_vec();
+    ops.sort_unstable();
+    assert_eq!(
+        table, ops,
+        "the table and simsandbox_expr::ARRAY_OPS differ"
+    );
+    assert!(is_array_op("ddx") && is_array_op("dd_y") && !ARRAY_OPS.contains(&"ddx"));
+    for f in FUNCTIONS {
+        assert!(
+            REFERENCE.contains(&format!("`{}`", f.signature)),
+            "{}'s signature `{}` is not in docs/reference/typed-equations.md",
+            f.name,
+            f.signature
+        );
+        let called = f.signature.split('(').next().unwrap();
+        assert!(is_array_op(called), "{} is not called {called}", f.name);
+        assert!(
+            f.name == called || f.name == DD_AXIS,
+            "{}'s signature calls {called}",
+            f.name
+        );
+        assert!(!f.gives.is_empty() && !f.unit.is_empty(), "{}", f.name);
+    }
+}

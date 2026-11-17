@@ -1,6 +1,7 @@
 //! Which axes an expression is over: the checks before lowering, and the
 //! helpers for grids, cells and meshes they use.
 
+use super::functions::{tables, Check, Function};
 use super::Axis;
 use simsandbox_expr::{ArrayOp, Ast, Edge, Expr, Line as GridLine, MAX_AXES};
 /// The variables `e` reads, edge values of its stencils included.
@@ -206,7 +207,7 @@ pub(super) fn axes_of(
     shapes: &Shapes,
 ) -> std::result::Result<Vec<usize>, (usize, String)> {
     let of = |a: &Ast| axes_of(a, grid, shapes);
-    let args = match ast {
+    let (name, args, col) = match ast {
         Ast::Num(_) => return Ok(Vec::new()),
         Ast::Name(n, _) => return Ok(shapes.get(n).cloned().unwrap_or_default()),
         Ast::Neg(a) => return of(a),
@@ -218,18 +219,35 @@ pub(super) fn axes_of(
             }
             return Ok(out);
         }
-        Ast::Apply(_, args, _) => args,
+        Ast::Apply(name, args, col) => (name, args, *col),
     };
-    let Ast::Apply(name, _, col) = ast else {
-        unreachable!()
-    };
-    let col = *col;
     if grid.is_empty() {
         return Err((
             col,
             format!("'{name}' works on arrays: declare a grid with 'grid x [m] = 0 .. length, 50'"),
         ));
     }
+    use Function::*;
+    let c = Check::new(name, args, col, grid, shapes);
+    match Function::by_name(name) {
+        Some(Id) => tables::id_axes(&c),
+        Some(Rows) => tables::rows_axes(&c),
+        Some(Of) => tables::of_axes(&c),
+        Some(FromEnd | ToEnd) => tables::ends_axes(&c, false),
+        Some(Corner) => tables::ends_axes(&c, true),
+        Some(Outflow) => tables::outflow_axes(&c),
+        _ => old_axes(name, args, col, grid, shapes),
+    }
+}
+
+fn old_axes(
+    name: &String,
+    args: &[Ast],
+    col: usize,
+    grid: &[Axis],
+    shapes: &Shapes,
+) -> std::result::Result<Vec<usize>, (usize, String)> {
+    let of = |a: &Ast| axes_of(a, grid, shapes);
     let names: Vec<&str> = grid.iter().map(|a| a.name.as_str()).collect();
     let axis_named = |a: &Ast| match a {
         Ast::Name(n, _) => names.iter().position(|m| m == n),
@@ -289,62 +307,7 @@ pub(super) fn axes_of(
             None => Ok(axes),
         }
     };
-    let table_named = |a: &Ast| axis_named(a).filter(|&i| grid[i].table.is_some());
     match name.as_str() {
-        "id" | "rows" => {
-            let Some(i) = args
-                .first()
-                .and_then(table_named)
-                .filter(|_| args.len() == 1)
-            else {
-                return Err((col, format!("'{name}' takes a table, e.g. {name}(pts)")));
-            };
-            Ok(if name == "id" { vec![i] } else { Vec::new() })
-        }
-        "from_end" | "to_end" | "corner" => {
-            // T at each cell's corner (ADR 0085; an edge's ends, ADR
-            // 0079 stage 2): over the cells.
-            let usage = match name.as_str() {
-                "corner" => "a quantity over a table of points, cells over it and a corner's number, e.g. corner(x, tri, 0)".to_string(),
-                _ => format!("a quantity over a table and its edges, e.g. {name}(x, segs)"),
-            };
-            count(args.len() == if name == "corner" { 3 } else { 2 }, &usage)?;
-            let a = of(&args[0])?;
-            let e = axis_named(&args[1]).filter(|&e| grid[e].ends_of.is_some());
-            let Some(e) = e else {
-                return Err((
-                    col,
-                    format!("'{name}' takes a table of cells, sides or edges second: {usage}"),
-                ));
-            };
-            let corners = grid[e].shape.map_or(2, |s| s.corners());
-            if name == "corner" {
-                match &args[2] {
-                    Ast::Num(k) if k.fract() == 0.0 && *k >= 0.0 && (*k as usize) < corners => {}
-                    _ => {
-                        return Err((
-                            col,
-                            format!(
-                                "{}'s corners are numbered 0 to {}: give one as a number",
-                                grid[e].name,
-                                corners - 1
-                            ),
-                        ))
-                    }
-                }
-            }
-            match &a[..] {
-                [m] if grid[e].ends_of == Some(*m) => Ok(vec![e]),
-                _ => Err((
-                    col,
-                    format!(
-                        "'{name}' takes a quantity over {}, whose rows {} joins",
-                        grid[grid[e].ends_of.expect("edges")].name,
-                        grid[e].name
-                    ),
-                )),
-            }
-        }
         "inner" | "outer" | "across" | "boundary" => {
             // A side's cells (ADR 0085): over the sides.
             let n = if name == "boundary" { 1 } else { 2 };
@@ -374,57 +337,6 @@ pub(super) fn axes_of(
         "centre" | "measure" | "normal" => {
             let e = mesh_expansion(name, args, grid).map_err(|m| (col, m))?;
             of(&e)
-        }
-        "outflow" => {
-            // A sum over each cell's sides (ADR 0085 step 3): over the
-            // cells; or over each row's edges, from `from` to `to` (ADR
-            // 0069 step 3): over the rows they join.
-            let usage =
-                "a quantity over sides or edges and those, e.g. outflow(F, f) or outflow(Q, pipes)";
-            count(args.len() == 2, usage)?;
-            let edges = |f: usize| {
-                grid[f].sides_of.is_none()
-                    && grid[f].ends_of.is_some()
-                    && grid[f].shape == Some(crate::mesh::CellShape::Segment)
-            };
-            let Some(f) = axis_named(&args[1]).filter(|&f| grid[f].sides_of.is_some() || edges(f))
-            else {
-                return Err((col, format!("'outflow' takes {usage}")));
-            };
-            let a = of(&args[0])?;
-            if !a.is_empty() && a != [f] {
-                return Err((
-                    col,
-                    format!(
-                        "'outflow' takes a quantity over the {} {}",
-                        if grid[f].sides_of.is_some() {
-                            "sides"
-                        } else {
-                            "edges"
-                        },
-                        grid[f].name
-                    ),
-                ));
-            }
-            Ok(vec![grid[f]
-                .sides_of
-                .or(grid[f].ends_of)
-                .expect("sides or edges")])
-        }
-        "of" => {
-            // of(T, i): T's value in the row with id i, NaN if none.
-            count(
-                args.len() == 2,
-                "a quantity over a table and an id, e.g. of(kp, 3)",
-            )?;
-            let a = of(&args[0])?;
-            if !(a.len() == 1 && grid[a[0]].table.is_some()) {
-                return Err((col, "'of(T, i)' takes T over a table's rows".into()));
-            }
-            if !of(&args[1])?.is_empty() {
-                return Err((col, "'of(T, i)' takes one id, e.g. of(kp, 3)".into()));
-            }
-            Ok(Vec::new())
         }
         "lap" => {
             count(args.len() == 1, "1 argument")?;
