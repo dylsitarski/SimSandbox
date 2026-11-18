@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "simsandbox-cli"
 description = "Headless command-line runner for SimSandbox models"
 version.workspace = true

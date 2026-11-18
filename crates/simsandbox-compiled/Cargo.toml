@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "simsandbox-compiled"
 description = "SimSandbox compiled typed equations: phases of cells compiled by Cranelift in the process, the same bits as the interpreter (ADR 0084)"
 version.workspace = true

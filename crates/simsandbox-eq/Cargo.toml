@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "simsandbox-eq"
 description = "SimSandbox equation domain: ODE Blocks, integrators, and fusion of equation Blocks into one system"
 version.workspace = true

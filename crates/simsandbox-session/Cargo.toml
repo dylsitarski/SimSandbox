@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "simsandbox-session"
 description = "SimSandbox sessions: an open model with its recorded history, filters and sweeps, shared by the app, the CLI and the Python API"
 version.workspace = true

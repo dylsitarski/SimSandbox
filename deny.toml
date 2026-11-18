@@ -10,7 +10,18 @@ all-features = false
 [advisories]
 version = 2
 # Every advisory fails the check; an exception goes here with its reason.
-ignore = []
+# Unmaintained, not vulnerable, and no maintained release to move to
+# (2026-11-18). Any other advisory fails the check.
+ignore = [
+    # `paste` (unmaintained): through faer, gemm and pulp (the implicit
+    # methods' linear algebra) and egui_dock.
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained only; needed by faer and egui_dock" },
+    # zvariant, zvariant_derive, zbus_names (unmaintained): through eframe's
+    # accessibility support (accesskit), the app only.
+    { id = "RUSTSEC-2026-0370", reason = "unmaintained only; needed by eframe/accesskit" },
+    { id = "RUSTSEC-2026-0371", reason = "unmaintained only; needed by eframe/accesskit" },
+    { id = "RUSTSEC-2026-0372", reason = "unmaintained only; needed by eframe/accesskit" },
+]
 yanked = "warn"
 
 [licenses]
@@ -53,7 +64,7 @@ multiple-versions = "warn"
 # Path dependencies between our own crates have no version. cargo-deny
 # excuses them (allow-wildcard-paths) only in crates marked
 # `publish = false`, which ours are not yet: until they are, a warning.
-wildcards = "warn"
+wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
 
