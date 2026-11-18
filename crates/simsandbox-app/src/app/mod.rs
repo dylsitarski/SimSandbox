@@ -275,6 +275,16 @@ impl SimApp {
             let (m, h) = (live.model(), live.history());
             app.views.show_only(name, preset, &m.available(&h));
         }
+        // A view chosen on the command line is where the session starts,
+        // not a change to save (the layout and views are saved with the
+        // model).
+        if view.is_some() && app.session.is_some() && app.error.is_none() {
+            // The dock as the first frame will have it, with the views'
+            // tabs.
+            let tiles = app.tile_ids();
+            app.dock.sync(&tiles);
+            app.mark_saved();
+        }
         // A --window flag opens a window at once (for headless checks).
         match (window, &app.session) {
             (Some("signals"), Some(live)) => {
@@ -536,6 +546,9 @@ impl SimApp {
             if let Err(e) = write_ppm(&req.path, &image) {
                 eprintln!("screenshot: {}: {e}", req.path.display());
             }
+            // A scripted screenshot always exits: unsaved changes are not
+            // asked about, with no one to answer.
+            self.modal = Some(Modal::Closing(CLOSING_FRAMES));
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }

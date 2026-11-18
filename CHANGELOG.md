@@ -262,6 +262,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- A plot coloured by time (the "Phase portrait" preset, and the coupled-oscillators, grazing and predator-prey examples) drew time against `y` instead of `y` against `x`.
+- The app started with `--view` no longer counts the chosen view as an unsaved change, and `--screenshot` always exits after saving the picture; with `--view` it waited for an answer about unsaved changes.
 - In the app, after unsaved changes were let go to close the window, a close that did not happen left replacing the model (opening a file, an example, a new model) without the question about unsaved changes; the question is back after a few frames.
 - Typed equations: `centre(T, c)` with `T` not over the points `c` joins says so of `centre`; the message named `corner`, the call it stands for.
 - Typed equations: a rule is held to units as an equation is, where any line has one: its condition compares like with like and has no unit, and each value is in its column's unit. A plain number a rule gives is in its column's unit (`h = 2` with `h` in km is 2 km, as `state h [km] = 2` is); it was taken in SI units, 2 m. A split's or merge's `copy`, `share`, `mean` or `sum` is the transfer only when written alone: `(share)` is a quantity named `share`, which could not be given before. Of several wrong `start` lines, the first written is reported, the same on every run.

@@ -1868,3 +1868,65 @@ fn a_close_that_never_comes_asks_again() {
     assert!(app.ask_first(Discard::NewModel));
     assert_eq!(app.modal, Some(Modal::Unsaved(Discard::NewModel)));
 }
+
+fn example_path(name: &str) -> String {
+    format!("{}/../../examples/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn a_view_chosen_on_the_command_line_is_not_an_unsaved_change() {
+    for view in ["time", "phase", "3d", "diagram"] {
+        let mut app = SimApp::new(
+            Some(example_path("predator-prey.ssbx.json")),
+            Some(view),
+            None,
+            None,
+        );
+        assert!(app.error.is_none(), "{view}: {:?}", app.error);
+        assert!(!app.has_unsaved(), "{view}");
+        // Nor once the first frame has docked the views' tabs.
+        let tiles = app.tile_ids();
+        app.dock.sync(&tiles);
+        assert!(!app.has_unsaved(), "{view}, docked");
+    }
+}
+
+#[test]
+fn a_screenshot_exits_even_with_unsaved_changes() {
+    let path = std::env::temp_dir().join(format!("ssbx-shot-{}.ppm", std::process::id()));
+    let request = ScreenshotRequest {
+        path: path.clone(),
+        after: 0.0,
+    };
+    let mut app = SimApp::new(
+        Some(example_path("lorenz.ssbx.json")),
+        None,
+        None,
+        Some(request),
+    );
+    app.speed = 2.0;
+    assert!(app.has_unsaved());
+    let mut shot = egui::RawInput::default();
+    shot.events.push(egui::Event::Screenshot {
+        viewport_id: egui::ViewportId::ROOT,
+        user_data: Default::default(),
+        image: std::sync::Arc::new(egui::ColorImage::filled([2, 2], egui::Color32::BLACK)),
+    });
+    frame(shot, |ctx| app.handle_screenshot(ctx));
+    assert!(path.exists());
+    let _ = std::fs::remove_file(&path);
+    // The close it asked for comes; it is not held back by a question.
+    let mut close = egui::RawInput::default();
+    close
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .events
+        .push(egui::ViewportEvent::Close);
+    frame(close, |ctx| app.guard_close(ctx));
+    assert!(
+        matches!(app.modal, Some(Modal::Closing(_))),
+        "{:?}",
+        app.modal
+    );
+}

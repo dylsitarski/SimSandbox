@@ -18,6 +18,7 @@
 - 2026-11-17: the review's third priority, second part: typed equations' per-evaluation costs, measured first, five commits, the same bits ([performance](../design/performance.md#typed-equations-per-evaluation-costs-2026-11-17)): Gather and Along without tables, the implicit methods' arrays in the `Workspace`, Take in place, tables' ids searched and their inputs built once. A thread pool for phases needs rayon (no `unsafe`): tried, no faster, not added. Next: the views and the app.
 
 - 2026-11-17: the review's third priority, third part: the views' frames, measured first (`view_frames`), four commits: `paired` in place, `plot.xy` thinned to pixel columns and kept between frames, heat maps uploaded only on change ([performance](../design/performance.md#the-views-and-the-apps-frames-2026-11-17)). The worker's publish-when-dirty measured and left. Found: `plot.xy` coloured by `t` draws `y` against time (STATUS, known limitations).
+- 2026-11-18: the phase-portrait bug fixed (`Curve::new` now always takes the colour's column off first; an `Option::zip` first tried evaluated its argument eagerly and dropped `y` when no colour was bound, caught by rendering the examples). The app's hang with `--view` and `--screenshot`: the view chosen counted as unsaved (the layout is saved with the model, and the baseline was taken before the dock had its views' tabs), and the screenshot's close was held by the unsaved-changes question; both fixed, checked under Xvfb with every `--view` and `--window`.
 
 ## Decided
 
@@ -25,7 +26,7 @@
 
 ## Left open
 
-- The review's fourth priority (the third is done: views 2026-11-17; the worker's publishing measured and left); the phase-portrait bug (`plot.xy` coloured by `t` draws `y` against time); the app as taken apart, to try in the window; what ADR 0098 left in the kernel, for the plugin interface's design.
+- The review's fourth priority (the third is done: views 2026-11-17; the worker's publishing measured and left); the app as taken apart, to try in the window; what ADR 0098 left in the kernel, for the plugin interface's design.
 
 ## Notes for the next session
 
