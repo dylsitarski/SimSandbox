@@ -4,8 +4,9 @@
 //! (equations, ports, parameters, states); an [`Integrator`] is the *method*
 //! that computes it. [`OdeBlock`] pairs the two into a kernel [`Block`].
 //!
-//! [`EquationGroup`] fuses several systems into one larger system solved by a
-//! single integrator, so tightly coupled equations have no coupling error.
+//! The master fuses connected equation Blocks into one system solved by a
+//! single [`integrators::GroupIntegrator`], so tightly coupled equations
+//! have no coupling error (ADR 0023).
 //!
 //! [`register`] adds the domain's block types to a model-file registry;
 //! with the `views` feature, `register_views` adds their views (ADR 0016).
@@ -15,7 +16,6 @@
 pub mod convert;
 pub mod fields;
 pub mod file_input;
-pub mod group;
 pub mod implicit;
 pub mod input;
 pub mod integrators;
@@ -29,7 +29,6 @@ pub mod systems;
 #[cfg(feature = "views")]
 pub mod views;
 
-pub use group::EquationGroup;
 pub use integrators::Integrator;
 pub use ode::{OdeBlock, OdeSystem};
 pub use registry::register;
