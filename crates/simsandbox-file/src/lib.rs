@@ -1969,6 +1969,43 @@ pub fn load_in(
     }
 }
 
+/// Every error of a model file that `check` finds cheaply: the first
+/// error loading it stops at, and, when that came from building its
+/// blocks and wires, the errors of every other block and of every wire
+/// between blocks that were built. Empty when the file loads. Errors in
+/// the file's syntax, in flattening, in a subsystem built alone, in fused
+/// groups and in the controls stop at the first; so does each block's
+/// definition (typed equations report their first error).
+pub fn load_errors(text: &str, registry: &Registry) -> Vec<FileError> {
+    let first = match load(text, registry) {
+        Ok(_) => return Vec::new(),
+        Err(e) => e,
+    };
+    let all = (|| -> Option<Vec<FileError>> {
+        let _reports = Reports::begin();
+        let (mut file, _) = ModelFile::from_json(text).ok()?;
+        compose::runs_alone(&file).ok()?;
+        if file.blocks.iter().any(BlockEntry::is_use) {
+            return None;
+        }
+        file.folder = simsandbox_core::registry::current_folder();
+        let flat = file.flatten().ok()?;
+        if !compose::subsystems_checked() {
+            for c in &flat.checks {
+                c.verify(registry, None).ok()?;
+            }
+        }
+        let (_, _, errors) = flat.file.build_collecting(registry, None, true);
+        let o = |e| origin(e, &flat.block_origins, &flat.connection_origins);
+        Some(errors.into_iter().map(o).collect())
+    })();
+    // Only errors found the same way as the load's own, first.
+    match all {
+        Some(all) if all.first().map(ToString::to_string) == Some(first.to_string()) => all,
+        _ => vec![first],
+    }
+}
+
 fn load_in_folder(
     text: &str,
     registry: &Registry,
@@ -2472,6 +2509,24 @@ impl ModelFile {
         registry: &Registry,
         folder: Option<&std::path::Path>,
     ) -> Result<(Model, BTreeMap<String, BlockId>), FileError> {
+        let (model, ids, mut errors) = self.build_collecting(registry, folder, false);
+        if errors.is_empty() {
+            Ok((model, ids))
+        } else {
+            Err(errors.swap_remove(0))
+        }
+    }
+
+    /// Build the model: stop at the first error, or with `all` go on to
+    /// find the errors of every block and of every wire between blocks
+    /// that were built (for `check`). The model is usable only when there
+    /// are no errors.
+    pub(crate) fn build_collecting(
+        &self,
+        registry: &Registry,
+        folder: Option<&std::path::Path>,
+        all: bool,
+    ) -> (Model, BTreeMap<String, BlockId>, Vec<FileError>) {
         let mut model = Model::new();
         model.set_seed(
             self.run
@@ -2483,124 +2538,178 @@ impl ModelFile {
             simsandbox_core::loops::LoopMethod::from_name(loops).unwrap_or_default(),
         );
         let mut ids = BTreeMap::new();
+        let mut errors = Vec::new();
+        // Blocks that failed: wires to them are not checked.
+        let mut failed: Vec<&str> = Vec::new();
         for (bi, entry) in self.blocks.iter().enumerate() {
-            let path = format!("blocks[{bi}]");
-            if entry.name.is_empty() || entry.name.contains('.') {
-                return Err(invalid(
-                    format!("{path}.name"),
-                    format!(
-                        "'{}': names must be non-empty and contain no '.'",
-                        entry.name
-                    ),
-                ));
+            if let Err(e) = self.add_block(bi, entry, registry, folder, &mut model, &mut ids) {
+                errors.push(e);
+                if !all {
+                    return (model, ids, errors);
+                }
+                if !ids.contains_key(&entry.name) {
+                    failed.push(&entry.name);
+                }
             }
-            if entry
-                .canvas
-                .is_some_and(|p| !p.iter().all(|v| v.is_finite()))
-            {
-                return Err(invalid(
-                    format!("{path}.canvas"),
-                    "positions must be finite numbers",
-                ));
-            }
-            if ids.contains_key(&entry.name) {
-                return Err(invalid(
-                    format!("{path}.name"),
-                    format!("duplicate block name '{}'", entry.name),
-                ));
-            }
-            if !registry.contains(&entry.type_name) {
-                let known: Vec<_> = registry.type_names().collect();
-                return Err(invalid(
-                    format!("{path}.type"),
-                    format!(
-                        "unknown block type '{}' (known: {})",
-                        entry.type_name,
-                        known.join(", ")
-                    ),
-                ));
-            }
-            if entry.sample.is_some() && entry.type_name != STUDY {
-                return Err(invalid(
-                    format!("{path}.sample"),
-                    "only a study block has a sample (ADR 0070)",
-                ));
-            }
-            if entry.activate.is_some() && entry.type_name != STUDY {
-                return Err(invalid(
-                    format!("{path}.activate"),
-                    "only a study or a use of a model is activated (ADR 0088)",
-                ));
-            }
-            if entry.restart {
-                return Err(invalid(
-                    format!("{path}.restart"),
-                    "only a use of a model starts again on a restart input (ADR 0088)",
-                ));
-            }
-            let config = entry.config(folder);
-            let block = registry
-                .build(&entry.type_name, &entry.name, &config)
-                .map_err(|e| match e {
-                    SimError::InvalidDefinition(_) => invalid(format!("{path}.equations"), e),
-                    SimError::InvalidSetting { ref setting, .. } => {
-                        invalid(format!("{path}.{setting}"), e)
-                    }
-                    _ => invalid(format!("{path}.method"), e),
-                })?;
-            let start = entry
-                .start
-                .as_ref()
-                .map(|s| s.to_start(block.spec()))
-                .transpose()
-                .map_err(|e| invalid(format!("{path}.start"), e))?;
-            let id = model.add(block);
-            for (name, value) in &entry.params {
-                // Formulas were evaluated when the file was flattened.
-                let value = value
-                    .number()
-                    .ok_or_else(|| invalid(format!("{path}.params.{name}"), "not evaluated"))?;
-                model
-                    .set_param(id, name, value)
-                    .map_err(|e| invalid(format!("{path}.params.{name}"), e))?;
-            }
-            model
-                .set_start(id, start)
-                .map_err(|e| invalid(format!("{path}.start"), e))?;
-            ids.insert(entry.name.clone(), id);
         }
         // Probes feeding the model: a hold per probe signal (ADR 0063).
         let mut holds: BTreeMap<String, BlockId> = BTreeMap::new();
         for (ci, c) in self.connections.iter().enumerate() {
-            let path = format!("connections[{ci}]");
-            let to = port_ref(&c.to, &ids).map_err(|m| invalid(format!("{path}.to"), m))?;
-            let from = match c.from.strip_prefix("probe:") {
-                Some(rest) => {
-                    let hold = match holds.get(rest) {
-                        Some(&h) => h,
-                        None => {
-                            let h = self
-                                .hold(&mut model, rest, &ids)
-                                .map_err(|m| invalid(format!("{path}.from"), m))?;
-                            holds.insert(rest.to_string(), h);
-                            h
-                        }
-                    };
-                    (hold, "y")
+            let ends = [c.to.as_str(), c.from.as_str()].map(|end| {
+                // `probe:NAME.block.port` names the block after the probe.
+                let end = end
+                    .strip_prefix("probe:")
+                    .and_then(|rest| rest.split_once('.'))
+                    .map_or(end, |(_, signal)| signal);
+                end.split_once('.').map_or(end, |(block, _)| block)
+            });
+            if ends.iter().any(|b| failed.contains(b)) {
+                continue;
+            }
+            if let Err(e) = self.add_connection(ci, c, &mut model, &ids, &mut holds) {
+                errors.push(e);
+                if !all {
+                    return (model, ids, errors);
                 }
-                None => port_ref(&c.from, &ids).map_err(|m| invalid(format!("{path}.from"), m))?,
-            };
-            // Into a parameter: it is driven (ADR 0075).
-            let spec = model.block(to.0).map_err(|e| invalid(&path, e))?.spec();
-            let param = !spec.inputs().any(|p| p.name == to.1)
-                && spec.params.iter().any(|p| p.name == to.1);
-            if param {
-                model.drive(from, to).map_err(|e| invalid(&path, e))?;
-            } else {
-                model.connect(from, to).map_err(|e| invalid(&path, e))?;
             }
         }
-        Ok((model, ids))
+        (model, ids, errors)
+    }
+
+    /// Build the block `entry` (at `bi`) into `model`, named in `ids`.
+    fn add_block(
+        &self,
+        bi: usize,
+        entry: &BlockEntry,
+        registry: &Registry,
+        folder: Option<&std::path::Path>,
+        model: &mut Model,
+        ids: &mut BTreeMap<String, BlockId>,
+    ) -> Result<(), FileError> {
+        let path = format!("blocks[{bi}]");
+        if entry.name.is_empty() || entry.name.contains('.') {
+            return Err(invalid(
+                format!("{path}.name"),
+                format!(
+                    "'{}': names must be non-empty and contain no '.'",
+                    entry.name
+                ),
+            ));
+        }
+        if entry
+            .canvas
+            .is_some_and(|p| !p.iter().all(|v| v.is_finite()))
+        {
+            return Err(invalid(
+                format!("{path}.canvas"),
+                "positions must be finite numbers",
+            ));
+        }
+        if ids.contains_key(&entry.name) {
+            return Err(invalid(
+                format!("{path}.name"),
+                format!("duplicate block name '{}'", entry.name),
+            ));
+        }
+        if !registry.contains(&entry.type_name) {
+            let known: Vec<_> = registry.type_names().collect();
+            return Err(invalid(
+                format!("{path}.type"),
+                format!(
+                    "unknown block type '{}' (known: {})",
+                    entry.type_name,
+                    known.join(", ")
+                ),
+            ));
+        }
+        if entry.sample.is_some() && entry.type_name != STUDY {
+            return Err(invalid(
+                format!("{path}.sample"),
+                "only a study block has a sample (ADR 0070)",
+            ));
+        }
+        if entry.activate.is_some() && entry.type_name != STUDY {
+            return Err(invalid(
+                format!("{path}.activate"),
+                "only a study or a use of a model is activated (ADR 0088)",
+            ));
+        }
+        if entry.restart {
+            return Err(invalid(
+                format!("{path}.restart"),
+                "only a use of a model starts again on a restart input (ADR 0088)",
+            ));
+        }
+        let config = entry.config(folder);
+        let block = registry
+            .build(&entry.type_name, &entry.name, &config)
+            .map_err(|e| match e {
+                SimError::InvalidDefinition(_) => invalid(format!("{path}.equations"), e),
+                SimError::InvalidSetting { ref setting, .. } => {
+                    invalid(format!("{path}.{setting}"), e)
+                }
+                _ => invalid(format!("{path}.method"), e),
+            })?;
+        let start = entry
+            .start
+            .as_ref()
+            .map(|s| s.to_start(block.spec()))
+            .transpose()
+            .map_err(|e| invalid(format!("{path}.start"), e))?;
+        let id = model.add(block);
+        for (name, value) in &entry.params {
+            // Formulas were evaluated when the file was flattened.
+            let value = value
+                .number()
+                .ok_or_else(|| invalid(format!("{path}.params.{name}"), "not evaluated"))?;
+            model
+                .set_param(id, name, value)
+                .map_err(|e| invalid(format!("{path}.params.{name}"), e))?;
+        }
+        model
+            .set_start(id, start)
+            .map_err(|e| invalid(format!("{path}.start"), e))?;
+        ids.insert(entry.name.clone(), id);
+        Ok(())
+    }
+
+    /// Wire connection `c` (at `ci`) into `model`.
+    fn add_connection(
+        &self,
+        ci: usize,
+        c: &ConnectionEntry,
+        model: &mut Model,
+        ids: &BTreeMap<String, BlockId>,
+        holds: &mut BTreeMap<String, BlockId>,
+    ) -> Result<(), FileError> {
+        let path = format!("connections[{ci}]");
+        let to = port_ref(&c.to, ids).map_err(|m| invalid(format!("{path}.to"), m))?;
+        let from = match c.from.strip_prefix("probe:") {
+            Some(rest) => {
+                let hold = match holds.get(rest) {
+                    Some(&h) => h,
+                    None => {
+                        let h = self
+                            .hold(model, rest, ids)
+                            .map_err(|m| invalid(format!("{path}.from"), m))?;
+                        holds.insert(rest.to_string(), h);
+                        h
+                    }
+                };
+                (hold, "y")
+            }
+            None => port_ref(&c.from, ids).map_err(|m| invalid(format!("{path}.from"), m))?,
+        };
+        // Into a parameter: it is driven (ADR 0075).
+        let spec = model.block(to.0).map_err(|e| invalid(&path, e))?.spec();
+        let param =
+            !spec.inputs().any(|p| p.name == to.1) && spec.params.iter().any(|p| p.name == to.1);
+        if param {
+            model.drive(from, to).map_err(|e| invalid(&path, e))?;
+        } else {
+            model.connect(from, to).map_err(|e| invalid(&path, e))?;
+        }
+        Ok(())
     }
 
     /// The hold of `probe.signal` (ADR 0063): a sample-and-hold of the

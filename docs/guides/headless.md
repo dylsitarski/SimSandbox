@@ -19,7 +19,7 @@ Build with `cargo build --release -p simsandbox-cli`; the binary is `target/rele
 | --- | --- |
 | `simsandbox describe [TYPE]` | JSON: `block_types`, `view_types`, `filter_types`, `units`; or one block or view type; `describe units` lists every unit symbol, its SI form and factor, and the prefixes ([ADR 0047](../decisions/0047-unit-vocabulary.md)) |
 | `simsandbox schema [run]` | The model file's JSON Schema, or the [run file's](../../crates/simsandbox-file/run.schema.json) |
-| `simsandbox check FILE` | JSON report; exit status 1 if the model cannot run. For a run file: its model is found and checked with the run's settings and events, and a model changed since the run was made is a warning, as is a run made by another SimSandbox version (its `made_with`) |
+| `simsandbox check FILE` | JSON report; exit status 1 if the model cannot run, 3 if the file cannot be read. For a run file: its model is found and checked with the run's settings and events, and a model changed since the run was made is a warning, as is a run made by another SimSandbox version (its `made_with`) |
 | `simsandbox run FILE [--t-end S] [--dt S] [--format csv\|json] [--inputs RUN]` | Every output at every step (or, for a model whose only runs are its studies, every run); JSON output names the SimSandbox that made it (`"made_with": "simsandbox 0.0.1"`). `FILE` may be a run file, which is replayed; `--inputs RUN` applies a run's events to a model file. `render` takes `--inputs` too |
 | `simsandbox run FILE --signals NAMES --every N [...]` | Only the outputs named (comma-separated: `block.port`, `block` for all its ports; in a model using models also a model's name, `.` the top level, or a path in it, `plant/car.v`) and only every `N`-th step and the last: the same values, less memory and time ([ADR 0076](../decisions/0076-headless-runs-keep-what-is-asked.md)). A name that keeps nothing is an error listing the outputs |
 | `simsandbox run FILE --probe NAME [--save-probes DIR] [...]` | What probe `NAME` recorded ([Probes](#probes)) instead of every output: CSV of `t` and its signals, or with `--format json` also its fields. `--save-probes DIR` (with or without `--probe`) writes the files of the probes that have one (`to`) into `DIR` |
@@ -30,12 +30,34 @@ Build with `cargo build --release -p simsandbox-cli`; the binary is `target/rele
 
 Notes, warnings and labels go to standard error; data to standard output.
 
+### Help, exit status and errors
+
+`simsandbox --help` (or `-h`, `help`) lists the commands; `simsandbox COMMAND --help` (or `help COMMAND`) gives a command's options. How a command fails sets its exit status ([ADR 0099](../decisions/0099-cli-exit-codes-and-json-errors.md)):
+
+| Status | Kind | When |
+| --- | --- | --- |
+| 0 | | Success |
+| 1 | `model`, `run` | The model cannot load or `check` found errors (`model`); the run or the drawing failed (`run`) |
+| 2 | `usage` | An unknown command or flag, a missing or bad argument; also no arguments at all |
+| 3 | `io` | A file could not be read (the model, a run file or its model, `--inputs`) or written (`--out`, `--save-probes`) |
+
+`--errors json`, anywhere on the line, makes every line on standard error one JSON object, for every command:
+
+```json
+{"error": {"kind": "model", "message": "m.json cannot run (see \"errors\")", "file": "m.json", "errors": [{"path": "blocks[0].method", "message": "..."}]}}
+{"warning": {"message": "...", "file": "m.json"}}
+{"note": {"message": "..."}}
+{"labels": {"speed": "RealTime", "accuracy": "Quantitative"}}
+```
+
+A failure has `kind` and `message`, and where they exist `file`, `errors` (as in the `check` report: `run`, `render` and `start-from` of a model that does not check give them too) and, for a usage error, `usage` (the command's synopsis). The other objects are `warning` (with `file` when known), `note` (with `model` in a model using models), `labels`, `converted` (from `upgrade`) and `wrote` (a probe's file). Without the option (`--errors text`, the default) the same lines are text: `error: ...`, `warning: ...`, `note: ...`.
+
 ### `check` report
 
 | Key | Meaning |
 | --- | --- |
 | `ok` | The model loads and can run |
-| `errors` | Each `{path, message}` (file structure) or `{line, column, message}` (JSON syntax) or `{message}` |
+| `errors` | Each `{path, message}` (file structure) or `{line, column, message}` (JSON syntax) or `{message}`. Every block's error and every wire's (between blocks that were built) are listed; other stages, and a typed-equations block's own lines, stop at the first ([ADR 0099](../decisions/0099-cli-exit-codes-and-json-errors.md)) |
 | `warnings` | Problems that were worked around, e.g. a saved view that cannot be shown |
 | `conversions` | Older forms of the format the file was written in, converted on reading; `simsandbox upgrade` writes the current form |
 | `params` | Every parameter: `key` (`block.param`; a model parameter's `name`, a used model's `use.name`; blocks inside uses `use/inner.param`), `value`, `formula` (set when a formula computes it), `unit`, `suggested` range, `initial_condition`, `description` |

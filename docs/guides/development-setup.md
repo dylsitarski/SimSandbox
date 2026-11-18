@@ -27,7 +27,6 @@ cargo test --workspace
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 python3 scripts/check_docs.py          # on Windows: py scripts/check_docs.py
-cargo run --release -p simsandbox-cli -- lorenz --t-end 20 --dt 0.01 --method rk4 > lorenz.csv
 cargo run --release -p simsandbox-cli -- run examples/lorenz.ssbx.json --t-end 20 > lorenz.csv
 cargo run --release -p simsandbox-cli -- check examples/grazing.ssbx.json      # JSON report
 cargo run --release -p simsandbox-cli -- render examples/grazing.ssbx.json --t-end 30 --out grazing.png

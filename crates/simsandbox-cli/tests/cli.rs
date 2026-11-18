@@ -238,3 +238,226 @@ fn upgrade_writes_the_current_form_of_an_older_file() {
     let report = json(&simsandbox(&["check", &old.to_string_lossy()]));
     assert!(!report["conversions"].as_array().unwrap().is_empty());
 }
+
+/// Standard error's lines, each one JSON object (`--errors json`).
+fn json_lines(out: &Output) -> Vec<Value> {
+    String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+        .collect()
+}
+
+#[test]
+fn help_goes_to_standard_output_and_succeeds() {
+    for flag in ["--help", "-h", "help"] {
+        let out = simsandbox(&[flag]);
+        assert_eq!(out.status.code(), Some(0), "{flag}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(text.starts_with("usage: simsandbox"), "{flag}: {text}");
+        assert!(text.contains("start-from FILE") && text.contains("Exit status"));
+        assert!(out.stderr.is_empty());
+    }
+    // Each command's own help, two ways.
+    for args in [
+        &["run", "--help"][..],
+        &["help", "run"],
+        &["run", "FILE", "-h"],
+    ] {
+        let out = simsandbox(args);
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(text.starts_with("usage: simsandbox run FILE"), "{text}");
+        assert!(text.contains("--save-probes DIR"));
+    }
+    for command in [
+        "check",
+        "describe",
+        "schema",
+        "render",
+        "start-from",
+        "upgrade",
+    ] {
+        let out = simsandbox(&[command, "--help"]);
+        assert_eq!(out.status.code(), Some(0), "{command}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            text.starts_with(&format!("usage: simsandbox {command}")),
+            "{text}"
+        );
+    }
+    // No arguments: the usage on standard error, as a usage error.
+    let none = simsandbox(&[]);
+    assert_eq!(none.status.code(), Some(2));
+    assert!(none.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&none.stderr).starts_with("usage: simsandbox"));
+    // The leftover `lorenz` command is gone.
+    assert_eq!(simsandbox(&["lorenz"]).status.code(), Some(2));
+}
+
+#[test]
+fn exit_status_says_how_a_command_failed() {
+    // 2: usage errors.
+    let usage = [
+        &["frobnicate"][..],
+        &["run"],
+        &["run", &example("lorenz.ssbx.json"), "--bogus", "1"],
+        &["run", &example("lorenz.ssbx.json"), "--t-end", "-1"],
+        &["run", &example("lorenz.ssbx.json"), "--format", "xml"],
+        &["run", &example("lorenz.ssbx.json"), "--t-end"],
+        &["check"],
+        &["check", &example("lorenz.ssbx.json"), "extra"],
+        &["describe", "eq.nothing"],
+        &["schema", "model"],
+        &["render", &example("pendulum.ssbx.json")],
+        &["start-from", &example("pendulum.ssbx.json")],
+        &["help", "nothing"],
+        &["--errors", "yaml", "describe"],
+    ];
+    for args in usage {
+        let out = simsandbox(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.starts_with("error: ") && err.contains("usage: simsandbox"),
+            "{err}"
+        );
+    }
+    // 3: a file that cannot be read or written.
+    let missing = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-such-model.json");
+    let missing = missing.to_string_lossy();
+    for command in ["run", "check", "upgrade"] {
+        let out = simsandbox(&[command, &missing]);
+        assert_eq!(out.status.code(), Some(3), "{command}");
+        assert!(out.stdout.is_empty());
+    }
+    let out = simsandbox(&["start-from", &missing, "--t", "1"]);
+    assert_eq!(out.status.code(), Some(3));
+    let unwritable = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-such-dir/out.json");
+    let out = simsandbox(&[
+        "upgrade",
+        &example("lorenz.ssbx.json"),
+        "--out",
+        &unwritable.to_string_lossy(),
+    ]);
+    assert_eq!(out.status.code(), Some(3));
+    // 1: the model cannot run.
+    let bad = scratch(
+        "bad-type.json",
+        r#"{"format": 1, "blocks": [{"name": "a", "type": "eq.nothing"}]}"#,
+    );
+    assert_eq!(simsandbox(&["check", &bad]).status.code(), Some(1));
+    assert_eq!(simsandbox(&["run", &bad]).status.code(), Some(1));
+}
+
+#[test]
+fn errors_json_writes_one_object_per_line() {
+    // A usage error, the option anywhere on the line.
+    for args in [
+        &["--errors", "json", "run", "--nope"][..],
+        &["run", "--nope", "--errors", "json"],
+        &["--errors=json", "run", "--nope"],
+    ] {
+        let out = simsandbox(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let lines = json_lines(&out);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0]["error"]["kind"], "usage");
+        assert!(lines[0]["error"]["usage"]
+            .as_str()
+            .unwrap()
+            .starts_with("usage: simsandbox run"));
+    }
+    let none = simsandbox(&["--errors", "json"]);
+    assert_eq!(none.status.code(), Some(2));
+    assert_eq!(json_lines(&none)[0]["error"]["kind"], "usage");
+
+    // An input/output error names the file.
+    let missing = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no-such-run.run.json");
+    let missing = missing.to_string_lossy();
+    let out = simsandbox(&["--errors", "json", "run", &missing]);
+    assert_eq!(out.status.code(), Some(3));
+    let e = &json_lines(&out)[0]["error"];
+    assert_eq!(
+        (e["kind"].as_str(), e["file"].as_str()),
+        (Some("io"), Some(&*missing))
+    );
+
+    // A model that cannot run: where each error is, from `check`.
+    let bad = scratch(
+        "bad-method-json.json",
+        r#"{"format": 1, "blocks": [{"name": "a", "type": "eq.lorenz", "method": {"name": "leapfrog"}}]}"#,
+    );
+    for command in ["run", "check"] {
+        let out = simsandbox(&["--errors", "json", command, &bad]);
+        assert_eq!(out.status.code(), Some(1), "{command}");
+        let lines = json_lines(&out);
+        assert_eq!(lines.len(), 1);
+        let e = &lines[0]["error"];
+        assert_eq!(e["kind"], "model");
+        assert_eq!(e["file"], bad.as_str());
+        assert_eq!(e["errors"][0]["path"], "blocks[0].method", "{command}: {e}");
+    }
+
+    // Labels, notes and warnings: one object each.
+    let out = simsandbox(&[
+        "run",
+        &example("lorenz.ssbx.json"),
+        "--t-end",
+        "0.1",
+        "--errors",
+        "json",
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    let lines = json_lines(&out);
+    assert!(
+        lines.iter().any(|l| l["labels"]["speed"].is_string()),
+        "{lines:?}"
+    );
+    let text = simsandbox(&["run", &example("lorenz.ssbx.json"), "--t-end", "0.1"]);
+    assert_eq!(out.stdout, text.stdout);
+    assert!(String::from_utf8_lossy(&text.stderr).starts_with("speed: "));
+
+    let old = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../simsandbox-file/tests/old/adr-0014-single-view.json");
+    let out = simsandbox(&["--errors", "json", "upgrade", &old.to_string_lossy()]);
+    assert_eq!(out.status.code(), Some(0));
+    let lines = json_lines(&out);
+    assert!(lines.iter().any(|l| l["converted"]["message"]
+        .as_str()
+        .is_some_and(|m| m.starts_with("controls.view"))));
+}
+
+#[test]
+fn check_reports_every_block_and_wire_error() {
+    let bad = scratch(
+        "several-errors.json",
+        r#"{"format": 1, "blocks": [
+            {"name": "a", "type": "eq.lorenz", "method": {"name": "leapfrog"}},
+            {"name": "b", "type": "eq.nothing"},
+            {"name": "c", "type": "eq.coupled_oscillator"},
+            {"name": "d", "type": "eq.equations", "equations": ["x' = = 1"]}],
+          "connections": [
+            {"from": "a.xyz", "to": "c.neighbor_x"},
+            {"from": "c.x", "to": "c.nope"}]}"#,
+    );
+    let out = simsandbox(&["check", &bad]);
+    assert_eq!(out.status.code(), Some(1));
+    let report = json(&out);
+    assert_eq!(report["ok"], false);
+    let paths: Vec<&str> = report["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["path"].as_str().unwrap())
+        .collect();
+    // The wire from the failed block `a` is not checked.
+    assert_eq!(
+        paths,
+        [
+            "blocks[0].method",
+            "blocks[1].type",
+            "blocks[3].equations",
+            "connections[1]"
+        ]
+    );
+}

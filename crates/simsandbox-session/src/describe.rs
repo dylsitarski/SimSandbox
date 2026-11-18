@@ -312,9 +312,11 @@ pub fn check(text: &str, r: &Registry) -> Value {
     if simsandbox_file::compose::is_composition(text) {
         return crate::compose::check(text, r);
     }
-    // File errors carry where they are.
-    if let Err(e) = simsandbox_file::load(text, r) {
-        return json!({"ok": false, "errors": [file_error(&e)], "warnings": []});
+    // File errors carry where they are; every block's and wire's.
+    let errors = simsandbox_file::load_errors(text, r);
+    if !errors.is_empty() {
+        let errors: Vec<Value> = errors.iter().map(file_error).collect();
+        return json!({"ok": false, "errors": errors, "warnings": []});
     }
     match Session::load("check", text, r) {
         Err(e) => json!({"ok": false, "errors": [{"message": e}], "warnings": []}),

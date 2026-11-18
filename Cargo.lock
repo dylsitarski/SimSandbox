@@ -3464,7 +3464,6 @@ dependencies = [
  "serde_json",
  "simsandbox-agents",
  "simsandbox-core",
- "simsandbox-eq",
  "simsandbox-file",
  "simsandbox-session",
 ]
