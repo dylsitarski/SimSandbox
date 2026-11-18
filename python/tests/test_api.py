@@ -3,6 +3,7 @@ run, study and render, with results checked against known answers."""
 
 import math
 import os
+import re
 import struct
 
 import numpy as np
@@ -675,4 +676,66 @@ def test_an_output_over_three_axes_is_an_array_with_named_axes():
     assert q.shape == (r.rows, 4, 3, 2)
     assert q[-1, 3, 2, 1] == 1 + 20 + 300
     assert r.axes("m.q") == [("z", 4), ("y", 3), ("x", 2)]
+
+
+def test_connect_refuses_names_the_model_does_not_have():
+    # Checked when the wire is written, not when the model runs.
+    m = ss.Model()
+    m.add_block("clock", "eq.equations", "rk4", equations="param a = 0.5\nstate tau = 0\ndtau/dt = 1\nk = a*tau")
+    m.add_block("decay", "eq.equations", "rk4", equations="param k = 1\ninput u\nstate x = 1\ndx/dt = -k*x + u")
+    wrong = {
+        ("clok.k", "decay.u"): "the source 'clok.k' names no block 'clok'; blocks: clock, decay",
+        ("clock.q", "decay.u"): "the block 'clock' has no output 'q'; outputs: tau, k",
+        ("clock.k", "decay.zz"): "has no input or parameter 'zz'; inputs: u; parameters: k, x0",
+        ("clock.k", "dekay.u"): "the target 'dekay.u' names no block 'dekay'",
+        ("clock", "decay.u"): "is not 'block.port'",
+        ("clock.k", "plant/u"): "names no used model 'plant'",
+    }
+    for (source, target), message in wrong.items():
+        with pytest.raises(ss.ModelError, match=re.escape(message)):
+            m.connect(source, target)
+    assert m.data["connections"] == []
+    with pytest.raises(TypeError):
+        m.connect("clock.k", None)  # type: ignore[arg-type]
+    # An input or a parameter takes one wire.
+    m.connect("clock.k", "decay.u")
+    with pytest.raises(ss.ModelError, match="already wired from 'clock.k'"):
+        m.connect("clock.tau", "decay.u")
+    m.connect("clock.tau", "decay.k")
+    assert m.check()["ok"]
+    assert m.data["connections"] == [
+        {"from": "clock.k", "to": "decay.u"},
+        {"from": "clock.tau", "to": "decay.k"},
+    ]
+
+
+def test_add_block_refuses_an_unknown_type():
+    m = ss.Model()
+    with pytest.raises(ss.ModelError, match="unknown block type 'eq.nothing'; known: .*eq.equations"):
+        m.add_block("x", "eq.nothing")
+    assert m.data["blocks"] == []
+
+
+def test_connect_accepts_every_wire_of_every_example():
+    # Each example rebuilt wire by wire: connect refuses none of the wires
+    # the model files need.
+    examples = os.path.join(os.path.dirname(__file__), "..", "..", "examples")
+    paths = sorted(
+        os.path.join(d, f)
+        for d, _, files in os.walk(examples)
+        for f in files
+        if f.endswith(".ssbx.json")
+    )
+    if not paths:
+        pytest.skip("the repository's examples are not here")
+    wires = 0
+    for path in paths:
+        m = ss.Model.load(path)
+        connections = m.data.get("connections", [])
+        m.data["connections"] = []
+        for c in connections:
+            m.connect(c["from"], c["to"])
+            wires += 1
+        assert m.data["connections"] == connections, path
+    assert wires > 20
 

@@ -5,13 +5,38 @@ build-backend = "maturin"
 [project]
 name = "simsandbox"
 description = "Describe, check, build, run and render SimSandbox models from Python"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
+authors = [{ name = "Dylan Sitarski" }]
+keywords = ["simulation", "modelling", "ode", "physics", "headless"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
+]
 dependencies = ["numpy>=1.24"]
+# The version is the crate's (Cargo.toml, `version`), which maturin reads.
 dynamic = ["version"]
 
+[project.urls]
+Repository = "https://github.com/dylsitarski/SimSandbox"
+Documentation = "https://github.com/dylsitarski/SimSandbox/blob/main/docs/guides/headless.md"
+
 [project.optional-dependencies]
-test = ["pytest>=7"]
+# mypy runs the type checks in tests/test_stubs.py; without it they skip.
+test = ["pytest>=7", "mypy>=1.10"]
 
 [tool.maturin]
 python-source = "."

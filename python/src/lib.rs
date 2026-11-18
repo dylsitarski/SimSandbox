@@ -548,6 +548,147 @@ fn set_folder(folder: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> 
     simsandbox_core::registry::set_folder(folder)
 }
 
+/// Why a wire from `source` to `target` cannot be added to the model file
+/// `text`, or `None` if it can. `Model.connect` calls it so a wire to a
+/// block or port that does not exist fails where it is written, not at
+/// the run. It judges as the node canvas does (a wire it would draw
+/// dangling is refused), building only the one or two blocks named, so
+/// its cost does not grow with the model. Not judged, and so let through
+/// to `check`: a file that does not parse, a probe's samples
+/// (`probe:…`), and an end on a block or used model that cannot be built
+/// alone (its own error is the one to read).
+#[pyfunction]
+fn connection_problem(text: &str, source: &str, target: &str) -> Option<String> {
+    use simsandbox_session::diagram::{Diagram, NodeKind};
+    if source.starts_with("probe:") {
+        return None;
+    }
+    let mut data: serde_json::Value = serde_json::from_str(text).ok()?;
+    let blocks: Vec<(String, bool)> = data
+        .get("blocks")?
+        .as_array()?
+        .iter()
+        .filter_map(|b| {
+            let name = b.get("name")?.as_str()?.to_string();
+            let is_use =
+                b.get("type").is_none() && (b.get("file").is_some() || b.get("model").is_some());
+            Some((name, is_use))
+        })
+        .collect();
+    // The block (or used model) an end names, and the rest: `car.v` is
+    // `car` and `v`; `plant/car.v` is `plant` and `car.v` if `plant` is a
+    // use, as `plant/force` is.
+    let split = |key: &str| -> Option<(String, String)> {
+        if let Some((u, rest)) = key.split_once('/') {
+            if blocks.iter().any(|(n, is_use)| *is_use && n == u) {
+                return Some((u.to_string(), rest.to_string()));
+            }
+        }
+        key.split_once('.')
+            .map(|(b, p)| (b.to_string(), p.to_string()))
+    };
+    let names = || {
+        blocks
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut ends = Vec::new();
+    for (key, what) in [(source, "source"), (target, "target")] {
+        let Some((block, rest)) = split(key) else {
+            if let Some((u, _)) = key.split_once('/') {
+                return Some(format!(
+                    "the {what} '{key}' names no used model '{u}'; blocks: {}",
+                    names()
+                ));
+            }
+            return Some(format!(
+                "the {what} '{key}' is not 'block.port' (or a used model's 'use/port')"
+            ));
+        };
+        if !blocks.iter().any(|(n, _)| *n == block) {
+            return Some(format!(
+                "the {what} '{key}' names no block '{block}'; blocks: {}",
+                names()
+            ));
+        }
+        ends.push((block, rest));
+    }
+    // The file with only those blocks and this wire, drawn as the canvas
+    // draws it.
+    let keep = [ends[0].0.clone(), ends[1].0.clone()];
+    if let Some(list) = data.get_mut("blocks").and_then(|b| b.as_array_mut()) {
+        list.retain(|b| {
+            b.get("name")
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| keep.iter().any(|k| k == n))
+        });
+    }
+    let map = data.as_object_mut()?;
+    map.insert(
+        "connections".into(),
+        serde_json::json!([{ "from": source, "to": target }]),
+    );
+    map.remove("controls");
+    let (file, _) = simsandbox_session::ModelFile::from_json(&data.to_string()).ok()?;
+    let d = Diagram::new(&file, &registry());
+    if d.dangling.is_empty() {
+        return None;
+    }
+    let node = |name: &str| d.nodes.iter().find(|n| n.name == name);
+    let (from_node, to_node) = (node(&ends[0].0)?, node(&ends[1].0)?);
+    if from_node.error.is_some() || to_node.error.is_some() {
+        return None;
+    }
+    let list = |v: Vec<&str>| match v.is_empty() {
+        true => "none".to_string(),
+        false => v.join(", "),
+    };
+    let what = |n: &simsandbox_session::diagram::Node| match n.kind {
+        NodeKind::Use => "the used model",
+        _ => "the block",
+    };
+    let outputs: Vec<&str> = from_node.outputs.iter().map(|p| p.name.as_str()).collect();
+    if !outputs.contains(&ends[0].1.as_str()) {
+        return Some(format!(
+            "the source '{source}': {} '{}' has no output '{}'; outputs: {}",
+            what(from_node),
+            ends[0].0,
+            ends[0].1,
+            list(outputs)
+        ));
+    }
+    // A parameter the file sets by a formula is not shown as a value, but
+    // may still be driven: the run decides.
+    let in_file = |block: &str, param: &str| {
+        data.get("blocks")
+            .and_then(|b| b.as_array())
+            .and_then(|b| {
+                b.iter()
+                    .find(|b| b.get("name").and_then(|n| n.as_str()) == Some(block))
+            })
+            .and_then(|b| b.get("params"))
+            .is_some_and(|p| p.get(param).is_some())
+    };
+    if in_file(&ends[1].0, &ends[1].1) {
+        return None;
+    }
+    let inputs: Vec<&str> = to_node.inputs.iter().map(|p| p.name.as_str()).collect();
+    let params: Vec<&str> = to_node.values.iter().map(|v| v.name.as_str()).collect();
+    if !inputs.contains(&ends[1].1.as_str()) && !params.contains(&ends[1].1.as_str()) {
+        return Some(format!(
+            "the target '{target}': {} '{}' has no input or parameter '{}'; inputs: {}; parameters: {}",
+            what(to_node),
+            ends[1].0,
+            ends[1].1,
+            list(inputs),
+            list(params)
+        ));
+    }
+    Some(format!("cannot wire '{source}' to '{target}'"))
+}
+
 /// A model file in the current form (ADR 0044): the text, the older forms
 /// converted, and what was dropped as unusable.
 #[pyfunction]
@@ -582,6 +723,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(study_model, m)?)?;
     m.add_function(wrap_pyfunction!(strategy, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
+    m.add_function(wrap_pyfunction!(connection_problem, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
