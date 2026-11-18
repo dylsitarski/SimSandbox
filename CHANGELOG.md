@@ -6,6 +6,9 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- CLI: `--help`, `-h`, `help` and `COMMAND --help` print help to standard output and exit 0; the exit status says what failed (1 the model or run, 2 the command line, 3 a file); `--errors json` writes every failure, warning and note as one JSON object per line; `check` reports every block's and wire's error, not only the first; a missing run file given to `check` now exits 3 without a report. The `lorenz` command is removed (run `examples/lorenz.ssbx.json`).
+- Python: `Model.connect` refuses a wire to a block, port or parameter that does not exist, or to an input already wired, when called (blocks are added before they are wired); `Model.add_block` refuses an unknown type.
+- Rust: `simsandbox_eq::group` (`EquationGroup`, `FusedSystem`) is removed; fuse blocks in a model (`Model::fuse`).
 - Plots of long runs draw much faster: a `plot.xy` of 100 000 samples took 40–80 ms a frame and now about 1–2 ms while paused and 5–9 ms while running; long curves are drawn thinned to the pixels they cover, keeping every peak, so dense areas may be smoothed very slightly differently. `plot.3d` of a long run 33 → 4 ms. A paused heat map no longer recolours and uploads its picture every frame (a 512 × 512 grid: 11 ms → 0.1 ms).
 - Typed equations and implicit methods do less work per evaluation, with the same results: a grid summed along an axis about 30% fewer instructions a step, backward Euler and TR-BDF2 on small systems about 20% (their working arrays are kept between steps), tables with edges (the bridge network) about 20%.
 - Small models step faster, with the same results: 10–50% fewer instructions per step in the step loop and in a session's recording (a model of many blocks about 30%, a study about 50%).
@@ -93,6 +96,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Python: type information (`py.typed`, stubs for the native module); wheels built and tested in CI for Linux, Windows and macOS (artifacts, not yet on PyPI).
+- CI: build cache, a minimum-Rust (1.97) job, Python 3.10, and `cargo deny` for licences, advisories and sources (`deny.toml`).
 - `simsandbox describe eq.equations` and `ss.describe("eq.equations")` list the language's functions under `functions`: those of numbers with their arity, and the array functions with their signature, what each gives and its unit, from the one table the language itself dispatches by.
 - Python: `Model.render(inputs=…)` renders after a run with changes made during it, as `(t, key, value)` tuples or a `Run` (the CLI's `render --inputs`).
 - A reference for the typed-equations language (`docs/reference/typed-equations.md`): every statement, the expression grammar, units, every function, and the faults found while writing it. `simsandbox describe eq.equations` and `ss.describe("eq.equations")` give it whole under `reference`; a test parses every example in it and fails when a function is missing from it.

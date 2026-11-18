@@ -19,14 +19,16 @@
 
 - 2026-11-17: the review's third priority, third part: the views' frames, measured first (`view_frames`), four commits: `paired` in place, `plot.xy` thinned to pixel columns and kept between frames, heat maps uploaded only on change ([performance](../design/performance.md#the-views-and-the-apps-frames-2026-11-17)). The worker's publish-when-dirty measured and left. Found: `plot.xy` coloured by `t` draws `y` against time (STATUS, known limitations).
 - 2026-11-18: the phase-portrait bug fixed (`Curve::new` now always takes the colour's column off first; an `Option::zip` first tried evaluated its argument eagerly and dropped `y` when no colour was bound, caught by rendering the examples). The app's hang with `--view` and `--screenshot`: the view chosen counted as unsaved (the layout is saved with the model, and the baseline was taken before the dock had its views' tabs), and the screenshot's close was held by the unsaved-changes question; both fixed, checked under Xvfb with every `--view` and `--window`.
+- 2026-11-18: the review's fourth priority, by two helpers in parallel (Rust in the checkout, Python and CI in a worktree, cherry-picked): CLI help, exit statuses, `--errors json`, several errors per `check` (ADR 0099); `lorenz` command and `group.rs` deleted; Python stubs, checks at the call, wheels in CI; CI cache, minimum Rust, Python 3.10, `cargo deny` (ADR 0100). The hard-coded systems investigated, not replaced (Q62).
 
 ## Decided
 
 - Owner (2026-11-14): the single build of a model that uses models is deferred ([ADR 0090](../decisions/0090-one-engine-for-nested-models.md), as built).
+- The four unmaintained crates `cargo deny` reports are ignored with reasons, not left failing (ADR 0100); the owner may prefer otherwise.
 
 ## Left open
 
-- The review's fourth priority (the third is done: views 2026-11-17; the worker's publishing measured and left); the app as taken apart, to try in the window; what ADR 0098 left in the kernel, for the plugin interface's design.
+- The review is done but for Q62 (the hard-coded systems); before PyPI, the licence in the wheel and absolute README links; the app as taken apart, to try in the window; what ADR 0098 left in the kernel, for the plugin interface's design.
 
 ## Notes for the next session
 

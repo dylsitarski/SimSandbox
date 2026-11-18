@@ -172,6 +172,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0097-implicit-steps-relative-tolerances-and-fallback.md](decisions/0097-implicit-steps-relative-tolerances-and-fallback.md) | Decision record | Implicit steps: relative tolerances, fresh Jacobians on failure, state kept on error |
 | [decisions/0098-the-kernel-holds-the-contract.md](decisions/0098-the-kernel-holds-the-contract.md) | Decision record | The kernel holds the contract; fixed properties as data, the rest capabilities; a `BlockSpec` builder |
 | [decisions/0099-cli-exit-codes-and-json-errors.md](decisions/0099-cli-exit-codes-and-json-errors.md) | Decision record | CLI help, exit statuses by kind of failure, `--errors json`, several errors per `check` |
+| [decisions/0100-python-wheels-typing-and-dependency-checks.md](decisions/0100-python-wheels-typing-and-dependency-checks.md) | Decision record | Python wheels and typing, checks at the call, CI and `cargo deny` |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 
