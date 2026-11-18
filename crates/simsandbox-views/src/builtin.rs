@@ -393,10 +393,17 @@ impl<'a> Curve<'a> {
             }
         };
         let n = t.len();
+        // The colour's column is the last; taken off before `y` and `x`
+        // whatever it is bound to (time included).
         let colour = match colour {
             None => ColourKey::Constant,
-            Some(c) if c.signal == SignalRef::Time => ColourKey::Time(t.to_vec()),
-            Some(_) => ColourKey::Value(columns.pop().map_or_else(Vec::new, |c| c.to_vec())),
+            Some(c) => {
+                let column = columns.pop();
+                match c.signal {
+                    SignalRef::Time => ColourKey::Time(t.to_vec()),
+                    _ => ColourKey::Value(column.map_or_else(Vec::new, |c| c.to_vec())),
+                }
+            }
         };
         let ys = columns.pop().unwrap_or(Column::Owned(Vec::new()));
         let xs = columns.pop().unwrap_or(Column::Owned(Vec::new()));
@@ -901,9 +908,21 @@ mod tests {
         size: egui::Vec2,
         frames: usize,
     ) {
+        xy_frames_bound(ctx, view, h, &[("x", "t"), ("y", "y")], size, frames);
+    }
+
+    /// Frames of a `plot.xy` with the given bindings.
+    fn xy_frames_bound(
+        ctx: &egui::Context,
+        view: &mut Xy,
+        h: &crate::History,
+        bound: &[(&str, &str)],
+        size: egui::Vec2,
+        frames: usize,
+    ) {
         let reg = crate::ViewRegistry::builtin();
         let t = reg.get("plot.xy").unwrap();
-        let bind = bindings(&[("x", "t"), ("y", "y")]);
+        let bind = bindings(bound);
         let style = Default::default();
         let input = crate::view::view_input(&bind, &style, t, h.into());
         for _ in 0..frames {
@@ -913,6 +932,32 @@ mod tests {
             };
             let mut out = ctx.run_ui(raw, |ui| view.show(ui, &input));
             out.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn a_curve_coloured_by_time_is_still_y_against_x() {
+        // A phase portrait: y = 2x, coloured by t. Before 2026-11-18 the
+        // time column was taken as y and y as x.
+        let mut h = crate::History::new(vec!["x".into(), "y".into()]);
+        for k in 0..50 {
+            let x = (k as f64 * 0.3).sin();
+            h.push(k as f64 * 0.1, &[x, 2.0 * x]);
+        }
+        let ctx = egui::Context::default();
+        let size = egui::vec2(400.0, 300.0);
+        for bound in [
+            &[("x", "x"), ("y", "y"), ("colour", "t")][..],
+            &[("x", "x"), ("y", "y"), ("colour", "x")],
+            &[("x", "x"), ("y", "y")],
+        ] {
+            let mut view = Xy::default();
+            xy_frames_bound(&ctx, &mut view, &h, bound, size, 2);
+            let points: Vec<&PlotPoint> = view.kept.lines.iter().flat_map(|(_, r)| r).collect();
+            assert!(!points.is_empty(), "{bound:?}");
+            for p in points {
+                assert_eq!(p.y, 2.0 * p.x, "{bound:?}");
+            }
         }
     }
 
