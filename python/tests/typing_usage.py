@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+from numpy.typing import NDArray
 
 import simsandbox as ss
 from simsandbox import _native
@@ -33,7 +34,7 @@ def use(m: ss.Model, folder: Path) -> float:
     r = m.run(t_end=1.0, signals=["decay.x"], every=2)
     total = 0.0
     if isinstance(r, ss.Results):
-        t: np.ndarray = r.t
+        t: NDArray[np.float64] = r.t
         x = r.outputs["decay.x"]
         y = r["gain.y"]
         total += len(y)
