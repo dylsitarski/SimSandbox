@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (owner, 2026-11-14; only what the cart-pole needs is built before the Phase 2 gate); not built yet
 - **Date:** 2026-11-14
+- **See also:** [ADR 0101](0101-scene-primitives-are-parametric-meshes.md) (how primitives are drawn and tested; shape meshes come from models), 2026-11-18
 - **Builds on:** [ADR 0015](0015-pluggable-views.md) (views, slots), [ADR 0058](0058-inputs-live-scheduled-replayed.md) (views that send input), [ADR 0079](0079-tables-of-members.md) (tables, rows by id), [ADR 0086](0086-views-by-axis-roles-and-mesh-views.md) (rows and meshes in views), [ADR 0057](0057-phase-2-plan.md) (the gate's scene view); answers [Q60](../open-questions.md)
 
 ## Context
