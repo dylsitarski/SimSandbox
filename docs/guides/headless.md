@@ -239,6 +239,26 @@ A `plot.scene` view draws a picture from layers of primitives (`points`, `segmen
 
 The pendulum's angle is measured from straight down and a scene's counter-clockwise from +x, so the rod's frame sits in a fixed frame turned by −π/2: a constant pose, not a calculation in the model. A layer evaluates no expressions: a position that must be computed is a model output or an `expression` filter. Every length is in the scene's `unit`; a signal in another length unit is refused (convert it in the model). `simsandbox render examples/pendulum.ssbx.json --view 1 --out scene.png` draws it alone.
 
+From Python, `Model.add_scene` adds one in the same form and refuses a wrong form, a binding that names no block, filter or probe of the model, or a `grab` that names no `input.pointer` block, when it is called; units and whether a block has that output are left to `check`. The cart-pole picture of ADR 0093 point 8, on a model whose blocks `cart` and `pole` give `cart.x` and `pole.theta`, with an `input.pointer` named `hand`:
+
+```python
+m.add_scene(
+    unit="m",
+    extent={"x": [-3, 3], "y": [-0.5, 2]},
+    frames={"cart": {"x": "cart.x", "y": 0}, "pole": {"in": "cart", "angle": "pole.theta"}},
+    layers=[
+        {"draw": "segments", "bind": {"x1": -3, "y1": 0, "x2": 3, "y2": 0}},
+        {"draw": "boxes", "in": "cart", "bind": {"x": 0, "y": 0, "width": 0.4, "height": 0.2}, "grab": "hand"},
+        {"draw": "boxes", "in": "pole", "bind": {"x": 0, "y": 0.5, "width": 0.04, "height": 1.0}},
+        {"draw": "discs", "in": "pole", "bind": {"x": 0, "y": 1.0, "radius": 0.05}, "grab": "hand"},
+    ],
+)
+m.check()["warnings"]                    # a layer that does not fit, at its path
+m.render("scene.png", t_end=1.0, view=0)
+```
+
+On the diagram's data layer a scene is a view node with an input per bound signal and per grab, named by the path `check` uses (`frames.cart.x`, `layers[1].grab`), so `render --diagram` shows what it reads and which pointer it sends to. Renaming a block renames it in the scene's bindings, poses and grabs.
+
 ## Recorder
 
 `"recorder": {"every": 10, "mb": 256}` in `controls` (both optional) lets the model be rewound in the app ([ADR 0064](../decisions/0064-recorder-node.md)): a snapshot of its state every `every` steps, within `mb` megabytes. Without it the app shows no rewind bar. It changes no results; headless runs ignore it.
@@ -294,7 +314,7 @@ ss.Run(m, track=[(1.0, "decay.k", 0.1)], name="slow", model_path="decay.ssbx.jso
 ```
 
 - The lines of an `eq.equations` block (units, grids and stencils, tables, edges, meshes, rules, every function) are in the [typed-equations reference](../reference/typed-equations.md), which `simsandbox describe eq.equations` and `ss.describe("eq.equations")` give whole under `reference`. `check` reports lines that do not parse or balance, with line and column.
-- `Model.add_block(..., canvas=(x, y))` places a block on the canvas (laid out automatically otherwise). `Model.connect("a.y", "b.u")` wires blocks; `Model.as_study(("spring.w", 0, 3, 600))` studies the whole model over parameter values ([Studies](#studies)).
+- `Model.add_block(..., canvas=(x, y))` places a block on the canvas (laid out automatically otherwise). `Model.connect("a.y", "b.u")` wires blocks; `Model.add_scene(layers, frames=..., unit=..., extent=..., view_from=...)` adds a scene view ([Scenes](#scenes)); `Model.as_study(("spring.w", 0, 3, 600))` studies the whole model over parameter values ([Studies](#studies)).
 - `Results.outputs` shapes: scalar `(rows,)`, vector `(rows, n)`, grid `(rows, ny, nx)`, points `(rows, count, dim)`; `Results.populations[name]` is a list of `(n, dim)` arrays; `Results.over_rows[name]` (and `Probe.over_rows`) is a `Rows`: `ids` and `values` per row, `versions`, `of(id)` (that row through the run, NaN where absent) and `by_id()` (every id, and a `(rows, ids)` matrix).
 - Problems raise `simsandbox.ModelError`, listing every error `check` finds.
 
