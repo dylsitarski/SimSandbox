@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "description": "A damped pendulum, shown as itself by the pendulum view that comes with the eq.pendulum block (ADR 0016), next to its angle over time. Started at 2 rad it swings well beyond the small-angle range, so its period is longer than 2π√(L/g). Raise c to damp it.",
+  "description": "A damped pendulum, shown as itself by the pendulum view that comes with the eq.pendulum block (ADR 0016), beside the same pendulum drawn as a scene of layers (ADR 0093: a support, and a rod and bob in a frame turned by the angle, which is measured from straight down, so its frame sits in one turned by -π/2), and its angle over time. The scene's rod is 1 m long, as L is: it draws no parameter. Started at 2 rad it swings well beyond the small-angle range, so its period is longer than 2π√(L/g). Raise c to damp it.",
   "run": {
     "dt": 0.01
   },
@@ -36,6 +36,63 @@
           "x": "bob.x",
           "y": "bob.y"
         }
+      },
+      {
+        "type": "plot.scene",
+        "unit": "m",
+        "extent": {
+          "x": [
+            -1.3,
+            1.3
+          ],
+          "y": [
+            -1.3,
+            1.3
+          ]
+        },
+        "frames": {
+          "pivot": {
+            "angle": -1.5707963267948966
+          },
+          "rod": {
+            "in": "pivot",
+            "angle": "bob.angle"
+          }
+        },
+        "layers": [
+          {
+            "draw": "boxes",
+            "bind": {
+              "colour": "grey",
+              "height": 0.08,
+              "width": 0.3,
+              "x": 0.0,
+              "y": 0.04
+            }
+          },
+          {
+            "draw": "segments",
+            "in": "rod",
+            "bind": {
+              "colour": "grey",
+              "width": 3.0,
+              "x1": 0.0,
+              "x2": 1.0,
+              "y1": 0.0,
+              "y2": 0.0
+            }
+          },
+          {
+            "draw": "discs",
+            "in": "rod",
+            "bind": {
+              "colour": "orange",
+              "radius": 0.08,
+              "x": 1.0,
+              "y": 0.0
+            }
+          }
+        ]
       },
       {
         "type": "plot.xy",

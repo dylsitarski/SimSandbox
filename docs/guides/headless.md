@@ -222,6 +222,23 @@ A **study** is a block that runs a model at each point of its own `sample` and o
 - The app opens a model, and checks a diagram edit, without running its studies; its worker runs them first. A model with nothing in time (no states, tables, data, clocks or scheduled inputs; formulas and studies only) is evaluated, not run ([ADR 0072](../decisions/0072-models-with-nothing-in-time.md)): once, and again whenever a value it reads changes, with no clock or rewind. A model that runs in time runs each study within the step that needs it, showing its runs done of runs; changing a parameter or input, Pause or Run gives the study up, undoes the step and runs it again from the new values, so results never depend on timing. It opens such a model on a profile of the study's results (against the swept parameter for a grid over one parameter, else against the run's number), or on a heat map of its 2D results for a grid over two.
 - **Making one:** "Study this model" on a used model's node (Python `Model.study("car1")`) adds a study block beside it over the same model: a grid of 20 points over its first parameter (a declared parameter, else the first block parameter), its inputs fed as the use's input blocks are. On the canvas background (Python `Model.as_study(("spring.w", 0, 3, 600))` or `as_study(sample={...})`) it studies the whole model: its blocks move into a new definition used in their place ("Make model"), with a study of it beside. The Inspector shows the model it studies and the number of runs, and edits its sample as a form (design, a row per parameter chosen from the model's, count and seed, replicates and seeds, results) or as JSON, applied when a field is left or a choice made; renaming the definition renames it in the study.
 
+## Scenes
+
+A `plot.scene` view draws a picture from layers of primitives (`points`, `segments`, `boxes`, `discs`) whose attributes are bound to numbers, signals or rows of tables, in frames that chain ([ADR 0093](../decisions/0093-scenes-from-primitive-layers.md), [visualization](../architecture/visualization.md#scenes)). `simsandbox describe plot.scene` lists the primitives, each attribute's kind, unit and default, and the palette; `check` warns about a layer that does not fit, at its path (`controls.views[1]: layers[2].bind.x: 'car.v' is in m/s; the scene's lengths are in m`); `render` draws it. The pendulum example draws its pendulum this way beside the `eq.pendulum` view:
+
+```json
+{"type": "plot.scene", "unit": "m", "extent": {"x": [-1.3, 1.3], "y": [-1.3, 1.3]},
+ "frames": {
+   "pivot": {"angle": -1.5707963267948966},
+   "rod": {"in": "pivot", "angle": "bob.angle"}},
+ "layers": [
+   {"draw": "boxes", "bind": {"colour": "grey", "height": 0.08, "width": 0.3, "x": 0.0, "y": 0.04}},
+   {"draw": "segments", "in": "rod", "bind": {"colour": "grey", "width": 3.0, "x1": 0.0, "x2": 1.0, "y1": 0.0, "y2": 0.0}},
+   {"draw": "discs", "in": "rod", "bind": {"colour": "orange", "radius": 0.08, "x": 1.0, "y": 0.0}}]}
+```
+
+The pendulum's angle is measured from straight down and a scene's counter-clockwise from +x, so the rod's frame sits in a fixed frame turned by −π/2: a constant pose, not a calculation in the model. A layer evaluates no expressions: a position that must be computed is a model output or an `expression` filter. Every length is in the scene's `unit`; a signal in another length unit is refused (convert it in the model). `simsandbox render examples/pendulum.ssbx.json --view 1 --out scene.png` draws it alone.
+
 ## Recorder
 
 `"recorder": {"every": 10, "mb": 256}` in `controls` (both optional) lets the model be rewound in the app ([ADR 0064](../decisions/0064-recorder-node.md)): a snapshot of its state every `every` steps, within `mb` megabytes. Without it the app shows no rewind bar. It changes no results; headless runs ignore it.

@@ -1,6 +1,6 @@
 # 0093 — Views from primitive parts: a scene is layers of primitives drawn from signals and tables
 
-- **Status:** Accepted (owner, 2026-11-14; only what the cart-pole needs is built before the Phase 2 gate); not built yet
+- **Status:** Accepted (owner, 2026-11-14; only what the cart-pole needs is built before the Phase 2 gate); stage 1 built 2026-11-19 (the view, frames, primitives, checks and headless renders; see the end), grabbing and editing not yet
 - **Date:** 2026-11-14
 - **See also:** [ADR 0101](0101-scene-primitives-are-parametric-meshes.md) (how primitives are drawn and tested; shape meshes come from models), 2026-11-18
 - **Builds on:** [ADR 0015](0015-pluggable-views.md) (views, slots), [ADR 0058](0058-inputs-live-scheduled-replayed.md) (views that send input), [ADR 0079](0079-tables-of-members.md) (tables, rows by id), [ADR 0086](0086-views-by-axis-roles-and-mesh-views.md) (rows and meshes in views), [ADR 0057](0057-phase-2-plan.md) (the gate's scene view); answers [Q60](../open-questions.md)
@@ -94,3 +94,13 @@ Points 1–8 as written: 2D, the four primitives, constants, scalars and rows, f
 - Verification: a scene's render checked against a known picture; a grab recorded and replayed bit for bit, in the window's worker and headless.
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none at the level of the list: a scene is a view (an observer). Within views it adds the layer, the primitive and the frame: slots bind one fixed picture and cannot say "draw this, then that, one per row", and without frames every corner of every moving shape would be a model output; over time it removes view types that become presets of layers.
+
+## Stage 1 built (2026-11-19)
+
+Points 1–5, 7 and 8, without grabbing (point 6) or the window's editing. Details in [visualization](../architecture/visualization.md#scenes); code in `crates/simsandbox-views/src/scene/`.
+
+- **Saved form:** as point 8, in `ViewEntry::scene` (`SceneSettings`, typed fields flattened into the entry, so files keep this order and are written back unchanged); the JSON Schema describes it. `grab` is kept and does nothing yet.
+- **Choices this ADR left open:** an attribute bound to a signal with no unit (dimensionless, or a filter's) is accepted as a length; `size` and `width` take numbers or dimensionless signals; `colour` as a number goes through viridis over 0 to 1, clamped; unbound it is `sky` from a fixed palette of ten names (Okabe–Ito and greys), and a palette name wins over a signal of the same name; a layer with no rows binding in a frame over rows draws once per row of that frame; `view_from` refuses a frame over rows; a disc's mark is drawn only when its `angle` is bound; a negative size is drawn as its magnitude; an instance with any value missing or not finite (a row absent from one binding) is left out; tables are told apart by block and table name.
+- **Example:** `examples/pendulum.ssbx.json` draws its pendulum as a scene beside the `eq.pendulum` view: a support box, and a rod and bob in a frame turned by `bob.angle` inside a fixed frame turned by −π/2 (the block measures its angle from straight down). Its rod is a constant 1 m, as `L` is by default: a scene binds no parameters, so a changed `L` needs a model output to follow.
+- **Tested:** each primitive's triangles, bounds and containment at its edges; poses (apply, chain, inverse); frames composed against the same pose in typed equations (to 10⁻¹²); rows paired by id with and without a frame over rows; `view_from`; colours; every `check` error at its path, in the views crate and through `check`; the cache (a still scene is not rebuilt; a new sample or size rebuilds it); a headless render compared with a known picture by exact colours and sizes; the topmost grabbed instance found by containment (`eval::picked`), ready for stage 2.
+- **Left for stage 2:** grabbing: `input.pointer`'s `picked` output, pressing on an instance through `eval::picked` (the plot already reports the pointer in view coordinates, which `view_from` must turn back into the scene's), recording and replaying it, pan and zoom held while grabbing. **Stage 3:** a scene as a node on the canvas's data layer (its signals as edges; block renames reaching layer bindings), editing layers in the Inspector, a Python `Model` method that adds a scene.
