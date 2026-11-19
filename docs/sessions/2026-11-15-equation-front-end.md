@@ -23,6 +23,7 @@
 - 2026-11-18: how meshes fit views asked; ADR 0101 (primitives are parametric meshes, one cached drawing path, shape meshes from models), accepted by the owner.
 - 2026-11-19: the scene view, stage 1 (`plot.scene`, frames, the four primitives, `check`/`describe`/schema/`render`, the pendulum as a scene, which agrees with `eq.pendulum`'s view in the app and headless).
 - 2026-11-19: the scene view, stage 2 (grabbing, `picked`, replay), with the example "Grab the bob"; a replayed grab checked in the app under Xvfb.
+- 2026-11-19: the scene view, stage 3 (canvas node, renames, Inspector editing, `Model.add_scene`); ADR 0093's list before the gate complete. The container restarted during verification (likely memory): checks rerun with `-j 2`.
 
 ## Decided
 

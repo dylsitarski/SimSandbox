@@ -97,6 +97,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Editing scenes: the Inspector lists a scene's frames and layers to add, remove, reorder and bind; on the canvas a scene is wired from what it draws; `Model.add_scene` in Python; `simsandbox-app --select NODE` opens with a node selected.
 - Grabbing in scenes: press on a shape whose layer names an `input.pointer` block and drag; the model receives the pointer and which shape was pressed (`picked`), and the grab replays exactly from a saved run. New example "Grab the bob".
 - Scene views (`plot.scene`): a picture built from layers of points, segments, boxes and discs whose positions, sizes and colours come from constants, signals or a table's rows, placed in frames that move and turn with signals, and seen from any frame. The pendulum example shows its pendulum as a scene too.
 - Python: type information (`py.typed`, stubs for the native module); wheels built and tested in CI for Linux, Windows and macOS (artifacts, not yet on PyPI).
@@ -270,6 +271,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- Renaming a block now also renames it where it stands alone: the `input.pointer` a view sends to (`controls.inputs`) and fused groups' members; deleting it drops those.
 - A plot coloured by time (the "Phase portrait" preset, and the coupled-oscillators, grazing and predator-prey examples) drew time against `y` instead of `y` against `x`.
 - The app started with `--view` no longer counts the chosen view as an unsaved change, and `--screenshot` always exits after saving the picture; with `--view` it waited for an answer about unsaved changes.
 - In the app, after unsaved changes were let go to close the window, a close that did not happen left replacing the model (opening a file, an example, a new model) without the question about unsaved changes; the question is back after a few frames.
