@@ -241,7 +241,7 @@ fn values_display_compactly() {
 }
 
 /// Apply canvas edits to the open model as the Diagram tab does.
-fn canvas_edits(app: &mut SimApp, edits: Vec<simsandbox_session::diagram::Edit>) {
+pub(super) fn canvas_edits(app: &mut SimApp, edits: Vec<simsandbox_session::diagram::Edit>) {
     let live = app.session.as_ref().unwrap();
     let m = live.model();
     let (speed, views, layout) = (app.speed, app.views.entries(), app.layout());
@@ -254,7 +254,7 @@ fn canvas_edits(app: &mut SimApp, edits: Vec<simsandbox_session::diagram::Edit>)
 }
 
 /// Undo (`back`) or redo a canvas edit, as Ctrl+Z and Ctrl+Shift+Z do.
-fn canvas_step(app: &mut SimApp, back: bool) {
+pub(super) fn canvas_step(app: &mut SimApp, back: bool) {
     let live = app.session.as_ref().unwrap();
     let m = live.model();
     let (speed, views, layout) = (app.speed, app.views.entries(), app.layout());

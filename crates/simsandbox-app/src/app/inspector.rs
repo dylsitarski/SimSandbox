@@ -253,6 +253,9 @@ impl SimApp {
                 .into_iter()
                 .filter_map(|n| self.studied(&m.file, &n).map(|s| (n, s)))
                 .collect();
+            if let Some(tile) = self.inspected_scene() {
+                self.scene_section(ui, tile);
+            }
             if !picked.is_empty() {
                 self.selected_section(ui, &m, &picked, &keys, folder, &mut c);
             }
@@ -294,8 +297,26 @@ impl SimApp {
     /// last looked at.
     fn follow_canvas(&mut self) {
         let canvas = self.diagram.canvas.selected.clone();
+        // A view picked alone on the canvas (`view:K`): its tile, for a
+        // scene's editor; anything else picked leaves it. A canvas edit
+        // of the view makes it a new tile, which is followed.
+        let view = match canvas.as_ref().map(|s| s.blocks()).as_deref() {
+            Some([one]) => one
+                .strip_prefix("view:")
+                .and_then(|k| k.parse::<usize>().ok())
+                .and_then(|k| self.views.tiles.get(k))
+                .map(|t| t.id),
+            _ => None,
+        };
+        let gone = self
+            .inspected_view
+            .is_some_and(|id| !self.views.tiles.iter().any(|t| t.id == id));
+        if gone {
+            self.inspected_view = view;
+        }
         if canvas != self.last_canvas {
             self.last_canvas = canvas.clone();
+            self.inspected_view = view;
             // Inside a used model, picks are named inside it: its path
             // (`car1`, `vehicle/plant`) says where.
             let scope: Option<String> =

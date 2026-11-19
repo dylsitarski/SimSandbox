@@ -3,6 +3,7 @@
 //! ```text
 //! simsandbox-app [FILE] [--view time|phase|3d|diagram]   (shows only that view)
 //! simsandbox-app [FILE] --window signals|equations (opens that window)
+//! simsandbox-app [FILE] --select NODE   (selects a canvas node: `car`, `view:1`)
 //! simsandbox-app [FILE] --screenshot OUT.ppm [--after SECONDS]
 //! ```
 //!
@@ -21,6 +22,7 @@ mod log;
 mod pacing;
 mod probe_editor;
 mod recorder_editor;
+mod scene_edit;
 
 use app::{ScreenshotRequest, SimApp};
 use eframe::egui;
@@ -30,6 +32,7 @@ struct Args {
     path: Option<String>,
     view: Option<String>,
     window: Option<String>,
+    select: Option<String>,
     screenshot: Option<ScreenshotRequest>,
 }
 
@@ -37,6 +40,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
     let mut path = None;
     let mut view = None;
     let mut window = None;
+    let mut select = None;
     let mut shot: Option<std::path::PathBuf> = None;
     let mut after = 3.0;
     let mut it = args.iter();
@@ -63,6 +67,9 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 }
                 window = Some(v.clone());
             }
+            "--select" => {
+                select = Some(it.next().ok_or("missing value for --select")?.clone());
+            }
             "--after" => {
                 let v = it.next().ok_or("missing value for --after")?;
                 after = v
@@ -81,6 +88,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         path,
         view,
         window,
+        select,
         screenshot: shot.map(|path| ScreenshotRequest { path, after }),
     })
 }
@@ -122,7 +130,7 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => {
             eprintln!(
-                "error: {e}\nusage: simsandbox-app [FILE] [--view time|phase|3d|diagram] [--window signals|equations] [--screenshot OUT.ppm [--after SECONDS]]"
+                "error: {e}\nusage: simsandbox-app [FILE] [--view time|phase|3d|diagram] [--window signals|equations] [--select NODE] [--screenshot OUT.ppm [--after SECONDS]]"
             );
             return ExitCode::FAILURE;
         }
@@ -158,6 +166,9 @@ fn main() -> ExitCode {
                 args.window.as_deref(),
                 args.screenshot,
             );
+            if let Some(node) = &args.select {
+                app.select(node);
+            }
             if let Some(mb) = cc
                 .storage
                 .and_then(|s| s.get_string(MEMORY_KEY))

@@ -215,6 +215,7 @@ impl SimApp {
             return;
         }
         self.picked = vec![(None, top.to_string())];
+        self.inspected_view = None;
         if self.diagram.scope == simsandbox_session::diagram::Scope::Model {
             let selection = crate::canvas::Selection::Block(top.to_string());
             self.diagram.canvas.selected = Some(selection.clone());

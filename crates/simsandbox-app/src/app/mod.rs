@@ -34,6 +34,9 @@ mod forms;
 mod inspector;
 mod param_rows;
 mod run_menu;
+mod scene;
+#[cfg(test)]
+mod scene_tests;
 #[cfg(test)]
 mod tests;
 mod toolbar;
@@ -163,6 +166,11 @@ pub struct SimApp {
     picked: Vec<(Option<String>, String)>,
     /// The diagram's selection when last looked at, to tell a new pick.
     last_canvas: Option<crate::canvas::Selection>,
+    /// The view tile the inspector edits, picked as a node on the canvas
+    /// or by its title: a scene's layers (ADR 0093).
+    inspected_view: Option<u64>,
+    /// Scenes changed in the inspector that do not check yet, by tile.
+    scene_drafts: HashMap<u64, scene::SceneDraft>,
     /// List values formulas set too.
     show_computed: bool,
     /// What the study picked last can vary: its name, its model's text and
@@ -246,6 +254,8 @@ impl SimApp {
             inspect_query: String::new(),
             picked: Vec::new(),
             last_canvas: None,
+            inspected_view: None,
+            scene_drafts: HashMap::new(),
             show_computed: false,
             study_keys: HashMap::new(),
             diagram: DiagramTab::default(),
@@ -447,7 +457,10 @@ impl SimApp {
                     let tiles = self.tile_ids();
                     self.dock.tile_all(&tiles);
                 }
-                DockAction::Select(t) => self.views.selected = Some(t),
+                DockAction::Select(t) => {
+                    self.views.selected = Some(t);
+                    self.inspected_view = Some(t);
+                }
                 DockAction::Inspect(signal) => self.inspect_signal(&signal),
                 DockAction::Pointer(block, p) => self.send_pointer(&block, &p),
             }

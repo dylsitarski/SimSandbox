@@ -23,6 +23,12 @@ impl SimApp {
         self.diagram_outcomes(&m, outcomes);
     }
 
+    /// Select a node on the canvas, as a click does: a block (`car`) or a
+    /// data-layer node (`view:1`, whose scene the inspector then edits).
+    pub fn select(&mut self, node: &str) {
+        self.diagram.canvas.selected = Some(crate::canvas::Selection::Block(node.to_string()));
+    }
+
     /// The node canvas (ADR 0042), and what its edits ask for.
     pub(super) fn diagram_tab(&mut self, ui: &mut egui::Ui) {
         let Some(live) = &self.session else {
