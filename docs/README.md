@@ -176,7 +176,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0100-python-wheels-typing-and-dependency-checks.md](decisions/0100-python-wheels-typing-and-dependency-checks.md) | Decision record | Python wheels and typing, checks at the call, CI and `cargo deny` |
 | [decisions/0101-scene-primitives-are-parametric-meshes.md](decisions/0101-scene-primitives-are-parametric-meshes.md) | Decision record | Scene primitives as parametric meshes, one drawing path, shape meshes from models |
 | [decisions/0102-scene-bindings-may-name-parameters.md](decisions/0102-scene-bindings-may-name-parameters.md) | Decision record | Scene bindings naming parameters: the name rule, values over time recorded in the history |
-| [decisions/0103-rigid-body-engine.md](decisions/0103-rigid-body-engine.md) | Decision record | Proposed: a native articulated-body solver for jointed mechanisms and Rapier for contacts; five options; state for rewind, file form, rows, grabbing, tests |
+| [decisions/0103-rigid-body-engine.md](decisions/0103-rigid-body-engine.md) | Decision record | Proposed: a native articulated-body solver for jointed mechanisms and Rapier for contacts; five options, the typed-equations function not taken; state for rewind, file form, rows, grabbing, tests |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 
