@@ -96,6 +96,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Scene views (`plot.scene`): a picture built from layers of points, segments, boxes and discs whose positions, sizes and colours come from constants, signals or a table's rows, placed in frames that move and turn with signals, and seen from any frame. The pendulum example shows its pendulum as a scene too.
 - Python: type information (`py.typed`, stubs for the native module); wheels built and tested in CI for Linux, Windows and macOS (artifacts, not yet on PyPI).
 - CI: build cache, a minimum-Rust (1.97) job, Python 3.10, and `cargo deny` for licences, advisories and sources (`deny.toml`).
 - `simsandbox describe eq.equations` and `ss.describe("eq.equations")` list the language's functions under `functions`: those of numbers with their arity, and the array functions with their signature, what each gives and its unit, from the one table the language itself dispatches by.
