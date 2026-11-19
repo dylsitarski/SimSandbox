@@ -26,6 +26,7 @@
 - 2026-11-19: the scene view, stage 3 (canvas node, renames, Inspector editing, `Model.add_scene`); ADR 0093's list before the gate complete. The container restarted during verification (likely memory): checks rerun with `-j 2`.
 - 2026-11-19: parameter bindings in scenes (ADR 0102, owner), frame renames, a scene's check error on its tile and node. A first try recorded a study's swept parameter beside its field output and moved the resonance profiles' axis; caught by the render hashes and fixed (an output of any shape wins).
 - 2026-11-19: the rigid-body spike, ADR 0103 proposed (Rapier). Checked: the cart-pole table reproduced exactly by a rebuild; the `mujoco-rs` licence's reservation against text and data mining and machine learning confirmed in its 7.1.0 `LICENSE`.
+- 2026-11-19: the rigid-body follow-up: a native 2D ABA, the typed-equations routes and Featherstone as a typed-equations function; ADR 0103 revised to five options, proposing the native core plus Rapier for contacts. Checked by a rebuild: the ABA–CRBA agreement, the double pendulum's errors and orders, the momentum drift and the generated chains' timings reproduced; the typed files pass `check`; no workspace file changed.
 
 ## Decided
 
@@ -34,6 +35,7 @@
 
 ## Left open
 
+- Found by the follow-up spike, not yet fixed in the workspace: `simsandbox-eq`'s implicit methods probe a system's Jacobian structure at the first step's state when it declares none, so a system starting at rest can miss entries (the cart-pole's ∂q̈/∂q̇), and a restore into a new workspace then differed by 5.9e−12; and typed models' step times grew 10–25× late in a long process that had run other models (cause unknown).
 - The review is done but for Q62 (the hard-coded systems); before PyPI, the licence in the wheel and absolute README links; the app as taken apart, to try in the window; what ADR 0098 left in the kernel, for the plugin interface's design.
 
 ## Notes for the next session
