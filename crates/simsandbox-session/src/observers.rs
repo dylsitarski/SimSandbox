@@ -645,6 +645,19 @@ impl Diagram {
         self.place_observers(model_nodes);
     }
 
+    /// Mark views that draw nothing with why (ADR 0093): `problems` are
+    /// each view's place in `controls.views` and its error, as the window
+    /// knows it (a scene that does not check, saved or a draft). The
+    /// error is the node's, shown on hover; a scene's input at the error's
+    /// path is marked when drawn ([`view_problem_input`]).
+    pub fn mark_views(&mut self, problems: &[(usize, String)]) {
+        for (k, e) in problems {
+            if let Some(n) = self.node(&view_node(*k)) {
+                self.nodes[n].error = Some(e.clone());
+            }
+        }
+    }
+
     /// Place data-layer nodes without a saved place, in columns to the right
     /// of the model: filters, probes, views.
     fn place_observers(&mut self, first: usize) {
@@ -687,6 +700,16 @@ impl Diagram {
             }
         }
     }
+}
+
+/// The input of view node `n` that its error is at: a scene's input
+/// named by the error's path (`layers[1].bind.x2`), if it has one.
+pub fn view_problem_input(n: &Node) -> Option<usize> {
+    if n.kind != NodeKind::View {
+        return None;
+    }
+    let path = simsandbox_views::scene::spec::error_path(n.error.as_deref()?)?;
+    n.inputs.iter().position(|p| p.name == path)
 }
 
 /// Why a filter cannot feed a model input.

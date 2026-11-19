@@ -50,7 +50,12 @@ impl Views {
         let mut warnings = Vec::new();
         for (i, entry) in saved.iter().enumerate() {
             match self.restore(entry, available) {
-                Ok(state) => {
+                Ok((state, problem)) => {
+                    // A scene that does not check is kept, saying why it
+                    // is not drawn, so it is saved back as it was.
+                    if let Some(e) = problem {
+                        warnings.push(format!("controls.views[{i}]: {e}; not drawn"));
+                    }
                     let id = self.push(state);
                     self.tile_mut(id).canvas = entry.canvas;
                     self.opened.push(Some(id));
@@ -89,7 +94,13 @@ impl Views {
         warnings
     }
 
-    fn restore(&self, e: &ViewEntry, available: &Available<'_>) -> Result<ViewState, String> {
+    /// A tile's state for an entry, and the error of settings it holds
+    /// without drawing them (a scene that does not check).
+    fn restore(
+        &self,
+        e: &ViewEntry,
+        available: &Available<'_>,
+    ) -> Result<(ViewState, Option<String>), String> {
         let t = self
             .registry
             .get(&e.type_name)
@@ -102,14 +113,22 @@ impl Views {
         let camera = e.camera.map(|c| [c.yaw, c.pitch, c.zoom]);
         let mut state = ViewState::restore(t, bind, e.style.clone(), camera, available)?;
         // What it takes beyond slots: a scene's frames and layers
-        // (ADR 0093), each problem at its path.
-        state.set_settings(&e.scene.to_map(), available)?;
+        // (ADR 0093), each problem at its path. A scene that does not
+        // check holds them, to show why and save them back.
+        let settings = e.scene.to_map();
+        let mut problem = None;
+        if let Err(err) = state.set_settings(&settings, available) {
+            if !state.hold_settings(&settings, &err) {
+                return Err(err);
+            }
+            problem = Some(err);
+        }
         if let Some(s) = &e.selection {
             state
                 .set_selection(s)
                 .map_err(|err| format!("selection: {err}"))?;
         }
-        Ok(state)
+        Ok((state, problem))
     }
 
     fn push(&mut self, state: ViewState) -> u64 {
@@ -149,14 +168,25 @@ impl Views {
                         ..o.clone()
                     } == *e
             });
-            if let Some(k) = same {
+            // Kept as it is, unless it holds settings that did not check:
+            // those are checked again.
+            if let Some(k) = same.filter(|&k| {
+                kept[k]
+                    .as_ref()
+                    .is_some_and(|t| t.state.problem().is_none())
+            }) {
                 let mut tile = kept[k].take().expect("checked");
                 tile.canvas = e.canvas;
                 self.tiles.push(tile);
                 continue;
             }
             let state = match self.restore(e, available) {
-                Ok(s) => Ok(s),
+                Ok((s, problem)) => {
+                    if let Some(err) = problem {
+                        warnings.push(format!("view {}: {err}; not drawn", i + 1));
+                    }
+                    Ok(s)
+                }
                 Err(err) if e.bind.is_empty() => self
                     .registry
                     .get(&e.type_name)
@@ -558,7 +588,7 @@ mod tests {
     }
 
     /// A scene's problems are found where the app and `check` find them,
-    /// at their paths, and the view is left out.
+    /// at their paths; the view is kept, not drawn, saying why.
     #[test]
     fn a_scene_that_does_not_fit_is_reported_at_its_path() {
         use crate::examples::{registry, view_registry};
@@ -602,7 +632,16 @@ mod tests {
             let w = v.open(&s.available(&s.signals()), &s.file.controls.views);
             assert_eq!(w.len(), 1, "{w:?}");
             assert!(w[0].starts_with(problem), "{}\n  not {problem}", w[0]);
-            assert_eq!(v.tiles[0].state.type_name, "plot.xy");
+            assert!(w[0].ends_with("; not drawn"), "{}", w[0]);
+            // Kept as a tile that says why it is not drawn, and saved
+            // back as it was.
+            assert_eq!(v.tiles[0].state.type_name, "plot.scene");
+            let held = v.tiles[0].state.problem().unwrap();
+            assert!(
+                held.starts_with(&problem["controls.views[0]: ".len()..]),
+                "{held}"
+            );
+            assert_eq!(v.entries(), s.file.controls.views);
             // `check` says the same.
             let checked = crate::describe::check(&text, &registry());
             let warnings = checked["warnings"].as_array().unwrap();

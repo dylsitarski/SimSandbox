@@ -41,6 +41,7 @@ impl SimApp {
             live.call(move |s, _| s.save_json_with(speed, Some(views), Some(layout)))?
         };
         self.diagram.activations = live.status().activations;
+        self.diagram.view_problems = self.view_problems();
         let outcomes = self.diagram.show(
             ui,
             &m,

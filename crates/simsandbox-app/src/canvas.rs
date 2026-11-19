@@ -193,7 +193,14 @@ impl Canvas {
                 let value = self.value_under(d, origin, p).filter(|&(k, _)| k == i);
                 let unit = self.unit_under(d, origin, p).filter(|&(k, _)| k == i);
                 let tip = if let Some(e) = &n.error {
-                    Some(e.clone())
+                    Some(match n.kind {
+                        // A view draws nothing: a scene that does not
+                        // check (ADR 0093).
+                        NodeKind::View => format!(
+                            "Not drawn: {e}\nFix it in the Inspector (double-click to show the tile)"
+                        ),
+                        _ => e.clone(),
+                    })
                 } else if self.view.expander(origin, n).is_some_and(|r| r.contains(p)) {
                     Some(if n.open {
                         "Hide its values".to_string()

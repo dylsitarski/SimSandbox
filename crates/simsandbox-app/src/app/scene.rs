@@ -43,6 +43,27 @@ impl SimApp {
         (t.state.type_name == SCENE).then_some(id)
     }
 
+    /// Why a scene tile draws nothing or does not draw its form: its
+    /// draft's error, else that of the saved form it holds.
+    pub(super) fn scene_problem(&self, tile: u64) -> Option<String> {
+        let t = self.views.tiles.iter().find(|t| t.id == tile)?;
+        let saved = SceneSettings::from_map(&t.state.settings()).unwrap_or_default();
+        match self.scene_drafts.get(&tile) {
+            Some(d) if d.base == saved => Some(d.error.clone()),
+            _ => t.state.problem().map(str::to_string),
+        }
+    }
+
+    /// The tiles with a problem, by place, for their canvas nodes.
+    pub(super) fn view_problems(&self) -> Vec<(usize, String)> {
+        self.views
+            .tiles
+            .iter()
+            .enumerate()
+            .filter_map(|(k, t)| Some((k, self.scene_problem(t.id)?)))
+            .collect()
+    }
+
     /// A scene tile's form as the Inspector shows it: its draft, while the
     /// tile is still what the draft was made from, else the tile's own.
     pub(super) fn scene_form(&mut self, tile: u64) -> Option<SceneSettings> {
@@ -140,10 +161,21 @@ impl SimApp {
             .position(|t| t.id == tile)
             .unwrap_or(0);
         let draft = self.scene_drafts.get(&tile).map(|d| d.error.clone());
+        // A saved form that does not check: nothing is drawn.
+        let held = self
+            .views
+            .tiles
+            .iter()
+            .find(|t| t.id == tile)
+            .and_then(|t| t.state.problem())
+            .map(str::to_string);
         let mut edits: Vec<SceneEdit> = Vec::new();
         let mut form_ui = FormUi {
             tile,
-            error: draft.as_deref().map(|e| (error_path(e), e)),
+            error: draft
+                .as_deref()
+                .or(held.as_deref())
+                .map(|e| (error_path(e), e)),
             placed: false,
             text: &mut self.param_edits,
             typed: &mut self.error,
@@ -156,12 +188,19 @@ impl SimApp {
         .id_salt(("scene", tile))
         .default_open(true)
         .show(ui, |ui| {
+            if draft.is_none() && held.is_some() {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Not drawn: the saved scene does not check; an edit that makes it check draws it",
+                );
+            }
             if draft.is_some() {
                 ui.horizontal(|ui| {
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        "Not drawn yet: the scene shows its last form",
-                    );
+                    let what = match &held {
+                        Some(_) => "Not drawn: neither this form nor the saved one checks",
+                        None => "Not drawn yet: the scene shows its last form",
+                    };
+                    ui.colored_label(ui.visuals().warn_fg_color, what);
                     discard = ui
                         .small_button("discard")
                         .on_hover_text("Go back to the form the scene draws")

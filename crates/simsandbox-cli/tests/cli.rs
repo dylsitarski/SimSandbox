@@ -557,7 +557,7 @@ fn check_refuses_a_scene_layer_grabbing_with_no_input_pointer() {
     let warnings = report["warnings"].as_array().unwrap();
     assert!(
         warnings.iter().any(|w| w
-            == "controls.views[0]: layers[3].grab: no input.pointer block 'bob' (grabbing sends the pointer to one); ignored"),
+            == "controls.views[0]: layers[3].grab: no input.pointer block 'bob' (grabbing sends the pointer to one); not drawn"),
         "{warnings:?}"
     );
     // `describe` gives the pointer's fourth output.

@@ -87,6 +87,10 @@ pub struct DiagramTab {
     /// What the run says of each activated use now (ADR 0088), set
     /// before each frame.
     pub activations: Vec<(String, bool, u64)>,
+    /// Views that draw nothing and why, by place among the tiles (a scene
+    /// that does not check, saved or a draft, ADR 0093), set before each
+    /// frame: their nodes are marked.
+    pub view_problems: Vec<(usize, String)>,
     /// The level shown: the model, or a subsystem's inside.
     pub scope: Scope,
     /// The subsystem's name as typed for renaming.
@@ -737,10 +741,14 @@ impl DiagramTab {
         // Filters and views change outside the canvas too.
         let key = match self.hide_data {
             true => String::new(),
-            false => {
-                serde_json::to_string(&(views.0, &model.filters, &model.probes, &model.recorder))
-                    .unwrap_or_default()
-            }
+            false => serde_json::to_string(&(
+                views.0,
+                &model.filters,
+                &model.probes,
+                &model.recorder,
+                &self.view_problems,
+            ))
+            .unwrap_or_default(),
         };
         if key != self.data_key {
             self.data_key = key;
@@ -751,6 +759,7 @@ impl DiagramTab {
         let draft = self.draft.is_some();
         let expanded = self.expanded.clone();
         let folder = self.folder.clone();
+        let problems = self.view_problems.clone();
         let built = self.cache.get_or_insert_with(|| {
             let mut d = Diagram::of(source, &scope, registry);
             let mut f = source.clone();
@@ -767,6 +776,9 @@ impl DiagramTab {
                 f = simsandbox_session::observers::model_part(&f);
             }
             d.observe(&f, views.1);
+            if !draft && !hide_data {
+                d.mark_views(&problems);
+            }
             // Uses expanded in place (ADR 0066 step 4d).
             if !expanded.is_empty() {
                 let mut top = source.clone();

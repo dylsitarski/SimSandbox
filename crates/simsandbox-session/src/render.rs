@@ -176,6 +176,9 @@ pub fn render_diagram(
         crate::observers::model_part(file)
     };
     d.observe(&observed, &crate::examples::view_registry());
+    if o.data && o.inside.is_none() {
+        d.mark_views(&scene_problems(file, registry));
+    }
     if !expanded.is_empty() {
         d.expand(file, registry, &expanded);
     }
@@ -184,6 +187,35 @@ pub fn render_diagram(
         o.values || file.controls.open.iter().any(|open| open == key)
     });
     Ok(paint(o, |ui| crate::diagram_paint::show(ui, &d)))
+}
+
+/// The model's scenes that do not check, by place in `controls.views`,
+/// and why (ADR 0093): what the window marks their nodes with. Checked
+/// against the model loaded, its studies not run; none if it does not
+/// load (its blocks show why) or has no scene.
+fn scene_problems(file: &simsandbox_file::ModelFile, registry: &Registry) -> Vec<(usize, String)> {
+    let scene = simsandbox_views::scene::SCENE;
+    if !file.controls.views.iter().any(|v| v.type_name == scene) {
+        return Vec::new();
+    }
+    let loaded = crate::study::without_running_studies(|| {
+        Session::load_in("diagram", &file.to_json(), registry, file.folder.as_deref())
+    });
+    let Ok(s) = loaded else {
+        return Vec::new();
+    };
+    let h = s.signals();
+    let available = s.available(&h);
+    file.controls
+        .views
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.type_name == scene)
+        .filter_map(|(k, v)| {
+            let e = simsandbox_views::scene::Scene::check(&v.scene.to_map(), &available).err()?;
+            Some((k, e))
+        })
+        .collect()
 }
 
 fn check(o: &RenderOptions) -> Result<(), String> {
@@ -812,6 +844,37 @@ mod tests {
         .unwrap();
         let placed = scene.place(&simsandbox_views::Recorded::single(&h));
         assert_eq!(placed.iter().filter(|p| p.layer == 2).count(), 5);
+    }
+
+    /// A scene that does not check marks its node in the headless
+    /// diagram, as the window does (ADR 0093).
+    #[test]
+    fn a_scene_that_does_not_check_is_marked_on_the_diagram() {
+        let text = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Pendulum (with its own view)"))
+            .unwrap()
+            .text;
+        let r = registry();
+        let file = |t: &str| simsandbox_file::ModelFile::from_json(t).unwrap().0;
+        assert!(scene_problems(&file(text), &r).is_empty());
+        let broken = text.replace("\"angle\": \"bob.angle\"", "\"angle\": \"bob.angel\"");
+        assert_eq!(
+            scene_problems(&file(&broken), &r),
+            [(
+                1,
+                "frames.rod.angle: no signal or parameter 'bob.angel'".to_string()
+            )]
+        );
+        let o = RenderOptions {
+            width: 600.0,
+            height: 300.0,
+            ..Default::default()
+        };
+        assert_ne!(
+            render_diagram(&file(&broken), &r, &o).unwrap(),
+            render_diagram(&file(text), &r, &o).unwrap()
+        );
     }
 
     #[test]

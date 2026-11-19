@@ -224,7 +224,7 @@ A **study** is a block that runs a model at each point of its own `sample` and o
 
 ## Scenes
 
-A `plot.scene` view draws a picture from layers of primitives (`points`, `segments`, `boxes`, `discs`) whose attributes are bound to numbers, signals, rows of tables or model parameters, in frames that chain ([ADR 0093](../decisions/0093-scenes-from-primitive-layers.md), [visualization](../architecture/visualization.md#scenes)). `simsandbox describe plot.scene` lists the primitives, each attribute's kind, unit and default, and the palette; `check` warns about a layer that does not fit, at its path (`controls.views[1]: layers[2].bind.x: 'car.v' is in m/s; the scene's lengths are in m`); `render` draws it. The pendulum example draws its pendulum this way beside the `eq.pendulum` view:
+A `plot.scene` view draws a picture from layers of primitives (`points`, `segments`, `boxes`, `discs`) whose attributes are bound to numbers, signals, rows of tables or model parameters, in frames that chain ([ADR 0093](../decisions/0093-scenes-from-primitive-layers.md), [visualization](../architecture/visualization.md#scenes)). `simsandbox describe plot.scene` lists the primitives, each attribute's kind, unit and default, and the palette; `check` warns about a layer that does not fit, at its path (`controls.views[1]: layers[2].bind.x: 'car.v' is in m/s; the scene's lengths are in m; not drawn`); `render` draws it, or in its place `Not drawn:` and the error, and `render --diagram` marks its node and the input at that path. The pendulum example draws its pendulum this way beside the `eq.pendulum` view:
 
 ```json
 {"type": "plot.scene", "unit": "m", "extent": {"x": [-1.3, 1.3], "y": [-1.3, 1.3]},

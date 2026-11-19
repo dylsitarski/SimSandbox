@@ -345,7 +345,9 @@ impl View {
             FontId::proportional(14.0 * z),
             visuals.strong_text_color(),
         );
-        let kind = if n.error.is_some() {
+        let kind = if n.error.is_some() && n.kind == NodeKind::View {
+            "not drawn (hover)".to_string()
+        } else if n.error.is_some() {
             "cannot be built (hover)".to_string()
         } else {
             match n.kind {
@@ -371,6 +373,8 @@ impl View {
             FontId::proportional(10.5 * z),
             weak,
         );
+        // A view's input its error is at (a scene's binding, ADR 0093).
+        let wrong = crate::observers::view_problem_input(n);
         for (c, ports) in [
             (Causality::Input, &n.inputs),
             (Causality::Output, &n.outputs),
@@ -378,7 +382,10 @@ impl View {
             for (k, p) in ports.iter().enumerate() {
                 let at = self.to_screen(origin, n.port_at(c, k));
                 let field = p.shape != Shape::Scalar;
-                let colour = if field {
+                let wrong = c == Causality::Input && wrong == Some(k);
+                let colour = if wrong {
+                    visuals.error_fg_color
+                } else if field {
                     visuals.hyperlink_color
                 } else {
                     visuals.widgets.active.fg_stroke.color
@@ -467,7 +474,7 @@ impl View {
                     align,
                     fit(&label, max),
                     FontId::proportional(12.0 * z),
-                    text,
+                    if wrong { visuals.error_fg_color } else { text },
                 );
             }
         }

@@ -100,6 +100,9 @@ struct SceneView {
     held: Option<Held>,
     /// What grabbing sent, not yet taken.
     sent: Vec<(String, [f64; 4])>,
+    /// Why `given` does not check, held to be saved back unchanged: then
+    /// nothing is drawn but this.
+    problem: Option<String>,
 }
 
 impl SceneView {
@@ -194,6 +197,10 @@ const NOTHING_PICKED: f64 = -1.0;
 impl View for SceneView {
     fn show(&mut self, ui: &mut egui::Ui, input: &ViewInput<'_>) {
         self.grab(ui);
+        if let Some(e) = &self.problem {
+            ui.colored_label(ui.visuals().error_fg_color, format!("Not drawn: {e}"));
+            return;
+        }
         let Some(scene) = &self.scene else {
             return;
         };
@@ -272,6 +279,7 @@ impl View for SceneView {
         self.let_go();
         self.scene = Some(scene);
         self.given = settings.clone();
+        self.problem = None;
         self.kept = Kept::default();
         self.shown = None;
         Ok(())
@@ -279,6 +287,20 @@ impl View for SceneView {
 
     fn settings(&self) -> Settings {
         self.given.clone()
+    }
+
+    fn hold_settings(&mut self, settings: &Settings, error: &str) -> bool {
+        self.let_go();
+        self.scene = None;
+        self.given = settings.clone();
+        self.problem = Some(error.to_string());
+        self.kept = Kept::default();
+        self.shown = None;
+        true
+    }
+
+    fn problem(&self) -> Option<&str> {
+        self.problem.as_deref()
     }
 }
 

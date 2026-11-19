@@ -192,3 +192,118 @@ fn a_frame_renamed_in_the_inspector_is_renamed_where_it_is_named() {
     }
     assert!(app.scene_drafts.is_empty());
 }
+
+/// The canvas as the diagram tab draws it, written as NAME.png where
+/// SIMSANDBOX_SHOT_SCENE says.
+fn canvas(app: &mut SimApp, name: &str) -> simsandbox_session::raster::Image {
+    let o = simsandbox_session::render::RenderOptions {
+        width: 1100.0,
+        height: 600.0,
+        ..Default::default()
+    };
+    let image = simsandbox_session::render::paint(&o, |ui| app.diagram_tab(ui));
+    if let Ok(dir) = std::env::var("SIMSANDBOX_SHOT_SCENE") {
+        let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+        std::fs::write(path, simsandbox_session::render::png(&image).unwrap()).unwrap();
+    }
+    image
+}
+
+/// The scene's node as the canvas has it, marked by the app's problems.
+fn scene_node(app: &SimApp) -> simsandbox_session::diagram::Node {
+    let file = saved(app);
+    let mut d = simsandbox_session::diagram::Diagram::new(&file, &app.registry);
+    d.observe(&file, &app.views.registry);
+    d.mark_views(&app.view_problems());
+    d.nodes[d.node("view:1").unwrap()].clone()
+}
+
+#[test]
+fn a_draft_scene_marks_its_node_with_its_error() {
+    let mut app = SimApp::new(None, None, None, None);
+    let tile = pendulum(&mut app);
+    assert!(app.view_problems().is_empty());
+    let n = scene_node(&app);
+    assert_eq!(n.error, None);
+    let clean = canvas(&mut app, "canvas-clean");
+    // The rod's end bound to a speed: a draft, its error on the node and
+    // on the input at its path.
+    app.edit_scene(
+        tile,
+        &SceneEdit::Bind(1, "x2".into(), Some(SceneValue::Name("bob.omega".into()))),
+    );
+    let error = app.scene_drafts[&tile].error.clone();
+    assert!(
+        error.starts_with("layers[1].bind.x2: 'bob.omega' is in 1/s"),
+        "{error}"
+    );
+    assert_eq!(app.view_problems(), [(1, error.clone())]);
+    let n = scene_node(&app);
+    assert_eq!(n.error.as_deref(), Some(error.as_str()));
+    let at = simsandbox_session::observers::view_problem_input(&n).unwrap();
+    assert_eq!(n.inputs[at].name, "layers[1].bind.x2");
+    let marked = canvas(&mut app, "canvas-draft");
+    assert_ne!(marked, clean);
+    // Discarded, the node is clean again.
+    app.scene_drafts.clear();
+    assert_eq!(scene_node(&app).error, None);
+    assert_eq!(canvas(&mut app, "canvas-discarded"), clean);
+}
+
+#[test]
+fn a_saved_scene_that_does_not_check_is_kept_and_says_why() {
+    let mut app = SimApp::new(None, None, None, None);
+    let e = EXAMPLES
+        .iter()
+        .find(|e| e.name.starts_with("Pendulum (with its own view)"))
+        .unwrap();
+    // A signal the scene binds, renamed in the file by hand.
+    let text = e
+        .text
+        .replace("\"angle\": \"bob.angle\"", "\"angle\": \"bob.angel\"");
+    assert_ne!(text, e.text);
+    app.open_text("renamed", &text);
+    let live = app.session.as_ref().unwrap();
+    live.set_running(false);
+    live.call(|s, _| s.run_until(0.5)).unwrap().unwrap();
+    let error = "frames.rod.angle: no signal or parameter 'bob.angel'";
+    // Its tile is kept and says why; the log says it too.
+    assert_eq!(app.views.tiles.len(), 3);
+    let tile = app.views.tiles[1].id;
+    assert_eq!(app.views.tiles[1].state.problem(), Some(error));
+    assert!(
+        app.log.entries().iter().any(|l| l.text.contains(error)),
+        "the log"
+    );
+    let held = picture(&mut app, tile);
+    // Saved back as it was, not dropped.
+    assert_eq!(saved(&app).controls.views, {
+        let (f, _) = ModelFile::from_json(&text).unwrap();
+        f.controls.views
+    });
+    // Its node is marked, at the frame's angle.
+    assert_eq!(app.view_problems(), [(1, error.to_string())]);
+    let n = scene_node(&app);
+    assert_eq!(n.error.as_deref(), Some(error));
+    let at = simsandbox_session::observers::view_problem_input(&n).unwrap();
+    assert_eq!(n.inputs[at].name, "frames.rod.angle");
+    canvas(&mut app, "canvas-saved");
+    // The Inspector shows the error beside the field; an edit that makes
+    // it check draws it.
+    app.select("view:1");
+    inspect(&mut app, "held");
+    assert_eq!(app.inspected_scene(), Some(tile));
+    app.edit_scene(
+        tile,
+        &SceneEdit::Pose(
+            "rod".into(),
+            "angle",
+            Some(SceneValue::Name("bob.angle".into())),
+        ),
+    );
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.views.tiles[1].state.problem().is_none());
+    assert!(app.view_problems().is_empty());
+    assert_ne!(picture(&mut app, tile), held);
+    assert_eq!(scene_node(&app).error, None);
+}

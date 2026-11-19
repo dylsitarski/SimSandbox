@@ -228,6 +228,20 @@ pub trait View: Send {
     fn settings(&self) -> Settings {
         Settings::new()
     }
+
+    /// Keep settings that do not check (`error`, from
+    /// [`View::set_settings`]), to save them back unchanged and show why
+    /// nothing is drawn, instead of the view being left out (a scene
+    /// whose signal was renamed, ADR 0093). Returns whether the view can;
+    /// views of slots alone cannot.
+    fn hold_settings(&mut self, _settings: &Settings, _error: &str) -> bool {
+        false
+    }
+
+    /// Why the view draws nothing: the error of settings it holds.
+    fn problem(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// A view's settings as saved beside its slots (ADR 0093): key to JSON.
@@ -692,6 +706,17 @@ impl ViewState {
     /// The settings to save beside the slots.
     pub fn settings(&self) -> Settings {
         self.view.settings()
+    }
+
+    /// Keep settings that do not check, with their error (see
+    /// [`View::hold_settings`]); whether the view can.
+    pub fn hold_settings(&mut self, settings: &Settings, error: &str) -> bool {
+        self.view.hold_settings(settings, error)
+    }
+
+    /// Why the view draws nothing, if it holds settings that do not check.
+    pub fn problem(&self) -> Option<&str> {
+        self.view.problem()
     }
 
     /// The view's selection controls, for the side panel.
