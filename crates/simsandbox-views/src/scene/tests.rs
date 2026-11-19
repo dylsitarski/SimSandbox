@@ -359,6 +359,49 @@ fn reads_are_the_signals_the_settings_bind() {
     assert_eq!(r, ["car.v", "cart.x", "probe:p/rb.y", "rb.x"]);
 }
 
+#[test]
+fn bindings_and_grabs_are_listed_at_the_paths_check_names() {
+    let s = settings(json!({
+    "frames": {"a": {"x": "cart.x", "angle": 1}},
+    "layers": [
+        {"draw": "points", "bind": {"y": "rb.y", "x": "rb.x", "colour": "red"}},
+        {"draw": "discs", "bind": {"x": 0, "y": 0, "radius": 1, "colour": "car.v"}, "grab": "hand"}
+    ]}));
+    let b = bound(&s);
+    let b: Vec<(&str, &str)> = b.iter().map(|(p, n)| (p.as_str(), n.as_str())).collect();
+    // Frames first, then layers in order, attributes in the primitive's
+    // order; palette colours and numbers are not signals.
+    assert_eq!(
+        b,
+        [
+            ("frames.a.x", "cart.x"),
+            ("layers[0].bind.x", "rb.x"),
+            ("layers[0].bind.y", "rb.y"),
+            ("layers[1].bind.colour", "car.v"),
+        ]
+    );
+    assert_eq!(
+        grabs(&s),
+        [("layers[1].grab".to_string(), "hand".to_string())]
+    );
+    // Every check error names its path, which the Inspector shows the
+    // error beside.
+    let e = Scene::check(&s, &Available::default()).unwrap_err();
+    assert_eq!(spec::error_path(&e), Some("frames.a.x"), "{e}");
+    assert_eq!(
+        spec::error_path("layers[2].bind.x: required"),
+        Some("layers[2].bind.x")
+    );
+    assert_eq!(
+        spec::error_path("view_from: no frame 'b'"),
+        Some("view_from")
+    );
+    assert_eq!(
+        spec::error_path("'plot.scene' takes no setting 'q' (it takes …)"),
+        None
+    );
+}
+
 /// Draw the view for a frame in a headless egui context, as the app would.
 fn frame(
     ctx: &egui::Context,

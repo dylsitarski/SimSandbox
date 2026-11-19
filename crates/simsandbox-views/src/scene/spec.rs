@@ -646,39 +646,83 @@ impl Scene {
     }
 }
 
-/// The signals a scene's settings bind, as written, without checking
-/// them: what the history must record for it (ADR 0063). Numbers and
-/// palette colours are not signals.
-pub fn reads(settings: &Settings) -> Vec<String> {
+/// Where a scene's settings bind signals, as written, without checking
+/// them: each binding's path as `check` names it (`frames.cart.x`,
+/// `layers[1].bind.x`) and the signal, frames first (by name), then
+/// layers in order. Numbers and palette colours are not signals. A
+/// layer's `grab` is not a signal; see [`grabs`].
+pub fn bound(settings: &Settings) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let mut take = |v: &Value, colour: bool| {
-        if let Some(s) = v.as_str() {
-            if !(colour && palette(s).is_some()) {
-                out.push(s.to_string());
-            }
-        }
-    };
     if let Some(frames) = settings.get("frames").and_then(Value::as_object) {
-        for f in frames.values().filter_map(Value::as_object) {
+        for (name, f) in frames {
+            let Some(f) = f.as_object() else { continue };
             for a in FRAME {
-                if let Some(v) = f.get(a.name) {
-                    take(v, false);
+                if let Some(s) = f.get(a.name).and_then(Value::as_str) {
+                    out.push((format!("frames.{name}.{}", a.name), s.to_string()));
                 }
             }
         }
     }
     if let Some(layers) = settings.get("layers").and_then(Value::as_array) {
-        for l in layers {
-            if let Some(bind) = l.get("bind").and_then(Value::as_object) {
-                for (a, v) in bind {
-                    take(v, a == "colour");
+        for (k, l) in layers.iter().enumerate() {
+            let Some(bind) = l.get("bind").and_then(Value::as_object) else {
+                continue;
+            };
+            // In the primitive's order where it is known.
+            let mut names: Vec<&String> = bind.keys().collect();
+            if let Some(p) = l
+                .get("draw")
+                .and_then(Value::as_str)
+                .and_then(|d| PRIMITIVES.iter().find(|p| p.name == d))
+            {
+                names.sort_by_key(|n| p.attribute(n).unwrap_or(usize::MAX));
+            }
+            for a in names {
+                let Some(s) = bind[a].as_str() else { continue };
+                if a == "colour" && palette(s).is_some() {
+                    continue;
                 }
+                out.push((format!("layers[{k}].bind.{a}"), s.to_string()));
             }
         }
     }
+    out
+}
+
+/// The `input.pointer` blocks a scene's layers grab with, as written:
+/// each layer's path (`layers[3].grab`) and the block.
+pub fn grabs(settings: &Settings) -> Vec<(String, String)> {
+    settings
+        .get("layers")
+        .and_then(Value::as_array)
+        .map(|layers| {
+            layers
+                .iter()
+                .enumerate()
+                .filter_map(|(k, l)| {
+                    let g = l.get("grab")?.as_str()?;
+                    Some((format!("layers[{k}].grab"), g.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The signals a scene's settings bind, as written, without checking
+/// them: what the history must record for it (ADR 0063), once each.
+pub fn reads(settings: &Settings) -> Vec<String> {
+    let mut out: Vec<String> = bound(settings).into_iter().map(|(_, s)| s).collect();
     out.sort();
     out.dedup();
     out
+}
+
+/// The path a `check` error is at (`layers[1].bind.x` of
+/// `"layers[1].bind.x: required"`), if it names one.
+pub fn error_path(error: &str) -> Option<&str> {
+    let (path, _) = error.split_once(": ")?;
+    let first = path.split(['.', '[']).next()?;
+    (KEYS.contains(&first) && !path.contains(' ')).then_some(path)
 }
 
 fn describe_attributes(attributes: &[Attribute]) -> Vec<Value> {

@@ -34,7 +34,7 @@ use egui::{epaint::Mesh, Pos2, Shape, Stroke};
 use egui_plot::{Plot, PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotTransform};
 use eval::{Drawn, Placed};
 use geometry::{Item, Pose, P};
-pub use spec::{reads, Scene};
+pub use spec::{bound, grabs, reads, Scene};
 use std::sync::Arc;
 
 /// The scene view's type name.
