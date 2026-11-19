@@ -1,6 +1,6 @@
 # Open questions
 
-_Last updated: 2026-11-14_
+_Last updated: 2026-11-19_
 
 Decisions not yet made. When one is resolved, write an ADR, link it in the **Resolved** table and remove the row from **Open**.
 
@@ -8,6 +8,7 @@ Decisions not yet made. When one is resolved, write an ADR, link it in the **Res
 
 | ID | Question | Options | Needed by | Notes |
 | --- | --- | --- | --- | --- |
+| Q63 | How a fused group of more than 128 states gets its Jacobian's structure exactly for implicit methods ([ADR 0104](decisions/0104-implicit-structure-independent-of-the-state.md)) | (a) Probed at three states (as built 2026-11-19), which can miss an entry and then not replay exactly from a fresh workspace; (b) the kernel's `GroupSolver` receives each member's declared structure plus the wires inside the group; (c) dense, whatever it costs | When a large fused group runs implicitly and is restored | Typed equations alone give theirs exactly; it is lost when they are fused |
 | Q62 | Whether the hard-coded systems (`eq.lorenz`, `eq.coupled_oscillator`, `eq.pendulum` in `systems.rs`; `eq.heat_rod`, `eq.grass`, `eq.orbits` in `fields.rs`, about 850 lines) become typed definitions | (a) Keep them (as now); (b) add parameter ranges and descriptions (`param NAME [unit] = v in [min, max] "text"`) and named state outputs to the typed language, then register the oscillator, pendulum and grass under their old names as fixed typed definitions (their results are bit-identical; `check` gains a `code` entry and `describe` changes); (c) also convert Lorenz (needs one vector output from three states) and the heat rod (a different grid: L/51 with held ends against cell-centred L/50, so results change) through `upgrade` (ADR 0044) | Before the plugin interface's "hello block" | Review 2026-11-14, priority 4; investigated 2026-11-18 (session note 2026-11-15): coupled oscillator and pendulum typed equivalents match bit for bit over 20 s; orbits outputs a point set typed equations do not make. Owner's call; the Phase 2 gate comes first. |
 | Q52 | How a study keeps each run's series, now that experiments are studies (ADR 0071) and `keep: "series"` is refused | (a) A 2D output per signal, runs × samples, on a common time grid; (b) a probe inside the studied model writing a file per run; (c) not at all: reduce, or run the model alone at that point | When someone needs whole runs of a study | Experiments kept them headless (`Results.series`) until 2026-11-04; nothing used them besides tests |
 | Q43 | Re-reading a data file that changes while its model is open (`input.file`, ADR 0063) | (a) Read when the model is built only (as built 2026-10-30): reopen or edit to re-read; (b) re-read on Restart; (c) watch the file and offer to reload | When the owner reads files that change, e.g. another model's streamed probe | Step 5 (several models in one session) links models by probes directly, which may make this rare |

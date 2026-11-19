@@ -349,8 +349,9 @@ fn implicit_runs_rewind_and_replay_bit_for_bit() {
 }
 
 #[test]
-fn the_built_in_rod_runs_implicitly_by_probing_its_structure() {
-    // eq.heat_rod does not tell its structure; it is probed once.
+fn the_built_in_rod_runs_implicitly_without_its_structure() {
+    // eq.heat_rod does not tell its structure; with 50 states it is taken
+    // as dense (ADR 0104).
     let mut m = Model::new();
     let b = m.add(Box::new(OdeBlock::new(
         HeatRod::new("rod"),

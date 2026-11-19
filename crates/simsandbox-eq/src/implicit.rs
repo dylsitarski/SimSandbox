@@ -25,9 +25,18 @@
 //!
 //! Nothing numeric is carried from one step to the next: a step's result
 //! depends only on its start, so a run replays bit for bit. Only the
-//! structure is kept ([`Workspace`]): given by the system (typed
-//! equations know it exactly), or else found once by perturbing each
-//! state alone.
+//! structure is kept ([`Workspace`]), and it decides which entries of the
+//! Jacobian are kept, so it must not depend on where it was first found
+//! (ADR 0104): a run restored into a fresh workspace finds it again at
+//! another state. It is
+//! - given by the system (typed equations know it exactly), or else
+//! - dense, up to [`DENSE_UP_TO`] states: exact whatever the state;
+//! - beyond that, found once by perturbing each state alone just beside
+//!   the state and at two states offset from it, and taking the union.
+//!   An entry that is zero at all three (a dependence on a velocity that
+//!   starts at 0 is not: the offsets move it) is missed, and the Jacobian
+//!   is then wrong in it, which changes the bits Newton's method
+//!   converges to. Large systems should give their structure.
 
 use crate::integrators::Rhs;
 use faer::linalg::solvers::Solve;
@@ -101,8 +110,14 @@ impl Failure {
     }
 }
 
+/// Systems up to this many states that do not give their structure are
+/// taken as dense: `n` evaluations per Jacobian instead of a handful,
+/// but no entry can be missed.
+pub const DENSE_UP_TO: usize = 128;
+
 /// The Jacobian's structure and how it is coloured and ordered; kept
-/// between steps, because it never changes the numbers a step gives.
+/// between steps. It is the same wherever it is found (see the module's
+/// notes), so keeping it never changes the numbers a step gives.
 #[derive(Default)]
 pub struct Workspace {
     structure: Option<Structure>,
@@ -283,38 +298,67 @@ impl Structure {
             .map_err(|e| SimError::Block(format!("implicit method: {e}")))
     }
 
-    /// The structure of `f` found by perturbing each state alone: a rate
-    /// that changes depends on that state. Not at `x` itself but beside
-    /// it, every state moved a little and each by a different amount: at
-    /// `x` a product hides what it depends on wherever its other factor
-    /// is 0 (a reaction `k·a·b` starting with no `b`), and equal states
-    /// hide what their difference multiplies. A rate that is not a number
-    /// beside `x` counts as depending on everything, which is safe.
+    /// The structure of `f` when the system does not give it: dense up
+    /// to [`DENSE_UP_TO`] states, else probed around `x`.
+    fn undeclared(f: &Rhs<'_>, t: f64, x: &[f64]) -> Vec<Vec<usize>> {
+        let n = x.len();
+        if n <= DENSE_UP_TO {
+            return vec![(0..n).collect(); n];
+        }
+        Self::probe(f, t, x)
+    }
+
+    /// The structure of `f` found by perturbing each state alone, beside
+    /// `x` and at two states offset from it, taking the union: a rate
+    /// that changes at any of them depends on that state. At `x` itself a
+    /// product hides what it depends on wherever its other factor is 0 (a
+    /// velocity starting at rest, a reaction `k·a·b` with no `b`), and
+    /// equal states hide what their difference multiplies; the offsets
+    /// move every state by a quarter to three quarters of its size plus
+    /// the state's scale, up at one and down at the other (alternating
+    /// from state to state). Steps and offsets are relative to the
+    /// state's scale (ADR 0097), so other units probe alike. A rate that
+    /// is not a number counts as depending on the state moved, which is
+    /// safe.
     fn probe(f: &Rhs<'_>, t: f64, x: &[f64]) -> Vec<Vec<usize>> {
         let n = x.len();
         let floor = perturbation_floor(x);
-        // Between 1 and 2 thousandths of each state's size, by the
-        // golden ratio's multiples: no two alike.
-        let delta: Vec<f64> = (0..n)
-            .map(|j| {
-                1e-3 * x[j].abs().max(floor) * (1.0 + (j as f64 * 0.618_033_988_749_895).fract())
-            })
-            .collect();
-        let mut xp: Vec<f64> = x.iter().zip(&delta).map(|(v, d)| v + d).collect();
-        let mut f0 = vec![0.0; n];
-        f(t, &xp, &mut f0);
+        // A fixed sequence, the same for every run: no two states alike.
+        let golden = |j: usize| (j as f64 * 0.618_033_988_749_895).fract();
         let mut deps: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut f0 = vec![0.0; n];
         let mut f1 = vec![0.0; n];
-        for j in 0..n {
-            let kept = xp[j];
-            xp[j] = kept + delta[j];
-            f(t, &xp, &mut f1);
-            xp[j] = kept;
-            for i in 0..n {
-                if f1[i] != f0[i] {
-                    deps[i].push(j);
+        for k in 0..3usize {
+            let mut xp: Vec<f64> = x
+                .iter()
+                .enumerate()
+                .map(|(j, &v)| {
+                    if k == 0 {
+                        // Just beside `x`: between 1 and 2 thousandths.
+                        return v + 1e-3 * v.abs().max(floor) * (1.0 + golden(j));
+                    }
+                    let r = 0.25 + 0.5 * golden(j + 1);
+                    let sign = if (j + k) % 2 == 0 { 1.0 } else { -1.0 };
+                    v + sign * r * (floor + v.abs())
+                })
+                .collect();
+            f(t, &xp, &mut f0);
+            for j in 0..n {
+                let kept = xp[j];
+                xp[j] = kept + 1e-3 * kept.abs().max(floor) * (1.0 + golden(j));
+                f(t, &xp, &mut f1);
+                xp[j] = kept;
+                for i in 0..n {
+                    let finite = f0[i].is_finite() && f1[i].is_finite();
+                    if !finite || f1[i] != f0[i] {
+                        deps[i].push(j);
+                    }
                 }
             }
+        }
+        for row in &mut deps {
+            row.sort_unstable();
+            row.dedup();
         }
         deps
     }
@@ -555,7 +599,7 @@ pub fn advance(
     if ws.structure.as_ref().is_none_or(|s| s.rows_of.len() != n) {
         let deps = structure
             .and_then(|s| s())
-            .unwrap_or_else(|| Structure::probe(f, t, x));
+            .unwrap_or_else(|| Structure::undeclared(f, t, x));
         ws.structure = Some(Structure::new(n, &deps)?);
     }
     let Workspace {
@@ -662,5 +706,72 @@ mod tests {
         let mut ws = Workspace::default();
         advance((Scheme::TrBdf2, 2), &g, 0.0, 0.1, &mut y, &mut ws, None).unwrap();
         assert!(ws.structure.as_ref().unwrap().fallback.get().is_none());
+    }
+
+    /// Two oscillators coupled through their velocities, `x₁' = v₁,
+    /// v₁' = −x₁ + v₁v₂, x₂' = v₂, v₂' = −x₂ − v₁v₂` (as a Coriolis term),
+    /// in `groups` copies: at rest, perturbing one velocity alone leaves
+    /// the product 0, so its entries vanish there.
+    fn coupled(groups: usize) -> impl Fn(f64, &[f64], &mut [f64]) {
+        move |_: f64, x: &[f64], dx: &mut [f64]| {
+            for k in 0..groups {
+                let s = &x[4 * k..4 * k + 4];
+                let d = &mut dx[4 * k..4 * k + 4];
+                let q = s[1] * s[3];
+                d[0] = s[1];
+                d[1] = -s[0] + q;
+                d[2] = s[3];
+                d[3] = -s[2] - q;
+            }
+        }
+    }
+
+    /// At rest, `groups` copies.
+    fn at_rest(groups: usize) -> Vec<f64> {
+        (0..groups)
+            .flat_map(|k| [0.5 + 0.001 * k as f64, 0.0, 0.3, 0.0])
+            .collect()
+    }
+
+    /// Run `steps` steps of TR-BDF2 from `x` in `ws`.
+    fn run(f: &Rhs<'_>, x: &mut [f64], from: usize, steps: usize, ws: &mut Workspace) {
+        let dt = 0.05;
+        for k in from..from + steps {
+            advance((Scheme::TrBdf2, 1), f, k as f64 * dt, dt, x, ws, None).unwrap();
+        }
+    }
+
+    /// Started at rest, snapshot, run on; the snapshot restored into a
+    /// fresh workspace (which finds the structure again, away from rest)
+    /// runs on to the same bits: dense (small) and probed (large).
+    #[test]
+    fn a_run_restored_into_a_fresh_workspace_gives_the_same_bits() {
+        for groups in [1, DENSE_UP_TO / 2] {
+            let f = coupled(groups);
+            let mut x = at_rest(groups);
+            let mut ws = Workspace::default();
+            run(&f, &mut x, 0, 100, &mut ws);
+            let snapshot = x.clone();
+            run(&f, &mut x, 100, 100, &mut ws);
+            let mut y = snapshot;
+            run(&f, &mut y, 100, 100, &mut Workspace::default());
+            let bits = |x: &[f64]| x.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&x), bits(&y), "{groups} groups");
+            assert!(x.iter().all(|v| v.is_finite() && v.abs() < 1.0), "{x:?}");
+        }
+    }
+
+    /// The probe finds entries that are 0 at the state it starts from;
+    /// a small system that does not give its structure is dense.
+    #[test]
+    fn the_probe_finds_entries_that_vanish_at_the_state() {
+        let f = coupled(1);
+        let x = at_rest(1);
+        let deps = Structure::probe(&f, 0.0, &x);
+        assert_eq!(deps, vec![vec![1], vec![0, 1, 3], vec![3], vec![1, 2, 3]]);
+        assert_eq!(
+            Structure::undeclared(&f, 0.0, &x),
+            vec![(0..4).collect::<Vec<_>>(); 4]
+        );
     }
 }

@@ -16,7 +16,10 @@ pub trait OdeSystem: Equations + Send {
 
     /// For each rate, the states it depends on: the structure of the
     /// Jacobian, for implicit methods (ADR 0060). `None` if not known;
-    /// it is then found by perturbing each state.
+    /// it is then taken as dense, or for more than
+    /// [`DENSE_UP_TO`](crate::implicit::DENSE_UP_TO) states found by
+    /// perturbing each state (ADR 0104), which can miss an entry: large
+    /// systems should give it.
     fn sparsity(&self) -> Option<Vec<Vec<usize>>> {
         None
     }

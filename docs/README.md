@@ -161,6 +161,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0085-meshes-are-tables-of-cells.md](decisions/0085-meshes-are-tables-of-cells.md) | Decision record | Meshes as tables of cells over points, any shape and dimension; refinement by bisection or 2^d split |
 | [decisions/0086-views-by-axis-roles-and-mesh-views.md](decisions/0086-views-by-axis-roles-and-mesh-views.md) | Decision record | Views by axis roles (pick, reduce, facet); mesh views on wgpu with an egui path headless |
 | [decisions/0087-implicit-lu-on-the-matrix-pattern.md](decisions/0087-implicit-lu-on-the-matrix-pattern.md) | Decision record | Implicit methods' own sparse LU on the matrix's pattern, faer's as fallback |
+| [decisions/0104-implicit-structure-independent-of-the-state.md](decisions/0104-implicit-structure-independent-of-the-state.md) | Decision record | Implicit methods' Jacobian structure when a system does not give it: dense when small, probed at three states when large |
 | [decisions/0088-activation.md](decisions/0088-activation.md) | Decision record | Activation of used models and studies: `activate` modes and `restart` |
 | [decisions/0089-native-code-for-typed-equations.md](decisions/0089-native-code-for-typed-equations.md) | Decision record | Native code for typed equations: generated Rust compiled where a toolchain exists |
 | [decisions/0090-one-engine-for-nested-models.md](decisions/0090-one-engine-for-nested-models.md) | Decision record | One engine for nested models: the merged simulator |
@@ -201,6 +202,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [research/2026-11-19-rigid-body-spike.md](research/2026-11-19-rigid-body-spike.md) | Research | The rigid-body spike of 2026-11-19: Rapier against MuJoCo on accuracy, rewind, determinism, speed, contacts, build; the recommendation and its risks; the follow-up with a native articulated-body solver, mechanisms as typed equations and Featherstone as a typed-equations function (estimated) |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
+| [sessions/2026-11-19-implicit-structure-replay.md](sessions/2026-11-19-implicit-structure-replay.md) | Session note | Implicit methods' undeclared Jacobian structure made independent of the state (ADR 0104) |
 | [sessions/2026-11-15-equation-front-end.md](sessions/2026-11-15-equation-front-end.md) | Session note | Review W6: typed-equation faults fixed, front end restructured |
 | [sessions/2026-11-14-code-review.md](sessions/2026-11-14-code-review.md) | Session note | Whole-project code review; report in research/ |
 | [sessions/2026-10-16-kernel-prep-and-adrs.md](sessions/2026-10-16-kernel-prep-and-adrs.md) | Session note | Kernel prep for files and UI; ADRs 0007–0013; model file format; desktop app shell; parameter panel; phase and 3D views; saved views; ADR 0015 |
