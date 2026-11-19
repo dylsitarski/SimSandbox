@@ -198,9 +198,12 @@ fn describe(r: &mut Registry) -> Result<()> {
         crate::input::POINTER,
         TypeInfo::new(
             "A pointer in a view's coordinates (ADR 0058): outputs x and y in the setting \
-             'unit' (m if absent), and down (1 while pressed). A view that sends input feeds \
-             it (controls.inputs); the model turns it into what it does, e.g. a spring force \
-             towards the pointer.",
+             'unit' (m if absent), down (1 while pressed) and picked (ADR 0093: the row id of \
+             the scene instance held, 0 for a layer of one instance, -1 while nothing is held; \
+             older files and runs read -1). A view that sends input feeds it \
+             (controls.inputs), as does a scene layer that names it in 'grab', always in the \
+             scene's own frame; the model turns it into what it does, e.g. a spring force \
+             towards the pointer while down is 1 and picked is 0 or more.",
         )
         .method(crate::input::HELD, &[])
         .setting("unit", &[])

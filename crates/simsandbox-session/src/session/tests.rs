@@ -1781,3 +1781,53 @@ mod probe_tests {
         assert_eq!(r.probes[0].1.read().len(), 5);
     }
 }
+
+mod pointer_tests {
+    use super::*;
+    use crate::examples::{registry, EXAMPLES};
+
+    /// ADR 0093 point 6: a model file made before `picked` (the drag
+    /// example) reads it as -1, never picking, and is written back without
+    /// it; its `input.pointer` blocks are those a scene may grab with.
+    #[test]
+    fn an_older_file_never_picks_and_is_saved_unchanged() {
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.contains("Drag the bob"))
+            .unwrap();
+        assert!(!e.text.contains("picked"));
+        let mut s = Session::load(e.name, e.text, &registry()).unwrap();
+        let picked = s
+            .params()
+            .into_iter()
+            .find(|p| p.key == "hand.picked")
+            .unwrap();
+        assert_eq!(picked.value, -1.0);
+        assert_eq!(s.pointers(), ["hand"]);
+        // Its recorded run (x, y and down) leaves picked at -1.
+        let track = [
+            (0.1, "hand.x", 1.0),
+            (0.1, "hand.down", 1.0),
+            (0.3, "hand.down", 0.0),
+        ]
+        .map(|(t, key, value)| InputEvent {
+            t,
+            key: key.into(),
+            value,
+        })
+        .to_vec();
+        s.replay(track).unwrap();
+        s.run_until(0.5).unwrap();
+        let id = s.ids["hand"];
+        assert_eq!(s.sim.output(id, "picked"), Some(&[-1.0][..]));
+        // The run's starting point names it, as it names every value.
+        let start = &s.start_file().blocks[0].params;
+        assert_eq!(
+            start.get("picked"),
+            Some(&simsandbox_file::ParamValue::Number(-1.0))
+        );
+        // The file itself is written back as it was.
+        let (f, _) = ModelFile::from_json(e.text).unwrap();
+        assert_eq!(f.to_json(), e.text);
+    }
+}
