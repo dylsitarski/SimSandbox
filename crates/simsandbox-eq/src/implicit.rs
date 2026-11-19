@@ -215,6 +215,7 @@ impl Factor {
             Factor::Pivoted(lu) => {
                 let mut g = faer::Mat::<f64>::from_fn(x.len(), 1, |i, _| x[i]);
                 lu.solve_in_place(g.as_mut());
+                simsandbox_compiled::vector_state::clear_upper();
                 for (i, v) in x.iter_mut().enumerate() {
                     *v = g[(i, 0)];
                 }
@@ -365,8 +366,23 @@ impl Structure {
 }
 
 /// The matrix `I − c·h·J` factorised, `J` by finite differences at
-/// `(t, x)` where the rates are `f0`.
+/// `(t, x)` where the rates are `f0`. faer's matrix products leave the
+/// upper halves of the vector registers in use, which slows every later
+/// SSE instruction on this thread on Intel processors: they are cleared
+/// before returning (`simsandbox_compiled::vector_state`).
 fn factorise(
+    s: &Structure,
+    f: &Rhs<'_>,
+    point: (f64, &[f64], &[f64]),
+    ch: f64,
+    a: &mut Arrays,
+) -> Result<Factor> {
+    let factor = factorise_with_faer(s, f, point, ch, a);
+    simsandbox_compiled::vector_state::clear_upper();
+    factor
+}
+
+fn factorise_with_faer(
     s: &Structure,
     f: &Rhs<'_>,
     (t, x, f0): (f64, &[f64], &[f64]),
@@ -773,5 +789,42 @@ mod tests {
             Structure::undeclared(&f, 0.0, &x),
             vec![(0..4).collect::<Vec<_>>(); 4]
         );
+    }
+
+    /// A dense system, factorised with faer's matrix products: the upper
+    /// halves of the vector registers are left unused (performance notes,
+    /// 2026-11-19). Without clearing them, a 200-link chain stepped
+    /// afterwards on this thread ran 17 times slower.
+    #[test]
+    fn factorising_leaves_the_upper_vector_registers_unused() {
+        use simsandbox_compiled::vector_state::{clear_upper, upper_in_use};
+        // faer's product of two 64 × 64 matrices, as the LU's dense
+        // blocks: whether it leaves them in use here (it does on x86-64
+        // with AVX, faer 0.24).
+        clear_upper();
+        let a = faer::Mat::<f64>::from_fn(64, 64, |i, j| (i + 2 * j) as f64);
+        let mut c = faer::Mat::<f64>::zeros(64, 64);
+        faer::linalg::matmul::matmul(
+            c.as_mut(),
+            faer::Accum::Add,
+            a.as_ref(),
+            a.as_ref(),
+            1.0,
+            faer::Par::Seq,
+        );
+        let dirtied = upper_in_use();
+        let n = 64;
+        let f = move |_: f64, x: &[f64], dx: &mut [f64]| {
+            let total: f64 = x.iter().sum();
+            for i in 0..n {
+                dx[i] = -3.0 * x[i] + 0.01 * total;
+            }
+        };
+        let mut x = vec![1.0; n];
+        let mut ws = Workspace::default();
+        advance((Scheme::TrBdf2, 2), &f, 0.0, 0.1, &mut x, &mut ws, None).unwrap();
+        if dirtied == Some(true) {
+            assert_eq!(upper_in_use(), Some(false));
+        }
     }
 }

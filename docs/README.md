@@ -202,6 +202,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [research/2026-11-19-rigid-body-spike.md](research/2026-11-19-rigid-body-spike.md) | Research | The rigid-body spike of 2026-11-19: Rapier against MuJoCo on accuracy, rewind, determinism, speed, contacts, build; the recommendation and its risks; the follow-up with a native articulated-body solver, mechanisms as typed equations and Featherstone as a typed-equations function (estimated) |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
+| [sessions/2026-11-19-vector-registers-after-faer.md](sessions/2026-11-19-vector-registers-after-faer.md) | Session note | Why typed models slowed after implicit methods ran: faer's AVX kernels and `vzeroupper` |
 | [sessions/2026-11-19-implicit-structure-replay.md](sessions/2026-11-19-implicit-structure-replay.md) | Session note | Implicit methods' undeclared Jacobian structure made independent of the state (ADR 0104) |
 | [sessions/2026-11-15-equation-front-end.md](sessions/2026-11-15-equation-front-end.md) | Session note | Review W6: typed-equation faults fixed, front end restructured |
 | [sessions/2026-11-14-code-review.md](sessions/2026-11-14-code-review.md) | Session note | Whole-project code review; report in research/ |

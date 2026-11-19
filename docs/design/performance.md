@@ -458,3 +458,29 @@ Measured and left:
 - **Phase portraits thinned by columns** keep most points when the path retraces itself (an orbit): pendulum-drag's path draws 3.9 M instructions a frame paused, but predator-prey's coloured view still 33.6 M.
 - **Thinning while running** reads every sample each frame; keeping the columns of the samples already thinned would make it proportional to the new samples. Not done: 9 ms a frame at the history's limit, within the frame.
 - **`plot.3d`** still projects and draws every point (at most 20 000 drawn), 4.3 ms a frame for Lorenz.
+
+## The vector registers after faer (2026-11-19)
+
+**Observed** in the rigid-body spike (branch `claude/great-ramanujan-shfh9u`): a 200-link chain written as typed equations (`grid i = 200`, `grid j = 200`, the mass matrix from `cos` of angle differences, `sum(…, j)`, `solve(M, b)`) stepped by RK4 at about 10 ms a step alone, and at about 276 ms in the same process after a 50-link chain had been stepped by TR-BDF2. Dopri5 went from 32 ms to 842 ms.
+
+**Cause.** On x86-64, faer's matrix products run the hand-written AVX and AVX-512 kernels of `private-gemm-x86` (0.1.22, the newest), which return without `vzeroupper`. The upper halves of the vector registers then stay in use for the rest of the thread. On Intel processors every later legacy-SSE instruction waits on them: Cranelift's code, the interpreter, libm and the integrators are all SSE code. The implicit LU's dense blocks call those products once a front is large enough. A 50-link chain's fully coupled matrix is, but a 10-link chain's isn't, which is why only the 50-link run set it off. How it was found:
+
+- Same results bit for bit in both orders, and the same instructions per step under callgrind (165 M), so it was the same work running slower.
+- All of the time was user time on one thread, with no page faults, so it was not threads, the core's pool or memory.
+- Flush-to-zero and denormals-are-zero made no difference, so it was not denormals. Changing malloc's thresholds made no difference either.
+- Explicit methods before it left no trace. Any implicit method did, even after a single step.
+- One `vzeroupper` before the 200-link run brought it back to full speed.
+
+**Fix.** `simsandbox_compiled::vector_state::clear_upper()` runs `vzeroupper` when the processor has AVX. It lives in `simsandbox-compiled` because that is the one crate allowed unsafe code. The implicit methods call it after factorising and after faer's pivoted solve. It costs a cycle and changes no value. Our own code needs no such call: Rust inserts `vzeroupper` itself after its own AVX code.
+
+Timings after the fix, this machine (Intel Xeon with AVX-512), reproduced with chain models of the same form. Results are the same bits as before:
+
+| Run | Before | After |
+| --- | --- | --- |
+| 200 links, RK4, alone | 13 ms | 13 ms |
+| 200 links, RK4, after 50 links with TR-BDF2 | 227–241 ms | 12.4 ms |
+| 200 links, Dopri5, after the same | 383 ms | 16.8 ms |
+| 50 links, TR-BDF2 | 97 ms | 11.0 ms |
+| 50 links, backward Euler | 90 ms | 11.1 ms |
+
+The last two rows show that the implicit methods had been slowing themselves too: each step's Newton iterations evaluate the equations after the factorisation. **Regression check:** `implicit::tests::factorising_leaves_the_upper_vector_registers_unused` reads `XGETBV(1)` (whether the upper states are in use) after a TR-BDF2 step on a dense 64-variable system. It passes trivially where faer leaves nothing in use or the processor cannot tell, and it fails without the fix.

@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Implicit methods (`backward_euler`, `trbdf2`) no longer slow down whatever runs after them on Intel processors (often by 10–20×), and run faster themselves: TR-BDF2 on a 50-link chain takes 11 ms a step instead of 97. The cause was faer's matrix kernels leaving the vector registers' upper halves in use. Results are unchanged bit for bit.
 - `input.pointer` has a fourth output, `picked` (−1 while nothing is held), so runs of models with a pointer gain a column.
 - CLI: `--help`, `-h`, `help` and `COMMAND --help` print help to standard output and exit 0; the exit status says what failed (1 the model or run, 2 the command line, 3 a file); `--errors json` writes every failure, warning and note as one JSON object per line; `check` reports every block's and wire's error, not only the first; a missing run file given to `check` now exits 3 without a report. The `lorenz` command is removed (run `examples/lorenz.ssbx.json`).
 - Python: `Model.connect` refuses a wire to a block, port or parameter that does not exist, or to an input already wired, when called (blocks are added before they are wired); `Model.add_block` refuses an unknown type.

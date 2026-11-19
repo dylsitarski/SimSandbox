@@ -15,6 +15,7 @@
 mod jit;
 pub mod native;
 mod routes;
+pub mod vector_state;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
