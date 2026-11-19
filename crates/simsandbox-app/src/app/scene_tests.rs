@@ -143,3 +143,52 @@ fn the_inspector_edits_a_scenes_layers_live_and_saves_them() {
     assert_eq!(app.inspected_scene(), None);
     assert!(app.error.is_none(), "{:?}", app.error);
 }
+
+/// The pendulum's scene, its node picked: the tile the Inspector edits.
+fn pendulum(app: &mut SimApp) -> u64 {
+    let e = EXAMPLES
+        .iter()
+        .find(|e| e.name.starts_with("Pendulum (with its own view)"))
+        .unwrap();
+    app.open_text(e.name, e.text);
+    let live = app.session.as_ref().unwrap();
+    live.set_running(false);
+    live.call(|s, _| s.run_until(0.5)).unwrap().unwrap();
+    app.select("view:1");
+    inspect(app, "pendulum");
+    app.inspected_scene().expect("the scene's tile")
+}
+
+#[test]
+fn a_frame_renamed_in_the_inspector_is_renamed_where_it_is_named() {
+    let mut app = SimApp::new(None, None, None, None);
+    let tile = pendulum(&mut app);
+    let before = picture(&mut app, tile);
+    let scene = |app: &SimApp| saved(app).controls.views[1].scene.clone();
+    app.edit_scene(tile, &SceneEdit::RenameFrame("rod".into(), "arm".into()));
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let s = scene(&app);
+    assert_eq!(s.frames.keys().collect::<Vec<_>>(), ["arm", "pivot"]);
+    assert_eq!(s.frames["arm"].parent.as_deref(), Some("pivot"));
+    assert!(s.layers[1..]
+        .iter()
+        .all(|l| l.frame.as_deref() == Some("arm")));
+    // The same picture, under a new name.
+    assert_eq!(picture(&mut app, tile), before);
+    inspect(&mut app, "frame-renamed");
+    // A parent renamed: the frame in it follows.
+    app.edit_scene(
+        tile,
+        &SceneEdit::RenameFrame("pivot".into(), "hinge".into()),
+    );
+    assert_eq!(scene(&app).frames["arm"].parent.as_deref(), Some("hinge"));
+    // Refused: a name taken, or not a name; the scene is as it was.
+    let kept = scene(&app);
+    for to in ["hinge", "two words"] {
+        app.error = None;
+        app.edit_scene(tile, &SceneEdit::RenameFrame("arm".into(), to.into()));
+        assert!(app.error.is_some(), "{to}");
+        assert_eq!(scene(&app), kept);
+    }
+    assert!(app.scene_drafts.is_empty());
+}

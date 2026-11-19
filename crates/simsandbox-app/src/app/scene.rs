@@ -290,7 +290,27 @@ impl FormUi<'_, '_> {
         ui.strong("Frames");
         for (name, f) in &s.frames {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(name).strong());
+                // Its name, typed over to rename it: what names it follows.
+                let key = format!("scene.{}.frame-name.{name}", self.tile);
+                let mut text = self.text.get(&key).cloned().unwrap_or(name.clone());
+                let r = ui
+                    .add(egui::TextEdit::singleline(&mut text).desired_width(70.0))
+                    .on_hover_text(
+                        "Its name (letters, digits and '_'): type a new one and press Enter \
+                         to rename it; frames and layers in it and 'view from' follow",
+                    );
+                if r.has_focus() {
+                    self.text.insert(key.clone(), text.clone());
+                }
+                if r.lost_focus() {
+                    self.text.remove(&key);
+                    if text.trim() != name {
+                        self.edits.push(SceneEdit::RenameFrame(
+                            name.clone(),
+                            text.trim().to_string(),
+                        ));
+                    }
+                }
                 ui.label("in");
                 let id = (self.tile, "frame-in");
                 if let Some(p) = frame_picker(

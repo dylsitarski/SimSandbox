@@ -17,6 +17,9 @@ pub enum SceneEdit {
     ViewFrom(Option<String>),
     AddFrame(String),
     RemoveFrame(String),
+    /// A frame's new name: the frames and layers in it, and `view_from`,
+    /// follow.
+    RenameFrame(String, String),
     /// A frame's parent (`in`).
     FrameIn(String, Option<String>),
     /// A frame's `x`, `y` or `angle`; `None` is its default, 0.
@@ -114,6 +117,30 @@ pub fn apply(s: &mut SceneSettings, edit: &SceneEdit) -> Result<(), String> {
             }
             if s.view_from == here {
                 s.view_from = None;
+            }
+        }
+        SceneEdit::RenameFrame(from, to) => {
+            if !s.frames.contains_key(from) {
+                return Err(format!("no frame '{from}'"));
+            }
+            let to = frame_name(to)?;
+            if to == from {
+                return Ok(());
+            }
+            if s.frames.contains_key(to) {
+                return Err(format!("there is already a frame '{to}'"));
+            }
+            let f = s.frames.remove(from).expect("checked");
+            s.frames.insert(to.to_string(), f);
+            let (old, new) = (Some(from.clone()), Some(to.to_string()));
+            for f in s.frames.values_mut().filter(|f| f.parent == old) {
+                f.parent.clone_from(&new);
+            }
+            for l in s.layers.iter_mut().filter(|l| l.frame == old) {
+                l.frame.clone_from(&new);
+            }
+            if s.view_from == old {
+                s.view_from = new;
             }
         }
         SceneEdit::FrameIn(name, parent) => frame(s, name)?.parent = parent.clone(),
@@ -235,6 +262,69 @@ mod tests {
         assert_eq!(s.frames["tip"].parent.as_deref(), Some("cart"));
         assert_eq!(s.layers[0].frame.as_deref(), Some("cart"));
         assert_eq!(s.view_from, None);
+        Scene::check(&s.to_map(), &Available::default()).unwrap();
+    }
+
+    #[test]
+    fn a_frame_renamed_is_renamed_where_it_is_named_and_a_taken_name_refused() {
+        let mut s = edited(&[
+            SceneEdit::AddFrame("cart".into()),
+            SceneEdit::AddFrame("pole".into()),
+            SceneEdit::FrameIn("pole".into(), Some("cart".into())),
+            SceneEdit::AddFrame("tip".into()),
+            SceneEdit::FrameIn("tip".into(), Some("pole".into())),
+            SceneEdit::AddLayer("discs".into()),
+            SceneEdit::LayerIn(0, Some("pole".into())),
+            SceneEdit::AddLayer("boxes".into()),
+            SceneEdit::LayerIn(1, Some("cart".into())),
+            SceneEdit::ViewFrom(Some("pole".into())),
+            SceneEdit::Pose("pole".into(), "angle", Some(SceneValue::Number(0.5))),
+        ]);
+        let before = s.clone();
+        // Refused, nothing changes: a name taken, not a name, no frame.
+        for (from, to, error) in [
+            ("pole", "cart", "there is already a frame 'cart'"),
+            (
+                "pole",
+                "a.b",
+                "'a.b': a frame's name is letters, digits and '_'",
+            ),
+            ("pole", " ", "a frame's name is letters, digits and '_'"),
+            ("arm", "hand", "no frame 'arm'"),
+        ] {
+            let e = apply(&mut s, &SceneEdit::RenameFrame(from.into(), to.into())).unwrap_err();
+            assert!(e.contains(error), "{e}");
+            assert_eq!(s, before);
+        }
+        // The same name changes nothing.
+        apply(
+            &mut s,
+            &SceneEdit::RenameFrame("pole".into(), "pole".into()),
+        )
+        .unwrap();
+        assert_eq!(s, before);
+        apply(
+            &mut s,
+            &SceneEdit::RenameFrame("pole".into(), " arm_2 ".into()),
+        )
+        .unwrap();
+        assert!(!s.frames.contains_key("pole"));
+        let arm = &s.frames["arm_2"];
+        assert_eq!(arm.parent.as_deref(), Some("cart"));
+        assert_eq!(arm.angle, Some(SceneValue::Number(0.5)));
+        assert_eq!(s.frames["tip"].parent.as_deref(), Some("arm_2"));
+        assert_eq!(s.layers[0].frame.as_deref(), Some("arm_2"));
+        assert_eq!(s.layers[1].frame.as_deref(), Some("cart"));
+        assert_eq!(s.view_from.as_deref(), Some("arm_2"));
+        Scene::check(&s.to_map(), &Available::default()).unwrap();
+        // A parent renamed: its child follows.
+        apply(
+            &mut s,
+            &SceneEdit::RenameFrame("cart".into(), "body".into()),
+        )
+        .unwrap();
+        assert_eq!(s.frames["arm_2"].parent.as_deref(), Some("body"));
+        assert_eq!(s.layers[1].frame.as_deref(), Some("body"));
         Scene::check(&s.to_map(), &Available::default()).unwrap();
     }
 }
