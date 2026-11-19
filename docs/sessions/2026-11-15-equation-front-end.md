@@ -25,6 +25,7 @@
 - 2026-11-19: the scene view, stage 2 (grabbing, `picked`, replay), with the example "Grab the bob"; a replayed grab checked in the app under Xvfb.
 - 2026-11-19: the scene view, stage 3 (canvas node, renames, Inspector editing, `Model.add_scene`); ADR 0093's list before the gate complete. The container restarted during verification (likely memory): checks rerun with `-j 2`.
 - 2026-11-19: parameter bindings in scenes (ADR 0102, owner), frame renames, a scene's check error on its tile and node. A first try recorded a study's swept parameter beside its field output and moved the resonance profiles' axis; caught by the render hashes and fixed (an output of any shape wins).
+- 2026-11-19: the rigid-body spike, ADR 0103 proposed (Rapier). Checked: the cart-pole table reproduced exactly by a rebuild; the `mujoco-rs` licence's reservation against text and data mining and machine learning confirmed in its 7.1.0 `LICENSE`.
 
 ## Decided
 
