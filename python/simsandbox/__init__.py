@@ -266,6 +266,52 @@ class Model:
         self.data.setdefault("connections", []).append({"from": source, "to": target})
         return self
 
+    def add_scene(
+        self,
+        layers: Iterable[dict[str, Any]],
+        frames: dict[str, dict[str, Any]] | None = None,
+        unit: str | None = None,
+        extent: dict[str, Any] | None = None,
+        view_from: str | None = None,
+        canvas: tuple[float, float] | None = None,
+    ) -> "Model":
+        """Add a scene view (``plot.scene``, ADR 0093) after the model's
+        other views: ``layers`` of primitives drawn first to last, each
+        ``{"draw": "boxes", "in": frame, "bind": {attribute: binding},
+        "grab": pointer_block}``, a binding being a number, a signal
+        (``"cart.x"``), a quantity over a table's rows, or for ``colour`` a
+        palette name; named ``frames``, each ``{"in": parent, "x", "y",
+        "angle"}`` bound the same way; the length ``unit`` (``"m"`` if not
+        given); the ``extent`` shown, ``{"x": [lo, hi], "y": [lo, hi]}``
+        (following what is drawn if not given); and the frame it is seen
+        from. ``describe("plot.scene")`` lists the primitives and their
+        attributes. ``canvas`` places its node on the canvas's data layer.
+
+        Raises :class:`ModelError` at once if the form is wrong (an
+        unknown key, primitive or attribute, a required attribute unbound,
+        a frame that is not there or a cycle of frames, a bad extent), if a
+        binding names no block, filter or probe of the model, or if
+        ``grab`` names no ``input.pointer`` block. Whether a block has that
+        output, and units, are checked by :meth:`check` and when it is
+        drawn."""
+        view: dict[str, Any] = {"type": "plot.scene"}
+        if unit is not None:
+            view["unit"] = unit
+        if extent is not None:
+            view["extent"] = copy.deepcopy(dict(extent))
+        if frames:
+            view["frames"] = copy.deepcopy(dict(frames))
+        view["layers"] = copy.deepcopy(list(layers))
+        if view_from is not None:
+            view["view_from"] = view_from
+        if canvas is not None:
+            view["canvas"] = [float(canvas[0]), float(canvas[1])]
+        problem = _native.scene_problem(self.to_json(), json.dumps(view))
+        if problem is not None:
+            raise ModelError(problem)
+        self.data.setdefault("controls", {}).setdefault("views", []).append(view)
+        return self
+
     def block(self, name: str) -> dict[str, Any]:
         for b in self.data.get("blocks", []):
             if b["name"] == name:

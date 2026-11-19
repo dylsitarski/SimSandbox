@@ -241,6 +241,78 @@ def test_views_render_to_png(tmp_path):
         ss.Model.example("Lorenz system").render(view=5, t_end=0.1)
 
 
+def _cart_pole() -> ss.Model:
+    """A model giving what ADR 0093's cart-pole picture binds: cart.x and
+    pole.theta, and a pointer to grab with."""
+    m = ss.Model()
+    m.add_block("hand", "input.pointer", settings={"min": "-3", "max": "3", "unit": "m"})
+    m.add_block(
+        "cart", "eq.equations", "rk4",
+        equations="param w [1/s] = 1\nstate x [m] = 0\nstate v [m/s] = 1\ndx/dt = v\ndv/dt = -w^2*x",
+    )
+    m.add_block(
+        "pole", "eq.equations", "rk4",
+        equations="param g [1/s^2] = 9.81\nstate theta = 0.3\nstate omega [1/s] = 0\n"
+        "dtheta/dt = omega\ndomega/dt = -g*sin(theta)",
+    )
+    return m
+
+
+CART_POLE = dict(
+    unit="m",
+    extent={"x": [-3, 3], "y": [-0.5, 2]},
+    frames={"cart": {"x": "cart.x", "y": 0}, "pole": {"in": "cart", "angle": "pole.theta"}},
+    layers=[
+        {"draw": "segments", "bind": {"x1": -3, "y1": 0, "x2": 3, "y2": 0}},
+        {"draw": "boxes", "in": "cart", "bind": {"x": 0, "y": 0, "width": 0.4, "height": 0.2}, "grab": "hand"},
+        {"draw": "boxes", "in": "pole", "bind": {"x": 0, "y": 0.5, "width": 0.04, "height": 1.0}},
+        {"draw": "discs", "in": "pole", "bind": {"x": 0, "y": 1.0, "radius": 0.05}, "grab": "hand"},
+    ],
+)
+
+
+def test_a_scene_is_added_checked_saved_and_drawn(tmp_path):
+    # ADR 0093 point 8's cart-pole picture, on a model with its signals.
+    m = _cart_pole().add_scene(**CART_POLE)
+    view = m.data["controls"]["views"][0]
+    assert view["type"] == "plot.scene" and view["frames"]["pole"]["in"] == "cart"
+    report = m.check()
+    assert report["ok"], report
+    assert report["warnings"] == [], report["warnings"]
+    path = tmp_path / "cart-pole.ssbx.json"
+    m.save(path)
+    assert ss.Model.load(path).data == m.data
+    png = m.render(tmp_path / "scene.png", t_end=1.0, view=0, width=300, height=200)
+    assert png[1:4] == b"PNG"
+    # Its node on the canvas, wired from what it binds and grabs with.
+    assert m.render(diagram=True, width=600, height=300)[1:4] == b"PNG"
+
+
+def test_a_scenes_form_and_names_are_refused_at_once():
+    m = _cart_pole()
+    refused = [
+        ([{"draw": "segments", "bind": {"y1": 0, "x2": 1, "y2": 0}}], r"layers\[0\]\.bind\.x1: required"),
+        ([{"draw": "boxes", "bind": {"x": 0, "y": 0, "width": 1, "height": 1, "size": 2}}], r"layers\[0\]\.bind\.size"),
+        ([{"draw": "points", "bind": {"x": "car.x", "y": 0}}], r"layers\[0\]\.bind\.x: 'car\.x' names no block"),
+        ([{"draw": "points", "bind": {"x": 0, "y": 0}, "grab": "cart"}], r"layers\[0\]\.grab: no input\.pointer block 'cart'"),
+        ([{"draw": "polygons"}], r"layers\[0\]\.draw: no primitive 'polygons'"),
+        ([{"draw": "points", "in": "pole", "bind": {"x": 0, "y": 0}}], r"layers\[0\]\.in: no frame 'pole'"),
+    ]
+    for layers, message in refused:
+        with pytest.raises(ss.ModelError, match=message):
+            m.add_scene(layers)
+    with pytest.raises(ss.ModelError, match=r"frames\.a\.in: the frames .* form a cycle"):
+        m.add_scene([], frames={"a": {"in": "b"}, "b": {"in": "a"}})
+    with pytest.raises(ss.ModelError, match=r"extent\.x"):
+        m.add_scene([], extent={"x": [1, 0], "y": [0, 1]})
+    assert "views" not in m.data.get("controls", {})
+    # Units are the check's: a speed as a length is a warning there, and
+    # the scene is not drawn.
+    m.add_scene([{"draw": "points", "bind": {"x": "cart.v", "y": 0}}])
+    warnings = m.check()["warnings"]
+    assert any("layers[0].bind.x: 'cart.v' is in m/s" in w for w in warnings), warnings
+
+
 def test_every_example_loads_runs_briefly_and_round_trips():
     for name in ss.examples():
         m = ss.Model.example(name)

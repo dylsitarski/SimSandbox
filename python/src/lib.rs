@@ -689,6 +689,86 @@ fn connection_problem(text: &str, source: &str, target: &str) -> Option<String> 
     Some(format!("cannot wire '{source}' to '{target}'"))
 }
 
+/// What is wrong with a scene view (`plot.scene`, ADR 0093) for this
+/// model, judged without building it: the scene's form as `check` reads
+/// it (keys, primitives, attributes, frames, extent, `view_from`), each
+/// bound signal named by one of the model's blocks or used models, a
+/// filter, a probe or time, and each `grab` an `input.pointer` block.
+/// Left to `check`: whether a block has that output, units, and tables
+/// (`None` here then, as for a file that does not parse).
+#[pyfunction]
+fn scene_problem(text: &str, scene: &str) -> Option<String> {
+    use simsandbox_views::scene::{bound, Scene, SCENE};
+    use simsandbox_views::Available;
+    let data: serde_json::Value = serde_json::from_str(text).ok()?;
+    let view: serde_json::Value = match serde_json::from_str(scene) {
+        Ok(v) => v,
+        Err(e) => return Some(format!("the scene is not JSON: {e}")),
+    };
+    let Some(view) = view.as_object() else {
+        return Some("a scene is an object of its settings".into());
+    };
+    if view.get("type").and_then(|t| t.as_str()) != Some(SCENE) {
+        return Some(format!("a scene's type is '{SCENE}'"));
+    }
+    // Its settings: all but what every view has.
+    let settings: simsandbox_views::view::Settings = view
+        .iter()
+        .filter(|(k, _)| !matches!(k.as_str(), "type" | "canvas"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let names = |list: Option<&serde_json::Value>, key: &str| -> Vec<(String, String)> {
+        list.and_then(|l| l.as_array())
+            .map(|l| {
+                l.iter()
+                    .filter_map(|e| {
+                        let name = e.get("name")?.as_str()?.to_string();
+                        let kind = e.get(key).and_then(|t| t.as_str()).unwrap_or("");
+                        Some((name, kind.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let blocks = names(data.get("blocks"), "type");
+    let controls = data.get("controls");
+    let filters = names(controls.and_then(|c| c.get("filters")), "type");
+    let probes = names(controls.and_then(|c| c.get("probes")), "type");
+    let has = |list: &[(String, String)], n: &str| list.iter().any(|(name, _)| name == n);
+    let named = |s: &str| -> bool {
+        if s == "t" {
+            return true;
+        }
+        if let Some(rest) = s.strip_prefix("probe:") {
+            return rest.split_once('/').is_some_and(|(p, _)| has(&probes, p));
+        }
+        let first = s.split(['.', '/', '[']).next().unwrap_or(s);
+        has(&blocks, first) || has(&filters, first) || (first == "grid" && s.len() > 5)
+    };
+    let mut signals = Vec::new();
+    for (path, s) in bound(&settings) {
+        if !named(&s) {
+            let list: Vec<&str> = blocks.iter().map(|(n, _)| n.as_str()).collect();
+            return Some(format!(
+                "{path}: '{s}' names no block, filter or probe of the model; blocks: {}",
+                list.join(", ")
+            ));
+        }
+        signals.push(s);
+    }
+    let pointers: Vec<String> = blocks
+        .iter()
+        .filter(|(_, t)| t == "input.pointer")
+        .map(|(n, _)| n.clone())
+        .collect();
+    let available = Available {
+        scalars: &signals,
+        pointers: Some(&pointers),
+        ..Default::default()
+    };
+    Scene::check(&settings, &available).err()
+}
+
 /// A model file in the current form (ADR 0044): the text, the older forms
 /// converted, and what was dropped as unusable.
 #[pyfunction]
@@ -724,6 +804,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(strategy, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
     m.add_function(wrap_pyfunction!(connection_problem, m)?)?;
+    m.add_function(wrap_pyfunction!(scene_problem, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

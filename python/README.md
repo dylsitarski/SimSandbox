@@ -17,7 +17,7 @@ maturin develop               # or: pip install ".[test]"
 python -m pytest tests
 ```
 
-`Model.connect` checks its two ends when called: a block, used model, port or parameter that does not exist, or an input or parameter that already has a wire, raises `ModelError` at once (judged as the node canvas draws wires, building only the blocks named). `Model.add_block` refuses an unknown type.
+`Model.connect` checks its two ends when called: a block, used model, port or parameter that does not exist, or an input or parameter that already has a wire, raises `ModelError` at once (judged as the node canvas draws wires, building only the blocks named). `Model.add_block` refuses an unknown type. `Model.add_scene` checks a scene view's form when called (`_native.scene_problem`, without building the model): keys, primitives, attributes, frames and extent as `check` reads them, each binding naming a block, filter or probe of the model, and each `grab` an `input.pointer` block; units and outputs are left to `check`.
 
 ## Wheels
 
