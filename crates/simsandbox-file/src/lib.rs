@@ -1446,6 +1446,100 @@ pub struct ViewEntry {
     /// written.
     #[serde(default, skip_serializing)]
     pub probe: Option<String>,
+    /// A scene's `unit`, `extent`, `frames`, `layers` and `view_from`
+    /// (ADR 0093), written beside the other keys; empty for other views.
+    /// The view type checks what they mean (signals, units, frames).
+    #[serde(flatten)]
+    pub scene: SceneSettings,
+}
+
+/// What a scene (`plot.scene`, ADR 0093 point 8) holds beyond slots: its
+/// layers do not fit a slot-to-signals map. The file keeps their form;
+/// the view type checks what they mean and refuses them on other views.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneSettings {
+    /// The length unit of every position and size (`m` if absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// The region shown, `{"x": [low, high], "y": [low, high]}`; absent,
+    /// it follows what is drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<Value>,
+    /// Named frames, each a pose in another.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub frames: BTreeMap<String, SceneFrame>,
+    /// Drawn first to last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<SceneLayer>,
+    /// The frame whose coordinates the picture is drawn in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_from: Option<String>,
+}
+
+/// A frame: its pose in its parent (`in`, the scene's own if absent).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneFrame {
+    #[serde(rename = "in", default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<SceneValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<SceneValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<SceneValue>,
+    /// Keys a frame does not take, kept for the view type to report where
+    /// they are.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, Value>,
+}
+
+/// A layer: one primitive, the frame it is in, its attributes' bindings
+/// and the `input.pointer` that grabs it (kept; acted on in a later
+/// stage).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneLayer {
+    pub draw: String,
+    #[serde(rename = "in", default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bind: BTreeMap<String, SceneValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grab: Option<String>,
+    /// Keys a layer does not take, kept for the view type to report.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, Value>,
+}
+
+/// An attribute's binding: a constant, or a name (a signal, a quantity
+/// over a table's rows, or for a colour a palette name).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SceneValue {
+    Number(f64),
+    Name(String),
+    /// Anything else, kept for the view type to report where it is.
+    Other(Value),
+}
+
+impl SceneSettings {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// As the view type reads them: key to JSON.
+    pub fn to_map(&self) -> BTreeMap<String, Value> {
+        match serde_json::to_value(self) {
+            Ok(Value::Object(m)) => m.into_iter().collect(),
+            _ => BTreeMap::new(),
+        }
+    }
+
+    /// From what a view gives to save; `None` if it is not a scene's form.
+    pub fn from_map(map: &BTreeMap<String, Value>) -> Option<Self> {
+        let object: serde_json::Map<String, Value> =
+            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        serde_json::from_value(Value::Object(object)).ok()
+    }
 }
 
 impl ViewEntry {
@@ -1646,6 +1740,7 @@ impl ViewControl {
             selection: None,
             canvas: None,
             probe: None,
+            scene: SceneSettings::default(),
         }
     }
 

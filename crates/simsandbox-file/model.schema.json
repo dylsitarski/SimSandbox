@@ -693,6 +693,101 @@
                     "exclusiveMinimum": 0
                   }
                 }
+              },
+              "unit": {
+                "type": "string",
+                "description": "plot.scene (ADR 0093): the length unit every position and size is in ('m' if absent); a binding in another length unit is refused."
+              },
+              "extent": {
+                "type": "object",
+                "description": "plot.scene: the region shown, x and y ranges in the scene's unit; absent, the extent follows what is drawn. Drawn with equal scales.",
+                "required": [
+                  "x",
+                  "y"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "x": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "y": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  }
+                }
+              },
+              "frames": {
+                "type": "object",
+                "description": "plot.scene: named frames, each a pose in another frame (`in`, the scene's own if absent): a point p drawn in it lies at (x, y) + R(angle)·p in its parent. A frame over a table's rows cannot hold another yet.",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "in": {
+                      "type": "string",
+                      "description": "The parent frame."
+                    },
+                    "x": {
+                      "$ref": "#/$defs/sceneAttribute"
+                    },
+                    "y": {
+                      "$ref": "#/$defs/sceneAttribute"
+                    },
+                    "angle": {
+                      "$ref": "#/$defs/sceneAttribute"
+                    }
+                  }
+                }
+              },
+              "layers": {
+                "type": "array",
+                "description": "plot.scene: layers drawn first to last, each one primitive (`simsandbox describe plot.scene` lists the primitives and their attributes).",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "draw"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "draw": {
+                      "enum": [
+                        "points",
+                        "segments",
+                        "boxes",
+                        "discs"
+                      ],
+                      "description": "The primitive."
+                    },
+                    "in": {
+                      "type": "string",
+                      "description": "The frame its positions and angles are in; the scene's if absent."
+                    },
+                    "bind": {
+                      "type": "object",
+                      "description": "Attribute name to its binding.",
+                      "additionalProperties": {
+                        "$ref": "#/$defs/sceneAttribute"
+                      }
+                    },
+                    "grab": {
+                      "type": "string",
+                      "description": "The input.pointer block grabbing an instance sends to (ADR 0093 point 6); kept, not acted on yet."
+                    }
+                  }
+                }
+              },
+              "view_from": {
+                "type": "string",
+                "description": "plot.scene: draw the picture in this frame's coordinates (it stands still)."
               }
             }
           }
@@ -1107,6 +1202,17 @@
           "description": "A study's named results, one value per run (ADR 0067), each one reduction of an expression over the run's signals by full name and t: final, mean (over time), min, max, amplitude (half of max − min), period (mean time between upward crossings of the mean), first_time(a < b) (also >, <=, >=; NaN if never). Given, the rows hold these instead of final values. E.g. {\"v_max\": \"max(plant/car.v)\", \"settle\": \"first_time(abs(cruise.e) < 0.1)\"}."
         }
       }
+    },
+    "sceneAttribute": {
+      "oneOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "A constant, a scalar signal ('block.port'), or a quantity over a table's rows (one instance a row, paired by id); for 'colour' also a palette name."
     }
   }
 }

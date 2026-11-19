@@ -3,7 +3,7 @@
 //! type's presets under "More views…" (ADR 0018). Save writes the tiles as
 //! they are.
 
-use simsandbox_file::{Binding, CameraControl, ViewEntry};
+use simsandbox_file::{Binding, CameraControl, SceneSettings, ViewEntry};
 use simsandbox_views::{Available, Bindings, ViewRegistry, ViewState, ViewType};
 
 /// One view on screen. The id stays fixed while other tiles come and go, so
@@ -101,6 +101,9 @@ impl Views {
             .collect();
         let camera = e.camera.map(|c| [c.yaw, c.pitch, c.zoom]);
         let mut state = ViewState::restore(t, bind, e.style.clone(), camera, available)?;
+        // What it takes beyond slots: a scene's frames and layers
+        // (ADR 0093), each problem at its path.
+        state.set_settings(&e.scene.to_map(), available)?;
         if let Some(s) = &e.selection {
             state
                 .set_selection(s)
@@ -265,6 +268,7 @@ impl Views {
                     selection: s.selection(),
                     canvas: tile.canvas,
                     probe: None,
+                    scene: SceneSettings::from_map(&s.settings()).unwrap_or_default(),
                 }
             })
             .collect()
@@ -336,6 +340,7 @@ mod tests {
             selection: None,
             canvas: None,
             probe: None,
+            scene: Default::default(),
         }
     }
 
@@ -425,6 +430,131 @@ mod tests {
         assert_eq!(v.tiles[0].state.type_name, "plot.heatmap");
         assert_eq!(b["field"], ["map.spring_amplitude"]);
         assert_eq!((b["x"][0].as_str(), b["y"][0].as_str()), ("map.w", "map.c"));
+    }
+
+    /// A model whose typed equations compose the pose of a point drawn in
+    /// a chain of frames (ADR 0093 Consequences): a frame on a moving
+    /// base, turned by a constant, holding one turned by the model's angle
+    /// and offset along it.
+    const COMPOSED: &str = r#"{"format": 1, "run": {"dt": 0.01},
+        "blocks": [{"name": "m", "type": "eq.equations", "method": {"name": "rk4"}, "equations": [
+            "param v [m/s] = 0.3", "param w [1/s] = 0.7",
+            "param y0 [m] = 0.5", "param d [m] = 0.2", "param a [m] = 0.4", "param b [m] = 0.25",
+            "state cx [m] = 0", "dcx/dt = v", "state th = 0", "dth/dt = w",
+            "ex = cx + d*cos(0.6) + a*cos(th - 0.6) - b*sin(th - 0.6)",
+            "ey = y0 - d*sin(0.6) + a*sin(th - 0.6) + b*cos(th - 0.6)"]}],
+        "controls": {"views": [
+            {"type": "plot.scene", "frames": {
+                "base": {"x": "m.cx", "y": 0.5},
+                "turn": {"in": "base", "angle": -0.6},
+                "arm": {"in": "turn", "x": 0.2, "angle": "m.th"}},
+             "layers": [{"draw": "points", "in": "arm", "bind": {"x": 0.4, "y": 0.25}}]},
+            {"type": "plot.xy", "bind": {"x": "m.ex", "y": ["m.ey"]}}]}}"#;
+
+    /// Frames compose as typed equations compose the same pose: they
+    /// agree to rounding at every sample drawn.
+    #[test]
+    fn frames_agree_with_the_same_pose_in_typed_equations() {
+        use crate::examples::{registry, view_registry};
+        use crate::session::Session;
+        use simsandbox_views::scene::{eval::Placed, geometry::Instance, Scene};
+        use simsandbox_views::Recorded;
+        let mut s = Session::load("composed", COMPOSED, &registry()).unwrap();
+        let mut v = Views::new(view_registry());
+        let w = v.open(&s.available(&s.signals()), &s.file.controls.views);
+        assert!(w.is_empty(), "{w:?}");
+        // The scene's reads are recorded with the plot's.
+        let reads = crate::session::view_reads(&s.file.controls.views);
+        assert_eq!(reads, ["m.cx", "m.ex", "m.ey", "m.th"]);
+        let settings = s.file.controls.views[0].scene.to_map();
+        let mut worst: f64 = 0.0;
+        for k in 1..=40 {
+            s.run_until(0.25 * k as f64).unwrap();
+            let h = s.signals();
+            let scene = Scene::check(&settings, &s.available(&h)).unwrap();
+            let placed: Vec<Placed> = scene.place(&Recorded::single(&h));
+            let Instance::Point { at, .. } = placed[0].shape else {
+                panic!("{placed:?}")
+            };
+            let n = h.len() - 1;
+            let value = |name: &str| h.value(h.resolve(name).unwrap(), n);
+            let want = [value("m.ex"), value("m.ey")];
+            worst = worst.max((at[0] - want[0]).abs().max((at[1] - want[1]).abs()));
+        }
+        assert!(
+            worst < 1e-12,
+            "frames and typed equations differ by {worst}"
+        );
+    }
+
+    /// A scene's problems are found where the app and `check` find them,
+    /// at their paths, and the view is left out.
+    #[test]
+    fn a_scene_that_does_not_fit_is_reported_at_its_path() {
+        use crate::examples::{registry, view_registry};
+        use crate::session::Session;
+        for (from, to, problem) in [
+            (
+                r#""angle": "m.th""#,
+                r#""angle": "m.cx""#,
+                "controls.views[0]: frames.arm.angle: 'm.cx' is in m; an angle takes radians",
+            ),
+            (
+                r#""draw": "points""#,
+                r#""draw": "arrows""#,
+                "controls.views[0]: layers[0].draw: no primitive 'arrows'",
+            ),
+            (
+                r#""in": "turn""#,
+                r#""in": "elbow""#,
+                "controls.views[0]: frames.arm.in: no frame 'elbow'",
+            ),
+            (
+                r#""in": "base""#,
+                r#""in": "arm""#,
+                "controls.views[0]: frames.arm.in: the frames arm in turn in arm form a cycle",
+            ),
+            (
+                r#""x": 0.4"#,
+                r#""x": "m.ez""#,
+                "controls.views[0]: layers[0].bind.x: no signal 'm.ez'",
+            ),
+            (
+                r#""y": 0.25}"#,
+                r#""y": 0.25, "z": 1}"#,
+                "controls.views[0]: layers[0].bind.z: 'points' has no attribute 'z'",
+            ),
+        ] {
+            let text = COMPOSED.replace(from, to);
+            assert_ne!(text, COMPOSED, "{from}");
+            let s = Session::load("composed", &text, &registry()).unwrap();
+            let mut v = Views::new(view_registry());
+            let w = v.open(&s.available(&s.signals()), &s.file.controls.views);
+            assert_eq!(w.len(), 1, "{w:?}");
+            assert!(w[0].starts_with(problem), "{}\n  not {problem}", w[0]);
+            assert_eq!(v.tiles[0].state.type_name, "plot.xy");
+            // `check` says the same.
+            let checked = crate::describe::check(&text, &registry());
+            let warnings = checked["warnings"].as_array().unwrap();
+            assert!(
+                warnings
+                    .iter()
+                    .any(|x| x.as_str().unwrap().starts_with(problem)),
+                "{warnings:?}"
+            );
+        }
+        // Scene settings on another view are refused, not ignored.
+        let other = COMPOSED.replace(
+            r#""type": "plot.xy","#,
+            r#""type": "plot.xy", "unit": "m","#,
+        );
+        let s = Session::load("composed", &other, &registry()).unwrap();
+        let mut v = Views::new(view_registry());
+        let w = v.open(&s.available(&s.signals()), &s.file.controls.views);
+        assert_eq!(
+            w,
+            ["controls.views[1]: this view takes no setting 'unit'; ignored"]
+        );
     }
 
     #[test]

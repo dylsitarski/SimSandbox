@@ -1025,6 +1025,7 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                 selection: None,
                 canvas: Some(at.map(tidy)),
                 probe: None,
+                scene: Default::default(),
             });
             Ok(format!("Added a {type_name} view"))
         }

@@ -716,6 +716,104 @@ mod tests {
         assert!(drawn > 2000, "{drawn}");
     }
 
+    /// A scene rendered headless against a known picture (ADR 0093
+    /// Verification): a red square up and left, a blue disc down and right,
+    /// drawn with equal scales; exact colours inside each, neither between
+    /// them. A third layer draws a table's rows, one dot a row.
+    #[test]
+    fn a_scene_renders_its_known_picture() {
+        use simsandbox_views::scene::spec::palette;
+        let model = serde_json::json!({"format": 1, "run": {"dt": 1, "t_end": 2},
+            "blocks": [{"name": "m", "type": "eq.equations", "equations": [
+                "table pts max 20", "start pts = 5", "state x[pts] = id(pts)/8 - 0.3",
+                "x[n+1] = x"]}],
+            "controls": {"views": [{"type": "plot.scene", "extent": {"x": [-1, 1], "y": [-1, 1]},
+                "layers": [
+                    {"draw": "boxes", "bind": {"x": -0.5, "y": 0.5, "width": 0.9, "height": 0.9, "colour": "red"}},
+                    {"draw": "discs", "bind": {"x": 0.5, "y": -0.5, "radius": 0.45, "colour": "blue"}},
+                    {"draw": "points", "bind": {"x": "m.x", "y": -0.98, "size": 4, "colour": "green"}}]}]}})
+        .to_string();
+        let mut s = Session::load("m", &model, &registry()).unwrap();
+        s.run_until(2.0).unwrap();
+        let o = RenderOptions {
+            width: 500.0,
+            height: 400.0,
+            ..Default::default()
+        };
+        let (img, warnings) = render(&s, view_registry(), &o).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let pixel = |x: usize, y: usize| {
+            let i = 4 * (y * img.width + x);
+            egui::Color32::from_rgb(img.rgba[i], img.rgba[i + 1], img.rgba[i + 2])
+        };
+        // The box holding every pixel of exactly this colour.
+        let extent = |c: egui::Color32| {
+            let (mut lo, mut hi) = ([usize::MAX; 2], [0; 2]);
+            let mut n = 0;
+            for y in 0..img.height {
+                for x in 0..img.width {
+                    if pixel(x, y) == c {
+                        lo = [lo[0].min(x), lo[1].min(y)];
+                        hi = [hi[0].max(x), hi[1].max(y)];
+                        n += 1;
+                    }
+                }
+            }
+            assert!(n > 0, "no {c:?} drawn");
+            (lo, hi, n)
+        };
+        let (red, blue, green) = (
+            palette("red").unwrap(),
+            palette("blue").unwrap(),
+            palette("green").unwrap(),
+        );
+        let (rlo, rhi, _) = extent(red);
+        let (blo, bhi, _) = extent(blue);
+        let size =
+            |lo: [usize; 2], hi: [usize; 2]| [(hi[0] - lo[0]) as f64, (hi[1] - lo[1]) as f64];
+        let centre = |lo: [usize; 2], hi: [usize; 2]| [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2];
+        let (r, b) = (size(rlo, rhi), size(blo, bhi));
+        // Equal scales: the square is square, the disc as wide as it.
+        assert!((r[0] - r[1]).abs() <= 2.0, "{r:?}");
+        assert!(
+            (b[0] - r[0]).abs() <= 2.0 && (b[1] - r[1]).abs() <= 2.0,
+            "{r:?} {b:?}"
+        );
+        assert!(r[0] > 100.0, "{r:?}");
+        // y is up: the disc is right of and below the square, one unit
+        // (r / 0.9 pixels) each way.
+        let (rc, bc) = (centre(rlo, rhi), centre(blo, bhi));
+        let unit = r[0] / 0.9;
+        assert!(
+            ((bc[0] - rc[0]) as f64 - unit).abs() <= 2.0,
+            "{rc:?} {bc:?}"
+        );
+        assert!(
+            ((bc[1] - rc[1]) as f64 - unit).abs() <= 2.0,
+            "{rc:?} {bc:?}"
+        );
+        assert_eq!(pixel(rc[0], rc[1]), red);
+        assert_eq!(pixel(bc[0], bc[1]), blue);
+        let between = pixel((rc[0] + bc[0]) / 2, (rc[1] + bc[1]) / 2);
+        assert!(between != red && between != blue, "{between:?}");
+        // The disc is round: its bounding box's corner is not blue.
+        assert_ne!(pixel(blo[0] + 3, blo[1] + 3), blue);
+        // Five rows, five dots along the bottom.
+        let (glo, ghi, _) = extent(green);
+        assert!(
+            glo[1] > bhi[1] && ghi[0] > glo[0] + 3 * (unit / 8.0) as usize,
+            "{glo:?} {ghi:?}"
+        );
+        let h = s.signals();
+        let scene = simsandbox_views::scene::Scene::check(
+            &s.file.controls.views[0].scene.to_map(),
+            &s.available(&h),
+        )
+        .unwrap();
+        let placed = scene.place(&simsandbox_views::Recorded::single(&h));
+        assert_eq!(placed.iter().filter(|p| p.layer == 2).count(), 5);
+    }
+
     #[test]
     fn the_arrangement_places_the_views_and_drops_the_rest() {
         let l: simsandbox_file::layout::Layout = serde_json::from_str(

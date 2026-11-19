@@ -699,6 +699,52 @@ fn views_are_validated_leniently() {
     assert_eq!(v.style["w"], 2.0);
 }
 
+/// A scene's layers do not fit slots (ADR 0093): they are kept as the
+/// view's settings, written back as given, and checked by the view type.
+#[test]
+fn a_scene_keeps_its_frames_and_layers() {
+    let scene = r#"{"type": "plot.scene", "unit": "m", "extent": {"x": [-2.0, 2.0], "y": [-2.0, 1.0]},
+        "frames": {"pivot": {"angle": -1.5707963267948966}, "rod": {"in": "pivot", "angle": "bob.angle"}},
+        "layers": [
+          {"draw": "segments", "in": "rod", "bind": {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 0.0, "colour": "grey"}},
+          {"draw": "discs", "in": "rod", "bind": {"x": 1.0, "y": 0.0, "radius": 0.1}, "grab": "hand"}],
+        "view_from": "rod"}"#;
+    let text = PENDULUM.replacen(r#""views": ["#, &format!(r#""views": [{scene},"#), 1);
+    let loaded = load(&text, &registry()).unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    let v = &loaded.file.controls.views[0];
+    assert_eq!(v.type_name, "plot.scene");
+    assert!(v.bind.is_empty());
+    let keys: Vec<String> = v.scene.to_map().into_keys().collect();
+    assert_eq!(keys, ["extent", "frames", "layers", "unit", "view_from"]);
+    assert_eq!(v.scene.layers[1].grab.as_deref(), Some("hand"));
+    assert_eq!(v.scene.frames["rod"].parent.as_deref(), Some("pivot"));
+    // Written back as read, in the order the ADR gives.
+    let (again, _) = ModelFile::from_json(&loaded.file.to_json()).unwrap();
+    assert_eq!(again.controls.views[0], *v);
+    let written: serde_json::Value = serde_json::from_str(&loaded.file.to_json()).unwrap();
+    let wanted: serde_json::Value = serde_json::from_str(scene).unwrap();
+    assert_eq!(written["controls"]["views"][0], wanted);
+    let text = loaded.file.to_json();
+    let order = [
+        "\"unit\"",
+        "\"extent\"",
+        "\"frames\"",
+        "\"layers\"",
+        "\"view_from\"",
+    ];
+    let at: Vec<usize> = order.iter().map(|k| text.find(k).unwrap()).collect();
+    assert!(at.windows(2).all(|w| w[0] < w[1]), "{text}");
+    assert!(text.find("\"draw\"").unwrap() < text.find("\"x1\"").unwrap());
+    // What a layer does not take is kept, for the view type to report at
+    // its path (the rest of controls stays).
+    let bad = text.replace(r#""draw": "discs""#, r#""draw": "discs", "fill": true"#);
+    let (file, warnings) = ModelFile::from_json(&bad).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(file.controls.views[0].scene.layers[1].other["fill"], true);
+    assert!(file.controls.params["bob.L"].slider);
+}
+
 #[test]
 fn the_single_view_of_adr_0014_is_converted() {
     let with_view = |view: &str| {

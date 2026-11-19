@@ -465,12 +465,20 @@ impl Session {
     }
 }
 
-/// What views read, as their bindings are written (ADR 0063).
+/// What views read, as their bindings are written (ADR 0063), a scene's
+/// layers and frames included (ADR 0093).
 pub fn view_reads(views: &[ViewEntry]) -> Vec<String> {
     model_reads(
         views
             .iter()
-            .flat_map(|v| v.bind.values().flat_map(simsandbox_file::Binding::signals))
+            .flat_map(|v| {
+                let scene = (v.type_name == simsandbox_views::scene::SCENE)
+                    .then(|| simsandbox_views::scene::reads(&v.scene.to_map()));
+                v.bind
+                    .values()
+                    .flat_map(simsandbox_file::Binding::signals)
+                    .chain(scene.into_iter().flatten())
+            })
             .collect(),
     )
 }

@@ -209,7 +209,7 @@ fn slot_kind(k: SlotKind) -> &'static str {
 
 /// One view type: its slots, style properties and presets.
 pub fn view_type(t: &ViewType) -> Value {
-    json!({
+    let mut v = json!({
         "type": t.name,
         "label": t.label,
         "description": t.description,
@@ -230,7 +230,12 @@ pub fn view_type(t: &ViewType) -> Value {
         })).collect::<Vec<_>>(),
         "presets": t.presets.iter().map(|p| json!({"label": p.label, "description": p.description})).collect::<Vec<_>>(),
         "applies_to": t.applies_to,
-    })
+    });
+    // Beyond slots: a scene's frames, layers and primitives (ADR 0093).
+    if let Some(describe) = t.settings {
+        v["takes"] = describe();
+    }
+    v
 }
 
 /// The filter types (ADR 0030–0032).
@@ -322,10 +327,18 @@ pub fn check(text: &str, r: &Registry) -> Value {
         Err(e) => json!({"ok": false, "errors": [{"message": e}], "warnings": []}),
         Ok(s) => {
             let labels = s.labels();
+            // Views that cannot be shown, as the app and `render` find
+            // them: a scene's layers at their paths (ADR 0093).
+            let mut warnings = s.warnings.clone();
+            {
+                let h = s.signals();
+                let mut views = crate::views::Views::new(crate::examples::view_registry());
+                warnings.extend(views.open(&s.available(&h), &s.file.controls.views));
+            }
             json!({
                 "ok": true,
                 "errors": [],
-                "warnings": s.warnings,
+                "warnings": warnings,
                 "conversions": s.conversions,
                 "labels": labels.map(self::labels),
                 // What it offers to models that use it (ADR 0066 step 4b).
