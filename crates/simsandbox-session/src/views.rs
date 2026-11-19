@@ -579,6 +579,23 @@ mod tests {
         assert_eq!((lengths[0], lengths[lengths.len() - 1]), (1.0, 1.5));
         s.set_filters(s.filters().to_vec()).unwrap();
         assert_eq!(column(&s), lengths);
+        // An output wins over a parameter of the same name: the
+        // pointer's `hand.x`, a study's swept `curve.w` (a field) are
+        // outputs, never recorded or offered as parameters.
+        for (example, name) in [("Grab the bob", "hand.x"), ("Resonance", "curve.w")] {
+            let e = EXAMPLES.iter().find(|e| e.name.contains(example)).unwrap();
+            let other =
+                Session::load_in(e.name, e.text, &registry(), e.folder().as_deref()).unwrap();
+            assert!(
+                !other.bindable_params().contains(&name.to_string()),
+                "{name}"
+            );
+            let h = other.signals();
+            assert!(
+                h.names().iter().filter(|n| *n == name).count() <= 1,
+                "{name}"
+            );
+        }
         // From the run file, headless: the same picture.
         let track = s.recorded().to_vec();
         let mut again = Session::load("pendulum", text, &registry()).unwrap();

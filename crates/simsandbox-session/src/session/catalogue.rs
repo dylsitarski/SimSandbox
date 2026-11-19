@@ -78,9 +78,10 @@ pub(super) struct Catalogue {
     /// Filters compiled: expressions recorded after the output signals,
     /// cut fields after the recorded fields.
     pub(super) filters: Filters,
-    /// Every block parameter (`block.param`), which a scene may bind
-    /// (ADR 0102), and where its value is: its block and its place among
-    /// the block's parameters.
+    /// Every block parameter (`block.param`) that no output (a signal or a
+    /// field) has the name of, which a scene may bind (ADR 0102), and
+    /// where its value is: its block and its place among the block's
+    /// parameters.
     params: Vec<ParamSource>,
     param_keys: Vec<String>,
     /// What views read (as [`Catalogue::set_param_reads`] was given): the
@@ -140,6 +141,18 @@ impl Catalogue {
         }
         c.add_aliases(&loaded.aliases);
         c.keep_coordinates_that_fit();
+        // An output of the same name wins over a parameter (ADR 0102):
+        // `input.pointer`'s `hand.x`, a study's swept `curve.w`.
+        let outputs: std::collections::BTreeSet<&String> = c
+            .output_names
+            .iter()
+            .chain(c.base_fields.iter().map(|(n, _)| n))
+            .collect();
+        let keep: Vec<bool> = c.param_keys.iter().map(|k| !outputs.contains(k)).collect();
+        let mut kept = keep.iter();
+        c.param_keys.retain(|_| *kept.next().expect("one each"));
+        let mut kept = keep.iter();
+        c.params.retain(|_| *kept.next().expect("one each"));
         Ok(c)
     }
 
@@ -456,9 +469,9 @@ impl Catalogue {
             }
         }
         // Parameters' units, recorded or not, for a scene's check
-        // (ADR 0102); an output of the same name keeps its own.
+        // (ADR 0102); none has an output's name.
         for (key, p) in self.param_keys.iter().zip(&self.params) {
-            if let (Some(u), false) = (&p.unit, self.output_names.contains(key)) {
+            if let Some(u) = &p.unit {
                 h.set_unit(key, u);
             }
         }
@@ -630,8 +643,8 @@ impl Session {
         self.catalogue.signals()
     }
 
-    /// Every block parameter as `block.param`, which a scene may bind
-    /// where no signal has the name (ADR 0102).
+    /// Every block parameter as `block.param` that no output has the name
+    /// of, which a scene may bind (ADR 0102).
     pub fn bindable_params(&self) -> &[String] {
         &self.catalogue.param_keys
     }
