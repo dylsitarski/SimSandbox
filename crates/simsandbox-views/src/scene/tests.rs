@@ -1,6 +1,6 @@
 use super::eval::{self, Placed};
 use super::geometry::{Instance, Item};
-use super::spec::{palette, Scene};
+use super::spec::{palette, Scene, Source};
 use super::*;
 use crate::history::{FieldShape, History, Recorded};
 use crate::view::{Available, Bindings, Settings};
@@ -147,8 +147,8 @@ fn check_reports_each_problem_at_its_path() {
         (layer(json!({"draw": "circles"})), "layers[1].draw: no primitive 'circles'"),
         (layer(json!({"draw": "discs", "bind": {"x": 0, "y": 0, "radius": 1, "r": 2}})), "layers[1].bind.r: 'discs' has no attribute 'r'"),
         (layer(json!({"draw": "discs", "bind": {"x": 0, "y": 0}})), "layers[1].bind.radius: required"),
-        (layer(json!({"draw": "points", "bind": {"x": "cart.y", "y": 0}})), "layers[1].bind.x: no signal 'cart.y'"),
-        (layer(json!({"draw": "points", "bind": {"x": 0, "y": 0, "colour": "mauve"}})), "layers[1].bind.colour: no signal or palette colour 'mauve'"),
+        (layer(json!({"draw": "points", "bind": {"x": "cart.y", "y": 0}})), "layers[1].bind.x: no signal or parameter 'cart.y'"),
+        (layer(json!({"draw": "points", "bind": {"x": 0, "y": 0, "colour": "mauve"}})), "layers[1].bind.colour: no signal, parameter or palette colour 'mauve'"),
         (layer(json!({"draw": "points", "bind": {"x": "car.v", "y": 0}})), "layers[1].bind.x: 'car.v' is in m/s; the scene's lengths are in m"),
         (layer(json!({"draw": "boxes", "bind": {"x": 0, "y": 0, "width": 1, "height": 1, "angle": "cart.x"}})), "layers[1].bind.angle: 'cart.x' is in m; an angle takes radians"),
         (layer(json!({"draw": "points", "bind": {"x": 0, "y": 0, "size": "cart.x"}})), "layers[1].bind.size: 'cart.x' is in m; it is in screen points"),
@@ -750,4 +750,86 @@ fn new_settings_let_go_of_what_is_held() {
         .unwrap();
     let sent = d.view.grabs();
     assert!(near(&sent[0], "hand", [0.0, 0.0, 0.0, -1.0]), "{sent:?}");
+}
+
+/// A parameter is bound where no signal has its name, read from the
+/// history like a signal (which records it, ADR 0102), and checked for
+/// units; a signal of the same name wins.
+#[test]
+fn a_parameter_binds_where_no_signal_has_its_name() {
+    // The history records `bob.L` and `bob.theta0` as a session does when
+    // a scene binds them, and knows every parameter's unit.
+    let make = || {
+        let mut h = History::with_fields(
+            "t",
+            vec![
+                "cart.x".into(),
+                "bob.L".into(),
+                "hand.x".into(),
+                "bob.theta0".into(),
+            ],
+            Vec::new(),
+        );
+        h.set_unit("cart.x", "m");
+        h.set_unit("bob.L", "m");
+        h.set_unit("bob.c", "N*m*s");
+        h.set_unit("hand.x", "m");
+        h
+    };
+    let meta = make();
+    let mut h = make();
+    // `hand.x` is an output and a parameter.
+    let scalars = vec!["cart.x".to_string(), "hand.x".to_string()];
+    let params: Vec<String> = ["bob.L", "bob.c", "bob.theta0", "hand.x"]
+        .map(String::from)
+        .to_vec();
+    let a = Available {
+        scalars: &scalars,
+        meta: Some(&meta),
+        params: &params,
+        ..Default::default()
+    };
+    let scene = |x2: &str| {
+        settings(json!({
+            "frames": {"rod": {"angle": "bob.theta0"}},
+            "layers": [{"draw": "segments", "in": "rod", "bind": {"x1": 0, "y1": 0, "x2": x2, "y2": 0}}]
+        }))
+    };
+    let s = Scene::check(&scene("bob.L"), &a).unwrap();
+    assert_eq!(
+        s.layers[0].attributes[2],
+        Some(Source::Param("bob.L".into()))
+    );
+    // An angle from a dimensionless parameter.
+    assert_eq!(s.frames[0].pose[2], Source::Param("bob.theta0".into()));
+    assert_eq!(s.reads(), ["bob.L", "bob.theta0"]);
+    // The output wins over the parameter of the same name.
+    let s = Scene::check(&scene("hand.x"), &a).unwrap();
+    assert_eq!(
+        s.layers[0].attributes[2],
+        Some(Source::Scalar("hand.x".into()))
+    );
+    // Units as for signals.
+    let e = Scene::check(&scene("bob.c"), &a).unwrap_err();
+    assert!(
+        e.starts_with("layers[0].bind.x2: 'bob.c' is in N*m*s; the scene's lengths are in m"),
+        "{e}"
+    );
+    let mm = settings(
+        json!({"unit": "mm", "layers": [{"draw": "points", "bind": {"x": "bob.L", "y": 0}}]}),
+    );
+    let e = Scene::check(&mm, &a).unwrap_err();
+    assert!(e.starts_with("layers[0].bind.x: 'bob.L' is in m"), "{e}");
+    let e = Scene::check(&scene("bob.M"), &a).unwrap_err();
+    assert_eq!(e, "layers[0].bind.x2: no signal or parameter 'bob.M'");
+    // Drawn at the value recorded at the newest sample.
+    let s = Scene::check(&scene("bob.L"), &a).unwrap();
+    for (t, l) in [(0.0, 1.0), (0.1, 1.5)] {
+        h.push_sample(t, &[0.0, l, 0.0, 0.0], &[]);
+        let placed = s.place(&Recorded::single(&h));
+        match placed[0].shape {
+            Instance::Segment { to, .. } => assert!(close(to, [l, 0.0]), "{to:?}"),
+            _ => panic!(),
+        }
+    }
 }

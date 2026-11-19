@@ -224,7 +224,7 @@ A **study** is a block that runs a model at each point of its own `sample` and o
 
 ## Scenes
 
-A `plot.scene` view draws a picture from layers of primitives (`points`, `segments`, `boxes`, `discs`) whose attributes are bound to numbers, signals or rows of tables, in frames that chain ([ADR 0093](../decisions/0093-scenes-from-primitive-layers.md), [visualization](../architecture/visualization.md#scenes)). `simsandbox describe plot.scene` lists the primitives, each attribute's kind, unit and default, and the palette; `check` warns about a layer that does not fit, at its path (`controls.views[1]: layers[2].bind.x: 'car.v' is in m/s; the scene's lengths are in m`); `render` draws it. The pendulum example draws its pendulum this way beside the `eq.pendulum` view:
+A `plot.scene` view draws a picture from layers of primitives (`points`, `segments`, `boxes`, `discs`) whose attributes are bound to numbers, signals, rows of tables or model parameters, in frames that chain ([ADR 0093](../decisions/0093-scenes-from-primitive-layers.md), [visualization](../architecture/visualization.md#scenes)). `simsandbox describe plot.scene` lists the primitives, each attribute's kind, unit and default, and the palette; `check` warns about a layer that does not fit, at its path (`controls.views[1]: layers[2].bind.x: 'car.v' is in m/s; the scene's lengths are in m`); `render` draws it. The pendulum example draws its pendulum this way beside the `eq.pendulum` view:
 
 ```json
 {"type": "plot.scene", "unit": "m", "extent": {"x": [-1.3, 1.3], "y": [-1.3, 1.3]},
@@ -233,11 +233,13 @@ A `plot.scene` view draws a picture from layers of primitives (`points`, `segmen
    "rod": {"in": "pivot", "angle": "bob.angle"}},
  "layers": [
    {"draw": "boxes", "bind": {"colour": "grey", "height": 0.08, "width": 0.3, "x": 0.0, "y": 0.04}},
-   {"draw": "segments", "in": "rod", "bind": {"colour": "grey", "width": 3.0, "x1": 0.0, "x2": 1.0, "y1": 0.0, "y2": 0.0}},
-   {"draw": "discs", "in": "rod", "bind": {"colour": "orange", "radius": 0.08, "x": 1.0, "y": 0.0}}]}
+   {"draw": "segments", "in": "rod", "bind": {"colour": "grey", "width": 3.0, "x1": 0.0, "x2": "bob.L", "y1": 0.0, "y2": 0.0}},
+   {"draw": "discs", "in": "rod", "bind": {"colour": "orange", "radius": 0.08, "x": "bob.L", "y": 0.0}}]}
 ```
 
 The pendulum's angle is measured from straight down and a scene's counter-clockwise from +x, so the rod's frame sits in a fixed frame turned by −π/2: a constant pose, not a calculation in the model. A layer evaluates no expressions: a position that must be computed is a model output or an `expression` filter. Every length is in the scene's `unit`; a signal in another length unit is refused (convert it in the model). `simsandbox render examples/pendulum.ssbx.json --view 1 --out scene.png` draws it alone.
+
+The rod's end and the bob are at `bob.L`, the rod length, a parameter ([ADR 0102](../decisions/0102-scene-bindings-may-name-parameters.md)): a binding names a scalar signal if the model has one of that name, else a quantity over rows, else a block parameter (`input.pointer`'s `hand.x` is its output). The session records each parameter a view binds every step, as it records signals, so the picture follows a change (a slider, a run file's `track`, a scheduled change in `run.inputs` such as `[{"t": 0.5, "set": "bob.L", "to": 1.25}]`) at the step it applies, and a rewound or replayed run draws it as it was. Its unit is checked as a signal's.
 
 From Python, `Model.add_scene` adds one in the same form and refuses a wrong form, a binding that names no block, filter or probe of the model, or a `grab` that names no `input.pointer` block, when it is called; units and whether a block has that output are left to `check`. The cart-pole picture of ADR 0093 point 8, on a model whose blocks `cart` and `pole` give `cart.x` and `pole.theta`, with an `input.pointer` named `hand`:
 
@@ -257,7 +259,7 @@ m.check()["warnings"]                    # a layer that does not fit, at its pat
 m.render("scene.png", t_end=1.0, view=0)
 ```
 
-On the diagram's data layer a scene is a view node with an input per bound signal and per grab, named by the path `check` uses (`frames.cart.x`, `layers[1].grab`), so `render --diagram` shows what it reads and which pointer it sends to. Renaming a block renames it in the scene's bindings, poses and grabs.
+On the diagram's data layer a scene is a view node with an input per bound signal and per grab, named by the path `check` uses (`frames.cart.x`, `layers[1].grab`), so `render --diagram` shows what it reads and which pointer it sends to; a parameter binding has no wire and is named beside its input (`layers[1].bind.x2 · bob.L`). Renaming a block renames it in the scene's bindings (parameters too), poses and grabs.
 
 ## Recorder
 

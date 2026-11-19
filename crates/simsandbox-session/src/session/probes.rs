@@ -332,7 +332,7 @@ impl Probes {
     ) -> Result<(), Vec<String>> {
         let mut problems = Vec::new();
         let mut names: Vec<&str> = Vec::new();
-        let (scalars, field_list) = (&catalogue.layout_scalars, &catalogue.layout_fields);
+        let (scalars, field_list) = (catalogue.signals(), &catalogue.layout_fields);
         let mut built = Vec::new();
         for spec in &specs {
             if let Err(e) = spec.check() {
@@ -532,7 +532,7 @@ impl Probes {
                     Src::Probe(i)
                 }
             };
-            let (at, field) = match catalogue.layout_scalars.iter().position(|n| *n == r) {
+            let (at, field) = match catalogue.signals().iter().position(|n| *n == r) {
                 Some(i) => (i, false),
                 None => match catalogue.layout_fields.iter().position(|(n, _)| *n == r) {
                     Some(i) => (i, true),
@@ -843,10 +843,7 @@ impl Session {
     /// What the probes record may have moved or gone: they start afresh,
     /// without what a step no longer yields.
     pub(super) fn reset_probes(&mut self) {
-        let (scalars, fields) = (
-            &self.catalogue.layout_scalars,
-            &self.catalogue.layout_fields,
-        );
+        let (scalars, fields) = (self.catalogue.signals(), &self.catalogue.layout_fields);
         let recorded =
             |n: &str| scalars.iter().any(|m| m == n) || fields.iter().any(|(f, _)| f == n);
         let specs = self

@@ -66,6 +66,8 @@ pub struct Model {
     block_types: Vec<String>,
     /// The `input.pointer` blocks a scene may grab with (ADR 0093).
     pointers: Vec<String>,
+    /// The block parameters a scene may bind (ADR 0102).
+    param_keys: Vec<String>,
 }
 
 impl Model {
@@ -103,6 +105,7 @@ impl Model {
             lines,
             block_types,
             pointers: s.pointers().to_vec(),
+            param_keys: s.bindable_params().to_vec(),
         }
     }
 
@@ -127,6 +130,7 @@ impl Model {
             // Units and tables, for a scene's check (ADR 0093).
             meta: Some(h),
             pointers: Some(&self.pointers),
+            params: &self.param_keys,
         }
     }
 }

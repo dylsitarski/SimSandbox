@@ -3,6 +3,7 @@
 - **Status:** Accepted (owner, 2026-11-14; only what the cart-pole needs is built before the Phase 2 gate); stage 1 built 2026-11-19 (the view, frames, primitives, checks and headless renders; see the end); stage 2 built 2026-11-19 (grabbing); stage 3 built 2026-11-19 (the canvas node, renames, editing in the Inspector, `Model.add_scene`)
 - **Date:** 2026-11-14
 - **See also:** [ADR 0101](0101-scene-primitives-are-parametric-meshes.md) (how primitives are drawn and tested; shape meshes come from models), 2026-11-18
+- **See also:** [ADR 0102](0102-scene-bindings-may-name-parameters.md) (bindings may name parameters; a signal of the same name wins), 2026-11-19
 - **Builds on:** [ADR 0015](0015-pluggable-views.md) (views, slots), [ADR 0058](0058-inputs-live-scheduled-replayed.md) (views that send input), [ADR 0079](0079-tables-of-members.md) (tables, rows by id), [ADR 0086](0086-views-by-axis-roles-and-mesh-views.md) (rows and meshes in views), [ADR 0057](0057-phase-2-plan.md) (the gate's scene view); answers [Q60](../open-questions.md)
 
 ## Context
@@ -137,3 +138,9 @@ The last of "Before the gate": the scene on the canvas's data layer, editable in
   - `simsandbox-app FILE --select NODE` picks a canvas node from the command line (for screenshots and checks).
 - **Not built:** binding a model parameter (`bob.L`) in a scene, waiting on the owner's decision; a frame's rename; a scene's check errors on its canvas node (the node knows its paths but not the model's units without the session).
 - **Tested:** the node's inputs and wires for the grab example and the pendulum's frame, and canvas edits on them (`simsandbox-session`); renames reaching bindings, poses, grabs, `controls.inputs` and groups, and deletions letting go (`simsandbox-session`); the edits on a form (`scene_edit`) and, through the app's methods, adding a layer, binding an attribute, setting `grab` (and the node's new wire), a binding that does not check kept as a draft with its error, and removing the layer, each changing the saved form and the drawn scene as expected, and a canvas edit of the scene undone and redone (`simsandbox-app`); `Model.add_scene` accepting the cart-pole and refusing each wrong form at its path (`python/tests`).
+
+## Parameters, frame renames and errors (2026-11-19)
+
+What stage 3 left: binding a parameter, renaming a frame, and showing a scene's check error where the scene is. Details in [visualization](../architecture/visualization.md#scenes).
+
+- **Parameters** ([ADR 0102](0102-scene-bindings-may-name-parameters.md)): an attribute or a pose may name a block parameter (`"x2": "bob.L"`) where no signal has the name; a signal wins. The session records the parameters views bind in the history every step, so a scene draws one at its value at the drawn sample, rewound and replayed alike. Not a wire on the canvas: the input names it. `examples/pendulum.ssbx.json` draws its rod and bob at `bob.L`; `pendulum-grab.ssbx.json` already draws its rod to the `bob.x`, `bob.y` outputs and is unchanged.

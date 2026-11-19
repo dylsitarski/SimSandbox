@@ -257,6 +257,9 @@ impl Session {
                 .warnings
                 .push(format!("controls.filters.{p}; ignored"));
         }
+        // The parameters the file's scenes bind are recorded (ADR 0102).
+        let reads = recording::view_reads(&session.file.controls.views);
+        session.catalogue.set_param_reads(&reads);
         // No probes yet: they are loaded next, and the filters that read
         // them with them.
         session.build_history();

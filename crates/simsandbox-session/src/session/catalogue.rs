@@ -78,6 +78,25 @@ pub(super) struct Catalogue {
     /// Filters compiled: expressions recorded after the output signals,
     /// cut fields after the recorded fields.
     pub(super) filters: Filters,
+    /// Every block parameter (`block.param`), which a scene may bind
+    /// (ADR 0102), and where its value is: its block and its place among
+    /// the block's parameters.
+    params: Vec<ParamSource>,
+    param_keys: Vec<String>,
+    /// What views read (as [`Catalogue::set_param_reads`] was given): the
+    /// parameters among them that no signal shadows are recorded.
+    param_reads: Vec<String>,
+    /// The parameters recorded, by place in `params`: last in the layout,
+    /// after the outputs and expression filters.
+    bound_params: Vec<usize>,
+}
+
+/// Where a parameter's value is.
+#[derive(Clone)]
+struct ParamSource {
+    block: BlockId,
+    at: usize,
+    unit: Option<String>,
 }
 
 /// The field a port's shape records, if it is one.
@@ -109,6 +128,14 @@ impl Catalogue {
             let spec = block.spec();
             for port in spec.outputs() {
                 c.add_output(&entry.name, id, spec, port);
+            }
+            for (at, p) in spec.params.iter().enumerate() {
+                c.param_keys.push(format!("{}.{}", entry.name, p.name));
+                c.params.push(ParamSource {
+                    block: id,
+                    at,
+                    unit: (p.unit != Unit::DIMENSIONLESS).then(|| p.unit.to_string()),
+                });
             }
         }
         c.add_aliases(&loaded.aliases);
@@ -291,10 +318,62 @@ impl Catalogue {
             .collect()
     }
 
+    /// The parameters among `reads` that no signal of the model (an
+    /// output or an expression filter) shadows (ADR 0102: a signal wins),
+    /// by place in `params`.
+    fn params_in(&self, reads: &[String]) -> Vec<usize> {
+        let signals = self.scalar_names();
+        (0..self.params.len())
+            .filter(|&k| {
+                let key = &self.param_keys[k];
+                reads.contains(key) && !signals.contains(key)
+            })
+            .collect()
+    }
+
+    /// Note what views read; returns whether the parameters recorded
+    /// change, so the layout must be made again.
+    pub(super) fn set_param_reads(&mut self, reads: &[String]) -> bool {
+        let changed = self.params_in(reads) != self.bound_params;
+        self.param_reads = reads.to_vec();
+        changed
+    }
+
+    /// How many of the layout's scalars are signals: the parameters
+    /// recorded come after them, and are not offered as signals.
+    pub(super) fn signal_count(&self) -> usize {
+        self.layout_scalars.len() - self.bound_params.len()
+    }
+
+    /// The layout's signals, without the parameters recorded.
+    pub(super) fn signals(&self) -> &[String] {
+        &self.layout_scalars[..self.signal_count()]
+    }
+
+    /// Append the recorded parameters' values now to a sample's scalars.
+    fn append_params(&self, sim: &Simulator, values: &mut Vec<f64>) {
+        let model = sim.model();
+        values.extend(self.bound_params.iter().map(|&k| {
+            let p = &self.params[k];
+            model
+                .params(p.block)
+                .ok()
+                .and_then(|v| v.get(p.at))
+                .copied()
+                .unwrap_or(f64::NAN)
+        }));
+    }
+
     /// Lay out a sample with the filters as they are: its scalars, fields
     /// and coordinates, and what views can draw. Returns the cuts' labels.
     pub(super) fn lay_out(&mut self) -> Vec<(String, String)> {
-        let scalars = self.scalar_names();
+        self.bound_params = self.params_in(&self.param_reads);
+        let mut scalars = self.scalar_names();
+        scalars.extend(
+            self.bound_params
+                .iter()
+                .map(|&k| self.param_keys[k].clone()),
+        );
         let mut fields = self.base_fields.clone();
         let mut coordinates = self.base_coordinates.clone();
         let mut labels = Vec::new();
@@ -374,6 +453,13 @@ impl Catalogue {
         for (name, s) in self.output_names.iter().zip(&self.sources) {
             if let Some(u) = unit(s.block, &s.port) {
                 h.set_unit(name, &u);
+            }
+        }
+        // Parameters' units, recorded or not, for a scene's check
+        // (ADR 0102); an output of the same name keeps its own.
+        for (key, p) in self.param_keys.iter().zip(&self.params) {
+            if let (Some(u), false) = (&p.unit, self.output_names.contains(key)) {
+                h.set_unit(key, u);
             }
         }
         for ((name, _), f) in self.base_fields.iter().zip(&self.field_sources) {
@@ -541,7 +627,13 @@ fn kept_entries(filters: &Filters, given: &[FilterEntry]) -> Vec<FilterEntry> {
 impl Session {
     /// Every scalar a step yields, which views can bind (ADR 0063).
     pub fn bindable_scalars(&self) -> &[String] {
-        &self.catalogue.layout_scalars
+        self.catalogue.signals()
+    }
+
+    /// Every block parameter as `block.param`, which a scene may bind
+    /// where no signal has the name (ADR 0102).
+    pub fn bindable_params(&self) -> &[String] {
+        &self.catalogue.param_keys
     }
 
     /// The 2D grids a cut filter can take, recorded or not (ADR 0063).
@@ -577,7 +669,7 @@ impl Session {
     pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
         let c = &self.catalogue;
         Available {
-            scalars: &c.layout_scalars,
+            scalars: c.signals(),
             grids: &c.grids,
             points: &c.points,
             block_types: &c.block_types,
@@ -589,6 +681,7 @@ impl Session {
             // Units and tables of every output, recorded or not.
             meta: Some(h),
             pointers: Some(&c.pointers),
+            params: &c.param_keys,
         }
     }
 
@@ -644,11 +737,13 @@ impl Session {
     }
 
     /// One sample: the output signals, then the expression filters computed
-    /// from them, earlier filters, the current parameter values and `t`.
+    /// from them, earlier filters, the current parameter values and `t`,
+    /// then the parameters views bind (ADR 0102).
     pub(super) fn sample(&self, t: f64) -> Vec<f64> {
         let mut values = self.catalogue.output_values(&self.sim);
         self.catalogue
             .append_derived(t, &mut values, || self.param_values());
+        self.catalogue.append_params(&self.sim, &mut values);
         values
     }
 

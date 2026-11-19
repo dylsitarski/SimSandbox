@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "description": "A damped pendulum, shown as itself by the pendulum view that comes with the eq.pendulum block (ADR 0016), beside the same pendulum drawn as a scene of layers (ADR 0093: a support, and a rod and bob in a frame turned by the angle, which is measured from straight down, so its frame sits in one turned by -π/2), and its angle over time. The scene's rod is 1 m long, as L is: it draws no parameter. Started at 2 rad it swings well beyond the small-angle range, so its period is longer than 2π√(L/g). Raise c to damp it.",
+  "description": "A damped pendulum, shown as itself by the pendulum view that comes with the eq.pendulum block (ADR 0016), beside the same pendulum drawn as a scene of layers (ADR 0093: a support, and a rod and bob in a frame turned by the angle, which is measured from straight down, so its frame sits in one turned by -π/2), and its angle over time. The scene's rod is as long as L, a parameter it binds (ADR 0102), so it follows the L slider, and a rewound or replayed run draws it as it was. Started at 2 rad it swings well beyond the small-angle range, so its period is longer than 2π√(L/g). Raise c to damp it.",
   "run": {
     "dt": 0.01
   },
@@ -77,7 +77,7 @@
               "colour": "grey",
               "width": 3.0,
               "x1": 0.0,
-              "x2": 1.0,
+              "x2": "bob.L",
               "y1": 0.0,
               "y2": 0.0
             }
@@ -88,7 +88,7 @@
             "bind": {
               "colour": "orange",
               "radius": 0.08,
-              "x": 1.0,
+              "x": "bob.L",
               "y": 0.0
             }
           }

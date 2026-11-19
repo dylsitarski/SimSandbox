@@ -303,11 +303,14 @@ impl Recording {
             .map(|(n, _)| old.fields().iter().position(|f| &f.name == n))
             .collect();
         let outputs = catalogue.output_names.len();
+        // Recorded parameters (ADR 0102) come last, after the signals: a
+        // value at a past sample is had only from the model then.
+        let signals = catalogue.signal_count();
         let base = catalogue.base_fields.len();
         let lacks = self
             .keep_signals
             .iter()
-            .any(|&i| signal_at[i].is_none() && (!recompute || i < outputs))
+            .any(|&i| signal_at[i].is_none() && (!recompute || i < outputs || i >= signals))
             || self
                 .keep_fields
                 .iter()
@@ -335,8 +338,10 @@ impl Recording {
                 .collect();
             let cuts;
             if recompute {
+                let recorded_params = values.split_off(signals);
                 values.truncate(outputs);
                 catalogue.append_derived(t, &mut values, &params);
+                values.extend(recorded_params);
                 frames.truncate(base);
                 cuts = catalogue.sample_cuts(&frames);
                 frames.extend(cuts.iter().map(Vec::as_slice));
@@ -399,7 +404,9 @@ impl Session {
         if self.probes.set_view_probes(probes) {
             self.update_probe_io();
         }
-        if !self.recording.set_view_reads(reads, &self.catalogue) {
+        // The parameters a scene binds are recorded too (ADR 0102).
+        let params = self.catalogue.set_param_reads(&model_reads(reads.clone()));
+        if !self.recording.set_view_reads(reads, &self.catalogue) && !params {
             return;
         }
         let old = self.recording.take();

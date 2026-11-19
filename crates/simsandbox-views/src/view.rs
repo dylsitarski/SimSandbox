@@ -262,6 +262,11 @@ pub struct Available<'a> {
     /// with (ADR 0093 point 6); `None` where they are unknown, and then no
     /// `grab` is refused.
     pub pointers: Option<&'a [String]>,
+    /// The model's parameters as `block.param`, which a scene may bind
+    /// where no signal has the name (ADR 0102): the history records each
+    /// one bound, at every step, so a picture drawn at an instant uses its
+    /// value then. Their units are in `meta`.
+    pub params: &'a [String],
 }
 
 impl Available<'_> {

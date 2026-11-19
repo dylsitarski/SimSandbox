@@ -487,6 +487,76 @@ mod tests {
         );
     }
 
+    /// A scene binding a parameter (the pendulum's rod, `bob.L`) draws it
+    /// at its value at the drawn instant (ADR 0102): the history records
+    /// it every step, so the picture follows a change, and a rewound or
+    /// replayed run draws as it was then.
+    #[test]
+    fn a_parameter_a_scene_binds_is_drawn_at_its_value_then() {
+        use crate::examples::{registry, EXAMPLES};
+        use crate::session::Session;
+        use simsandbox_views::scene::{geometry::Instance, Scene};
+        use simsandbox_views::Recorded;
+        let text = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Pendulum (with its own view)"))
+            .unwrap()
+            .text;
+        let mut s = Session::load("pendulum", text, &registry()).unwrap();
+        s.set_recorder(Some(Default::default()));
+        let settings = s.file.controls.views[1].scene.to_map();
+        // The rod's far end, in the scene's frame, and its length.
+        let rod = |s: &Session| {
+            let h = s.signals();
+            let scene = Scene::check(&settings, &s.available(&h)).unwrap();
+            let placed = scene.place(&Recorded::single(&h));
+            let Instance::Segment { from, to, .. } = placed[1].shape else {
+                panic!("{placed:?}")
+            };
+            (to, (to[0] - from[0]).hypot(to[1] - from[1]))
+        };
+        // Recorded as a signal under its name, not offered as one.
+        assert!(s.signals().resolve("bob.L").is_some());
+        assert!(!s.bindable_scalars().contains(&"bob.L".to_string()));
+        assert!(s.bindable_params().contains(&"bob.L".to_string()));
+        s.run_until(0.5).unwrap();
+        let (_, l) = rod(&s);
+        assert!((l - 1.0).abs() < 1e-12, "{l}");
+        let (at_half, _) = rod(&s);
+        // The slider moves L: the next sample draws the new length.
+        s.set_param_key("bob.L", 1.5).unwrap();
+        s.run_until(1.0).unwrap();
+        let (_, l) = rod(&s);
+        assert!((l - 1.5).abs() < 1e-12, "{l}");
+        let (at_one, _) = rod(&s);
+        // Rewound to before the change, it is drawn as it was then.
+        s.rewind_to(0.5);
+        assert!(s.time() <= 0.5 + 1e-9);
+        let (_, l) = rod(&s);
+        assert!((l - 1.0).abs() < 1e-12, "{l}");
+        s.run_until(0.5).unwrap();
+        assert_eq!(rod(&s).0, at_half);
+        // Running on replays the change: drawn as it first was.
+        s.run_until(1.0).unwrap();
+        assert_eq!(rod(&s).0, at_one);
+        // Filters computed again over the history keep what it recorded.
+        let column = |s: &Session| {
+            let h = s.signals();
+            let r = h.resolve("bob.L").unwrap();
+            (0..h.len()).map(|k| h.value(r, k)).collect::<Vec<f64>>()
+        };
+        let lengths = column(&s);
+        assert_eq!((lengths[0], lengths[lengths.len() - 1]), (1.0, 1.5));
+        s.set_filters(s.filters().to_vec()).unwrap();
+        assert_eq!(column(&s), lengths);
+        // From the run file, headless: the same picture.
+        let track = s.recorded().to_vec();
+        let mut again = Session::load("pendulum", text, &registry()).unwrap();
+        again.replay(track).unwrap();
+        again.run_until(1.0).unwrap();
+        assert_eq!(rod(&again).0, at_one);
+    }
+
     /// A scene's problems are found where the app and `check` find them,
     /// at their paths, and the view is left out.
     #[test]
@@ -517,7 +587,7 @@ mod tests {
             (
                 r#""x": 0.4"#,
                 r#""x": "m.ez""#,
-                "controls.views[0]: layers[0].bind.x: no signal 'm.ez'",
+                "controls.views[0]: layers[0].bind.x: no signal or parameter 'm.ez'",
             ),
             (
                 r#""y": 0.25}"#,

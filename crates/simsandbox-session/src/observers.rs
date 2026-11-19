@@ -1649,15 +1649,30 @@ mod tests {
         // The grab: from the block it sends the pointer to.
         assert!(has("hand.picked", "layers[3].grab"));
         assert!(n.unreached.is_empty(), "{:?}", n.unreached);
-        // Frames' poses are inputs too; constants are not.
+        // Frames' poses are inputs too; constants are not. A parameter
+        // (ADR 0102) is an input with no wire: it names the parameter.
         let d = observed(&file("own view"));
         let n = &d.nodes[d.node("view:1").unwrap()];
         let inputs: Vec<&str> = n.inputs.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(inputs, ["frames.rod.angle"]);
+        assert_eq!(
+            inputs,
+            ["frames.rod.angle", "layers[1].bind.x2", "layers[2].bind.x"]
+        );
+        let into: Vec<&str> = d
+            .wires
+            .iter()
+            .filter(|w| w.to_name.starts_with("view:1."))
+            .map(|w| w.to_name.as_str())
+            .collect();
+        assert_eq!(into, ["view:1.frames.rod.angle"]);
         assert!(d
             .wires
             .iter()
             .any(|w| w.from_name == "bob.angle" && w.to_name == "view:1.frames.rod.angle"));
+        assert_eq!(
+            n.unreached,
+            ["layers[1].bind.x2: bob.L", "layers[2].bind.x: bob.L"]
+        );
 
         // Canvas edits on its inputs: rewired, unwired back to the
         // default, and a required attribute kept.

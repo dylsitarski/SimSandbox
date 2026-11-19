@@ -32,7 +32,8 @@ impl Read {
         match source {
             Source::Constant(x) => Read::One(*x),
             Source::Colour(c) => Read::Colour(*c),
-            Source::Scalar(name) => Read::One(
+            // A parameter is recorded under its name like a signal.
+            Source::Scalar(name) | Source::Param(name) => Read::One(
                 recorded
                     .resolve(name)
                     .and_then(|(h, s)| Some(h.value(s, h.len().checked_sub(1)?)))

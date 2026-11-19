@@ -231,6 +231,10 @@ pub enum Source {
     Scalar(String),
     /// A quantity over a table's rows, one instance a row by id.
     Rows(String),
+    /// A model parameter (`block.param`), no signal having the name
+    /// (ADR 0102): read like a scalar signal, from the history, which
+    /// records its value at every step.
+    Param(String),
 }
 
 /// A frame, checked: its parent and its pose's bindings (x, y, angle).
@@ -326,17 +330,20 @@ impl Checker<'_, '_> {
                 return Ok(Source::Colour(c));
             }
         }
+        // A signal wins over a parameter of the same name (ADR 0102).
         let source = if self.available.accepts(SlotKind::Scalar, name) {
             Source::Scalar(name.to_string())
         } else if self.available.accepts(SlotKind::Rows, name) {
             Source::Rows(name.to_string())
+        } else if self.available.params.iter().any(|p| p == name) {
+            Source::Param(name.to_string())
         } else {
-            let colours = if kind == Kind::Colour {
-                " or palette colour"
+            let what = if kind == Kind::Colour {
+                "signal, parameter or palette colour"
             } else {
-                ""
+                "signal or parameter"
             };
-            return Err(format!("{path}: no signal{colours} '{name}'"));
+            return Err(format!("{path}: no {what} '{name}'"));
         };
         let signal = split_source(name).1;
         let unit = if signal == TIME {
@@ -636,7 +643,7 @@ impl Scene {
                     .flat_map(|l| l.attributes.iter().flatten()),
             )
             .filter_map(|s| match s {
-                Source::Scalar(n) | Source::Rows(n) => Some(n.clone()),
+                Source::Scalar(n) | Source::Rows(n) | Source::Param(n) => Some(n.clone()),
                 _ => None,
             })
             .collect();
@@ -752,6 +759,7 @@ pub fn describe() -> Value {
     let bindings: BTreeMap<&str, &str> = [
         ("number", "a constant"),
         ("signal", "a scalar signal ('block.port'): one instance, its newest value"),
+        ("parameter", "a model parameter ('block.param') where no signal has that name (a signal wins): its value at the drawn instant, recorded at every step like a signal, so a rewound or replayed run draws as it was"),
         ("rows", "a quantity over a table's rows: one instance a row, paired with the layer's other rows (and its frame's) by id"),
         ("colour", "colour also takes a palette name"),
     ]

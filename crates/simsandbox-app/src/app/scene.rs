@@ -23,10 +23,12 @@ pub(super) struct SceneDraft {
     pub(super) error: String,
 }
 
-/// What a binding can name: scalar signals and quantities over rows.
+/// What a binding can name: scalar signals, quantities over rows and
+/// parameters no signal shadows (ADR 0102).
 struct Choices {
     scalars: Vec<String>,
     rows: Vec<String>,
+    params: Vec<String>,
 }
 
 /// What a frame's pose binds, in `FRAME`'s order.
@@ -116,6 +118,16 @@ impl SimApp {
                     .choices(simsandbox_views::SlotKind::Rows)
                     .into_iter()
                     .map(str::to_string)
+                    .collect(),
+                // A signal of the same name wins (ADR 0102).
+                params: available
+                    .params
+                    .iter()
+                    .filter(|p| {
+                        !available.accepts(simsandbox_views::SlotKind::Scalar, p)
+                            && !available.accepts(simsandbox_views::SlotKind::Rows, p)
+                    })
+                    .cloned()
                     .collect(),
             };
             let pointers: Vec<String> = available.pointers.unwrap_or_default().to_vec();
@@ -480,6 +492,7 @@ impl FormUi<'_, '_> {
         };
         let shown = match current {
             Some(SceneValue::Number(_)) => "number".to_string(),
+            Some(SceneValue::Name(n)) if choices.params.contains(n) => format!("{n} · parameter"),
             Some(SceneValue::Name(n)) => n.clone(),
             Some(SceneValue::Other(v)) => v.to_string(),
             None => default.clone(),
@@ -522,6 +535,11 @@ impl FormUi<'_, '_> {
                         ui.separator();
                         ui.weak("over a table's rows");
                         names(ui, &mut choices.rows.iter().map(String::as_str));
+                    }
+                    if !choices.params.is_empty() {
+                        ui.separator();
+                        ui.weak("parameters, at each instant drawn");
+                        names(ui, &mut choices.params.iter().map(String::as_str));
                     }
                 })
                 .response

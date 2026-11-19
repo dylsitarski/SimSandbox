@@ -3412,6 +3412,12 @@ mod tests {
             scene.frames["rod"].angle,
             Some(SceneValue::Name("pend.angle".into()))
         );
+        // A parameter it binds (ADR 0102), as the slider's key is.
+        assert_eq!(
+            scene.layers[1].bind["x2"],
+            SceneValue::Name("pend.L".into())
+        );
+        assert!(f.controls.params.contains_key("pend.L"));
         crate::Session::load("t", &f.to_json(), &r).unwrap();
         // Its grabs and bindings, and the view a pointer is driven by
         // (`controls.inputs`, keyed by the bare block name).

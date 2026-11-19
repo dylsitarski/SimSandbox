@@ -313,6 +313,31 @@ def test_a_scenes_form_and_names_are_refused_at_once():
     assert any("layers[0].bind.x: 'cart.v' is in m/s" in w for w in warnings), warnings
 
 
+def test_a_scene_binds_a_parameter(tmp_path):
+    # ADR 0102: a parameter names a value as a signal does; units are the
+    # check's, and a signal of the same name would win.
+    m = ss.Model.example("Pendulum (with its own view)")
+    m.data["controls"]["views"] = []
+    m.add_scene(
+        [
+            {"draw": "segments", "in": "rod", "bind": {"x1": 0, "y1": 0, "x2": "bob.L", "y2": 0}},
+            {"draw": "discs", "in": "rod", "bind": {"x": "bob.L", "y": 0, "radius": 0.08}},
+        ],
+        frames={"rod": {"angle": "bob.angle"}},
+    )
+    report = m.check()
+    assert report["ok"] and report["warnings"] == [], report
+    # The rod drawn after L changed (a scheduled change, recorded every
+    # step like a signal) differs from the rod before.
+    before = m.render(t_end=0.2, width=200, height=200)
+    longer = m.copy().schedule(0.1, "bob.L", 0.5)
+    assert longer.render(t_end=0.2, width=200, height=200) != before
+    # A damping coefficient is no length.
+    m.add_scene([{"draw": "points", "bind": {"x": "bob.c", "y": 0}}])
+    warnings = m.check()["warnings"]
+    assert any("layers[0].bind.x: 'bob.c' is in" in w for w in warnings), warnings
+
+
 def test_every_example_loads_runs_briefly_and_round_trips():
     for name in ss.examples():
         m = ss.Model.example(name)
