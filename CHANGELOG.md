@@ -97,6 +97,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Scenes can bind a block's parameters (`bob.L`), drawn at the value used at each moment, also when rewound or replayed; frames can be renamed in the Inspector.
 - Editing scenes: the Inspector lists a scene's frames and layers to add, remove, reorder and bind; on the canvas a scene is wired from what it draws; `Model.add_scene` in Python; `simsandbox-app --select NODE` opens with a node selected.
 - Grabbing in scenes: press on a shape whose layer names an `input.pointer` block and drag; the model receives the pointer and which shape was pressed (`picked`), and the grab replays exactly from a saved run. New example "Grab the bob".
 - Scene views (`plot.scene`): a picture built from layers of points, segments, boxes and discs whose positions, sizes and colours come from constants, signals or a table's rows, placed in frames that move and turn with signals, and seen from any frame. The pendulum example shows its pendulum as a scene too.
@@ -271,6 +272,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Fixed
 
+- A scene view that fails its check is no longer dropped (and lost on save): its tile says why it is not drawn, and its node on the canvas is marked with the error.
 - Renaming a block now also renames it where it stands alone: the `input.pointer` a view sends to (`controls.inputs`) and fused groups' members; deleting it drops those.
 - A plot coloured by time (the "Phase portrait" preset, and the coupled-oscillators, grazing and predator-prey examples) drew time against `y` instead of `y` against `x`.
 - The app started with `--view` no longer counts the chosen view as an unsaved change, and `--screenshot` always exits after saving the picture; with `--view` it waited for an answer about unsaved changes.
