@@ -1,0 +1,153 @@
+{
+  "format": 1,
+  "description": "Grab the pendulum in a scene (ADR 0093 stage 2): press on the bob in the scene and drag; while it is held the bob is pulled towards the pointer by a damped spring (k, d); let go and it swings on. The bob's layer names the input.pointer block 'hand' in 'grab', so pressing on it sends the hand x and y in the scene's frame, down 1 and picked 0 (the bob is a layer of one instance), and on release down 0 and picked -1. What a grab does is written in the pendulum's equations: the spring acts only while down is 1 and picked is 0 or more. The thin line from the bob to the hand is drawn while it is held (its width is hand.down). Rewind and run on: the grab is replayed exactly, without testing the picture again. Runs ▸ Save run… keeps it beside the model, and simsandbox run --inputs replays it headless.",
+  "run": {
+    "dt": 0.005
+  },
+  "blocks": [
+    {
+      "name": "hand",
+      "type": "input.pointer",
+      "settings": {
+        "max": "1.5",
+        "min": "-1.5",
+        "unit": "m"
+      }
+    },
+    {
+      "name": "bob",
+      "type": "eq.equations",
+      "equations": [
+        "# a pendulum of length L, pulled towards the hand while it holds the bob",
+        "input hx [m]",
+        "input hy [m]",
+        "input down",
+        "input picked",
+        "param L [m] = 1",
+        "param g [m/s^2] = 9.81",
+        "param c [1/s] = 0.2",
+        "param k [1/s^2] = 60",
+        "param d [1/s] = 12",
+        "state theta",
+        "state omega [1/s]",
+        "x = L*sin(theta) [m]",
+        "y = -L*cos(theta) [m]",
+        "# held: pressed on the bob (picked is -1 while nothing is held)",
+        "held = down*(picked >= 0)",
+        "# while held: a spring's pull along the swing (tangent cos, sin), damped by d",
+        "pull = held*(k*((hx - x)*cos(theta) + (hy - y)*sin(theta))/L - d*omega)",
+        "dtheta/dt = omega",
+        "domega/dt = -g/L*sin(theta) - c*omega + pull"
+      ],
+      "params": {
+        "theta0": 0.5
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": "hand.x",
+      "to": "bob.hx"
+    },
+    {
+      "from": "hand.y",
+      "to": "bob.hy"
+    },
+    {
+      "from": "hand.down",
+      "to": "bob.down"
+    },
+    {
+      "from": "hand.picked",
+      "to": "bob.picked"
+    }
+  ],
+  "controls": {
+    "params": {
+      "bob.c": {
+        "slider": true,
+        "pin": true
+      },
+      "bob.k": {
+        "slider": true,
+        "range": [
+          0.0,
+          200.0
+        ],
+        "pin": true
+      }
+    },
+    "views": [
+      {
+        "type": "plot.scene",
+        "unit": "m",
+        "extent": {
+          "x": [
+            -1.3,
+            1.3
+          ],
+          "y": [
+            -1.3,
+            1.3
+          ]
+        },
+        "layers": [
+          {
+            "draw": "boxes",
+            "bind": {
+              "colour": "grey",
+              "height": 0.08,
+              "width": 0.3,
+              "x": 0.0,
+              "y": 0.04
+            }
+          },
+          {
+            "draw": "segments",
+            "bind": {
+              "colour": "grey",
+              "width": 3.0,
+              "x1": 0.0,
+              "x2": "bob.x",
+              "y1": 0.0,
+              "y2": "bob.y"
+            }
+          },
+          {
+            "draw": "segments",
+            "bind": {
+              "colour": "red",
+              "width": "hand.down",
+              "x1": "bob.x",
+              "x2": "hand.x",
+              "y1": "bob.y",
+              "y2": "hand.y"
+            }
+          },
+          {
+            "draw": "discs",
+            "bind": {
+              "colour": "orange",
+              "radius": 0.1,
+              "x": "bob.x",
+              "y": "bob.y"
+            },
+            "grab": "hand"
+          }
+        ]
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": [
+            "bob.theta",
+            "hand.down",
+            "hand.picked"
+          ]
+        }
+      }
+    ],
+    "recorder": {}
+  }
+}

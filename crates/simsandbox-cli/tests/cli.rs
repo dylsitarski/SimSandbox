@@ -461,3 +461,117 @@ fn check_reports_every_block_and_wire_error() {
         ]
     );
 }
+
+/// A run file for `model` with these recorded events (`[t, key, value]`).
+fn run_file(name: &str, model: &str, track: Value) -> String {
+    let run = serde_json::json!({
+        "format": 1, "model": model, "model_hash": "made by hand", "track": track
+    });
+    scratch(name, &run.to_string())
+}
+
+/// One output of `run --format json`, as bits.
+fn bits(out: &Output, name: &str) -> Vec<u64> {
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    json(out)["outputs"][name]["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap().to_bits())
+        .collect()
+}
+
+#[test]
+fn a_grab_in_a_run_file_replays_headless_and_older_runs_never_pick() {
+    // ADR 0093 point 6: a scene's grab is recorded as its input.pointer's
+    // x, y, down and picked; headless, a run file gives the same events.
+    let model = example("pendulum-grab.ssbx.json");
+    let grab = run_file(
+        "grab.run.json",
+        &model,
+        serde_json::json!([
+            [0.2, "hand.x", 1.0],
+            [0.2, "hand.y", 0.0],
+            [0.2, "hand.down", 1.0],
+            [0.2, "hand.picked", 0.0],
+            [0.6, "hand.down", 0.0],
+            [0.6, "hand.picked", -1.0]
+        ]),
+    );
+    let run = |extra: &[&str]| {
+        let mut args = vec!["run", &model, "--t-end", "1", "--format", "json"];
+        args.extend_from_slice(extra);
+        simsandbox(&args)
+    };
+    let alone = run(&[]);
+    let grabbed = run(&["--inputs", &grab]);
+    assert_ne!(bits(&grabbed, "bob.theta"), bits(&alone, "bob.theta"));
+    // The run file itself replays the same, bit for bit.
+    let itself = simsandbox(&["run", &grab, "--t-end", "1", "--format", "json"]);
+    assert_eq!(bits(&itself, "bob.theta"), bits(&grabbed, "bob.theta"));
+    // Held exactly from the first step at or after 0.2 to the one at 0.6.
+    let out = json(&grabbed);
+    let t: Vec<f64> = out["index"]["t"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let held = &out["outputs"]["bob.held"]["values"];
+    for (k, t) in t.iter().enumerate() {
+        let want = if (0.2 + 1e-9..0.6 + 1e-9).contains(t) {
+            1.0
+        } else {
+            0.0
+        };
+        assert_eq!(held[k].as_f64(), Some(want), "t = {t}");
+    }
+    // A run made before `picked` (x, y and down only) reads it as -1
+    // throughout: pressed, but on nothing, so the model does not pull.
+    let older = run_file(
+        "older.run.json",
+        &model,
+        serde_json::json!([
+            [0.2, "hand.x", 1.0],
+            [0.2, "hand.down", 1.0],
+            [0.6, "hand.down", 0.0]
+        ]),
+    );
+    let older = run(&["--inputs", &older]);
+    let picked = &json(&older)["outputs"]["hand.picked"]["values"];
+    assert!(picked.as_array().unwrap().iter().all(|v| v == -1.0));
+    assert_eq!(bits(&older, "bob.theta"), bits(&alone, "bob.theta"));
+}
+
+#[test]
+fn check_refuses_a_scene_layer_grabbing_with_no_input_pointer() {
+    let text = std::fs::read_to_string(example("pendulum-grab.ssbx.json"))
+        .unwrap()
+        .replace("\"grab\": \"hand\"", "\"grab\": \"bob\"");
+    let out = simsandbox(&["check", &scratch("grab-bob.json", &text)]);
+    let report = json(&out);
+    let warnings = report["warnings"].as_array().unwrap();
+    assert!(
+        warnings.iter().any(|w| w
+            == "controls.views[0]: layers[3].grab: no input.pointer block 'bob' (grabbing sends the pointer to one); ignored"),
+        "{warnings:?}"
+    );
+    // `describe` gives the pointer's fourth output.
+    let d = json(&simsandbox(&["describe", "input.pointer"]));
+    let outputs: Vec<&str> = d["interface"]["ports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(outputs, ["x", "y", "down", "picked"]);
+    let picked = &d["interface"]["params"][3];
+    assert_eq!(
+        (picked["name"].as_str(), picked["default"].as_f64()),
+        (Some("picked"), Some(-1.0))
+    );
+}

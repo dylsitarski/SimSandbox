@@ -905,6 +905,173 @@ fn a_dragged_run_is_saved_beside_the_model_and_replayed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Frames of the first scene tile, drawn from the live recording with
+/// `events` each, as the dock draws it; what its grabs sent goes to the
+/// session as the dock sends it.
+fn grab_frames(app: &mut SimApp, ctx: &egui::Context, frames: Vec<Vec<egui::Event>>) {
+    for events in frames {
+        let sent = {
+            let live = app.session.as_ref().unwrap();
+            let h = live.history();
+            let recorded = simsandbox_views::Recorded::single(&h);
+            let views = &mut app.views;
+            let t = views.registry.get("plot.scene").unwrap();
+            let tile = views
+                .tiles
+                .iter_mut()
+                .find(|t| t.state.type_name == "plot.scene")
+                .unwrap();
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| tile.state.show(ui, t, recorded));
+            out.textures_delta.clear();
+            tile.state.grabs()
+        };
+        for (block, p) in sent {
+            app.send_pointer(&block, &p);
+        }
+        app.session.as_ref().unwrap().sync();
+    }
+}
+
+#[test]
+fn a_grabbed_run_is_saved_and_replayed_bit_for_bit_in_the_worker_and_headless() {
+    let dir = std::env::temp_dir().join(format!("simsandbox-grab-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = SimApp::new(None, None, None, None);
+    let e = EXAMPLES
+        .iter()
+        .find(|e| e.name.contains("Grab the bob"))
+        .unwrap();
+    // The bob made as large as the picture, so a press anywhere on the
+    // plot lands on it.
+    let text = e.text.replace("\"radius\": 0.1", "\"radius\": 5.0");
+    assert_ne!(text, e.text);
+    app.open_text(e.name, &text);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let model = dir.join("grab.ssbx.json");
+    app.save_to(&model);
+    let live = app.session.as_ref().unwrap();
+    live.set_running(false);
+    live.call(|s, _| s.restart()).unwrap().unwrap();
+    live.call(|s, _| s.run_until(0.5)).unwrap().unwrap();
+    let ctx = egui::Context::default();
+    let button = |p, pressed| egui::Event::PointerButton {
+        pos: p,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    let (a, b) = (egui::pos2(300.0, 300.0), egui::pos2(500.0, 250.0));
+    // Drawn twice to settle, pressed on the bob, held while the model
+    // runs, dragged, and let go.
+    grab_frames(
+        &mut app,
+        &ctx,
+        vec![
+            vec![],
+            vec![],
+            vec![egui::Event::PointerMoved(a)],
+            vec![button(a, true)],
+        ],
+    );
+    let run = |app: &SimApp, t: f64| {
+        let live = app.session.as_ref().unwrap();
+        live.call(move |s, _| s.run_until(t)).unwrap().unwrap();
+    };
+    run(&app, 0.7);
+    grab_frames(&mut app, &ctx, vec![vec![egui::Event::PointerMoved(b)]]);
+    run(&app, 1.0);
+    grab_frames(&mut app, &ctx, vec![vec![button(b, false)]]);
+    run(&app, 1.5);
+    let live = app.session.as_ref().unwrap();
+    let track = live.call(|s, _| s.recorded().to_vec()).unwrap();
+    let keys: Vec<&str> = track.iter().map(|e| e.key.as_str()).collect();
+    // Pressed (x, y, down, picked), moved (x, y), let go (down, picked).
+    assert_eq!(
+        keys,
+        [
+            "hand.x",
+            "hand.y",
+            "hand.down",
+            "hand.picked",
+            "hand.x",
+            "hand.y",
+            "hand.down",
+            "hand.picked"
+        ],
+        "{track:?}"
+    );
+    let value = |k: usize| track[k].value;
+    assert_eq!(
+        (value(2), value(3), value(6), value(7)),
+        (1.0, 0.0, 0.0, -1.0)
+    );
+    // Moved right and up on screen: right and up in the scene.
+    assert!(value(4) > value(0) && value(5) > value(1), "{track:?}");
+    let signals = |app: &SimApp| {
+        app.session
+            .as_ref()
+            .unwrap()
+            .call(|s, _| {
+                let h = s.signals();
+                ["bob.theta", "bob.x", "hand.picked"].map(|n| {
+                    let k = h.names().iter().position(|m| m == n).unwrap();
+                    h.points(k)
+                        .iter()
+                        .map(|p| p.y.to_bits())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .unwrap()
+    };
+    let reference = signals(&app);
+    // The grab moved the bob: the run differs from one left alone.
+    let alone = simsandbox_session::run::run(&text, &app.registry, Some(1.5), None).unwrap();
+    let theta = |r: &simsandbox_session::run::Results| -> Vec<u64> {
+        let o = r.outputs.iter().find(|o| o.name == "bob.theta").unwrap();
+        o.values.iter().map(|x| x.to_bits()).collect()
+    };
+    assert_eq!(theta(&alone).len(), reference[0].len());
+    assert_ne!(theta(&alone), reference[0]);
+
+    // Saved as a run and opened: the worker replays it bit for bit.
+    app.save_run("grab", "pulled right");
+    let runs = runs::runs_beside(&model);
+    let (path, saved) = &runs[0];
+    assert_eq!(saved.track.len(), 8);
+    app.open_run(path);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let live = app.session.as_ref().unwrap();
+    live.set_running(false);
+    assert!(live.call(|s, _| s.replaying()).unwrap());
+    live.call(|s, _| s.run_until(1.5)).unwrap().unwrap();
+    assert_eq!(signals(&app), reference);
+    // Headless, as `simsandbox run MODEL --inputs RUN` reads it.
+    let replay = simsandbox_session::runs::model_and_track(
+        &model.to_string_lossy(),
+        Some(&path.to_string_lossy()),
+        &app.registry,
+    )
+    .unwrap();
+    let headless = simsandbox_session::run::run_with(
+        &replay.text,
+        &app.registry,
+        Some(1.5),
+        None,
+        replay.track,
+    )
+    .unwrap();
+    assert_eq!(theta(&headless), reference[0]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn probes_added_on_the_canvas_record_and_save_their_files() {
     use simsandbox_session::diagram::Edit;

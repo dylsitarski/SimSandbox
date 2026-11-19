@@ -151,6 +151,11 @@ pub const EXAMPLES: &[Example] = &[
         files: &[],
     },
     Example {
+        name: "Grab the bob (a scene sends the pointer)",
+        text: include_str!("../../../examples/pendulum-grab.ssbx.json"),
+        files: &[],
+    },
+    Example {
         name: "Heat along a rod (a grid field)",
         text: include_str!("../../../examples/heat-rod.ssbx.json"),
         files: &[],

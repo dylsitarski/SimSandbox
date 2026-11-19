@@ -245,11 +245,13 @@ The pendulum's angle is measured from straight down and a scene's counter-clockw
 
 ## Inputs and run files
 
-Input blocks ([ADR 0058](../decisions/0058-inputs-live-scheduled-replayed.md)) are values set from outside a running model: `input.value` (one output `y`) and `input.pointer` (`x`, `y`, `down`), with settings `unit`, `min` and `max`. Their outputs are their own parameters, so they are wired like any block.
+Input blocks ([ADR 0058](../decisions/0058-inputs-live-scheduled-replayed.md)) are values set from outside a running model: `input.value` (one output `y`) and `input.pointer` (`x`, `y`, `down`, `picked`), with settings `unit`, `min` and `max`. Their outputs are their own parameters, so they are wired like any block. `picked` is the row id of the scene instance a grab holds (0 for a layer of one instance) and −1 while nothing is held; files and runs made before it read −1 throughout.
 
 A change during a run is an event `(t, key, value)`, applied at the first step boundary at or after `t` and held over the step. `key` is any parameter key (`push.y`, `cruise.kp`). Events come from:
 - the model's default schedule, `run.inputs`: `[{"t": 5, "set": "push.y", "to": 40}]` (Python `Model.schedule(5, "push.y", 40)`); every run applies it;
 - a run file `<model>.<run>.run.json` beside the model ([ADR 0059](../decisions/0059-run-files.md)): the schedule in effect (`inputs`) and recorded live input (`track`, `[[t, "key", value], ...]`), with the seed, `run` settings and `model_hash` of the model it was made with. The hash leaves out `controls`, the seed, `dt`, `t_end` and the schedule, and is taken over the model with every parameter written out, so saving from the app does not make a run stale.
+
+A scene's grab ([ADR 0093](../decisions/0093-scenes-from-primitive-layers.md) point 6: a layer with `"grab": "hand"`) is recorded as the events it sends to that `input.pointer`: on the press `hand.x`, `hand.y` (in the scene's own frame), `hand.down` 1 and `hand.picked` (the row id); while held, `hand.x` and `hand.y` as they change; on release `hand.down` 0 and `hand.picked` −1. Headless, the same events come from a run file's `track`, written by the app or by hand, so `simsandbox run MODEL --inputs RUN` (or `run RUN`) replays a grab without drawing the scene: `[[0.2, "hand.x", 1.0], [0.2, "hand.y", 0.0], [0.2, "hand.down", 1.0], [0.2, "hand.picked", 0.0], [0.6, "hand.down", 0.0], [0.6, "hand.picked", -1.0]]` holds the bob of `examples/pendulum-grab.ssbx.json` from 0.2 s to 0.6 s.
 
 The same model, events and seed give the same run bit for bit, in the app (live, after a rewind, or from Runs ▸ a saved run) and headless. Bindings of keys and views to input blocks (`controls.inputs`) affect only the app.
 
