@@ -2131,7 +2131,16 @@ fn forget_block(file: &mut ModelFile, block: &str) {
     }
     file.groups.retain(|g| g.blocks.len() > 1);
     file.controls.params.retain(|k, _| !mine(k));
-    // Views and filters that used it are dropped with a warning when the
+    // Nothing drives it or grabs with it any more (ADR 0058, ADR 0093).
+    file.controls.inputs.remove(block);
+    for v in &mut file.controls.views {
+        for l in &mut v.scene.layers {
+            if l.grab.as_deref() == Some(block) {
+                l.grab = None;
+            }
+        }
+    }
+    // Views and filters that read it are dropped with a warning when the
     // model opens.
 }
 
@@ -2151,7 +2160,27 @@ fn rename_refs_in_file(file: &mut ModelFile, from: &str, to: &str) -> Result<(),
             rename_in(v, from, to);
         }
     }
-    let (renamed, _) = ModelFile::from_json(&value.to_string()).map_err(|e| e.to_string())?;
+    let (mut renamed, _) = ModelFile::from_json(&value.to_string()).map_err(|e| e.to_string())?;
+    // Where a block is named alone, not as the start of `old.port`: the
+    // keys and views driving input blocks (ADR 0058), the blocks a
+    // scene's layers grab with (ADR 0093), and groups' members.
+    if let Some(b) = renamed.controls.inputs.remove(from) {
+        renamed.controls.inputs.insert(to.to_string(), b);
+    }
+    for v in &mut renamed.controls.views {
+        for l in &mut v.scene.layers {
+            if l.grab.as_deref() == Some(from) {
+                l.grab = Some(to.to_string());
+            }
+        }
+    }
+    for g in &mut renamed.groups {
+        for b in &mut g.blocks {
+            if b == from {
+                *b = to.to_string();
+            }
+        }
+    }
     *file = renamed;
     Ok(())
 }
@@ -3358,6 +3387,84 @@ mod tests {
         .unwrap();
         let copy = f.blocks.iter().find(|b| b.name == "car1").unwrap();
         assert_eq!(copy.equations, f.blocks[0].equations);
+    }
+
+    #[test]
+    fn renames_reach_names_standing_alone_scenes_and_inputs() {
+        use simsandbox_file::SceneValue;
+        let r = registry();
+        let rename = |f: &mut ModelFile, from: &str, to: &str| {
+            apply(
+                f,
+                &r,
+                &Edit::Rename {
+                    from: from.into(),
+                    to: to.into(),
+                },
+            )
+            .unwrap();
+        };
+        // A scene's bindings, its frames' poses (ADR 0093).
+        let mut f = file("own view");
+        rename(&mut f, "bob", "pend");
+        let scene = &f.controls.views[1].scene;
+        assert_eq!(
+            scene.frames["rod"].angle,
+            Some(SceneValue::Name("pend.angle".into()))
+        );
+        crate::Session::load("t", &f.to_json(), &r).unwrap();
+        // Its grabs and bindings, and the view a pointer is driven by
+        // (`controls.inputs`, keyed by the bare block name).
+        let mut f = file("Grab the bob");
+        rename(&mut f, "hand", "pointer");
+        rename(&mut f, "bob", "pend");
+        let layers = &f.controls.views[0].scene.layers;
+        assert_eq!(layers[3].grab.as_deref(), Some("pointer"));
+        assert_eq!(layers[2].bind["x2"], SceneValue::Name("pointer.x".into()));
+        assert_eq!(layers[3].bind["x"], SceneValue::Name("pend.x".into()));
+        let text = f.to_json();
+        assert!(
+            !text.contains("\"hand") && !text.contains("\"bob"),
+            "{text}"
+        );
+        let mut f = file("Drag the bob");
+        assert!(f.controls.inputs.contains_key("hand"));
+        rename(&mut f, "hand", "pointer");
+        assert_eq!(f.controls.inputs.keys().collect::<Vec<_>>(), ["pointer"]);
+        // A group's members are bare names too.
+        let mut f = file("oscillators");
+        f.groups = vec![simsandbox_file::GroupEntry {
+            blocks: vec!["a".into(), "b".into()],
+            method: Default::default(),
+        }];
+        rename(&mut f, "a", "first");
+        assert_eq!(f.groups[0].blocks, ["first", "b"]);
+        // Deleted, the pointer is driven by nothing and grabbed by no
+        // layer.
+        let mut f = file("Grab the bob");
+        apply(
+            &mut f,
+            &r,
+            &Edit::Delete {
+                block: "hand".into(),
+            },
+        )
+        .unwrap();
+        assert!(f.controls.views[0]
+            .scene
+            .layers
+            .iter()
+            .all(|l| l.grab.is_none()));
+        let mut f = file("Drag the bob");
+        apply(
+            &mut f,
+            &r,
+            &Edit::Delete {
+                block: "hand".into(),
+            },
+        )
+        .unwrap();
+        assert!(f.controls.inputs.is_empty());
     }
 
     #[test]
