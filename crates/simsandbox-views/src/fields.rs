@@ -151,6 +151,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             bindings: grid_bindings,
         }],
         create: || Box::new(Heatmap::default()),
+        settings: None,
     })?;
     r.register(ViewType {
         name: "plot.profile",
@@ -202,6 +203,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             },
         }],
         create: || Box::new(Profile::default()),
+        settings: None,
     })?;
     r.register(ViewType {
         name: "plot.scatter",
@@ -225,6 +227,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             bindings: |a| a.points.first().map(|p| bindings(&[("points", p)])),
         }],
         create: || Box::new(Scatter),
+        settings: None,
     })
 }
 

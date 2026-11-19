@@ -111,7 +111,6 @@ impl Model {
     }
 
     pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
-        let _ = h;
         Available {
             scalars: &self.scalars,
             grids: &self.grids,
@@ -122,6 +121,8 @@ impl Model {
             meshes: &self.meshes,
             coordinates: &self.coordinates,
             derived: &self.derived,
+            // Units and tables, for a scene's check (ADR 0093).
+            meta: Some(h),
         }
     }
 }

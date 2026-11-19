@@ -107,6 +107,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             bindings: mesh_bindings,
         }],
         create: || Box::new(MeshView::default()),
+        settings: None,
     })
 }
 

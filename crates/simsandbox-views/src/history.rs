@@ -376,6 +376,18 @@ pub struct History {
     own_limit: bool,
 }
 
+impl std::fmt::Debug for History {
+    /// What it records, not its samples.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("History")
+            .field("index", &self.index)
+            .field("signals", &self.names.len())
+            .field("fields", &self.fields.len())
+            .field("samples", &self.times.len())
+            .finish()
+    }
+}
+
 /// Samples kept before thinning: `budget` field values over the fields'
 /// values a sample, within [`MIN_SAMPLES`] and [`MAX_SAMPLES`].
 fn samples_for(budget: usize, field_values: usize) -> usize {

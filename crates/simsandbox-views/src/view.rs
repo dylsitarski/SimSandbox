@@ -104,6 +104,9 @@ pub struct ViewInput<'a> {
     /// The view feeds an `input.pointer` (ADR 0058): dragging sends the
     /// pointer instead of panning, through [`View::pointer`].
     pub sends_pointer: bool,
+    /// Every recording, for views that bind signals outside their slots
+    /// (a scene's layers, ADR 0093).
+    pub recorded: Recorded<'a>,
     /// Bindings in `history`.
     slots: BTreeMap<&'a str, Vec<SignalRef>>,
     /// Every binding, in its own recording.
@@ -197,7 +200,30 @@ pub trait View: Send {
     fn pointer(&mut self) -> Option<[f64; 3]> {
         None
     }
+
+    /// Take what the view's entry holds beyond slots, style, camera and
+    /// selection (a scene's frames and layers, ADR 0093), checked against
+    /// what the model offers; an error says why it cannot be used, at its
+    /// path. Views of slots alone take nothing.
+    fn set_settings(
+        &mut self,
+        settings: &Settings,
+        _available: &Available<'_>,
+    ) -> Result<(), String> {
+        match settings.keys().next() {
+            Some(k) => Err(format!("this view takes no setting '{k}'")),
+            None => Ok(()),
+        }
+    }
+
+    /// The settings to save, as they were given.
+    fn settings(&self) -> Settings {
+        Settings::new()
+    }
 }
+
+/// A view's settings as saved beside its slots (ADR 0093): key to JSON.
+pub type Settings = BTreeMap<String, serde_json::Value>;
 
 /// What a model offers views: its recorded signals by kind and its block
 /// types (for views that apply to particular blocks, ADR 0016).
@@ -219,6 +245,11 @@ pub struct Available<'a> {
     /// The outputs of filters with clocks of their own (ADR 0063): bound
     /// by name, recorded apart from the model's history.
     pub derived: &'a [String],
+    /// A history that knows the units and tables of what is offered
+    /// ([`History::unit`], [`History::table`]), for settings that check
+    /// them (a scene's lengths, ADR 0093); `None` where they are unknown,
+    /// and then nothing is refused for its unit.
+    pub meta: Option<&'a History>,
 }
 
 impl Available<'_> {
@@ -339,6 +370,10 @@ pub struct ViewType {
     /// first is the default.
     pub presets: &'static [Preset],
     pub create: fn() -> Box<dyn View>,
+    /// What the view takes beyond slots and style, described for
+    /// `describe` (a scene's frames, layers and primitives, ADR 0093);
+    /// `None` for a view of slots alone.
+    pub settings: Option<fn() -> serde_json::Value>,
 }
 
 impl ViewType {
@@ -531,6 +566,7 @@ pub(crate) fn view_input<'a>(
         history,
         bind,
         sends_pointer: false,
+        recorded,
         slots,
         any,
         style,
@@ -626,6 +662,21 @@ impl ViewState {
         self.view.set_selection(selection)
     }
 
+    /// Take the settings saved beside the slots (a scene's layers,
+    /// ADR 0093), checked against what the model offers.
+    pub fn set_settings(
+        &mut self,
+        settings: &Settings,
+        available: &Available<'_>,
+    ) -> Result<(), String> {
+        self.view.set_settings(settings, available)
+    }
+
+    /// The settings to save beside the slots.
+    pub fn settings(&self) -> Settings {
+        self.view.settings()
+    }
+
     /// The view's selection controls, for the side panel.
     pub fn edit_selection<'a>(
         &mut self,
@@ -714,6 +765,7 @@ mod tests {
                 "plot.contour",
                 "plot.values",
                 "plot.mesh",
+                "plot.scene",
             ]
         );
         assert!(crate::builtin::register(&mut r).is_err());
@@ -887,6 +939,7 @@ mod tests {
                 history: h,
                 bind: &bind,
                 sends_pointer: false,
+                recorded: Recorded::single(h),
                 slots: BTreeMap::new(),
                 any: BTreeMap::new(),
                 style: &style,

@@ -50,6 +50,7 @@ pub fn register_views(r: &mut ViewRegistry) -> Result<(), String> {
             bindings: pendulum_bindings,
         }],
         create: || Box::<PendulumView>::default(),
+        settings: None,
     })
 }
 

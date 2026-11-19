@@ -563,7 +563,6 @@ impl Session {
     /// What views can bind: everything a step yields (ADR 0063), whether
     /// or not the history `h` records it now; and the model's block types.
     pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
-        let _ = h;
         let c = &self.catalogue;
         Available {
             scalars: &c.layout_scalars,
@@ -575,6 +574,8 @@ impl Session {
             meshes: &c.meshes,
             coordinates: &c.all_coordinates,
             derived: self.probes.derived_names(),
+            // Units and tables of every output, recorded or not.
+            meta: Some(h),
         }
     }
 

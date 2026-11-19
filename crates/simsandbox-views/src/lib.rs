@@ -17,6 +17,8 @@
 //! - [`surface`]: `plot.surface` and `plot.contour` (grids as shapes).
 //! - [`view3d`]: the projection and drawing behind `plot.3d` and
 //!   `plot.surface`.
+//! - [`scene`]: `plot.scene`, layers of primitives in frames (ADR 0093,
+//!   ADR 0101).
 
 pub mod builtin;
 pub mod colour;
@@ -27,6 +29,7 @@ pub mod fields;
 pub mod gpu;
 pub mod history;
 pub mod mesh;
+pub mod scene;
 pub mod slice;
 pub mod surface;
 pub mod values;
@@ -37,5 +40,6 @@ pub use history::{
     Coordinate, Field, FieldShape, History, MeshInfo, MeshShape, Recorded, SignalRef,
 };
 pub use view::{
-    Available, Bindings, Context, Preset, SlotKind, Swap, ViewRegistry, ViewState, ViewType,
+    Available, Bindings, Context, Preset, Settings, SlotKind, Swap, ViewRegistry, ViewState,
+    ViewType,
 };

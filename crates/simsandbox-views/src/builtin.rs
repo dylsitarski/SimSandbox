@@ -127,6 +127,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             },
         ],
         create: || Box::new(Xy::default()),
+        settings: None,
     })?;
     r.register(ViewType {
         name: "plot.3d",
@@ -176,11 +177,13 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             },
         }],
         create: || Box::new(Trajectory::default()),
+        settings: None,
     })?;
     crate::fields::register(r)?;
     crate::surface::register(r)?;
     crate::values::register(r)?;
-    crate::mesh::register(r)
+    crate::mesh::register(r)?;
+    crate::scene::register(r)
 }
 
 /// A bound signal's label with its unit, as an axis shows it.
