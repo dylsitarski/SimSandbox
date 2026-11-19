@@ -1,0 +1,26 @@
+# The rigid-body spike of ADR 0057 item 3 (Rapier against MuJoCo): not part
+# of the workspace, so neither engine enters SimSandbox's build and CI.
+[package]
+name = "rigid-body-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[workspace]
+
+[features]
+default = ["enhanced-determinism"]
+# Rapier's software maths (libm) for the same bits on every platform.
+enhanced-determinism = ["rapier2d-f64/enhanced-determinism", "rapier3d-f64/enhanced-determinism"]
+# MuJoCo through its C library: run ./fetch-mujoco.sh first, or set
+# MUJOCO_DIR to a folder with lib/ and include/.
+mujoco = []
+
+[dependencies]
+rapier2d-f64 = { version = "=0.36.1", features = ["serde-serialize"] }
+rapier3d-f64 = { version = "=0.36.1", features = ["serde-serialize"] }
+bincode = "=1.3.3"
+
+[profile.release]
+debug = false

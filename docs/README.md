@@ -1,6 +1,6 @@
 # Documentation system
 
-_Last updated: 2026-11-14_
+_Last updated: 2026-11-19_
 
 This page is the map of every document in the repository and the rules for keeping them current. The repository is the single source of truth for SimSandbox ([ADR 0005](decisions/0005-repository-as-source-of-truth.md)).
 
@@ -44,6 +44,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [CHANGELOG.md](../CHANGELOG.md) | Changelog | User-visible changes |
 | [python/README.md](../python/README.md) | Guide | The Python package's layout and checks |
 | [spikes/compiled-routes/README.md](../spikes/compiled-routes/README.md) | Guide | The compiled-route comparison of ADR 0084: how to build and run it |
+| [spikes/rigid-body/README.md](../spikes/rigid-body/README.md) | Guide | The rigid-body spike of ADR 0057 (Rapier against MuJoCo): how to get MuJoCo, build and run it |
 
 ### Project
 
@@ -175,6 +176,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0100-python-wheels-typing-and-dependency-checks.md](decisions/0100-python-wheels-typing-and-dependency-checks.md) | Decision record | Python wheels and typing, checks at the call, CI and `cargo deny` |
 | [decisions/0101-scene-primitives-are-parametric-meshes.md](decisions/0101-scene-primitives-are-parametric-meshes.md) | Decision record | Scene primitives as parametric meshes, one drawing path, shape meshes from models |
 | [decisions/0102-scene-bindings-may-name-parameters.md](decisions/0102-scene-bindings-may-name-parameters.md) | Decision record | Scene bindings naming parameters: the name rule, values over time recorded in the history |
+| [decisions/0103-rigid-body-engine.md](decisions/0103-rigid-body-engine.md) | Decision record | Proposed: Rapier as the first rigid-body engine; state for rewind, crate, file form, rows, grabbing, tests |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 
@@ -196,6 +198,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [reference/typed-equations.md](reference/typed-equations.md) | Reference | The typed-equations language: statements, expressions, units, functions, limits; given by `describe eq.equations`; examples parsed by a test |
 | [research/market-landscape.md](research/market-landscape.md) | Research | Existing tools and the gap SimSandbox targets |
 | [research/2026-11-14-code-review.md](research/2026-11-14-code-review.md) | Research | Whole-project review of 2026-11-14: vision, correctness, structure, performance, usability; work items W1–W13 |
+| [research/2026-11-19-rigid-body-spike.md](research/2026-11-19-rigid-body-spike.md) | Research | The rigid-body spike of 2026-11-19: Rapier against MuJoCo on accuracy, rewind, determinism, speed, contacts, build; the recommendation and its risks |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
 | [sessions/2026-11-15-equation-front-end.md](sessions/2026-11-15-equation-front-end.md) | Session note | Review W6: typed-equation faults fixed, front end restructured |
