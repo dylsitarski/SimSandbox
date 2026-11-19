@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- `input.pointer` has a fourth output, `picked` (−1 while nothing is held), so runs of models with a pointer gain a column.
 - CLI: `--help`, `-h`, `help` and `COMMAND --help` print help to standard output and exit 0; the exit status says what failed (1 the model or run, 2 the command line, 3 a file); `--errors json` writes every failure, warning and note as one JSON object per line; `check` reports every block's and wire's error, not only the first; a missing run file given to `check` now exits 3 without a report. The `lorenz` command is removed (run `examples/lorenz.ssbx.json`).
 - Python: `Model.connect` refuses a wire to a block, port or parameter that does not exist, or to an input already wired, when called (blocks are added before they are wired); `Model.add_block` refuses an unknown type.
 - Rust: `simsandbox_eq::group` (`EquationGroup`, `FusedSystem`) is removed; fuse blocks in a model (`Model::fuse`).
@@ -96,6 +97,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Grabbing in scenes: press on a shape whose layer names an `input.pointer` block and drag; the model receives the pointer and which shape was pressed (`picked`), and the grab replays exactly from a saved run. New example "Grab the bob".
 - Scene views (`plot.scene`): a picture built from layers of points, segments, boxes and discs whose positions, sizes and colours come from constants, signals or a table's rows, placed in frames that move and turn with signals, and seen from any frame. The pendulum example shows its pendulum as a scene too.
 - Python: type information (`py.typed`, stubs for the native module); wheels built and tested in CI for Linux, Windows and macOS (artifacts, not yet on PyPI).
 - CI: build cache, a minimum-Rust (1.97) job, Python 3.10, and `cargo deny` for licences, advisories and sources (`deny.toml`).

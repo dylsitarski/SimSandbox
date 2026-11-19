@@ -22,6 +22,7 @@
 - 2026-11-18: the review's fourth priority, by two helpers in parallel (Rust in the checkout, Python and CI in a worktree, cherry-picked): CLI help, exit statuses, `--errors json`, several errors per `check` (ADR 0099); `lorenz` command and `group.rs` deleted; Python stubs, checks at the call, wheels in CI; CI cache, minimum Rust, Python 3.10, `cargo deny` (ADR 0100). The hard-coded systems investigated, not replaced (Q62).
 - 2026-11-18: how meshes fit views asked; ADR 0101 (primitives are parametric meshes, one cached drawing path, shape meshes from models), accepted by the owner.
 - 2026-11-19: the scene view, stage 1 (`plot.scene`, frames, the four primitives, `check`/`describe`/schema/`render`, the pendulum as a scene, which agrees with `eq.pendulum`'s view in the app and headless).
+- 2026-11-19: the scene view, stage 2 (grabbing, `picked`, replay), with the example "Grab the bob"; a replayed grab checked in the app under Xvfb.
 
 ## Decided
 
