@@ -1494,8 +1494,8 @@ pub struct SceneFrame {
 }
 
 /// A layer: one primitive, the frame it is in, its attributes' bindings
-/// and the `input.pointer` that grabs it (kept; acted on in a later
-/// stage).
+/// and the `input.pointer` block pressing on its instances sends the
+/// pointer to (ADR 0093 point 6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneLayer {
     pub draw: String,

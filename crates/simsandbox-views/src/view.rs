@@ -201,6 +201,14 @@ pub trait View: Send {
         None
     }
 
+    /// What grabbing sent since last asked, oldest first (a scene's
+    /// layers, ADR 0093 point 6): the `input.pointer` block each is for,
+    /// and `[x, y, down, picked]` in the scene's own frame. Views that
+    /// cannot grab send nothing.
+    fn grabs(&mut self) -> Vec<(String, [f64; 4])> {
+        Vec::new()
+    }
+
     /// Take what the view's entry holds beyond slots, style, camera and
     /// selection (a scene's frames and layers, ADR 0093), checked against
     /// what the model offers; an error says why it cannot be used, at its
@@ -250,6 +258,10 @@ pub struct Available<'a> {
     /// them (a scene's lengths, ADR 0093); `None` where they are unknown,
     /// and then nothing is refused for its unit.
     pub meta: Option<&'a History>,
+    /// The model's `input.pointer` blocks, which a scene's layers may grab
+    /// with (ADR 0093 point 6); `None` where they are unknown, and then no
+    /// `grab` is refused.
+    pub pointers: Option<&'a [String]>,
 }
 
 impl Available<'_> {
@@ -700,6 +712,12 @@ impl ViewState {
     /// The pointer the view sent since last asked (ADR 0058).
     pub fn pointer(&mut self) -> Option<[f64; 3]> {
         self.view.pointer()
+    }
+
+    /// What grabbing sent since last asked, by `input.pointer` block
+    /// (ADR 0093 point 6): `[x, y, down, picked]`.
+    pub fn grabs(&mut self) -> Vec<(String, [f64; 4])> {
+        self.view.grabs()
     }
 
     pub fn camera(&self) -> Option<[f64; 3]> {

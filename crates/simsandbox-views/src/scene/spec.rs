@@ -253,8 +253,8 @@ pub struct Layer {
     /// The table its instances are rows of: its own bindings' or its
     /// frame's.
     pub table: Option<String>,
-    /// The `input.pointer` it is grabbed with (ADR 0093 point 6): kept,
-    /// acted on in a later stage.
+    /// The `input.pointer` block pressing on one of its instances sends
+    /// the pointer to (ADR 0093 point 6).
     pub grab: Option<String>,
 }
 
@@ -581,7 +581,18 @@ impl Scene {
             )?;
             let grab = match l.get("grab") {
                 None => None,
-                Some(g) => Some(string(g, &format!("{path}.grab"))?.to_string()),
+                Some(g) => {
+                    let g = string(g, &format!("{path}.grab"))?;
+                    if available
+                        .pointers
+                        .is_some_and(|p| !p.iter().any(|n| n == g))
+                    {
+                        return Err(format!(
+                            "{path}.grab: no input.pointer block '{g}' (grabbing sends the pointer to one)"
+                        ));
+                    }
+                    Some(g.to_string())
+                }
             };
             layers.push(Layer {
                 primitive,
@@ -706,7 +717,7 @@ pub fn describe() -> Value {
             "unit": format!("the length unit of every position and size ('{DEFAULT_UNIT}' if absent); a binding in another length unit is refused"),
             "extent": "{\"x\": [low, high], \"y\": [low, high]}: the region shown; absent, it follows what is drawn. Drawn with equal scales",
             "frames": "name to {\"in\": parent, \"x\", \"y\", \"angle\"}: a point p drawn in the frame lies at (x, y) + R(angle)·p in its parent (the scene's if 'in' is absent). Frames chain; a frame over a table's rows cannot hold another yet",
-            "layers": "a list of {\"draw\": primitive, \"in\": frame, \"bind\": attribute to binding, \"grab\": input.pointer block}, drawn first to last; 'grab' is kept and not acted on yet",
+            "layers": "a list of {\"draw\": primitive, \"in\": frame, \"bind\": attribute to binding, \"grab\": input.pointer block}, drawn first to last. Pressing on an instance of a layer with 'grab' sends that block x and y in the scene's own frame (whatever the layer's frame or view_from), down and picked (the row id, 0 for a layer of one instance; -1 once let go) until released; the topmost such layer wins, and pan and zoom pause while it is held",
             "view_from": "a frame: the picture is drawn in its coordinates",
         },
         "bindings": bindings,

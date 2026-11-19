@@ -64,6 +64,8 @@ pub struct Model {
     /// Meshes (ADR 0086).
     meshes: Vec<simsandbox_views::MeshInfo>,
     block_types: Vec<String>,
+    /// The `input.pointer` blocks a scene may grab with (ADR 0093).
+    pointers: Vec<String>,
 }
 
 impl Model {
@@ -100,6 +102,7 @@ impl Model {
             points,
             lines,
             block_types,
+            pointers: s.pointers().to_vec(),
         }
     }
 
@@ -123,6 +126,7 @@ impl Model {
             derived: &self.derived,
             // Units and tables, for a scene's check (ADR 0093).
             meta: Some(h),
+            pointers: Some(&self.pointers),
         }
     }
 }

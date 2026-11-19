@@ -1,6 +1,7 @@
 //! The view tiles (ADR 0053): each view with its title bar, style menu and
 //! slot pickers, laid out in a grid; and what views send back, a clicked
-//! curve (shown in the inspector) or a pointer (ADR 0058).
+//! curve (shown in the inspector) or a pointer (ADR 0058), or a scene's
+//! grabs (ADR 0093).
 
 use super::*;
 
@@ -159,7 +160,12 @@ impl SimApp {
                             actions.push(DockAction::Inspect(signal));
                         }
                         if let (Some(block), Some(p)) = (sender, tile.state.pointer()) {
-                            actions.push(DockAction::Pointer(block.clone(), p));
+                            actions.push(DockAction::Pointer(block.clone(), p.to_vec()));
+                        }
+                        // A scene's grabs, each to the block its layer
+                        // names, in the scene's own frame (ADR 0093).
+                        for (block, p) in tile.state.grabs() {
+                            actions.push(DockAction::Pointer(block, p.to_vec()));
                         }
                     });
             });
@@ -178,6 +184,16 @@ impl SimApp {
                 c.error(format!("input {key}: {e}"));
             }
         });
+    }
+
+    /// A view's pointer for an `input.pointer` block, as live input:
+    /// `[x, y, down]` from a view in `controls.inputs`, or `[x, y, down,
+    /// picked]` from a scene's grab (ADR 0093 point 6). Only changes are
+    /// recorded.
+    pub(super) fn send_pointer(&self, block: &str, p: &[f64]) {
+        for (name, &v) in ["x", "y", "down", "picked"].into_iter().zip(p) {
+            self.send_input(format!("{block}.{name}"), v);
+        }
     }
 
     /// A curve was clicked: show the block it comes from in the inspector,

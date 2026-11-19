@@ -449,11 +449,7 @@ impl SimApp {
                 }
                 DockAction::Select(t) => self.views.selected = Some(t),
                 DockAction::Inspect(signal) => self.inspect_signal(&signal),
-                DockAction::Pointer(block, p) => {
-                    for (name, v) in ["x", "y", "down"].into_iter().zip(p) {
-                        self.send_input(format!("{block}.{name}"), v);
-                    }
-                }
+                DockAction::Pointer(block, p) => self.send_pointer(&block, &p),
             }
         }
     }
@@ -617,8 +613,9 @@ enum DockAction {
     Select(u64),
     /// Show where a clicked curve comes from.
     Inspect(String),
-    /// A view's pointer for an `input.pointer` block: `[x, y, down]`.
-    Pointer(String, [f64; 3]),
+    /// A view's pointer for an `input.pointer` block: `[x, y, down]`, or
+    /// from a scene's grab `[x, y, down, picked]` (ADR 0093).
+    Pointer(String, Vec<f64>),
 }
 
 /// A tab in its own window, by what it shows (tiles are renumbered when

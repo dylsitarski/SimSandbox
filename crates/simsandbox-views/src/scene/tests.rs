@@ -445,3 +445,266 @@ fn the_scene_type_is_registered_without_slots_and_described() {
         (Some("pt"), Some(6.0))
     );
 }
+
+#[test]
+fn a_grab_must_name_an_input_pointer_block() {
+    let h = history();
+    let o = offer();
+    let hands = ["hand".to_string()];
+    let a = Available {
+        pointers: Some(&hands),
+        ..available(&o, &h)
+    };
+    let layer = |grab: &str| {
+        settings(json!({"layers": [
+            {"draw": "discs", "bind": {"x": 0, "y": 0, "radius": 1}, "grab": grab}
+        ]}))
+    };
+    assert!(Scene::check(&layer("hand"), &a).is_ok());
+    assert_eq!(
+        Scene::check(&layer("cart"), &a).unwrap_err(),
+        "layers[0].grab: no input.pointer block 'cart' (grabbing sends the pointer to one)"
+    );
+}
+
+/// A scene view driven by simulated pointer events, frame by frame, as
+/// the app drives it.
+struct Driven {
+    ctx: egui::Context,
+    view: SceneView,
+    h: History,
+}
+
+impl Driven {
+    fn new(scene: serde_json::Value) -> Self {
+        let mut h = history();
+        push(&mut h, 0.0, 0.5, FRAC_PI_2);
+        let o = offer();
+        let mut view = SceneView::default();
+        view.set_settings(&settings(scene), &available(&o, &h))
+            .unwrap();
+        let mut d = Driven {
+            ctx: egui::Context::default(),
+            view,
+            h,
+        };
+        // The plot settles its bounds over the first frames.
+        for _ in 0..4 {
+            d.frame(Vec::new());
+        }
+        d
+    }
+
+    /// One frame with these events; what grabbing sent in it.
+    fn frame(&mut self, events: Vec<egui::Event>) -> Vec<(String, [f64; 4])> {
+        let registry = crate::view::ViewRegistry::builtin();
+        let t = registry.get(SCENE).unwrap();
+        let bind = Bindings::new();
+        let style = BTreeMap::new();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(600.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let (view, h) = (&mut self.view, &self.h);
+        let mut out = self.ctx.run_ui(raw, |ui| {
+            let input = crate::view::view_input(&bind, &style, t, Recorded::single(h));
+            view.show(ui, &input);
+        });
+        out.textures_delta.clear();
+        self.view.grabs()
+    }
+
+    /// Where a point given in the scene's own frame is on screen.
+    fn screen(&self, p: [f64; 2]) -> egui::Pos2 {
+        let [x, y] = self.view.kept.view.unwrap().apply(p);
+        self.view
+            .shown
+            .unwrap()
+            .position_from_point(&PlotPoint::new(x, y))
+    }
+
+    fn bounds(&self) -> PlotBounds {
+        *self.view.shown.unwrap().bounds()
+    }
+
+    fn press(&mut self, p: egui::Pos2) -> Vec<(String, [f64; 4])> {
+        self.frame(vec![egui::Event::PointerMoved(p)]);
+        self.frame(vec![button(p, true)])
+    }
+
+    fn release(&mut self, p: egui::Pos2) -> Vec<(String, [f64; 4])> {
+        self.frame(vec![button(p, false)])
+    }
+}
+
+fn button(p: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos: p,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    }
+}
+
+/// `[x, y, down, picked]` sent, within a fraction of a screen point.
+fn near(sent: &(String, [f64; 4]), block: &str, want: [f64; 4]) -> bool {
+    let [x, y, down, picked] = sent.1;
+    sent.0 == block
+        && (x - want[0]).abs() < 0.01
+        && (y - want[1]).abs() < 0.01
+        && down == want[2]
+        && picked == want[3]
+}
+
+const EXTENT: [[f64; 2]; 2] = [[-2.0, 2.0], [-2.0, 2.0]];
+
+fn extent() -> serde_json::Value {
+    json!({"x": EXTENT[0], "y": EXTENT[1]})
+}
+
+#[test]
+fn pressing_dragging_and_releasing_an_instance_sends_the_pointer_until_let_go() {
+    let mut d = Driven::new(json!({"extent": extent(), "layers": [
+        {"draw": "discs", "bind": {"x": 1, "y": 0, "radius": 0.3}, "grab": "hand"}
+    ]}));
+    let before = d.bounds();
+    let sent = d.press(d.screen([1.1, 0.0]));
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(near(&sent[0], "hand", [1.1, 0.0, 1.0, 0.0]), "{sent:?}");
+    // Dragged far off the disc, and off the plot: still held, still sent,
+    // and the plot does not pan.
+    for (k, p) in [[0.0, 0.5], [-1.5, -1.0], [-3.0, 0.0]]
+        .into_iter()
+        .enumerate()
+    {
+        let sent = d.frame(vec![egui::Event::PointerMoved(d.screen(p))]);
+        assert_eq!(sent.len(), 1, "move {k}: {sent:?}");
+        assert!(
+            near(&sent[0], "hand", [p[0], p[1], 1.0, 0.0]),
+            "move {k}: {sent:?}"
+        );
+    }
+    // Held still, it is sent again every frame (the app records changes
+    // only).
+    let still = d.frame(Vec::new());
+    assert!(near(&still[0], "hand", [-3.0, 0.0, 1.0, 0.0]), "{still:?}");
+    // Scrolling does not zoom while held.
+    d.frame(vec![egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, 200.0),
+        modifiers: Default::default(),
+        phase: egui::TouchPhase::Move,
+    }]);
+    assert_eq!(d.bounds(), before, "panned or zoomed while held");
+    let at = d.screen([-3.0, 0.0]);
+    let sent = d.release(at);
+    assert_eq!(sent.len(), 1);
+    assert!(near(&sent[0], "hand", [-3.0, 0.0, 0.0, -1.0]), "{sent:?}");
+    // Let go, nothing more is sent.
+    assert!(d
+        .frame(vec![egui::Event::PointerMoved(d.screen([0.0, 0.0]))])
+        .is_empty());
+    assert!(d.frame(Vec::new()).is_empty());
+}
+
+#[test]
+fn pressing_off_every_grabbing_instance_sends_nothing_and_pans() {
+    let mut d = Driven::new(json!({"extent": extent(), "layers": [
+        {"draw": "discs", "bind": {"x": 1, "y": 0, "radius": 0.3}, "grab": "hand"},
+        // Not grabbing: pressing on it pans.
+        {"draw": "discs", "bind": {"x": -1, "y": 0, "radius": 0.3}}
+    ]}));
+    let before = d.bounds();
+    let p = d.screen([-1.0, 0.0]);
+    assert!(d.press(p).is_empty());
+    for k in 1..=10 {
+        let sent = d.frame(vec![egui::Event::PointerMoved(
+            p + egui::vec2(8.0 * k as f32, 0.0),
+        )]);
+        assert!(sent.is_empty());
+    }
+    assert!(d.release(p + egui::vec2(80.0, 0.0)).is_empty());
+    assert_ne!(
+        d.bounds(),
+        before,
+        "a drag off the instances pans as plots do"
+    );
+}
+
+#[test]
+fn the_topmost_grabbing_layer_wins_and_rows_send_their_ids() {
+    // `rb`'s bodies: id 7 at (1, 10), id 3 at (2, 20); a box under them
+    // grabbing with another block.
+    let mut d = Driven::new(json!({"layers": [
+        {"draw": "boxes", "bind": {"x": 1.5, "y": 15, "width": 4, "height": 14}, "grab": "under"},
+        {"draw": "discs", "bind": {"x": "rb.x", "y": "rb.y", "radius": 0.5}, "grab": "hand"},
+        // On top but not grabbing: passed over.
+        {"draw": "discs", "bind": {"x": 2, "y": 20, "radius": 0.2}}
+    ]}));
+    for (p, block, picked) in [
+        ([2.0, 20.0], "hand", 3.0),
+        ([1.0, 10.2], "hand", 7.0),
+        ([1.5, 15.0], "under", 0.0),
+    ] {
+        let at = d.screen(p);
+        let sent = d.press(at);
+        assert!(
+            near(&sent[0], block, [p[0], p[1], 1.0, picked]),
+            "{p:?}: {sent:?}"
+        );
+        let sent = d.release(at);
+        assert!(
+            near(&sent[0], block, [p[0], p[1], 0.0, -1.0]),
+            "{p:?}: {sent:?}"
+        );
+    }
+}
+
+#[test]
+fn grabbing_sends_the_scene_frame_under_view_from_and_in_a_turned_frame() {
+    // `cart.x` is 0.5 and `pole.theta` π/2: the pole's frame stands at
+    // (0.5, 0) turned a quarter, so its (1, 0) is the scene's (0.5, 1).
+    // The picture is seen from the cart.
+    let mut d = Driven::new(json!({"extent": extent(),
+    "frames": {
+        "cart": {"x": "cart.x"},
+        "pole": {"in": "cart", "angle": "pole.theta"}
+    },
+    "view_from": "cart",
+    "layers": [
+        {"draw": "discs", "in": "pole", "bind": {"x": 1, "y": 0, "radius": 0.2}, "grab": "hand"},
+        {"draw": "boxes", "bind": {"x": -1, "y": -1, "width": 0.4, "height": 0.4}, "grab": "hand"}
+    ]}));
+    // Drawn from the cart, the disc is at (0, 1) on the plot's axes ...
+    let plot = d.view.shown.unwrap();
+    let on_plot = plot.value_from_position(d.screen([0.5, 1.0]));
+    assert!(close([on_plot.x, on_plot.y], [0.0, 1.0]));
+    // ... and pressing on it sends the scene's (0.5, 1), not the plot's.
+    let sent = d.press(d.screen([0.5, 1.0]));
+    assert!(near(&sent[0], "hand", [0.5, 1.0, 1.0, 0.0]), "{sent:?}");
+    let sent = d.frame(vec![egui::Event::PointerMoved(d.screen([0.6, 1.1]))]);
+    assert!(near(&sent[0], "hand", [0.6, 1.1, 1.0, 0.0]), "{sent:?}");
+    d.release(d.screen([0.6, 1.1]));
+    // A box in the scene's own frame, seen from the cart.
+    let sent = d.press(d.screen([-1.1, -0.9]));
+    assert!(near(&sent[0], "hand", [-1.1, -0.9, 1.0, 0.0]), "{sent:?}");
+}
+
+#[test]
+fn new_settings_let_go_of_what_is_held() {
+    let mut d = Driven::new(json!({"extent": extent(), "layers": [
+        {"draw": "discs", "bind": {"x": 0, "y": 0, "radius": 0.5}, "grab": "hand"}
+    ]}));
+    let sent = d.press(d.screen([0.0, 0.0]));
+    assert_eq!(sent[0].1[2], 1.0);
+    let (h, o) = (history(), offer());
+    d.view
+        .set_settings(&settings(json!({})), &available(&o, &h))
+        .unwrap();
+    let sent = d.view.grabs();
+    assert!(near(&sent[0], "hand", [0.0, 0.0, 0.0, -1.0]), "{sent:?}");
+}

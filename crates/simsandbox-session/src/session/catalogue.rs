@@ -56,6 +56,9 @@ pub(super) struct Catalogue {
     mesh_shapes: Vec<(String, MeshShape)>,
     /// The model's block types, which views can bind.
     pub(super) block_types: Vec<String>,
+    /// Its `input.pointer` blocks, which a scene's layers grab with
+    /// (ADR 0093 point 6).
+    pointers: Vec<String>,
     /// Every scalar and per-sample field a step yields, in sample order:
     /// what probes take from and views can bind.
     pub(super) layout_scalars: Vec<String>,
@@ -99,6 +102,9 @@ impl Catalogue {
             let block = loaded.model.block(id).map_err(|e| e.to_string())?;
             if !c.block_types.contains(&entry.type_name) {
                 c.block_types.push(entry.type_name.clone());
+            }
+            if entry.type_name == simsandbox_eq::input::POINTER {
+                c.pointers.push(entry.name.clone());
             }
             let spec = block.spec();
             for port in spec.outputs() {
@@ -560,6 +566,12 @@ impl Session {
         [&c.grids, &c.points, &c.lines, &c.block_types, &c.rows]
     }
 
+    /// The model's `input.pointer` blocks, which a scene's layers grab
+    /// with (ADR 0093 point 6).
+    pub fn pointers(&self) -> &[String] {
+        &self.catalogue.pointers
+    }
+
     /// What views can bind: everything a step yields (ADR 0063), whether
     /// or not the history `h` records it now; and the model's block types.
     pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
@@ -576,6 +588,7 @@ impl Session {
             derived: self.probes.derived_names(),
             // Units and tables of every output, recorded or not.
             meta: Some(h),
+            pointers: Some(&c.pointers),
         }
     }
 
