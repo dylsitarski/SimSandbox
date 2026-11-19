@@ -1,25 +1,29 @@
 //! The rigid-body spike of ADR 0057 item 3: the same cases on Rapier (2D and
 //! 3D, f64, impulse and multibody joints) and on MuJoCo (through its C API),
-//! printed as Markdown tables. See README.md.
+//! printed as Markdown tables; and a native 2D articulated-body solver
+//! (`native_2d.rs`) on the jointed cases. See README.md.
 
 mod common;
 #[cfg(feature = "mujoco")]
 mod mujoco;
+mod native_2d;
+mod native_cases;
 mod rapier_2d;
 mod rapier_3d;
+mod typed;
 
 use common::{cartpole as cp, disturb, hash_bits, pendulum as pd, time, Sim, SnapKind};
 use rapier_2d::{Joints, Model};
 use std::hint::black_box;
 
-type Make = fn(Model, f64) -> Box<dyn Sim>;
+pub type Make = fn(Model, f64) -> Box<dyn Sim>;
 
-fn quick() -> bool {
+pub fn quick() -> bool {
     std::env::var("SPIKE_QUICK").is_ok()
 }
 
 /// Every engine and setting that runs jointed models.
-fn joint_variants() -> Vec<Make> {
+pub fn joint_variants() -> Vec<Make> {
     let mut v: Vec<Make> = vec![
         |m, dt| Box::new(rapier_2d::R2::new(m, Joints::Impulse, dt)),
         |m, dt| Box::new(rapier_2d::R2::new(m, Joints::Multibody, dt)),
@@ -32,7 +36,45 @@ fn joint_variants() -> Vec<Make> {
         |m, dt| Box::new(mujoco::Mj::new(m, mujoco::Integrator::Rk4, dt)),
         |m, dt| Box::new(mujoco::Mj::new(m, mujoco::Integrator::ImplicitFast, dt)),
     ]);
+    v.extend(native_variants());
+    v.extend(typed_variants());
     v
+}
+
+/// The typed-equations models, with SimSandbox's methods for them.
+pub fn typed_variants() -> Vec<Make> {
+    vec![
+        |m, dt| Box::new(typed::T2::new(m, "rk4", dt)),
+        |m, dt| Box::new(typed::T2::new(m, "dopri5", dt)),
+        |m, dt| Box::new(typed::T2::new(m, "trbdf2", dt)),
+    ]
+}
+
+/// The native solver (ABA) with each integrator.
+pub fn native_variants() -> Vec<Make> {
+    use native_2d::{Method, N2};
+    use simsandbox_eq::Integrator;
+    vec![
+        |m, dt| Box::new(N2::new(m, Method::SemiImplicitEuler, dt)),
+        |m, dt| Box::new(N2::new(m, Method::Eq(Integrator::Rk4 { substeps: 1 }), dt)),
+        |m, dt| {
+            Box::new(N2::new(
+                m,
+                Method::Eq(Integrator::Dopri5 {
+                    rtol: 1e-8,
+                    atol: 1e-10,
+                }),
+                dt,
+            ))
+        },
+        |m, dt| {
+            Box::new(N2::new(
+                m,
+                Method::Eq(Integrator::TrBdf2 { substeps: 1 }),
+                dt,
+            ))
+        },
+    ]
 }
 
 /// The engines and settings for models with contacts and no joints.
@@ -62,12 +104,42 @@ fn main() {
         "determinism",
         "speed",
         "contacts",
+        "chain",
+        "native",
+        "typed",
     ];
     let cases: Vec<&str> = if args.is_empty() || args.iter().any(|a| a == "all") {
         all.to_vec()
     } else {
         args.iter().map(String::as_str).collect()
     };
+    // For experiments: µs per kernel step of any model file.
+    if cases.first() == Some(&"typed-time") {
+        let (file, method, steps) = (cases[1], cases[2], cases[3].parse::<usize>().unwrap());
+        let mut t = typed::Typed::load_path(file, method);
+        if std::env::var("SIMSANDBOX_NATIVE").is_ok_and(|v| v == "build") {
+            // A native library builds in the background: wait for it.
+            let start = std::time::Instant::now();
+            while !t.code().starts_with("native") && start.elapsed().as_secs() < 600 {
+                t.step(0.001);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            eprintln!("after {:.0} s: {}", start.elapsed().as_secs_f64(), t.code());
+            t = typed::Typed::load_path(file, method);
+            t.step(0.001);
+        }
+        let (_, wall) = time(|| {
+            for _ in 0..steps {
+                t.step(0.001);
+            }
+        });
+        println!(
+            "{file} {method}: {:.3} µs per step ({})",
+            wall / steps as f64 * 1e6,
+            t.code()
+        );
+        return;
+    }
     if cases == ["hash"] {
         hashes();
         return;
@@ -81,6 +153,11 @@ fn main() {
             "determinism" => determinism(),
             "speed" => speed(),
             "contacts" => contacts(),
+            "chain" => native_cases::chain_stability(),
+            "native" => native_cases::native(),
+            "typed" => native_cases::typed_cases(),
+            "typed-cost" => native_cases::typed_cost(),
+            "generated" => native_cases::generated_aba(),
             "trace" => trace(),
             other => eprintln!("unknown case {other}; cases: {}", all.join(", ")),
         }
@@ -100,6 +177,7 @@ fn header() {
     );
     #[cfg(not(feature = "mujoco"))]
     println!("- MuJoCo: not built (feature `mujoco` off)");
+    println!("- Native 2D: `src/native_2d.rs` (ABA; semi-implicit Euler written there; RK4, Dopri5, TR-BDF2 from `simsandbox-eq`)");
     println!(
         "- Build: {} profile; quick mode {}\n",
         if cfg!(debug_assertions) {
@@ -119,7 +197,7 @@ fn rapier_features() -> &'static str {
     }
 }
 
-fn sci(x: f64) -> String {
+pub fn sci(x: f64) -> String {
     format!("{x:+.2e}")
 }
 
@@ -603,6 +681,12 @@ fn speed() {
             "chain of 50 links",
         ),
         (
+            Model::Chain { links: 200 },
+            if q { 100 } else { 500 },
+            true,
+            "chain of 200 links",
+        ),
+        (
             Model::Pile { boxes: 100 },
             if q { 500 } else { 3_000 },
             false,
@@ -617,6 +701,11 @@ fn speed() {
         };
         for make in makes {
             let mut sim = make(model, dt);
+            // Typed TR-BDF2 on chains: a dense Jacobian by differences,
+            // 85 ms a step at 50 links (see the typed cost table).
+            if matches!(model, Model::Chain { .. }) && sim.label() == "Typed equations, trbdf2" {
+                continue;
+            }
             let w0 = sim.warnings();
             let gains = cp::lqr();
             let (_, wall) = time(|| {
@@ -659,7 +748,10 @@ fn speed() {
 fn largest_speed(sim: &dyn Sim) -> f64 {
     let r = sim.rows();
     let label = sim.label();
-    let vals: Vec<f64> = if label.starts_with("Rapier 2D") {
+    let vals: Vec<f64> = if label.starts_with("Rapier 2D")
+        || label.starts_with("Native 2D")
+        || label.starts_with("Typed")
+    {
         r.chunks(6).flat_map(|c| c[3..6].to_vec()).collect()
     } else if label.starts_with("Rapier 3D") {
         r.chunks(13).flat_map(|c| c[7..13].to_vec()).collect()
@@ -668,6 +760,7 @@ fn largest_speed(sim: &dyn Sim) -> f64 {
         let n = r.len();
         let nv = match n {
             100 => 50,   // chain: 50 + 50
+            400 => 200,  // chain: 200 + 200
             1300 => 600, // 100 free bodies: 700 + 600
             _ => n / 2,
         };

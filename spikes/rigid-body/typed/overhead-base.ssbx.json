@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "description": "Measures a built-in call's overhead (with overhead-solve): two states, a 2 x 2 matrix formed, no call.",
+  "run": {
+    "dt": 0.001,
+    "t_end": 1.0
+  },
+  "blocks": [
+    {
+      "name": "o",
+      "type": "eq.equations",
+      "equations": [
+        "grid i = 2",
+        "grid j = 2",
+        "state x[i] = 1",
+        "A = (i > j - 0.5)*(i < j + 0.5) + 0*on(x, i, j)",
+        "dx/dt = -x"
+      ],
+      "method": {
+        "name": "rk4"
+      }
+    }
+  ],
+  "connections": []
+}

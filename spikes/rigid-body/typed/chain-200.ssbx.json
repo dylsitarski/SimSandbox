@@ -1,0 +1,46 @@
+{
+  "format": 1,
+  "description": "The spike's chain of 200 uniform links (0.1 m, 0.1 kg) as typed equations: absolute angles phi from +x, counter-clockwise, starting horizontal at rest. M(phi) and the right-hand side are built over the axes of links (i, j) in closed form for a uniform chain; the accelerations are solve(M, b).",
+  "run": {
+    "dt": 0.001,
+    "t_end": 10.0
+  },
+  "blocks": [
+    {
+      "name": "chain",
+      "type": "eq.equations",
+      "equations": [
+        "# a chain of 200 uniform links; phi[i] is link i's absolute angle",
+        "grid i = 200",
+        "grid j = 200",
+        "param nl = 200",
+        "param m [kg] = 0.1",
+        "param l [m] = 0.1",
+        "param g [m/s^2] = 9.81",
+        "state phi[i] = 0",
+        "state w[i] [1/s] = 0",
+        "# mu: what links i and j share of the links beyond them (uniform rods)",
+        "eye = (i > j - 0.5)*(i < j + 0.5)",
+        "mu = eye*(1/3 + nl - 1 - i) + (1 - eye)*(1/2 + nl - 1 - max(i, j))",
+        "pj = on(phi, i, j)",
+        "wj = on(w, i, j)",
+        "M = m*l^2*mu*cos(phi - pj) [kg*m^2]",
+        "b = -sum(m*l^2*mu*sin(phi - pj)*wj^2, j) - m*g*l*cos(phi)*(nl - i - 0.5) [N*m]",
+        "acc = solve(M, b) [1/s^2]",
+        "dphi/dt = w",
+        "dw/dt = on(acc, j, i) [1/s^2]",
+        "# each link's centre and its velocity, as rows",
+        "before = (j < i - 0.5)",
+        "cx = sum(l*cos(pj)*before, j) + 0.5*l*cos(phi) [m]",
+        "cy = sum(l*sin(pj)*before, j) + 0.5*l*sin(phi) [m]",
+        "cvx = -sum(l*sin(pj)*wj*before, j) - 0.5*l*sin(phi)*w [m/s]",
+        "cvy = sum(l*cos(pj)*wj*before, j) + 0.5*l*cos(phi)*w [m/s]",
+        "E = sum(0.5*m*(cvx^2 + cvy^2) + 0.5*(m*l^2/12)*w^2 + m*g*cy) [J]"
+      ],
+      "method": {
+        "name": "rk4"
+      }
+    }
+  ],
+  "connections": []
+}
