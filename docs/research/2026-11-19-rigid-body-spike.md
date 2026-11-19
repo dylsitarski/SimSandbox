@@ -1,6 +1,6 @@
 # Rigid-body spike: Rapier against MuJoCo (2026-11-19)
 
-The spike [ADR 0057](../decisions/0057-phase-2-plan.md) item 3 asks for before the first rigid-body backend: the same cases on both engines, measured, for the Phase 2 gate's interactive cart-pole ([roadmap](../roadmap.md#phase-2--breadth)). The decision it proposes is [ADR 0103](../decisions/0103-rigid-body-engine.md) (Proposed). Code and how to run it: [spikes/rigid-body](../../spikes/rigid-body/README.md).
+The spike [ADR 0057](../decisions/0057-phase-2-plan.md) item 3 asks for before the first rigid-body backend: the same cases on both engines, measured, for the Phase 2 gate's interactive cart-pole ([roadmap](../roadmap.md#phase-2--breadth)). The decision it proposes is [ADR 0103](../decisions/0103-rigid-body-engine.md) (Proposed). A follow-up the same day added a native articulated-body solver, the same mechanisms as typed equations and an estimate for Featherstone as a typed-equations function: [below](#a-native-articulated-body-solver-2026-11-19). Code and how to run it: [spikes/rigid-body](../../spikes/rigid-body/README.md).
 
 ## Method
 
@@ -131,6 +131,8 @@ All runs were deterministic (same hash twice). Both engines' stacks are stable. 
 
 ## Recommendation
 
+_This was the first recommendation (Rapier for everything). The follow-up, [a native articulated-body solver](#a-native-articulated-body-solver-2026-11-19), changes it for jointed mechanisms without contact; the current proposal is [ADR 0103](../decisions/0103-rigid-body-engine.md)._
+
 **Rapier (`rapier2d-f64` first, `rapier3d-f64` when 3D scenes arrive), with `enhanced-determinism`, multibody joints for mechanisms like the cart-pole, and its state held as an opaque snapshot.** MuJoCo stays the candidate for a later, optional backend for robotics-grade 3D work (MJCF models, RK4, generalized coordinates), wrapped when a model needs it.
 
 Reasons:
@@ -154,3 +156,198 @@ Risks:
 - **Contact behaviour differs between engines** (the dropped box). Neither is "right" without a reference; contact models need their own verification cases before they are labelled.
 
 What would change the recommendation: if 3D robotics models (MJCF from elsewhere) or reference-grade accuracy (RK4 in generalized coordinates) became the next need rather than playable 2D scenes, MuJoCo's strengths would weigh more than its build and determinism costs.
+
+## A native articulated-body solver (2026-11-19)
+
+A follow-up asked for by the owner the same day. SimSandbox hosts any engine a user relies on; the engine it ships as the default must have SimSandbox's own properties (exact replay and rewind, units, verification, AI access). The hypothesis tested: **jointed mechanisms without contact** (chains and trees on revolute and prismatic joints: the cart-pole, pendulum chains, arms) are worth a solver of SimSandbox's own, whose dynamics in joint coordinates are an ODE and whose state is an ordinary kernel state; **contacts** stay with Rapier. Two more routes were added during the day at the owner's request: the same mechanisms **written as typed equations**, and **Featherstone as a built-in typed-equations function** (estimated, not built). The proposal that follows from all of it is in [ADR 0103](../decisions/0103-rigid-body-engine.md).
+
+### Method
+
+- **The native solver** ([`spikes/rigid-body/src/native_2d.rs`](../../spikes/rigid-body/src/native_2d.rs), pure Rust, no new crates): a tree of rigid bodies in the plane (mass, centre of mass, inertia about it), each on one revolute or prismatic joint to its parent or the ground; gravity; joint damping (default 0); joint forces and point forces in world axes at a point fixed on a body (how a grab's spring is applied). Dynamics by Featherstone's articulated-body algorithm (ABA) in 2D spatial algebra (3-vectors ω, vx, vy), O(n); and, as an independent check, the composite rigid-body algorithm (CRBA) with recursive Newton–Euler (RNEA) and a Cholesky solve. Outputs: each body's `x`, `y`, `angle` and velocities at its centre, by forward kinematics. **State: `[q, q̇]` and nothing else.**
+- **Integrators.** A semi-implicit Euler written in the spike (q̇ first, then q, as MuJoCo's Euler and Rapier do). RK4, Dormand–Prince 5(4) (rtol 1e−8, atol 1e−10) and TR-BDF2 are **SimSandbox's own**: the spike depends on `simsandbox-eq` by path and calls `Integrator::advance_in`, as the equation domain does. The workspace is unchanged.
+- **Typed equations** ([`spikes/rigid-body/typed/`](../../spikes/rigid-body/typed/)): model files loaded by `simsandbox-file` and stepped by the kernel's `Simulator` (the spike depends on `simsandbox-core` and `simsandbox-file` by path), as `simsandbox run` does:
+  - `pendulum`, `cartpole` (inputs held over the step: the cart force and the tip force are parameters the host sets before each step, as for the other engines), `cartpole-lqr` (plant, LQR and grab in one block: one ODE), `double-pendulum` (Lagrange equations, 2 × 2 inverse by hand);
+  - `chain-N`: an n-link chain in absolute angles, M(φ) and the right-hand side over axes `i`, `j`, accelerations by `solve(M, b)`;
+  - `aba-chain-N`: the equation-generator route, the native ABA unrolled into scalar formulas per body by [`generate_aba.py`](../../spikes/rigid-body/typed/generate_aba.py) (the 50- and 200-link files are generated, not committed);
+  - `overhead-base`, `overhead-solve`: a built-in call's cost.
+- **Same cases and parameters** as above (the same `Sim` trait, models and references), rerun in one process on the same machine (Linux 6.18, Xeon 2.30 GHz, one thread, Rust 1.97.0, release, `-j 2`), measured 2026-11-19. Rapier's and MuJoCo's numbers in that rerun agree with the tables above within a few per cent; the tables below quote them for comparison.
+- **New references:** the double pendulum's Lagrange equations written out by hand (absolute angles), RK4 at h = 1e−5 s; the damped pendulum's linear solution at 1e−5 rad; conservation of energy and of momentum.
+
+### N1. Pendulum period and energy
+
+| Engine | a = 0.1 rad, dt 10 ms | dt 1 ms | dt 0.5 ms | a = 2 rad, dt 10 ms | dt 1 ms | dt 0.5 ms | Order | Energy over 100 periods at 2 rad, dt 1 ms: max \|ΔE\|/E0 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Rapier, multibody joints | −2.5e−6 | −2.5e−8 | −6.3e−9 | +1.1e−6 | +1.1e−8 | +2.6e−9 | 2 | 9.7e−4 |
+| MuJoCo, Euler | −4.0e−5 | −4.0e−7 | −1.0e−7 | +1.7e−5 | +1.7e−7 | +4.2e−8 | 2 | 1.3e−3 |
+| MuJoCo, RK4 | −3.9e−9 | +6.9e−12 | −6.5e−13 | +5.8e−9 | −7.9e−13 | +1.3e−12 | 4 | 2.2e−12 |
+| **Native, semi-implicit Euler** | −4.0e−5 | −4.0e−7 | −1.0e−7 | +1.7e−5 | +1.7e−7 | +4.2e−8 | 2 | 1.3e−3 |
+| **Native, RK4** | −3.9e−9 | +6.9e−12 | −6.5e−13 | +5.8e−9 | −7.9e−13 | +1.3e−12 | 4 | 2.1e−12 |
+| **Native, Dopri5** | −1.2e−8 | +6.1e−12 | −7.0e−13 | +7.5e−9 | −1.1e−12 | +1.2e−12 | (adaptive) | 5.1e−14 |
+| **Native, TR-BDF2** | +3.9e−5 | +3.9e−7 | +9.8e−8 | +1.7e−5 | +1.9e−7 | +4.7e−8 | 2 | 6.4e−7 (loses energy) |
+| **Typed equations, RK4** | as native RK4 to every digit shown | | | | | | 4 | 2.1e−12 |
+| **Typed equations, Dopri5** | −1.2e−8 | +6.4e−12 | +7.2e−14 | +7.5e−9 | −9.2e−13 | +2.4e−12 | (adaptive) | 2.9e−14 |
+| **Typed equations, TR-BDF2** | as native TR-BDF2 to every digit shown | | | | | | 2 | 6.4e−7 |
+
+The native solver's semi-implicit Euler and RK4 give **MuJoCo's numbers to every digit printed** (same dynamics in generalized coordinates, same schemes); so do the typed equations with RK4.
+
+### N2. Cart-pole
+
+| Engine | Closed loop, 6 s: max \|θ − θ_ref\| | max \|x − x_ref\| | Open loop: θ − θ_ref at 1 s |
+| --- | --- | --- | --- |
+| Rapier, multibody joints | 3.3e−4 rad | 3.7e−4 m | +8.5e−4 rad |
+| MuJoCo, Euler | 8.8e−4 rad | 7.6e−4 m | +3.6e−3 rad |
+| MuJoCo, RK4 | 2.2e−5 rad | 4.6e−5 m | −9.5e−12 rad |
+| **Native, semi-implicit Euler** | 8.8e−4 rad | 7.6e−4 m | +3.6e−3 rad |
+| **Native, RK4** | **3.3e−9 rad** | 9.0e−9 m | −9.5e−12 rad |
+| **Native, Dopri5** | 1.2e−13 rad | 1.1e−13 m | +9.3e−15 rad |
+| **Native, TR-BDF2** | 2.7e−7 rad | 7.5e−7 m | +2.5e−6 rad |
+| **Typed equations, RK4 / Dopri5 / TR-BDF2** | 3.3e−9 / 1.2e−13 / 2.7e−7 rad | 9.0e−9 / 1.9e−13 / 7.5e−7 m | −9.5e−12 / +8.0e−15 / +2.5e−6 rad |
+
+Native RK4 is about 7000 times closer to the reference than MuJoCo's RK4 in closed loop, while open loop they agree to 1e−12. The likely reason (not isolated): the spike gives MuJoCo the tip force as a world force and torque about the pole's centre (`xfrc_applied`), fixed over the step, while the native solver, like the reference, applies it at the moving tip inside every RK4 stage. Every route balanced through the impulse and the grab; the largest tilt while pulled is 0.2126 rad for all but the Euler-type schemes (0.2121).
+
+### N3. Snapshot and restore
+
+| Engine | Full state | Bit-identical after restore (same objects, new objects) | Size, cart-pole | Take, restore |
+| --- | --- | --- | --- | --- |
+| Rapier 2D, multibody | the sets, serialized | yes | 6.3 KB | 2.0 µs, 4.3 µs |
+| MuJoCo | `mjSTATE_INTEGRATION` | yes | 224 B | 0.1 µs, 0.1 µs |
+| **Native (every integrator)** | `[q, q̇]` | **yes** | **32 B** | < 0.05 µs each |
+| **Typed equations (every method)** | the kernel's own `Snapshot` (states, parameters, outputs it cannot recompute) | yes; into a newly loaded model too | 32 B of states | 0.3 µs, 0.3 µs (new model: 140 µs, most of it loading) |
+
+**Found on the way:** with TR-BDF2 the native solver first restored into a *new* workspace with 8 of 12 values off by up to 5.9e−12. `simsandbox-eq`'s implicit methods, when a system gives no Jacobian structure, probe it once at the first step's state and keep it; the cart-pole starts at rest, where ∂q̈/∂q̇ (quadratic in q̇) is zero, so the probe misses it, and a workspace probed at another state gives other bits. Passing the structure (q̇'s rates read q̇, q̈'s read everything) fixed it. Typed equations give their structure exactly and are not affected; Rust `OdeSystem`s whose `sparsity()` is `None` are. Suggested as a separate task.
+
+### N4. Determinism
+
+Hashes of every body's pose and velocity at every step of the 6 s cart-pole with the disturbances: the same twice in one process and in two more processes, **for every native and typed variant** (seven more runs, all "yes"). Cross-machine: as for MuJoCo and the typed equations, the native solver calls the platform's `sin` and `cos` (Rust's `f64::sin_cos`), which may differ between operating systems; Rapier avoids this with the `libm` crate under `enhanced-determinism`. It is the same exposure SimSandbox's typed equations already have (`Func::Sin` calls `f64::sin`), so the CI hash job ADR 0103 asks for covers both.
+
+### N5. Speed, and the chains' stability
+
+µs per step at 1 kHz, one thread (cart-pole with the controller in the loop):
+
+| Model | Rapier 2D multibody | MuJoCo Euler | MuJoCo RK4 | Native, semi-implicit Euler | **Native, RK4** | Native, Dopri5 | Native, TR-BDF2 | Typed (`solve` route), RK4 | Typed (generated ABA), RK4 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Cart-pole | 3.7 | 0.70 | 2.4 | 0.15 | **0.54** | 1.0 | 1.6 | 1.05 (closed form) | – |
+| Chain, 50 links | 1086 | 13 | 54 | 3.3 | **13.8** | 124 | 2106 | 464 | 150 |
+| Chain, 200 links (500 steps) | 58 164 | 321 | 1258 | 12.6 | **50.8** | 319 | 23 070 | 10 400 | 591 |
+
+Typed timings are from a fresh process (`typed-cost`, `generated`); see "an anomaly" below for why. Rapier impulse joints: 20 µs (50 links) and 49 µs (200).
+
+The 50-link chain over 10 s (from horizontal, no damping), energy against E_ref = m g L n²/2 (the potential energy the chain loses by hanging straight down):
+
+| Engine | max \|E − E0\|/E_ref | Stable for 10 s |
+| --- | --- | --- |
+| Rapier 2D impulse joints | 0.41 (lost) | yes, by losing energy |
+| Rapier 2D multibody joints | 0.57 (lost) | yes, by losing energy |
+| MuJoCo Euler, implicitfast | – | **no**, reset at 3.125 s |
+| MuJoCo RK4 | – | **no**, reset at 7.008 s |
+| Native, semi-implicit Euler | – | **no**, not a number at 3.131 s |
+| Native, RK4 | – | **no**, not a number at 7.016 s |
+| **Native, Dopri5** | **2.7e−7** | **yes** (124 µs a step: 8× real time) |
+| Native, TR-BDF2 | 5.1e−2 | yes (2.1 ms a step) |
+| Typed (`solve` route, absolute angles), RK4 | 0.16 | yes |
+| Typed (`solve` route), Dopri5 | 1.3e−7 | yes |
+| 200 links: native Dopri5 | 4.1e−9 | yes (2.8 ms a step with the energy; 319 µs without) |
+| 200 links: native RK4, semi-implicit Euler, TR-BDF2 | – | no (6.2 s, 5.3 s, 6.2 s) |
+
+- The fixed-step explicit failures happen **at the same instants as MuJoCo's** (3.13 s and 7.01 s): they are the chain's dynamics at 1 kHz (the free end whips faster than the step resolves), not a defect of either. An adaptive method (Dopri5) carries both chains through with energy kept to 1e−7, which no fixed-step engine here offers. The same RK4 in absolute angles (typed) stayed finite but lost 16 % of the energy: the coordinates change how the whip fails.
+- MuJoCo's chain timing differs from the native one mostly by constant factors; native semi-implicit Euler is 4 times faster than MuJoCo's Euler, native RK4 4 times faster than MuJoCo's RK4 (one fewer dimension, no collision pipeline, no general constraint solver).
+
+### N6. Verification beyond the shared cases
+
+**ABA against CRBA + RNEA, and against equations written by hand** (relative difference in q̈, max over draws):
+
+| Check | Draws | Largest difference |
+| --- | --- | --- |
+| Random trees of 2, 10, 50 bodies (parents drawn among earlier bodies or the ground, 70 % revolute and 30 % prismatic on random axes, random masses, centres, inertias, damping, sideways gravity), random states, joint forces and two point forces | 100 each | 2.2e−15, 1.2e−14, 2.6e−14 |
+| Cart-pole against the spike's exact equations (cart force and tip force) | 1000 | 9.6e−16 |
+| Double pendulum against its Lagrange equations by hand | 1000 | 3.0e−15 |
+
+**Double pendulum** (two uniform rods of 1 kg and 1 m, from 1 rad and 0.5 rad absolute, 5 s), max |φ − φ_ref| against the hand-written Lagrange equations by RK4 at 1e−5 s (which agrees with itself at 2e−5 s to 6e−14):
+
+| Method | dt 4 ms | 2 ms | 1 ms | 0.5 ms | Order |
+| --- | --- | --- | --- | --- | --- |
+| Native, semi-implicit Euler | 6.7e−2 | 3.6e−2 | 1.9e−2 | 9.5e−3 | 0.97 |
+| Native, RK4 | 1.6e−7 | 1.0e−8 | 6.5e−10 | 4.1e−11 | 3.99 |
+| Native, Dopri5 | 3.5e−10 | 1.0e−11 | 3.2e−13 | 2.7e−14 | (adaptive) |
+| Native, TR-BDF2 | 7.0e−4 | 1.8e−4 | 4.4e−5 | 1.1e−5 | 2.00 |
+| Typed, RK4 | 1.6e−7 | 1.0e−8 | 6.5e−10 | 4.1e−11 | 3.99 |
+| Typed, TR-BDF2 | 7.0e−4 | 1.8e−4 | 4.4e−5 | 1.1e−5 | 2.00 |
+
+**Energy** without damping or forcing, dt = 1 ms, 100 s, relative to the energy above the hanging rest: double pendulum, semi-implicit Euler **+12 %** (it is not symplectic when the mass matrix depends on q), RK4 4.9e−11, Dopri5 9.0e−13, TR-BDF2 1.2e−6; a 10-link chain, semi-implicit Euler 78 %, RK4 2.4 %, Dopri5 3.8e−7, TR-BDF2 1.7 %.
+
+**Momentum, free-floating chain.** A floating base costs nothing extra: two massless bodies on prismatic joints along x and y, then the first link on a revolute joint (ABA handles massless bodies, since each joint's articulated inertia includes what hangs on it). Five links in zero gravity, every joint moving, 10 s at 1 ms: drift of linear momentum (relative to |P0|) and angular momentum about the origin: RK4 6.7e−10 and 7.8e−9; Dopri5 7.2e−14 and 1.6e−12; TR-BDF2 4.9e−6 and 7.6e−5; semi-implicit Euler 8.4e−3 and 8.8e−2.
+
+**Joint damping** (b = 0.05 N m s/rad, 1e−5 rad, 10 s) against the linear solution: RK4 1.4e−10, Dopri5 1.2e−10, TR-BDF2 9.2e−6, semi-implicit Euler 1.6e−3 (relative to the amplitude).
+
+**A controller fused with the plant.** The cart-pole with LQR evaluated inside the right-hand side, so plant and controller are one ODE, against the same continuous closed loop on the exact equations (RK4 at 1e−5 s), max |θ − θ_ref| over 6 s:
+
+| Controller | dt 10 ms | 5 ms | 2 ms | 1 ms | Order |
+| --- | --- | --- | --- | --- | --- |
+| Native ABA, fused, RK4 | 4.4e−8 | 2.7e−9 | 6.7e−11 | 4.2e−12 | 4.01 |
+| Typed `cartpole-lqr` (one block), RK4 | 4.4e−8 | 2.7e−9 | 6.7e−11 | 4.2e−12 | 4.01 |
+| Typed `cartpole-lqr`, Dopri5 | 9.0e−11 | 3.3e−12 | 3.2e−14 | 1.4e−15 | – |
+| Native ABA, controller held over each step (as with any hosted engine) | 2.4e−3 | 1.2e−3 | 4.7e−4 | 2.3e−4 | 1.00 |
+
+What fusing buys is the order of the whole loop: held over the step, the controller's sampling is a first-order gap (2.3e−4 rad at 1 kHz) whatever the plant's integrator; fused, the closed loop is fourth order. A hosted engine (Rapier, MuJoCo) can only hold its inputs over its own step. With the recorded impulse and grab as parameters set between steps, `cartpole-lqr` (RK4, 1 ms) peaks at 0.2119 rad and stays within 9.1e−4 rad of the held-controller reference: the gap is the sampling, not an error.
+
+### N7. Mechanisms as typed equations
+
+**What can be written today.** Everything above for fixed mechanisms, with units checked (`simsandbox check` passed every file at the first try):
+
+| Model | Lines (without comments) | How |
+| --- | --- | --- |
+| Pendulum | 14 | scalar equations |
+| Cart-pole (inputs held) | 27 | the Lagrange equations, 2 × 2 inverse by hand |
+| Cart-pole with LQR and grab | 42 | the same, controller and spring as formulas |
+| Double pendulum | 24 | Lagrange equations, 2 × 2 inverse by hand |
+| n-link chain (any n) | 23 | `grid i`, `grid j`; M and b over (i, j) in closed form; `solve(M, b)`; rows by sums over the links before each |
+| n-link chain, ABA generated | 131 (n = 2), 747 (10), 3829 (50), 15 386 (200) | `generate_aba.py`: scalar lines per body, no arrays |
+
+**Where it stops.**
+
+- The `solve` chain exists only because a chain of **uniform links in absolute angles** has a closed-form M (M_ij = m l² μ_ij cos(φ_i − φ_j), with μ a count of the links beyond i and j). A general chain needs M_ij = Σ_k m_k a_ki a_kj over a third axis (expressible, n³ work per evaluation); a **tree** needs "is i an ancestor of k", which the language can only take as a parameter matrix read from a file: it has no recursion along edges and no ordered pass from root to leaves (`of(T, i)` reads one row by id, one hop). Prismatic joints break the cos(φ_i − φ_j) form altogether. So hand-derived M and C do not generalise; they are a per-mechanism derivation.
+- Its cost is O(n²) trigonometry plus `solve`'s O(n³) with a copy of M per evaluation: 3.6 µs (2 links), 22 µs (10), 464 µs (50, interpreted: phases this small are not compiled), 10.4 ms (200, compiled; native code 8.9 ms, built in about a second with `SIMSANDBOX_NATIVE=build`). Removing the sums or `solve` showed the sums of n² trigonometric terms are most of it (at 50 links: 229 of 445 µs a step), `solve` about a third.
+- **Authoring.** No derivation error happened here, because every typed model was checked against an independent reference the same day (the native ABA to 3e−13, the hand Lagrange reference to 4e−11 at RK4's order). Without such a check, a sign in C or a missing ½ in μ would give a plausible, wrong mechanism: hand-derived M and C are what most needs a reference.
+- **The generated ABA** needs no language change and agrees with the native solver to 1.6e−13–1.5e−11 over 2 s. It is linear in n but about **11 times slower than the native ABA** (150 µs against 13.4 µs at 50 links, 591 against 52 at 200; Dopri5 684 and 2779 µs): its 3800 scalar lines run on the interpreter, since only phases of arrays are compiled. The files are machine output nobody would edit (175 KB at 50 links, 743 KB at 200), regenerated on every change to the mechanism.
+- **Crossover.** Against the `solve` route the generated ABA wins from about 10–20 links (22 against 28 µs at 10; 464 against 150 at 50). Against the native solver there is no crossover: closed-form typed equations come within 2 times of it only for the smallest mechanisms (cart-pole 0.8–1.05 µs against 0.54).
+
+**An anomaly.** In one long process the compiled 200-link chain took 267 ms a step (and the 50-link chain 3.9 ms in the full suite) instead of 10.4 ms and 0.46 ms in a fresh process. It reproduces whenever the 50-link chain ran with TR-BDF2 earlier in the same process (`SPIKE_TYPED_ONLY=chain-50,chain-200 … typed-cost`); glibc's malloc thresholds are not the cause; the cause is not found. Suggested as a separate task.
+
+### N8. Featherstone as a typed-equations function (estimate)
+
+The owner's fifth option: the language gains a built-in such as `articulated(bodies, q, qd, tau, f_ext)`, as `solve` hides its factorisation, with the native ABA as its body. Not built (no workspace changes); **this is an estimate from measured parts**:
+
+- ABA per evaluation, measured: 0.09 µs (2 links), 0.63 (10), 3.5 (50), 14.3 (200).
+- A built-in call through the interpreter, measured: `overhead-solve` against `overhead-base` (two states, a 2 × 2 matrix, RK4): 1.13 against 0.22 µs a step, so **about 0.23 µs per call** (the relabelling, the call, the copy and a 2 × 2 elimination). Fixed per-step cost of a small typed model: about 0.2–0.3 µs.
+- Estimate per RK4 step = 4 × (ABA + 0.23 µs) + 0.25 µs, plus forward kinematics for the outputs once a step (about a quarter of an ABA):
+
+| Links | Native block, RK4 (measured) | **Featherstone function, RK4 (estimate)** | Generated ABA, RK4 (measured) | `solve` route, RK4 (measured) |
+| --- | --- | --- | --- | --- |
+| 2 | 0.46 µs | ≈ 1.5 µs | 4.0 µs | 3.6 µs |
+| 10 | 2.7 µs | ≈ 4 µs | 28 µs | 22 µs |
+| 50 | 13.3 µs | ≈ 16 µs | 150 µs | 464 µs |
+| 200 | 52 µs | ≈ 62 µs | 591 µs | 10 400 µs |
+
+So within about 1.2 times of the native block at 50 links and more, 1.5 times at 10 and 3 times at 2 (where both are under 2 µs: hundreds of times real time at 1 kHz). Expected, not measured: the overhead of passing a table's columns could be larger than `solve`'s, and the function would need its structure declared to implicit methods (dense: every q̈ reads every q and q̇).
+
+**Design questions for the owner** (recommendations in bold):
+
+1. **Units.** The language gives a quantity one unit ([ADR 0045](../decisions/0045-units-in-typed-equations.md); [the reference](../reference/typed-equations.md#units)): an array over a table has one unit for all its rows. Joint coordinates mix units (cart x in m, pole θ in rad, so dimensionless), as do their forces (N and N m). Options: one table per joint kind (`hinges` in rad with torques in N m, `sliders` in m with forces in N), each a separate state array; a unit carried by a joint-kind column (against the language's rule, and `check` could not balance an equation over the rows); dimensionless coordinates with a length scale per slider (loses the check exactly where a mistake is likely). **Recommended: one table per joint kind.** Its cost: the function then gives accelerations for two arrays, and the language has no function with two results: either `hinge_acc(…)` and `slider_acc(…)` share one ABA per evaluation (a cache keyed on its arguments) or the language gains multi-result calls. Mechanisms of one joint kind (chains, arms, pendulums) need neither.
+2. **The bodies table and its tree.** Expressible today ([ADR 0079](../decisions/0079-tables-of-members.md), [ADR 0085](../decisions/0085-meshes-are-tables-of-cells.md)): `table bodies`, `start bodies = file "bodies.csv"` with an `id` column; per-row parameters from that file (`param mass[bodies] [kg]`, `param parent[bodies]`, offsets, axis); or the joints as `edges joints of bodies` with `from`/`to` ids. What is missing is only what the function would hide: an ordered pass along the parent edges (leaves to root, root to leaves). The function must check that `parent` makes a tree (no cycles, ids that exist) at load, and a table with rules (rows coming and going) would change the mechanism mid-run: **allow only tables without rules**, at least at first.
+3. **Point forces** (a grab's spring) as rows over the bodies: `fx[bodies]`, `fy[bodies]` and the point `px[bodies]`, `py[bodies]` in body axes, one force per body; several forces on one body add up before the call. The spring is a formula of the outputs (`pose`) and the pointer, as [ADR 0093](../decisions/0093-scenes-from-primitive-layers.md) wants: **one force per body row**.
+4. **Outputs as rows.** `pose(bodies, q, k)` with k = 0, 1, 2 for x, y, angle, and `velocity(bodies, q, qd, k)`, following `normal(f, k, x, y)`'s component argument; each a cheap O(n) forward pass. The scene's frame over rows takes them as any table's columns.
+5. **Jacobians for implicit methods:** finite differences over a declared dense structure now (as the native spike does); exact derivatives of ABA (known algorithms) later, if TR-BDF2 on mechanisms matters. Measured here: with a dense finite-difference Jacobian a TR-BDF2 step costs about 150 RK4 steps at 50 links (2.1 ms against 13.8 µs).
+6. **Not covered:** closed loops (a four-bar linkage needs loop-closure constraints: a DAE, by Baumgarte stabilisation or by SimSandbox's implicit methods on an index-reduced form); joint limits (contacts in disguise: penalty springs keep it an ODE but stiff; hard limits are impulses); contacts. These stay with Rapier or wait for their own decision.
+7. **Conflicts.** [ADR 0084](../decisions/0084-where-typed-equations-stop.md) point 3 says algorithms built from primitives ship as models, "never as built-in designs", and point 2 asks every addition for a "use library X instead" row; `articulated` is an algorithm (like `solve`, which is linear algebra), so it **widens the language** and needs its own ADR that amends 0084, with Rapier's and MuJoCo's multibody solvers as the "library instead" rows. The owner's rule of 2026-11-14 puts the Phase 2 gate before further typed-equation features ([ADR 0091](../decisions/0091-equations-first-hosting-for-existing-codes.md) point 4); this is the gate's own rigid-body work, but it is still a language feature. **Recommended: not for the gate; after it, as its own ADR, built on the same Rust core as the native block.**
+
+### Effort and fit
+
+- **Size.** The solver core (spatial algebra, ABA, CRBA, RNEA, forward kinematics, energy, momentum, Cholesky) is about 455 lines of Rust without comments; the spike's models 130 and its stepper and adapter 230. Written and cross-checked in one session.
+- **Beyond the spike, for a real crate** (expectations, not measured):
+  - The block: an `OdeSystem` (it implements `Equations`, so it fuses with typed-equation blocks in one group and uses every integrator), its ports and units, rows of bodies, joint coordinates as scalar outputs, the Jacobian's structure declared: a few hundred lines.
+  - File form: tables of bodies (mass, centre, inertia, parent, joint kind, offset, axis), checked (a tree, positive masses, units) and listed by `describe`.
+  - Springs, motors and damping on joints: generalized-force terms, small. Joint limits as penalty spring-dampers: small, but stiff (TR-BDF2), and labelled as an approximation.
+  - Closed loops: loop-closure constraints and their stabilisation (Baumgarte, or projection), with their own verification: the largest single item, not needed for chains, trees, the cart-pole or arms.
+  - 3D: 6-vector spatial algebra, spherical and free joints with quaternion states (states not in a flat Euclidean space: normalisation, or integration on the manifold); about two to three times the 2D work. Rapier and MuJoCo exist for 3D in the meantime.
+- **Fit as a block.** States `[q, q̇]` in the kernel's states vector: snapshots, rewind and branching unchanged, 16 bytes per joint; no opaque state, no new capability. Inputs: joint forces (scalars) and point forces (rows). Outputs: bodies as rows (`x`, `y`, `angle`, `vx`, `vy`, `omega`) and joint coordinates as scalars. Fused with a typed controller, plant and controller are integrated together at RK4's order (N6), which no hosted engine allows.
+- **Where the line falls.** Native: jointed mechanisms without contact (chains, trees, the cart-pole, arms, pendulums), with damping, springs and motors. Rapier: contacts and collisions, piles, anything dropped or stacked, joint limits that must be hard, closed loops until they have their own decision, and **jointed mechanisms that touch things** (Rapier's multibody joints handle joints and contacts in one solver). A model mixing both by coupling, a native arm whose end pushes Rapier boxes, would exchange contact forces once a step, a step late: stable for slow, soft pushes, wrong for impacts and resting contact, where the contact impulse and the arm's motion must be solved together. **One model, one engine for anything that touches**: a mechanism that must touch moves to Rapier as a whole, and the file form should make that a change of engine, not a rewrite.

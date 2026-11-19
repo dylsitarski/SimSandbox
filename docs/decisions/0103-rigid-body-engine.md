@@ -1,75 +1,60 @@
-# 0103 — The first rigid-body engine: Rapier, its state held as an opaque snapshot
+# 0103 — Rigid bodies: a native articulated-body solver for jointed mechanisms, Rapier for contacts
 
-- **Status:** Proposed (draft for the owner, 2026-11-19)
+- **Status:** Proposed (draft for the owner, 2026-11-19; revised the same day after the native-solver follow-up)
 - **Date:** 2026-11-19
-- **Builds on:** [ADR 0057](0057-phase-2-plan.md) item 3 (the spike and the gate), [ADR 0093](0093-scenes-from-primitive-layers.md) (bodies as rows drawn by a frame over rows; grabbing), [ADR 0062](0062-probes-recording-and-replay.md) (exact runs on any computer, snapshots, memory budget), [ADR 0058](0058-inputs-live-scheduled-replayed.md) (recorded input), [ADR 0091](0091-equations-first-hosting-for-existing-codes.md) (mature engines are wrapped)
-- **Evidence:** [the rigid-body spike](../research/2026-11-19-rigid-body-spike.md) ([code](../../spikes/rigid-body/README.md))
+- **Builds on:** [ADR 0057](0057-phase-2-plan.md) item 3 (the spike and the gate), [ADR 0093](0093-scenes-from-primitive-layers.md) (bodies as rows drawn by a frame over rows; grabbing), [ADR 0062](0062-probes-recording-and-replay.md) (exact runs on any computer, snapshots, memory budget), [ADR 0058](0058-inputs-live-scheduled-replayed.md) (recorded input), [ADR 0091](0091-equations-first-hosting-for-existing-codes.md) (equations first; hosting for codes that exist), [ADR 0084](0084-where-typed-equations-stop.md) (where typed equations stop)
+- **Evidence:** [the rigid-body spike](../research/2026-11-19-rigid-body-spike.md) and its [follow-up on a native solver and typed equations](../research/2026-11-19-rigid-body-spike.md#a-native-articulated-body-solver-2026-11-19) ([code](../../spikes/rigid-body/README.md))
 
 ## Context
 
-The Phase 2 gate is an interactive cart-pole: a typed-equation controller balances a rigid-body pole live, the user drags the bodies in the scene and pushes with keys, and a rewound run replays bit for bit, also headless. ADR 0057 chose to pick the engine by a spike between MuJoCo and Rapier. The spike ran the same cases on Rapier 0.36.1 (2D and 3D, f64, impulse and multibody joints) and MuJoCo 4.0.1 (C library, Euler, RK4, implicitfast) on Linux:
+The Phase 2 gate is an interactive cart-pole: a typed-equation controller balances a rigid-body pole live, the user drags the bodies in the scene and pushes with keys, and a rewound run replays bit for bit, also headless. ADR 0057 chose to pick the engine by a spike between MuJoCo and Rapier. The owner's direction (2026-11-19) then separated two things: SimSandbox **hosts** any engine a user relies on, whatever its properties; the engine it **ships as the default** must have SimSandbox's own properties (exact replay and rewind, units, verification, AI access).
 
-- Both balance the cart-pole through a recorded impulse and a grab-like pull at 1 kHz, within 1e−3 rad of the exact equations, at 150 to 1300 times real time.
-- Both restore a snapshot bit for bit and repeat runs bit for bit in one process and across processes.
-- Accuracy:
-  - MuJoCo's RK4 is exact to 1e−12.
-  - Rapier's multibody joints and MuJoCo's Euler are second order with bounded energy.
-  - Rapier's impulse joints are first order and lose 37 % of a 2 rad swing's energy in 100 periods.
-- State:
-  - MuJoCo's full state is one flat f64 vector (224 bytes for the cart-pole).
-  - Rapier's is a graph of objects, 4–9 KB serialized for the cart-pole and 250–650 KB for 100 boxes.
-- Determinism across machines:
-  - Rapier claims it with `enhanced-determinism`, at no measured cost.
-  - MuJoCo disclaims it across operating systems and versions.
-- Build:
-  - Rapier is pure Rust: about 45 s of clean build, licences all allowed.
-  - MuJoCo needs a shared library on each OS and `unsafe` bindings SimSandbox writes itself. The maintained crate, `mujoco-rs`, adds a licence clause forbidding AI use.
+What the spike and its follow-up measured (Linux, one machine; numbers in the report):
+
+- **Rapier 0.36** (pure Rust, 2D and 3D): balances the cart-pole within 4e−4 rad of the exact equations; impulse joints are first order and lose 37 % of a 2 rad swing in 100 periods, multibody joints second order but 1.1 ms a step at 50 links and 58 ms at 200. Its full state is a graph of objects (6 KB serialized for the cart-pole, 250–650 KB for 100 boxes) that the kernel's flat states cannot hold. Contacts: stable stacks and piles, fastest on piles. Claims cross-platform determinism.
+- **MuJoCo 4.0.1** (C library): generalized coordinates, RK4 exact to 1e−12, flat state; a shared library per OS, `unsafe` bindings of SimSandbox's own, no bit-identity promised across OSes.
+- **A native 2D articulated-body solver** (Featherstone's ABA, 455 lines of Rust in the spike, SimSandbox's own integrators): reproduces MuJoCo's results to every digit printed with the same schemes; ABA agrees with CRBA + RNEA on random trees to 3e−14 and with hand-written Lagrange equations to 3e−15; RK4 fourth order on the double pendulum, energy kept to 5e−11 and momentum to 7e−10 over long runs. Cart-pole within **3.3e−9 rad** of the exact equations with RK4. State `[q, q̇]`: 32 bytes for the cart-pole, bit-exact restore, deterministic across processes. **0.54 µs a step for the cart-pole, 13.8 µs at 50 links, 51 µs at 200** (RK4), 4 times faster than MuJoCo with the same scheme. With Dormand–Prince it carries the 50- and 200-link chains through 10 s with energy kept to 1e−7, where every fixed-step engine either blows up (MuJoCo and native at the same instants) or loses half the energy (Rapier). Fused with the controller in one ODE, the closed loop is fourth order; held over the step, as a hosted engine must, it is first order (2.3e−4 rad at 1 kHz).
+- **Typed equations as they are:** the cart-pole, the double pendulum and the pendulum written by hand match the native solver to the digit, units checked, at 0.3–1.05 µs a step. Chains through `solve(M, b)` work only because a uniform chain has a closed-form mass matrix; they cost O(n²) trigonometry and an O(n³) solve (464 µs at 50 links, 10 ms at 200). ABA generated into scalar typed equations works today for any tree and agrees to 1e−11, but runs about 11 times slower than the native code (150 µs at 50 links) in machine-written files of thousands of lines.
+- **Featherstone as a typed-equations function** (estimated from measured parts: ABA plus a built-in call's 0.23 µs): about 1.5 µs a step for the cart-pole-sized mechanisms, 16 µs at 50 links, 62 µs at 200; within 1.2 times of the native block from 50 links up, 3 times for the smallest. It widens the language and has open design questions (units of mixed joints, a function with two results).
 
 ## Options considered
 
 | Option | Pros | Cons |
 | --- | --- | --- |
-| **A. Rapier (`rapier2d-f64` first), `enhanced-determinism`, multibody joints for mechanisms; state as an opaque snapshot** | Same bits on every computer, as ADR 0062 wants (claimed; to be pinned in CI); pure Rust, no `unsafe` in SimSandbox, nothing to ship; native 2D for the gate and ADR 0093; fast enough (cart-pole 170–410× real time) and bit-exact restore | Impulse joints dissipative, no high-order integrator; multibody joints slow on long chains (1 ms a step for 50 links); state not a flat vector: a new capability for opaque block state, and large snapshots with many contacts; pre-1.0 API |
-| B. MuJoCo through its C API | Generalized coordinates, RK4, implicit damping: the accurate choice; flat state vector fits the kernel's states as they are, snapshots of bytes in a microsecond; MJCF and the robotics ecosystem; fastest on small mechanisms | No bit-identity across OSes or versions (against ADR 0062's default); a shared library to ship and pin per OS (no Intel-Mac wheel, no import library in the Windows wheel); `unsafe` FFI in a second crate, bindings of our own; its error handler ends the process; 3D only; box piles 2.5× slower than Rapier 3D at defaults |
-| C. Both now, behind one block type | Each where it is best | Twice the verification, two state models and two file mappings before the gate needs one |
-| D. Write a 2D engine in typed equations | Everything in one language (ADR 0091) | Contacts and joints are what mature engines do well; against "wrap, don't build" |
+| 1. **Rapier only** (the first draft): multibody joints for mechanisms, everything as an opaque snapshot | One engine; contacts and joints in one solver; pure Rust; claims cross-platform bits | Mechanisms second order at best, slow on long chains (1.1 ms at 50 links); no high-order or adaptive integrator; inputs only held over the step, so a controller cannot be fused; state as an opaque blob needs a new kernel capability even for the cart-pole |
+| 2. **A hand-written native block** for jointed mechanisms (the spike's ABA in a domain crate, as an `OdeSystem`) | Fastest measured (0.54 µs cart-pole, 13.8 µs at 50 links); state is the kernel's own (`[q, q̇]`), rewind unchanged; every SimSandbox integrator, including adaptive and implicit; fuses with typed blocks through `Equations`; verified against references; no language change | Its parameters are a block's settings, not equations a model can read or vary as freely; units declared in Rust per port; one more domain crate to own; no contacts |
+| 3. **An equation generator**: bodies and joints compiled into typed equations (ABA unrolled) | No language change, works today; everything typed equations have (units, check, fusion, implicit methods, compiled code where it applies) | 11× slower than option 2 (scalar lines run interpreted); files of thousands of machine-written lines, regenerated on every change; the model's text is not what a person wrote |
+| 4. **Featherstone as a typed-equations function** (`articulated(...)`, `pose(...)` over a table of bodies) | Near option 2's speed (estimate); the mechanism is a table in the model, read by `check`, `describe` and agents; units, fusion and implicit methods come with the language | Widens the language: amends ADR 0084 (an algorithm as a built-in) and falls under the rule that the gate comes before further typed-equation features; mixed joint units need one table per joint kind and a call with two results or a cache; not measured, only estimated |
+| 5. **A combination** (proposed): one Rust ABA core; a native mechanism block for the gate; Featherstone as a typed-equations function after the gate, on the same core; Rapier for contacts | Each part where the numbers put it; the gate needs no language change; the core is written and verified once | Two engines in the product (native for mechanisms, Rapier for contacts); a model must choose per mechanism; the function waits for its own ADR |
+
+Also considered and kept out: MuJoCo as the default (build per OS, `unsafe` bindings, no cross-OS bits; still the candidate for a later hosted 3D backend), and coupling a native mechanism to Rapier objects by exchanging contact forces once a step (a step late: wrong for impacts and resting contact).
 
 ## Decision (proposed)
 
-A, for the gate. MuJoCo stays the candidate for a later optional backend when a model needs 3D robotics accuracy or MJCF.
+Option 5.
 
-1. **Crate.** A domain crate `simsandbox-rigid` (domain `RigidBody`) depending on `rapier2d-f64` (later `rapier3d-f64`) with `enhanced-determinism` and without `parallel`, exact versions pinned. It needs no `unsafe`: the workspace's `forbid` holds. Rapier's types stay inside the crate.
-2. **State for rewind.**
-   - The block keeps its Rapier world live between steps. It gives the kernel an opaque snapshot (the serialized sets: bodies, colliders, both joint sets, island manager, broad and narrow phase, CCD) and restores from one.
-   - A new optional capability trait carries this (`ExternalState`: save to bytes, restore from bytes). The kernel stores the bytes in its `Snapshot` beside the states vector, and counts them against the memory budget.
-   - The snapshot's serialization is a maintained serde format checked by `cargo deny` (not bincode 1, which is unmaintained).
-   - When the snapshots would exceed the budget, they are taken further apart and the steps between are replayed.
-3. **File form.** The block's parameters describe the world as tables, 2D, in SI units, checked by `check` and listed by `describe`:
-   - `bodies` (id, kind: dynamic, fixed or kinematic, pose, velocity, mass and inertia or density);
-   - `shapes` (body, box, disc or capsule, size, friction, restitution), one to one with ADR 0101's primitives;
-   - `joints` (kind: revolute, prismatic or fixed; the two bodies, anchors, axis, limits; `articulated: true` for multibody joints).
-   - MJCF import for 3D is left for later; `mjcf-rs` is a candidate.
-4. **Outputs as rows.** A table `bodies` over the dynamic bodies' stable ids, with `x`, `y`, `angle`, `vx`, `vy`, `omega` (and the fixed sizes as columns), so one frame over rows and a layer per kind of shape draw any number of bodies (ADR 0093 point 8). Each joint's coordinate and rate are also scalar outputs (`slider.x`, `hinge.theta`), which the controller reads.
-5. **Inputs.** Joint forces or torques as scalar inputs (the cart's force), and external forces as rows: body id, force, point of application, held over the step. User forces are cleared every step (forces and torques both: Rapier keeps them otherwise).
-6. **Grabbing.** The pull toward the pointer is computed in the model, not in the engine: a spring and damper from the grabbed body's point to `input.pointer`'s position while `picked` names it, written in typed equations from the body rows and fed back as a force row. Replay holds because the pointer is recorded input and the force is a function of it and the state. An engine-side mouse joint (a spring joint to a kinematic body) was rejected: it would be engine state outside the model, invisible to `check`, units and probes.
-7. **Labels.** Impulse joints: first order, dissipative at large motion. Multibody joints: second order, energy bounded at 1 kHz. Contacts: unverified until a reference case exists. None `Verified` (ADR 0061).
-8. **Verification tests to keep** (the spike's cases as tests, in `simsandbox-rigid/tests/verification.rs`):
-   - The pendulum period against 4 K(sin(a/2)) / ω0 at 0.1 and 2 rad: multibody within 1e−7 at 1 ms, error ratio about 4 when the step halves; impulse joints bounded by their measured error.
-   - Energy over 100 periods: multibody within 2e−3.
-   - The cart-pole falling open loop against the exact equations by RK4: within 1e−3 rad at 1 s.
-   - The cart-pole closed loop with a recorded impulse and grab.
-   - Snapshot, restore and replay bit for bit, for the cart-pole, a box stack and a 100-box pile.
-   - The same run twice gives the same hash, and a pinned hash per platform in CI on Linux, Windows and macOS.
-   - A resting box and a resting stack staying within 1e−4 m for 10 s.
-   - The verification policy's reference table gains the pendulum period.
+1. **A native articulated-body solver** for jointed mechanisms without contact, as the default for them.
+   - One Rust core: 2D spatial algebra, ABA for q̈, CRBA and RNEA kept as its test oracle, forward kinematics for rows; the spike's `native_2d.rs` grown into a domain crate (for example `simsandbox-mech`, domain `Mechanism`). No `unsafe`, no new dependency.
+   - Delivered first as a **block** implementing `OdeSystem`: state `[q, q̇]` in the kernel's states vector (snapshots, rewind and branching unchanged); every integrator SimSandbox has (RK4 by default, Dormand–Prince for long chains, TR-BDF2), with the Jacobian's structure declared; fuses with typed-equation controllers in one ODE.
+   - Bodies and joints as tables in the block's settings: bodies (id, mass, centre, inertia, parent, joint kind revolute or prismatic, offset, rotation, axis), joint damping, springs and motors, in SI units, checked (a tree, positive masses) and listed by `describe`.
+   - Inputs: joint forces and torques as scalars; point forces as rows (body id, force in world axes, point in body axes), held over the step unless fused.
+   - Outputs: bodies as rows (`x`, `y`, `angle`, `vx`, `vy`, `omega` by stable id) for ADR 0093's frame over rows; joint coordinates and rates as scalars (`slider.x`, `hinge.theta`).
+   - Grabbing as the first draft said: a spring and damper toward `input.pointer`, written in typed equations from the body rows and fed back as a point force; rewind holds because the pointer is recorded input.
+2. **Rapier for contacts** (`rapier2d-f64`, `enhanced-determinism`, without `parallel`, exact versions pinned): boxes, piles, anything dropped or stacked, hard joint limits, and mechanisms that touch things (Rapier's multibody joints, so joints and contacts are solved together). Its state as an opaque snapshot through a new optional capability (`ExternalState`: save to bytes, restore from bytes), counted against the memory budget, in a maintained serde format; snapshots further apart with replay between them when the budget requires.
+3. **One model, one engine for anything that touches.** A mechanism with contact moves to Rapier as a whole; the file form keeps bodies and joints the same for both engines, so moving is a change of engine, not a rewrite. No force exchange between a native mechanism and Rapier bodies.
+4. **After the gate: Featherstone as a typed-equations function**, in its own ADR amending ADR 0084, on the same core: `articulated(...)` for q̈ and `pose(...)`/`velocity(...)` for rows over a bodies table without rules. Recommended there: one table per joint kind for units, one force per body row, finite-difference Jacobians first. The generator (option 3) is not adopted; the spike's `generate_aba.py` stays as a second test oracle.
+5. **Not covered now:** closed loops (four-bar linkages: loop-closure constraints, Baumgarte or projection, their own decision), soft joint limits (penalty springs, labelled approximate) as a follow-up, 3D (spherical and free joints with quaternion states; Rapier 3D or MuJoCo hosted in the meantime).
+6. **Labels.** Native, RK4: fourth order, `Quantitative`; Dopri5: tolerance-controlled; semi-implicit Euler: first order, energy not conserved when the mass matrix depends on q; TR-BDF2: second order, dissipative. Rapier impulse joints: first order, dissipative; multibody: second order. Contacts: unverified until a reference case exists. None `Verified` (ADR 0061).
+7. **Verification tests to keep** (in the crates' `tests/verification.rs`): the pendulum period against 4 K(sin(a/2)) / ω0 at 0.1 and 2 rad (native RK4 within 1e−11 at 1 ms, order 4); the double pendulum against its Lagrange equations (RK4 order 4, within 1e−9 at 1 ms over 5 s); ABA against CRBA + RNEA on random trees (1e−12); the cart-pole against the exact equations, closed and open loop; energy and momentum of a free-floating chain in zero gravity; joint damping against the linear solution; snapshot, restore and replay bit for bit (native, Rapier cart-pole, box stack, 100-box pile); hashes pinned per platform in CI on Linux, Windows and macOS, for both engines; resting box and stack within 1e−4 m for 10 s (Rapier). The verification policy's reference table gains the pendulum period and the double pendulum.
 
 ## Consequences
 
-- The block contract gains the `ExternalState` capability, and snapshots gain opaque bytes per block. [Block contract](../architecture/block-contract.md) and [solver backends](../architecture/solver-backends.md) are updated when this is accepted, and the kernel still contains no physics.
-- A rigid-body run is exact on one machine (measured) and, by Rapier's claim, across machines; the CI hash job turns the claim into a test.
-- `deny.toml` needs no new licence. Build time grows by about 45 s clean for 2D (50 s more for 3D).
-- Models needing long articulated chains in real time, or reference-grade accuracy, wait for MuJoCo as a second backend. That would be a crate with `unsafe` FFI (as `simsandbox-compiled` is), bindings of SimSandbox's own, the shared library shipped per OS, and its state as a flat f64 vector in the kernel.
-- Rejected here: an engine-side mouse joint for grabbing; `mujoco-rs` (licence).
-- Follow-up: the ADR for the file form in detail ([changing the file format](../guides/changing-the-file-format.md)); the snapshot spacing rule under the memory budget.
+- The gate's cart-pole runs on the native block with a typed controller fused into one ODE; its state is ordinary kernel state, so the gate's rewind needs nothing new. The `ExternalState` capability is needed only when the first contact scene (Rapier) arrives.
+- SimSandbox owns a rigid-body solver: about 455 lines for the 2D core, plus the block, its file form and its tests (expected: a few hundred lines each). [Block contract](../architecture/block-contract.md) and [solver backends](../architecture/solver-backends.md) are updated when this is accepted; the kernel still contains no physics.
+- Cross-platform bits: the native solver calls the platform's `sin` and `cos`, as typed equations already do; the CI hash job covers both. Rapier's are claimed by its `enhanced-determinism`.
+- `deny.toml` needs no new licence. Rapier adds about 45 s to a clean build when the contact crate lands.
+- Found by the follow-up and suggested as separate tasks: `simsandbox-eq`'s implicit methods probe the Jacobian's structure at the first step's state when a system declares none, so a run restored into a fresh workspace can differ by about 1e−12; a compiled typed-equations model slowed 26 times later in one process, cause not found.
+- Rejected here: an engine-side mouse joint for grabbing; `mujoco-rs` (licence); coupling a native mechanism to Rapier by exchanged contact forces; the equation generator as the way mechanisms are made.
+- Follow-up: the ADR for the mechanism file form in detail ([changing the file format](../guides/changing-the-file-format.md)); the ADR for Featherstone as a typed-equations function after the gate; the snapshot spacing rule for Rapier under the memory budget.
 
-**Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): a rigid-body world block (a block of a new domain, its bodies as rows); opaque block state in snapshots, which the kernel's flat states vector cannot express for an engine whose state is a graph of objects.
+**Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): a mechanism block (bodies on joints as rows, its state the joint coordinates) and a rigid-body world block for contacts (a new domain, bodies as rows); opaque block state in snapshots, needed only by the contact engine, whose state is a graph of objects the kernel's flat states vector cannot express.
