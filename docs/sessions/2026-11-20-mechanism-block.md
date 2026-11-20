@@ -28,7 +28,7 @@
 
 ## Left open
 
-- Before the gate ([STATUS](../STATUS.md), Next up item 3): Windows' and macOS' pinned hashes. CI runs only on `main` and pull requests, and the test fails there until their lines are added (the failure prints them). Intel macOS is not in CI.
+- Pinned results: Windows x86_64 and macOS aarch64 pinned from CI on [dylsitarski/SimSandbox#4](https://github.com/dylsitarski/SimSandbox/pull/4); each differs from Linux's. Intel macOS is not in CI. CI's stable Rust (1.100) added a clippy lint the local 1.97 lacked (`chunks_exact_to_as_chunks`): check with the current stable before pushing.
 
 ## Notes for the next session
 

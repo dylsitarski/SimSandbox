@@ -10,5 +10,11 @@
     "cartpole grabbed": "4d1b6fdd7beecd39",
     "chain of 10, dopri5": "8eba15aca9fa4805",
     "chain of 10, trbdf2": "aea21bbb0857afc3"
+  },
+  "windows-x86_64": {
+    "cartpole": "5e099499aa680c8d",
+    "cartpole grabbed": "36b0b84103d785c1",
+    "chain of 10, dopri5": "df105f572cd4ef74",
+    "chain of 10, trbdf2": "97a8febf86c38408"
   }
 }
