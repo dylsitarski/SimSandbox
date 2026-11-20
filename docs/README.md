@@ -162,6 +162,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0086-views-by-axis-roles-and-mesh-views.md](decisions/0086-views-by-axis-roles-and-mesh-views.md) | Decision record | Views by axis roles (pick, reduce, facet); mesh views on wgpu with an egui path headless |
 | [decisions/0087-implicit-lu-on-the-matrix-pattern.md](decisions/0087-implicit-lu-on-the-matrix-pattern.md) | Decision record | Implicit methods' own sparse LU on the matrix's pattern, faer's as fallback |
 | [decisions/0104-implicit-structure-independent-of-the-state.md](decisions/0104-implicit-structure-independent-of-the-state.md) | Decision record | Implicit methods' Jacobian structure when a system does not give it: dense when small, probed at three states when large |
+| [decisions/0105-mechanism-file-form.md](decisions/0105-mechanism-file-form.md) | Decision record | Proposed: the mechanism block's file form (bodies table, numbers as parameters, ports by joint kind) |
 | [decisions/0088-activation.md](decisions/0088-activation.md) | Decision record | Activation of used models and studies: `activate` modes and `restart` |
 | [decisions/0089-native-code-for-typed-equations.md](decisions/0089-native-code-for-typed-equations.md) | Decision record | Native code for typed equations: generated Rust compiled where a toolchain exists |
 | [decisions/0090-one-engine-for-nested-models.md](decisions/0090-one-engine-for-nested-models.md) | Decision record | One engine for nested models: the merged simulator |
