@@ -1,6 +1,6 @@
 # 0103 — Rigid bodies: a native articulated-body solver for jointed mechanisms, Rapier for contacts
 
-- **Status:** Proposed (draft for the owner, 2026-11-19; revised the same day after the native-solver follow-up, and again after the owner's comment that a typed-equations Featherstone function would duplicate the block)
+- **Status:** Accepted (owner, 2026-11-20). Drafted 2026-11-19, revised the same day after the native-solver follow-up, and again after the owner's comment that a typed-equations Featherstone function would duplicate the block.
 - **Date:** 2026-11-19
 - **Builds on:** [ADR 0057](0057-phase-2-plan.md) item 3 (the spike and the gate), [ADR 0093](0093-scenes-from-primitive-layers.md) (bodies as rows drawn by a frame over rows; grabbing), [ADR 0062](0062-probes-recording-and-replay.md) (exact runs on any computer, snapshots, memory budget), [ADR 0058](0058-inputs-live-scheduled-replayed.md) (recorded input), [ADR 0091](0091-equations-first-hosting-for-existing-codes.md) (equations first; hosting for codes that exist), [ADR 0084](0084-where-typed-equations-stop.md) (where typed equations stop)
 - **Evidence:** [the rigid-body spike](../research/2026-11-19-rigid-body-spike.md) and its [follow-up on a native solver and typed equations](../research/2026-11-19-rigid-body-spike.md#a-native-articulated-body-solver-2026-11-19) ([code](../../spikes/rigid-body/README.md))
@@ -31,12 +31,13 @@ Option 4 is not taken, beside option 2, as the owner observed (2026-11-19): what
 
 Also considered and kept out: MuJoCo as the default (build per OS, `unsafe` bindings, no cross-OS bits; still the candidate for a later hosted 3D backend), and coupling a native mechanism to Rapier objects by exchanging contact forces once a step (a step late: wrong for impacts and resting contact).
 
-## Decision (proposed)
+## Decision
 
 Option 5.
 
 1. **A native articulated-body solver** for jointed mechanisms without contact, as the default for them.
    - One Rust core: 2D spatial algebra, ABA for q̈, CRBA and RNEA kept as its test oracle, forward kinematics for rows; the spike's `native_2d.rs` grown into a domain crate (for example `simsandbox-mech`, domain `Mechanism`). No `unsafe`, no new dependency.
+   - **One block per mechanism** (a tree of bodies from the ground), not one per joint: every joint's acceleration depends on the whole tree, so joints in separate blocks would exchange constraint forces through an algebraic loop or a step late. Joints are rows of the block's bodies table; separate trees are separate blocks, coupled by smooth forces written in typed equations (springs, drag), never by contact.
    - Delivered first as a **block** implementing `OdeSystem`: state `[q, q̇]` in the kernel's states vector (snapshots, rewind and branching unchanged); every integrator SimSandbox has (RK4 by default, Dormand–Prince for long chains, TR-BDF2), with the Jacobian's structure declared; fuses with typed-equation controllers in one ODE.
    - Bodies and joints as tables in the block's settings: bodies (id, mass, centre, inertia, parent, joint kind revolute or prismatic, offset, rotation, axis), joint damping, springs and motors, in SI units, checked (a tree, positive masses) and listed by `describe`.
    - Inputs: joint forces and torques as scalars; point forces as rows (body id, force in world axes, point in body axes), held over the step unless fused.

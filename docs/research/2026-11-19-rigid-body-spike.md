@@ -1,6 +1,6 @@
 # Rigid-body spike: Rapier against MuJoCo (2026-11-19)
 
-The spike [ADR 0057](../decisions/0057-phase-2-plan.md) item 3 asks for before the first rigid-body backend: the same cases on both engines, measured, for the Phase 2 gate's interactive cart-pole ([roadmap](../roadmap.md#phase-2--breadth)). The decision it proposes is [ADR 0103](../decisions/0103-rigid-body-engine.md) (Proposed). A follow-up the same day added a native articulated-body solver, the same mechanisms as typed equations and an estimate for Featherstone as a typed-equations function: [below](#a-native-articulated-body-solver-2026-11-19). Code and how to run it: [spikes/rigid-body](../../spikes/rigid-body/README.md).
+The spike [ADR 0057](../decisions/0057-phase-2-plan.md) item 3 asks for before the first rigid-body backend: the same cases on both engines, measured, for the Phase 2 gate's interactive cart-pole ([roadmap](../roadmap.md#phase-2--breadth)). The decision it proposes is [ADR 0103](../decisions/0103-rigid-body-engine.md) (accepted 2026-11-20). A follow-up the same day added a native articulated-body solver, the same mechanisms as typed equations and an estimate for Featherstone as a typed-equations function: [below](#a-native-articulated-body-solver-2026-11-19). Code and how to run it: [spikes/rigid-body](../../spikes/rigid-body/README.md).
 
 ## Method
 

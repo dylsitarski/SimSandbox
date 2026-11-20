@@ -31,6 +31,7 @@
 
 ## Decided
 
+- Owner (2026-11-20): ADR 0103 accepted; one mechanism block per tree of bodies, joints as rows (asked how mechanisms are built: not a block per joint).
 - Owner (2026-11-14): the single build of a model that uses models is deferred ([ADR 0090](../decisions/0090-one-engine-for-nested-models.md), as built).
 - The four unmaintained crates `cargo deny` reports are ignored with reasons, not left failing (ADR 0100); the owner may prefer otherwise.
 
