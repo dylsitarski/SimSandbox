@@ -328,7 +328,7 @@ impl PlotItem for SceneItem {
         for item in &self.drawn.items {
             match item {
                 Item::Triangles { points, colour } => {
-                    for t in points.chunks_exact(3) {
+                    for t in points.as_chunks::<3>().0 {
                         let corners = [at(&t[0]), at(&t[1]), at(&t[2])];
                         if !corners.iter().all(finite) {
                             continue;
