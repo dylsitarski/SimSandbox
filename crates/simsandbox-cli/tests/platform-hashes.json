@@ -4,5 +4,11 @@
     "cartpole grabbed": "c0849271a84a9913",
     "chain of 10, dopri5": "55203666caf24235",
     "chain of 10, trbdf2": "174ebfbbe54d2985"
+  },
+  "macos-aarch64": {
+    "cartpole": "36f6cf70493ebc2e",
+    "cartpole grabbed": "4d1b6fdd7beecd39",
+    "chain of 10, dopri5": "8eba15aca9fa4805",
+    "chain of 10, trbdf2": "aea21bbb0857afc3"
   }
 }
