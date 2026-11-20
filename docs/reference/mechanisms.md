@@ -61,6 +61,12 @@ A scene draws the bodies with one frame over the rows and a layer per shape in i
 "frames": {"body": {"x": "cartpole.x", "y": "cartpole.y", "angle": "cartpole.angle"}}
 ```
 
+## In the app
+
+With the block's node selected, the Inspector shows its bodies as a table: one row per body with its name, its joint's name, the joint's kind, its parent (`ground` or a body above it) and its mass, and buttons to move a row up or down or remove it (its children then hang from its parent). `…` opens a row's other columns and two boxes for its inputs: the joint driven (`actuated`) and the body loaded (`loaded`). `+ body` adds a body on a turning joint hanging from the last one.
+
+Each change is one edit of the model (`Edit::SetMechanism`), undone like any other. Renaming a body or a joint renames the ports and parameters it makes, and the wires, sliders, scheduled inputs and views that name them. An input that goes takes its wire with it. A change that `check` refuses (a body moved above its parent, a welded joint that still has damping) waits as a draft with the error at its row and column; the running model stays. The numbers are also parameters, so a slider on `pole_mass` changes the value while the model runs, without editing the row.
+
 ## Methods
 
 `method` as for equation blocks: `rk4` (the default), `dopri5`, `trbdf2`, `backward_euler`. RK4 is fourth order; Dormand–Prince controls its error and carries long chains through their whip; TR-BDF2 is second order and damps. None is labelled verified.

@@ -17,6 +17,7 @@ AI-written numerical code can look right and be subtly wrong: lost conservation,
 
 - A new coupling scheme comes with a test that compares it against the fused (exact-coupling) solution of the same equations, like `cosimulation_adds_coupling_error`.
 - Snapshot and restore must reproduce a run bit for bit (`snapshot_and_rewind_reproduce_the_run`).
+- Results pinned per platform ([ADR 0103](../decisions/0103-rigid-body-engine.md) point 7): `crates/simsandbox-cli/tests/platform_hashes.rs` runs the mechanism cases (the cart-pole, the cart-pole grabbed from a run file, a 10-link chain under Dormand–Prince and under TR-BDF2) through the binary and compares a hash of their printed results with `tests/platform-hashes.json`, keyed `os-arch`. CI runs it on Linux, Windows and macOS with the other tests. A platform with no values fails, printing the line to add. A change meant to alter results is pinned again on each platform: `SIMSANDBOX_PIN_HASHES=1 cargo test -p simsandbox-cli --test platform_hashes` writes this platform's line, and CI's failure gives the others'. Say why in the commit.
 
 ## Reference problems in use
 

@@ -64,5 +64,5 @@ Option 5.
 
 ## Built (2026-11-20)
 
-Point 1, the native solver for jointed mechanisms, as `mech.planar` in `crates/simsandbox-mech` with the file form of [ADR 0105](0105-mechanism-file-form.md) (see its "Built" section). Point 7's verification tests are in `crates/simsandbox-mech/tests/verification.rs`, except the per-platform hashes in CI and Rapier's. The gate's cart-pole is `examples/cartpole.ssbx.json`: an LQR controller in typed equations fused with the mechanism, grabbed in a scene by a spring written in the same equations. Rapier for contacts (point 2) and `ExternalState` are not built.
+Point 1, the native solver for jointed mechanisms, as `mech.planar` in `crates/simsandbox-mech` with the file form of [ADR 0105](0105-mechanism-file-form.md) (see its "Built" section). Point 7's verification tests are in `crates/simsandbox-mech/tests/verification.rs`, with the per-platform hashes from 2026-11-20 (`simsandbox-cli/tests/platform_hashes.rs`; pinned for Linux x86_64, Windows and macOS to be pinned from their first CI run); Rapier's are not built. The gate's cart-pole is `examples/cartpole.ssbx.json`: an LQR controller in typed equations fused with the mechanism, grabbed in a scene by a spring written in the same equations. Rapier for contacts (point 2) and `ExternalState` are not built.
 

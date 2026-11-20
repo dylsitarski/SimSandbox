@@ -129,6 +129,6 @@ The first option of each table.
 - `euler` is accepted as for every ODE block but not listed; `rk4` is the default.
 - Python checks the rows when `add_block` is called through a new native `block_problem`, which builds the one block alone.
 - Two ports or parameters meeting by name is checked, though the names' suffixes make it hard to reach.
-- Not built yet: the Inspector's table for `bodies` (the canvas shows the block and its ports; the file, the CLI and Python edit the rows).
+- The Inspector's table (2026-11-20): `simsandbox-app/src/app/mechanism.rs`, each change one `Edit::SetMechanism` (`simsandbox-session/src/diagram.rs`) that renames the ports and parameters a renamed body or joint makes everywhere they are named, and drops wires to inputs that go ([reference](../reference/mechanisms.md#in-the-app)).
 - Verification ([policy](../guides/verification-policy.md#reference-problems-in-use)): ABA against CRBA with RNEA on 250 random trees with every joint kind, springs, damping and loads (1e−12); the double pendulum and the cart-pole against their Lagrange equations (1e−13), RK4 order 4; the pendulum period against the elliptic integral (1e−10); a damped slider against its linear solution (1e−12); momentum and energy kept (1e−9); restored into a fresh block bit for bit with all four methods; every refusal of point 6. The cart-pole example's grab replays bit for bit from a run file (`simsandbox-cli/tests/cli.rs`).
 

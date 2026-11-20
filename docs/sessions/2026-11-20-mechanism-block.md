@@ -15,6 +15,9 @@
 - `examples/cartpole.ssbx.json` ("Cart-pole"), and the CLI tests: it balances, a grab replays bit for bit from a run file, rows refused at their path.
 - Python: `add_block(bodies=...)`, checked at the call by `_native.block_problem` (stubs updated).
 - Checks: fmt, clippy, workspace tests, the Python tests, the docs check; every other example's hashes unchanged.
+- After the owner tried the cart-pole in the app:
+  - **The Inspector's table for `bodies`** (`simsandbox-app/src/app/mechanism.rs`). Each change is a new diagram edit, `Edit::SetMechanism`. It renames the ports and parameters a renamed body or joint makes, in wires, parameter values, settings and everything in the file outside the blocks (views, sliders, schedules), and drops wires to ports that go. Tested in the session and the app: renames, numbers, add and remove, a refused change kept as a draft, an input unlisted.
+  - **Per-platform hashes** (`simsandbox-cli/tests/platform_hashes.rs`, `tests/platform-hashes.json`): four mechanism cases through the binary, pinned for Linux x86_64. The test build and the release build give the same bits, and a changed parameter was caught.
 
 ## Decided
 
@@ -25,13 +28,11 @@
 
 ## Left open
 
-- Before the gate ([STATUS](../STATUS.md), Next up item 3):
-  - the owner trying the cart-pole in the window;
-  - the Inspector's table for `bodies`;
-  - per-platform hashes in CI.
+- Before the gate ([STATUS](../STATUS.md), Next up item 3): Windows' and macOS' pinned hashes. CI runs only on `main` and pull requests, and the test fails there until their lines are added (the failure prints them). Intel macOS is not in CI.
 
 ## Notes for the next session
 
+- **The table's renames:** a name belongs to the body or joint whose name it starts with (the longest match, then `_`), so the rows' names, not a second list of suffixes, decide what follows a rename. If the new rows do not build, nothing is dropped: the edit waits as a draft.
 - **Convergence order:** on the double pendulum, RK4's order measured at 4 ms and 2 ms steps is 3.79 (not yet asymptotic); at 2 ms and 1 ms it is 4.0. The test uses the latter.
 - **Unwired inputs:** an unwired input is an error, not 0. That is why ADR 0105 creates inputs only for listed joints and bodies.
 - **The cart-pole's grab:** the spring pulls the pole's centre of mass (a load). The spike pulled its tip.

@@ -1144,6 +1144,16 @@ pub enum Edit {
     },
     /// Remove a declared parameter of the model.
     RemoveParam { name: String },
+    /// A mechanism's rows and settings (ADR 0105), with bodies and joints
+    /// renamed old to new (`renames`): the ports and parameters their
+    /// names make follow, and wires, parameter values, settings and views
+    /// with them; wires to ports that no longer exist go.
+    SetMechanism {
+        block: String,
+        bodies: Vec<serde_json::Map<String, Value>>,
+        settings: BTreeMap<String, String>,
+        renames: Vec<(String, String)>,
+    },
     /// A block's text setting, such as a conversion's `from` or `to` unit
     /// (ADR 0045).
     SetSetting {
@@ -1362,6 +1372,15 @@ fn apply_level(
                 connections: std::mem::take(&mut file.connections),
                 ..Subsystem::default()
             };
+            // A mechanism's names before its rows change (ADR 0105).
+            let names = match edit {
+                Edit::SetMechanism { block, .. } => def
+                    .blocks
+                    .iter()
+                    .find(|b| b.name == *block)
+                    .map(|b| mechanism_names(registry, b, edit)),
+                _ => None,
+            };
             let result = edit_level(&mut def, file, registry, edit);
             file.blocks = def.blocks;
             file.connections = def.connections;
@@ -1370,6 +1389,11 @@ fn apply_level(
             match edit {
                 Edit::Delete { block } => forget_block(file, block),
                 Edit::Rename { from, to } => rename_refs_in_file(file, from, to)?,
+                Edit::SetMechanism { .. } => {
+                    if let Some(names) = &names {
+                        rename_keys_in_file(file, names)?;
+                    }
+                }
                 _ => {}
             }
             Ok(note)
@@ -1529,6 +1553,69 @@ fn edit_level(
             } else {
                 format!("{block} has no restart input")
             })
+        }
+        Edit::SetMechanism {
+            block,
+            bodies,
+            settings,
+            renames,
+        } => {
+            let entry = l
+                .blocks
+                .iter()
+                .find(|b| b.name == *block)
+                .filter(|b| b.type_name.starts_with("mech."))
+                .ok_or_else(|| format!("no mechanism '{block}'"))?;
+            let names = mechanism_names(registry, entry, edit);
+            let renamed = |key: &str| names.iter().find(|(k, _)| k == key).map(|(_, n)| n.clone());
+            let entry = l
+                .blocks
+                .iter_mut()
+                .find(|b| b.name == *block)
+                .expect("found above");
+            entry.bodies.clone_from(bodies);
+            entry.settings.clone_from(settings);
+            // The settings list bodies and joints by name.
+            for list in entry.settings.values_mut() {
+                let words: Vec<String> = list
+                    .split([',', ' '])
+                    .filter(|w| !w.is_empty())
+                    .map(|w| {
+                        renames
+                            .iter()
+                            .find(|(o, _)| o == w)
+                            .map_or(w.to_string(), |(_, n)| n.clone())
+                    })
+                    .collect();
+                *list = words.join(", ");
+            }
+            entry.settings.retain(|_, v| !v.is_empty());
+            // Parameter values set beside the rows follow their names.
+            let params = std::mem::take(&mut entry.params);
+            for (k, v) in params {
+                match renamed(&format!("{block}.{k}")) {
+                    Some(Some(n)) => {
+                        let n = n.split_once('.').map_or(n.as_str(), |(_, p)| p).to_string();
+                        entry.params.insert(n, v);
+                    }
+                    Some(None) => {}
+                    None => {
+                        entry.params.insert(k, v);
+                    }
+                }
+            }
+            // Wires follow the ports; those to ports that went, go.
+            l.connections.retain_mut(|c| {
+                for end in [&mut c.from, &mut c.to] {
+                    match renamed(end) {
+                        Some(Some(n)) => *end = n,
+                        Some(None) => return false,
+                        None => {}
+                    }
+                }
+                true
+            });
+            Ok(format!("Changed the bodies of {block}"))
         }
         Edit::SetSetting { block, key, text } => {
             let b = l
@@ -2183,6 +2270,159 @@ fn rename_refs_in_file(file: &mut ModelFile, from: &str, to: &str) -> Result<(),
     }
     *file = renamed;
     Ok(())
+}
+
+/// For a [`Edit::SetMechanism`] of `entry`: each of its ports and
+/// parameters now (`block.name`) with what it becomes, `None` if it goes.
+/// A name belongs to the body or joint whose name it starts with (the
+/// longest, then `_`); renamed with it, and gone if the new rows do not
+/// make it. If the new rows do not build, nothing is said to go (the edit
+/// waits as a draft with their error).
+fn mechanism_names(
+    registry: &Registry,
+    entry: &BlockEntry,
+    edit: &Edit,
+) -> Vec<(String, Option<String>)> {
+    let Edit::SetMechanism {
+        block,
+        bodies,
+        settings,
+        renames,
+    } = edit
+    else {
+        return Vec::new();
+    };
+    let names = |e: &BlockEntry| -> Option<Vec<String>> {
+        let b = registry
+            .build(&e.type_name, &e.name, &e.config(None))
+            .ok()?;
+        let spec = b.spec();
+        Some(
+            spec.ports
+                .iter()
+                .map(|p| p.name.clone())
+                .chain(spec.params.iter().map(|p| p.name.clone()))
+                .collect(),
+        )
+    };
+    let Some(old) = names(entry) else {
+        return Vec::new();
+    };
+    let mut next = entry.clone();
+    next.bodies.clone_from(bodies);
+    next.settings.clone_from(settings);
+    for list in next.settings.values_mut() {
+        *list = list
+            .split([',', ' '])
+            .filter(|w| !w.is_empty())
+            .map(|w| {
+                renames
+                    .iter()
+                    .find(|(o, _)| o == w)
+                    .map_or(w, |(_, n)| n.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+    }
+    let new = names(&next);
+    let owners: Vec<&str> = entry
+        .bodies
+        .iter()
+        .flat_map(|r| ["name", "joint"].map(|k| r.get(k).and_then(Value::as_str)))
+        .flatten()
+        .collect();
+    old.into_iter()
+        .filter_map(|name| {
+            let owner = owners
+                .iter()
+                .filter(|o| name.starts_with(&format!("{o}_")))
+                .max_by_key(|o| o.len());
+            let now = match owner.and_then(|o| renames.iter().find(|(f, _)| f == o)) {
+                Some((f, t)) => format!("{t}{}", &name[f.len()..]),
+                None => name.clone(),
+            };
+            let gone = new.as_ref().is_some_and(|n| !n.contains(&now));
+            let key = format!("{block}.{name}");
+            match (gone, now == name) {
+                (true, _) => Some((key, None)),
+                (false, false) => Some((key, Some(format!("{block}.{now}")))),
+                (false, true) => None,
+            }
+        })
+        .collect()
+}
+
+/// [`mechanism_names`]' renames and removals in the file outside its
+/// blocks and wires: views, sliders, scheduled inputs, probes, filters,
+/// groups. A key that went is dropped where it is a key (a slider); in a
+/// value it is left for `check` to report.
+fn rename_keys_in_file(
+    file: &mut ModelFile,
+    names: &[(String, Option<String>)],
+) -> Result<(), String> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    let mut value: Value = serde_json::from_str(&file.to_json()).map_err(|e| e.to_string())?;
+    let obj = value.as_object_mut().ok_or("a model file is an object")?;
+    for (key, v) in obj.iter_mut() {
+        if !matches!(
+            key.as_str(),
+            "blocks" | "connections" | "models" | "subsystems" | "format"
+        ) {
+            rename_whole_keys(v, names);
+        }
+    }
+    let (renamed, _) = ModelFile::from_json(&value.to_string()).map_err(|e| e.to_string())?;
+    *file = renamed;
+    Ok(())
+}
+
+fn rename_whole_keys(v: &mut Value, names: &[(String, Option<String>)]) {
+    let swap = |s: &str| -> String {
+        names.iter().fold(s.to_string(), |s, (from, to)| match to {
+            Some(to) => replace_whole(&s, from, to),
+            None => s,
+        })
+    };
+    match v {
+        Value::String(s) => *s = swap(s),
+        Value::Array(items) => items.iter_mut().for_each(|i| rename_whole_keys(i, names)),
+        Value::Object(map) => {
+            let entries: Vec<(String, Value)> = std::mem::take(map).into_iter().collect();
+            for (k, mut item) in entries {
+                if names.iter().any(|(from, to)| to.is_none() && *from == k) {
+                    continue;
+                }
+                rename_whole_keys(&mut item, names);
+                map.insert(swap(&k), item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `s` with each `from` that is a whole key (no name character, `.` or
+/// `/` either side) replaced by `to`.
+fn replace_whole(s: &str, from: &str, to: &str) -> String {
+    let part = |c: char| c.is_alphanumeric() || c == '_' || c == '.' || c == '/';
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    let mut prev: Option<char> = None;
+    while let Some(i) = rest.find(from) {
+        let before = rest[..i].chars().last().or(prev);
+        let after = rest[i + from.len()..].chars().next();
+        out.push_str(&rest[..i]);
+        if before.is_some_and(part) || after.is_some_and(part) {
+            out.push_str(from);
+        } else {
+            out.push_str(to);
+        }
+        prev = from.chars().last();
+        rest = &rest[i + from.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn rename_in(v: &mut Value, from: &str, to: &str) {
@@ -3387,6 +3627,88 @@ mod tests {
         .unwrap();
         let copy = f.blocks.iter().find(|b| b.name == "car1").unwrap();
         assert_eq!(copy.equations, f.blocks[0].equations);
+    }
+
+    #[test]
+    fn a_mechanism_s_rows_change_and_its_names_follow() {
+        // ADR 0105: renaming a joint and a body renames the ports and
+        // parameters they make, and every wire, setting, slider and scene
+        // binding with them; an input that goes takes its wire.
+        use simsandbox_file::SceneValue;
+        let r = registry();
+        let mut f = file("Cart-pole");
+        let entry = f
+            .blocks
+            .iter()
+            .find(|b| b.name == "cartpole")
+            .unwrap()
+            .clone();
+        let mut bodies = entry.bodies.clone();
+        bodies[0].insert("joint".into(), "rail".into());
+        bodies[1].insert("name".into(), "arm".into());
+        bodies[1].insert("parent".into(), "cart".into());
+        apply(
+            &mut f,
+            &r,
+            &Edit::SetMechanism {
+                block: "cartpole".into(),
+                bodies,
+                settings: entry.settings.clone(),
+                renames: vec![
+                    ("slider".into(), "rail".into()),
+                    ("pole".into(), "arm".into()),
+                ],
+            },
+        )
+        .unwrap();
+        let wired = |f: &ModelFile, from: &str, to: &str| {
+            f.connections.iter().any(|c| c.from == from && c.to == to)
+        };
+        assert!(wired(&f, "control.F", "cartpole.rail_force"));
+        assert!(wired(&f, "cartpole.rail_position", "control.x"));
+        assert!(wired(&f, "control.fx", "cartpole.arm_fx"));
+        let m = f.blocks.iter().find(|b| b.name == "cartpole").unwrap();
+        assert_eq!(m.settings["actuated"], "rail");
+        assert_eq!(m.settings["loaded"], "arm");
+        assert!(f.controls.params.contains_key("cartpole.arm_mass"));
+        let scene = &f.controls.views[0].scene;
+        assert_eq!(
+            scene.frames["cart"].x,
+            Some(SceneValue::Name("cartpole.rail_position".into()))
+        );
+        // The pose rows keep their names: they belong to no body.
+        assert_eq!(
+            scene.layers[4].bind["x"],
+            SceneValue::Name("cartpole.x".into())
+        );
+        crate::Session::load("t", &f.to_json(), &r).unwrap();
+        let text = f.to_json();
+        assert!(
+            !text.contains("slider_") && !text.contains("pole_"),
+            "{text}"
+        );
+        // The rail no longer driven: its input and the wire into it go.
+        let entry = f
+            .blocks
+            .iter()
+            .find(|b| b.name == "cartpole")
+            .unwrap()
+            .clone();
+        let mut settings = entry.settings.clone();
+        settings.remove("actuated");
+        apply(
+            &mut f,
+            &r,
+            &Edit::SetMechanism {
+                block: "cartpole".into(),
+                bodies: entry.bodies,
+                settings,
+                renames: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(!f.connections.iter().any(|c| c.to == "cartpole.rail_force"));
+        crate::Session::load("t", &f.to_json(), &r).unwrap();
     }
 
     #[test]

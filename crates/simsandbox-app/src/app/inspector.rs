@@ -373,6 +373,16 @@ impl SimApp {
                         .as_ref()
                         .and_then(|f| block_entry(f, scope.as_deref(), name));
                     let mut shown = false;
+                    // A mechanism's bodies, as a table (ADR 0105): as the
+                    // draft has them while one waits, since edits build on it.
+                    if let (None, Some(b)) =
+                        (scope, running.filter(|b| b.type_name.starts_with("mech.")))
+                    {
+                        let b = drafted.unwrap_or(b).clone();
+                        for e in self.mechanism_section(ui, &b) {
+                            c.canvas.push((at.clone(), e));
+                        }
+                    }
                     if let Some(b) = running {
                         if let Some(t) =
                             crate::inspector::selected(&m.params, &m.file, scope.as_deref(), name)
@@ -551,6 +561,10 @@ impl SimApp {
                             }
                         }
                     });
+                }
+                // A mechanism's bodies are a table where it is selected.
+                if entry.is_some_and(|b| b.type_name.starts_with("mech.")) {
+                    ui.weak("Select it on the canvas to edit its bodies");
                 }
                 if let Some(b) = convert {
                     for e in unit_fields(ui, b, &mut self.param_edits) {

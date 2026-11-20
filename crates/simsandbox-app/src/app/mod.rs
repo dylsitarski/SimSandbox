@@ -32,6 +32,7 @@ mod editors;
 mod files;
 mod forms;
 mod inspector;
+mod mechanism;
 mod param_rows;
 mod run_menu;
 mod scene;
@@ -146,6 +147,9 @@ pub struct SimApp {
     example_folder: Option<(PathBuf, usize)>,
     /// Text being typed into parameter fields, keyed by `"block.param"`.
     param_edits: HashMap<String, String>,
+    /// The mechanism row opened in the Inspector's table: its block and
+    /// row (ADR 0105).
+    mech_open: Option<(String, usize)>,
     /// Values of sliders being dragged that apply on release (ADR 0037).
     pending: HashMap<String, f64>,
     /// The equation editor window, when open.
@@ -244,6 +248,7 @@ impl SimApp {
             path: None,
             example_folder: None,
             param_edits: HashMap::new(),
+            mech_open: None,
             pending: HashMap::new(),
             editor: None,
             signals_editor: None,
