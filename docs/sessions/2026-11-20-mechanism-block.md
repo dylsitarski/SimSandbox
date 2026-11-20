@@ -21,6 +21,7 @@
 
 ## Decided
 
+- Owner (2026-11-20): 3D scenes in Next up; usability and the plugin interface worked on together. [ADR 0106](../decisions/0106-mechanism-forces-are-parameters.md) (forces as parameters, since an input with a default is a parameter) and [ADR 0107](../decisions/0107-model-cards-and-agent-notes.md) (notes only of agents; both a check and a mark in the file). The [interface report](../research/2026-11-20-interface-report.md) written; its open choices are [Q64](../open-questions.md).
 - Owner (2026-11-20): pull request 4 merged; **the Phase 2 gate is met**. Recorded in the roadmap, STATUS, the README and ADR 0057.
 - The owner: [ADR 0103](../decisions/0103-rigid-body-engine.md) and [ADR 0105](../decisions/0105-mechanism-file-form.md) accepted.
 - Recorded in ADR 0105's "Built" section:

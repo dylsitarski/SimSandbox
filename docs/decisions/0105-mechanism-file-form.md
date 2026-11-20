@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (owner, 2026-11-20)
 - **Date:** 2026-11-20
+- **See also:** [ADR 0106](0106-mechanism-forces-are-parameters.md) supersedes point 4's inputs and the settings `actuated` and `loaded`: forces and loads are parameters.
 - **Builds on:** [ADR 0103](0103-rigid-body-engine.md) (a native articulated-body solver, one block per mechanism, joints as rows), [ADR 0075](0075-parameters-are-inputs-with-defaults.md) (parameters are inputs with defaults), [ADR 0093](0093-scenes-from-primitive-layers.md) (frames over rows, grabbing), [ADR 0079](0079-tables-of-members.md) (rows with ids), [ADR 0045](0045-units-in-typed-equations.md) (units on every connection), [ADR 0039](0039-ai-agent-access.md) (headless and AI access), [changing the file format](../guides/changing-the-file-format.md)
 
 ## Context

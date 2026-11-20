@@ -163,6 +163,8 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0087-implicit-lu-on-the-matrix-pattern.md](decisions/0087-implicit-lu-on-the-matrix-pattern.md) | Decision record | Implicit methods' own sparse LU on the matrix's pattern, faer's as fallback |
 | [decisions/0104-implicit-structure-independent-of-the-state.md](decisions/0104-implicit-structure-independent-of-the-state.md) | Decision record | Implicit methods' Jacobian structure when a system does not give it: dense when small, probed at three states when large |
 | [decisions/0105-mechanism-file-form.md](decisions/0105-mechanism-file-form.md) | Decision record | Accepted: the mechanism block's file form (bodies table, numbers as parameters, ports by joint kind) |
+| [decisions/0106-mechanism-forces-are-parameters.md](decisions/0106-mechanism-forces-are-parameters.md) | Decision record | Accepted: a mechanism's forces and loads are parameters, not inputs |
+| [decisions/0107-model-cards-and-agent-notes.md](decisions/0107-model-cards-and-agent-notes.md) | Decision record | Accepted: generated model cards; notes required only of agents; agents' parts marked |
 | [decisions/0088-activation.md](decisions/0088-activation.md) | Decision record | Activation of used models and studies: `activate` modes and `restart` |
 | [decisions/0089-native-code-for-typed-equations.md](decisions/0089-native-code-for-typed-equations.md) | Decision record | Native code for typed equations: generated Rust compiled where a toolchain exists |
 | [decisions/0090-one-engine-for-nested-models.md](decisions/0090-one-engine-for-nested-models.md) | Decision record | One engine for nested models: the merged simulator |
@@ -202,6 +204,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [research/market-landscape.md](research/market-landscape.md) | Research | Existing tools and the gap SimSandbox targets |
 | [research/2026-11-14-code-review.md](research/2026-11-14-code-review.md) | Research | Whole-project review of 2026-11-14: vision, correctness, structure, performance, usability; work items W1–W13 |
 | [research/2026-11-19-rigid-body-spike.md](research/2026-11-19-rigid-body-spike.md) | Research | The rigid-body spike of 2026-11-19: Rapier against MuJoCo on accuracy, rewind, determinism, speed, contacts, build; the recommendation and its risks; the follow-up with a native articulated-body solver, mechanisms as typed equations and Featherstone as a typed-equations function (estimated) |
+| [research/2026-11-20-interface-report.md](research/2026-11-20-interface-report.md) | Research | The interface from concept to a legible model: the cart-pole's problems, paradigms of other tools, five architectures compared, synchronized projections recommended, order of work |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
 | [sessions/2026-11-20-mechanism-block.md](sessions/2026-11-20-mechanism-block.md) | Session note | The mechanism block built (ADR 0103, ADR 0105): `simsandbox-mech`, the `bodies` field, the cart-pole example |
