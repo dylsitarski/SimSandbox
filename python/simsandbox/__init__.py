@@ -207,6 +207,7 @@ class Model:
         update: str | None = None,
         canvas: tuple[float, float] | None = None,
         settings: dict[str, str] | None = None,
+        bodies: Iterable[dict[str, Any]] | None = None,
     ) -> "Model":
         """Add a block. ``method`` is a name (``"rk4"``) or a dict with its
         options (``{"name": "dopri5", "rtol": 1e-9}``); without one, the
@@ -215,7 +216,10 @@ class Model:
         lines of an ``eq.equations`` block (a string is split into
         lines). ``canvas`` places it on the node canvas (laid out automatically
         if absent). ``settings`` are a type's text settings, e.g.
-        ``{"from": "mm", "to": "m"}`` for ``units.convert``."""
+        ``{"from": "mm", "to": "m"}`` for ``units.convert``. ``bodies`` are
+        a mechanism's (``mech.planar``) rows, one dict per body and its
+        joint (ADR 0105; ``describe("mech.planar")`` lists the columns),
+        checked here."""
         if any(b["name"] == name for b in self.data.get("blocks", [])):
             raise ModelError(f"there is already a block named {name!r}")
         # Groups of blocks the file defines are used like types (ADR 0043).
@@ -239,6 +243,13 @@ class Model:
             block["canvas"] = [float(canvas[0]), float(canvas[1])]
         if settings:
             block["settings"] = {k: str(v) for k, v in settings.items()}
+        if bodies is not None:
+            if not type.startswith("mech."):
+                raise ModelError(f"a {type} block has no bodies: only mechanisms (mech.*) do")
+            block["bodies"] = [dict(b) for b in bodies]
+            problem = _native.block_problem(json.dumps(block))
+            if problem is not None:
+                raise ModelError(problem)
         self.data.setdefault("blocks", []).append(block)
         return self
 

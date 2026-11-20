@@ -12,6 +12,7 @@ One note per non-trivial working session (human or agent): what was done, what w
 
 | Date | Note | Summary |
 | --- | --- | --- |
+| 2026-11-20 | [The mechanism block](2026-11-20-mechanism-block.md) | ADR 0103 and 0105 built: `simsandbox-mech` (`mech.planar`), the `bodies` field, verification tests, the cart-pole example, Python's `bodies` |
 | 2026-11-19 | [The vector registers after faer](2026-11-19-vector-registers-after-faer.md) | A 25× slowdown after implicit methods traced to faer's AVX kernels leaving the vector registers in use; cleared after factorising |
 | 2026-11-19 | [Implicit structure and replay](2026-11-19-implicit-structure-replay.md) | Undeclared Jacobian structures dense when small, probed at three states when large (ADR 0104); restored implicit runs replay bit for bit |
 | 2026-11-15 | [The equations' front end](2026-11-15-equation-front-end.md) | Review W6: the eight faults of typed equations fixed; the front end's restructuring |

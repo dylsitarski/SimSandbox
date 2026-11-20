@@ -696,6 +696,26 @@ fn connection_problem(text: &str, source: &str, target: &str) -> Option<String> 
 /// filter, a probe or time, and each `grab` an `input.pointer` block.
 /// Left to `check`: whether a block has that output, units, and tables
 /// (`None` here then, as for a file that does not parse).
+/// What is wrong with one block's entry (a model file's block object, as
+/// JSON) when its type builds it alone, or `None`: for `Model.add_block`
+/// to refuse a mechanism's rows at the call (ADR 0105 point 7). Types that
+/// are not registered (a definition in the file) are left to `check`.
+#[pyfunction]
+fn block_problem(block: &str) -> Option<String> {
+    let entry: simsandbox_file::BlockEntry = match serde_json::from_str(block) {
+        Ok(e) => e,
+        Err(e) => return Some(format!("not a block: {e}")),
+    };
+    let registry = simsandbox_session::examples::registry();
+    if !registry.contains(&entry.type_name) {
+        return None;
+    }
+    registry
+        .build(&entry.type_name, &entry.name, &entry.config(None))
+        .err()
+        .map(|e| e.to_string())
+}
+
 #[pyfunction]
 fn scene_problem(text: &str, scene: &str) -> Option<String> {
     use simsandbox_views::scene::{bound, Scene, SCENE};
@@ -804,6 +824,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(strategy, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
     m.add_function(wrap_pyfunction!(connection_problem, m)?)?;
+    m.add_function(wrap_pyfunction!(block_problem, m)?)?;
     m.add_function(wrap_pyfunction!(scene_problem, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

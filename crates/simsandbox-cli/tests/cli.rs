@@ -575,3 +575,88 @@ fn check_refuses_a_scene_layer_grabbing_with_no_input_pointer() {
         (Some("picked"), Some(-1.0))
     );
 }
+
+#[test]
+fn the_cartpole_balances_and_a_grab_replays_headless() {
+    // ADR 0103 and ADR 0105: the mechanism with a typed controller, one
+    // fused ODE; a grab of the pole from a run file, replayed bit for bit.
+    let model = example("cartpole.ssbx.json");
+    let report = json(&simsandbox(&["check", &model]));
+    assert_eq!(report["ok"], true, "{report}");
+    let groups = report["fused_groups"].as_array().unwrap();
+    assert!(groups.iter().any(|g| g["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| b == "cartpole")
+        && g["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b == "control")));
+    let grab = run_file(
+        "cartpole-grab.run.json",
+        &model,
+        serde_json::json!([
+            [0.5, "hand.x", 0.6],
+            [0.5, "hand.y", 0.6],
+            [0.5, "hand.down", 1.0],
+            [0.5, "hand.picked", 0.0],
+            [1.0, "hand.down", 0.0],
+            [1.0, "hand.picked", -1.0]
+        ]),
+    );
+    let run = |extra: &[&str]| {
+        let mut args = vec!["run", &model, "--t-end", "6", "--format", "json"];
+        args.extend_from_slice(extra);
+        simsandbox(&args)
+    };
+    let alone = run(&[]);
+    let grabbed = run(&["--inputs", &grab]);
+    let angle = |out: &Output| -> Vec<f64> {
+        json(out)["outputs"]["cartpole.hinge_angle"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect()
+    };
+    let (a, g) = (angle(&alone), angle(&grabbed));
+    assert_ne!(a, g, "the grab moves the pole");
+    // Pulled over by the hand, then caught: upright again by 6 s.
+    let pulled = g.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    assert!(pulled > 0.15, "{pulled}");
+    assert!(a.last().unwrap().abs() < 1e-3 && g.last().unwrap().abs() < 1e-3);
+    let itself = simsandbox(&["run", &grab, "--t-end", "6", "--format", "json"]);
+    assert_eq!(
+        bits(&itself, "cartpole.hinge_angle"),
+        bits(&grabbed, "cartpole.hinge_angle")
+    );
+}
+
+#[test]
+fn a_mechanism_is_described_and_its_rows_are_checked_at_their_path() {
+    let d = json(&simsandbox(&["describe", "mech.planar"]));
+    let text = d.to_string();
+    assert!(
+        text.contains("<joint>_angle0"),
+        "the reference is given whole"
+    );
+    let model = std::fs::read_to_string(example("cartpole.ssbx.json"))
+        .unwrap()
+        .replace("\"parent\": \"cart\"", "\"parent\": \"carriage\"");
+    let out = simsandbox(&["check", &scratch("cartpole-bad.json", &model)]);
+    let report = json(&out);
+    assert_eq!(report["ok"], false);
+    assert!(report.to_string().contains("bodies[1].parent"), "{report}");
+    // Only a mechanism has bodies.
+    let wrong = std::fs::read_to_string(example("cartpole.ssbx.json"))
+        .unwrap()
+        .replace("\"type\": \"mech.planar\"", "\"type\": \"eq.lorenz\"");
+    let out = simsandbox(&["check", &scratch("lorenz-bodies.json", &wrong)]);
+    assert!(
+        json(&out).to_string().contains("blocks[1].bodies"),
+        "{}",
+        json(&out)
+    );
+}

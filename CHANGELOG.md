@@ -99,6 +99,8 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Added
 
+- Mechanisms: a block type `mech.planar`, a tree of rigid bodies in the plane on revolute, prismatic and fixed joints, written as a new `bodies` field (one row per body and its joint). Every number of a row is a parameter (`pole_mass`, `hinge_damping`, `hinge_angle0`); outputs are each joint's coordinate and rate, the energy, and each body's frame over rows (`x`, `y`, `angle`, …) for a scene; inputs only for the joints listed in `actuated` and the bodies listed in `loaded`. Solved by RK4, Dormand–Prince, TR-BDF2 or backward Euler, and together with typed equations wired to it. `simsandbox describe mech.planar` gives the whole reference. New example "Cart-pole (a mechanism, balanced and grabbed)" (`examples/cartpole.ssbx.json`): an LQR controller in typed equations balances the pole; grab it in the scene and it is pulled toward the pointer, replayed exactly after a rewind and headless.
+- Python: `Model.add_block(..., bodies=[...])` builds a mechanism, its rows checked when called.
 - Scenes can bind a block's parameters (`bob.L`), drawn at the value used at each moment, also when rewound or replayed; frames can be renamed in the Inspector.
 - Editing scenes: the Inspector lists a scene's frames and layers to add, remove, reorder and bind; on the canvas a scene is wired from what it draws; `Model.add_scene` in Python; `simsandbox-app --select NODE` opens with a node selected.
 - Grabbing in scenes: press on a shape whose layer names an `input.pointer` block and drag; the model receives the pointer and which shape was pressed (`picked`), and the grab replays exactly from a saved run. New example "Grab the bob".

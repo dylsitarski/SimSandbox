@@ -1038,6 +1038,11 @@ pub struct BlockEntry {
     /// equations.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub equations: Vec<String>,
+    /// The bodies of a mechanism (`mech.*`), one object per body and its
+    /// joint (ADR 0105); the columns are the type's, listed by `simsandbox
+    /// describe mech.planar`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bodies: Vec<serde_json::Map<String, serde_json::Value>>,
     /// Numbers, or formulas of the declared parameters in scope
     /// (ADR 0043). For a subsystem: its declared parameters, and inner
     /// values for this instance only as `"block.param"`.
@@ -1077,6 +1082,12 @@ impl BlockEntry {
             method: (&self.method).into(),
             definition: if self.type_name == STUDY {
                 self.study_definition()
+            } else if !self.bodies.is_empty() {
+                // A mechanism's rows, one JSON object a line (ADR 0105).
+                self.bodies
+                    .iter()
+                    .map(|b| serde_json::to_string(b).expect("rows serialize"))
+                    .collect()
             } else {
                 self.equations.clone()
             },

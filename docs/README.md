@@ -162,7 +162,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0086-views-by-axis-roles-and-mesh-views.md](decisions/0086-views-by-axis-roles-and-mesh-views.md) | Decision record | Views by axis roles (pick, reduce, facet); mesh views on wgpu with an egui path headless |
 | [decisions/0087-implicit-lu-on-the-matrix-pattern.md](decisions/0087-implicit-lu-on-the-matrix-pattern.md) | Decision record | Implicit methods' own sparse LU on the matrix's pattern, faer's as fallback |
 | [decisions/0104-implicit-structure-independent-of-the-state.md](decisions/0104-implicit-structure-independent-of-the-state.md) | Decision record | Implicit methods' Jacobian structure when a system does not give it: dense when small, probed at three states when large |
-| [decisions/0105-mechanism-file-form.md](decisions/0105-mechanism-file-form.md) | Decision record | Proposed: the mechanism block's file form (bodies table, numbers as parameters, ports by joint kind) |
+| [decisions/0105-mechanism-file-form.md](decisions/0105-mechanism-file-form.md) | Decision record | Accepted: the mechanism block's file form (bodies table, numbers as parameters, ports by joint kind) |
 | [decisions/0088-activation.md](decisions/0088-activation.md) | Decision record | Activation of used models and studies: `activate` modes and `restart` |
 | [decisions/0089-native-code-for-typed-equations.md](decisions/0089-native-code-for-typed-equations.md) | Decision record | Native code for typed equations: generated Rust compiled where a toolchain exists |
 | [decisions/0090-one-engine-for-nested-models.md](decisions/0090-one-engine-for-nested-models.md) | Decision record | One engine for nested models: the merged simulator |
@@ -198,11 +198,13 @@ This page is the map of every document in the repository and the rules for keepi
 | Document | Type | What it covers |
 | --- | --- | --- |
 | [reference/typed-equations.md](reference/typed-equations.md) | Reference | The typed-equations language: statements, expressions, units, functions, limits; given by `describe eq.equations`; examples parsed by a test |
+| [reference/mechanisms.md](reference/mechanisms.md) | Reference | Mechanisms (`mech.planar`): the `bodies` columns, the parameters and ports they make, methods, what `check` refuses; given whole by `describe mech.planar` |
 | [research/market-landscape.md](research/market-landscape.md) | Research | Existing tools and the gap SimSandbox targets |
 | [research/2026-11-14-code-review.md](research/2026-11-14-code-review.md) | Research | Whole-project review of 2026-11-14: vision, correctness, structure, performance, usability; work items W1–W13 |
 | [research/2026-11-19-rigid-body-spike.md](research/2026-11-19-rigid-body-spike.md) | Research | The rigid-body spike of 2026-11-19: Rapier against MuJoCo on accuracy, rewind, determinism, speed, contacts, build; the recommendation and its risks; the follow-up with a native articulated-body solver, mechanisms as typed equations and Featherstone as a typed-equations function (estimated) |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
+| [sessions/2026-11-20-mechanism-block.md](sessions/2026-11-20-mechanism-block.md) | Session note | The mechanism block built (ADR 0103, ADR 0105): `simsandbox-mech`, the `bodies` field, the cart-pole example |
 | [sessions/2026-11-19-vector-registers-after-faer.md](sessions/2026-11-19-vector-registers-after-faer.md) | Session note | Why typed models slowed after implicit methods ran: faer's AVX kernels and `vzeroupper` |
 | [sessions/2026-11-19-implicit-structure-replay.md](sessions/2026-11-19-implicit-structure-replay.md) | Session note | Implicit methods' undeclared Jacobian structure made independent of the state (ADR 0104) |
 | [sessions/2026-11-15-equation-front-end.md](sessions/2026-11-15-equation-front-end.md) | Session note | Review W6: typed-equation faults fixed, front end restructured |

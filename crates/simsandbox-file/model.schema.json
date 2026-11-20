@@ -333,6 +333,98 @@
           },
           "description": "Equations of an 'eq.equations' block, one per line: 'dx/dt = ...' (or \"x' = ...\") for a state, 'name = ...' for a defined quantity (ADR 0017); 'input F [N]', 'param m [kg] = 2', 'state x [m] = 0' and a trailing '[unit]' for a line's left side ('dv/dt = F/m [m/s^2]') give units, and then every line must balance (ADR 0045, ADR 0049)."
         },
+        "bodies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "parent",
+              "joint",
+              "kind",
+              "mass"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The body's name: letters, digits, _; unique in the block."
+              },
+              "parent": {
+                "type": "string",
+                "description": "'ground', or a body listed before this one."
+              },
+              "joint": {
+                "type": "string",
+                "description": "The joint to the parent: its name, unique among bodies and joints."
+              },
+              "kind": {
+                "enum": [
+                  "revolute",
+                  "prismatic",
+                  "fixed"
+                ],
+                "description": "revolute turns, prismatic slides along the joint frame's x axis, fixed is welded."
+              },
+              "at": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "The joint's point in the parent's frame (m); default [0, 0]."
+              },
+              "turn": {
+                "type": "number",
+                "description": "The joint frame's rotation from the parent's (rad); default 0."
+              },
+              "mass": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Mass (kg)."
+              },
+              "centre": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "The centre of mass in the body's frame (m); default [0, 0]."
+              },
+              "inertia": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Moment of inertia about the centre of mass (kg*m^2); default 0."
+              },
+              "damping": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Viscous friction in the joint (N*m*s or N*s/m); default 0."
+              },
+              "stiffness": {
+                "type": "number",
+                "minimum": 0,
+                "description": "A spring in the joint toward 'rest' (N*m or N/m); default 0."
+              },
+              "rest": {
+                "type": "number",
+                "description": "The spring's rest coordinate (rad or m); default 0."
+              },
+              "start": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "The coordinate and its rate at the start (rad, rad/s or m, m/s); default [0, 0]."
+              }
+            }
+          },
+          "description": "A mechanism's (mech.planar) bodies, one per body and the joint to its parent, parents first (ADR 0105); every number is also a parameter named <body>_<column> or <joint>_<column>. 'simsandbox describe mech.planar' gives the reference."
+        },
         "settings": {
           "type": "object",
           "additionalProperties": {

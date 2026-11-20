@@ -183,6 +183,24 @@ pub(crate) fn check_uses(
                 format!("'{m}': a model's name is letters, digits and '_'"),
             ));
         }
+        // Only a mechanism has bodies, and then no equations (ADR 0105).
+        if !b.bodies.is_empty() && !b.type_name.is_empty() {
+            if !b.type_name.starts_with("mech.") {
+                return Err(invalid(
+                    format!("{path}.bodies"),
+                    format!(
+                        "a {} block has no bodies: only mechanisms (mech.*) do",
+                        b.type_name
+                    ),
+                ));
+            }
+            if !b.equations.is_empty() {
+                return Err(invalid(
+                    format!("{path}.equations"),
+                    "a mechanism is defined by its bodies, not by equations",
+                ));
+            }
+        }
         // Only a use (no type) or a study names a model (ADR 0070).
         if b.names_model() && !b.type_name.is_empty() && b.type_name != crate::STUDY {
             return Err(invalid(
@@ -227,6 +245,7 @@ pub(crate) fn check_uses(
                     ("type", !b.type_name.is_empty()),
                     ("method", !b.method.is_empty()),
                     ("equations", !b.equations.is_empty()),
+                    ("bodies", !b.bodies.is_empty()),
                     ("update", b.update.is_some()),
                     ("settings", !b.settings.is_empty()),
                     ("start", b.start.is_some()),

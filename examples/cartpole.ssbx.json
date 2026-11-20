@@ -1,0 +1,246 @@
+{
+  "format": 1,
+  "description": "The Phase 2 gate's cart-pole (ADR 0103, ADR 0105): a cart on a rail and a pole hinged on it, one mech.planar block, balanced upright by an LQR controller written as typed equations. The controller reads the joints and drives the cart's force; wired to the mechanism it is solved with it as one ODE. Press on the pole in the scene and drag: while it is held, a damped spring pulls the pole's centre toward the pointer (the 'loaded' force); let go and the controller catches it, unless the cart's force limit (umax) cannot. Rewind and run on: the grab is recorded input and replays exactly; Runs ▸ Save run… keeps it, and simsandbox run --inputs replays it headless. The dots are the bodies' frames, drawn from the mechanism's rows.",
+  "run": {
+    "dt": 0.002
+  },
+  "blocks": [
+    {
+      "name": "hand",
+      "type": "input.pointer",
+      "settings": {
+        "max": "2.5",
+        "min": "-2.5",
+        "unit": "m"
+      }
+    },
+    {
+      "name": "cartpole",
+      "type": "mech.planar",
+      "settings": {
+        "actuated": "slider",
+        "loaded": "pole"
+      },
+      "bodies": [
+        {
+          "damping": 0.1,
+          "joint": "slider",
+          "kind": "prismatic",
+          "mass": 1.0,
+          "name": "cart",
+          "parent": "ground"
+        },
+        {
+          "centre": [
+            0.0,
+            0.5
+          ],
+          "inertia": 0.008333333333333333,
+          "joint": "hinge",
+          "kind": "revolute",
+          "mass": 0.1,
+          "name": "pole",
+          "parent": "cart",
+          "start": [
+            0.1,
+            0.0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "control",
+      "type": "eq.equations",
+      "equations": [
+        "# LQR for the upright pole (Q = diag(10, 1, 100, 1), R = 0.1), the force limited to umax",
+        "input x [m]",
+        "input v [m/s]",
+        "input th [rad]",
+        "input w [rad/s]",
+        "param k1 [N/m] = -10",
+        "param k2 [N*s/m] = -12.134",
+        "param k3 [N] = 78.104",
+        "param k4 [N*s] = 18.676",
+        "param umax [N] = 30",
+        "F = min(max(-(k1*x + k2*v + k3*th + k4*w), -umax), umax) [N]",
+        "# the grab: while the pole is held, a damped spring from its centre to the pointer",
+        "input hx [m]",
+        "input hy [m]",
+        "input down",
+        "input picked",
+        "param lh [m] = 0.5",
+        "param ks [N/m] = 20",
+        "param cs [N*s/m] = 2",
+        "held = down*(picked >= 0)",
+        "cx = x - lh*sin(th) [m]",
+        "cy = lh*cos(th) [m]",
+        "fx = held*(ks*(hx - cx) - cs*(v - lh*cos(th)*w)) [N]",
+        "fy = held*(ks*(hy - cy) + cs*lh*sin(th)*w) [N]",
+        "n = 0 [N*m]"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "cartpole.slider_position",
+      "to": "control.x"
+    },
+    {
+      "from": "cartpole.slider_speed",
+      "to": "control.v"
+    },
+    {
+      "from": "cartpole.hinge_angle",
+      "to": "control.th"
+    },
+    {
+      "from": "cartpole.hinge_rate",
+      "to": "control.w"
+    },
+    {
+      "from": "hand.x",
+      "to": "control.hx"
+    },
+    {
+      "from": "hand.y",
+      "to": "control.hy"
+    },
+    {
+      "from": "hand.down",
+      "to": "control.down"
+    },
+    {
+      "from": "hand.picked",
+      "to": "control.picked"
+    },
+    {
+      "from": "control.F",
+      "to": "cartpole.slider_force"
+    },
+    {
+      "from": "control.fx",
+      "to": "cartpole.pole_fx"
+    },
+    {
+      "from": "control.fy",
+      "to": "cartpole.pole_fy"
+    },
+    {
+      "from": "control.n",
+      "to": "cartpole.pole_torque"
+    }
+  ],
+  "controls": {
+    "params": {
+      "cartpole.pole_mass": {
+        "slider": true,
+        "range": [
+          0.01,
+          0.5
+        ],
+        "pin": true
+      },
+      "control.umax": {
+        "slider": true,
+        "range": [
+          0.0,
+          60.0
+        ],
+        "pin": true
+      }
+    },
+    "views": [
+      {
+        "type": "plot.scene",
+        "unit": "m",
+        "extent": {
+          "x": [
+            -2.5,
+            2.5
+          ],
+          "y": [
+            -0.8,
+            1.6
+          ]
+        },
+        "frames": {
+          "cart": {
+            "x": "cartpole.slider_position",
+            "y": 0.0
+          },
+          "pole": {
+            "in": "cart",
+            "angle": "cartpole.hinge_angle"
+          }
+        },
+        "layers": [
+          {
+            "draw": "segments",
+            "bind": {
+              "colour": "grey",
+              "width": 2.0,
+              "x1": -2.5,
+              "x2": 2.5,
+              "y1": -0.1,
+              "y2": -0.1
+            }
+          },
+          {
+            "draw": "boxes",
+            "in": "cart",
+            "bind": {
+              "colour": "blue",
+              "height": 0.2,
+              "width": 0.4,
+              "x": 0.0,
+              "y": 0.0
+            }
+          },
+          {
+            "draw": "boxes",
+            "in": "pole",
+            "bind": {
+              "colour": "orange",
+              "height": 1.0,
+              "width": 0.05,
+              "x": 0.0,
+              "y": 0.5
+            },
+            "grab": "hand"
+          },
+          {
+            "draw": "segments",
+            "bind": {
+              "colour": "red",
+              "width": "hand.down",
+              "x1": "control.cx",
+              "x2": "hand.x",
+              "y1": "control.cy",
+              "y2": "hand.y"
+            }
+          },
+          {
+            "draw": "points",
+            "bind": {
+              "colour": "grey",
+              "size": 6.0,
+              "x": "cartpole.x",
+              "y": "cartpole.y"
+            }
+          }
+        ]
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": [
+            "cartpole.hinge_angle",
+            "cartpole.slider_position",
+            "control.F"
+          ]
+        }
+      }
+    ]
+  }
+}

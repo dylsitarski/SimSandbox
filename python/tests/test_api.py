@@ -836,3 +836,34 @@ def test_connect_accepts_every_wire_of_every_example():
         assert m.data["connections"] == connections, path
     assert wires > 20
 
+
+
+def test_a_mechanism_is_built_from_rows_checked_at_the_call():
+    # ADR 0105: one row per body; every number a parameter; poses as rows.
+    m = ss.Model()
+    m.add_block(
+        "cartpole",
+        "mech.planar",
+        settings={"actuated": "slider"},
+        bodies=[
+            {"name": "cart", "parent": "ground", "joint": "slider", "kind": "prismatic", "mass": 1.0},
+            {"name": "pole", "parent": "cart", "joint": "hinge", "kind": "revolute",
+             "mass": 0.1, "centre": [0, 0.5], "inertia": 0.0083, "start": [0.1, 0]},
+        ],
+    )
+    m.add_block("push", "eq.equations", equations=["f = 0 [N]"])
+    m.connect("push.f", "cartpole.slider_force")
+    run = m.run(t_end=0.5, dt=0.001)
+    angle = run["cartpole.hinge_angle"]
+    assert angle[0] == 0.1 and angle[-1] > 0.1  # it falls
+    with pytest.raises(ss.ModelError, match=r"bodies\[1\]\.parent"):
+        ss.Model().add_block(
+            "m",
+            "mech.planar",
+            bodies=[
+                {"name": "a", "parent": "ground", "joint": "ja", "kind": "revolute", "mass": 1, "centre": [0, -1]},
+                {"name": "b", "parent": "c", "joint": "jb", "kind": "revolute", "mass": 1},
+            ],
+        )
+    with pytest.raises(ss.ModelError, match="only mechanisms"):
+        ss.Model().add_block("l", "eq.lorenz", bodies=[])

@@ -876,6 +876,7 @@ impl Ctx<'_> {
         let extra = [
             (!entry.method.name.is_empty(), "method"),
             (!entry.equations.is_empty(), "equations"),
+            (!entry.bodies.is_empty(), "bodies"),
             (entry.update.is_some(), "update"),
             (!entry.settings.is_empty(), "settings"),
             (entry.start.is_some(), "start"),

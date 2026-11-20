@@ -61,3 +61,8 @@ Option 5.
 - Follow-up: the ADR for the mechanism file form in detail ([changing the file format](../guides/changing-the-file-format.md)); the snapshot spacing rule for Rapier under the memory budget.
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): a mechanism block (bodies on joints as rows, its state the joint coordinates) and a rigid-body world block for contacts (a new domain, bodies as rows); opaque block state in snapshots, needed only by the contact engine, whose state is a graph of objects the kernel's flat states vector cannot express.
+
+## Built (2026-11-20)
+
+Point 1, the native solver for jointed mechanisms, as `mech.planar` in `crates/simsandbox-mech` with the file form of [ADR 0105](0105-mechanism-file-form.md) (see its "Built" section). Point 7's verification tests are in `crates/simsandbox-mech/tests/verification.rs`, except the per-platform hashes in CI and Rapier's. The gate's cart-pole is `examples/cartpole.ssbx.json`: an LQR controller in typed equations fused with the mechanism, grabbed in a scene by a spring written in the same equations. Rapier for contacts (point 2) and `ExternalState` are not built.
+

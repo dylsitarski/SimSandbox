@@ -5,6 +5,7 @@ members = [
     "crates/simsandbox-expr",
     "crates/simsandbox-compiled",
     "crates/simsandbox-eq",
+    "crates/simsandbox-mech",
     "crates/simsandbox-agents",
     "crates/simsandbox-file",
     "crates/simsandbox-cli",

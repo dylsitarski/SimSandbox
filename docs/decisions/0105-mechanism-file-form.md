@@ -1,6 +1,6 @@
 # 0105 — The mechanism block's file form: a bodies table, numbers as parameters, ports by joint kind
 
-- **Status:** Proposed (draft for the owner, 2026-11-20)
+- **Status:** Accepted (owner, 2026-11-20)
 - **Date:** 2026-11-20
 - **Builds on:** [ADR 0103](0103-rigid-body-engine.md) (a native articulated-body solver, one block per mechanism, joints as rows), [ADR 0075](0075-parameters-are-inputs-with-defaults.md) (parameters are inputs with defaults), [ADR 0093](0093-scenes-from-primitive-layers.md) (frames over rows, grabbing), [ADR 0079](0079-tables-of-members.md) (rows with ids), [ADR 0045](0045-units-in-typed-equations.md) (units on every connection), [ADR 0039](0039-ai-agent-access.md) (headless and AI access), [changing the file format](../guides/changing-the-file-format.md)
 
@@ -42,7 +42,7 @@ The cart-pole of the Phase 2 gate is the first user. A 50- or 200-link chain, a 
 | One array over all joints (`q`, `v`) | Few ports | Mixed units (m and rad) in one port: refused by ADR 0045 |
 | One array per joint kind (`angles[revolute]`, `positions[prismatic]`) | Few ports, exact units, suits long chains | A controller of one joint must pick it out of an array; not needed by the gate |
 
-## Decision (proposed)
+## Decision
 
 The first option of each table.
 
@@ -119,3 +119,16 @@ The first option of each table.
 - Not here: closed loops (a second table of loop joints, by its own decision), joint limits, `free` joints, 3D (`mech.spatial`), contact shapes (the contact engine's ADR).
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none beyond ADR 0103's mechanism block. Bodies and joints are rows of its table (ADR 0079); their numbers are parameters (ADR 0075); their poses are rows a scene draws (ADR 0093).
+
+## Built (2026-11-20)
+
+- `crates/simsandbox-mech`: `tree.rs` (the dynamics), `rows.rs` (the rows), `block.rs` (`Mechanism`, `MechBlock`, `mech.planar`); the reference is [docs/reference/mechanisms.md](../reference/mechanisms.md), printed by `describe mech.planar`.
+- The `bodies` field reaches the block as its definition lines, one JSON object each, as a study's `sample` does; the file refuses it on any type but `mech.*` and beside `equations` (`blocks[k].bodies`). Errors name the row and column (`bodies[1].parent`).
+- The block is in the equation domain (`Domain::Equations`, not a domain of its own as ADR 0103 point 1 suggested), so the equation domain's group solver fuses it with typed equations. Its rows outputs are written whenever its outputs are, after each step and when the master resolves outputs.
+- `x`, `y`, `angle` are each body's frame (its joint's point), as point 4 says; a load acts at the body's centre of mass.
+- `euler` is accepted as for every ODE block but not listed; `rk4` is the default.
+- Python checks the rows when `add_block` is called through a new native `block_problem`, which builds the one block alone.
+- Two ports or parameters meeting by name is checked, though the names' suffixes make it hard to reach.
+- Not built yet: the Inspector's table for `bodies` (the canvas shows the block and its ports; the file, the CLI and Python edit the rows).
+- Verification ([policy](../guides/verification-policy.md#reference-problems-in-use)): ABA against CRBA with RNEA on 250 random trees with every joint kind, springs, damping and loads (1e−12); the double pendulum and the cart-pole against their Lagrange equations (1e−13), RK4 order 4; the pendulum period against the elliptic integral (1e−10); a damped slider against its linear solution (1e−12); momentum and energy kept (1e−9); restored into a fresh block bit for bit with all four methods; every refusal of point 6. The cart-pole example's grab replays bit for bit from a run file (`simsandbox-cli/tests/cli.rs`).
+

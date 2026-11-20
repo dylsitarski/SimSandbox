@@ -3516,6 +3516,17 @@ dependencies = [
  "simsandbox-core",
  "simsandbox-eq",
  "simsandbox-expr",
+ "simsandbox-mech",
+]
+
+[[package]]
+name = "simsandbox-mech"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "simsandbox-core",
+ "simsandbox-eq",
 ]
 
 [[package]]
@@ -3531,6 +3542,7 @@ dependencies = [
  "simsandbox-eq",
  "simsandbox-expr",
  "simsandbox-file",
+ "simsandbox-mech",
  "simsandbox-views",
 ]
 
