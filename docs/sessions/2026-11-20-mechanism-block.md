@@ -21,6 +21,7 @@
 
 ## Decided
 
+- Owner (2026-11-20): pull request 4 merged; **the Phase 2 gate is met**. Recorded in the roadmap, STATUS, the README and ADR 0057.
 - The owner: [ADR 0103](../decisions/0103-rigid-body-engine.md) and [ADR 0105](../decisions/0105-mechanism-file-form.md) accepted.
 - Recorded in ADR 0105's "Built" section:
   - the block is in the equation domain, so it fuses with typed equations;

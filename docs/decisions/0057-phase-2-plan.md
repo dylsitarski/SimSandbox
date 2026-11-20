@@ -113,3 +113,7 @@ The verification policy holds for everything added: reference, order or toleranc
 - Q36 is settled by the inputs ADR (item 1), Q35 and Q17 by item 2, Q28 and Q37 by item 4. Q28's "after Q26" condition is replaced by items 1–2.
 - Scheduled changes leave the list as a separate item: they are input written in the file.
 - The adaptive master, acausal connections, ML, FMI and GPU fluids stay listed but are not planned until the gate is met.
+
+## Gate met (2026-11-20)
+
+The owner judged the gate met on 2026-11-20 with `examples/cartpole.ssbx.json`: a typed-equation LQR controller fused with a mechanism block ([ADR 0103](0103-rigid-body-engine.md), [ADR 0105](0105-mechanism-file-form.md)) balances the pole live; the user grabs it in a scene ([ADR 0093](0093-scenes-from-primitive-layers.md)) and the grab is recorded input, replayed bit for bit after a rewind and headless (`simsandbox-cli/tests/cli.rs`); the mechanism's verification tests pass and its results are pinned on Linux, Windows and macOS. Items 1–3 are done; item 4 and point 5's list follow as decided above.
