@@ -151,6 +151,16 @@ pub const EXAMPLES: &[Example] = &[
         files: &[],
     },
     Example {
+        name: "Grab the bob (a scene sends the pointer)",
+        text: include_str!("../../../examples/pendulum-grab.ssbx.json"),
+        files: &[],
+    },
+    Example {
+        name: "Cart-pole (a mechanism, balanced and grabbed)",
+        text: include_str!("../../../examples/cartpole.ssbx.json"),
+        files: &[],
+    },
+    Example {
         name: "Heat along a rod (a grid field)",
         text: include_str!("../../../examples/heat-rod.ssbx.json"),
         files: &[],
@@ -208,6 +218,7 @@ pub fn registry() -> Registry {
     let mut r = Registry::new();
     simsandbox_eq::register(&mut r).expect("equation types register once");
     simsandbox_agents::register(&mut r).expect("agent types register once");
+    simsandbox_mech::register(&mut r).expect("mechanism types register once");
     crate::study::register(&mut r).expect("the study type registers once");
     r
 }

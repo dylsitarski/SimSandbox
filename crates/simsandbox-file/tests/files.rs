@@ -481,6 +481,121 @@ fn schema_is_valid_json_and_lists_the_file_fields() {
     assert_eq!(schema["properties"]["format"]["const"], 1);
 }
 
+/// The keys of `value` the schema does not allow, by path: objects with
+/// `additionalProperties: false` are checked key by key, through `$ref`,
+/// `items` and the branches of `oneOf` and `anyOf` (a value fits if it
+/// fits one branch). Types and ranges are not checked here: the reader
+/// does that. This is what catches a field added to the file's structs
+/// and not to the hand-written schema.
+fn not_in_schema(
+    root: &serde_json::Value,
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+    path: &str,
+    out: &mut Vec<String>,
+) {
+    use serde_json::Value;
+    if let Some(r) = schema.get("$ref").and_then(Value::as_str) {
+        let target = r
+            .strip_prefix('#')
+            .and_then(|p| root.pointer(p))
+            .unwrap_or_else(|| panic!("{path}: $ref {r} leads nowhere"));
+        return not_in_schema(root, target, value, path, out);
+    }
+    for key in ["oneOf", "anyOf"] {
+        if let Some(branches) = schema.get(key).and_then(Value::as_array) {
+            let tried: Vec<Vec<String>> = branches
+                .iter()
+                .map(|b| {
+                    let mut o = Vec::new();
+                    not_in_schema(root, b, value, path, &mut o);
+                    o
+                })
+                .collect();
+            if !tried.iter().any(Vec::is_empty) {
+                out.extend(tried.into_iter().min_by_key(Vec::len).unwrap_or_default());
+            }
+        }
+    }
+    match value {
+        Value::Object(map) => {
+            let props = schema.get("properties").and_then(Value::as_object);
+            let extra = schema.get("additionalProperties");
+            for (k, v) in map {
+                let here = format!("{path}.{k}");
+                match (props.and_then(|p| p.get(k)), extra) {
+                    (Some(s), _) => not_in_schema(root, s, v, &here, out),
+                    (None, Some(Value::Bool(false))) => out.push(here),
+                    (None, Some(s @ Value::Object(_))) => not_in_schema(root, s, v, &here, out),
+                    _ => {}
+                }
+            }
+        }
+        Value::Array(items) => {
+            if let Some(s) = schema.get("items") {
+                for (i, v) in items.iter().enumerate() {
+                    not_in_schema(root, s, v, &format!("{path}[{i}]"), out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The schema is written by hand beside the structs the reader fills, so
+/// it can fall behind them: every key a current file holds must be in it.
+/// Checked over every example, every older fixture in its current form,
+/// and a file holding the fields no example uses.
+#[test]
+fn schema_allows_every_key_the_reader_writes() {
+    let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
+    let check = |name: &str, text: &str| {
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        let mut out = Vec::new();
+        not_in_schema(&schema, &schema, &value, "", &mut out);
+        assert!(out.is_empty(), "{name}: not in model.schema.json: {out:?}");
+    };
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut folders = vec![root.join("../../examples"), root.join("tests/old")];
+    let mut files = 0;
+    while let Some(dir) = folders.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                folders.push(path);
+            } else if name.ends_with(".ssbx.json") || name.ends_with(".current.json") {
+                check(&name, &std::fs::read_to_string(&path).unwrap());
+                files += 1;
+            }
+        }
+    }
+    assert!(files >= 20, "only {files} files found");
+    // Fields no example uses, written back by the reader itself.
+    let text = r#"{"format": 1,
+        "models": {"m": {"blocks": [
+            {"name": "u", "type": "input.value"},
+            {"name": "e", "type": "eq.equations", "equations": ["input u", "dx/dt = u - x"]}],
+            "connections": [{"from": "u.y", "to": "e.u"}]}},
+        "blocks": [
+            {"name": "on", "type": "input.value"},
+            {"name": "again", "type": "input.value"},
+            {"name": "a", "model": "m", "clock": {"dt": 0.1}, "activate": "while", "restart": true}],
+        "connections": [{"from": "on.y", "to": "a.activate"}, {"from": "again.y", "to": "a.restart"}],
+        "controls": {"open": ["on"], "expand": ["a"]}}"#;
+    let (file, _) = ModelFile::from_json(text).unwrap();
+    let written = file.to_json();
+    for key in ["activate", "restart", "open", "expand"] {
+        assert!(written.contains(&format!("\"{key}\"")), "{key} not written");
+    }
+    check("fields no example uses", &written);
+    // And the check itself sees a key the schema lacks.
+    let value = serde_json::json!({"format": 1, "blocks": [{"name": "x", "type": "t", "nope": 1}]});
+    let mut out = Vec::new();
+    not_in_schema(&schema, &schema, &value, "", &mut out);
+    assert_eq!(out, [".blocks[0].nope"]);
+}
+
 #[test]
 fn run_settings_default_validate_and_round_trip() {
     let bare = r#"{"format": 1, "blocks": [{"name": "l", "type": "eq.lorenz", "method": {"name": "rk4"}}]}"#;
@@ -582,6 +697,52 @@ fn views_are_validated_leniently() {
     let v = &loaded.file.controls.views[0];
     assert_eq!(v.bind["y"].signals(), ["a.x", "b.x"]);
     assert_eq!(v.style["w"], 2.0);
+}
+
+/// A scene's layers do not fit slots (ADR 0093): they are kept as the
+/// view's settings, written back as given, and checked by the view type.
+#[test]
+fn a_scene_keeps_its_frames_and_layers() {
+    let scene = r#"{"type": "plot.scene", "unit": "m", "extent": {"x": [-2.0, 2.0], "y": [-2.0, 1.0]},
+        "frames": {"pivot": {"angle": -1.5707963267948966}, "rod": {"in": "pivot", "angle": "bob.angle"}},
+        "layers": [
+          {"draw": "segments", "in": "rod", "bind": {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 0.0, "colour": "grey"}},
+          {"draw": "discs", "in": "rod", "bind": {"x": 1.0, "y": 0.0, "radius": 0.1}, "grab": "hand"}],
+        "view_from": "rod"}"#;
+    let text = PENDULUM.replacen(r#""views": ["#, &format!(r#""views": [{scene},"#), 1);
+    let loaded = load(&text, &registry()).unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    let v = &loaded.file.controls.views[0];
+    assert_eq!(v.type_name, "plot.scene");
+    assert!(v.bind.is_empty());
+    let keys: Vec<String> = v.scene.to_map().into_keys().collect();
+    assert_eq!(keys, ["extent", "frames", "layers", "unit", "view_from"]);
+    assert_eq!(v.scene.layers[1].grab.as_deref(), Some("hand"));
+    assert_eq!(v.scene.frames["rod"].parent.as_deref(), Some("pivot"));
+    // Written back as read, in the order the ADR gives.
+    let (again, _) = ModelFile::from_json(&loaded.file.to_json()).unwrap();
+    assert_eq!(again.controls.views[0], *v);
+    let written: serde_json::Value = serde_json::from_str(&loaded.file.to_json()).unwrap();
+    let wanted: serde_json::Value = serde_json::from_str(scene).unwrap();
+    assert_eq!(written["controls"]["views"][0], wanted);
+    let text = loaded.file.to_json();
+    let order = [
+        "\"unit\"",
+        "\"extent\"",
+        "\"frames\"",
+        "\"layers\"",
+        "\"view_from\"",
+    ];
+    let at: Vec<usize> = order.iter().map(|k| text.find(k).unwrap()).collect();
+    assert!(at.windows(2).all(|w| w[0] < w[1]), "{text}");
+    assert!(text.find("\"draw\"").unwrap() < text.find("\"x1\"").unwrap());
+    // What a layer does not take is kept, for the view type to report at
+    // its path (the rest of controls stays).
+    let bad = text.replace(r#""draw": "discs""#, r#""draw": "discs", "fill": true"#);
+    let (file, warnings) = ModelFile::from_json(&bad).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(file.controls.views[0].scene.layers[1].other["fill"], true);
+    assert!(file.controls.params["bob.L"].slider);
 }
 
 #[test]
@@ -943,8 +1104,11 @@ fn stateless_blocks_join_the_group_they_connect_but_never_merge_methods() {
     let loaded = load(&text("rk4"), &registry()).unwrap();
     let blocks: Vec<&str> = loaded.groups[0].blocks.iter().map(String::as_str).collect();
     assert_eq!((loaded.groups.len(), blocks), (1, vec!["a", "c", "f", "b"]));
+    // With another method, b stays apart; the stateless blocks stay with
+    // a, the set they joined first, and are solved with it (ADR 0095).
     let loaded = load(&text("dopri5"), &registry()).unwrap();
-    assert!(loaded.groups.is_empty(), "{:?}", loaded.groups);
+    let blocks: Vec<&str> = loaded.groups[0].blocks.iter().map(String::as_str).collect();
+    assert_eq!((loaded.groups.len(), blocks), (1, vec!["a", "c", "f"]));
     // A group of only stateless blocks is refused when asked for.
     let explicit = text("rk4").replace(
         r#""connections""#,
@@ -952,6 +1116,51 @@ fn stateless_blocks_join_the_group_they_connect_but_never_merge_methods() {
     );
     let err = load(&explicit, &registry()).err().unwrap().to_string();
     assert!(err.contains("block with states"), "{err}");
+}
+
+/// One block with states and a formula wired in a circle with it are
+/// solved together (ADR 0095): a mass and a spring written as a formula
+/// block follow cos(2t) to RK4's accuracy. Stepped apart (`fusion: off`)
+/// the force reaches the mass a step late and the run is 5% off at t = 5.
+#[test]
+fn a_formula_in_a_loop_with_one_block_with_states_is_fused() {
+    let text = |fusion: &str| {
+        format!(
+            r#"{{"format": 1, "run": {{"dt": 0.01}}, {fusion} "blocks": [
+              {{"name": "mass", "type": "eq.equations", "equations": [
+                "input F [N]", "param m [kg] = 2", "state x [m] = 1", "state v [m/s] = 0",
+                "dx/dt = v", "dv/dt = F/m"]}},
+              {{"name": "spring", "type": "eq.equations", "equations": [
+                "input x [m]", "param k [N/m] = 8", "F = -k*x [N]"]}}
+            ], "connections": [{{"from": "mass.x", "to": "spring.x"}},
+                               {{"from": "spring.F", "to": "mass.F"}}]}}"#
+        )
+    };
+    let x_at_5 = |fusion: &str| {
+        let loaded = load(&text(fusion), &registry()).unwrap();
+        let groups = loaded.groups.clone();
+        let mass = loaded.ids["mass"];
+        let mut sim = Simulator::new(loaded.model, 0.0).unwrap();
+        for _ in 0..500 {
+            sim.step(0.01).unwrap();
+        }
+        (sim.output(mass, "x").unwrap()[0], groups)
+    };
+    let exact = (2.0f64 * 5.0).cos();
+    let (x, groups) = x_at_5("");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].blocks, ["mass", "spring"]);
+    assert!(!groups[0].explicit);
+    assert!((x - exact).abs() < 1e-7, "{x} against {exact}");
+    let (apart, groups) = x_at_5(r#""fusion": "off","#);
+    assert!(groups.is_empty());
+    assert!((apart - exact).abs() > 0.03, "{apart}");
+    // A formula wired to nothing with states is left alone.
+    let alone = r#"{"format": 1, "blocks": [
+        {"name": "a", "type": "eq.equations", "equations": ["y = 2"]},
+        {"name": "b", "type": "eq.equations", "equations": ["input u", "z = 3*u"]}
+      ], "connections": [{"from": "a.y", "to": "b.u"}]}"#;
+    assert!(load(alone, &registry()).unwrap().groups.is_empty());
 }
 
 #[test]

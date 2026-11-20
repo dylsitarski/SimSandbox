@@ -1,6 +1,6 @@
 # 0009 — Hobbyists are the first audience
 
-- **Status:** Accepted
+- **Status:** Superseded by [0094](0094-the-full-audience.md)
 - **Date:** 2026-10-16
 
 ## Context

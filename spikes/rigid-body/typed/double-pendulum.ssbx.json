@@ -1,0 +1,45 @@
+{
+  "format": 1,
+  "description": "Two uniform rods (1 kg, 1 m) hinged end to end, absolute angles p1, p2 from straight down: the Lagrange equations written out, the 2 x 2 mass matrix inverted by hand.",
+  "run": {
+    "dt": 0.001,
+    "t_end": 5.0
+  },
+  "blocks": [
+    {
+      "name": "dp",
+      "type": "eq.equations",
+      "equations": [
+        "# a double pendulum of uniform rods; absolute angles from down",
+        "param m1 [kg] = 1",
+        "param m2 [kg] = 1",
+        "param l1 [m] = 1",
+        "param c1 [m] = 0.5",
+        "param c2 [m] = 0.5",
+        "param i1 [kg*m^2] = 0.08333333333333333",
+        "param i2 [kg*m^2] = 0.08333333333333333",
+        "param g [m/s^2] = 9.81",
+        "state p1 = 1",
+        "state p2 = 0.5",
+        "state w1 [1/s] = 0",
+        "state w2 [1/s] = 0",
+        "a = i1 + m1*c1^2 + m2*l1^2 [kg*m^2]",
+        "b = m2*l1*c2 [kg*m^2]",
+        "c = i2 + m2*c2^2 [kg*m^2]",
+        "r1 = -b*sin(p1 - p2)*w2^2 - (m1*c1 + m2*l1)*g*sin(p1) [N*m]",
+        "r2 = b*sin(p1 - p2)*w1^2 - m2*c2*g*sin(p2) [N*m]",
+        "m12 = b*cos(p1 - p2) [kg*m^2]",
+        "det = a*c - m12^2 [kg^2*m^4]",
+        "dp1/dt = w1",
+        "dp2/dt = w2",
+        "dw1/dt = (c*r1 - m12*r2)/det [1/s^2]",
+        "dw2/dt = (a*r2 - m12*r1)/det [1/s^2]",
+        "E = 0.5*a*w1^2 + 0.5*c*w2^2 + m12*w1*w2 - m1*g*c1*cos(p1) - m2*g*(l1*cos(p1) + c2*cos(p2)) [J]"
+      ],
+      "method": {
+        "name": "rk4"
+      }
+    }
+  ],
+  "connections": []
+}

@@ -28,6 +28,8 @@ type Entry = unsafe extern "C" fn(i64, i64, *const *mut f64, *const *const f64, 
 /// A compiled phase.
 pub struct Kernel {
     entry: Entry,
+    /// What it was compiled for; every call is checked against it.
+    shape: crate::Shape,
     /// The code's memory, kept while the kernel lives.
     _module: Module_,
 }
@@ -43,12 +45,15 @@ unsafe impl Sync for Module_ {}
 
 impl PhaseKernel for Kernel {
     fn run(&self, lo: usize, written: &mut [&mut [f64]], read: &[&[f64]], scalars: &[f64]) {
-        let len = written.first().map_or(0, |w| w.len());
+        let len = self.shape.check(lo, written, read, scalars);
         let w: Vec<*mut f64> = written.iter_mut().map(|w| w.as_mut_ptr()).collect();
         let r: Vec<*const f64> = read.iter().map(|r| r.as_ptr()).collect();
-        // SAFETY: the code reads `len` cells of each written array from
-        // its start, read arrays within their length (the cells of lines
-        // the view describes) and the scalars it was compiled for.
+        // SAFETY: the code reads and writes `len` cells of each of the
+        // view's written arrays from its start, cells of its read arrays
+        // below the view's number of cells (cells `lo..lo + len`, their
+        // neighbours along lines that fill the cells, `Shape::of`), and
+        // the view's scalars. `Shape::check` has just made sure the
+        // arrays and scalars given are that many and that long.
         unsafe {
             (self.entry)(
                 lo as i64,
@@ -414,6 +419,7 @@ impl Cell<'_> {
 
 /// Compile a phase; `None` if this machine's code cannot be made.
 pub fn compile(view: &PhaseView) -> Option<Arc<dyn PhaseKernel>> {
+    let shape = crate::Shape::of(view)?;
     let mut flags = settings::builder();
     flags.set("opt_level", "speed").ok()?;
     let isa = cranelift_native::builder()
@@ -678,6 +684,7 @@ pub fn compile(view: &PhaseView) -> Option<Arc<dyn PhaseKernel>> {
     let entry: Entry = unsafe { std::mem::transmute(code) };
     Some(Arc::new(Kernel {
         entry,
+        shape,
         _module: Module_(module),
     }))
 }

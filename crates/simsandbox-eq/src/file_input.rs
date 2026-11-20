@@ -38,7 +38,6 @@ pub const READ: &str = "read";
 pub struct FileInput {
     spec: BlockSpec,
     method: MethodSpec,
-    times: Vec<f64>,
     /// Per output, its values sample after sample.
     data: Vec<Vec<f64>>,
     linear: bool,
@@ -234,6 +233,10 @@ impl FileInput {
                 states: Vec::new(),
                 tables: Vec::new(),
                 time: TimeSemantics::Stateless,
+                reads_time: None,
+                // Its samples' times: a model with no states is evaluated
+                // there (ADR 0067 step 4).
+                instants: Some(times),
             },
             method: MethodSpec {
                 name: READ.into(),
@@ -244,7 +247,6 @@ impl FileInput {
                     accuracy: AccuracyClass::Quantitative,
                 },
             },
-            times,
             data,
             linear,
         })
@@ -438,7 +440,7 @@ impl FileInput {
 
     /// The samples' times.
     pub fn times(&self) -> &[f64] {
-        &self.times
+        self.spec.instants.as_deref().unwrap_or_default()
     }
 }
 
@@ -465,8 +467,9 @@ impl Block for FileInput {
         // (2.4999999999998 for 2500 steps of 0.001): within rounding, it is
         // that sample's time.
         let near = t + TIME_ROUNDING * t.abs().max(1.0);
-        let k = self.times.partition_point(|&s| s <= near).saturating_sub(1);
-        let next = (k + 1 < self.times.len() && t > self.times[k]).then_some(k + 1);
+        let times = self.times();
+        let k = times.partition_point(|&s| s <= near).saturating_sub(1);
+        let next = (k + 1 < times.len() && t > times[k]).then_some(k + 1);
         let mut at = 0;
         for (p, d) in self.spec.ports.iter().zip(&self.data) {
             let n = p.shape.len();
@@ -475,7 +478,7 @@ impl Block for FileInput {
             match next.filter(|_| self.linear) {
                 Some(j) => {
                     // From the sample itself when a hair short of it.
-                    let w = ((t - self.times[k]) / (self.times[j] - self.times[k])).max(0.0);
+                    let w = ((t - times[k]) / (times[j] - times[k])).max(0.0);
                     let b = &d[j * n..(j + 1) * n];
                     for ((o, &a), &b) in out.iter_mut().zip(a).zip(b) {
                         *o = a + (b - a) * w;
@@ -486,12 +489,6 @@ impl Block for FileInput {
             at += n;
         }
         Ok(())
-    }
-
-    /// Its samples' times: a model with no states is evaluated there
-    /// (ADR 0067 step 4).
-    fn instants(&self) -> Option<&[f64]> {
-        Some(&self.times)
     }
 }
 
@@ -582,7 +579,7 @@ mod tests {
             ]),
         )
         .unwrap();
-        assert_eq!(b.instants(), Some(&[0.0, 1.0, 2.0][..]));
+        assert_eq!(b.spec().instants.as_deref(), Some(&[0.0, 1.0, 2.0][..]));
         assert_eq!(b.spec.ports[0].unit, Unit::parse("m").unwrap());
         let v: Vec<f64> = run(b, 4, 0.5).iter().map(|o| o[0]).collect();
         assert_eq!(v, [1.0, 2.0, 3.0, 2.5, 2.0]);

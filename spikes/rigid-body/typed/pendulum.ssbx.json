@@ -1,0 +1,36 @@
+{
+  "format": 1,
+  "description": "The rigid-body spike's pendulum as typed equations: a compact bob (mass m, inertia Ic about its centre) at L from the pivot; theta from straight down, counter-clockwise.",
+  "run": {
+    "dt": 0.001,
+    "t_end": 20.0
+  },
+  "blocks": [
+    {
+      "name": "pend",
+      "type": "eq.equations",
+      "equations": [
+        "# the spike's physical pendulum",
+        "param m [kg] = 1",
+        "param L [m] = 1",
+        "param Ic [kg*m^2] = 0.01",
+        "param g [m/s^2] = 9.81",
+        "state theta = 0.1",
+        "state omega [1/s] = 0",
+        "J = Ic + m*L^2 [kg*m^2]",
+        "dtheta/dt = omega",
+        "domega/dt = -m*g*L*sin(theta)/J [1/s^2]",
+        "# the bob as a row: centre and velocity",
+        "x = L*sin(theta) [m]",
+        "y = -L*cos(theta) [m]",
+        "vx = L*cos(theta)*omega [m/s]",
+        "vy = L*sin(theta)*omega [m/s]",
+        "E = 0.5*J*omega^2 + m*g*L*(1 - cos(theta)) [J]"
+      ],
+      "method": {
+        "name": "rk4"
+      }
+    }
+  ],
+  "connections": []
+}

@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "simsandbox-agents"
 description = "SimSandbox agent domain: populations of agents as kernel-owned tables (ADR 0034)"
 version.workspace = true

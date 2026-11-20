@@ -3,13 +3,14 @@
 //! [`crate::fields`].
 
 use crate::colour::{bins, segments, trail_start, ColourKey, HEAD};
-use crate::history::{label, paired, split_source, SignalRef, TIME};
+use crate::decimate::{self, Columns};
+use crate::history::{label, paired, split_source, SignalRef, Stamp, TIME};
 use crate::view::{
     always, over_time, Bindings, Bound, Preset, Slot, SlotKind, StyleProperty, Swap, View,
     ViewInput, ViewRegistry, ViewType,
 };
 use crate::view3d::{self, Camera};
-use egui_plot::{Legend, Line, MarkerShape, Plot, PlotUi, Points};
+use egui_plot::{Legend, Line, MarkerShape, Plot, PlotPoint, PlotPoints, PlotUi, Points};
 
 /// Segments a single coloured trail is split into.
 const COLOUR_CHUNKS: usize = 48;
@@ -126,6 +127,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             },
         ],
         create: || Box::new(Xy::default()),
+        settings: None,
     })?;
     r.register(ViewType {
         name: "plot.3d",
@@ -175,11 +177,13 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             },
         }],
         create: || Box::new(Trajectory::default()),
+        settings: None,
     })?;
     crate::fields::register(r)?;
     crate::surface::register(r)?;
     crate::values::register(r)?;
-    crate::mesh::register(r)
+    crate::mesh::register(r)?;
+    crate::scene::register(r)
 }
 
 /// A bound signal's label with its unit, as an axis shows it.
@@ -268,10 +272,37 @@ pub(crate) fn series_colour(k: usize) -> egui::Color32 {
 struct Xy {
     /// Drawn with the `y` signals across and `x` up ("swap axes").
     transposed: bool,
+    kept: Kept,
     /// The curve last clicked, until the app asks.
     picked: Option<String>,
     /// The pointer, when the view sends input (ADR 0058).
     pointer: crate::view::PlotPointer,
+}
+
+/// What `plot.xy` last drew, kept while nothing it was drawn from changes:
+/// with the model paused, a frame draws the same lines again without
+/// reading the recordings.
+#[derive(Default)]
+struct Kept {
+    /// The recordings' stamps, the bindings and the trail length the
+    /// curves were read with.
+    data: Option<(Vec<Stamp>, Bindings, u64)>,
+    /// Each curve's first sample shown (its trail).
+    firsts: Vec<usize>,
+    x_range: Option<[f64; 2]>,
+    y_range: Option<[f64; 2]>,
+    /// Each curve's newest point, as `(x, y)`.
+    newest: Vec<Option<[f64; 2]>>,
+    /// The column width, the plot's width in pixels and the orientation
+    /// the lines were drawn for.
+    drawn: Option<[u64; 3]>,
+    /// The lines as drawn, each with its colour if it is a segment of a
+    /// coloured curve, and each curve's lines among them.
+    lines: Vec<(Option<egui::Color32>, Vec<PlotPoint>)>,
+    spans: Vec<std::ops::Range<usize>>,
+    /// Times the recordings were read and the lines drawn.
+    #[cfg(test)]
+    counts: [usize; 2],
 }
 
 /// A curve's id in the plot, by its signal's name.
@@ -279,42 +310,143 @@ fn curve_id(name: &str) -> egui::Id {
     egui::Id::new(("curve", name))
 }
 
+/// A recorded column of values: read where the recording keeps it, or
+/// paired from several recordings (ADR 0063).
+enum Column<'a> {
+    Times(&'a [f64]),
+    Points(&'a [PlotPoint]),
+    Owned(Vec<f64>),
+}
+
+impl Column<'_> {
+    fn at(&self, i: usize) -> f64 {
+        match self {
+            Column::Times(t) => t[i],
+            Column::Points(p) => p[i].y,
+            Column::Owned(v) => v[i],
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Column::Times(t) => t.len(),
+            Column::Points(p) => p.len(),
+            Column::Owned(v) => v.len(),
+        }
+    }
+
+    /// Times, which are never kept as points.
+    fn slice(&self) -> &[f64] {
+        match self {
+            Column::Times(t) => t,
+            Column::Owned(v) => v,
+            Column::Points(_) => &[],
+        }
+    }
+
+    fn to_vec(&self) -> Vec<f64> {
+        match self {
+            Column::Times(t) => t.to_vec(),
+            Column::Points(p) => p.iter().map(|p| p.y).collect(),
+            Column::Owned(v) => v.clone(),
+        }
+    }
+}
+
 /// One curve of `plot.xy`: its `y` against `x` (and colour), at the times
 /// all of them were recorded (ADR 0063).
-struct Curve {
-    /// The binding as written, and as shown.
-    name: String,
-    label: String,
-    /// The label with its unit, for an axis.
-    axis: String,
-    t: Vec<f64>,
-    x: Vec<f64>,
-    y: Vec<f64>,
+struct Curve<'a> {
+    t: Column<'a>,
+    x: Column<'a>,
+    y: Column<'a>,
+    n: usize,
     colour: ColourKey,
 }
 
-impl Curve {
-    fn new(x: Bound<'_>, y: Bound<'_>, colour: Option<Bound<'_>>) -> Self {
-        let mut signals = vec![(x.history, x.signal), (y.history, y.signal)];
-        signals.extend(colour.map(|c| (c.history, c.signal)));
-        let mut p = paired(&signals);
+impl<'a> Curve<'a> {
+    fn new(x: Bound<'a>, y: Bound<'a>, colour: Option<Bound<'a>>) -> Self {
+        let mut bound = vec![x, y];
+        bound.extend(colour);
+        // One recording: its samples, read in place.
+        let mut sources = bound
+            .iter()
+            .filter(|b| b.signal != SignalRef::Time)
+            .map(|b| b.history);
+        let first = sources.next();
+        let one = match first {
+            Some(h) if sources.all(|g| std::ptr::eq(g, h)) => Some(h),
+            Some(_) => None,
+            None => Some(x.history),
+        };
+        let (t, mut columns) = match one {
+            Some(h) => {
+                let column = |b: &Bound<'a>| match b.signal {
+                    SignalRef::Time => Column::Times(h.times()),
+                    SignalRef::Signal(i) => Column::Points(h.points(i)),
+                    SignalRef::Field(_) => Column::Owned(vec![f64::NAN; h.len()]),
+                };
+                let columns: Vec<Column<'a>> = bound.iter().map(column).collect();
+                (Column::Times(h.times()), columns)
+            }
+            None => {
+                let signals: Vec<_> = bound.iter().map(|b| (b.history, b.signal)).collect();
+                let p = paired(&signals);
+                let columns = p.columns.into_iter().map(Column::Owned).collect();
+                (Column::Owned(p.t), columns)
+            }
+        };
+        let n = t.len();
+        // The colour's column is the last; taken off before `y` and `x`
+        // whatever it is bound to (time included).
         let colour = match colour {
             None => ColourKey::Constant,
-            Some(c) if c.signal == SignalRef::Time => ColourKey::Time(p.t.clone()),
-            Some(_) => ColourKey::Value(p.columns.pop().unwrap_or_default()),
+            Some(c) => {
+                let column = columns.pop();
+                match c.signal {
+                    SignalRef::Time => ColourKey::Time(t.to_vec()),
+                    _ => ColourKey::Value(column.map_or_else(Vec::new, |c| c.to_vec())),
+                }
+            }
         };
-        let ys = p.columns.pop().unwrap_or_default();
-        let xs = p.columns.pop().unwrap_or_default();
+        let ys = columns.pop().unwrap_or(Column::Owned(Vec::new()));
+        let xs = columns.pop().unwrap_or(Column::Owned(Vec::new()));
         Self {
-            name: y.name.to_string(),
-            label: label(y.name),
-            axis: with_unit(y),
-            t: p.t,
+            t,
             x: xs,
             y: ys,
+            n,
             colour,
         }
     }
+
+    /// The first sample shown with `trail` seconds of trail.
+    fn first(&self, trail: f64) -> usize {
+        trail_start(self.t.slice(), trail)
+    }
+}
+
+/// Points `from..to` of a curve as drawn (`at`), in runs of finite points
+/// (plots cannot draw infinities or NaN), each thinned to columns `width`
+/// wide ([`Columns`]; not thinned if `width` is 0).
+fn drawn(
+    c: &Curve<'_>,
+    from: usize,
+    to: usize,
+    at: impl Fn(f64, f64) -> [f64; 2],
+    width: f64,
+) -> Vec<Vec<PlotPoint>> {
+    let mut runs = Vec::new();
+    let mut run: Option<Columns> = None;
+    for i in from..to {
+        let p = at(c.x.at(i), c.y.at(i));
+        if p.iter().all(|v| v.is_finite()) {
+            run.get_or_insert_with(|| Columns::new(width)).push(p);
+        } else if let Some(r) = run.take() {
+            runs.push(r.finish());
+        }
+    }
+    runs.extend(run.map(Columns::finish));
+    runs
 }
 
 impl Xy {
@@ -426,15 +558,51 @@ impl View for Xy {
             self.cells(ui, input, x, fx, colour);
             return;
         }
+        let ys = input.many_any("y");
+        let trail = input.style("trail_length");
+        // Read the recordings only when they or the bindings changed: with
+        // the model paused, a frame draws what the last one did.
+        let stamps: Vec<Stamp> = std::iter::once(x)
+            .chain(ys.iter().copied())
+            .chain(colour)
+            .map(|b| b.history.stamp())
+            .collect();
+        let kept = &mut self.kept;
+        let same = kept
+            .data
+            .as_ref()
+            .is_some_and(|(s, b, t)| *s == stamps && b == input.bind && *t == trail.to_bits());
         // Each curve from its own recording, paired with x (and colour) at
         // the times both recorded.
-        let curves: Vec<Curve> = input
-            .many_any("y")
-            .iter()
-            .map(|&y| Curve::new(x, y, colour))
-            .collect();
-        let trail = input.style("trail_length");
-        let firsts: Vec<usize> = curves.iter().map(|c| trail_start(&c.t, trail)).collect();
+        let mut curves: Option<Vec<Curve<'_>>> = None;
+        if !same {
+            let read: Vec<Curve<'_>> = ys.iter().map(|&y| Curve::new(x, y, colour)).collect();
+            kept.firsts = read.iter().map(|c| c.first(trail)).collect();
+            // Keep near-constant signals (e.g. a conserved energy) from
+            // being magnified until rounding noise looks like drift.
+            let union = |a: [f64; 2], b: [f64; 2]| [a[0].min(b[0]), a[1].max(b[1])];
+            kept.y_range = read
+                .iter()
+                .zip(&kept.firsts)
+                .filter_map(|(c, &f)| value_range((f..c.n).map(|i| c.y.at(i))))
+                .reduce(union);
+            kept.x_range = read
+                .iter()
+                .zip(&kept.firsts)
+                .filter_map(|(c, &f)| value_range((f..c.n).map(|i| c.x.at(i))))
+                .reduce(union);
+            kept.newest = read
+                .iter()
+                .map(|c| (c.n > 0).then(|| [c.x.at(c.n - 1), c.y.at(c.n - 1)]))
+                .collect();
+            kept.data = Some((stamps, input.bind.clone(), trail.to_bits()));
+            kept.drawn = None;
+            #[cfg(test)]
+            {
+                kept.counts[0] += 1;
+            }
+            curves = Some(read);
+        }
         let against_time = x.signal == SignalRef::Time;
         let x_label = if against_time && input.history.index() == TIME {
             "t [s]".to_string()
@@ -443,7 +611,7 @@ impl View for Xy {
         } else {
             with_unit(x)
         };
-        let y_label = (curves.len() == 1).then(|| curves[0].axis.clone());
+        let y_label = (ys.len() == 1).then(|| with_unit(ys[0]));
         // A point of the curve of y against x, as drawn.
         let tr = self.transposed;
         let at = move |a: f64, b: f64| if tr { [b, a] } else { [a, b] };
@@ -463,26 +631,13 @@ impl View for Xy {
         if let Some(l) = up {
             plot = plot.y_axis_label(l);
         }
-        if curves.len() > 1 {
+        if ys.len() > 1 {
             plot = plot.legend(Legend::default());
         }
-        // Keep near-constant signals (e.g. a conserved energy) from being
-        // magnified until rounding noise looks like drift.
-        let union = |a: [f64; 2], b: [f64; 2]| [a[0].min(b[0]), a[1].max(b[1])];
-        let y_range = curves
-            .iter()
-            .zip(&firsts)
-            .filter_map(|(c, &f)| value_range(c.y[f..].iter().copied()))
-            .reduce(union);
-        let x_range = curves
-            .iter()
-            .zip(&firsts)
-            .filter_map(|(c, &f)| value_range(c.x[f..].iter().copied()))
-            .reduce(union);
         let (across_range, up_range) = if tr {
-            (y_range, x_range)
+            (kept.y_range, kept.x_range)
         } else {
-            (x_range, y_range)
+            (kept.x_range, kept.y_range)
         };
         if let Some([lo, hi]) = across_range.and_then(widened) {
             plot = plot.include_x(lo).include_x(hi);
@@ -501,36 +656,79 @@ impl View for Xy {
         if input.style("equal_scales") >= 0.5 {
             plot = plot.data_aspect(1.0);
         }
-        let shown: Vec<String> = curves.iter().map(|c| c.name.clone()).collect();
-        let one_coloured = curves.len() == 1 && colour.is_some();
-        let response = plot.show(ui, |plot| {
+        let shown: Vec<String> = ys.iter().map(|y| y.name.to_string()).collect();
+        let labels: Vec<String> = ys.iter().map(|y| label(y.name)).collect();
+        let one_coloured = ys.len() == 1 && colour.is_some();
+        let (names, labels) = (&shown, &labels);
+        let response = plot.show(ui, move |plot| {
             scroll_to_zoom(plot);
-            for (k, (c, &first)) in curves.iter().zip(&firsts).enumerate() {
-                let n = c.t.len();
-                let points =
-                    |from: usize, to: usize| finite_runs((from..to).map(|i| at(c.x[i], c.y[i])));
-                if one_coloured {
-                    // One curve with a colour encoding: coloured segments.
-                    for seg in segments(first, n, &c.colour, COLOUR_CHUNKS) {
-                        for run in points(seg.start, seg.end + 1) {
-                            plot.line(Line::new("trail", run).color(seg.colour).allow_hover(false));
+            // Long curves are thinned to the pixel columns they are drawn
+            // on, keeping each column's extremes.
+            // This frame's width; the bounds as last drawn.
+            let pixels = f64::from(plot.response().rect.width() * plot.ctx().pixels_per_point());
+            let data = across_range.map_or(0.0, |[lo, hi]| hi - lo);
+            let column = decimate::pixel_width(plot.plot_bounds().width(), data, pixels)
+                / decimate::COLUMNS_PER_PIXEL;
+            // Drawn again only for other recordings, another width or the
+            // other orientation.
+            let key = [column.to_bits(), pixels.to_bits(), u64::from(tr)];
+            if kept.drawn != Some(key) {
+                let curves = curves
+                    .get_or_insert_with(|| ys.iter().map(|&y| Curve::new(x, y, colour)).collect());
+                kept.lines.clear();
+                kept.spans.clear();
+                for (c, &first) in curves.iter().zip(&kept.firsts) {
+                    let n = c.n;
+                    let start = kept.lines.len();
+                    // Curves with fewer points than the plot is pixels
+                    // wide (twice over) are drawn whole.
+                    let width = if (n - first.min(n)) as f64 > 2.0 * pixels {
+                        column
+                    } else {
+                        0.0
+                    };
+                    if one_coloured {
+                        // One curve with a colour encoding: coloured
+                        // segments.
+                        for seg in segments(first, n, &c.colour, COLOUR_CHUNKS) {
+                            for run in drawn(c, seg.start, seg.end + 1, at, width) {
+                                kept.lines.push((Some(seg.colour), run));
+                            }
+                        }
+                    } else if n > first + 1 {
+                        for run in drawn(c, first, n, at, width) {
+                            kept.lines.push((None, run));
                         }
                     }
-                } else if n > first + 1 {
-                    // Pieces of one curve (split where it is not finite)
-                    // share its name and colour.
-                    for run in points(first, n) {
-                        plot.line(
-                            Line::new(c.label.clone(), run)
-                                .id(curve_id(&c.name))
+                    kept.spans.push(start..kept.lines.len());
+                }
+                kept.drawn = Some(key);
+                #[cfg(test)]
+                {
+                    kept.counts[1] += 1;
+                }
+            }
+            let kept: &Kept = kept;
+            for (k, span) in kept.spans.iter().enumerate() {
+                for (colour, run) in &kept.lines[span.clone()] {
+                    let points = PlotPoints::Borrowed(run);
+                    match colour {
+                        Some(c) => {
+                            plot.line(Line::new("trail", points).color(*c).allow_hover(false));
+                        }
+                        // Pieces of one curve (split where it is not
+                        // finite) share its name and colour.
+                        None => plot.line(
+                            Line::new(labels[k].clone(), points)
+                                .id(curve_id(&names[k]))
                                 .color(series_colour(k)),
-                        );
+                        ),
                     }
                 }
                 // Mark the current point unless time is an axis (it is the
                 // edge).
-                if !against_time && n > 0 {
-                    let now = at(c.x[n - 1], c.y[n - 1]);
+                if let Some([a, b]) = kept.newest[k].filter(|_| !against_time) {
+                    let now = at(a, b);
                     if now.iter().all(|v| v.is_finite()) {
                         plot.points(
                             Points::new("now", vec![now])
@@ -703,6 +901,131 @@ mod tests {
         assert_eq!(one.t.len(), 4);
         assert_eq!(one.columns[1], one.t);
         assert_eq!(crate::history::label("probe:p/a.x"), "a.x (p)");
+    }
+
+    /// Frames of a `plot.xy` of `y` against time, `size` points large.
+    fn xy_frames(
+        ctx: &egui::Context,
+        view: &mut Xy,
+        h: &crate::History,
+        size: egui::Vec2,
+        frames: usize,
+    ) {
+        xy_frames_bound(ctx, view, h, &[("x", "t"), ("y", "y")], size, frames);
+    }
+
+    /// Frames of a `plot.xy` with the given bindings.
+    fn xy_frames_bound(
+        ctx: &egui::Context,
+        view: &mut Xy,
+        h: &crate::History,
+        bound: &[(&str, &str)],
+        size: egui::Vec2,
+        frames: usize,
+    ) {
+        let reg = crate::ViewRegistry::builtin();
+        let t = reg.get("plot.xy").unwrap();
+        let bind = bindings(bound);
+        let style = Default::default();
+        let input = crate::view::view_input(&bind, &style, t, h.into());
+        for _ in 0..frames {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| view.show(ui, &input));
+            out.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn a_curve_coloured_by_time_is_still_y_against_x() {
+        // A phase portrait: y = 2x, coloured by t. Before 2026-11-18 the
+        // time column was taken as y and y as x.
+        let mut h = crate::History::new(vec!["x".into(), "y".into()]);
+        for k in 0..50 {
+            let x = (k as f64 * 0.3).sin();
+            h.push(k as f64 * 0.1, &[x, 2.0 * x]);
+        }
+        let ctx = egui::Context::default();
+        let size = egui::vec2(400.0, 300.0);
+        for bound in [
+            &[("x", "x"), ("y", "y"), ("colour", "t")][..],
+            &[("x", "x"), ("y", "y"), ("colour", "x")],
+            &[("x", "x"), ("y", "y")],
+        ] {
+            let mut view = Xy::default();
+            xy_frames_bound(&ctx, &mut view, &h, bound, size, 2);
+            let points: Vec<&PlotPoint> = view.kept.lines.iter().flat_map(|(_, r)| r).collect();
+            assert!(!points.is_empty(), "{bound:?}");
+            for p in points {
+                assert_eq!(p.y, 2.0 * p.x, "{bound:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn long_curves_are_drawn_thinned_with_every_peak() {
+        let mut h = crate::History::new(vec!["y".into()]);
+        for k in 0..100_000 {
+            let y = if k == 61_234 {
+                50.0
+            } else {
+                (k as f64 * 0.01).sin()
+            };
+            h.push(k as f64 * 1e-3, &[y]);
+        }
+        let mut view = Xy::default();
+        let ctx = egui::Context::default();
+        xy_frames(&ctx, &mut view, &h, egui::vec2(400.0, 300.0), 3);
+        let points: Vec<&PlotPoint> = view.kept.lines.iter().flat_map(|(_, r)| r).collect();
+        // Four columns to each of fewer than 400 pixels, at most six
+        // points to a column.
+        assert!(points.len() < 6 * 4 * 400, "{}", points.len());
+        assert!(points.iter().any(|p| p.y == 50.0));
+        assert_eq!(points.first().map(|p| p.x), Some(0.0));
+        assert_eq!(points.last().map(|p| p.x), Some(99.999));
+        // A short recording is drawn whole.
+        let mut h = crate::History::new(vec!["y".into()]);
+        for k in 0..300 {
+            h.push(k as f64, &[(k % 7) as f64]);
+        }
+        let mut view = Xy::default();
+        xy_frames(&ctx, &mut view, &h, egui::vec2(400.0, 300.0), 3);
+        assert_eq!(view.kept.lines[0].1.len(), 300);
+    }
+
+    #[test]
+    fn a_still_plot_is_drawn_from_what_it_kept_until_data_or_size_change() {
+        let mut h = crate::History::new(vec!["y".into()]);
+        for k in 0..20_000 {
+            h.push(k as f64 * 1e-2, &[(k as f64 * 0.1).sin()]);
+        }
+        let size = egui::vec2(400.0, 300.0);
+        let mut view = Xy::default();
+        let ctx = egui::Context::default();
+        // The plot settles its bounds over its first frames.
+        xy_frames(&ctx, &mut view, &h, size, 3);
+        let [read, drawn] = view.kept.counts;
+        // Paused: nothing is read or drawn again.
+        xy_frames(&ctx, &mut view, &h, size, 5);
+        assert_eq!(view.kept.counts, [read, drawn]);
+        // A new sample is read and drawn.
+        h.push(200.0, &[7.0]);
+        xy_frames(&ctx, &mut view, &h, size, 1);
+        assert_eq!(view.kept.counts, [read + 1, drawn + 1]);
+        let last = view.kept.lines.last().unwrap().1.last().unwrap();
+        assert_eq!((last.x, last.y), (200.0, 7.0));
+        // Another size draws the lines again from the same data.
+        xy_frames(&ctx, &mut view, &h, egui::vec2(800.0, 300.0), 1);
+        assert_eq!(view.kept.counts[0], read + 1);
+        assert!(view.kept.counts[1] > drawn + 1);
+        // So does a rewind.
+        h.truncate_after(100.0);
+        xy_frames(&ctx, &mut view, &h, egui::vec2(800.0, 300.0), 1);
+        assert_eq!(view.kept.counts[0], read + 2);
+        let last = view.kept.lines.last().unwrap().1.last().unwrap();
+        assert_eq!(last.x, 100.0);
     }
 
     #[test]

@@ -1,0 +1,66 @@
+{
+  "format": 1,
+  "description": "The spike's cart-pole with its LQR controller and the grab written in the same typed block: plant, controller and the pull toward a held pointer are one ODE, integrated together. The pointer (hx, hy), whether it is held (grab, 0 or 1) and the impulse force (fi, 0.05 N s over one step) are parameters the host sets: recorded input.",
+  "run": {
+    "dt": 0.001,
+    "t_end": 6.0
+  },
+  "blocks": [
+    {
+      "name": "cp",
+      "type": "eq.equations",
+      "equations": [
+        "# the spike's cart-pole with its controller and the grab",
+        "param mc [kg] = 1",
+        "param mp [kg] = 0.1",
+        "param lh [m] = 0.5",
+        "param len [m] = 1",
+        "param ic [kg*m^2] = 0.008333333333333333",
+        "param g [m/s^2] = 9.81",
+        "state x [m] = 0",
+        "state v [m/s] = 0",
+        "state th = 0.1",
+        "state w [1/s] = 0",
+        "# LQR gains (Q = diag(10, 1, 100, 1), R = 0.1), force limited to umax",
+        "param k1 [N/m] = -9.999999999930962",
+        "param k2 [N*s/m] = -12.133952837077473",
+        "param k3 [N] = 78.10369401818309",
+        "param k4 [N*s] = 18.67585224981303",
+        "param umax [N] = 30",
+        "param grab = 0",
+        "param hx [m] = 0.4",
+        "param hy [m] = 0.9",
+        "param ks [N/m] = 5",
+        "param cs [N*s/m] = 1",
+        "param fi [N] = 0",
+        "F = min(max(-(k1*x + k2*v + k3*th + k4*w), -umax), umax) [N]",
+        "tx = x - len*sin(th) [m]",
+        "ty = len*cos(th) [m]",
+        "tvx = v - len*cos(th)*w [m/s]",
+        "tvy = -len*sin(th)*w [m/s]",
+        "fx = fi + grab*(ks*(hx - tx) - cs*tvx) [N]",
+        "fy = grab*(ks*(hy - ty) - cs*tvy) [N]",
+        "# the exact equations (Lagrange): a cart force F, a world force (fx, fy) at the tip",
+        "j = ic + mp*lh^2 [kg*m^2]",
+        "m11 = mc + mp [kg]",
+        "m12 = -mp*lh*cos(th) [kg*m]",
+        "qx = F + fx - mp*lh*sin(th)*w^2 [N]",
+        "qt = mp*g*lh*sin(th) - fx*len*cos(th) - fy*len*sin(th) [N*m]",
+        "det = m11*j - m12^2 [kg^2*m^2]",
+        "dx/dt = v",
+        "dth/dt = w",
+        "dv/dt = (j*qx - m12*qt)/det [m/s^2]",
+        "dw/dt = (m11*qt - m12*qx)/det [1/s^2]",
+        "# the bodies as rows: the cart, and the pole's centre",
+        "px = x - lh*sin(th) [m]",
+        "py = lh*cos(th) [m]",
+        "pvx = v - lh*cos(th)*w [m/s]",
+        "pvy = -lh*sin(th)*w [m/s]"
+      ],
+      "method": {
+        "name": "rk4"
+      }
+    }
+  ],
+  "connections": []
+}

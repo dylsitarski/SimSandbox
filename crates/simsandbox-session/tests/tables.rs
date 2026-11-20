@@ -255,3 +255,45 @@ fn a_map_with_tables_iterates_and_holds_still() {
         15.0
     );
 }
+
+/// A plain number a rule gives a column is in that column's unit, as an
+/// initial value's is: a new row's height of 2 in km is 2 km.
+#[test]
+fn a_plain_number_in_a_rule_is_in_its_columns_unit() {
+    let model = json!({"format": 1, "run": {"dt": 1, "t_end": 2},
+        "blocks": [{"name": "pop", "type": "eq.equations", "equations": [
+            "table pts max 4",
+            "start pts = 1",
+            "state h[pts] [km] = 1",
+            "h[n+1] = h",
+            "add pts where rows(pts) < 2: h = 2",
+            "top = maxof(h) [km]"]}]});
+    let r = run(&model.to_string(), &registry(), None, None).unwrap();
+    assert_eq!(column(&r, "pop.top"), [1.0, 2.0, 2.0]);
+}
+
+/// A split's `copy` alone is the transfer (a new point takes its edge's
+/// `from` end); `(copy)` is a quantity of that name, here a parameter.
+#[test]
+fn a_quantity_named_like_a_transfer_is_given_in_parentheses() {
+    let model = |value: &str| {
+        json!({"format": 1, "run": {"dt": 1, "t_end": 1},
+            "blocks": [{"name": "line", "type": "eq.equations", "equations": [
+                "table pts max 3",
+                "start pts = 2",
+                "state x[pts] = 4*id(pts)",
+                "x[n+1] = x",
+                "edges segs of pts",
+                "start segs = chain",
+                "param copy = 7",
+                format!("split segs where to_end(x, segs) - from_end(x, segs) > 1: x = {value}"),
+                "total = sum(x)"]}]})
+    };
+    let total = |value: &str| {
+        let r = run(&model(value).to_string(), &registry(), None, None).unwrap();
+        column(&r, "line.total")
+    };
+    // Points at 0 and 4; the new one at the `from` end's 0, or at 7.
+    assert_eq!(total("copy"), [4.0, 4.0]);
+    assert_eq!(total("(copy)"), [4.0, 11.0]);
+}

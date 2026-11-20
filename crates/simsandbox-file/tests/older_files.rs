@@ -11,6 +11,7 @@ fn registry() -> Registry {
     let mut r = Registry::new();
     simsandbox_eq::register(&mut r).unwrap();
     simsandbox_agents::register(&mut r).unwrap();
+    simsandbox_mech::register(&mut r).unwrap();
     r
 }
 

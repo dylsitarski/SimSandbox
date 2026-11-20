@@ -153,6 +153,12 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
         v["note"] =
             json!("Defined by its 'equations' lines: the interface below is the example's.");
     }
+    if let Some(text) = &info.reference {
+        v["reference"] = json!(text);
+    }
+    if name == simsandbox_eq::registry::EQUATIONS {
+        v["functions"] = functions();
+    }
     if !info.files.is_empty() {
         v["files"] = json!(info.files);
         v["note"] = json!(
@@ -163,6 +169,28 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
         v["interface"] = block(b.as_ref());
     }
     v
+}
+
+/// The functions typed equations know, so that an agent has the list
+/// without reading the reference: those of numbers with their number of
+/// arguments, and those of arrays with how each is called, what it gives
+/// and its unit.
+fn functions() -> Value {
+    json!({
+        "of_numbers": simsandbox_expr::Func::ALL
+            .iter()
+            .map(|(name, f)| json!({"name": name, "arity": f.arity()}))
+            .collect::<Vec<_>>(),
+        "of_arrays": simsandbox_eq::symbolic::FUNCTIONS
+            .iter()
+            .map(|f| json!({
+                "name": f.name,
+                "signature": f.signature,
+                "gives": f.gives,
+                "unit": f.unit,
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 fn slot_kind(k: SlotKind) -> &'static str {
@@ -181,7 +209,7 @@ fn slot_kind(k: SlotKind) -> &'static str {
 
 /// One view type: its slots, style properties and presets.
 pub fn view_type(t: &ViewType) -> Value {
-    json!({
+    let mut v = json!({
         "type": t.name,
         "label": t.label,
         "description": t.description,
@@ -202,7 +230,12 @@ pub fn view_type(t: &ViewType) -> Value {
         })).collect::<Vec<_>>(),
         "presets": t.presets.iter().map(|p| json!({"label": p.label, "description": p.description})).collect::<Vec<_>>(),
         "applies_to": t.applies_to,
-    })
+    });
+    // Beyond slots: a scene's frames, layers and primitives (ADR 0093).
+    if let Some(describe) = t.settings {
+        v["takes"] = describe();
+    }
+    v
 }
 
 /// The filter types (ADR 0030–0032).
@@ -252,7 +285,17 @@ pub fn units() -> Value {
 /// Everything a model can be built from.
 pub fn catalogue(r: &Registry, views: &ViewRegistry) -> Value {
     json!({
-        "block_types": r.type_names().map(|n| block_type(r, n)).collect::<Vec<_>>(),
+        // A type's reference is long: the catalogue says where it is.
+        "block_types": r
+            .type_names()
+            .map(|n| {
+                let mut v = block_type(r, n);
+                if v.get("reference").is_some() {
+                    v["reference"] = json!(format!("simsandbox describe {n} gives the whole reference"));
+                }
+                v
+            })
+            .collect::<Vec<_>>(),
         "view_types": views.types().iter().map(view_type).collect::<Vec<_>>(),
         "filter_types": filter_types(),
         "units": units(),
@@ -274,18 +317,28 @@ pub fn check(text: &str, r: &Registry) -> Value {
     if simsandbox_file::compose::is_composition(text) {
         return crate::compose::check(text, r);
     }
-    // File errors carry where they are.
-    if let Err(e) = simsandbox_file::load(text, r) {
-        return json!({"ok": false, "errors": [file_error(&e)], "warnings": []});
+    // File errors carry where they are; every block's and wire's.
+    let errors = simsandbox_file::load_errors(text, r);
+    if !errors.is_empty() {
+        let errors: Vec<Value> = errors.iter().map(file_error).collect();
+        return json!({"ok": false, "errors": errors, "warnings": []});
     }
     match Session::load("check", text, r) {
         Err(e) => json!({"ok": false, "errors": [{"message": e}], "warnings": []}),
         Ok(s) => {
             let labels = s.labels();
+            // Views that cannot be shown, as the app and `render` find
+            // them: a scene's layers at their paths (ADR 0093).
+            let mut warnings = s.warnings.clone();
+            {
+                let h = s.signals();
+                let mut views = crate::views::Views::new(crate::examples::view_registry());
+                warnings.extend(views.open(&s.available(&h), &s.file.controls.views));
+            }
             json!({
                 "ok": true,
                 "errors": [],
-                "warnings": s.warnings,
+                "warnings": warnings,
                 "conversions": s.conversions,
                 "labels": labels.map(self::labels),
                 // What it offers to models that use it (ADR 0066 step 4b).
@@ -322,7 +375,7 @@ pub fn check(text: &str, r: &Registry) -> Value {
 
 /// How each block whose code SimSandbox makes from equations runs, by
 /// name as `full` gives it: `interpreted`, `compiled`, `native`, or
-/// `compiled` and why not native ([`simsandbox_core::block::Block::code`]).
+/// `compiled` and why not native ([`simsandbox_core::block::GeneratedCode`]).
 pub(crate) fn code(
     model: &simsandbox_core::graph::Model,
     ids: &std::collections::BTreeMap<String, simsandbox_core::graph::BlockId>,
@@ -330,7 +383,7 @@ pub(crate) fn code(
 ) -> serde_json::Map<String, Value> {
     ids.iter()
         .filter_map(|(name, &id)| {
-            let code = model.block(id).ok()?.code()?;
+            let code = model.block(id).ok()?.as_generated_code()?.code();
             Some((full(name), Value::String(code)))
         })
         .collect()
@@ -384,6 +437,39 @@ mod tests {
         assert_eq!(sheep["settings"][0]["name"], "update");
         let all = catalogue(&r, &view_registry());
         assert!(all["view_types"].as_array().unwrap().len() >= 8);
+    }
+
+    #[test]
+    fn typed_equations_list_every_function() {
+        let r = registry();
+        let typed = block_type(&r, simsandbox_eq::registry::EQUATIONS);
+        let listed = |kind: &str| -> Vec<String> {
+            typed["functions"][kind]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let numbers = listed("of_numbers");
+        for (name, _) in simsandbox_expr::Func::ALL {
+            assert!(numbers.iter().any(|n| n == name), "{name}");
+        }
+        assert_eq!(numbers.len(), simsandbox_expr::Func::ALL.len());
+        let arrays = listed("of_arrays");
+        for name in simsandbox_expr::ARRAY_OPS {
+            assert!(arrays.iter().any(|n| n == name), "{name}");
+        }
+        assert!(arrays.iter().any(|n| n == simsandbox_eq::symbolic::DD_AXIS));
+        assert_eq!(arrays.len(), simsandbox_expr::ARRAY_OPS.len() + 1);
+        for f in typed["functions"]["of_arrays"].as_array().unwrap() {
+            for key in ["signature", "gives", "unit"] {
+                assert!(f[key].as_str().is_some_and(|s| !s.is_empty()), "{f}");
+            }
+        }
+        assert_eq!(typed["functions"]["of_numbers"][0]["arity"], 1);
+        // Only typed equations have a language of their own.
+        assert!(block_type(&r, "eq.grass").get("functions").is_none());
     }
 
     #[test]

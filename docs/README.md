@@ -1,6 +1,6 @@
 # Documentation system
 
-_Last updated: 2026-10-23_
+_Last updated: 2026-11-19_
 
 This page is the map of every document in the repository and the rules for keeping them current. The repository is the single source of truth for SimSandbox ([ADR 0005](decisions/0005-repository-as-source-of-truth.md)).
 
@@ -17,7 +17,7 @@ This page is the map of every document in the repository and the rules for keepi
 | Type | Purpose | Changes when | Style |
 | --- | --- | --- | --- |
 | Entry point | Orientation and session protocol for agents and contributors | The workflow changes | Imperative checklist |
-| Status | The current state of the project: done, in progress, next, limits | Every working session | Short lists, dated |
+| Status | The current state of the project: done, in progress, next, limits. **Done recently** holds a week; older entries move to the status archive | Every working session | Short lists, dated |
 | Vision | Why the project exists, pillars, scope and non-goals | Rarely; a change needs an ADR | Prose |
 | Roadmap | Phases, gates and the task list for each phase | A task finishes or the plan changes | Checklists |
 | Architecture | How the system is built and why it is shaped that way | The design changes | Spec, with diagrams as needed |
@@ -26,6 +26,7 @@ This page is the map of every document in the repository and the rules for keepi
 | Open questions | Undecided questions, each with options and an owner | A question is raised or resolved (resolution becomes an ADR) | Table |
 | Risks | Known risks and mitigations | A risk changes | Table |
 | Guide | How to do a recurring task | The task changes | Steps |
+| Reference | The whole of one language or format as the code reads it, held to the code by a test | The code changes | Tables and examples that parse |
 | Research | Background findings that informed decisions | New research | Prose with sources |
 | Session note | What one working session did, decided and left open | Created once per session; not edited later | Fixed template |
 | Changelog | User-visible changes per release | Any user-visible change | Keep a Changelog |
@@ -43,12 +44,14 @@ This page is the map of every document in the repository and the rules for keepi
 | [CHANGELOG.md](../CHANGELOG.md) | Changelog | User-visible changes |
 | [python/README.md](../python/README.md) | Guide | The Python package's layout and checks |
 | [spikes/compiled-routes/README.md](../spikes/compiled-routes/README.md) | Guide | The compiled-route comparison of ADR 0084: how to build and run it |
+| [spikes/rigid-body/README.md](../spikes/rigid-body/README.md) | Guide | The rigid-body spike of ADR 0057 (Rapier against MuJoCo): how to get MuJoCo, build and run it |
 
 ### Project
 
 | Document | Type | What it covers |
 | --- | --- | --- |
 | [STATUS.md](STATUS.md) | Status | Current state and next tasks |
+| [status-archive.md](status-archive.md) | Status | Done entries older than a week, moved from STATUS.md; not edited |
 | [vision.md](vision.md) | Vision | Purpose, three pillars, scope, non-goals |
 | [roadmap.md](roadmap.md) | Roadmap | Phases 0–3, gates, task checklists |
 | [open-questions.md](open-questions.md) | Open questions | Decisions not yet made |
@@ -158,8 +161,24 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0085-meshes-are-tables-of-cells.md](decisions/0085-meshes-are-tables-of-cells.md) | Decision record | Meshes as tables of cells over points, any shape and dimension; refinement by bisection or 2^d split |
 | [decisions/0086-views-by-axis-roles-and-mesh-views.md](decisions/0086-views-by-axis-roles-and-mesh-views.md) | Decision record | Views by axis roles (pick, reduce, facet); mesh views on wgpu with an egui path headless |
 | [decisions/0087-implicit-lu-on-the-matrix-pattern.md](decisions/0087-implicit-lu-on-the-matrix-pattern.md) | Decision record | Implicit methods' own sparse LU on the matrix's pattern, faer's as fallback |
+| [decisions/0104-implicit-structure-independent-of-the-state.md](decisions/0104-implicit-structure-independent-of-the-state.md) | Decision record | Implicit methods' Jacobian structure when a system does not give it: dense when small, probed at three states when large |
+| [decisions/0105-mechanism-file-form.md](decisions/0105-mechanism-file-form.md) | Decision record | Accepted: the mechanism block's file form (bodies table, numbers as parameters, ports by joint kind) |
 | [decisions/0088-activation.md](decisions/0088-activation.md) | Decision record | Activation of used models and studies: `activate` modes and `restart` |
 | [decisions/0089-native-code-for-typed-equations.md](decisions/0089-native-code-for-typed-equations.md) | Decision record | Native code for typed equations: generated Rust compiled where a toolchain exists |
+| [decisions/0090-one-engine-for-nested-models.md](decisions/0090-one-engine-for-nested-models.md) | Decision record | One engine for nested models: the merged simulator |
+| [decisions/0091-equations-first-hosting-for-existing-codes.md](decisions/0091-equations-first-hosting-for-existing-codes.md) | Decision record | Typed equations first; hosting for existing codes |
+| [decisions/0092-what-a-model-file-may-read.md](decisions/0092-what-a-model-file-may-read.md) | Decision record | Reads confined to a project folder and granted folders |
+| [decisions/0093-scenes-from-primitive-layers.md](decisions/0093-scenes-from-primitive-layers.md) | Decision record | Scenes as layers of primitives drawn from signals and tables, with frames |
+| [decisions/0094-the-full-audience.md](decisions/0094-the-full-audience.md) | Decision record | The full audience: hobbyists, researchers, engineers |
+| [decisions/0095-one-block-with-states-fuses-with-its-formulas.md](decisions/0095-one-block-with-states-fuses-with-its-formulas.md) | Decision record | Fusion of one block with states and its formulas; notes for loops stepped apart |
+| [decisions/0096-the-native-cache.md](decisions/0096-the-native-cache.md) | Decision record | The native cache: trust, names by processor, size; checked calls of compiled code |
+| [decisions/0097-implicit-steps-relative-tolerances-and-fallback.md](decisions/0097-implicit-steps-relative-tolerances-and-fallback.md) | Decision record | Implicit steps: relative tolerances, fresh Jacobians on failure, state kept on error |
+| [decisions/0098-the-kernel-holds-the-contract.md](decisions/0098-the-kernel-holds-the-contract.md) | Decision record | The kernel holds the contract; fixed properties as data, the rest capabilities; a `BlockSpec` builder |
+| [decisions/0099-cli-exit-codes-and-json-errors.md](decisions/0099-cli-exit-codes-and-json-errors.md) | Decision record | CLI help, exit statuses by kind of failure, `--errors json`, several errors per `check` |
+| [decisions/0100-python-wheels-typing-and-dependency-checks.md](decisions/0100-python-wheels-typing-and-dependency-checks.md) | Decision record | Python wheels and typing, checks at the call, CI and `cargo deny` |
+| [decisions/0101-scene-primitives-are-parametric-meshes.md](decisions/0101-scene-primitives-are-parametric-meshes.md) | Decision record | Scene primitives as parametric meshes, one drawing path, shape meshes from models |
+| [decisions/0102-scene-bindings-may-name-parameters.md](decisions/0102-scene-bindings-may-name-parameters.md) | Decision record | Scene bindings naming parameters: the name rule, values over time recorded in the history |
+| [decisions/0103-rigid-body-engine.md](decisions/0103-rigid-body-engine.md) | Decision record | Accepted: a native articulated-body solver for jointed mechanisms and Rapier for contacts; five options, the typed-equations function not taken; state for rewind, file form, rows, grabbing, tests |
 | [decisions/0063-probes-on-wires.md](decisions/0063-probes-on-wires.md) | Decision record | Probe outputs, sources of views and filters, what is recorded |
 | [decisions/0062-probes-recording-and-replay.md](decisions/0062-probes-recording-and-replay.md) | Decision record | Probes, saving, rewind memory and exact or fast runs |
 
@@ -178,9 +197,18 @@ This page is the map of every document in the repository and the rules for keepi
 
 | Document | Type | What it covers |
 | --- | --- | --- |
+| [reference/typed-equations.md](reference/typed-equations.md) | Reference | The typed-equations language: statements, expressions, units, functions, limits; given by `describe eq.equations`; examples parsed by a test |
+| [reference/mechanisms.md](reference/mechanisms.md) | Reference | Mechanisms (`mech.planar`): the `bodies` columns, the parameters and ports they make, methods, what `check` refuses; given whole by `describe mech.planar` |
 | [research/market-landscape.md](research/market-landscape.md) | Research | Existing tools and the gap SimSandbox targets |
+| [research/2026-11-14-code-review.md](research/2026-11-14-code-review.md) | Research | Whole-project review of 2026-11-14: vision, correctness, structure, performance, usability; work items W1–W13 |
+| [research/2026-11-19-rigid-body-spike.md](research/2026-11-19-rigid-body-spike.md) | Research | The rigid-body spike of 2026-11-19: Rapier against MuJoCo on accuracy, rewind, determinism, speed, contacts, build; the recommendation and its risks; the follow-up with a native articulated-body solver, mechanisms as typed equations and Featherstone as a typed-equations function (estimated) |
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
+| [sessions/2026-11-20-mechanism-block.md](sessions/2026-11-20-mechanism-block.md) | Session note | The mechanism block built (ADR 0103, ADR 0105): `simsandbox-mech`, the `bodies` field, the cart-pole example |
+| [sessions/2026-11-19-vector-registers-after-faer.md](sessions/2026-11-19-vector-registers-after-faer.md) | Session note | Why typed models slowed after implicit methods ran: faer's AVX kernels and `vzeroupper` |
+| [sessions/2026-11-19-implicit-structure-replay.md](sessions/2026-11-19-implicit-structure-replay.md) | Session note | Implicit methods' undeclared Jacobian structure made independent of the state (ADR 0104) |
+| [sessions/2026-11-15-equation-front-end.md](sessions/2026-11-15-equation-front-end.md) | Session note | Review W6: typed-equation faults fixed, front end restructured |
+| [sessions/2026-11-14-code-review.md](sessions/2026-11-14-code-review.md) | Session note | Whole-project code review; report in research/ |
 | [sessions/2026-10-16-kernel-prep-and-adrs.md](sessions/2026-10-16-kernel-prep-and-adrs.md) | Session note | Kernel prep for files and UI; ADRs 0007–0013; model file format; desktop app shell; parameter panel; phase and 3D views; saved views; ADR 0015 |
 | [sessions/2026-10-15-project-inception.md](sessions/2026-10-15-project-inception.md) | Session note | Market research through the first commit |
 

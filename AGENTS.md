@@ -33,7 +33,7 @@ All four run in CI and must stay green. Changes that touch the Python package or
 
 Before you stop, update the docs so the next agent can continue without this conversation:
 
-- [ ] `docs/STATUS.md`: move finished items to **Done recently**, update **In progress** and **Next up**, bump `Last updated`.
+- [ ] `docs/STATUS.md`: move finished items to **Done recently**, update **In progress** and **Next up**, bump `Last updated`; move **Done recently** entries older than a week to `docs/status-archive.md`.
 - [ ] `CHANGELOG.md`: add user-visible changes under **Unreleased**.
 - [ ] A decision was made → new ADR in `docs/decisions/` (copy `0000-template.md`) and a row in its index.
 - [ ] A question was raised but not decided → `docs/open-questions.md`.

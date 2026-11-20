@@ -140,21 +140,28 @@ impl RunFile {
         Ok(self.model_hash == loaded_hash(model)?)
     }
 
-    /// A note when this build is not the one that made the run: it then
-    /// replays exactly only where the versions between agree.
+    /// A note when this build is not the one that made the run
+    /// ([`version_note`]).
     pub fn version_note(&self) -> Option<String> {
-        if self.made_with == MADE_WITH {
-            return None;
-        }
-        let made = if self.made_with.is_empty() {
-            "a SimSandbox that did not record its version"
-        } else {
-            &self.made_with
-        };
-        Some(format!(
-            "recorded with {made}, replayed with {MADE_WITH}: results can differ where the changelog says a version changed them"
-        ))
+        version_note(&self.made_with)
     }
+}
+
+/// A note when this build is not the one that made a run (`made_with` as
+/// its file records it, empty if it did not): it then replays exactly only
+/// where the versions between agree.
+pub fn version_note(made_with: &str) -> Option<String> {
+    if made_with == MADE_WITH {
+        return None;
+    }
+    let made = if made_with.is_empty() {
+        "a SimSandbox that did not record its version"
+    } else {
+        made_with
+    };
+    Some(format!(
+        "recorded with {made}, replayed with {MADE_WITH}: results can differ where the changelog says a version changed them"
+    ))
 }
 
 /// A SHA-256 of a model as saved, leaving out `controls` (they never

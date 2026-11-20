@@ -46,6 +46,8 @@ impl Convert {
                 states: Vec::new(),
                 tables: Vec::new(),
                 time: TimeSemantics::Stateless,
+                reads_time: Some(false),
+                instants: None,
             },
             method: MethodSpec {
                 name: EXACT.into(),
@@ -113,10 +115,6 @@ impl Block for Convert {
     fn compute_outputs(&self, _t: f64, io: StepIo<'_>) -> Result<()> {
         io.outputs[0] = self.factor * io.inputs[0];
         Ok(())
-    }
-
-    fn reads_time(&self) -> Option<bool> {
-        Some(false)
     }
 
     /// A conversion joins a fused group it sits in (ADR 0051).

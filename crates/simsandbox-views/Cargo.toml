@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "simsandbox-views"
 description = "SimSandbox views: recorded signals, the view registry and the built-in views (ADR 0015)"
 version.workspace = true

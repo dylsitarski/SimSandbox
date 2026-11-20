@@ -112,6 +112,39 @@ fn node_of(key: &str) -> &str {
     key.split_once('.').map_or(key, |(n, _)| n)
 }
 
+/// What a scene's input carries: a bound signal, or the `input.pointer`
+/// block a layer grabs with.
+#[derive(Debug, Clone, PartialEq)]
+enum SceneInput {
+    Signal(String),
+    Grab(String),
+}
+
+/// A scene view's inputs on the canvas, by path (ADR 0093): its bound
+/// signals, then its grabs; none for other views.
+fn scene_inputs(v: &ViewEntry) -> Vec<(String, SceneInput)> {
+    if v.type_name != simsandbox_views::scene::SCENE {
+        return Vec::new();
+    }
+    let settings = v.scene.to_map();
+    let bound = simsandbox_views::scene::bound(&settings)
+        .into_iter()
+        .map(|(p, s)| (p, SceneInput::Signal(s)));
+    let grabs = simsandbox_views::scene::grabs(&settings)
+        .into_iter()
+        .map(|(p, b)| (p, SceneInput::Grab(b)));
+    bound.chain(grabs).collect()
+}
+
+/// Where a grab's wire starts: the pointer block's `picked` output (what
+/// grabbing sets), or its first.
+fn pointer_output(d: &Diagram, block: &str) -> Option<(usize, usize)> {
+    let n = d.node(block).filter(|&n| d.nodes[n].is_block())?;
+    let outputs = &d.nodes[n].outputs;
+    let k = outputs.iter().position(|p| p.name == "picked").unwrap_or(0);
+    (k < outputs.len()).then_some((n, k))
+}
+
 /// The flat signal an output at a level carries: `car.v` stays, a
 /// subsystem use's `car1.v` becomes the inner `car1/car.v`.
 fn flat_output(
@@ -420,6 +453,11 @@ impl Diagram {
                     slots.push(s.clone());
                 }
             }
+            // A scene's inputs are where its layers and frames bind
+            // signals, and where they grab (ADR 0093), at the paths
+            // `check` names them by.
+            let scene = scene_inputs(v);
+            slots.extend(scene.iter().map(|(path, _)| path.clone()));
             if let Some(t) = t {
                 for s in t.slots.iter().filter(|s| s.many) {
                     self.many.insert(format!("{name}.{}", s.name));
@@ -523,6 +561,7 @@ impl Diagram {
         for i in model_nodes..self.nodes.len() {
             let n = &self.nodes[i];
             let mut reads: Vec<(usize, String)> = Vec::new();
+            let mut grabbed: Vec<(usize, String)> = Vec::new();
             match n.kind {
                 NodeKind::Filter => reads.extend(n.inputs.iter().enumerate().map(|(k, p)| {
                     match n.settings.get(&format!("from.{}", p.name)) {
@@ -538,12 +577,40 @@ impl Diagram {
                 }
                 _ => {
                     let k = n.name["view:".len()..].parse::<usize>().unwrap_or(0);
-                    for (slot, b) in &file.controls.views[k].bind {
+                    let v = &file.controls.views[k];
+                    for (slot, b) in &v.bind {
                         let port = n.inputs.iter().position(|p| &p.name == slot);
                         for s in b.signals() {
                             reads.extend(port.map(|p| (p, s)));
                         }
                     }
+                    for (path, input) in scene_inputs(v) {
+                        let Some(port) = n.inputs.iter().position(|p| p.name == path) else {
+                            continue;
+                        };
+                        match input {
+                            SceneInput::Signal(s) => reads.push((port, s)),
+                            SceneInput::Grab(block) => grabbed.push((port, block)),
+                        }
+                    }
+                }
+            }
+            // A grab's wire comes from the block it sends the pointer to.
+            for (port, block) in grabbed {
+                let path = self.nodes[i].inputs[port].name.clone();
+                match pointer_output(self, &block) {
+                    Some(from) => wires.push(Wire {
+                        from,
+                        to: (i, port),
+                        from_name: format!(
+                            "{}.{}",
+                            self.nodes[from.0].name, self.nodes[from.0].outputs[from.1].name
+                        ),
+                        to_name: format!("{}.{path}", self.nodes[i].name),
+                        signal: block,
+                        param: false,
+                    }),
+                    None => self.nodes[i].unreached.push(format!("{path}: {block}")),
                 }
             }
             for (port, signal) in reads {
@@ -576,6 +643,19 @@ impl Diagram {
         }
         self.wires.extend(wires);
         self.place_observers(model_nodes);
+    }
+
+    /// Mark views that draw nothing with why (ADR 0093): `problems` are
+    /// each view's place in `controls.views` and its error, as the window
+    /// knows it (a scene that does not check, saved or a draft). The
+    /// error is the node's, shown on hover; a scene's input at the error's
+    /// path is marked when drawn ([`view_problem_input`]).
+    pub fn mark_views(&mut self, problems: &[(usize, String)]) {
+        for (k, e) in problems {
+            if let Some(n) = self.node(&view_node(*k)) {
+                self.nodes[n].error = Some(e.clone());
+            }
+        }
     }
 
     /// Place data-layer nodes without a saved place, in columns to the right
@@ -620,6 +700,16 @@ impl Diagram {
             }
         }
     }
+}
+
+/// The input of view node `n` that its error is at: a scene's input
+/// named by the error's path (`layers[1].bind.x2`), if it has one.
+pub fn view_problem_input(n: &Node) -> Option<usize> {
+    if n.kind != NodeKind::View {
+        return None;
+    }
+    let path = simsandbox_views::scene::spec::error_path(n.error.as_deref()?)?;
+    n.inputs.iter().position(|p| p.name == path)
 }
 
 /// Why a filter cannot feed a model input.
@@ -823,6 +913,9 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                 .split_once('.')
                 .map(|(_, s)| s.to_string())
                 .ok_or("a view input is 'view:K.slot'")?;
+            if file.controls.views[k].type_name == simsandbox_views::scene::SCENE {
+                return scene_input(file, k, &slot, Some(from));
+            }
             let signal = signal_of(file, from)?;
             let bind = &mut file.controls.views[k].bind;
             let mut now = bind.get(&slot).map(Binding::signals).unwrap_or_default();
@@ -931,6 +1024,9 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                         .collect();
                     *b = Binding::from(renamed);
                 }
+                rename_scene_signals(v, &|s: &str| {
+                    s.strip_prefix(&was).map(|rest| format!("{now}{rest}"))
+                });
             }
             Ok(format!("Renamed the probe {old} to {to}"))
         }
@@ -1025,6 +1121,7 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                 selection: None,
                 canvas: Some(at.map(tidy)),
                 probe: None,
+                scene: Default::default(),
             });
             Ok(format!("Added a {type_name} view"))
         }
@@ -1084,6 +1181,9 @@ fn unbind(file: &mut ModelFile, to: &str, signal: Option<&String>) -> Result<Str
     }
     if node.starts_with("view:") {
         let k = view_index(file, node)?;
+        if file.controls.views[k].type_name == simsandbox_views::scene::SCENE {
+            return scene_input(file, k, slot, None);
+        }
         let bind = &mut file.controls.views[k].bind;
         let now = bind.get(slot).map(Binding::signals).unwrap_or_default();
         let kept: Vec<String> = match signal {
@@ -1118,6 +1218,97 @@ fn unbind(file: &mut ModelFile, to: &str, signal: Option<&String>) -> Result<Str
         "{} cuts nothing until a grid is wired to it",
         f.name
     ))
+}
+
+/// Wire `from` (an output on the canvas) into a scene's input at `path`
+/// (ADR 0093), or with `None` take the wire away: a binding then goes
+/// back to its default, which a required attribute has none of; a grab
+/// is let go of.
+fn scene_input(
+    file: &mut ModelFile,
+    k: usize,
+    path: &str,
+    from: Option<&String>,
+) -> Result<String, String> {
+    use simsandbox_file::SceneValue;
+    use simsandbox_views::scene::spec::{Unbound, PRIMITIVES};
+    let pointer = |from: &str| -> Result<String, String> {
+        let block = node_of(from);
+        match file.blocks.iter().find(|b| b.name == block) {
+            Some(b) if b.type_name == "input.pointer" => Ok(block.to_string()),
+            _ => Err(format!(
+                "a layer grabs with an input.pointer block, which {block} is not"
+            )),
+        }
+    };
+    let signal = match from {
+        Some(f) if path.ends_with(".grab") => Some(pointer(f)?),
+        Some(f) => Some(signal_of(file, f)?),
+        None => None,
+    };
+    let view = k + 1;
+    let scene = &mut file.controls.views[k].scene;
+    if let Some(rest) = path.strip_prefix("frames.") {
+        let (name, attr) = rest
+            .rsplit_once('.')
+            .ok_or_else(|| format!("no scene input '{path}'"))?;
+        let f = scene
+            .frames
+            .get_mut(name)
+            .ok_or_else(|| format!("view {view} has no frame '{name}'"))?;
+        let slot = match attr {
+            "x" => &mut f.x,
+            "y" => &mut f.y,
+            "angle" => &mut f.angle,
+            _ => return Err(format!("a frame has no '{attr}'")),
+        };
+        *slot = signal.clone().map(SceneValue::Name);
+        return Ok(match signal {
+            Some(s) => format!("view {view}: frame {name}'s {attr} is {s}"),
+            None => format!("view {view}: frame {name}'s {attr} is 0"),
+        });
+    }
+    let (layer, what) = path
+        .strip_prefix("layers[")
+        .and_then(|r| r.split_once("]."))
+        .and_then(|(i, w)| Some((i.parse::<usize>().ok()?, w)))
+        .ok_or_else(|| format!("no scene input '{path}'"))?;
+    let l = scene
+        .layers
+        .get_mut(layer)
+        .ok_or_else(|| format!("view {view} has no layer {layer}"))?;
+    if what == "grab" {
+        l.grab = signal.clone();
+        return Ok(match signal {
+            Some(b) => format!("view {view}: layer {layer} grabs with {b}"),
+            None => format!("view {view}: layer {layer} grabs nothing"),
+        });
+    }
+    let attr = what
+        .strip_prefix("bind.")
+        .ok_or_else(|| format!("no scene input '{path}'"))?;
+    match signal {
+        Some(s) => {
+            l.bind.insert(attr.to_string(), SceneValue::Name(s.clone()));
+            Ok(format!("view {view}: layer {layer}'s {attr} is {s}"))
+        }
+        None => {
+            let required = PRIMITIVES
+                .iter()
+                .find(|p| p.name == l.draw)
+                .and_then(|p| p.attributes.iter().find(|a| a.name == attr))
+                .is_some_and(|a| a.default == Unbound::Required);
+            if required {
+                return Err(format!(
+                    "layer {layer}'s {attr} is required: bind it to a number or another signal in the Inspector"
+                ));
+            }
+            l.bind.remove(attr);
+            Ok(format!(
+                "view {view}: layer {layer}'s {attr} is back to its default"
+            ))
+        }
+    }
 }
 
 /// Set where filter `f`'s input `input` comes from: a probe, or the model
@@ -1192,6 +1383,35 @@ fn rename_signal(file: &mut ModelFile, old: &str, new: &str) {
                 .map(|s| map(&s).unwrap_or(s))
                 .collect();
             *b = Binding::from(renamed);
+        }
+        rename_scene_signals(v, &map);
+    }
+}
+
+/// Pass each signal a scene binds (ADR 0093) through `map`: its frames'
+/// poses and its layers' attributes; palette colours are not signals.
+fn rename_scene_signals(v: &mut ViewEntry, map: &dyn Fn(&str) -> Option<String>) {
+    use simsandbox_file::SceneValue;
+    let rename = |value: &mut Option<SceneValue>| {
+        if let Some(SceneValue::Name(s)) = value {
+            if let Some(n) = map(s) {
+                *s = n;
+            }
+        }
+    };
+    for f in v.scene.frames.values_mut() {
+        rename(&mut f.x);
+        rename(&mut f.y);
+        rename(&mut f.angle);
+    }
+    for l in &mut v.scene.layers {
+        for (a, value) in &mut l.bind {
+            if let SceneValue::Name(s) = value {
+                let colour = a == "colour" && simsandbox_views::scene::spec::palette(s).is_some();
+                if let Some(n) = map(s).filter(|_| !colour) {
+                    *s = n;
+                }
+            }
         }
     }
 }
@@ -1413,6 +1633,138 @@ mod tests {
             .nodes
             .iter()
             .all(|n| !n.is_observer()));
+    }
+
+    #[test]
+    fn a_scene_is_wired_from_what_it_binds_and_the_pointer_it_grabs() {
+        use simsandbox_file::SceneValue;
+        let mut f = file("Grab the bob");
+        let d = observed(&f);
+        let v = d.node("view:0").unwrap();
+        let n = &d.nodes[v];
+        assert_eq!(n.method, "Scene");
+        let inputs: Vec<&str> = n.inputs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            inputs,
+            [
+                "layers[1].bind.x2",
+                "layers[1].bind.y2",
+                "layers[2].bind.x1",
+                "layers[2].bind.y1",
+                "layers[2].bind.x2",
+                "layers[2].bind.y2",
+                "layers[2].bind.width",
+                "layers[3].bind.x",
+                "layers[3].bind.y",
+                "layers[3].grab",
+            ]
+        );
+        let into: Vec<(String, String)> = d
+            .wires
+            .iter()
+            .filter(|w| w.to.0 == v)
+            .map(|w| (w.from_name.clone(), d.nodes[v].inputs[w.to.1].name.clone()))
+            .collect();
+        assert_eq!(into.len(), inputs.len(), "{into:?}");
+        let has = |from: &str, to: &str| into.iter().any(|(a, b)| a == from && b == to);
+        assert!(has("bob.x", "layers[1].bind.x2"));
+        assert!(has("hand.down", "layers[2].bind.width"));
+        // The grab: from the block it sends the pointer to.
+        assert!(has("hand.picked", "layers[3].grab"));
+        assert!(n.unreached.is_empty(), "{:?}", n.unreached);
+        // Frames' poses are inputs too; constants are not. A parameter
+        // (ADR 0102) is an input with no wire: it names the parameter.
+        let d = observed(&file("own view"));
+        let n = &d.nodes[d.node("view:1").unwrap()];
+        let inputs: Vec<&str> = n.inputs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            inputs,
+            ["frames.rod.angle", "layers[1].bind.x2", "layers[2].bind.x"]
+        );
+        let into: Vec<&str> = d
+            .wires
+            .iter()
+            .filter(|w| w.to_name.starts_with("view:1."))
+            .map(|w| w.to_name.as_str())
+            .collect();
+        assert_eq!(into, ["view:1.frames.rod.angle"]);
+        assert!(d
+            .wires
+            .iter()
+            .any(|w| w.from_name == "bob.angle" && w.to_name == "view:1.frames.rod.angle"));
+        assert_eq!(
+            n.unreached,
+            ["layers[1].bind.x2: bob.L", "layers[2].bind.x: bob.L"]
+        );
+
+        // Canvas edits on its inputs: rewired, unwired back to the
+        // default, and a required attribute kept.
+        let r = registry();
+        let edit = |f: &mut ModelFile, e: Edit| apply(f, &r, &e);
+        edit(
+            &mut f,
+            Edit::Connect {
+                from: "hand.x".into(),
+                to: "view:0.layers[1].bind.x2".into(),
+            },
+        )
+        .unwrap();
+        let layers = |f: &ModelFile| f.controls.views[0].scene.layers.clone();
+        assert_eq!(layers(&f)[1].bind["x2"], SceneValue::Name("hand.x".into()));
+        edit(
+            &mut f,
+            Edit::Disconnect {
+                to: "view:0.layers[2].bind.width".into(),
+            },
+        )
+        .unwrap();
+        assert!(!layers(&f)[2].bind.contains_key("width"));
+        let e = edit(
+            &mut f,
+            Edit::Disconnect {
+                to: "view:0.layers[2].bind.x1".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("required"), "{e}");
+        // The grab's wire taken away lets go; one from a pointer grabs.
+        edit(
+            &mut f,
+            Edit::Unbind {
+                to: "view:0.layers[3].grab".into(),
+                signal: "hand".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(layers(&f)[3].grab, None);
+        let e = edit(
+            &mut f,
+            Edit::Connect {
+                from: "bob.x".into(),
+                to: "view:0.layers[3].grab".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("input.pointer"), "{e}");
+        edit(
+            &mut f,
+            Edit::Connect {
+                from: "hand.picked".into(),
+                to: "view:0.layers[3].grab".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(layers(&f)[3].grab.as_deref(), Some("hand"));
+        // Frame poses unwired go back to 0.
+        let mut g = file("own view");
+        edit(
+            &mut g,
+            Edit::Disconnect {
+                to: "view:1.frames.rod.angle".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(g.controls.views[1].scene.frames["rod"].angle, None);
     }
 
     #[test]

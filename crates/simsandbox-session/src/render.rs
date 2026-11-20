@@ -4,8 +4,10 @@
 //! PNG.
 
 use crate::raster::{Canvas, Image, Textures};
+use crate::session::InputEvent;
 use crate::views::{grid, Views};
 use crate::Session;
+use simsandbox_core::registry::Registry;
 use simsandbox_views::Recorded;
 use simsandbox_views::ViewRegistry;
 
@@ -101,6 +103,37 @@ pub fn render(
     Ok((image, warnings))
 }
 
+/// Run a model file and draw its views, as every headless interface does:
+/// load `text`, replay `track` if there is any (a run file's recorded
+/// input), run to `t_end` (the file's if not given, else
+/// [`DEFAULT_T_END`](crate::run::DEFAULT_T_END)) and [`render`] with the
+/// built-in views. Warnings are added to `warnings` as they arise, the
+/// model's before the views', so a caller can show them even when a later
+/// step fails. `title` names the model in the session and in a replay
+/// error.
+pub fn render_run(
+    title: &str,
+    text: &str,
+    registry: &Registry,
+    t_end: Option<f64>,
+    track: Vec<InputEvent>,
+    o: &RenderOptions,
+    warnings: &mut Vec<String>,
+) -> Result<Image, String> {
+    let mut s = Session::load(title, text, registry)?;
+    if !track.is_empty() {
+        s.replay(track).map_err(|e| format!("{title}: {e}"))?;
+    }
+    warnings.extend(s.warnings.iter().cloned());
+    let t_end = t_end
+        .or(s.file.run.t_end)
+        .unwrap_or(crate::run::DEFAULT_T_END);
+    s.run_until(t_end).map_err(|e| e.to_string())?;
+    let (image, more) = render(&s, crate::examples::view_registry(), o)?;
+    warnings.extend(more);
+    Ok(image)
+}
+
 /// Draw a model file's diagram, as the node canvas shows it, fitted to
 /// the image (ADR 0042). Works for files that do not load: blocks that
 /// cannot be built show their error.
@@ -143,18 +176,46 @@ pub fn render_diagram(
         crate::observers::model_part(file)
     };
     d.observe(&observed, &crate::examples::view_registry());
+    if o.data && o.inside.is_none() {
+        d.mark_views(&scene_problems(file, registry));
+    }
     if !expanded.is_empty() {
         d.expand(file, registry, &expanded);
     }
     // The nodes the file opens, or all.
-    let mut canvas = if o.values {
-        crate::canvas::Canvas::all_open()
-    } else {
-        crate::canvas::Canvas::opening(&file.controls.open)
+    crate::diagram_paint::open_nodes(&mut d, |key| {
+        o.values || file.controls.open.iter().any(|open| open == key)
+    });
+    Ok(paint(o, |ui| crate::diagram_paint::show(ui, &d)))
+}
+
+/// The model's scenes that do not check, by place in `controls.views`,
+/// and why (ADR 0093): what the window marks their nodes with. Checked
+/// against the model loaded, its studies not run; none if it does not
+/// load (its blocks show why) or has no scene.
+fn scene_problems(file: &simsandbox_file::ModelFile, registry: &Registry) -> Vec<(usize, String)> {
+    let scene = simsandbox_views::scene::SCENE;
+    if !file.controls.views.iter().any(|v| v.type_name == scene) {
+        return Vec::new();
+    }
+    let loaded = crate::study::without_running_studies(|| {
+        Session::load_in("diagram", &file.to_json(), registry, file.folder.as_deref())
+    });
+    let Ok(s) = loaded else {
+        return Vec::new();
     };
-    Ok(paint(o, |ui| {
-        canvas.show(ui, &mut d, registry, false);
-    }))
+    let h = s.signals();
+    let available = s.available(&h);
+    file.controls
+        .views
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.type_name == scene)
+        .filter_map(|(k, v)| {
+            let e = simsandbox_views::scene::Scene::check(&v.scene.to_map(), &available).err()?;
+            Some((k, e))
+        })
+        .collect()
 }
 
 fn check(o: &RenderOptions) -> Result<(), String> {
@@ -436,6 +497,50 @@ mod tests {
             .contains("no view 99"));
     }
 
+    #[test]
+    fn a_file_run_and_rendered_in_one_call_is_the_session_drawn() {
+        let e = &EXAMPLES[0];
+        let o = RenderOptions {
+            width: 200.0,
+            height: 100.0,
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        let img = render_run(
+            "m",
+            e.text,
+            &registry(),
+            Some(1.0),
+            Vec::new(),
+            &o,
+            &mut warnings,
+        )
+        .unwrap();
+        let mut s = Session::load("m", e.text, &registry()).unwrap();
+        s.run_until(1.0).unwrap();
+        let (by_hand, more) = render(&s, view_registry(), &o).unwrap();
+        assert_eq!(img.rgba, by_hand.rgba);
+        let expected: Vec<String> = s.warnings.iter().cloned().chain(more).collect();
+        assert_eq!(warnings, expected);
+        // Recorded input that does not apply is an error naming the model.
+        let track = vec![InputEvent {
+            t: 0.5,
+            key: "nope.y".into(),
+            value: 1.0,
+        }];
+        let e = render_run(
+            "m",
+            e.text,
+            &registry(),
+            Some(1.0),
+            track,
+            &o,
+            &mut warnings,
+        )
+        .unwrap_err();
+        assert!(e.starts_with("m: "), "{e}");
+    }
+
     /// A field over three axes drawn by a heat map, a surface and a
     /// contour (two kept, the third picked, reduced or faceted), and a
     /// profile of a 2D grid along one axis (ADR 0086).
@@ -641,6 +746,135 @@ mod tests {
             draw(serde_json::json!([{"type": "plot.xy", "bind": {"x": "m.x", "y": ["m.w"]}}]));
         let drawn = scatter.chunks(4).filter(|p| p != &&scatter[..4]).count();
         assert!(drawn > 2000, "{drawn}");
+    }
+
+    /// A scene rendered headless against a known picture (ADR 0093
+    /// Verification): a red square up and left, a blue disc down and right,
+    /// drawn with equal scales; exact colours inside each, neither between
+    /// them. A third layer draws a table's rows, one dot a row.
+    #[test]
+    fn a_scene_renders_its_known_picture() {
+        use simsandbox_views::scene::spec::palette;
+        let model = serde_json::json!({"format": 1, "run": {"dt": 1, "t_end": 2},
+            "blocks": [{"name": "m", "type": "eq.equations", "equations": [
+                "table pts max 20", "start pts = 5", "state x[pts] = id(pts)/8 - 0.3",
+                "x[n+1] = x"]}],
+            "controls": {"views": [{"type": "plot.scene", "extent": {"x": [-1, 1], "y": [-1, 1]},
+                "layers": [
+                    {"draw": "boxes", "bind": {"x": -0.5, "y": 0.5, "width": 0.9, "height": 0.9, "colour": "red"}},
+                    {"draw": "discs", "bind": {"x": 0.5, "y": -0.5, "radius": 0.45, "colour": "blue"}},
+                    {"draw": "points", "bind": {"x": "m.x", "y": -0.98, "size": 4, "colour": "green"}}]}]}})
+        .to_string();
+        let mut s = Session::load("m", &model, &registry()).unwrap();
+        s.run_until(2.0).unwrap();
+        let o = RenderOptions {
+            width: 500.0,
+            height: 400.0,
+            ..Default::default()
+        };
+        let (img, warnings) = render(&s, view_registry(), &o).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let pixel = |x: usize, y: usize| {
+            let i = 4 * (y * img.width + x);
+            egui::Color32::from_rgb(img.rgba[i], img.rgba[i + 1], img.rgba[i + 2])
+        };
+        // The box holding every pixel of exactly this colour.
+        let extent = |c: egui::Color32| {
+            let (mut lo, mut hi) = ([usize::MAX; 2], [0; 2]);
+            let mut n = 0;
+            for y in 0..img.height {
+                for x in 0..img.width {
+                    if pixel(x, y) == c {
+                        lo = [lo[0].min(x), lo[1].min(y)];
+                        hi = [hi[0].max(x), hi[1].max(y)];
+                        n += 1;
+                    }
+                }
+            }
+            assert!(n > 0, "no {c:?} drawn");
+            (lo, hi, n)
+        };
+        let (red, blue, green) = (
+            palette("red").unwrap(),
+            palette("blue").unwrap(),
+            palette("green").unwrap(),
+        );
+        let (rlo, rhi, _) = extent(red);
+        let (blo, bhi, _) = extent(blue);
+        let size =
+            |lo: [usize; 2], hi: [usize; 2]| [(hi[0] - lo[0]) as f64, (hi[1] - lo[1]) as f64];
+        let centre = |lo: [usize; 2], hi: [usize; 2]| [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2];
+        let (r, b) = (size(rlo, rhi), size(blo, bhi));
+        // Equal scales: the square is square, the disc as wide as it.
+        assert!((r[0] - r[1]).abs() <= 2.0, "{r:?}");
+        assert!(
+            (b[0] - r[0]).abs() <= 2.0 && (b[1] - r[1]).abs() <= 2.0,
+            "{r:?} {b:?}"
+        );
+        assert!(r[0] > 100.0, "{r:?}");
+        // y is up: the disc is right of and below the square, one unit
+        // (r / 0.9 pixels) each way.
+        let (rc, bc) = (centre(rlo, rhi), centre(blo, bhi));
+        let unit = r[0] / 0.9;
+        assert!(
+            ((bc[0] - rc[0]) as f64 - unit).abs() <= 2.0,
+            "{rc:?} {bc:?}"
+        );
+        assert!(
+            ((bc[1] - rc[1]) as f64 - unit).abs() <= 2.0,
+            "{rc:?} {bc:?}"
+        );
+        assert_eq!(pixel(rc[0], rc[1]), red);
+        assert_eq!(pixel(bc[0], bc[1]), blue);
+        let between = pixel((rc[0] + bc[0]) / 2, (rc[1] + bc[1]) / 2);
+        assert!(between != red && between != blue, "{between:?}");
+        // The disc is round: its bounding box's corner is not blue.
+        assert_ne!(pixel(blo[0] + 3, blo[1] + 3), blue);
+        // Five rows, five dots along the bottom.
+        let (glo, ghi, _) = extent(green);
+        assert!(
+            glo[1] > bhi[1] && ghi[0] > glo[0] + 3 * (unit / 8.0) as usize,
+            "{glo:?} {ghi:?}"
+        );
+        let h = s.signals();
+        let scene = simsandbox_views::scene::Scene::check(
+            &s.file.controls.views[0].scene.to_map(),
+            &s.available(&h),
+        )
+        .unwrap();
+        let placed = scene.place(&simsandbox_views::Recorded::single(&h));
+        assert_eq!(placed.iter().filter(|p| p.layer == 2).count(), 5);
+    }
+
+    /// A scene that does not check marks its node in the headless
+    /// diagram, as the window does (ADR 0093).
+    #[test]
+    fn a_scene_that_does_not_check_is_marked_on_the_diagram() {
+        let text = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Pendulum (with its own view)"))
+            .unwrap()
+            .text;
+        let r = registry();
+        let file = |t: &str| simsandbox_file::ModelFile::from_json(t).unwrap().0;
+        assert!(scene_problems(&file(text), &r).is_empty());
+        let broken = text.replace("\"angle\": \"bob.angle\"", "\"angle\": \"bob.angel\"");
+        assert_eq!(
+            scene_problems(&file(&broken), &r),
+            [(
+                1,
+                "frames.rod.angle: no signal or parameter 'bob.angel'".to_string()
+            )]
+        );
+        let o = RenderOptions {
+            width: 600.0,
+            height: 300.0,
+            ..Default::default()
+        };
+        assert_ne!(
+            render_diagram(&file(&broken), &r, &o).unwrap(),
+            render_diagram(&file(text), &r, &o).unwrap()
+        );
     }
 
     #[test]

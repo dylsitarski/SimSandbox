@@ -1,0 +1,89 @@
+name: Wheels
+
+# Python wheels of the `simsandbox` package (python/), so it can be
+# installed without a Rust toolchain. One abi3 wheel per platform serves
+# every CPython from 3.10 on (pyo3's abi3-py310). The wheels are uploaded
+# as workflow artifacts only; publishing to PyPI is a later step.
+# Not run on pull requests: a full release build per platform is slow,
+# and the CI workflow already builds and tests the package there.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  wheels:
+    name: wheel (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: "2_28"
+          - name: windows-x64
+            os: windows-latest
+            target: x64
+            manylinux: ""
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64
+            manylinux: ""
+          - name: macos-x86_64
+            os: macos-latest
+            target: x86_64
+            manylinux: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: python/dist/*.whl
+          if-no-files-found: error
+
+  # Install each wheel into a clean Python with no Rust involved and run
+  # the package's tests against it.
+  test:
+    name: test wheel (${{ matrix.name }}, Python ${{ matrix.python }})
+    needs: wheels
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest, python: "3.10" }
+          - { name: linux-x86_64, os: ubuntu-latest, python: "3.13" }
+          - { name: windows-x64, os: windows-latest, python: "3.12" }
+          - { name: macos-arm64, os: macos-latest, python: "3.12" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: wheels
+      - run: python -m pip install "numpy>=1.24" "pytest>=7" "mypy>=1.10"
+      # Only the wheel just built, never a package of the same name from
+      # an index.
+      - run: python -m pip install --no-index --no-deps --find-links wheels simsandbox
+      # From outside python/, so the installed package is imported, not
+      # the source tree.
+      - run: python -m pytest ../python/tests
+        working-directory: wheels

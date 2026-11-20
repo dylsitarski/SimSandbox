@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "simsandbox-app"
 description = "SimSandbox desktop app (eframe + egui + wgpu, ADR 0008)"
 version.workspace = true

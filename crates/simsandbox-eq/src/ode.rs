@@ -1,5 +1,7 @@
 use crate::integrators::Integrator;
-use simsandbox_core::block::{Block, BlockSpec, Equations, MethodSpec, StepContext, StepIo};
+use simsandbox_core::block::{
+    Block, BlockSpec, Equations, GeneratedCode, MethodSpec, StepContext, StepIo,
+};
 use simsandbox_core::Result;
 
 /// A model definition in the equation domain: equations plus metadata.
@@ -14,13 +16,17 @@ pub trait OdeSystem: Equations + Send {
 
     /// For each rate, the states it depends on: the structure of the
     /// Jacobian, for implicit methods (ADR 0060). `None` if not known;
-    /// it is then found by perturbing each state.
+    /// it is then taken as dense, or for more than
+    /// [`DENSE_UP_TO`](crate::implicit::DENSE_UP_TO) states found by
+    /// perturbing each state (ADR 0104), which can miss an entry: large
+    /// systems should give it.
     fn sparsity(&self) -> Option<Vec<Vec<usize>>> {
         None
     }
 
-    /// How its equations run ([`Block::code`]).
-    fn code(&self) -> Option<String> {
+    /// How its equations run, if SimSandbox makes its code
+    /// ([`Block::as_generated_code`]).
+    fn as_generated_code(&self) -> Option<&dyn GeneratedCode> {
         None
     }
 }
@@ -106,8 +112,8 @@ impl Block for OdeBlock {
         Some(self.system.as_ref())
     }
 
-    fn code(&self) -> Option<String> {
-        self.system.code()
+    fn as_generated_code(&self) -> Option<&dyn GeneratedCode> {
+        self.system.as_generated_code()
     }
 }
 

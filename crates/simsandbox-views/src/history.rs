@@ -282,45 +282,67 @@ pub fn paired(signals: &[(&History, SignalRef)]) -> Paired {
     if sources.is_empty() {
         sources.extend(signals.first().map(|(h, _)| *h));
     }
-    // For each common time, its sample in every source.
-    let rows: Vec<Vec<usize>> = match sources.as_slice() {
-        [] => Vec::new(),
-        [h] => (0..h.len()).map(|k| vec![k]).collect(),
-        _ => {
-            let base = (0..sources.len())
-                .min_by_key(|&i| sources[i].len())
-                .unwrap_or(0);
-            sources[base]
-                .times()
-                .iter()
-                .enumerate()
-                .filter_map(|(k, &t)| {
-                    sources
-                        .iter()
-                        .enumerate()
-                        .map(|(i, h)| {
-                            if i == base {
-                                return Some(k);
-                            }
-                            let j = h.times().partition_point(|&x| x < t);
-                            (h.times().get(j) == Some(&t)).then_some(j)
-                        })
-                        .collect()
-                })
-                .collect()
+    // One recording: every sample, read in place.
+    if let [h] = sources.as_slice() {
+        let t = h.times().to_vec();
+        let columns = signals
+            .iter()
+            .map(|(g, s)| match s {
+                SignalRef::Time => t.clone(),
+                _ if std::ptr::eq(*g, *h) => h.values(*s),
+                _ => t.clone(),
+            })
+            .collect();
+        return Paired { t, columns };
+    }
+    // For each common time, its sample in every source: one row of
+    // `width` sample numbers per time, in one array.
+    let width = sources.len();
+    let mut rows: Vec<usize> = Vec::new();
+    if let Some(base) = (0..width).min_by_key(|&i| sources[i].len()) {
+        let mut row = vec![0; width];
+        for (k, &t) in sources[base].times().iter().enumerate() {
+            let found = sources.iter().enumerate().all(|(i, h)| {
+                if i == base {
+                    row[i] = k;
+                    return true;
+                }
+                let j = h.times().partition_point(|&x| x < t);
+                row[i] = j;
+                h.times().get(j) == Some(&t)
+            });
+            if found {
+                rows.extend_from_slice(&row);
+            }
         }
-    };
+    }
     let at = |h: &History| sources.iter().position(|s| std::ptr::eq(*s, h));
-    let t: Vec<f64> = rows.iter().map(|r| sources[0].times()[r[0]]).collect();
+    let t: Vec<f64> = rows
+        .chunks_exact(width.max(1))
+        .map(|r| sources[0].times()[r[0]])
+        .collect();
     let columns = signals
         .iter()
         .map(|(h, s)| match (s, at(h)) {
             (SignalRef::Time, _) | (_, None) => t.clone(),
-            (s, Some(i)) => rows.iter().map(|r| h.value(*s, r[i])).collect(),
+            (s, Some(i)) => rows
+                .chunks_exact(width)
+                .map(|r| h.value(*s, r[i]))
+                .collect(),
         })
         .collect();
     Paired { t, columns }
 }
+
+/// A history's identity and its number of changes ([`History::stamp`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    id: u64,
+    changes: u64,
+}
+
+/// Each history's own number.
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub struct History {
     /// What the index is: `t`.
@@ -344,6 +366,7 @@ pub struct History {
     /// Keep only this many of the newest samples, forgetting older ones,
     /// instead of thinning (a probe's `keep`, ADR 0062).
     last: Option<usize>,
+    stamp: Stamp,
     /// Values held in population frames, which vary in size.
     population_values: usize,
     /// The field values it keeps before thinning, unless told otherwise.
@@ -351,6 +374,18 @@ pub struct History {
     /// Whether a limit of its own was set (`keep_all`, `thin_past`,
     /// `keep_last`), which the field budget leaves alone.
     own_limit: bool,
+}
+
+impl std::fmt::Debug for History {
+    /// What it records, not its samples.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("History")
+            .field("index", &self.index)
+            .field("signals", &self.names.len())
+            .field("fields", &self.fields.len())
+            .field("samples", &self.times.len())
+            .finish()
+    }
 }
 
 /// Samples kept before thinning: `budget` field values over the fields'
@@ -396,13 +431,28 @@ impl History {
             population_values: 0,
             field_budget: FIELD_VALUES,
             own_limit: false,
+            stamp: Stamp {
+                id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                changes: 0,
+            },
         }
+    }
+
+    /// Which history this is and how often it has changed: the same stamp
+    /// means the same samples, so a view can keep what it drew from them.
+    pub fn stamp(&self) -> Stamp {
+        self.stamp
+    }
+
+    fn changed(&mut self) {
+        self.stamp.changes += 1;
     }
 
     /// Keep about `bytes` of field values before thinning (ADR 0062 step
     /// 5: its share of the app's memory budget), unless a limit of its
     /// own was set. 256 MB by default.
     pub fn set_field_budget(&mut self, bytes: usize) {
+        self.changed();
         self.field_budget = (bytes / 8).max(1);
         if !self.own_limit {
             let per: usize = self.fields.iter().map(|f| f.shape.len()).sum();
@@ -424,6 +474,7 @@ impl History {
 
     /// Keep every sample instead of thinning long histories.
     pub fn keep_all(&mut self) {
+        self.changed();
         self.max_samples = usize::MAX;
         self.last = None;
         self.own_limit = true;
@@ -432,6 +483,7 @@ impl History {
     /// Thin when longer than `samples` (at least 2), instead of the limit
     /// the fields' size sets.
     pub fn thin_past(&mut self, samples: usize) {
+        self.changed();
         self.max_samples = samples.max(2);
         self.last = None;
         self.own_limit = true;
@@ -440,6 +492,7 @@ impl History {
     /// Keep only the newest `samples` (at least 1), forgetting the oldest,
     /// instead of thinning.
     pub fn keep_last(&mut self, samples: usize) {
+        self.changed();
         self.last = Some(samples.max(1));
         self.max_samples = usize::MAX;
         self.own_limit = true;
@@ -452,16 +505,19 @@ impl History {
 
     /// Declare which fields are coordinates of which (ADR 0024).
     pub fn set_coordinates(&mut self, coordinates: Vec<Coordinate>) {
+        self.changed();
         self.coordinates = coordinates;
     }
 
     /// Give signal or field `name` its unit, as written (`m/s`).
     pub fn set_unit(&mut self, name: &str, unit: &str) {
+        self.changed();
         self.units.insert(name.into(), unit.into());
     }
 
     /// Name the axes of field `name` (the first fastest), as its port does.
     pub fn set_axes(&mut self, name: &str, axes: Vec<String>) {
+        self.changed();
         self.axes.insert(name.into(), axes);
     }
 
@@ -488,6 +544,7 @@ impl History {
 
     /// Declare field `name` a mesh's cells (ADR 0086).
     pub fn set_mesh(&mut self, name: &str, mesh: MeshShape) {
+        self.changed();
         self.meshes.insert(name.into(), mesh);
     }
 
@@ -508,6 +565,7 @@ impl History {
 
     /// Show `name` as `label` in legends and on axes.
     pub fn set_label(&mut self, name: &str, label: &str) {
+        self.changed();
         self.labels.insert(name.into(), label.into());
     }
 
@@ -575,11 +633,13 @@ impl History {
     /// Record one sample of scalar signals; `values` has one entry per
     /// signal. Use [`History::push_sample`] when there are fields.
     pub fn push(&mut self, t: f64, values: &[f64]) {
+        self.changed();
         self.push_sample(t, values, &[]);
     }
 
     /// Record one sample: scalar values and one frame per field.
     pub fn push_sample(&mut self, t: f64, values: &[f64], frames: &[&[f64]]) {
+        self.changed();
         debug_assert_eq!(values.len(), self.names.len());
         let per_sample = self.fields.iter_mut();
         self.times.push(t);
@@ -646,6 +706,7 @@ impl History {
 
     /// Drop every sample after `t` (rewind).
     pub fn truncate_after(&mut self, t: f64) {
+        self.changed();
         let keep = self.times.partition_point(|&x| x <= t);
         self.times.truncate(keep);
         for p in &mut self.points {
@@ -658,6 +719,7 @@ impl History {
     }
 
     pub fn clear(&mut self) {
+        self.changed();
         self.times.clear();
         for p in &mut self.points {
             p.clear();
@@ -713,7 +775,11 @@ impl History {
 
     /// All values of a signal, in sample order.
     pub fn values(&self, s: SignalRef) -> Vec<f64> {
-        (0..self.len()).map(|k| self.value(s, k)).collect()
+        match s {
+            SignalRef::Time => self.times.clone(),
+            SignalRef::Signal(i) => self.points[i].iter().map(|p| p.y).collect(),
+            SignalRef::Field(_) => vec![f64::NAN; self.len()],
+        }
     }
 }
 

@@ -18,14 +18,19 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import functools
 import json
 import os
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, cast
 
 import numpy as np
+from numpy.typing import NDArray
 
 from . import _native
 from ._native import ModelError
+
+if TYPE_CHECKING:
+    from ._native import _CompositionResults, _ProbeRecord, _ProbeResults, _RunResults
 
 __version__ = _native.__version__
 __all__ = [
@@ -45,30 +50,30 @@ __all__ = [
 ]
 
 
-def describe(type_name: str | None = None) -> dict:
+def describe(type_name: str | None = None) -> dict[str, Any]:
     """Every block, view and filter type SimSandbox has (with ports, units,
     parameters, methods and their speed and accuracy labels), or one type
     by name (e.g. ``"eq.equations"``, ``"plot.heatmap"``); ``"units"``
     gives every unit symbol and prefix files accept."""
-    return json.loads(_native.describe(type_name))
+    return cast("dict[str, Any]", json.loads(_native.describe(type_name)))
 
 
-def schema() -> dict:
+def schema() -> dict[str, Any]:
     """The model file's JSON Schema."""
-    return json.loads(_native.schema())
+    return cast("dict[str, Any]", json.loads(_native.schema()))
 
 
-def check(model: "Model | dict | str | os.PathLike") -> dict:
+def check(model: "Model | dict[str, Any] | str | os.PathLike[str]") -> dict[str, Any]:
     """Check a model (a :class:`Model`, a dict, JSON text or a path).
     Returns the report: ``ok``, ``errors`` (each with a ``path`` such as
     ``blocks[0].method``, or ``line`` and ``column``), ``warnings``,
     ``params``, what the model records and its views. Never raises for a
     bad model: read ``ok``."""
     with _in_folder(_folder(model)):
-        return json.loads(_native.check(_text(model)))
+        return cast("dict[str, Any]", json.loads(_native.check(_text(model))))
 
 
-def upgrade(model: "Model | dict | str | os.PathLike") -> tuple["Model", list[str]]:
+def upgrade(model: "Model | dict[str, Any] | str | os.PathLike[str]") -> tuple["Model", list[str]]:
     """The model in the current form of the file format, and the older
     forms it was converted from (ADR 0044). Files in older forms open
     anyway; this writes them as SimSandbox writes files today."""
@@ -82,8 +87,18 @@ def examples() -> list[str]:
     return [name for name, _, _ in _native.examples()]
 
 
+@functools.cache
+def _block_types_cached() -> tuple[str, ...]:
+    return tuple(t["type"] for t in describe()["block_types"])
+
+
+def _block_types() -> list[str]:
+    """The registered block types, as :func:`describe` lists them."""
+    return list(_block_types_cached())
+
+
 @contextlib.contextmanager
-def _in_folder(folder: "str | None"):
+def _in_folder(folder: "str | None") -> Iterator[None]:
     # Blocks that read files (``input.file``, ADR 0063) read them from the
     # model file's folder.
     previous = _native.set_folder(folder)
@@ -93,7 +108,7 @@ def _in_folder(folder: "str | None"):
         _native.set_folder(previous)
 
 
-def _folder(model: "Model | dict | str | os.PathLike") -> "str | None":
+def _folder(model: "Model | dict[str, Any] | str | os.PathLike[str]") -> "str | None":
     if isinstance(model, Model):
         return model.folder
     if isinstance(model, os.PathLike) or (
@@ -108,7 +123,7 @@ def _model_hash(model: "Model") -> str:
         return _native.model_hash(model.to_json())
 
 
-def _text(model: "Model | dict | str | os.PathLike") -> str:
+def _text(model: "Model | dict[str, Any] | str | os.PathLike[str]") -> str:
     if isinstance(model, Model):
         return model.to_json()
     if isinstance(model, dict):
@@ -128,18 +143,21 @@ class Model:
     (``input.file``, ADR 0063): the folder the model was loaded from or
     saved to, else ``None`` (only absolute file names then)."""
 
-    def __init__(self, data: dict | None = None, folder: "str | os.PathLike | None" = None):
-        self.data: dict = (
+    def __init__(self, data: dict[str, Any] | None = None, folder: "str | os.PathLike[str] | None" = None):
+        self.data: dict[str, Any] = (
             copy.deepcopy(data)
             if data is not None
             else {"format": 1, "blocks": [], "connections": []}
         )
         self.folder: str | None = None if folder is None else os.fspath(folder)
+        #: What :meth:`start_from` noted of each block, on the model it
+        #: returns; empty otherwise.
+        self.start_notes: list[str] = []
 
     # Opening and saving
 
     @classmethod
-    def load(cls, path: str | os.PathLike) -> "Model":
+    def load(cls, path: str | os.PathLike[str]) -> "Model":
         with open(path, encoding="utf-8") as f:
             m = cls.from_json(f.read())
         m.folder = os.path.dirname(os.path.abspath(path))
@@ -169,7 +187,7 @@ class Model:
     def to_json(self) -> str:
         return json.dumps(self.data, indent=2)
 
-    def save(self, path: str | os.PathLike) -> None:
+    def save(self, path: str | os.PathLike[str]) -> None:
         with open(path, "w", encoding="utf-8") as f:
             f.write(self.to_json() + "\n")
         self.folder = os.path.dirname(os.path.abspath(path))
@@ -183,12 +201,13 @@ class Model:
         self,
         name: str,
         type: str,
-        method: str | dict | None = None,
+        method: str | dict[str, Any] | None = None,
         equations: Iterable[str] | str | None = None,
         params: dict[str, float] | None = None,
         update: str | None = None,
         canvas: tuple[float, float] | None = None,
         settings: dict[str, str] | None = None,
+        bodies: Iterable[dict[str, Any]] | None = None,
     ) -> "Model":
         """Add a block. ``method`` is a name (``"rk4"``) or a dict with its
         options (``{"name": "dopri5", "rtol": 1e-9}``); without one, the
@@ -197,9 +216,16 @@ class Model:
         lines of an ``eq.equations`` block (a string is split into
         lines). ``canvas`` places it on the node canvas (laid out automatically
         if absent). ``settings`` are a type's text settings, e.g.
-        ``{"from": "mm", "to": "m"}`` for ``units.convert``."""
+        ``{"from": "mm", "to": "m"}`` for ``units.convert``. ``bodies`` are
+        a mechanism's (``mech.planar``) rows, one dict per body and its
+        joint (ADR 0105; ``describe("mech.planar")`` lists the columns),
+        checked here."""
         if any(b["name"] == name for b in self.data.get("blocks", [])):
             raise ModelError(f"there is already a block named {name!r}")
+        # Groups of blocks the file defines are used like types (ADR 0043).
+        known = _block_types() + sorted(self.data.get("subsystems", {}))
+        if type not in known:
+            raise ModelError(f"unknown block type {type!r}; known: {', '.join(known)}")
         block: dict[str, Any] = {"name": name, "type": type}
         if method is not None:
             block["method"] = {"name": method} if isinstance(method, str) else dict(method)
@@ -217,6 +243,13 @@ class Model:
             block["canvas"] = [float(canvas[0]), float(canvas[1])]
         if settings:
             block["settings"] = {k: str(v) for k, v in settings.items()}
+        if bodies is not None:
+            if not type.startswith("mech."):
+                raise ModelError(f"a {type} block has no bodies: only mechanisms (mech.*) do")
+            block["bodies"] = [dict(b) for b in bodies]
+            problem = _native.block_problem(json.dumps(block))
+            if problem is not None:
+                raise ModelError(problem)
         self.data.setdefault("blocks", []).append(block)
         return self
 
@@ -224,14 +257,76 @@ class Model:
         """Connect an output to an input, ``connect("car.v", "cruise.v")``,
         or to a parameter, which the output then drives in place of its
         value (ADR 0075): ``connect("clock.k", "decay.k")``, a used
-        model's ``"car1/mass"`` or a study's ``"curve.m"``."""
+        model's ``"car1/mass"`` or a study's ``"curve.m"``.
+
+        Raises :class:`ModelError` at once if either end names a block,
+        used model, port or parameter the model does not have (add the
+        blocks first), or if ``target`` is already wired."""
+        for what, key in (("source", source), ("target", target)):
+            if not isinstance(key, str):
+                raise TypeError(f"the {what} is a name such as 'block.port', not {type(key).__name__}")
+        for c in self.data.get("connections", []):
+            if c.get("to") == target:
+                raise ModelError(
+                    f"{target!r} is already wired from {c.get('from')!r}; an input or parameter takes one wire"
+                )
+        with _in_folder(self.folder):
+            problem = _native.connection_problem(self.to_json(), source, target)
+        if problem is not None:
+            raise ModelError(problem)
         self.data.setdefault("connections", []).append({"from": source, "to": target})
         return self
 
-    def block(self, name: str) -> dict:
+    def add_scene(
+        self,
+        layers: Iterable[dict[str, Any]],
+        frames: dict[str, dict[str, Any]] | None = None,
+        unit: str | None = None,
+        extent: dict[str, Any] | None = None,
+        view_from: str | None = None,
+        canvas: tuple[float, float] | None = None,
+    ) -> "Model":
+        """Add a scene view (``plot.scene``, ADR 0093) after the model's
+        other views: ``layers`` of primitives drawn first to last, each
+        ``{"draw": "boxes", "in": frame, "bind": {attribute: binding},
+        "grab": pointer_block}``, a binding being a number, a signal
+        (``"cart.x"``), a quantity over a table's rows, or for ``colour`` a
+        palette name; named ``frames``, each ``{"in": parent, "x", "y",
+        "angle"}`` bound the same way; the length ``unit`` (``"m"`` if not
+        given); the ``extent`` shown, ``{"x": [lo, hi], "y": [lo, hi]}``
+        (following what is drawn if not given); and the frame it is seen
+        from. ``describe("plot.scene")`` lists the primitives and their
+        attributes. ``canvas`` places its node on the canvas's data layer.
+
+        Raises :class:`ModelError` at once if the form is wrong (an
+        unknown key, primitive or attribute, a required attribute unbound,
+        a frame that is not there or a cycle of frames, a bad extent), if a
+        binding names no block, filter or probe of the model, or if
+        ``grab`` names no ``input.pointer`` block. Whether a block has that
+        output, and units, are checked by :meth:`check` and when it is
+        drawn."""
+        view: dict[str, Any] = {"type": "plot.scene"}
+        if unit is not None:
+            view["unit"] = unit
+        if extent is not None:
+            view["extent"] = copy.deepcopy(dict(extent))
+        if frames:
+            view["frames"] = copy.deepcopy(dict(frames))
+        view["layers"] = copy.deepcopy(list(layers))
+        if view_from is not None:
+            view["view_from"] = view_from
+        if canvas is not None:
+            view["canvas"] = [float(canvas[0]), float(canvas[1])]
+        problem = _native.scene_problem(self.to_json(), json.dumps(view))
+        if problem is not None:
+            raise ModelError(problem)
+        self.data.setdefault("controls", {}).setdefault("views", []).append(view)
+        return self
+
+    def block(self, name: str) -> dict[str, Any]:
         for b in self.data.get("blocks", []):
             if b["name"] == name:
-                return b
+                return cast("dict[str, Any]", b)
         raise KeyError(f"no block named {name!r}")
 
     # Parameters
@@ -253,16 +348,16 @@ class Model:
         default."""
         for p in self.params():
             if p["key"] == key:
-                return p["value"]
+                return float(p["value"])
         raise KeyError(f"no parameter {key!r}")
 
-    def params(self) -> list[dict]:
+    def params(self) -> list[dict[str, Any]]:
         """Every parameter, with its value, unit, suggested range,
         description and whether it is an initial condition."""
         report = self.check()
         if not report["ok"]:
             raise ModelError(_errors(report))
-        return report["params"]
+        return cast("list[dict[str, Any]]", report["params"])
 
     def set_run(self, dt: float | None = None, t_end: float | None = None, seed: int | None = None) -> "Model":
         run = self.data.setdefault("run", {})
@@ -273,7 +368,7 @@ class Model:
 
     # Using it
 
-    def check(self) -> dict:
+    def check(self) -> dict[str, Any]:
         """See :func:`check`."""
         return check(self)
 
@@ -332,7 +427,9 @@ class Model:
             raise ModelError(_errors(report) if not report["ok"] else str(e)) from None
         return Results(raw)
 
-    def _with_inputs(self, inputs) -> "tuple[Model, list[tuple[float, str, float]]]":
+    def _with_inputs(
+        self, inputs: "Iterable[tuple[float, str, float]] | Run | None"
+    ) -> "tuple[Model, list[tuple[float, str, float]]]":
         if isinstance(inputs, Run):
             model = self.copy()
             model.data.setdefault("run", {})["inputs"] = copy.deepcopy(inputs.inputs)
@@ -344,11 +441,11 @@ class Model:
     def add_model(
         self,
         name: str,
-        file: "str | os.PathLike | None" = None,
+        file: "str | os.PathLike[str] | None" = None,
         params: dict[str, float | str] | None = None,
         dt: float | None = None,
         shared: bool = False,
-        files: "dict[str, str | os.PathLike] | None" = None,
+        files: "dict[str, str | os.PathLike[str]] | None" = None,
         model: str | None = None,
     ) -> "Model":
         """Use a model file in this model (ADR 0066), under ``name``, which
@@ -373,7 +470,7 @@ class Model:
             raise ValueError("a use on a shared clock takes this model's step: no dt")
         if (file is None) == (model is None):
             raise ValueError("a use names a file or a model defined here, one of the two")
-        use: dict = {"name": name}
+        use: dict[str, Any] = {"name": name}
         if file is not None:
             use["file"] = os.fspath(file)
         else:
@@ -389,7 +486,7 @@ class Model:
         self.data.setdefault("blocks", []).append(use)
         return self
 
-    def define(self, name: str, model: "Model | dict") -> "Model":
+    def define(self, name: str, model: "Model | dict[str, Any]") -> "Model":
         """Define a model in this file under ``name`` (ADR 0068), used by
         :meth:`add_model` with ``model=name``: written like a model file,
         its input blocks are its inputs and its declared ``outputs`` its
@@ -399,7 +496,7 @@ class Model:
         self.data.setdefault("models", {})[name] = data
         return self
 
-    def link(self, signal: str, to: str, every: dict | None = None, probe: str | None = None) -> "Model":
+    def link(self, signal: str, to: str, every: dict[str, Any] | None = None, probe: str | None = None) -> "Model":
         """Link two models on their own clocks (ADR 0066): a probe records
         ``signal`` (``"plant/car.v"``) ``every`` as :meth:`add_probe` takes
         it (every step if not given), and drives the input block ``to``
@@ -416,8 +513,8 @@ class Model:
         self,
         name: str,
         record: Iterable[str],
-        every: dict | None = None,
-        keep: dict | None = None,
+        every: dict[str, Any] | None = None,
+        keep: dict[str, Any] | None = None,
         to: str | None = None,
     ) -> "Model":
         """Add a probe (ADR 0062): it records the signals and fields in
@@ -427,7 +524,7 @@ class Model:
         ``{"last": n}`` or ``{"all": True}`` (thinned when long if not
         given). ``to`` names the CSV file it writes beside the model, with
         a ``.npy`` file per grid or point field."""
-        probe: dict = {"name": name, "record": list(record)}
+        probe: dict[str, Any] = {"name": name, "record": list(record)}
         if every is not None:
             probe["every"] = dict(every)
         if keep is not None:
@@ -443,7 +540,7 @@ class Model:
         dt: float | None = None,
         inputs: "Iterable[tuple[float, str, float]] | Run | None" = None,
         probes: Iterable[str] | None = None,
-        save: "str | os.PathLike | None" = None,
+        save: "str | os.PathLike[str] | None" = None,
         memory: float | None = None,
     ) -> "ProbeRun":
         """Run as the app does and return what the probes recorded
@@ -517,7 +614,7 @@ class Model:
         self.data = json.loads(text)
         return note
 
-    def as_study(self, *params: tuple[str, float, float, int], design: str = "grid", sample: dict | None = None) -> str:
+    def as_study(self, *params: tuple[str, float, float, int], design: str = "grid", sample: dict[str, Any] | None = None) -> str:
         """Study the whole model (ADR 0071), as "Study this model" does on
         the canvas background: its blocks move into a model defined in the
         file, used in their place, with a study of it beside. Each of
@@ -547,13 +644,13 @@ class Model:
     # (moved into a definition the study runs). Run the model to search;
     # open the strategy block to change it. Returns a note naming it.
 
-    def _strategy(self, target: str | None, spec: dict) -> str:
+    def _strategy(self, target: str | None, spec: dict[str, Any]) -> str:
         text, note = _native.strategy(self.to_json(), json.dumps(spec), target)
         self.data = json.loads(text)
         return note
 
     @staticmethod
-    def _varied(params) -> list[dict]:
+    def _varied(params: dict[str, Any]) -> list[dict[str, Any]]:
         """``{"car.kp": 400}`` or ``{"car.kp": {"start": 400, "span": 1000,
         "range": [1, 2000]}}`` as the strategy takes them."""
         out = []
@@ -567,7 +664,7 @@ class Model:
     def minimize(
         self,
         target: str | None,
-        params: dict,
+        params: dict[str, Any],
         objective: str,
         budget: float = 60,
         tol: float = 1e-3,
@@ -590,7 +687,7 @@ class Model:
     def fit(
         self,
         target: str | None,
-        params: dict,
+        params: dict[str, Any],
         residuals: str,
         budget: float = 60,
         tol: float = 1e-9,
@@ -609,7 +706,7 @@ class Model:
     def refine(
         self,
         target: str | None,
-        params: dict,
+        params: dict[str, Any],
         result: str,
         points: int = 9,
         change: float = 0.5,
@@ -630,7 +727,7 @@ class Model:
         ranged = []
         for key, v in params.items():
             r = v if not isinstance(v, dict) else v["range"]
-            entry = {"param": key, "range": [float(r[0]), float(r[1])]}
+            entry: dict[str, Any] = {"param": key, "range": [float(r[0]), float(r[1])]}
             if isinstance(v, dict) and "tol" in v:
                 entry["tol"] = float(v["tol"])
             ranged.append(entry)
@@ -701,7 +798,7 @@ class Model:
 
     def render(
         self,
-        path: str | os.PathLike | None = None,
+        path: str | os.PathLike[str] | None = None,
         t_end: float | None = None,
         view: int | None = None,
         width: float = 1200,
@@ -713,6 +810,7 @@ class Model:
         data: bool = True,
         values: bool = False,
         expand: "list[str] | None" = None,
+        inputs: "Iterable[tuple[float, str, float]] | Run | None" = None,
     ) -> bytes:
         """Run to ``t_end`` and draw the model's views (``controls.views``,
         or ``view`` alone) as a PNG, as the app shows them; with
@@ -723,7 +821,9 @@ class Model:
         the file lists in ``controls.expand``. The model's diagram
         includes its filters and views (ADR 0050) unless ``data`` is false.
         A diagram shows the values of the nodes the file opens
-        (``controls.open``), or of every node with ``values``. Writes it to ``path`` if given; returns the PNG bytes."""
+        (``controls.open``), or of every node with ``values``. ``inputs`` are
+        changes made during the run, as for :meth:`run`: ``(t, key, value)``
+        tuples or a :class:`Run` (the CLI's ``--inputs``). Writes it to ``path`` if given; returns the PNG bytes."""
         if inside is not None and not diagram:
             raise ValueError("inside draws a used model's diagram: add diagram=True")
         if expand and not diagram:
@@ -733,6 +833,8 @@ class Model:
         if diagram:
             if t_end is not None or view is not None:
                 raise ValueError("t_end and view do not apply to a diagram")
+            if inputs is not None:
+                raise ValueError("inputs change a run; a diagram is drawn without one")
             with _in_folder(self.folder):
                 image = _native.render_diagram(
                     self.to_json(),
@@ -745,11 +847,12 @@ class Model:
                     values,
                     list(expand or []),
                 )
-            warnings = []
+            warnings: list[str] = []
         else:
+            model, track = self._with_inputs(inputs)
             with _in_folder(self.folder):
                 image, warnings = _native.render(
-                    self.to_json(), t_end, view, float(width), float(height), float(scale), light
+                    model.to_json(), t_end, view, float(width), float(height), float(scale), light, track
                 )
         for w in warnings:
             import warnings as _w
@@ -774,20 +877,20 @@ class Run:
     def __init__(
         self,
         model: "Model",
-        inputs: Iterable[dict] | None = None,
+        inputs: Iterable[dict[str, Any]] | None = None,
         track: Iterable[tuple[float, str, float]] | None = None,
         seed: int | None = None,
         dt: float | None = None,
         t_end: float | None = None,
         name: str = "",
         note: str = "",
-        model_path: str | os.PathLike | None = None,
+        model_path: str | os.PathLike[str] | None = None,
     ):
         run = model.data.get("run", {})
         self.model = model.copy()
         #: The schedule in effect: ``{"t", "set", "to"}`` dicts; the
         #: model's own if not given.
-        self.inputs: list[dict] = (
+        self.inputs: list[dict[str, Any]] = (
             [dict(c) for c in inputs] if inputs is not None else copy.deepcopy(run.get("inputs", []))
         )
         #: Recorded input: ``(t, key, value)`` in the order it happened.
@@ -810,13 +913,17 @@ class Run:
         self.stale = False
 
     @classmethod
-    def load(cls, path: str | os.PathLike) -> "Run":
+    def load(cls, path: str | os.PathLike[str]) -> "Run":
         """Read a run file and the model it names (relative to it). Warns
         if the model changed since the run was made."""
         with open(path, encoding="utf-8") as f:
-            data = json.loads(f.read())
-        if data.get("format") != 1:
-            raise ModelError(f"{os.fspath(path)}: run file format {data.get('format')!r} is not 1")
+            text = f.read()
+        # Read as the CLI and the app read it: unknown fields and a newer
+        # format are refused.
+        try:
+            data = json.loads(_native.run_file(text))
+        except ModelError as e:
+            raise ModelError(f"{os.fspath(path)}: {e}") from None
         model_path = os.path.join(os.path.dirname(os.fspath(path)), data["model"])
         model = Model.load(model_path)
         settings = data.get("run", {})
@@ -833,15 +940,11 @@ class Run:
         )
         run.created = data.get("created", "")
         run.made_with = data.get("made_with", "")
-        if run.made_with != _native.made_with():
+        note = _native.version_note(run.made_with)
+        if note is not None:
             import warnings as _w
 
-            made = run.made_with or "a SimSandbox that did not record its version"
-            _w.warn(
-                f"{os.fspath(path)}: recorded with {made}, replayed with {_native.made_with()}: "
-                "results can differ where the changelog says a version changed them",
-                stacklevel=2,
-            )
+            _w.warn(f"{os.fspath(path)}: {note}", stacklevel=2)
         with _in_folder(model.folder):
             run.stale = _native.model_hash(model.to_json()) != data["model_hash"]
         if run.stale:
@@ -863,11 +966,14 @@ class Run:
         if self.t_end is not None:
             run["t_end"] = self.t_end
         run["inputs"] = copy.deepcopy(self.inputs)
-        return m.run(t_end=t_end, inputs=self.track)
+        # With inputs given, even none, a model runs as one: Results.
+        return cast(Results, m.run(t_end=t_end, inputs=self.track))
 
     def to_json(self, model_path: str | None = None) -> str:
         """The run file's text; ``model_path`` is the model relative to
-        where the run file goes."""
+        where the run file goes. Written by the same code as the app's and
+        checked as a run file is when read, so a run saved here and one
+        saved in the app with the same contents are the same bytes."""
         target = model_path or (os.path.basename(self.model_path) if self.model_path else None)
         if target is None:
             raise ValueError("a run refers to its model file: save the model and pass model_path")
@@ -881,11 +987,7 @@ class Run:
             data["name"] = self.name
         if self.note:
             data["note"] = self.note
-        import datetime
-
-        data["created"] = self.created or datetime.datetime.now(datetime.timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        data["created"] = self.created or _native.utc_now()
         data["seed"] = self.seed
         settings = {"dt": self.dt}
         if self.t_end is not None:
@@ -895,9 +997,9 @@ class Run:
             data["inputs"] = self.inputs
         if self.track:
             data["track"] = [list(e) for e in self.track]
-        return json.dumps(data, indent=2)
+        return _native.run_file(json.dumps(data)).rstrip("\n")
 
-    def save(self, path: str | os.PathLike) -> None:
+    def save(self, path: str | os.PathLike[str]) -> None:
         """Write the run file at ``path``. The model must be saved: the run
         refers to it by its path relative to ``path``."""
         if self.model_path is None:
@@ -914,7 +1016,7 @@ def _split(key: str) -> tuple[str, str]:
     return block, rest
 
 
-def _errors(report: dict) -> str:
+def _errors(report: dict[str, Any]) -> str:
     lines = []
     for e in report["errors"]:
         where = e.get("path") or (
@@ -933,7 +1035,7 @@ class Composed:
     name in the model holding it, and ``composed.t("plant")`` gives that
     model's times."""
 
-    def __init__(self, raw: dict):
+    def __init__(self, raw: "_CompositionResults"):
         self.models: dict[str, Results] = {name: Results(r) for name, r in raw["models"]}
         self.tick: float = raw["tick"]
         self.warnings: list[str] = list(raw["warnings"])
@@ -941,10 +1043,10 @@ class Composed:
     def model(self, name: str) -> "Results":
         return self.models[name]
 
-    def t(self, name: str) -> np.ndarray:
-        return self.models[name]["t"]
+    def t(self, name: str) -> NDArray[np.float64]:
+        return self.models[name].t
 
-    def __getitem__(self, name: str):
+    def __getitem__(self, name: str) -> Any:
         for r in self.models.values():
             if name in r.outputs or name in r.populations or name in r.over_rows:
                 return r[name]
@@ -969,11 +1071,11 @@ class Rows:
     seen and a matrix over them, NaN where a row is not there.
     """
 
-    def __init__(self, name: str, dim: int, frames: list):
+    def __init__(self, name: str, dim: int, frames: list[bytes]):
         self.name = name
         self.dim = dim
-        self.ids: list[np.ndarray] = []
-        self.values: list[np.ndarray] = []
+        self.ids: list[NDArray[np.int64]] = []
+        self.values: list[NDArray[np.float64]] = []
         versions = []
         for f in frames:
             v = _array(f, (-1,))
@@ -992,7 +1094,7 @@ class Rows:
     def __len__(self) -> int:
         return len(self.ids)
 
-    def of(self, id: int) -> np.ndarray:
+    def of(self, id: int) -> NDArray[np.float64]:
         """The row ``id`` at each row of the results, NaN where it is not
         there: shape ``(rows,)`` (or ``(rows, dim)``)."""
         out = np.full((len(self),) if self.dim == 1 else (len(self), self.dim), np.nan)
@@ -1002,7 +1104,7 @@ class Rows:
                 out[k] = vals[at[0]]
         return out
 
-    def by_id(self) -> tuple[np.ndarray, np.ndarray]:
+    def by_id(self) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
         """Every id seen, increasing, and the values over them:
         ``(rows, ids)`` (or ``(rows, ids, dim)``), NaN where a row is not
         there."""
@@ -1039,30 +1141,30 @@ class Results:
     populations and the quantities over rows.
     """
 
-    def __init__(self, raw: dict):
+    def __init__(self, raw: "_RunResults"):
         self.rows: int = raw["rows"]
         self.index = {
             name: _array(data, (self.rows,)) for name, _, data in raw["index"]
         }
-        self.outputs: dict[str, np.ndarray] = {}
-        self.shapes: dict[str, dict] = {}
+        self.outputs: dict[str, NDArray[np.float64]] = {}
+        self.shapes: dict[str, dict[str, Any]] = {}
         for name, shape, data in raw["outputs"]:
             shape = json.loads(shape)
             self.shapes[name] = shape
             self.outputs[name] = _array(data, (self.rows, *_dims(shape)))
-        self.populations: dict[str, list[np.ndarray]] = {
+        self.populations: dict[str, list[NDArray[np.float64]]] = {
             name: [_array(f, (-1, dim)) for f in frames]
             for name, dim, frames in raw["populations"]
         }
         self.over_rows: dict[str, Rows] = {
             name: Rows(name, dim, frames) for name, dim, frames in raw.get("over_rows", [])
         }
-        self.labels: dict | None = json.loads(raw["labels"])
+        self.labels: dict[str, Any] | None = json.loads(raw["labels"])
         self.notes: list[str] = raw["notes"]
         self.warnings: list[str] = raw["warnings"]
 
     @property
-    def t(self) -> np.ndarray:
+    def t(self) -> NDArray[np.float64]:
         """Times of a timed run."""
         return self.index["t"]
 
@@ -1074,7 +1176,9 @@ class Results:
         axes = [(a.get("name"), a["length"]) for a in shape.get("axes", [])]
         return list(reversed(axes))
 
-    def __getitem__(self, name: str):
+    def __getitem__(self, name: str) -> Any:
+        """An array, or for a population a list of arrays, or :class:`Rows`:
+        the type depends on the name."""
         for d in (self.index, self.outputs, self.populations, self.over_rows):
             if name in d:
                 return d[name]
@@ -1107,7 +1211,7 @@ class Probe:
     populations, then the quantities over rows.
     """
 
-    def __init__(self, raw: tuple):
+    def __init__(self, raw: "_ProbeRecord"):
         name, times, signals, fields, populations, over_rows = raw
         self.name: str = name
         self.t = _array(times, (-1,))
@@ -1119,7 +1223,7 @@ class Probe:
         }
         self.over_rows = {r: Rows(r, dim, frames) for r, dim, frames in over_rows}
 
-    def __getitem__(self, name: str):
+    def __getitem__(self, name: str) -> Any:
         if name == "t":
             return self.t
         for d in (self.signals, self.fields, self.populations, self.over_rows):
@@ -1143,11 +1247,11 @@ class ProbeRun:
     ``memory`` (bytes held at the end against the budget: ``budget``,
     ``held``, ``parts`` as [name, bytes]). ``run[name]`` is a probe."""
 
-    def __init__(self, raw: dict):
+    def __init__(self, raw: "_ProbeResults"):
         self.probes: dict[str, Probe] = {p[0]: Probe(p) for p in raw["probes"]}
         self.files: list[str] = [str(f) for f in raw["files"]]
-        self.memory: dict = json.loads(raw["memory"])
-        self.labels: dict | None = json.loads(raw["labels"])
+        self.memory: dict[str, Any] = json.loads(raw["memory"])
+        self.labels: dict[str, Any] | None = json.loads(raw["labels"])
         self.warnings: list[str] = raw["warnings"]
 
     def __getitem__(self, name: str) -> Probe:
@@ -1162,7 +1266,7 @@ class ProbeRun:
         return f"ProbeRun(probes={list(self.probes)}, files={self.files})"
 
 
-def _dims(shape: dict) -> tuple[int, ...]:
+def _dims(shape: dict[str, Any]) -> tuple[int, ...]:
     kind = shape["kind"]
     if kind == "scalar":
         return ()
@@ -1178,7 +1282,7 @@ def _dims(shape: dict) -> tuple[int, ...]:
     raise ValueError(f"unexpected shape {shape}")
 
 
-def _array(data: bytes, shape: tuple[int, ...]) -> np.ndarray:
+def _array(data: bytes, shape: tuple[int, ...]) -> NDArray[np.float64]:
     a = np.frombuffer(data, dtype="<f8").reshape(shape)
     a.flags.writeable = False
     return a

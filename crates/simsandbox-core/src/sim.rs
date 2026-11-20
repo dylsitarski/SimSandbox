@@ -102,6 +102,9 @@ struct Route {
 struct GroupPlan {
     /// Block index and state offset of each member.
     members: Vec<(usize, usize)>,
+    /// Per member: its number of states and of output values, from its
+    /// spec, which does not change during a run.
+    sizes: Vec<(usize, usize)>,
     /// Per member: its inputs' length and its driven parameters (ADR 0075),
     /// held in its inputs after them.
     driven: Vec<(usize, Vec<usize>)>,
@@ -131,10 +134,13 @@ impl GroupPlan {
     fn new(model: &Model, group: usize, routes: &[Route]) -> Result<Self> {
         let ids: Vec<usize> = model.groups[group].members.iter().map(|b| b.0).collect();
         let mut members = Vec::new();
+        let mut sizes = Vec::new();
         let mut len = 0;
         for &b in &ids {
+            let spec = model.blocks[b].spec();
             members.push((b, len));
-            len += model.blocks[b].spec().states.len();
+            sizes.push((spec.states.len(), spec.output_len()));
+            len += spec.states.len();
         }
         let position = |b: usize| ids.iter().position(|&m| m == b);
         let internal = routes
@@ -164,6 +170,7 @@ impl GroupPlan {
         drop(units);
         Ok(Self {
             members,
+            sizes,
             driven,
             len,
             outputs,
@@ -193,7 +200,13 @@ impl GroupPlan {
             held,
         } = members;
         let m = self.members.len();
-        let GroupScratch { us, ys, ps } = scratch;
+        let GroupScratch {
+            us,
+            ys,
+            ps,
+            computed,
+            ..
+        } = scratch;
         for v in [&mut *us, &mut *ys, &mut *ps] {
             if v.len() < m {
                 v.resize_with(m, Vec::new);
@@ -203,11 +216,11 @@ impl GroupPlan {
             us[k].clear();
             us[k].extend_from_slice(held[k]);
             ys[k].clear();
-            ys[k].resize(blocks[k].spec().output_len(), 0.0);
+            ys[k].resize(self.sizes[k].1, 0.0);
         }
         let state = |k: usize| {
             let off = self.members[k].1;
-            &x[off..off + blocks[k].spec().states.len()]
+            &x[off..off + self.sizes[k].0]
         };
         // A member's parameters with the driven ones as its inputs give
         // them (ADR 0075), in `buf`; its own when none is driven.
@@ -236,8 +249,11 @@ impl GroupPlan {
             }
         }
         if !self.outputs.is_empty() {
-            self.outputs
-                .solve(self.method, &mut ys[..m], &mut us[..m], &mut |k, u, y| {
+            self.outputs.solve(
+                self.method,
+                &mut ys[..m],
+                &mut us[..m],
+                &mut |k, u, y| {
                     if let Some(eq) = blocks[k].as_equations() {
                         let n = driven[k].0;
                         let p: &[f64] = if with(k, u, &mut ps[k]) {
@@ -248,7 +264,9 @@ impl GroupPlan {
                         eq.outputs(t, state(k), &u[..n], p, y);
                     }
                     Ok(())
-                })?;
+                },
+                computed,
+            )?;
         }
         for r in &self.internal {
             for i in 0..r.len {
@@ -256,7 +274,7 @@ impl GroupPlan {
             }
         }
         for (k, &(_, off)) in self.members.iter().enumerate() {
-            let n = blocks[k].spec().states.len();
+            let n = self.sizes[k].0;
             if let Some(eq) = blocks[k].as_equations() {
                 let ni = driven[k].0;
                 let p: &[f64] = if with(k, &us[k], &mut ps[k]) {
@@ -290,12 +308,16 @@ type GroupWork<'a> = (
 
 /// A fused group's working arrays for its right-hand side, kept between
 /// evaluations: each member's inputs, outputs and (when some are driven)
-/// parameters.
+/// parameters, a member's outputs as its output plan computes them, and
+/// the combined state.
 #[derive(Default)]
 struct GroupScratch {
     us: Vec<Vec<f64>>,
     ys: Vec<Vec<f64>>,
     ps: Vec<Vec<f64>>,
+    computed: Vec<f64>,
+    /// The combined state the solver advances.
+    x: Vec<f64>,
 }
 
 /// One Block's part of the run, lent to a unit of work (ADR 0066 step 6).
@@ -348,7 +370,10 @@ impl Unit<'_> {
             )?;
         }
         for (plan, solver, mut members, scratch) in self.groups {
-            let mut x = Vec::with_capacity(plan.len);
+            // The combined state, in an array kept between steps.
+            let mut x = std::mem::take(&mut scratch.x);
+            x.clear();
+            x.reserve(plan.len);
             for m in &members {
                 x.extend_from_slice(m.state);
             }
@@ -359,7 +384,7 @@ impl Unit<'_> {
                     held: members.iter().map(|m| m.inputs).collect(),
                 };
                 let failed = RefCell::new(None);
-                let scratch = RefCell::new(scratch);
+                let scratch = RefCell::new(&mut *scratch);
                 let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
                     let s = &mut **scratch.borrow_mut();
                     if let Err(e) = plan.rhs(&group, t, x, dx, s) {
@@ -388,6 +413,7 @@ impl Unit<'_> {
                     },
                 )?;
             }
+            scratch.x = x;
         }
         Ok(())
     }
@@ -443,6 +469,9 @@ pub struct Simulator {
     costs: crate::parallel::Costs,
     /// Each fused group's working arrays, kept between evaluations.
     scratch: Vec<GroupScratch>,
+    /// A block's outputs as [`Simulator::resolve`] computes them, kept
+    /// between steps.
+    resolved: Vec<f64>,
     /// Threads kept for the run, started the first time clocks are worth
     /// stepping on several cores.
     pool: Option<crate::parallel::Pool>,
@@ -457,6 +486,8 @@ pub struct Simulator {
     gates: Vec<[f64; 2]>,
     starts: Vec<u64>,
     held: Vec<bool>,
+    /// Per Block: whether it is a member of a fused group, which steps it.
+    grouped: Vec<bool>,
 }
 
 /// Stands in for a Block lent to a thread of the pool for one instant;
@@ -797,12 +828,17 @@ impl Simulator {
             parallel: crate::parallel::Parallel::default(),
             costs: crate::parallel::Costs::pooled(clocks),
             scratch: (0..groups).map(|_| GroupScratch::default()).collect(),
+            resolved: Vec::new(),
             pool: None,
             late: Vec::new(),
             gates: Vec::new(),
             starts: Vec::new(),
             held: vec![false; blocks],
+            grouped: Vec::new(),
         };
+        sim.grouped = (0..blocks)
+            .map(|b| sim.model.group_of(BlockId(b)).is_some())
+            .collect();
         sim.gates = vec![[f64::NAN; 2]; sim.model.activations.len()];
         sim.starts = vec![0; sim.model.activations.len()];
         sim.late = (0..sim.model.blocks.len())
@@ -976,6 +1012,7 @@ impl Simulator {
         let (states, tables) = (&mut self.states, &mut self.tables);
         let (pin, pout) = (&mut self.population_inputs, &mut self.population_outputs);
         let rows_routes = &self.population_routes;
+        let resolved = &mut self.resolved;
         let active = (!self.model.clocks.is_empty() || self.held.contains(&true))
             .then_some(self.active.as_slice());
         // With several clocks a block computes at its own clock's time.
@@ -1013,6 +1050,7 @@ impl Simulator {
                 )
             },
             active,
+            resolved,
         )
     }
 
@@ -1081,13 +1119,7 @@ impl Simulator {
             seed: 0,
         };
         for (bi, block) in self.model.blocks.iter_mut().enumerate() {
-            if self.held[bi]
-                || self
-                    .model
-                    .groups
-                    .iter()
-                    .any(|g| g.members.contains(&BlockId(bi)))
-            {
+            if self.held[bi] || self.grouped[bi] {
                 continue;
             }
             block.do_step(
@@ -1116,7 +1148,10 @@ impl Simulator {
             if plan.members.first().is_some_and(|&(b, _)| self.held[b]) {
                 continue;
             }
-            let mut x = Vec::with_capacity(plan.len);
+            // The combined state, in an array kept between steps.
+            let mut x = std::mem::take(&mut scratch.x);
+            x.clear();
+            x.reserve(plan.len);
             for &(b, _) in &plan.members {
                 x.extend_from_slice(&self.states[b]);
             }
@@ -1129,9 +1164,9 @@ impl Simulator {
             // The solver's right-hand side cannot fail; a loop that does
             // not converge is reported after the step.
             let failed = RefCell::new(None);
-            let scratch = RefCell::new(scratch);
+            let cell = RefCell::new(&mut *scratch);
             let rhs = |t: f64, x: &[f64], dx: &mut [f64]| {
-                let s = &mut **scratch.borrow_mut();
+                let s = &mut **cell.borrow_mut();
                 if let Err(e) = plan.rhs(&inside, t, x, dx, s) {
                     dx.fill(f64::NAN);
                     failed.borrow_mut().get_or_insert(e);
@@ -1157,6 +1192,7 @@ impl Simulator {
                     },
                 )?;
             }
+            scratch.x = x;
         }
         self.t += dt;
         self.step += 1;
@@ -1212,6 +1248,13 @@ impl Simulator {
         self.step
     }
 
+    /// Every fixed-length output value of a Block, its ports one after
+    /// another in the order its spec declares them: for readers that find
+    /// a port's place once, not by name at each step.
+    pub fn outputs_of(&self, id: BlockId) -> Option<&[f64]> {
+        self.outputs.get(id.0).map(Vec::as_slice)
+    }
+
     /// Current value of a named output port (of any length for a
     /// variable-length port).
     pub fn output(&self, id: BlockId, port: &str) -> Option<&[f64]> {
@@ -1264,10 +1307,10 @@ impl Simulator {
         if !self.changed.is_empty() {
             self.refresh_changed()?;
         }
-        let clocks = self.model.clocks.clone();
         let Some((tick, now)) = self.next_tick() else {
             return Ok(());
         };
+        let clocks = &self.model.clocks;
         // The clocks with an instant now (`listed` those at a listed time),
         // and each stepping one's step: its `dt`, or to its listed time.
         let listed: Vec<bool> = (0..clocks.len())
@@ -1285,24 +1328,25 @@ impl Simulator {
                 }
             })
             .collect();
+        // On new data, blocks step only to their own listed instants: their
+        // data's samples, which only a step brings (ADR 0067 step 4).
+        let stepping: Vec<bool> = (0..clocks.len())
+            .map(|c| reaching[c] && (!clocks[c].on_data || listed[c]))
+            .collect();
         // Activated parts (ADR 0088) at this instant of their clocks.
-        let clock_steps = |c: usize| reaching[c] && (!clocks[c].on_data || listed[c]);
-        self.gate(&clock_steps)?;
+        self.gate(&|c: usize| stepping[c])?;
         for (b, a) in self.active.iter_mut().enumerate() {
             *a = reaching[self.model.clock_of[b]] && !self.held[b];
         }
-        // On new data, blocks step only to their own listed instants: their
-        // data's samples, which only a step brings (ADR 0067 step 4).
-        let stepping = |c: usize| reaching[c] && (!clocks[c].on_data || listed[c]);
         // Each clock stepping now is a unit: its blocks and fused groups,
         // which touch nothing of another clock's, their inputs held. Units
         // run on several cores when worth it, with the same bits (ADR 0066
         // step 6).
         // Held blocks (ADR 0088) are not stepped either.
-        let in_group: Vec<bool> = (0..self.model.blocks.len())
-            .map(|b| self.model.group_of(BlockId(b)).is_some() || self.held[b])
+        let in_group: Vec<bool> = (self.grouped.iter().zip(&self.held))
+            .map(|(&g, &h)| g || h)
             .collect();
-        let clocks_now: Vec<usize> = (0..clocks.len()).filter(|&c| stepping(c)).collect();
+        let clocks_now: Vec<usize> = (0..stepping.len()).filter(|&c| stepping[c]).collect();
         let parallel = self.costs.worth(self.parallel, &clocks_now);
         let result = if parallel {
             self.step_lent(&clocks_now, &dts, &in_group)
@@ -1310,13 +1354,13 @@ impl Simulator {
             self.step_here(&clocks_now, &dts, &in_group)
         };
         result?;
-        for (c, clock) in clocks.iter().enumerate() {
+        for (c, clock) in self.model.clocks.iter().enumerate() {
             if listed[c] {
                 // At its listed time exactly; one on data counts its
                 // instants too.
                 self.clock_t[c] = now;
                 self.clock_taken[c] += 1;
-            } else if stepping(c) {
+            } else if stepping[c] {
                 self.clock_t[c] += clock.dt;
                 self.clock_taken[c] += 1;
             }

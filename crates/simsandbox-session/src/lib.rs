@@ -9,18 +9,20 @@
 //! - [`filters`]: expression and cut filters, compiled.
 //! - [`views`]: the model's views, opened from the file, as tiles.
 //! - [`run`]: a model file run headless, every output collected.
+//! - [`runs`]: run files read, checked, replayed and written beside their
+//!   model (ADR 0059).
 //! - [`render`]: the views drawn to an image without a window.
-//! - [`canvas`]: the node canvas drawn and edited with egui.
 //! - [`diagram`]: the model graph for the node canvas, its layout and edits.
+//! - [`diagram_paint`]: the node canvas drawn with egui; the app edits it.
 //! - [`describe`]: the catalogue of types and model checks, as JSON
 //!   (ADR 0039).
 //! - [`examples`]: the built-in example models and the registries of every
 //!   block type and view this build knows.
 
-pub mod canvas;
 pub mod compose;
 pub mod describe;
 pub mod diagram;
+pub mod diagram_paint;
 pub mod edit_use;
 pub mod examples;
 pub mod expand;
@@ -31,6 +33,7 @@ pub mod raster;
 pub mod reduce;
 pub mod render;
 pub mod run;
+pub mod runs;
 pub mod session;
 pub mod strategies;
 pub mod study;

@@ -31,7 +31,7 @@
     },
     "track": {
       "type": "array",
-      "description": "Recorded live input, [t, key, value] in the order it happened; each applies at the first step boundary at or after t.",
+      "description": "Recorded live input, [t, key, value] in the order it happened; each applies at the first step boundary at or after t. A scene's grab is recorded as its input.pointer block's x, y, down and picked (ADR 0093 point 6), so a replay never repeats the hit test; a run without picked events reads picked as -1 throughout.",
       "items": {
         "type": "array",
         "prefixItems": [{"type": "number", "minimum": 0}, {"type": "string"}, {"type": "number"}],

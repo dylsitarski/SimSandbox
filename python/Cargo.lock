@@ -1526,12 +1526,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "simsandbox-mech"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "simsandbox-core",
+ "simsandbox-eq",
+]
+
+[[package]]
 name = "simsandbox-py"
 version = "0.0.1"
 dependencies = [
  "pyo3",
  "serde_json",
  "simsandbox-core",
+ "simsandbox-file",
  "simsandbox-session",
  "simsandbox-views",
 ]
@@ -1549,6 +1560,7 @@ dependencies = [
  "simsandbox-eq",
  "simsandbox-expr",
  "simsandbox-file",
+ "simsandbox-mech",
  "simsandbox-views",
 ]
 

@@ -305,3 +305,182 @@ The checks had become slow: `cargo test --workspace` ran for 77 s after a 187 s 
 
 Optimising dependencies (faer, the UI crates) costs most of the build time and buys nothing in the tests, whose time is in typed equations, integrators and meshes. The chosen profile halves an edit-and-test cycle (109 s → 58 s) and adds 37 s to a run from nothing (CI, which keeps no cache). All 572 tests passed in every configuration; Rust keeps IEEE floating point at every optimisation level, so results are the same bits.
 
+## Loading models of large grids (2026-11-14)
+
+Found while removing a repeated build from the loading of models that use models ([ADR 0090](../decisions/0090-one-engine-for-nested-models.md)), by callgrind on a 512 × 512 Gray–Scott block (2 states, 524 288 state values):
+
+- **Naming the states was over half of building the block**: `T[0]`, `T[1]`, … for every cell with `format!`, 1.1 of 1.7 thousand million instructions. Written out by hand (`element_name`) the build is 0.57 thousand million, a third.
+- **A model using models built each used model three times**; now twice (ADR 0090, as built).
+- Together, loading a model that uses four such models: 11.5 → 5.1 thousand million instructions; `simsandbox run` of it for one step 1.71 → 1.12 s. Results the same bytes.
+- Still large in a build, not yet looked at: the half million names themselves (0.26), `ArrIns::touches` and `gather_places` (0.23), `Program::reads` (0.15), compiling (0.19, the first time).
+
+## The step loop and recording (2026-11-17)
+
+The [code review of 2026-11-14](../research/2026-11-14-code-review.md) §4 listed, unmeasured, constant-factor waste in the kernel's step loop (`sim.rs`, `loops.rs`, `hold.rs`) and the session's recording. Measured first, on small models where overhead and not arithmetic dominates:
+
+- **Cases:** through a `Session` (`profile_steps`, the app's path): the examples cruise-control, lorenz, coupled-oscillators (filters), pendulum, units, forced-spring (models on their own clocks), platoon, heat-rod, the bridge network (tables), grazing (agents) and cruise-search (a study, held still after its search), and from `scripts/profile_cases.py` many-blocks (40 cars) and linked (a probe feeding two models on their own clocks); linked also with its probe on 2001 listed times. Headless (`profile_run`): small ODE, fused, many-blocks, linked, cruise-control, units.
+- **Instructions per step:** callgrind's total for 2N steps less that for N (N from 300 to 4000), over N: loading drops out, and the count is the same from run to run. Linked cases are within about 5% only: the pool's idle threads count instructions while they wait.
+- **Wall time:** best of five, the same builds.
+
+Where the instructions went, before (inclusive shares):
+
+- **cruise-control:** the fused group's right-hand side 70%, of which its output plan 38% (`EquationSet::outputs` 31%: the PI block was evaluated once for each of its two feedthrough outputs); `Session::record` 8% (looking every recorded output up by name, `Simulator::output`, 4%).
+- **many-blocks:** the group's right-hand side 61%, its output plan 32%; `record` 6%; finding each block's fused group (`group_of` over every group's members) 2%.
+- **cruise-search:** `Simulator::step` 77% (the study block evaluated once per output, from its cache), `record` 16%, the snapshot taken before each step and dropped after it 6%.
+
+Changed, each with the same results (every example's and case's output, `run --format json` and renders, compared byte for byte; the session's tests):
+
+| Change | Where | Gain |
+|---|---|---|
+| A block's feedthrough outputs next to each other in the order share one evaluation, when the block is not wired to itself (within a loop's pass, always) | `loops.rs`, `OutputPlan::new` | the largest: cruise-control −15%, many-blocks −18%, cruise-search −28% |
+| Fused group members' numbers of states and outputs kept in the plan, not asked of the spec at each evaluation | `sim.rs`, `GroupPlan` | 2–8% on fused models |
+| Recorded signals and fields found by place once (`Simulator::outputs_of`), not by name each step; fields borrowed from the simulator, not copied | `session/catalogue.rs`, `Session::record` | 5–29% through a session |
+| A sample-and-hold keeps its trigger instead of cloning its schedule (a whole list of times) every step | `hold.rs` | linked with 2001 listed times −23% |
+| Group membership kept per block; clocks borrowed, not cloned, at each instant | `sim.rs`, `step`, `advance` | many-blocks −3%, others ≤1% |
+| The snapshot before a step taken only when a study is watched (`watch_studies`), the only case in which it can be given up and the step undone; the app's worker watches, so it still takes it | `Session::step` | cruise-search −11% |
+| The output plan's working array, the group's combined state and the recording's kept signals kept between steps | `loops.rs`, `sim.rs`, `recording.rs` | about 1–8% each |
+
+Instructions per step, before → after:
+
+| Case | Before | After | |
+|---|---|---|---|
+| lorenz | 2 929 | 2 065 | −30% |
+| pendulum | 3 838 | 2 539 | −34% |
+| cruise-control | 23 791 | 16 915 | −29% |
+| units | 24 262 | 19 872 | −18% |
+| coupled-oscillators | 29 443 | 25 539 | −13% |
+| forced-spring | 21 988 | 19 277 | −12% |
+| platoon | 72 032 | 52 759 | −27% |
+| heat-rod | 59 368 | 57 791 | −3% |
+| bridge | 50 362 | 47 188 | −6% |
+| grazing | 627 902 | 570 183 | −9% |
+| cruise-search | 54 360 | 26 936 | −50% |
+| linked | 61 458 | 54 384 | −12% |
+| linked, 2001 listed times | 75 868 | 52 965 | −30% |
+| many-blocks | 834 997 | 589 822 | −29% |
+| Headless: small ODE | 1 442 | 1 440 | 0 |
+| Headless: fused | 24 497 | 21 761 | −11% |
+| Headless: cruise-control | 22 826 | 17 155 | −25% |
+| Headless: units | 23 267 | 20 494 | −12% |
+| Headless: many-blocks | 820 338 | 619 108 | −25% |
+| Headless: linked | 56 397 | 53 846 | −5% |
+
+Wall time, best of five (seconds): through a session, cruise-control 200 000 steps 0.402 → 0.272, lorenz 1 000 000 steps 0.243 → 0.168, coupled-oscillators 0.482 → 0.380, units 0.407 → 0.312, forced-spring 0.421 → 0.365, platoon 100 000 steps 0.650 → 0.432, many-blocks 5 000 steps 0.380 → 0.279, cruise-search 100 000 steps 0.689 → 0.371, linked 0.352 → 0.300, linked with listed times 0.409 → 0.302; headless, fused 0.733 → 0.577, many-blocks 0.886 → 0.702, cruise-control 0.358 → 0.270, units 0.378 → 0.330, small ODE 0.021 and study 0.014 → 0.012 unchanged within noise.
+
+Measured and left:
+
+- **Members read in place:** a fused group still gathers its members' blocks, parameters and inputs into three small vectors per step. Reading them where they are, through an enum, cost as much at every access in the right-hand side as the allocations saved (coupled-oscillators +3%, fused +3%).
+- **Slots and units per instant** (`step_here`) with several clocks: under 1% (forced-spring).
+- **Comparing block types with "study"** each step, and **`state_bits` twice per step** for maps that iterate: under 0.1% and about 1% (cruise-search).
+- **The `Vec`s `push_kept` builds for fields:** none is allocated when nothing is kept; the rest is the history's own `push_sample`.
+- **Not measured, no case uses them:** an activated part's `clone` per step in `gate` (no example has one), and `run_derived` copying its inputs per sample (only filters with clocks of their own on probes).
+- **Out of this pass:** typed equations' own evaluation (`simsandbox-expr`, `EquationSet::outputs` and `rhs`), now most of every small model's step; its allocations per call show in forced-spring (`sin`).
+
+## Typed equations' per-evaluation costs (2026-11-17)
+
+The second part of the [review](../research/2026-11-14-code-review.md) §4: what typed equations and the implicit methods pay at every evaluation besides their arithmetic. Measured as [above](#the-step-loop-and-recording-2026-11-17) (callgrind's instructions for 2N steps less those for N, over N; wall time best of five through a `Session`, `profile_steps`), on cases where these costs show: the examples gray-scott (128 × 128), heat-rod-typed and the bridge network (tables); Gray–Scott at 64 × 64 with a sum along an axis broadcast back into the rates (`sum(v, y)`, `maxof(u, x)`: Gather and Along at every evaluation); TR-BDF2 on the typed and the built-in heat rods and on Gray–Scott at 48 × 48, backward Euler on the bridge; Gray–Scott at 256 × 256 and 512 × 512 (above 2^20 cell operations a phase: shared among the cores, so wall time only).
+
+Changed, each with the same results (every example's and profiling case's output, `run --format json` and renders, and this pass's cases, compared byte for byte; 636 tests):
+
+| Change | Where | Gain |
+|---|---|---|
+| Gather and Along walk their places with an odometer instead of building a table of them (a `Vec` per cell for Along) at every evaluation; a line along the first axis is reduced in place | `expr/program.rs` | Gray–Scott with a sum along an axis −29% |
+| The implicit methods' working arrays (residuals, the Jacobian's columns, the stages, the LU's fronts, updates and factor, a solve's array) kept in their `Workspace`, each set where a fresh one was allocated; the Jacobian's values written straight into the matrix's pattern | `eq/implicit.rs`, `eq/sparse_lu.rs` (`Work`) | heat rods with TR-BDF2 −22% and −24%, Gray–Scott 48 × 48 −7% |
+| Take writes in place when its result shares no registers with what it reads (known when compiled) | `expr/program.rs` | bridge −4%, with backward Euler −6% |
+| Edges' ends found among ascending ids by binary search, not by a `HashMap` built twice a step; other ids still by the map | `eq/symbolic/evaluate.rs` | bridge −11%, with backward Euler −3% |
+| A table block's inputs built in one array reserved at their length | `eq/symbolic/evaluate.rs` | bridge −9% |
+
+Instructions per step, before → after:
+
+| Case | Before | After | |
+|---|---|---|---|
+| gray-scott 128 × 128 | 3 597 333 | 3 597 389 | 0 |
+| Gray–Scott 64 × 64, sum along an axis | 3 069 909 | 2 190 717 | −29% |
+| heat-rod-typed | 108 804 | 109 493 | +0.6% |
+| bridge | 47 212 | 36 577 | −23% |
+| heat-rod-typed, TR-BDF2 | 143 652 | 111 488 | −22% |
+| heat-rod, TR-BDF2 | 131 746 | 99 667 | −24% |
+| bridge, backward Euler | 174 985 | 144 265 | −18% |
+| Gray–Scott 48 × 48, TR-BDF2 | 113 528 549 | 105 550 185 | −7% |
+
+Wall time, best of five (seconds): Gray–Scott with a sum along an axis 3 000 steps 0.778 → 0.593, bridge 200 000 steps 0.782 → 0.593, with backward Euler 100 000 steps 1.465 → 1.150, heat-rod-typed with TR-BDF2 100 000 steps 1.242 → 0.949, heat-rod with TR-BDF2 1.116 → 0.846, Gray–Scott 48 × 48 with TR-BDF2 20 steps 0.896 → 0.887; unchanged within noise: gray-scott 3 000 steps 0.773 → 0.761, 256 × 256 1 000 steps 1.587 → 1.571, 512 × 512 200 steps 1.343 → 1.296. The previous pass's cases are as they were, within 1% (heat-rod-typed's +0.6% and the typed-equation cases' +0.3–0.9% are in the interpreter's `Program::one`, compiled a little differently: about 17 instructions more per evaluation).
+
+Measured and left:
+
+- **A pool for phases of cells.** Above 2^20 cell operations a phase starts its threads at every evaluation (`std::thread::scope`): three threads started and joined cost about 95 µs alone on this machine. The project's own `Pool` takes only owned work, and without `unsafe` (forbidden in the workspace) borrowed arrays cannot be lent to long-lived threads, so only a dependency (rayon) could keep them. Tried with `rayon_core::scope` in `parallel::each` and measured, then taken out: Gray–Scott per evaluation (`fused_speed`, four cores) 512 × 512 377–434 µs against 360–432 without, 256 × 256 161–196 against 195–209; through a session 512 × 512 1.28 s against 1.20–1.34 s, 256 × 256 1.60 against 1.58. The calling thread works on its own share while the others start, which hides most of their start. The same finding as 2026-11-06 (rayon no faster for phases; the owner then chose no new dependency), so none was added.
+- **Phases' setup per run** (`Phase::run_in`'s operand list and splits, "about 8 vectors per run" in the review): under 1% of a step at 64 × 64 and 128 × 128 (gray-scott: 25 thousand of 3.6 million instructions).
+- **A sparsity hook for fused groups.** A fused group's structure is probed once per run (n + 1 evaluations of the group, kept in the `Workspace`), not per step: two coupled 40 × 40 typed grids with TR-BDF2 (3 200 states) take 0.24 s for the first step against 0.05–0.06 s for the next; the difference is the probe and building the LU's structure once (`sparse_lu::Symbolic::new`: 0.6 of 6.2 thousand million instructions over five steps). The steady cost there is the Jacobian's colouring, which the coupling through `mean` makes dense: a hook giving the exact structure would find the same.
+- **`FusedSystem::rhs`** (`EquationGroup`, built in code) allocated per call; no model file reached it (only a test built one). Deleted with `EquationGroup` on 2026-11-18; the master's fused-group right-hand side keeps its arrays since the [previous pass](#the-step-loop-and-recording-2026-11-17).
+- **Still per evaluation, not taken:** the LU's fronts zeroed for assembly (10% of Gray–Scott 48 × 48 with TR-BDF2; they must start at zero); `faer`'s pivoting LU, used when the LU on the pattern refuses a pivot (the bridge with backward Euler), allocating inside `faer`; a table block's states and inputs gathered into fresh arrays twice a step (the rest of the bridge's allocations, about a fifth of its step); `EquationSet::outputs` copying the states into the outputs (15% of gray-scott).
+
+## The views and the app's frames (2026-11-17)
+
+The third part of the [review](../research/2026-11-14-code-review.md) §4: what the views and the app pay at every frame. Measured first:
+
+- **Frames:** `cargo run --release -p simsandbox-session --example view_frames -- FILE --t-end T [--view K] [--steps S]` runs a model to `T`, then draws its views frame after frame as the app does (egui's frame and its tessellation, without a GPU) and prints the time, the vertices and the texture bytes uploaded per frame; `--steps S` steps the model between frames (running), else it is still (paused). Instructions per frame: callgrind's total for 8 frames less that for 4, over 4. Wall time: the best of three runs of 20 frames, 1200 × 800 points.
+- **Cases:** recordings at the history's limit (99 901 samples of Lorenz, predator-prey and pendulum-drag, `--t-end 999` or `499`), each view alone: Lorenz's three signals against time (`plot.xy`) and its `plot.3d`, predator-prey against time and its phase portrait coloured by time, pendulum-drag against time and the bob's path; Lorenz to t = 5 (500 samples); heat maps of gray-scott (128 × 128), Gray–Scott at 512 × 512 and heat-rod.
+- **The app's worker:** the time `Model::of` (what the worker publishes after each batch of commands) takes, in a test build, for every example and profiling case.
+- **Pictures:** `simsandbox render` of the cases before and after, compared pixel by pixel; screenshots of the app under Xvfb.
+
+Before, a `plot.xy` at the history's limit took 40–80 ms a frame: `paired` built a `Vec` per sample (half the instructions), egui_plot transformed every sample and egui tessellated a line through each (1.2 million vertices for Lorenz). A paused heat map coloured its field and uploaded it every frame (64 KB at 128 × 128, 1 MB at 512 × 512). `Model::of` takes 3–70 µs per example and 0.7 ms for many-blocks (40 cars), in a test build (opt-level 1, dependencies unoptimised).
+
+Changed, each with the same simulation results (no change reaches a simulation):
+
+| Change | Where | Gain |
+|---|---|---|
+| One recording's signals paired in place, several with one array of rows; a coloured line's scale found once, not once per segment | `history.rs` (`paired`), `colour.rs` (`segments`) | Lorenz against time −47%, its `plot.3d` −87%, phase portrait coloured by time −76% |
+| `plot.xy` reads its samples where the history keeps them; a curve with more samples than twice the plot's width in pixels is thinned: of consecutive points in one column (four to a pixel) the first, last, lowest, highest, leftmost and rightmost are kept, in order (`decimate::Columns`) | `builtin.rs`, `decimate.rs` | against time −42% to −71% further, 5 ms a frame instead of 37–70 |
+| `plot.xy` keeps its ranges and thinned lines, and lends them to the plot, while the recordings' stamps (`History::stamp`), the bindings, the trail length, the plot's width and orientation are the same | `builtin.rs` (`Kept`), `history.rs` | paused: a further −82% to −86% |
+| A heat map colours and uploads its textures only when the field's stamp, the bindings, the slicing, the log scale, the trail length or the facets change | `fields.rs` | paused: −88% to −99%, nothing uploaded |
+
+Per frame, instructions (millions) and wall time, before → after:
+
+| Case | Before | After, paused | After, running |
+|---|---|---|---|
+| Lorenz against time | 280.1, 80.7 ms | 15.3, 2.3 ms | 84.7, 9.2 ms |
+| Lorenz `plot.3d` | 202.9, 32.6 ms | 26.8, 4.3 ms | |
+| predator-prey against time | 184.1, 44.9 ms | 8.5, 0.9 ms | |
+| predator-prey coloured by time | 230.7, 46.1 ms | 33.6, 14.4 ms | |
+| pendulum-drag against time | 184.3, 40.5 ms | 8.1, 0.9 ms | |
+| pendulum-drag's path | 94.7, 15.4 ms | 3.9, 0.9 ms | |
+| Lorenz, 500 samples | 2.36, 0.36 ms | 1.49, 0.28 ms | |
+| gray-scott heat map | 5.86, 0.58 ms, 64 KB | 0.72, 0.08 ms, 0 | 9.9, 0.77 ms (as before) |
+| Gray–Scott 512 × 512 heat map | 83.1, 10.9 ms, 1 MB | 0.74, 0.09 ms, 0 | |
+| heat-rod heat map | 8.88, 1.0 ms | 0.44, 0.06 ms | |
+
+Running, Lorenz's frame is the thinning pass over every sample (about 35 instructions a point); predator-prey's view coloured by time thins little, because it draws `prey` against time (see below), whose columns hold a point or two each.
+
+Pictures: renders of a few hundred samples (every example's `render --t-end 1`, in the hash check) are identical. At 50 000–100 000 samples the lines are smoothed a little differently where many overlap: Lorenz against time, 15% of pixels differ, 0.06% by more than 32/255; coupled oscillators 21% and 0.04%; units, predator-prey and pendulum-drag less; none visible at three times the size. One column to a pixel differed by more (1.3% of Lorenz's pixels by more than 32/255: faint stripes in dense areas), two columns 0.2%; four were kept. App screenshots under Xvfb (Lorenz against time and its phase portrait, Gray–Scott) differ only by the run's progress.
+
+Measured and left:
+
+- **Publishing the model only when it changed.** The worker clones the model (`Model::of`) after every batch of commands. Commands that change nothing it publishes are rare: Run, Pause and speed, and the unsaved check once a second (which itself serialises the model, 30–490 µs). A slider or a view's pointer changes a parameter's value, which the published rows hold, so they need it. Once a second at most 0.7 ms (the largest case, in a test build) is under 0.1% of the worker's time.
+- **Phase portraits thinned by columns** keep most points when the path retraces itself (an orbit): pendulum-drag's path draws 3.9 M instructions a frame paused, but predator-prey's coloured view still 33.6 M.
+- **Thinning while running** reads every sample each frame; keeping the columns of the samples already thinned would make it proportional to the new samples. Not done: 9 ms a frame at the history's limit, within the frame.
+- **`plot.3d`** still projects and draws every point (at most 20 000 drawn), 4.3 ms a frame for Lorenz.
+
+## The vector registers after faer (2026-11-19)
+
+**Observed** in the rigid-body spike (branch `claude/great-ramanujan-shfh9u`): a 200-link chain written as typed equations (`grid i = 200`, `grid j = 200`, the mass matrix from `cos` of angle differences, `sum(…, j)`, `solve(M, b)`) stepped by RK4 at about 10 ms a step alone, and at about 276 ms in the same process after a 50-link chain had been stepped by TR-BDF2. Dopri5 went from 32 ms to 842 ms.
+
+**Cause.** On x86-64, faer's matrix products run the hand-written AVX and AVX-512 kernels of `private-gemm-x86` (0.1.22, the newest), which return without `vzeroupper`. The upper halves of the vector registers then stay in use for the rest of the thread. On Intel processors every later legacy-SSE instruction waits on them: Cranelift's code, the interpreter, libm and the integrators are all SSE code. The implicit LU's dense blocks call those products once a front is large enough. A 50-link chain's fully coupled matrix is, but a 10-link chain's isn't, which is why only the 50-link run set it off. How it was found:
+
+- Same results bit for bit in both orders, and the same instructions per step under callgrind (165 M), so it was the same work running slower.
+- All of the time was user time on one thread, with no page faults, so it was not threads, the core's pool or memory.
+- Flush-to-zero and denormals-are-zero made no difference, so it was not denormals. Changing malloc's thresholds made no difference either.
+- Explicit methods before it left no trace. Any implicit method did, even after a single step.
+- One `vzeroupper` before the 200-link run brought it back to full speed.
+
+**Fix.** `simsandbox_compiled::vector_state::clear_upper()` runs `vzeroupper` when the processor has AVX. It lives in `simsandbox-compiled` because that is the one crate allowed unsafe code. The implicit methods call it after factorising and after faer's pivoted solve. It costs a cycle and changes no value. Our own code needs no such call: Rust inserts `vzeroupper` itself after its own AVX code.
+
+Timings after the fix, this machine (Intel Xeon with AVX-512), reproduced with chain models of the same form. Results are the same bits as before:
+
+| Run | Before | After |
+| --- | --- | --- |
+| 200 links, RK4, alone | 13 ms | 13 ms |
+| 200 links, RK4, after 50 links with TR-BDF2 | 227–241 ms | 12.4 ms |
+| 200 links, Dopri5, after the same | 383 ms | 16.8 ms |
+| 50 links, TR-BDF2 | 97 ms | 11.0 ms |
+| 50 links, backward Euler | 90 ms | 11.1 ms |
+
+The last two rows show that the implicit methods had been slowing themselves too: each step's Newton iterations evaluate the equations after the factorisation. **Regression check:** `implicit::tests::factorising_leaves_the_upper_vector_registers_unused` reads `XGETBV(1)` (whether the upper states are in use) after a TR-BDF2 step on a dense 64-variable system. It passes trivially where faer leaves nothing in use or the processor cannot tell, and it fails without the fix.

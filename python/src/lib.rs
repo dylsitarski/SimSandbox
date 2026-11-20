@@ -8,11 +8,11 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
+use simsandbox_session::describe as catalogue;
 use simsandbox_session::examples::{registry, view_registry, EXAMPLES};
-use simsandbox_session::render::{png, render as render_views, RenderOptions};
+use simsandbox_session::render::{png, render_run, RenderOptions};
 use simsandbox_session::run::{run_keeping as run_model, run_probes as run_model_probes};
 use simsandbox_session::session::InputEvent;
-use simsandbox_session::{describe as catalogue, Session};
 
 create_exception!(
     _native,
@@ -82,6 +82,29 @@ fn model_hash(text: &str) -> PyResult<String> {
 #[pyfunction]
 fn made_with() -> &'static str {
     simsandbox_session::run::MADE_WITH
+}
+
+/// The note for a run file that records `made_with` when this build is
+/// not the one that made it (ADR 0082); `None` when it is.
+#[pyfunction]
+fn version_note(made_with: &str) -> Option<String> {
+    simsandbox_session::runs::version_note(made_with)
+}
+
+/// Now as a run file records `created`: RFC 3339 in UTC, to the second.
+#[pyfunction]
+fn utc_now() -> String {
+    simsandbox_session::runs::utc_now()
+}
+
+/// A run file's text read and written as every interface does (ADR 0059):
+/// unknown fields and a newer format are refused, and the text returned
+/// is the one form run files are saved in, whatever wrote `text`.
+#[pyfunction]
+fn run_file(text: &str) -> PyResult<String> {
+    simsandbox_session::runs::RunFile::from_json(text)
+        .map(|run| run.to_json())
+        .map_err(|e| ModelError::new_err(e.to_string()))
 }
 
 /// The run file's JSON Schema.
@@ -331,9 +354,10 @@ fn run_probes<'py>(
 }
 
 /// Run a model file to `t_end` (the file's, if not given) and draw its
-/// views as a PNG.
+/// views as a PNG. `track` is recorded input replayed with it (ADR 0058),
+/// as for [`run`].
 #[pyfunction]
-#[pyo3(signature = (text, t_end=None, view=None, width=1200.0, height=800.0, scale=1.0, light=false))]
+#[pyo3(signature = (text, t_end=None, view=None, width=1200.0, height=800.0, scale=1.0, light=false, track=None))]
 #[allow(clippy::too_many_arguments)]
 fn render<'py>(
     py: Python<'py>,
@@ -344,14 +368,11 @@ fn render<'py>(
     height: f32,
     scale: f32,
     light: bool,
+    track: Option<Vec<(f64, String, f64)>>,
 ) -> PyResult<(Bound<'py, PyBytes>, Vec<String>)> {
+    let track = simsandbox_session::runs::events(&track.unwrap_or_default());
     let (image, warnings) = py
         .detach(|| -> Result<_, String> {
-            let mut s = Session::load("model", text, &registry())?;
-            let t = t_end
-                .or(s.file.run.t_end)
-                .unwrap_or(simsandbox_session::run::DEFAULT_T_END);
-            s.run_until(t).map_err(|e| e.to_string())?;
             let o = RenderOptions {
                 width,
                 height,
@@ -363,8 +384,8 @@ fn render<'py>(
                 data: false,
                 values: false,
             };
-            let (image, mut warnings) = render_views(&s, view_registry(), &o)?;
-            warnings.splice(0..0, s.warnings.iter().cloned());
+            let mut warnings = Vec::new();
+            let image = render_run("model", text, &registry(), t_end, track, &o, &mut warnings)?;
             Ok((png(&image)?, warnings))
         })
         .map_err(ModelError::new_err)?;
@@ -527,6 +548,247 @@ fn set_folder(folder: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> 
     simsandbox_core::registry::set_folder(folder)
 }
 
+/// Why a wire from `source` to `target` cannot be added to the model file
+/// `text`, or `None` if it can. `Model.connect` calls it so a wire to a
+/// block or port that does not exist fails where it is written, not at
+/// the run. It judges as the node canvas does (a wire it would draw
+/// dangling is refused), building only the one or two blocks named, so
+/// its cost does not grow with the model. Not judged, and so let through
+/// to `check`: a file that does not parse, a probe's samples
+/// (`probe:…`), and an end on a block or used model that cannot be built
+/// alone (its own error is the one to read).
+#[pyfunction]
+fn connection_problem(text: &str, source: &str, target: &str) -> Option<String> {
+    use simsandbox_session::diagram::{Diagram, NodeKind};
+    if source.starts_with("probe:") {
+        return None;
+    }
+    let mut data: serde_json::Value = serde_json::from_str(text).ok()?;
+    let blocks: Vec<(String, bool)> = data
+        .get("blocks")?
+        .as_array()?
+        .iter()
+        .filter_map(|b| {
+            let name = b.get("name")?.as_str()?.to_string();
+            let is_use =
+                b.get("type").is_none() && (b.get("file").is_some() || b.get("model").is_some());
+            Some((name, is_use))
+        })
+        .collect();
+    // The block (or used model) an end names, and the rest: `car.v` is
+    // `car` and `v`; `plant/car.v` is `plant` and `car.v` if `plant` is a
+    // use, as `plant/force` is.
+    let split = |key: &str| -> Option<(String, String)> {
+        if let Some((u, rest)) = key.split_once('/') {
+            if blocks.iter().any(|(n, is_use)| *is_use && n == u) {
+                return Some((u.to_string(), rest.to_string()));
+            }
+        }
+        key.split_once('.')
+            .map(|(b, p)| (b.to_string(), p.to_string()))
+    };
+    let names = || {
+        blocks
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut ends = Vec::new();
+    for (key, what) in [(source, "source"), (target, "target")] {
+        let Some((block, rest)) = split(key) else {
+            if let Some((u, _)) = key.split_once('/') {
+                return Some(format!(
+                    "the {what} '{key}' names no used model '{u}'; blocks: {}",
+                    names()
+                ));
+            }
+            return Some(format!(
+                "the {what} '{key}' is not 'block.port' (or a used model's 'use/port')"
+            ));
+        };
+        if !blocks.iter().any(|(n, _)| *n == block) {
+            return Some(format!(
+                "the {what} '{key}' names no block '{block}'; blocks: {}",
+                names()
+            ));
+        }
+        ends.push((block, rest));
+    }
+    // The file with only those blocks and this wire, drawn as the canvas
+    // draws it.
+    let keep = [ends[0].0.clone(), ends[1].0.clone()];
+    if let Some(list) = data.get_mut("blocks").and_then(|b| b.as_array_mut()) {
+        list.retain(|b| {
+            b.get("name")
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| keep.iter().any(|k| k == n))
+        });
+    }
+    let map = data.as_object_mut()?;
+    map.insert(
+        "connections".into(),
+        serde_json::json!([{ "from": source, "to": target }]),
+    );
+    map.remove("controls");
+    let (file, _) = simsandbox_session::ModelFile::from_json(&data.to_string()).ok()?;
+    let d = Diagram::new(&file, &registry());
+    if d.dangling.is_empty() {
+        return None;
+    }
+    let node = |name: &str| d.nodes.iter().find(|n| n.name == name);
+    let (from_node, to_node) = (node(&ends[0].0)?, node(&ends[1].0)?);
+    if from_node.error.is_some() || to_node.error.is_some() {
+        return None;
+    }
+    let list = |v: Vec<&str>| match v.is_empty() {
+        true => "none".to_string(),
+        false => v.join(", "),
+    };
+    let what = |n: &simsandbox_session::diagram::Node| match n.kind {
+        NodeKind::Use => "the used model",
+        _ => "the block",
+    };
+    let outputs: Vec<&str> = from_node.outputs.iter().map(|p| p.name.as_str()).collect();
+    if !outputs.contains(&ends[0].1.as_str()) {
+        return Some(format!(
+            "the source '{source}': {} '{}' has no output '{}'; outputs: {}",
+            what(from_node),
+            ends[0].0,
+            ends[0].1,
+            list(outputs)
+        ));
+    }
+    // A parameter the file sets by a formula is not shown as a value, but
+    // may still be driven: the run decides.
+    let in_file = |block: &str, param: &str| {
+        data.get("blocks")
+            .and_then(|b| b.as_array())
+            .and_then(|b| {
+                b.iter()
+                    .find(|b| b.get("name").and_then(|n| n.as_str()) == Some(block))
+            })
+            .and_then(|b| b.get("params"))
+            .is_some_and(|p| p.get(param).is_some())
+    };
+    if in_file(&ends[1].0, &ends[1].1) {
+        return None;
+    }
+    let inputs: Vec<&str> = to_node.inputs.iter().map(|p| p.name.as_str()).collect();
+    let params: Vec<&str> = to_node.values.iter().map(|v| v.name.as_str()).collect();
+    if !inputs.contains(&ends[1].1.as_str()) && !params.contains(&ends[1].1.as_str()) {
+        return Some(format!(
+            "the target '{target}': {} '{}' has no input or parameter '{}'; inputs: {}; parameters: {}",
+            what(to_node),
+            ends[1].0,
+            ends[1].1,
+            list(inputs),
+            list(params)
+        ));
+    }
+    Some(format!("cannot wire '{source}' to '{target}'"))
+}
+
+/// What is wrong with a scene view (`plot.scene`, ADR 0093) for this
+/// model, judged without building it: the scene's form as `check` reads
+/// it (keys, primitives, attributes, frames, extent, `view_from`), each
+/// bound signal named by one of the model's blocks or used models, a
+/// filter, a probe or time, and each `grab` an `input.pointer` block.
+/// Left to `check`: whether a block has that output, units, and tables
+/// (`None` here then, as for a file that does not parse).
+/// What is wrong with one block's entry (a model file's block object, as
+/// JSON) when its type builds it alone, or `None`: for `Model.add_block`
+/// to refuse a mechanism's rows at the call (ADR 0105 point 7). Types that
+/// are not registered (a definition in the file) are left to `check`.
+#[pyfunction]
+fn block_problem(block: &str) -> Option<String> {
+    let entry: simsandbox_file::BlockEntry = match serde_json::from_str(block) {
+        Ok(e) => e,
+        Err(e) => return Some(format!("not a block: {e}")),
+    };
+    let registry = simsandbox_session::examples::registry();
+    if !registry.contains(&entry.type_name) {
+        return None;
+    }
+    registry
+        .build(&entry.type_name, &entry.name, &entry.config(None))
+        .err()
+        .map(|e| e.to_string())
+}
+
+#[pyfunction]
+fn scene_problem(text: &str, scene: &str) -> Option<String> {
+    use simsandbox_views::scene::{bound, Scene, SCENE};
+    use simsandbox_views::Available;
+    let data: serde_json::Value = serde_json::from_str(text).ok()?;
+    let view: serde_json::Value = match serde_json::from_str(scene) {
+        Ok(v) => v,
+        Err(e) => return Some(format!("the scene is not JSON: {e}")),
+    };
+    let Some(view) = view.as_object() else {
+        return Some("a scene is an object of its settings".into());
+    };
+    if view.get("type").and_then(|t| t.as_str()) != Some(SCENE) {
+        return Some(format!("a scene's type is '{SCENE}'"));
+    }
+    // Its settings: all but what every view has.
+    let settings: simsandbox_views::view::Settings = view
+        .iter()
+        .filter(|(k, _)| !matches!(k.as_str(), "type" | "canvas"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let names = |list: Option<&serde_json::Value>, key: &str| -> Vec<(String, String)> {
+        list.and_then(|l| l.as_array())
+            .map(|l| {
+                l.iter()
+                    .filter_map(|e| {
+                        let name = e.get("name")?.as_str()?.to_string();
+                        let kind = e.get(key).and_then(|t| t.as_str()).unwrap_or("");
+                        Some((name, kind.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let blocks = names(data.get("blocks"), "type");
+    let controls = data.get("controls");
+    let filters = names(controls.and_then(|c| c.get("filters")), "type");
+    let probes = names(controls.and_then(|c| c.get("probes")), "type");
+    let has = |list: &[(String, String)], n: &str| list.iter().any(|(name, _)| name == n);
+    let named = |s: &str| -> bool {
+        if s == "t" {
+            return true;
+        }
+        if let Some(rest) = s.strip_prefix("probe:") {
+            return rest.split_once('/').is_some_and(|(p, _)| has(&probes, p));
+        }
+        let first = s.split(['.', '/', '[']).next().unwrap_or(s);
+        has(&blocks, first) || has(&filters, first) || (first == "grid" && s.len() > 5)
+    };
+    let mut signals = Vec::new();
+    for (path, s) in bound(&settings) {
+        if !named(&s) {
+            let list: Vec<&str> = blocks.iter().map(|(n, _)| n.as_str()).collect();
+            return Some(format!(
+                "{path}: '{s}' names no block, filter or probe of the model; blocks: {}",
+                list.join(", ")
+            ));
+        }
+        signals.push(s);
+    }
+    let pointers: Vec<String> = blocks
+        .iter()
+        .filter(|(_, t)| t == "input.pointer")
+        .map(|(n, _)| n.clone())
+        .collect();
+    let available = Available {
+        scalars: &signals,
+        pointers: Some(&pointers),
+        ..Default::default()
+    };
+    Scene::check(&settings, &available).err()
+}
+
 /// A model file in the current form (ADR 0044): the text, the older forms
 /// converted, and what was dropped as unusable.
 #[pyfunction]
@@ -549,6 +811,9 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(model_hash, m)?)?;
     m.add_function(wrap_pyfunction!(made_with, m)?)?;
     m.add_function(wrap_pyfunction!(run_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(version_note, m)?)?;
+    m.add_function(wrap_pyfunction!(utc_now, m)?)?;
+    m.add_function(wrap_pyfunction!(run_file, m)?)?;
     m.add_function(wrap_pyfunction!(render, m)?)?;
     m.add_function(wrap_pyfunction!(render_diagram, m)?)?;
     m.add_function(wrap_pyfunction!(start_from, m)?)?;
@@ -558,6 +823,9 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(study_model, m)?)?;
     m.add_function(wrap_pyfunction!(strategy, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
+    m.add_function(wrap_pyfunction!(connection_problem, m)?)?;
+    m.add_function(wrap_pyfunction!(block_problem, m)?)?;
+    m.add_function(wrap_pyfunction!(scene_problem, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

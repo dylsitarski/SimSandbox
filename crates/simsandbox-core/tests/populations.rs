@@ -3,8 +3,8 @@
 //! counter-based randomness.
 
 use simsandbox_core::block::{
-    AccuracyClass, Block, BlockSpec, Domain, MethodLabels, MethodSpec, PortSpec, Shape, SpeedClass,
-    StepContext, StepIo, TimeSemantics,
+    AccuracyClass, Block, BlockSpec, Domain, MethodSpec, Shape, SpeedClass, StepContext, StepIo,
+    TimeSemantics,
 };
 use simsandbox_core::graph::Model;
 use simsandbox_core::random::Draws;
@@ -14,13 +14,7 @@ use simsandbox_core::units::Unit;
 use simsandbox_core::{Result, SimError};
 
 fn method() -> MethodSpec {
-    MethodSpec {
-        name: "rules".into(),
-        labels: MethodLabels {
-            speed: SpeedClass::RealTime,
-            accuracy: AccuracyClass::Quantitative,
-        },
-    }
+    MethodSpec::new("rules", SpeedClass::RealTime, AccuracyClass::Quantitative)
 }
 
 /// Walkers on a line: each step every walker moves by a normal draw; those
@@ -34,18 +28,11 @@ struct Walkers {
 impl Walkers {
     fn new() -> Self {
         Self {
-            spec: BlockSpec {
-                name: "walkers".into(),
-                domain: Domain::Agents,
-                ports: vec![
-                    PortSpec::output("x", Unit::METER, Shape::Population { dim: 1 }),
-                    PortSpec::output("count", Unit::DIMENSIONLESS, Shape::Scalar),
-                ],
-                params: vec![],
-                states: vec![],
-                tables: vec![TableSpec::new("walkers", &["x"])],
-                time: TimeSemantics::FixedStep { dt: 1.0 },
-            },
+            spec: BlockSpec::new("walkers", Domain::Agents)
+                .output("x", Unit::METER, Shape::Population { dim: 1 })
+                .output("count", Unit::DIMENSIONLESS, Shape::Scalar)
+                .table(TableSpec::new("walkers", &["x"]))
+                .time(TimeSemantics::FixedStep { dt: 1.0 }),
             method: method(),
         }
     }
@@ -101,19 +88,11 @@ struct Census {
 impl Census {
     fn new(unit: Unit, dim: usize) -> Self {
         Self {
-            spec: BlockSpec {
-                name: "census".into(),
-                domain: Domain::Agents,
-                ports: vec![
-                    PortSpec::input("x", unit, Shape::Population { dim }),
-                    PortSpec::output("n", Unit::DIMENSIONLESS, Shape::Scalar),
-                    PortSpec::output("sum", unit, Shape::Scalar),
-                ],
-                params: vec![],
-                states: vec![],
-                tables: vec![],
-                time: TimeSemantics::FixedStep { dt: 1.0 },
-            },
+            spec: BlockSpec::new("census", Domain::Agents)
+                .input("x", unit, Shape::Population { dim })
+                .output("n", Unit::DIMENSIONLESS, Shape::Scalar)
+                .output("sum", unit, Shape::Scalar)
+                .time(TimeSemantics::FixedStep { dt: 1.0 }),
             method: method(),
         }
     }

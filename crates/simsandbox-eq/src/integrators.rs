@@ -385,6 +385,8 @@ fn dopri5(
         unreachable!("nine working arrays")
     };
     let mut rejected = 0usize;
+    // Kept to put back if the step fails: `x` is then as it was given.
+    let start = x.to_vec();
 
     while t < t_end - 1e-14 * dt.abs().max(1.0) {
         h = h.min(t_end - t);
@@ -418,13 +420,28 @@ fn dopri5(
         } else {
             rejected += 1;
             if rejected > 10_000 || h < 1e-14 * dt.abs().max(1.0) {
-                return Err(SimError::Block("Dopri5: step size underflow".into()));
+                x.copy_from_slice(&start);
+                return Err(SimError::Block(if err.is_finite() {
+                    "Dopri5: step size underflow: the tolerances cannot be met (a stiff system \
+                     wants trbdf2)"
+                        .into()
+                } else {
+                    format!(
+                        "Dopri5: the equations give values that are not numbers (NaN or \
+                         infinite) near t = {t}, however short the step"
+                    )
+                }));
             }
         }
+        // An estimate that is not a number rejects the step and shortens
+        // it as far as one rejection may: the rates may be numbers
+        // closer to the state.
         let factor = if err == 0.0 {
             5.0
-        } else {
+        } else if err.is_finite() {
             0.9 * err.powf(-0.2)
+        } else {
+            0.2
         };
         h *= factor.clamp(0.2, 5.0);
     }
@@ -605,6 +622,217 @@ mod tests {
             assert!(
                 Integrator::from_settings(&MethodSettings::new(name).with("rtol", 1.0)).is_err()
             );
+        }
+    }
+
+    /// φ(t) = 1 + sin(t)/2 and its rate.
+    fn phi(t: f64) -> (f64, f64) {
+        (1.0 + 0.5 * t.sin(), 0.5 * t.cos())
+    }
+
+    /// A stiff nonlinear problem with a known solution (Prothero and
+    /// Robinson's, made nonlinear): y' = −L·(y² − φ²) + φ', y(0) = φ(0),
+    /// whose solution is φ. Its Jacobian −2L·y changes with the state.
+    /// The error at t = 2 in `steps` steps, with every value in units of
+    /// `unit` (1e-9: the same system in nano-units).
+    fn stiff_error(m: Integrator, stiffness: f64, steps: usize, unit: f64) -> f64 {
+        let f = move |t: f64, y: &[f64], dy: &mut [f64]| {
+            let (p, dp) = phi(t);
+            let v = y[0] / unit;
+            dy[0] = unit * (-stiffness * (v * v - p * p) + dp);
+        };
+        let mut y = [unit * phi(0.0).0];
+        let dt = 2.0 / steps as f64;
+        for i in 0..steps {
+            m.advance(&f, i as f64 * dt, dt, &mut y).unwrap();
+        }
+        (y[0] / unit - phi(2.0).0).abs()
+    }
+
+    #[test]
+    fn implicit_methods_keep_their_order_on_a_stiff_nonlinear_problem() {
+        // Steps of 0.05 and 0.025 with L = 50: the explicit limit is
+        // about 0.018 (RK4, at y = 1.5), so these are stiff steps.
+        let be = |n| stiff_error(Integrator::BackwardEuler { substeps: 1 }, 50.0, n, 1.0);
+        let tr = |n| stiff_error(Integrator::TrBdf2 { substeps: 1 }, 50.0, n, 1.0);
+        let ratio = be(40) / be(80);
+        assert!((1.7..2.3).contains(&ratio), "backward Euler ratio {ratio}");
+        let ratio = tr(40) / tr(80);
+        assert!((3.4..4.6).contains(&ratio), "TR-BDF2 ratio {ratio}");
+        // Far stiffer (L = 1e6, steps 5000 times the explicit limit) both
+        // stay on the solution.
+        for m in [
+            Integrator::BackwardEuler { substeps: 1 },
+            Integrator::TrBdf2 { substeps: 1 },
+        ] {
+            let e = stiff_error(m, 1e6, 20, 1.0);
+            assert!(e < 1e-5, "{m:?}: {e}");
+        }
+    }
+
+    /// The same system in other units converges the same way: tolerances
+    /// and the Jacobian's perturbations are relative to the state's
+    /// size, not to 1. In nano-units a tolerance of 1e-10 on values near
+    /// 1e-9 would accept a tenth of the state, and a perturbation of
+    /// 1.5e-8 would be fifteen times it.
+    #[test]
+    fn implicit_methods_do_not_depend_on_the_units_of_the_state() {
+        for m in [
+            Integrator::BackwardEuler { substeps: 1 },
+            Integrator::TrBdf2 { substeps: 1 },
+        ] {
+            let plain = stiff_error(m, 50.0, 40, 1.0);
+            for unit in [1e-9, 1e-3, 1e6] {
+                let scaled = stiff_error(m, 50.0, 40, unit);
+                assert!(
+                    (scaled - plain).abs() < 1e-7 * plain,
+                    "{m:?} in units of {unit}: {scaled} against {plain}"
+                );
+            }
+        }
+    }
+
+    /// Robertson's reactions, the standard stiff test: three states of
+    /// very different sizes (y2 near 1e-5) and rates from 0.04 to 3e7.
+    /// Against the reference solution at t = 40 (Hairer and Wanner,
+    /// Solving Ordinary Differential Equations II).
+    #[test]
+    fn trbdf2_solves_robertsons_problem() {
+        let f = |_t: f64, y: &[f64], dy: &mut [f64]| {
+            dy[0] = -0.04 * y[0] + 1e4 * y[1] * y[2];
+            dy[1] = 0.04 * y[0] - 1e4 * y[1] * y[2] - 3e7 * y[1] * y[1];
+            dy[2] = 3e7 * y[1] * y[1];
+        };
+        let run = |steps: usize| {
+            let mut y = [1.0, 0.0, 0.0];
+            let dt = 40.0 / steps as f64;
+            for i in 0..steps {
+                Integrator::TrBdf2 { substeps: 1 }
+                    .advance(&f, i as f64 * dt, dt, &mut y)
+                    .unwrap();
+            }
+            y
+        };
+        let reference = [
+            0.715_827_068_719_4,
+            9.185_534_764_557e-6,
+            0.284_163_745_745_8,
+        ];
+        let y = run(4000);
+        for (v, r) in y.iter().zip(reference) {
+            assert!((v - r).abs() < 2e-5 * r, "{y:?}");
+        }
+        // Mass is conserved to rounding.
+        assert!((y.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    /// A Jacobian taken at the start of a step can be far from the one
+    /// the solution needs (here hundreds of times too large once the state
+    /// has fallen): Newton's method then creeps and, before, gave up. The
+    /// stage now takes the Jacobian afresh where it has got to.
+    #[test]
+    fn a_stage_that_does_not_converge_is_retried_with_a_fresh_jacobian() {
+        let f = |_t: f64, y: &[f64], dy: &mut [f64]| dy[0] = -1e3 * y[0].powi(3);
+        for scheme in [
+            |substeps| Integrator::BackwardEuler { substeps },
+            |substeps| Integrator::TrBdf2 { substeps },
+        ] {
+            let mut together = [10.0];
+            scheme(10).advance(&f, 0.0, 1.0, &mut together).unwrap();
+            // The same steps, each with its own Jacobian.
+            let mut apart = [10.0];
+            for i in 0..10 {
+                scheme(1)
+                    .advance(&f, i as f64 * 0.1, 0.1, &mut apart)
+                    .unwrap();
+            }
+            assert!((together[0] - apart[0]).abs() < 1e-8 * apart[0]);
+        }
+    }
+
+    #[test]
+    fn a_failed_step_leaves_the_state_as_it_was() {
+        // Rates that are not numbers once the state has moved: the first
+        // substeps succeed, a later one cannot.
+        let f = |_t: f64, y: &[f64], dy: &mut [f64]| dy[0] = -(y[0] - 0.5).sqrt();
+        for m in [
+            Integrator::BackwardEuler { substeps: 8 },
+            Integrator::TrBdf2 { substeps: 8 },
+            Integrator::Dopri5 {
+                rtol: 1e-8,
+                atol: 1e-10,
+            },
+        ] {
+            let mut y = [1.0];
+            let e = m.advance(&f, 0.0, 4.0, &mut y).unwrap_err().to_string();
+            assert_eq!(y, [1.0], "{m:?}");
+            assert!(e.contains("not numbers"), "{m:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn dopri5_shortens_a_step_whose_stages_are_not_numbers_and_gives_up_soon() {
+        // y' = −√y from 1: (1 − t/2)². A first step of 1.5 has stages
+        // below 0, where the rate is not a number; shorter steps do not.
+        let calls = std::cell::Cell::new(0usize);
+        let f = |_t: f64, y: &[f64], dy: &mut [f64]| {
+            calls.set(calls.get() + 1);
+            dy[0] = -y[0].sqrt();
+        };
+        let m = Integrator::Dopri5 {
+            rtol: 1e-10,
+            atol: 1e-12,
+        };
+        let mut y = [1.0];
+        m.advance(&f, 0.0, 1.5, &mut y).unwrap();
+        assert!((y[0] - 0.0625).abs() < 1e-8, "{y:?}");
+        // Rates that are never numbers: an error after a few dozen
+        // steps tried, not ten thousand.
+        calls.set(0);
+        let never = |_t: f64, _y: &[f64], dy: &mut [f64]| {
+            calls.set(calls.get() + 1);
+            dy[0] = f64::NAN;
+        };
+        let mut y = [1.0];
+        let e = m.advance(&never, 0.0, 1.0, &mut y).unwrap_err().to_string();
+        assert!(e.contains("not numbers"), "{e}");
+        assert!(calls.get() < 400, "{} evaluations", calls.get());
+        assert_eq!(y, [1.0]);
+    }
+
+    /// Van der Pol's oscillator (μ = 5), nonlinear, with fast and slow
+    /// stretches, so steps are rejected and resized: a loose tolerance
+    /// against a tight one over one long communication step.
+    #[test]
+    fn dopri5_meets_its_tolerance_on_a_nonlinear_problem() {
+        let f = |_t: f64, y: &[f64], dy: &mut [f64]| {
+            dy[0] = y[1];
+            dy[1] = 5.0 * (1.0 - y[0] * y[0]) * y[1] - y[0];
+        };
+        let run = |rtol: f64| {
+            let mut y = [2.0, 0.0];
+            Integrator::Dopri5 {
+                rtol,
+                atol: rtol * 1e-2,
+            }
+            .advance(&f, 0.0, 20.0, &mut y)
+            .unwrap();
+            y
+        };
+        let (tight, loose) = (run(1e-13), run(1e-8));
+        for (a, b) in tight.iter().zip(loose) {
+            assert!(
+                (a - b).abs() < 1e-5 * a.abs().max(1.0),
+                "{tight:?} {loose:?}"
+            );
+        }
+        // And against RK4 with very short steps.
+        let mut y = [2.0, 0.0];
+        Integrator::Rk4 { substeps: 200_000 }
+            .advance(&f, 0.0, 20.0, &mut y)
+            .unwrap();
+        for (a, b) in tight.iter().zip(y) {
+            assert!((a - b).abs() < 1e-8 * a.abs().max(1.0), "{tight:?} {y:?}");
         }
     }
 }

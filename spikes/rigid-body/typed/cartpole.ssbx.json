@@ -1,0 +1,50 @@
+{
+  "format": 1,
+  "description": "The spike's cart-pole as typed equations, its inputs held over each step: the cart force F and the world force (fx, fy) on the pole's tip are parameters the host sets before each step (the controller and the disturbances computed outside, as for the other engines).",
+  "run": {
+    "dt": 0.001,
+    "t_end": 6.0
+  },
+  "blocks": [
+    {
+      "name": "cp",
+      "type": "eq.equations",
+      "equations": [
+        "# the spike's cart-pole; theta from upright, counter-clockwise",
+        "param mc [kg] = 1",
+        "param mp [kg] = 0.1",
+        "param lh [m] = 0.5",
+        "param len [m] = 1",
+        "param ic [kg*m^2] = 0.008333333333333333",
+        "param g [m/s^2] = 9.81",
+        "state x [m] = 0",
+        "state v [m/s] = 0",
+        "state th = 0.1",
+        "state w [1/s] = 0",
+        "param F [N] = 0",
+        "param fx [N] = 0",
+        "param fy [N] = 0",
+        "# the exact equations (Lagrange): a cart force F, a world force (fx, fy) at the tip",
+        "j = ic + mp*lh^2 [kg*m^2]",
+        "m11 = mc + mp [kg]",
+        "m12 = -mp*lh*cos(th) [kg*m]",
+        "qx = F + fx - mp*lh*sin(th)*w^2 [N]",
+        "qt = mp*g*lh*sin(th) - fx*len*cos(th) - fy*len*sin(th) [N*m]",
+        "det = m11*j - m12^2 [kg^2*m^2]",
+        "dx/dt = v",
+        "dth/dt = w",
+        "dv/dt = (j*qx - m12*qt)/det [m/s^2]",
+        "dw/dt = (m11*qt - m12*qx)/det [1/s^2]",
+        "# the bodies as rows: the cart, and the pole's centre",
+        "px = x - lh*sin(th) [m]",
+        "py = lh*cos(th) [m]",
+        "pvx = v - lh*cos(th)*w [m/s]",
+        "pvy = -lh*sin(th)*w [m/s]"
+      ],
+      "method": {
+        "name": "rk4"
+      }
+    }
+  ],
+  "connections": []
+}

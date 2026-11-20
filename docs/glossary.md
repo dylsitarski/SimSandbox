@@ -7,7 +7,7 @@ _Last updated: 2026-10-15_
 | Block | The unit of simulation: a model definition plus the method computing it, with ports, parameters and state. Implements the `Block` trait. |
 | Capability trait | An optional trait a Block may implement (`Equations`, `Rollback`, `Derivatives`, `Realtime`); the kernel uses it to decide how to schedule the Block. |
 | Domain | The family a Block belongs to (equations, rigid body, agents, fields, ML, external). Blocks in the same domain can be fused. |
-| Fused group | Several same-domain Blocks merged into one problem, e.g. equation Blocks into one ODE system with one integrator (`FusedSystem`). |
+| Fused group | Several same-domain Blocks merged into one problem, e.g. equation Blocks into one ODE system with one integrator (`Model::fuse`, a `GroupIntegrator`). |
 | Co-simulation master | The kernel component that steps Blocks or fused groups of different domains and exchanges data between them (`Simulator`). |
 | Communication step | The interval at which the master exchanges data between Blocks. |
 | Coupling error | Error introduced by exchanging values only at communication steps instead of solving coupled equations together. |

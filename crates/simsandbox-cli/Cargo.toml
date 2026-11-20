@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "simsandbox-cli"
 description = "Headless command-line runner for SimSandbox models"
 version.workspace = true
@@ -15,7 +16,6 @@ path = "src/main.rs"
 [dependencies]
 simsandbox-core = { path = "../simsandbox-core" }
 simsandbox-agents = { path = "../simsandbox-agents" }
-simsandbox-eq = { path = "../simsandbox-eq" }
 simsandbox-file = { path = "../simsandbox-file" }
 simsandbox-session = { path = "../simsandbox-session" }
 serde_json = "1"

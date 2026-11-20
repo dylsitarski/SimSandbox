@@ -2,14 +2,15 @@
 //! may name a `file` in place of a `type`. Each use runs on its own clock
 //! and may itself use files, to any depth; uses are linked by probes into
 //! input blocks. Loading walks the tree and gives a flat list of clock
-//! domains (each one `Simulator`) and of links; running is the session's.
+//! domains and of links, and all of it as one model with clocks
+//! ([`load_merged`], ADR 0090); running is the session's.
 
+use crate::schedule::Every;
 use crate::{invalid, load_in, BlockEntry, FileError, Loaded, ModelFile, Subsystem, UseClock};
 use simsandbox_core::block::Shape;
 use simsandbox_core::clock::Ticks;
 use simsandbox_core::graph::BlockId;
 use simsandbox_core::registry::Registry;
-use simsandbox_core::schedule::Every;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -60,14 +61,6 @@ impl Domain {
     }
 }
 
-/// Where a scalar comes from in a domain's model.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Source {
-    pub block: BlockId,
-    pub port: String,
-    pub index: usize,
-}
-
 /// A probe that feeds links: its full name (`vehicle/speed`), when it
 /// samples, and the domain it records from.
 #[derive(Debug, Clone)]
@@ -84,7 +77,6 @@ pub struct Link {
     pub probe: usize,
     pub signal: String,
     pub from: usize,
-    pub source: Source,
     pub to: usize,
     pub block: String,
     pub id: BlockId,
@@ -191,6 +183,24 @@ pub(crate) fn check_uses(
                 format!("'{m}': a model's name is letters, digits and '_'"),
             ));
         }
+        // Only a mechanism has bodies, and then no equations (ADR 0105).
+        if !b.bodies.is_empty() && !b.type_name.is_empty() {
+            if !b.type_name.starts_with("mech.") {
+                return Err(invalid(
+                    format!("{path}.bodies"),
+                    format!(
+                        "a {} block has no bodies: only mechanisms (mech.*) do",
+                        b.type_name
+                    ),
+                ));
+            }
+            if !b.equations.is_empty() {
+                return Err(invalid(
+                    format!("{path}.equations"),
+                    "a mechanism is defined by its bodies, not by equations",
+                ));
+            }
+        }
         // Only a use (no type) or a study names a model (ADR 0070).
         if b.names_model() && !b.type_name.is_empty() && b.type_name != crate::STUDY {
             return Err(invalid(
@@ -235,6 +245,7 @@ pub(crate) fn check_uses(
                     ("type", !b.type_name.is_empty()),
                     ("method", !b.method.is_empty()),
                     ("equations", !b.equations.is_empty()),
+                    ("bodies", !b.bodies.is_empty()),
                     ("update", b.update.is_some()),
                     ("settings", !b.settings.is_empty()),
                     ("start", b.start.is_some()),
@@ -741,6 +752,17 @@ pub fn load_merged(
     registry: &Registry,
     folder: Option<&Path>,
 ) -> Result<Loaded, FileError> {
+    load_merged_with(text, registry, folder).map(|(loaded, _)| loaded)
+}
+
+/// [`load_merged`], with the composition it was merged from: its domains
+/// in the order of the merged model's clocks, for a headless run to give
+/// each model's results at its own times (ADR 0090).
+pub fn load_merged_with(
+    text: &str,
+    registry: &Registry,
+    folder: Option<&Path>,
+) -> Result<(Loaded, Composition), FileError> {
     let c = load_composition(text, registry, folder)?;
     let (file, _) = ModelFile::from_json(text)?;
     runs_alone(&file)?;
@@ -806,8 +828,12 @@ pub fn load_merged(
         merged.run.dt = shortest;
     }
     // Activated parts (ADR 0088): fusion stops at their edges.
+    // Every use was built and checked on its own as a domain above, so the
+    // subsystems they are put in place as are not built alone again.
     let mut loaded = with_activated(&l.activations, "", || {
-        with_subsystems(|| load_in(&merged.to_json(), registry, folder.as_deref()))
+        with_subsystems(|| {
+            already_checked(|| load_in(&merged.to_json(), registry, folder.as_deref()))
+        })
     })?;
     register_activations(&mut loaded, &l.activations, "")?;
     let mut clocks: Vec<simsandbox_core::graph::Clock> = c
@@ -880,7 +906,7 @@ pub fn load_merged(
             loaded.warnings.push(w.clone());
         }
     }
-    Ok(loaded)
+    Ok((loaded, c))
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -906,6 +932,27 @@ fn with_subsystems<R>(f: impl FnOnce() -> R) -> R {
 
 pub(crate) fn subsystems_allowed() -> bool {
     SUBSYSTEMS.with(std::cell::Cell::get)
+}
+
+thread_local! {
+    /// Whether the file being loaded on this thread holds only what was
+    /// built and checked already: the merged form of a model that uses
+    /// models, each of whose parts [`load_composition`] built on its own.
+    static CHECKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` loading a file whose subsystems were each built and checked
+/// before: they are not built alone a second time (building a model of
+/// large grids is most of what loading it costs).
+fn already_checked<R>(f: impl FnOnce() -> R) -> R {
+    let before = CHECKED.with(|s| s.replace(true));
+    let r = f();
+    CHECKED.with(|s| s.set(before));
+    r
+}
+
+pub(crate) fn subsystems_checked() -> bool {
+    CHECKED.with(std::cell::Cell::get)
 }
 
 thread_local! {
@@ -2393,7 +2440,7 @@ impl Loader<'_> {
                 ),
             ));
         }
-        let (source, unit) = scalar(&self.domains[from].loaded, inner).ok_or_else(|| {
+        let unit = scalar(&self.domains[from].loaded, inner).ok_or_else(|| {
             invalid(
                 format!("{at}.from"),
                 format!("{signal} is not a scalar output"),
@@ -2466,7 +2513,6 @@ impl Loader<'_> {
             probe,
             signal,
             from,
-            source,
             to,
             block,
             id,
@@ -2542,8 +2588,8 @@ fn set_params(
     Ok(())
 }
 
-/// Find `block.port` or `block.port[i]`, a scalar, in a built model.
-fn scalar(loaded: &Loaded, signal: &str) -> Option<(Source, simsandbox_core::units::Unit)> {
+/// The unit of `block.port` or `block.port[i]`, a scalar, in a built model.
+fn scalar(loaded: &Loaded, signal: &str) -> Option<simsandbox_core::units::Unit> {
     let (block, port) = signal.split_once('.')?;
     let (port, index) = match port.strip_suffix(']').and_then(|p| p.rsplit_once('[')) {
         Some((p, i)) => (p, i.parse().ok()?),
@@ -2557,16 +2603,7 @@ fn scalar(loaded: &Loaded, signal: &str) -> Option<(Source, simsandbox_core::uni
         Shape::Vector(n) => index < n && signal.ends_with(']'),
         _ => false,
     };
-    fits.then(|| {
-        (
-            Source {
-                block: id,
-                port: port.into(),
-                index,
-            },
-            p.unit,
-        )
-    })
+    fits.then_some(p.unit)
 }
 
 /// Domains in the order they evaluate at a shared instant: each after the
@@ -2592,13 +2629,13 @@ fn order(domains: &[Domain], links: &[Link]) -> (Vec<usize>, Vec<String>) {
                 .map(|l| domains[l.from].name())
                 .collect();
             late.dedup();
+            // As the one simulator runs them (ADR 0090).
             loops.push(format!(
-                "{} evaluates before {}, which it reads: at a shared instant it takes their \
-                 samples after its own outputs, so an output of {} depending on them at the \
-                 same instant sees them one step late",
+                "{} and {} read each other: values pass between them at the instants they \
+                 share, and an output of one depending on the other at the same instant is \
+                 solved with it there (run.loops)",
                 domains[u].name(),
                 late.join(", "),
-                domains[u].name()
             ));
             u
         });

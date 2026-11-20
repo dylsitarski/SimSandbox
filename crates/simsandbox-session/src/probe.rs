@@ -6,8 +6,8 @@
 //! schedule ([`Every`]) and keep it their own way ([`Keep`]), each into a
 //! history of its own. A probe never changes results.
 
-pub use simsandbox_core::schedule::Every;
-pub(crate) use simsandbox_core::schedule::Trigger;
+pub use simsandbox_file::schedule::Every;
+pub(crate) use simsandbox_file::schedule::Trigger;
 use simsandbox_file::{ProbeEntry, ProbeEvery, ProbeKeep};
 use simsandbox_views::history::{FieldShape, SignalRef};
 use simsandbox_views::History;

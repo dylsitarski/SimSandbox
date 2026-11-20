@@ -14,8 +14,6 @@
 //!   (ADR 0040).
 //! - [`sim`]: the co-simulation master and the kernel-owned state store.
 //! - [`registry`]: block types by name, for loading models from files.
-//! - [`sampling`]: sampling designs for sweeps (grid, random, Latin
-//!   hypercube, Sobol).
 //! - [`table`]: populations of rows owned by the kernel (ADR 0034).
 //! - [`random`]: counter-based random numbers (ADR 0034).
 
@@ -24,13 +22,10 @@ pub mod clock;
 pub mod error;
 pub mod fusion;
 pub mod graph;
-pub mod hold;
 pub mod loops;
 pub mod parallel;
 pub mod random;
 pub mod registry;
-pub mod sampling;
-pub mod schedule;
 pub mod sim;
 pub mod table;
 pub mod units;

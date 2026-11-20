@@ -1,6 +1,6 @@
 # Development setup
 
-_Last updated: 2026-11-13_
+_Last updated: 2026-11-18_
 
 ## Toolchain
 
@@ -27,7 +27,6 @@ cargo test --workspace
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 python3 scripts/check_docs.py          # on Windows: py scripts/check_docs.py
-cargo run --release -p simsandbox-cli -- lorenz --t-end 20 --dt 0.01 --method rk4 > lorenz.csv
 cargo run --release -p simsandbox-cli -- run examples/lorenz.ssbx.json --t-end 20 > lorenz.csv
 cargo run --release -p simsandbox-cli -- check examples/grazing.ssbx.json      # JSON report
 cargo run --release -p simsandbox-cli -- render examples/grazing.ssbx.json --t-end 30 --out grazing.png
@@ -76,7 +75,9 @@ wgpu runs on software drivers, so rendering and compute code can be tested on ma
 
 The app pins `eframe` and `egui_plot` to exact versions ([ADR 0008](../decisions/0008-native-egui-ui.md)); `egui_plot` version numbers run one ahead of the egui they use (`egui_plot` 0.37 uses egui 0.36), so upgrade them together.
 
-CI (`.github/workflows/ci.yml`) uses the newest stable Rust, whose clippy can add lints that an older local toolchain does not flag: run `rustup update` (or `cargo +stable clippy ...` after it) before pushing. It runs formatting, clippy and tests on Windows, macOS and Linux, the same for the Python package (with pytest), plus the docs check. The [headless guide](headless.md) covers the CLI's machine-readable commands and the Python API.
+CI (`.github/workflows/ci.yml`) uses the newest stable Rust, whose clippy can add lints that an older local toolchain does not flag: run `rustup update` (or `cargo +stable clippy ...` after it) before pushing. It runs formatting, clippy and tests on Windows, macOS and Linux, the same for the Python package (with pytest, on Python 3.12 everywhere and on 3.10, the oldest it supports, on Linux), plus the docs check. It also checks the workspace with the oldest Rust it declares (`rust-version`, 1.97.0: `cargo +1.97.0 check --workspace --all-targets`), and runs `cargo deny check` on both workspaces against [`deny.toml`](../../deny.toml): licences, security advisories, duplicate crate versions (warnings only) and sources. Builds are cached between runs (`Swatinem/rust-cache`). A second workflow, `.github/workflows/wheels.yml`, builds the Python wheels on pushes to `main`, on tags and on demand ([python/README.md](../../python/README.md#wheels)).
+
+To run the dependency checks locally: `cargo install cargo-deny --locked`, then `cargo deny check` at the root and `cargo deny --manifest-path python/Cargo.toml check`, both from the root (where `deny.toml` is). A new dependency under a licence `deny.toml` does not list fails the check: add the licence only if it is permissive, and say so in the change. The [headless guide](headless.md) covers the CLI's machine-readable commands and the Python API.
 
 ## Dependencies
 

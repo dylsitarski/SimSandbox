@@ -3,6 +3,7 @@ run, study and render, with results checked against known answers."""
 
 import math
 import os
+import re
 import struct
 
 import numpy as np
@@ -240,6 +241,103 @@ def test_views_render_to_png(tmp_path):
         ss.Model.example("Lorenz system").render(view=5, t_end=0.1)
 
 
+def _cart_pole() -> ss.Model:
+    """A model giving what ADR 0093's cart-pole picture binds: cart.x and
+    pole.theta, and a pointer to grab with."""
+    m = ss.Model()
+    m.add_block("hand", "input.pointer", settings={"min": "-3", "max": "3", "unit": "m"})
+    m.add_block(
+        "cart", "eq.equations", "rk4",
+        equations="param w [1/s] = 1\nstate x [m] = 0\nstate v [m/s] = 1\ndx/dt = v\ndv/dt = -w^2*x",
+    )
+    m.add_block(
+        "pole", "eq.equations", "rk4",
+        equations="param g [1/s^2] = 9.81\nstate theta = 0.3\nstate omega [1/s] = 0\n"
+        "dtheta/dt = omega\ndomega/dt = -g*sin(theta)",
+    )
+    return m
+
+
+CART_POLE = dict(
+    unit="m",
+    extent={"x": [-3, 3], "y": [-0.5, 2]},
+    frames={"cart": {"x": "cart.x", "y": 0}, "pole": {"in": "cart", "angle": "pole.theta"}},
+    layers=[
+        {"draw": "segments", "bind": {"x1": -3, "y1": 0, "x2": 3, "y2": 0}},
+        {"draw": "boxes", "in": "cart", "bind": {"x": 0, "y": 0, "width": 0.4, "height": 0.2}, "grab": "hand"},
+        {"draw": "boxes", "in": "pole", "bind": {"x": 0, "y": 0.5, "width": 0.04, "height": 1.0}},
+        {"draw": "discs", "in": "pole", "bind": {"x": 0, "y": 1.0, "radius": 0.05}, "grab": "hand"},
+    ],
+)
+
+
+def test_a_scene_is_added_checked_saved_and_drawn(tmp_path):
+    # ADR 0093 point 8's cart-pole picture, on a model with its signals.
+    m = _cart_pole().add_scene(**CART_POLE)
+    view = m.data["controls"]["views"][0]
+    assert view["type"] == "plot.scene" and view["frames"]["pole"]["in"] == "cart"
+    report = m.check()
+    assert report["ok"], report
+    assert report["warnings"] == [], report["warnings"]
+    path = tmp_path / "cart-pole.ssbx.json"
+    m.save(path)
+    assert ss.Model.load(path).data == m.data
+    png = m.render(tmp_path / "scene.png", t_end=1.0, view=0, width=300, height=200)
+    assert png[1:4] == b"PNG"
+    # Its node on the canvas, wired from what it binds and grabs with.
+    assert m.render(diagram=True, width=600, height=300)[1:4] == b"PNG"
+
+
+def test_a_scenes_form_and_names_are_refused_at_once():
+    m = _cart_pole()
+    refused = [
+        ([{"draw": "segments", "bind": {"y1": 0, "x2": 1, "y2": 0}}], r"layers\[0\]\.bind\.x1: required"),
+        ([{"draw": "boxes", "bind": {"x": 0, "y": 0, "width": 1, "height": 1, "size": 2}}], r"layers\[0\]\.bind\.size"),
+        ([{"draw": "points", "bind": {"x": "car.x", "y": 0}}], r"layers\[0\]\.bind\.x: 'car\.x' names no block"),
+        ([{"draw": "points", "bind": {"x": 0, "y": 0}, "grab": "cart"}], r"layers\[0\]\.grab: no input\.pointer block 'cart'"),
+        ([{"draw": "polygons"}], r"layers\[0\]\.draw: no primitive 'polygons'"),
+        ([{"draw": "points", "in": "pole", "bind": {"x": 0, "y": 0}}], r"layers\[0\]\.in: no frame 'pole'"),
+    ]
+    for layers, message in refused:
+        with pytest.raises(ss.ModelError, match=message):
+            m.add_scene(layers)
+    with pytest.raises(ss.ModelError, match=r"frames\.a\.in: the frames .* form a cycle"):
+        m.add_scene([], frames={"a": {"in": "b"}, "b": {"in": "a"}})
+    with pytest.raises(ss.ModelError, match=r"extent\.x"):
+        m.add_scene([], extent={"x": [1, 0], "y": [0, 1]})
+    assert "views" not in m.data.get("controls", {})
+    # Units are the check's: a speed as a length is a warning there, and
+    # the scene is not drawn.
+    m.add_scene([{"draw": "points", "bind": {"x": "cart.v", "y": 0}}])
+    warnings = m.check()["warnings"]
+    assert any("layers[0].bind.x: 'cart.v' is in m/s" in w for w in warnings), warnings
+
+
+def test_a_scene_binds_a_parameter(tmp_path):
+    # ADR 0102: a parameter names a value as a signal does; units are the
+    # check's, and a signal of the same name would win.
+    m = ss.Model.example("Pendulum (with its own view)")
+    m.data["controls"]["views"] = []
+    m.add_scene(
+        [
+            {"draw": "segments", "in": "rod", "bind": {"x1": 0, "y1": 0, "x2": "bob.L", "y2": 0}},
+            {"draw": "discs", "in": "rod", "bind": {"x": "bob.L", "y": 0, "radius": 0.08}},
+        ],
+        frames={"rod": {"angle": "bob.angle"}},
+    )
+    report = m.check()
+    assert report["ok"] and report["warnings"] == [], report
+    # The rod drawn after L changed (a scheduled change, recorded every
+    # step like a signal) differs from the rod before.
+    before = m.render(t_end=0.2, width=200, height=200)
+    longer = m.copy().schedule(0.1, "bob.L", 0.5)
+    assert longer.render(t_end=0.2, width=200, height=200) != before
+    # A damping coefficient is no length.
+    m.add_scene([{"draw": "points", "bind": {"x": "bob.c", "y": 0}}])
+    warnings = m.check()["warnings"]
+    assert any("layers[0].bind.x: 'bob.c' is in" in w for w in warnings), warnings
+
+
 def test_every_example_loads_runs_briefly_and_round_trips():
     for name in ss.examples():
         m = ss.Model.example(name)
@@ -425,6 +523,57 @@ def test_inputs_schedules_and_runs_replay_the_same(tmp_path):
     # A change to a parameter that does not exist is an error.
     with pytest.raises(ss.ModelError, match="no parameter .z."):
         m.run(inputs=[(0.5, "push.z", 1.0)])
+
+
+def test_run_files_are_read_and_written_as_every_interface_does(tmp_path):
+    m = ss.Model(CART)
+    m.save(tmp_path / "cart.ssbx.json")
+    # A schedule written with whole numbers and keys in another order, and
+    # a name outside ASCII: saved in the one form run files have.
+    run = ss.Run(
+        m,
+        inputs=[{"to": 3, "set": "push.y", "t": 1}],
+        track=[(0.5, "push.y", 10.0)],
+        name="poussée",
+        model_path=tmp_path / "cart.ssbx.json",
+    )
+    path = tmp_path / "cart.push.run.json"
+    run.save(path)
+    text = path.read_text(encoding="utf-8")
+    assert '"name": "poussée"' in text
+    assert text.index('"t": 1.0') < text.index('"set": "push.y"') < text.index('"to": 3.0')
+    # Reading it and writing it again gives the same bytes.
+    again = ss.Run.load(path)
+    assert again.to_json(model_path="cart.ssbx.json") + "\n" == text
+    assert again.inputs == [{"t": 1.0, "set": "push.y", "to": 3.0}]
+    assert np.array_equal(again.replay()["cart.v"], run.replay()["cart.v"])
+    # A field run files do not have, or a newer format, is refused on
+    # reading, as the CLI and the app refuse it.
+    import json as _json
+
+    data = _json.loads(text)
+    (tmp_path / "extra.run.json").write_text(_json.dumps({**data, "nope": 1}))
+    with pytest.raises(ss.ModelError, match="extra.run.json.*nope"):
+        ss.Run.load(tmp_path / "extra.run.json")
+    (tmp_path / "newer.run.json").write_text(_json.dumps({**data, "format": 2}))
+    with pytest.raises(ss.ModelError, match="newer.run.json"):
+        ss.Run.load(tmp_path / "newer.run.json")
+
+
+def test_views_render_with_a_runs_input():
+    m = ss.Model(CART)
+    m.data["controls"] = {"views": [{"type": "plot.xy", "bind": {"x": "t", "y": "cart.v"}}]}
+    size = {"width": 300, "height": 200}
+    still = m.render(**size)
+    pushed = m.render(inputs=[(0.5, "push.y", 10.0)], **size)
+    assert pushed[1:4] == b"PNG" and pushed != still
+    # A run's schedule and recorded input draw the same as given by hand.
+    run = ss.Run(m, track=[(0.5, "push.y", 10.0)])
+    assert m.render(inputs=run, **size) == pushed
+    with pytest.raises(ss.ModelError, match="no parameter 'push.z'"):
+        m.render(inputs=[(0.5, "push.z", 1.0)], **size)
+    with pytest.raises(ValueError, match="diagram"):
+        m.render(diagram=True, inputs=run)
 
 
 def test_probes_record_on_their_own_schedule_and_write_files(tmp_path):
@@ -625,3 +774,96 @@ def test_an_output_over_three_axes_is_an_array_with_named_axes():
     assert q[-1, 3, 2, 1] == 1 + 20 + 300
     assert r.axes("m.q") == [("z", 4), ("y", 3), ("x", 2)]
 
+
+def test_connect_refuses_names_the_model_does_not_have():
+    # Checked when the wire is written, not when the model runs.
+    m = ss.Model()
+    m.add_block("clock", "eq.equations", "rk4", equations="param a = 0.5\nstate tau = 0\ndtau/dt = 1\nk = a*tau")
+    m.add_block("decay", "eq.equations", "rk4", equations="param k = 1\ninput u\nstate x = 1\ndx/dt = -k*x + u")
+    wrong = {
+        ("clok.k", "decay.u"): "the source 'clok.k' names no block 'clok'; blocks: clock, decay",
+        ("clock.q", "decay.u"): "the block 'clock' has no output 'q'; outputs: tau, k",
+        ("clock.k", "decay.zz"): "has no input or parameter 'zz'; inputs: u; parameters: k, x0",
+        ("clock.k", "dekay.u"): "the target 'dekay.u' names no block 'dekay'",
+        ("clock", "decay.u"): "is not 'block.port'",
+        ("clock.k", "plant/u"): "names no used model 'plant'",
+    }
+    for (source, target), message in wrong.items():
+        with pytest.raises(ss.ModelError, match=re.escape(message)):
+            m.connect(source, target)
+    assert m.data["connections"] == []
+    with pytest.raises(TypeError):
+        m.connect("clock.k", None)  # type: ignore[arg-type]
+    # An input or a parameter takes one wire.
+    m.connect("clock.k", "decay.u")
+    with pytest.raises(ss.ModelError, match="already wired from 'clock.k'"):
+        m.connect("clock.tau", "decay.u")
+    m.connect("clock.tau", "decay.k")
+    assert m.check()["ok"]
+    assert m.data["connections"] == [
+        {"from": "clock.k", "to": "decay.u"},
+        {"from": "clock.tau", "to": "decay.k"},
+    ]
+
+
+def test_add_block_refuses_an_unknown_type():
+    m = ss.Model()
+    with pytest.raises(ss.ModelError, match="unknown block type 'eq.nothing'; known: .*eq.equations"):
+        m.add_block("x", "eq.nothing")
+    assert m.data["blocks"] == []
+
+
+def test_connect_accepts_every_wire_of_every_example():
+    # Each example rebuilt wire by wire: connect refuses none of the wires
+    # the model files need.
+    examples = os.path.join(os.path.dirname(__file__), "..", "..", "examples")
+    paths = sorted(
+        os.path.join(d, f)
+        for d, _, files in os.walk(examples)
+        for f in files
+        if f.endswith(".ssbx.json")
+    )
+    if not paths:
+        pytest.skip("the repository's examples are not here")
+    wires = 0
+    for path in paths:
+        m = ss.Model.load(path)
+        connections = m.data.get("connections", [])
+        m.data["connections"] = []
+        for c in connections:
+            m.connect(c["from"], c["to"])
+            wires += 1
+        assert m.data["connections"] == connections, path
+    assert wires > 20
+
+
+
+def test_a_mechanism_is_built_from_rows_checked_at_the_call():
+    # ADR 0105: one row per body; every number a parameter; poses as rows.
+    m = ss.Model()
+    m.add_block(
+        "cartpole",
+        "mech.planar",
+        settings={"actuated": "slider"},
+        bodies=[
+            {"name": "cart", "parent": "ground", "joint": "slider", "kind": "prismatic", "mass": 1.0},
+            {"name": "pole", "parent": "cart", "joint": "hinge", "kind": "revolute",
+             "mass": 0.1, "centre": [0, 0.5], "inertia": 0.0083, "start": [0.1, 0]},
+        ],
+    )
+    m.add_block("push", "eq.equations", equations=["f = 0 [N]"])
+    m.connect("push.f", "cartpole.slider_force")
+    run = m.run(t_end=0.5, dt=0.001)
+    angle = run["cartpole.hinge_angle"]
+    assert angle[0] == 0.1 and angle[-1] > 0.1  # it falls
+    with pytest.raises(ss.ModelError, match=r"bodies\[1\]\.parent"):
+        ss.Model().add_block(
+            "m",
+            "mech.planar",
+            bodies=[
+                {"name": "a", "parent": "ground", "joint": "ja", "kind": "revolute", "mass": 1, "centre": [0, -1]},
+                {"name": "b", "parent": "c", "joint": "jb", "kind": "revolute", "mass": 1},
+            ],
+        )
+    with pytest.raises(ss.ModelError, match="only mechanisms"):
+        ss.Model().add_block("l", "eq.lorenz", bodies=[])

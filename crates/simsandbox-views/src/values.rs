@@ -40,6 +40,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             },
         }],
         create: || Box::new(Values),
+        settings: None,
     })
 }
 

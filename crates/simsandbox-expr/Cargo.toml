@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "simsandbox-expr"
 description = "SimSandbox expressions: parse and evaluate formulas such as sigma*(y - x) (ADR 0017)"
 version.workspace = true

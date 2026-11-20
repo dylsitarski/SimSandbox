@@ -64,6 +64,10 @@ pub struct Model {
     /// Meshes (ADR 0086).
     meshes: Vec<simsandbox_views::MeshInfo>,
     block_types: Vec<String>,
+    /// The `input.pointer` blocks a scene may grab with (ADR 0093).
+    pointers: Vec<String>,
+    /// The block parameters a scene may bind (ADR 0102).
+    param_keys: Vec<String>,
 }
 
 impl Model {
@@ -100,6 +104,8 @@ impl Model {
             points,
             lines,
             block_types,
+            pointers: s.pointers().to_vec(),
+            param_keys: s.bindable_params().to_vec(),
         }
     }
 
@@ -111,7 +117,6 @@ impl Model {
     }
 
     pub fn available<'a>(&'a self, h: &'a History) -> Available<'a> {
-        let _ = h;
         Available {
             scalars: &self.scalars,
             grids: &self.grids,
@@ -122,6 +127,10 @@ impl Model {
             meshes: &self.meshes,
             coordinates: &self.coordinates,
             derived: &self.derived,
+            // Units and tables, for a scene's check (ADR 0093).
+            meta: Some(h),
+            pointers: Some(&self.pointers),
+            params: &self.param_keys,
         }
     }
 }

@@ -117,6 +117,10 @@ fn ode(summary: &str) -> TypeInfo {
         .method("trbdf2", &["substeps"])
 }
 
+/// The typed-equations language, whole: the page `describe` gives with
+/// the type, held to the code by `tests/reference.rs`.
+pub const REFERENCE: &str = include_str!("../../../docs/reference/typed-equations.md");
+
 /// What each type is, for discovery (ADR 0039).
 fn describe(r: &mut Registry) -> Result<()> {
     r.describe(
@@ -146,27 +150,17 @@ fn describe(r: &mut Registry) -> Result<()> {
     r.describe(
         EQUATIONS,
         TypeInfo::new(
-            "Equations typed as lines (ADR 0017): 'dx/dt = ...' for states (an ODE method), \
-             'x[n+1] = ...' for a map (method iterate), only 'name = ...' for formulas (method \
-             evaluate); 'input u, F' declares inputs, 'param k = 2' a parameter with its default, \
-             'state x = 0' a state with its initial value (ADR 0049); every other name is a \
-             parameter. Units in brackets where a name appears ('input F [N]', 'param m [kg] = \
-             2', 'state x [m]') or at the end of a line for its left side ('E = m*v^2/2 [J]', \
-             'dv/dt = F/m [m/s^2]') make every line checked (ADR 0045); names without one are \
-             dimensionless. Arrays (ADR 0060): 'grid x [m] = 0 .. length, 50' declares a line of \
-             cells, 'grid k = 5' five cells numbered 0 to 4 (as a study's runs); \
-             'state T[x] [K] = expression' and 'input q[x]' have a value per cell; \
-             'edge T: x- = value, x+ gradient = 0' (or 'x periodic') sets the ends, insulated \
-             if not given; 'lap(T)' and 'ddx(T)' are stencils, 'sum', 'mean', 'minof', \
-             'maxof' and 'at(T, i)' give one value, 'argmaxof' and 'argminof' the cell \
-             of the greatest or least, 'at(T, argmaxof(A))' a cell found so (ADR 0070), \
-             'spacing(x)' the cell width; comparisons ('v > 20') give 1 or 0; \
-             'prev(v)' and 'next(v)' are the neighbours along an axis, beyond the ends \
-             the edge's value (ADR 0069); 'param m[k] [kg] = 1000' is a value per cell, \
-             each its own parameter 'm[0]', 'm[1]', …. Stiff \
-             systems (diffusion on fine grids) take long steps with 'trbdf2' or \
-             'backward_euler'. The method may be left out.",
+            "Equations typed as lines, the primary way to build a model: 'dx/dt = ...' for \
+             states (an ODE method), 'x[n+1] = ...' for a map (method iterate), only \
+             'name = ...' for formulas (method evaluate); 'input u, F' declares inputs, \
+             'param k = 2' a parameter, 'state x = 0' a state with its initial value; every \
+             other name is a parameter (1 unless set). Units in brackets ('param m [kg] = 2', \
+             'E = m*v^2/2 [J]') make every line checked. Arrays on grids with stencils, tables \
+             of rows, edges and meshes are in the language too: 'simsandbox describe \
+             eq.equations' gives the whole of it under 'reference', and every function with its \
+             signature and unit under 'functions'. The method may be left out.",
         )
+        .reference(REFERENCE)
         .method("rk4", &["substeps"])
         .method("euler", &["substeps"])
         .method("dopri5", &["rtol", "atol"])
@@ -204,9 +198,12 @@ fn describe(r: &mut Registry) -> Result<()> {
         crate::input::POINTER,
         TypeInfo::new(
             "A pointer in a view's coordinates (ADR 0058): outputs x and y in the setting \
-             'unit' (m if absent), and down (1 while pressed). A view that sends input feeds \
-             it (controls.inputs); the model turns it into what it does, e.g. a spring force \
-             towards the pointer.",
+             'unit' (m if absent), down (1 while pressed) and picked (ADR 0093: the row id of \
+             the scene instance held, 0 for a layer of one instance, -1 while nothing is held; \
+             older files and runs read -1). A view that sends input feeds it \
+             (controls.inputs), as does a scene layer that names it in 'grab', always in the \
+             scene's own frame; the model turns it into what it does, e.g. a spring force \
+             towards the pointer while down is 1 and picked is 0 or more.",
         )
         .method(crate::input::HELD, &[])
         .setting("unit", &[])

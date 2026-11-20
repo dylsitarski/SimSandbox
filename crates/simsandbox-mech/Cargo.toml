@@ -1,0 +1,21 @@
+[package]
+publish = false
+name = "simsandbox-mech"
+description = "SimSandbox mechanism domain: trees of rigid bodies on joints, solved by Featherstone's articulated-body algorithm (ADR 0103, ADR 0105)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+simsandbox-core = { path = "../simsandbox-core" }
+# The block is an ODE system solved by the equation domain's methods and
+# fused with typed equations (ADR 0103 point 1).
+simsandbox-eq = { path = "../simsandbox-eq" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[lints]
+workspace = true

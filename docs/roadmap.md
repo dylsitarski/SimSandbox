@@ -1,6 +1,6 @@
 # Roadmap
 
-_Last updated: 2026-10-26_
+_Last updated: 2026-11-14_
 
 Start with the equation sandbox: it exercises the whole Block contract, delivers all three pillars at small scale, and is useful on its own. Each gate is a working demo, not a feature count. If a gate fails, fix the Block contract before adding any new backend, because every later phase depends on it.
 
@@ -51,8 +51,8 @@ Goal: interactive real-time models, and heavy physics without rebuilding SimSand
 - [x] 1. Inputs: live, scheduled and replayed ([ADR 0058](decisions/0058-inputs-live-scheduled-replayed.md)), runs saved as run files ([ADR 0059](decisions/0059-run-files.md)). Input blocks and views that send input; every input recorded for exact replay; scheduled changes in the `run` section as input written in the file ([ADR 0042](decisions/0042-node-canvas.md)); headless input from a file. Built 2026-10-26; checked by the owner in the window on 2026-10-27
 - [x] 2. Typed equations with arrays and grid stencils ([ADR 0060](decisions/0060-arrays-in-typed-equations.md)), faster evaluation ([Q35](open-questions.md)), and an implicit method for stiff grids ([Q17](open-questions.md)); typed agent rules revisited ([Q26](open-questions.md)) Built 2026-10-27/28; follow-up: implicit methods are slow on large 2D grids (TR-BDF2 730 ms a step at 128 × 128, the LU ordering)
 - [ ] 2b. Probes: canvas nodes that record and save chosen values at chosen times, a memory budget, and runs that are exact (several cores, same bits everywhere) or fast ([ADR 0062](decisions/0062-probes-recording-and-replay.md)); recompute on demand after
-- [ ] 3. Rigid bodies and a 2D/3D scene view whose bodies can be grabbed (the gate). The engine is chosen by a spike between MuJoCo and Rapier, then its own ADR
-- [ ] 4. One plugin interface for user-defined blocks and views, after a WebAssembly spike ([Q28](open-questions.md), [Q37](open-questions.md))
+- [ ] 3. Rigid bodies and a 2D/3D scene view whose bodies can be grabbed (the gate). The engine is chosen by a spike between MuJoCo and Rapier, then its own ADR. The scene view is the first use of views from primitive layers ([ADR 0093](decisions/0093-scenes-from-primitive-layers.md), proposed), built only as far as the cart-pole needs
+- [ ] 4. One plugin interface for user-defined blocks and views, after a WebAssembly spike ([Q28](open-questions.md), [Q37](open-questions.md)); designed first for codes that already exist ([ADR 0091](decisions/0091-equations-first-hosting-for-existing-codes.md))
 
 After the gate, in an order chosen then:
 

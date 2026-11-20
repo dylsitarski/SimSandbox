@@ -16,8 +16,14 @@ use simsandbox_core::{Result, SimError};
 
 /// One value with a unit: a throttle, a steering angle, a push.
 pub const VALUE: &str = "input.value";
-/// A pointer in a view's coordinates: `x`, `y` and `down`.
+/// A pointer in a view's coordinates: `x`, `y`, `down` and `picked`.
 pub const POINTER: &str = "input.pointer";
+/// `picked` while nothing is held (ADR 0093 point 6): what older files and
+/// runs, which never pick, read.
+pub const NOTHING_PICKED: f64 = -1.0;
+/// The largest row id `picked` gives exactly (2^53: ids are integers held
+/// in an `f64`).
+pub const MAX_PICKED: f64 = 9_007_199_254_740_992.0;
 /// The one method: the value is held over each step.
 pub const HELD: &str = "held";
 
@@ -46,6 +52,9 @@ impl Input {
             // Each output is its own parameter (ADR 0075).
             .map(|p| PortSpec::output(&p.name, p.unit, Shape::Scalar).depends_on_params(&[&p.name]))
             .collect();
+        // A value set from outside does not read time (ADR 0083); a
+        // pointer follows the hand, so it does not say.
+        let reads_time = (params.len() == 1).then_some(false);
         Self {
             spec: BlockSpec {
                 name: name.into(),
@@ -55,6 +64,8 @@ impl Input {
                 states: Vec::new(),
                 tables: Vec::new(),
                 time: TimeSemantics::Stateless,
+                reads_time,
+                instants: None,
             },
             method: MethodSpec {
                 name: HELD.into(),
@@ -73,9 +84,20 @@ impl Input {
         Self::with(name, vec![p])
     }
 
-    /// `input.pointer`: `x` and `y` in `unit` within `range`, and `down`
-    /// (1 while pressed, else 0).
+    /// `input.pointer`: `x` and `y` in `unit` within `range`, `down` (1
+    /// while pressed, else 0) and `picked` (the row id of the scene
+    /// instance held, 0 for a layer of one instance, −1 while nothing is
+    /// held; ADR 0093 point 6).
     pub fn pointer(name: &str, unit: Unit, range: [f64; 2]) -> Self {
+        let picked = ParamSpec {
+            default: NOTHING_PICKED,
+            ..value_param(
+                "picked",
+                Unit::DIMENSIONLESS,
+                [NOTHING_PICKED, MAX_PICKED],
+                "The row id of the scene instance held (0 for a layer of one instance), -1 while nothing is held",
+            )
+        };
         Self::with(
             name,
             vec![
@@ -87,6 +109,7 @@ impl Input {
                     [0.0, 1.0],
                     "1 while the pointer is pressed, else 0",
                 ),
+                picked,
             ],
         )
     }
@@ -174,12 +197,6 @@ impl Block for Input {
         Ok(())
     }
 
-    /// A value set from outside does not read time (ADR 0083); a pointer
-    /// follows the hand, so it does not say.
-    fn reads_time(&self) -> Option<bool> {
-        (self.spec.params.len() == 1).then_some(false)
-    }
-
     /// An input joins a fused group it feeds (ADR 0051).
     fn as_equations(&self) -> Option<&dyn Equations> {
         Some(self)
@@ -224,12 +241,32 @@ mod tests {
         c.settings.insert("max".into(), "2".into());
         let p = Input::from_config(POINTER, "hand", &c).unwrap();
         let names: Vec<&str> = p.spec.ports.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["x", "y", "down"]);
+        assert_eq!(names, ["x", "y", "down", "picked"]);
         assert_eq!(p.spec.ports[0].unit, Unit::METER);
         assert_eq!(p.spec.params[0].suggested_max, 2.0);
         c.settings.insert("max".into(), "-3".into());
         assert!(Input::from_config(POINTER, "hand", &c).is_err());
         c.settings.insert("colour".into(), "red".into());
         assert!(Input::from_config(VALUE, "v", &c).is_err());
+    }
+
+    #[test]
+    fn a_pointer_picks_nothing_until_told() {
+        let mut m = Model::new();
+        let hand = Input::pointer("hand", Unit::METER, [-1.0, 1.0]);
+        let picked = &hand.spec.params[3];
+        assert_eq!(picked.name, "picked");
+        assert_eq!(picked.unit, Unit::DIMENSIONLESS);
+        assert_eq!(picked.default, NOTHING_PICKED);
+        assert_eq!(
+            [picked.suggested_min, picked.suggested_max],
+            [NOTHING_PICKED, MAX_PICKED]
+        );
+        let id = m.add(Box::new(hand));
+        let mut s = Simulator::new(m, 0.0).unwrap();
+        assert_eq!(s.output(id, "picked"), Some(&[-1.0][..]));
+        s.set_param(id, "picked", 7.0).unwrap();
+        s.step(0.1).unwrap();
+        assert_eq!(s.output(id, "picked"), Some(&[7.0][..]));
     }
 }

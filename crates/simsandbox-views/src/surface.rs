@@ -60,6 +60,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             bindings: grid_bindings,
         }],
         create: || Box::new(Surface::default()),
+        settings: None,
     })?;
     r.register(ViewType {
         name: "plot.contour",
@@ -75,6 +76,7 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
             bindings: grid_bindings,
         }],
         create: || Box::new(Contour::default()),
+        settings: None,
     })
 }
 

@@ -9,6 +9,38 @@ use simsandbox_core::units::Unit;
 pub type Dim = [i8; 7];
 pub const NO_DIM: Dim = [0; 7];
 
+/// The dimension of a product; `None` when a power of a base unit leaves
+/// what a dimension keeps (±127).
+pub fn dim_mul(a: Dim, b: Dim) -> Option<Dim> {
+    let mut out = a;
+    for (o, b) in out.iter_mut().zip(b) {
+        *o = o.checked_add(b)?;
+    }
+    Some(out)
+}
+
+/// The dimension of a quotient; `None` as [`dim_mul`].
+pub fn dim_div(a: Dim, b: Dim) -> Option<Dim> {
+    let mut out = a;
+    for (o, b) in out.iter_mut().zip(b) {
+        *o = o.checked_sub(b)?;
+    }
+    Some(out)
+}
+
+/// The dimension of a whole power; `None` as [`dim_mul`].
+pub fn dim_pow(a: Dim, n: i8) -> Option<Dim> {
+    let mut out = a;
+    for o in &mut out {
+        *o = o.checked_mul(n)?;
+    }
+    Some(out)
+}
+
+/// What is said when a power of a base unit leaves ±127.
+pub const DIM_TOO_HIGH: &str =
+    "the unit here has a power of a base unit beyond ±127, which is not kept";
+
 pub fn dim_text(d: Dim) -> String {
     Unit::new(d, 1.0).to_string()
 }
@@ -66,9 +98,14 @@ pub fn dimension_with(
             return Ok(NO_DIM);
         }
         match constant(exp) {
-            Some(n) if n.fract() == 0.0 && n.abs() < 64.0 => Ok(d.map(|e| e * n as i8)),
-            Some(n) if (2.0 * n).fract() == 0.0 && d.iter().all(|e| e % 2 == 0) => {
-                Ok(d.map(|e| (e / 2) * (2.0 * n) as i8))
+            Some(n) if n.fract() == 0.0 && n.abs() < 64.0 => {
+                dim_pow(d, n as i8).ok_or_else(|| (first_column(base), DIM_TOO_HIGH.into()))
+            }
+            Some(n)
+                if (2.0 * n).fract() == 0.0 && n.abs() < 64.0 && d.iter().all(|e| e % 2 == 0) =>
+            {
+                dim_pow(d.map(|e| e / 2), (2.0 * n) as i8)
+                    .ok_or_else(|| (first_column(base), DIM_TOO_HIGH.into()))
             }
             _ => Err((
                 first_column(base),
@@ -117,11 +154,11 @@ pub fn dimension_with(
                 }
                 Op::Mul => {
                     let (da, db) = (dimension_with(a, of, apply)?, dimension_with(b, of, apply)?);
-                    std::array::from_fn(|i| da[i] + db[i])
+                    dim_mul(da, db).ok_or_else(|| (first_column(b), DIM_TOO_HIGH.into()))?
                 }
                 Op::Div => {
                     let (da, db) = (dimension_with(a, of, apply)?, dimension_with(b, of, apply)?);
-                    std::array::from_fn(|i| da[i] - db[i])
+                    dim_div(da, db).ok_or_else(|| (first_column(b), DIM_TOO_HIGH.into()))?
                 }
                 Op::Pow => power(a, b)?,
             }
@@ -223,5 +260,31 @@ pub fn from_si(e: Expr, scale: f64) -> Expr {
         e
     } else {
         Expr::Bin(crate::Op::Div, Box::new(e), Box::new(Expr::Num(scale)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A power of a base unit beyond what a dimension keeps (±127) is an
+    /// error where it arises, not a wrapped dimension that could balance
+    /// by accident.
+    #[test]
+    fn powers_beyond_what_is_kept_are_refused() {
+        let mut length = NO_DIM;
+        length[0] = 100;
+        let of = |n: &str| if n == "a" { length } else { NO_DIM };
+        let dim = |src: &str| dimension(&crate::parse(src).unwrap(), &of);
+        assert_eq!(dim("a").unwrap()[0], 100);
+        assert_eq!(dim("a/a").unwrap(), NO_DIM);
+        for src in ["a*a", "1/a/a", "a^2", "pow(a, 2)", "a^-2", "x*(a*a)"] {
+            let (_, message) = dim(src).unwrap_err();
+            assert_eq!(message, DIM_TOO_HIGH, "{src}");
+        }
+        assert_eq!(dim_mul([127; 7], [1; 7]), None);
+        assert_eq!(dim_div([-128; 7], [1; 7]), None);
+        assert_eq!(dim_pow([64; 7], 2), None);
+        assert_eq!(dim_pow([2; 7], -3), Some([-6; 7]));
     }
 }

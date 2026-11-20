@@ -109,13 +109,6 @@ impl Thin {
         self.behind = !keep;
         keep
     }
-
-    /// Forget the latest step; whether it was kept.
-    pub fn undo(&mut self) -> bool {
-        self.seen -= 1;
-        self.behind = false;
-        self.seen.is_multiple_of(self.every)
-    }
 }
 
 /// One fixed-size output, `block.port`, at every row.
@@ -949,6 +942,12 @@ pub fn watch_studies(progress: Option<std::sync::Arc<Progress>>) {
     PROGRESS.with(|p| *p.borrow_mut() = progress);
 }
 
+/// Whether studies run on this thread are watched, and so can be given
+/// up: only then can a step fail with [`given_up`].
+pub(crate) fn studies_watched() -> bool {
+    PROGRESS.with(|p| p.borrow().is_some())
+}
+
 /// What a study given up says: its step failed only to start again from
 /// newer values.
 pub const GIVEN_UP: &str = "study given up for a newer change";
@@ -1147,7 +1146,7 @@ pub(crate) fn sample_times(
         .get(name)
         .and_then(|id| loaded.model.block(*id).ok())
         .ok_or_else(|| format!("at_samples: the model has no block '{name}'"))?;
-    let times = block.instants().ok_or_else(|| {
+    let times = block.spec().instants.as_deref().ok_or_else(|| {
         format!("at_samples: '{name}' is not recorded data (an input.file block)")
     })?;
     let end = t_end + 1e-9 * t_end.abs().max(1.0);
@@ -1583,5 +1582,37 @@ mod tests {
         let timed = run(example("`curve`"), &registry(), Some(1.0), Some(0.5)).unwrap();
         assert_eq!(timed.rows(), 3);
         assert!(run(example("lorenz"), &registry(), Some(-1.0), None).is_err());
+    }
+
+    /// Equation blocks wired in a circle and stepped apart say so in the
+    /// run's notes (ADR 0095): with fusion off, or different methods.
+    /// Solved together they say nothing.
+    #[test]
+    fn blocks_in_a_loop_stepped_apart_are_noted() {
+        let text = |fusion: &str, method: &str| {
+            format!(
+                r#"{{"format": 1, "run": {{"dt": 0.01, "t_end": 0.1}}, {fusion} "blocks": [
+                  {{"name": "a", "type": "eq.equations", "equations": ["input u", "dx/dt = -u"]}},
+                  {{"name": "b", "type": "eq.equations", {method}
+                   "equations": ["input u", "dy/dt = u"]}},
+                  {{"name": "c", "type": "eq.equations", "equations": ["input u", "dz/dt = u - z"]}}
+                ], "connections": [{{"from": "a.x", "to": "b.u"}}, {{"from": "b.y", "to": "a.u"}},
+                                   {{"from": "a.x", "to": "c.u"}}]}}"#
+            )
+        };
+        let notes = |fusion: &str, method: &str| {
+            run(&text(fusion, method), &registry(), None, None)
+                .unwrap()
+                .notes
+        };
+        assert!(notes("", "").is_empty());
+        for n in [
+            notes(r#""fusion": "off","#, ""),
+            notes("", r#""method": {"name": "euler"},"#),
+        ] {
+            // The loop is a and b; c only listens.
+            assert_eq!(n.len(), 1, "{n:?}");
+            assert!(n[0].starts_with("a, b depend on each other and are stepped apart"));
+        }
     }
 }

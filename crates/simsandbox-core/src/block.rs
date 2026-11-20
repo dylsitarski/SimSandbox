@@ -5,7 +5,7 @@
 //! - Every Block implements the required [`Block`] trait, which is enough for
 //!   the co-simulation master to step it as a black box.
 //! - Optional capability traits ([`Equations`], [`Rollback`], [`Derivatives`],
-//!   [`Realtime`]) are exposed through the `as_*` accessors. The kernel checks
+//!   [`Realtime`], [`GeneratedCode`]) are exposed through the `as_*` accessors. The kernel checks
 //!   them to decide how to schedule a Block, e.g. fusing equation Blocks of the
 //!   same domain into one system.
 //! - The kernel owns Block state as a flat `[f64]` slice so snapshots, rewind
@@ -74,6 +74,15 @@ impl MethodLabels {
 pub struct MethodSpec {
     pub name: String,
     pub labels: MethodLabels,
+}
+
+impl MethodSpec {
+    pub fn new(name: &str, speed: SpeedClass, accuracy: AccuracyClass) -> Self {
+        Self {
+            name: name.into(),
+            labels: MethodLabels { speed, accuracy },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,12 +412,42 @@ pub struct ParamSpec {
     pub initial_condition: bool,
 }
 
+impl ParamSpec {
+    /// A parameter with no description that does not set initial state;
+    /// `suggested` is the slider's initial range.
+    pub fn new(name: &str, unit: Unit, default: f64, suggested: [f64; 2]) -> Self {
+        Self {
+            name: name.into(),
+            unit,
+            default,
+            suggested_min: suggested[0],
+            suggested_max: suggested[1],
+            description: String::new(),
+            initial_condition: false,
+        }
+    }
+
+    pub fn described(mut self, description: &str) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Declare that it sets initial state (applied on restart).
+    pub fn sets_initial_state(mut self) -> Self {
+        self.initial_condition = true;
+        self
+    }
+}
+
 /// How a Block advances in time. Continuous time with events is the general
 /// case (as in FMI 3.0); the others are special cases.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum TimeSemantics {
+    #[default]
     Continuous,
-    FixedStep { dt: f64 },
+    FixedStep {
+        dt: f64,
+    },
     DiscreteEvent,
     Stateless,
 }
@@ -425,6 +464,73 @@ pub struct BlockSpec {
     /// Kernel-owned populations of rows that grow and shrink (ADR 0034).
     pub tables: Vec<TableSpec>,
     pub time: TimeSemantics,
+    /// Whether its outputs or next state depend on the time itself, beyond
+    /// its state, inputs and parameters (ADR 0083): `Some(false)` for a
+    /// block that never reads `t`, so a model of such blocks with only
+    /// maps iterates instead of running in time. `None`: not said, as for
+    /// most blocks.
+    pub reads_time: Option<bool>,
+    /// The times its outputs change at, known before the run, such as the
+    /// sample times of recorded data (ADR 0067 step 4): a model with no
+    /// states is evaluated there. `None` for most blocks.
+    pub instants: Option<Vec<f64>>,
+}
+
+/// Built step by step: `BlockSpec::new(name, domain)` then `.input(..)`,
+/// `.output(..)`, `.port(..)`, `.param(..)`, `.state(..)`, `.table(..)`
+/// and `.time(..)`, each adding to what is there.
+impl BlockSpec {
+    /// A Block with no ports, parameters, states or tables, in continuous
+    /// time, saying nothing of `t` or its instants.
+    pub fn new(name: &str, domain: Domain) -> Self {
+        Self {
+            name: name.into(),
+            domain,
+            ports: Vec::new(),
+            params: Vec::new(),
+            states: Vec::new(),
+            tables: Vec::new(),
+            time: TimeSemantics::default(),
+            reads_time: None,
+            instants: None,
+        }
+    }
+
+    pub fn input(self, name: &str, unit: Unit, shape: Shape) -> Self {
+        self.port(PortSpec::input(name, unit, shape))
+    }
+
+    pub fn output(self, name: &str, unit: Unit, shape: Shape) -> Self {
+        self.port(PortSpec::output(name, unit, shape))
+    }
+
+    /// A port with more said of it than `input` or `output` say, such as
+    /// its feedthrough (`PortSpec::depends_on`).
+    pub fn port(mut self, port: PortSpec) -> Self {
+        self.ports.push(port);
+        self
+    }
+
+    pub fn param(mut self, param: ParamSpec) -> Self {
+        self.params.push(param);
+        self
+    }
+
+    /// The next state variable, in slice order.
+    pub fn state(mut self, name: &str) -> Self {
+        self.states.push(name.into());
+        self
+    }
+
+    pub fn table(mut self, table: TableSpec) -> Self {
+        self.tables.push(table);
+        self
+    }
+
+    pub fn time(mut self, time: TimeSemantics) -> Self {
+        self.time = time;
+        self
+    }
 }
 
 impl BlockSpec {
@@ -479,6 +585,50 @@ pub struct StepIo<'a> {
 }
 
 /// The required contract. Enough for the master to step any Block as a black box.
+///
+/// The smallest complete Block, x' = -k x by Euler steps:
+///
+/// ```
+/// use simsandbox_core::block::*;
+/// use simsandbox_core::{graph::Model, sim::Simulator, units::Unit, Result};
+///
+/// struct Decay { spec: BlockSpec, method: MethodSpec }
+///
+/// impl Decay {
+///     fn new(name: &str) -> Self {
+///         let spec = BlockSpec::new(name, Domain::Equations)
+///             .param(ParamSpec::new("k", Unit::DIMENSIONLESS, 1.0, [0.0, 10.0]))
+///             .state("x")
+///             .output("x", Unit::DIMENSIONLESS, Shape::Scalar);
+///         let method = MethodSpec::new("euler", SpeedClass::RealTime, AccuracyClass::Qualitative);
+///         Self { spec, method }
+///     }
+/// }
+///
+/// impl Block for Decay {
+///     fn spec(&self) -> &BlockSpec { &self.spec }
+///     fn method(&self) -> &MethodSpec { &self.method }
+///     fn init(&mut self, _params: &[f64], state: &mut [f64]) -> Result<()> {
+///         state[0] = 1.0;
+///         Ok(())
+///     }
+///     fn do_step(&mut self, ctx: StepContext, io: StepIo<'_>) -> Result<()> {
+///         io.state[0] -= ctx.dt * io.params[0] * io.state[0];
+///         self.compute_outputs(ctx.t + ctx.dt, io)
+///     }
+///     fn compute_outputs(&self, _t: f64, io: StepIo<'_>) -> Result<()> {
+///         io.outputs[0] = io.state[0];
+///         Ok(())
+///     }
+/// }
+///
+/// let mut model = Model::new();
+/// let id = model.add(Box::new(Decay::new("decay")));
+/// let mut sim = Simulator::new(model, 0.0)?;
+/// sim.step(0.5)?;
+/// assert_eq!(sim.output(id, "x").unwrap(), [0.5]);
+/// # Ok::<(), simsandbox_core::SimError>(())
+/// ```
 pub trait Block: Send {
     fn spec(&self) -> &BlockSpec;
 
@@ -522,27 +672,7 @@ pub trait Block: Send {
     fn as_realtime(&self) -> Option<&dyn Realtime> {
         None
     }
-
-    /// The times its outputs change at, known before the run, such as the
-    /// sample times of recorded data (ADR 0067 step 4): a model with no
-    /// states is evaluated there. `None` for most blocks.
-    fn instants(&self) -> Option<&[f64]> {
-        None
-    }
-
-    /// Whether its outputs or next state depend on the time itself, beyond
-    /// its state, inputs and parameters (ADR 0083): `Some(false)` for a
-    /// block that never reads `t`, so a model of such blocks with only
-    /// maps iterates instead of running in time. `None`: not said, as for
-    /// most blocks.
-    fn reads_time(&self) -> Option<bool> {
-        None
-    }
-
-    /// How its equations run, for blocks whose code SimSandbox makes from
-    /// them (typed equations: `interpreted`, `compiled`, `native`; ADR
-    /// 0084, 0089). `None` for blocks written in Rust.
-    fn code(&self) -> Option<String> {
+    fn as_generated_code(&self) -> Option<&dyn GeneratedCode> {
         None
     }
 }
@@ -578,4 +708,12 @@ pub trait Derivatives {
 /// real-time models.
 pub trait Realtime {
     fn worst_case_step(&self) -> Duration;
+}
+
+/// Capability: SimSandbox makes the Block's code from its equations (typed
+/// equations, ADR 0084, ADR 0089). Blocks written in Rust do not have it.
+pub trait GeneratedCode {
+    /// How that code runs now (`interpreted`, `compiled`, `native`), for
+    /// `check`; it changes while the model runs, as a native build ends.
+    fn code(&self) -> String;
 }

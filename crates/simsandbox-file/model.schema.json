@@ -333,6 +333,98 @@
           },
           "description": "Equations of an 'eq.equations' block, one per line: 'dx/dt = ...' (or \"x' = ...\") for a state, 'name = ...' for a defined quantity (ADR 0017); 'input F [N]', 'param m [kg] = 2', 'state x [m] = 0' and a trailing '[unit]' for a line's left side ('dv/dt = F/m [m/s^2]') give units, and then every line must balance (ADR 0045, ADR 0049)."
         },
+        "bodies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "parent",
+              "joint",
+              "kind",
+              "mass"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The body's name: letters, digits, _; unique in the block."
+              },
+              "parent": {
+                "type": "string",
+                "description": "'ground', or a body listed before this one."
+              },
+              "joint": {
+                "type": "string",
+                "description": "The joint to the parent: its name, unique among bodies and joints."
+              },
+              "kind": {
+                "enum": [
+                  "revolute",
+                  "prismatic",
+                  "fixed"
+                ],
+                "description": "revolute turns, prismatic slides along the joint frame's x axis, fixed is welded."
+              },
+              "at": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "The joint's point in the parent's frame (m); default [0, 0]."
+              },
+              "turn": {
+                "type": "number",
+                "description": "The joint frame's rotation from the parent's (rad); default 0."
+              },
+              "mass": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Mass (kg)."
+              },
+              "centre": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "The centre of mass in the body's frame (m); default [0, 0]."
+              },
+              "inertia": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Moment of inertia about the centre of mass (kg*m^2); default 0."
+              },
+              "damping": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Viscous friction in the joint (N*m*s or N*s/m); default 0."
+              },
+              "stiffness": {
+                "type": "number",
+                "minimum": 0,
+                "description": "A spring in the joint toward 'rest' (N*m or N/m); default 0."
+              },
+              "rest": {
+                "type": "number",
+                "description": "The spring's rest coordinate (rad or m); default 0."
+              },
+              "start": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "The coordinate and its rate at the start (rad, rad/s or m, m/s); default [0, 0]."
+              }
+            }
+          },
+          "description": "A mechanism's (mech.planar) bodies, one per body and the joint to its parent, parents first (ADR 0105); every number is also a parameter named <body>_<column> or <joint>_<column>. 'simsandbox describe mech.planar' gives the reference."
+        },
         "settings": {
           "type": "object",
           "additionalProperties": {
@@ -434,6 +526,19 @@
         "sample": {
           "$ref": "#/$defs/sample",
           "description": "A study block's points and what it keeps of each run (ADR 0070): as the top-level `sample`. Only a `study` block has one."
+        },
+        "activate": {
+          "enum": [
+            "rise",
+            "fall",
+            "change",
+            "while"
+          ],
+          "description": "A study or a use of a model: gives it an 'activate' input and says when it acts (ADR 0088): once when the input rises, falls or changes, or while it is high, holding its results otherwise."
+        },
+        "restart": {
+          "type": "boolean",
+          "description": "A use of a model: true gives it a 'restart' input; it starts again when the input rises (ADR 0088)."
         }
       },
       "description": "A block of a registered type (e.g. 'eq.equations', see simsandbox describe), or a use of a model: a 'file', or a 'model' defined in this file (ADR 0066, ADR 0068)."
@@ -680,6 +785,101 @@
                     "exclusiveMinimum": 0
                   }
                 }
+              },
+              "unit": {
+                "type": "string",
+                "description": "plot.scene (ADR 0093): the length unit every position and size is in ('m' if absent); a binding in another length unit is refused."
+              },
+              "extent": {
+                "type": "object",
+                "description": "plot.scene: the region shown, x and y ranges in the scene's unit; absent, the extent follows what is drawn. Drawn with equal scales.",
+                "required": [
+                  "x",
+                  "y"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "x": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "y": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  }
+                }
+              },
+              "frames": {
+                "type": "object",
+                "description": "plot.scene: named frames, each a pose in another frame (`in`, the scene's own if absent): a point p drawn in it lies at (x, y) + R(angle)·p in its parent. A frame over a table's rows cannot hold another yet.",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "in": {
+                      "type": "string",
+                      "description": "The parent frame."
+                    },
+                    "x": {
+                      "$ref": "#/$defs/sceneAttribute"
+                    },
+                    "y": {
+                      "$ref": "#/$defs/sceneAttribute"
+                    },
+                    "angle": {
+                      "$ref": "#/$defs/sceneAttribute"
+                    }
+                  }
+                }
+              },
+              "layers": {
+                "type": "array",
+                "description": "plot.scene: layers drawn first to last, each one primitive (`simsandbox describe plot.scene` lists the primitives and their attributes).",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "draw"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "draw": {
+                      "enum": [
+                        "points",
+                        "segments",
+                        "boxes",
+                        "discs"
+                      ],
+                      "description": "The primitive."
+                    },
+                    "in": {
+                      "type": "string",
+                      "description": "The frame its positions and angles are in; the scene's if absent."
+                    },
+                    "bind": {
+                      "type": "object",
+                      "description": "Attribute name to its binding.",
+                      "additionalProperties": {
+                        "$ref": "#/$defs/sceneAttribute"
+                      }
+                    },
+                    "grab": {
+                      "type": "string",
+                      "description": "The input.pointer block that pressing on one of the layer's instances sends the pointer to (ADR 0093 point 6): x and y in the scene's own frame, down, and picked (the instance's row id, 0 for a layer of one instance; -1 once let go), until released. The topmost grabbing layer wins. The app records what is sent as input; a run file replays it."
+                    }
+                  }
+                }
+              },
+              "view_from": {
+                "type": "string",
+                "description": "plot.scene: draw the picture in this frame's coordinates (it stands still)."
               }
             }
           }
@@ -761,6 +961,20 @@
               }
             }
           }
+        },
+        "open": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Diagram nodes whose values are shown (ADR 0055), by name. Unknown names are ignored."
+        },
+        "expand": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Uses shown expanded in place on the diagram, by path ('car1', 'vehicle/plant'), one level each (ADR 0066 step 4d)."
         },
         "recorder": {
           "type": "object",
@@ -1080,6 +1294,17 @@
           "description": "A study's named results, one value per run (ADR 0067), each one reduction of an expression over the run's signals by full name and t: final, mean (over time), min, max, amplitude (half of max − min), period (mean time between upward crossings of the mean), first_time(a < b) (also >, <=, >=; NaN if never). Given, the rows hold these instead of final values. E.g. {\"v_max\": \"max(plant/car.v)\", \"settle\": \"first_time(abs(cruise.e) < 0.1)\"}."
         }
       }
+    },
+    "sceneAttribute": {
+      "oneOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "A constant, a scalar signal ('block.port'), or a quantity over a table's rows (one instance a row, paired by id); for 'colour' also a palette name."
     }
   }
 }

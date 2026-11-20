@@ -1,13 +1,20 @@
 //! Native code for typed equations ([ADR 0089](../../../docs/decisions/0089-native-code-for-typed-equations.md)):
 //! Rust generated from a program's phase views, built by the user's own
 //! toolchain into a library, kept in a cache by a hash of what it was built
-//! from, loaded, and checked bit for bit before use. While it builds, and
+//! from and the processor it was built for, loaded, and checked bit for
+//! bit before use. While it builds, and
 //! whenever it cannot be built or loaded or differs, the phases run on
 //! Cranelift's code.
 //!
 //! What it does is set by [`set_mode`], or `SIMSANDBOX_NATIVE`: `off`;
 //! `cache`, use libraries already built (the default); `build`, also build
 //! the missing ones in the background (the app's default).
+//!
+//! Loading a library runs its code, so the cache is trusted like any
+//! folder of programs ([ADR 0096](../../../docs/decisions/0096-the-native-cache.md)):
+//! SimSandbox makes it for its user alone, and on Unix does not load from
+//! a cache that other users can write to. The cache keeps the libraries
+//! used most recently, [`KEPT_LIBRARIES`] at most.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -106,6 +113,174 @@ fn cache_dir() -> Option<PathBuf> {
     Some(base.join("simsandbox").join("native"))
 }
 
+/// Libraries kept in the cache; the least recently used go when a build
+/// adds one beyond this.
+pub const KEPT_LIBRARIES: usize = 200;
+
+/// The processor native code is built for (`target-cpu=native`): its
+/// architecture and the instruction sets it has, part of a library's
+/// name, so a cache carried to another machine (a shared home folder, a
+/// container image) is not run where an instruction is missing.
+fn processor() -> String {
+    let mut s = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        macro_rules! features {
+            ($($f:tt),*) => {
+                $(if std::arch::is_x86_feature_detected!($f) {
+                    s.push(' ');
+                    s.push_str($f);
+                })*
+            };
+        }
+        features!(
+            "sse3",
+            "ssse3",
+            "sse4.1",
+            "sse4.2",
+            "popcnt",
+            "avx",
+            "avx2",
+            "fma",
+            "f16c",
+            "bmi1",
+            "bmi2",
+            "lzcnt",
+            "movbe",
+            "adx",
+            "aes",
+            "pclmulqdq",
+            "sha",
+            "avx512f",
+            "avx512dq",
+            "avx512cd",
+            "avx512bw",
+            "avx512vl",
+            "avx512ifma",
+            "avx512vbmi",
+            "avx512vbmi2",
+            "avx512vnni",
+            "avx512bitalg",
+            "avx512vpopcntdq",
+            "gfni",
+            "vaes",
+            "vpclmulqdq"
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        macro_rules! features {
+            ($($f:tt),*) => {
+                $(if std::arch::is_aarch64_feature_detected!($f) {
+                    s.push(' ');
+                    s.push_str($f);
+                })*
+            };
+        }
+        features!(
+            "neon", "fp16", "sve", "sve2", "dotprod", "rdm", "lse", "aes", "sha2", "sha3", "crc"
+        );
+    }
+    s
+}
+
+/// Why libraries in `dir` (a cache's `native` folder) must not be loaded:
+/// on Unix, when the folder, the folder libraries are built into or the
+/// library itself can be written by other users, who could then have put
+/// their own code there. `None` when it may be loaded. Elsewhere nothing
+/// is checked: the cache is in the user's own folders.
+fn untrusted(dir: &std::path::Path, file: &std::path::Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let release = dir.join("target").join("release");
+        for path in [dir, &dir.join("target"), &release, file] {
+            match std::fs::metadata(path) {
+                Ok(m) if m.mode() & 0o022 != 0 => {
+                    return Some(format!(
+                        "{} can be written by other users, so nothing is loaded from this \
+                         cache: delete the cache folder, or set SIMSANDBOX_CACHE to a folder \
+                         of your own",
+                        path.display()
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) => return Some(format!("{}: {e}", path.display())),
+            }
+        }
+    }
+    let _ = (dir, file);
+    None
+}
+
+/// Make a folder of the cache and those above it, for the user alone.
+fn private_dir(path: &std::path::Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(path)
+}
+
+/// The libraries in a cache, by name, least recently used first.
+fn cached(dir: &std::path::Path) -> Vec<(String, std::time::SystemTime)> {
+    let mut all: Vec<(String, std::time::SystemTime)> =
+        std::fs::read_dir(dir.join("target").join("release"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let file = e.file_name().to_string_lossy().into_owned();
+                let stem = file.split('.').next()?;
+                let name = stem.strip_prefix("lib").unwrap_or(stem);
+                (name.starts_with("ssn_") && file == lib_file(name))
+                    .then(|| Some((name.to_string(), e.metadata().ok()?.modified().ok()?)))?
+            })
+            .collect();
+    all.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    all
+}
+
+/// Remove the least recently used libraries of a cache beyond `keep`,
+/// with what they were built from, sparing those named in `in_use`.
+/// Returns the names removed.
+fn evict(dir: &std::path::Path, keep: usize, in_use: &[String]) -> Vec<String> {
+    let all = cached(dir);
+    let excess = all.len().saturating_sub(keep);
+    let gone: Vec<String> = all
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| !in_use.contains(name))
+        .take(excess)
+        .collect();
+    let release = dir.join("target").join("release");
+    for name in &gone {
+        let _ = std::fs::remove_dir_all(dir.join("crates").join(name));
+        // The library, and cargo's files for it (dependency lists, the
+        // copy it links from, its fingerprint).
+        for folder in [
+            release.clone(),
+            release.join("deps"),
+            release.join(".fingerprint"),
+        ] {
+            for e in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+                if e.file_name().to_string_lossy().contains(name.as_str()) {
+                    let path = e.path();
+                    let _ = if path.is_dir() {
+                        std::fs::remove_dir_all(&path)
+                    } else {
+                        std::fs::remove_file(&path)
+                    };
+                }
+            }
+        }
+    }
+    gone
+}
+
 /// FNV-1a: a hash that stays the same across builds and machines.
 fn fnv(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -196,7 +371,12 @@ pub fn library(views: &[PhaseView]) -> Option<Arc<Library>> {
     }
     let rustc = toolchain().unwrap_or("none");
     let source = source(views);
-    let hash = fnv(format!("{source}\n{rustc}\n{}", env!("CARGO_PKG_VERSION")).as_bytes());
+    let hash = fnv(format!(
+        "{source}\n{rustc}\n{}\n{}",
+        env!("CARGO_PKG_VERSION"),
+        processor()
+    )
+    .as_bytes());
     let name = format!("ssn_{hash:016x}");
     if let Some(l) = libraries().lock().ok()?.get(&name) {
         return Some(Arc::clone(l));
@@ -209,7 +389,7 @@ pub fn library(views: &[PhaseView]) -> Option<Arc<Library>> {
         differed: AtomicU8::new(0),
     });
     if file.exists() {
-        let _ = lib.loaded.set(load(&file, views.len()));
+        let _ = lib.loaded.set(load(&dir, &file, views.len()));
     } else if mode == Mode::Build && toolchain().is_some() {
         builder()
             .lock()
@@ -239,10 +419,20 @@ fn lib_file(name: &str) -> String {
     }
 }
 
-fn load(file: &std::path::Path, phases: usize) -> Result<Loaded, String> {
-    // SAFETY: the library was built from Rust SimSandbox generated
-    // (`source`), its functions with `Entry`'s signature; nothing runs
-    // when it loads.
+fn load(dir: &std::path::Path, file: &std::path::Path, phases: usize) -> Result<Loaded, String> {
+    if let Some(why) = untrusted(dir, file) {
+        return Err(why);
+    }
+    // Used now: the cache keeps the libraries used most recently.
+    if let Ok(f) = std::fs::File::options().append(true).open(file) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
+    // SAFETY: loading runs whatever the file holds, so this is sound only
+    // for a file SimSandbox built: one in the user's own cache, which
+    // `untrusted` has refused if anyone else could have written it, under
+    // a name that is the hash of its source, compiler and processor. Such
+    // a library is the Rust `source` generates, with no code that runs on
+    // loading and its functions of `Entry`'s signature.
     #[allow(unsafe_code)]
     unsafe {
         let lib = libloading::Library::new(file).map_err(|e| e.to_string())?;
@@ -272,8 +462,15 @@ fn builder() -> &'static Mutex<Sender<Job>> {
         let (tx, rx) = channel::<Job>();
         std::thread::spawn(move || {
             for job in rx {
-                let result = build(&job).and_then(|file| load(&file, job.phases));
+                let result = build(&job).and_then(|file| load(&job.dir, &file, job.phases));
                 let _ = job.lib.loaded.set(result);
+                // Room for it: the least recently used go, never one
+                // this process holds.
+                let in_use: Vec<String> = libraries()
+                    .lock()
+                    .map(|m| m.keys().cloned().collect())
+                    .unwrap_or_default();
+                evict(&job.dir, KEPT_LIBRARIES, &in_use);
             }
         });
         Mutex::new(tx)
@@ -283,7 +480,12 @@ fn builder() -> &'static Mutex<Sender<Job>> {
 /// Build a library's crate in the cache; its file.
 fn build(job: &Job) -> Result<PathBuf, String> {
     let krate = job.dir.join("crates").join(&job.name);
-    std::fs::create_dir_all(krate.join("src")).map_err(|e| e.to_string())?;
+    let target = job.dir.join("target");
+    // The cache's folders are the user's alone, whatever the umask;
+    // cargo makes the rest inside them.
+    for folder in [krate.join("src"), target.join("release")] {
+        private_dir(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    }
     let manifest = format!(
         "[package]\nname = \"{}\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n\n\
          [lib]\ncrate-type = [\"cdylib\"]\npath = \"src/lib.rs\"\n\n[workspace]\n\n\
@@ -292,7 +494,6 @@ fn build(job: &Job) -> Result<PathBuf, String> {
     );
     std::fs::write(krate.join("Cargo.toml"), manifest).map_err(|e| e.to_string())?;
     std::fs::write(krate.join("src").join("lib.rs"), &job.source).map_err(|e| e.to_string())?;
-    let target = job.dir.join("target");
     let out = std::process::Command::new("cargo")
         .args(["build", "--release", "--quiet", "--offline"])
         .current_dir(&krate)
@@ -314,7 +515,17 @@ fn build(job: &Job) -> Result<PathBuf, String> {
             err.lines().take(5).collect::<Vec<_>>().join(" ")
         ));
     }
-    Ok(target.join("release").join(lib_file(&job.name)))
+    let file = target.join("release").join(lib_file(&job.name));
+    // Written by the user alone, whatever the umask it was linked under.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(m) = std::fs::metadata(&file) {
+            let mode = m.permissions().mode() & !0o022;
+            let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode));
+        }
+    }
+    Ok(file)
 }
 
 /// A phase that runs Cranelift's code until its library is loaded, then,
@@ -324,33 +535,46 @@ pub struct Switching {
     lib: Arc<Library>,
     phase: usize,
     kept: Vec<bool>,
+    /// What the phase was generated for; every call of the library's
+    /// code is checked against it.
+    shape: crate::Shape,
     /// 0 not checked, 1 the same, 2 different.
     checked: AtomicU8,
 }
 
 impl Switching {
-    pub fn new(
+    pub(crate) fn new(
         jit: Arc<dyn PhaseKernel>,
         lib: Arc<Library>,
         phase: usize,
-        view: &PhaseView,
+        (view, shape): (&PhaseView, crate::Shape),
     ) -> Self {
         Self {
             jit,
             lib,
             phase,
             kept: view.kept.clone(),
+            shape,
             checked: AtomicU8::new(0),
         }
     }
 
-    fn call(f: Entry, lo: usize, written: &mut [&mut [f64]], read: &[&[f64]], scalars: &[f64]) {
-        let len = written.first().map_or(0, |w| w.len());
+    fn call(
+        &self,
+        f: Entry,
+        lo: usize,
+        written: &mut [&mut [f64]],
+        read: &[&[f64]],
+        scalars: &[f64],
+    ) {
+        let len = self.shape.check(lo, written, read, scalars);
         let w: Vec<*mut f64> = written.iter_mut().map(|w| w.as_mut_ptr()).collect();
         let r: Vec<*const f64> = read.iter().map(|r| r.as_ptr()).collect();
-        // SAFETY: as for Cranelift's code: `len` cells of each written
-        // array, read arrays within their length, the scalars it was
-        // generated for.
+        // SAFETY: as for Cranelift's code: the generated function takes
+        // `len` cells of each of the view's written arrays, the view's
+        // read arrays over all its cells and its scalars, and
+        // `Shape::check` has just made sure these are that many and that
+        // long.
         #[allow(unsafe_code)]
         unsafe {
             f(lo, len, w.as_ptr(), r.as_ptr(), scalars.as_ptr())
@@ -378,7 +602,7 @@ impl PhaseKernel for Switching {
             _ => return self.jit.run(lo, written, read, scalars),
         };
         match self.checked.load(Ordering::Relaxed) {
-            1 => Self::call(f, lo, written, read, scalars),
+            1 => self.call(f, lo, written, read, scalars),
             2 => self.jit.run(lo, written, read, scalars),
             _ => {
                 // Both ways, the library's on copies: the same bits or it
@@ -388,7 +612,7 @@ impl PhaseKernel for Switching {
                 {
                     let mut views: Vec<&mut [f64]> =
                         copies.iter_mut().map(|c| c.as_mut_slice()).collect();
-                    Self::call(f, lo, &mut views, read, scalars);
+                    self.call(f, lo, &mut views, read, scalars);
                 }
                 let same = written
                     .iter()
@@ -670,5 +894,122 @@ fn func(f: Func, x: &str, y: &str) -> String {
         Func::Min => format!("{x}.min({y})"),
         Func::Max => format!("{x}.max({y})"),
         Func::Pow => format!("{x}.powf({y})"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A folder of its own for a test, removed when dropped.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("simsandbox-native-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            private_dir(&dir.join("target").join("release")).unwrap();
+            Self(dir)
+        }
+
+        /// A file standing for library `name`, last used `age` seconds
+        /// ago, with the files a build leaves around it.
+        fn library(&self, name: &str, age: u64) -> PathBuf {
+            let release = self.0.join("target").join("release");
+            let file = release.join(lib_file(name));
+            std::fs::write(&file, b"not a library").unwrap();
+            let then = std::time::SystemTime::now() - std::time::Duration::from_secs(age);
+            std::fs::File::options()
+                .append(true)
+                .open(&file)
+                .unwrap()
+                .set_modified(then)
+                .unwrap();
+            private_dir(&self.0.join("crates").join(name).join("src")).unwrap();
+            private_dir(&release.join("deps")).unwrap();
+            std::fs::write(release.join("deps").join(format!("{name}-0123.d")), b"").unwrap();
+            std::fs::write(release.join(format!("lib{name}.d")), b"").unwrap();
+            file
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_cache_keeps_the_libraries_used_most_recently() {
+        let cache = Scratch::new("evict");
+        for (name, age) in [
+            ("ssn_a", 400),
+            ("ssn_b", 300),
+            ("ssn_c", 200),
+            ("ssn_d", 100),
+        ] {
+            cache.library(name, age);
+        }
+        // Something else in the folder is left alone.
+        let other = cache.0.join("target").join("release").join("other.txt");
+        std::fs::write(&other, b"").unwrap();
+        let names = |dir: &std::path::Path| -> Vec<String> {
+            cached(dir).into_iter().map(|(n, _)| n).collect()
+        };
+        assert_eq!(names(&cache.0), ["ssn_a", "ssn_b", "ssn_c", "ssn_d"]);
+        assert!(evict(&cache.0, 4, &[]).is_empty());
+        // Two too many: the oldest go, but not one in use.
+        let gone = evict(&cache.0, 2, &["ssn_a".to_string()]);
+        assert_eq!(gone, ["ssn_b", "ssn_c"]);
+        assert_eq!(names(&cache.0), ["ssn_a", "ssn_d"]);
+        let release = cache.0.join("target").join("release");
+        assert!(!cache.0.join("crates").join("ssn_b").exists());
+        assert!(!release.join("deps").join("ssn_b-0123.d").exists());
+        assert!(!release.join("libssn_b.d").exists());
+        assert!(cache.0.join("crates").join("ssn_a").exists());
+        assert!(release.join("deps").join("ssn_d-0123.d").exists());
+        assert!(other.exists());
+    }
+
+    /// A cache other users can write to is not loaded from: the refusal
+    /// comes before the file is opened as a library (this one is not a
+    /// library at all).
+    #[cfg(unix)]
+    #[test]
+    fn a_cache_others_can_write_to_is_not_loaded() {
+        use std::os::unix::fs::PermissionsExt;
+        let cache = Scratch::new("trust");
+        let file = cache.library("ssn_x", 0);
+        let set = |path: &std::path::Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        set(&file, 0o644);
+        assert_eq!(untrusted(&cache.0, &file), None);
+        let release = cache.0.join("target").join("release");
+        for (path, open, shut) in [
+            (file.as_path(), 0o666, 0o644),
+            (release.as_path(), 0o777, 0o700),
+            (cache.0.as_path(), 0o775, 0o700),
+        ] {
+            set(path, open);
+            let why = untrusted(&cache.0, &file).expect("refused");
+            assert!(why.contains("written by other users"), "{why}");
+            let e = load(&cache.0, &file, 1).err().expect("not loaded");
+            assert_eq!(e, why);
+            set(path, shut);
+        }
+        assert_eq!(untrusted(&cache.0, &file), None);
+        // A library that is not there is not trusted either.
+        assert!(untrusted(&cache.0, &release.join(lib_file("ssn_none"))).is_some());
+    }
+
+    #[test]
+    fn a_librarys_name_holds_the_processor() {
+        let p = processor();
+        assert!(p.starts_with(std::env::consts::ARCH), "{p}");
+        // Built for other instructions, another name.
+        let name = |cpu: &str| fnv(format!("source\nrustc\n0.0.1\n{cpu}").as_bytes());
+        assert_ne!(name(&p), name(&format!("{p} avx512f")));
     }
 }

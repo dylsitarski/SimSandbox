@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "simsandbox-core"
 description = "SimSandbox kernel: the Block contract, units, model graph, scheduler and state store"
 version.workspace = true
