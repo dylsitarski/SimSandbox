@@ -165,6 +165,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0105-mechanism-file-form.md](decisions/0105-mechanism-file-form.md) | Decision record | Accepted: the mechanism block's file form (bodies table, numbers as parameters, ports by joint kind) |
 | [decisions/0106-mechanism-forces-are-parameters.md](decisions/0106-mechanism-forces-are-parameters.md) | Decision record | Accepted: a mechanism's forces and loads are parameters, not inputs |
 | [decisions/0107-model-cards-and-agent-notes.md](decisions/0107-model-cards-and-agent-notes.md) | Decision record | Accepted: generated model cards; notes required only of agents; agents' parts marked |
+| [decisions/0108-interface-synchronized-projections.md](decisions/0108-interface-synchronized-projections.md) | Decision record | Accepted: the interface's direction and order of work |
 | [decisions/0088-activation.md](decisions/0088-activation.md) | Decision record | Activation of used models and studies: `activate` modes and `restart` |
 | [decisions/0089-native-code-for-typed-equations.md](decisions/0089-native-code-for-typed-equations.md) | Decision record | Native code for typed equations: generated Rust compiled where a toolchain exists |
 | [decisions/0090-one-engine-for-nested-models.md](decisions/0090-one-engine-for-nested-models.md) | Decision record | One engine for nested models: the merged simulator |

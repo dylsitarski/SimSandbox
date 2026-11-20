@@ -71,7 +71,7 @@ wgpu runs on software drivers, so rendering and compute code can be tested on ma
 - **Linux:** Mesa's lavapipe (`mesa-vulkan-drivers`) is a software Vulkan driver. With it, `libxkbcommon-x11-0` and `xvfb`, the app renders headless (`--screenshot`), and offscreen wgpu tests (render to a texture, read it back, compare with a reference image or a CPU result) run in `cargo test`.
 - **Windows:** WARP, the software DirectX 12 adapter, ships with Windows and is available on CI runners.
 - Software drivers show whether rendering and shaders are correct, not how fast they are or how a particular vendor's driver behaves; check those on real hardware.
-- Cloud sessions start from a fresh container: install the Linux packages in the environment's setup script so they are always present.
+- Cloud sessions start from a fresh container: the environment's setup script installs `libxkbcommon-x11-0`, `mesa-vulkan-drivers`, `xvfb` and `xauth` (since 2026-11-20; the earlier script failed to run).
 
 The app pins `eframe` and `egui_plot` to exact versions ([ADR 0008](../decisions/0008-native-egui-ui.md)); `egui_plot` version numbers run one ahead of the egui they use (`egui_plot` 0.37 uses egui 0.36), so upgrade them together.
 

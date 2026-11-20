@@ -212,6 +212,9 @@ A measure for each step: the cart-pole built from nothing, counted in steps, vis
 
 ## 10. Questions for the owner
 
+Answered 2026-11-20 ([ADR 0108](../decisions/0108-interface-synchronized-projections.md)): the Overview opens first for every model; positions stay free, with the layout as a suggestion; work starts with legibility. Views are made on the Stage (ADR 0108 point 4).
+
+
 - Should the Overview open first for every model, or only for models made by someone else (or an agent)?
 - Should the Structure lens keep free positions as today, with the derived layout as a suggestion, or derive positions with pins as exceptions?
 - Should the order above start at steps 1–3 (legibility first) or at step 5 (default pictures: the concept-to-model path first)?
