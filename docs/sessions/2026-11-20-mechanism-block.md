@@ -27,6 +27,8 @@
 
 - 2026-11-21: notes and agent marks (ADR 0107 points 2–5): file fields, `check --agent`, Python's agent mode and `note()`, the card, `Edit::Review` and the app's mark and button, guidance; tests in the session, app, CLI and Python.
 
+- 2026-11-21: the Overview tab: a dock pane focused on every open, the card built on the worker, values live, Inspect per part; the layout name `overview`; `--view overview`; an app test and screenshots.
+
 ## Decided
 
 - Owner (2026-11-20): [ADR 0108](../decisions/0108-interface-synchronized-projections.md), the interface's direction (Q64 answered); views are made on the Stage. The environment's setup script replaced: its first line was `#!/bin/install` (so the system ran the `install` utility on it) and it ran `npm install`; it now installs the headless app's libraries (run here first; unproven until a fresh container).

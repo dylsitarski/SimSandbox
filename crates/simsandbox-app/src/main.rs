@@ -1,7 +1,7 @@
 //! `simsandbox-app` — the SimSandbox desktop app (ADR 0008).
 //!
 //! ```text
-//! simsandbox-app [FILE] [--view time|phase|3d|diagram]   (shows only that view)
+//! simsandbox-app [FILE] [--view overview|time|phase|3d|diagram]   (shows only that view)
 //! simsandbox-app [FILE] --window signals|equations (opens that window)
 //! simsandbox-app [FILE] --select NODE   (selects a canvas node: `car`, `view:1`)
 //! simsandbox-app [FILE] --screenshot OUT.ppm [--after SECONDS]
@@ -130,7 +130,7 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => {
             eprintln!(
-                "error: {e}\nusage: simsandbox-app [FILE] [--view time|phase|3d|diagram] [--window signals|equations] [--select NODE] [--screenshot OUT.ppm [--after SECONDS]]"
+                "error: {e}\nusage: simsandbox-app [FILE] [--view overview|time|phase|3d|diagram] [--window signals|equations] [--select NODE] [--screenshot OUT.ppm [--after SECONDS]]"
             );
             return ExitCode::FAILURE;
         }

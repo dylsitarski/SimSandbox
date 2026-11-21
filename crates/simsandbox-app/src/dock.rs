@@ -11,6 +11,8 @@ use simsandbox_file::layout::{Layout, Pane as FilePane, SplitKind};
 /// One tab.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Pane {
+    /// The model's card (ADR 0107, ADR 0108), opened first.
+    Overview,
     /// The pinned parameters.
     Controls,
     Inspector,
@@ -45,8 +47,8 @@ pub struct Dock {
 
 impl Dock {
     /// The arrangement a model without one opens with: the controls above
-    /// the inspector on the left; on the right the views tiled together,
-    /// with the diagram as a second tab.
+    /// the inspector on the left; on the right the overview (ADR 0108),
+    /// then the views tiled together, then the diagram.
     pub fn standard(tiles: &[u64]) -> Self {
         let mut d = Self {
             state: DockState::new(vec![Pane::Inspector]),
@@ -54,9 +56,11 @@ impl Dock {
             next_group: 0,
         };
         let group = d.group(tiles.to_vec());
-        d.state
-            .main_surface_mut()
-            .split_right(NodeIndex::root(), 0.3, vec![group, Pane::Diagram]);
+        d.state.main_surface_mut().split_right(
+            NodeIndex::root(),
+            0.3,
+            vec![Pane::Overview, group, Pane::Diagram],
+        );
         d.add_controls();
         d
     }
@@ -102,6 +106,7 @@ impl Dock {
         };
         let pane = |d: &mut Self, p: &FilePane| -> Option<Pane> {
             match p {
+                FilePane::Named(n) if n == FilePane::OVERVIEW => Some(Pane::Overview),
                 FilePane::Named(n) if n == FilePane::CONTROLS => Some(Pane::Controls),
                 FilePane::Named(n) if n == FilePane::INSPECTOR => Some(Pane::Inspector),
                 FilePane::Named(n) if n == FilePane::DIAGRAM => Some(Pane::Diagram),
@@ -188,6 +193,11 @@ impl Dock {
         if d.find(|p| *p == Pane::Controls).is_none() {
             d.add_controls();
         }
+        // Arrangements saved before the overview (ADR 0108) gain it in
+        // front of the diagram's stack.
+        if d.find(|p| *p == Pane::Overview).is_none() {
+            d.beside_diagram(Pane::Overview);
+        }
         d.sync(all);
         d
     }
@@ -197,6 +207,7 @@ impl Dock {
     pub fn to_layout(&self, index: &dyn Fn(u64) -> Option<usize>) -> Option<Layout> {
         let pane = |p: &Pane| -> Option<FilePane> {
             match p {
+                Pane::Overview => Some(FilePane::Named(FilePane::OVERVIEW.into())),
                 Pane::Controls => Some(FilePane::Named(FilePane::CONTROLS.into())),
                 Pane::Inspector => Some(FilePane::Named(FilePane::INSPECTOR.into())),
                 Pane::Diagram => Some(FilePane::Named(FilePane::DIAGRAM.into())),
@@ -459,7 +470,7 @@ mod tests {
             r#"{"split": "left_right", "fraction": 0.3,
                 "first": {"tabs": ["inspector", "controls"]},
                 "second": {"split": "top_bottom", "fraction": 0.6,
-                    "first": {"tabs": [{"views": [0, 2]}, "diagram"], "active": 1},
+                    "first": {"tabs": ["overview", {"views": [0, 2]}, "diagram"], "active": 2},
                     "second": {"tabs": ["view:1"]}}}"#,
         );
         // Views 0, 1, 2 are tiles 10, 11, 12.
@@ -468,7 +479,8 @@ mod tests {
         let index = |t: u64| Some((t - 10) as usize);
         assert_eq!(d.to_layout(&index), Some(l));
         // An arrangement saved before the controls had a pane gets them
-        // above the inspector.
+        // above the inspector, and one saved before the overview (ADR
+        // 0108) gets it in front of the diagram.
         let old = layout(
             r#"{"split": "left_right", "fraction": 0.3,
             "first": {"tabs": ["inspector"]}, "second": {"tabs": ["diagram"]}}"#,
@@ -478,7 +490,7 @@ mod tests {
             r#"{"split": "left_right", "fraction": 0.3,
                 "first": {"split": "top_bottom", "fraction": 0.3,
                     "first": {"tabs": ["controls"]}, "second": {"tabs": ["inspector"]}},
-                "second": {"tabs": ["diagram"]}}"#,
+                "second": {"tabs": ["overview", "diagram"]}}"#,
         );
         assert_eq!(d.to_layout(&index), Some(expected));
     }

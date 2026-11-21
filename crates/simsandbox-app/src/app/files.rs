@@ -309,10 +309,14 @@ impl SimApp {
                     Some(l) => Dock::from_layout(l, &tile, &tiles),
                     None => Dock::standard(&tiles),
                 };
+                // The model's card opens first, for every model (ADR 0108).
+                self.dock.focus(|p| *p == Pane::Overview);
+                self.overview = None;
                 self.dock_settled = None;
                 self.probe_dir = None;
                 for p in popped {
                     let pane = match p {
+                        Popped::Overview => Some(Pane::Overview),
                         Popped::Controls => Some(Pane::Controls),
                         Popped::Inspector => Some(Pane::Inspector),
                         Popped::Diagram => Some(Pane::Diagram),

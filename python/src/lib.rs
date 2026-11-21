@@ -117,7 +117,7 @@ fn run_file(text: &str) -> PyResult<String> {
 fn explain(text: &str, json: bool) -> PyResult<String> {
     let r = registry();
     let s = simsandbox_session::Session::load("model", text, &r).map_err(ModelError::new_err)?;
-    let card = simsandbox_session::card::card(&s, &r);
+    let card = simsandbox_session::card::card(&s, &|t| r.info(t).map(|i| i.summary.clone()));
     Ok(if json {
         card.to_string()
     } else {

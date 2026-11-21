@@ -41,3 +41,11 @@ As in the report, section 5: keep and fix the canvas (A), text first (B), stage 
 - Measured against the cart-pole built from nothing: steps, visible wires, what a newcomer says from the first screen.
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none yet; components and port groups are named in their own ADRs.
+
+## Built so far
+
+- **The Overview (2026-11-21):**
+  - `Pane::Overview` in the dock (`simsandbox-app/src/app/overview.rs`), saved in layouts as `"overview"` (an older SimSandbox ignores it). It is in front of the right-hand stack in the standard arrangement, and arrangements saved before it gain it in front of the diagram. It is focused whenever a model opens; `--view overview` too, and `--view time|phase|3d` focuses the views instead.
+  - It shows the card ([ADR 0107](0107-model-cards-and-agent-notes.md)): built on the worker from the session when the file changes; values read live from the published parameters; parameters grouped by role (property, drive and tuning open, the rest open when short; drive parameters at 0 that nothing drives counted); a type's summary shortened to its first sentence with the rest on hover; agents' marks with **Mark as reviewed**; **Inspect** on each part selects it for the Inspector and the diagram.
+- Not yet: the Inspector by intent (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
+

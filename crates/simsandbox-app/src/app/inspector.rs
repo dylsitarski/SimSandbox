@@ -860,7 +860,7 @@ pub(super) type StudyKey = (String, [f64; 2], bool);
 /// A note that an agent made or last changed `what`, with a button to
 /// mark it reviewed (ADR 0107): the edit to apply, if pressed. `block`
 /// is empty for the model's own mark.
-fn agent_mark(ui: &mut egui::Ui, what: &str, block: &str) -> Option<Edit> {
+pub(super) fn agent_mark(ui: &mut egui::Ui, what: &str, block: &str) -> Option<Edit> {
     let mut review = None;
     ui.horizontal(|ui| {
         ui.colored_label(ui.visuals().warn_fg_color, "Made by an AI agent")

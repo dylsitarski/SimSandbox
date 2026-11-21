@@ -9,6 +9,17 @@ use serde_json::{json, Value};
 use simsandbox_core::block::{Causality, ParamRole};
 use std::collections::BTreeMap;
 
+/// Each registered type's summary, for [`card`]: a map that can be sent
+/// to the thread holding a session.
+pub fn type_summaries(
+    registry: &simsandbox_core::registry::Registry,
+) -> std::collections::HashMap<String, String> {
+    registry
+        .type_names()
+        .filter_map(|n| Some((n.to_string(), registry.info(n)?.summary.clone())))
+        .collect()
+}
+
 /// A part's role in its model, inferred from the graph.
 fn role(type_name: &str, stateful: bool, reads_system: bool, drives_system: bool) -> &'static str {
     if type_name.starts_with("input.") {
@@ -48,8 +59,9 @@ fn param_json(r: &ParamRow) -> Value {
 }
 
 /// The card of a loaded model; a part without a summary of its own has
-/// its type's (`registry`'s).
-pub fn card(s: &Session, registry: &simsandbox_core::registry::Registry) -> Value {
+/// its type's (`summary_of`, from a registry's descriptions: see
+/// [`type_summaries`]).
+pub fn card(s: &Session, summary_of: &dyn Fn(&str) -> Option<String>) -> Value {
     let model = s.sim_model();
     let rows = s.params();
     let connections = &s.flat.connections;
@@ -126,10 +138,12 @@ pub fn card(s: &Session, registry: &simsandbox_core::registry::Registry) -> Valu
             "type": entry.type_name,
             "role": role(&entry.type_name, stateful(&entry.name), reads_system, drives_system),
             "summary": if spec.summary.is_empty() {
-                registry.info(&entry.type_name).map(|i| i.summary.clone()).unwrap_or_default()
+                summary_of(&entry.type_name).unwrap_or_default()
             } else {
                 spec.summary.clone()
             },
+            // Whether the summary is its type's, not its own.
+            "summary_of_type": spec.summary.is_empty(),
             "method": {
                 "name": method.name,
                 "speed": format!("{:?}", method.labels.speed),

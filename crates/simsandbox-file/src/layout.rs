@@ -45,13 +45,15 @@ pub enum SplitKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Pane {
-    /// `"controls"`, `"inspector"`, `"diagram"` or `"view:K"`.
+    /// `"overview"`, `"controls"`, `"inspector"`, `"diagram"` or `"view:K"`.
     Named(String),
     /// Views tiled together in one tab.
     Views { views: Vec<usize> },
 }
 
 impl Pane {
+    /// The model's card (ADR 0108). A SimSandbox without it ignores it.
+    pub const OVERVIEW: &'static str = "overview";
     pub const CONTROLS: &'static str = "controls";
     pub const INSPECTOR: &'static str = "inspector";
     pub const DIAGRAM: &'static str = "diagram";

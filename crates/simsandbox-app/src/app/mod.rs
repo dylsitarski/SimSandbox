@@ -33,6 +33,7 @@ mod files;
 mod forms;
 mod inspector;
 mod mechanism;
+mod overview;
 mod param_rows;
 mod run_menu;
 mod scene;
@@ -150,6 +151,8 @@ pub struct SimApp {
     /// The mechanism row opened in the Inspector's table: its block and
     /// row (ADR 0105).
     mech_open: Option<(String, usize)>,
+    /// The model's card (ADR 0107) and the file it was built from.
+    overview: Option<(simsandbox_file::ModelFile, serde_json::Value)>,
     /// Values of sliders being dragged that apply on release (ADR 0037).
     pending: HashMap<String, f64>,
     /// The equation editor window, when open.
@@ -249,6 +252,7 @@ impl SimApp {
             example_folder: None,
             param_edits: HashMap::new(),
             mech_open: None,
+            overview: None,
             pending: HashMap::new(),
             editor: None,
             signals_editor: None,
@@ -281,6 +285,8 @@ impl SimApp {
         // A --view flag overrides the view saved in the file.
         if view == Some("diagram") {
             app.dock.focus(|p| *p == Pane::Diagram);
+        } else if view == Some("overview") {
+            app.dock.focus(|p| *p == Pane::Overview);
         } else if let (Some(v), Some(live)) = (view, &app.session) {
             let (name, preset) = match v {
                 "phase" => ("plot.xy", 1),
@@ -289,6 +295,11 @@ impl SimApp {
             };
             let (m, h) = (live.model(), live.history());
             app.views.show_only(name, preset, &m.available(&h));
+            // The view chosen, in front of the overview.
+            let tiles = app.tile_ids();
+            app.dock.sync(&tiles);
+            app.dock
+                .focus(|p| matches!(p, Pane::Views { .. } | Pane::View(_)));
         }
         // A view chosen on the command line is where the session starts,
         // not a change to save (the layout and views are saved with the
@@ -364,6 +375,7 @@ impl SimApp {
             .popped
             .iter()
             .filter_map(|p| match p {
+                Pane::Overview => Some(Popped::Overview),
                 Pane::Controls => Some(Popped::Controls),
                 Pane::Inspector => Some(Popped::Inspector),
                 Pane::Diagram => Some(Popped::Diagram),
@@ -507,6 +519,7 @@ impl SimApp {
     /// A tab's title.
     fn pane_title(&self, pane: &Pane) -> String {
         match pane {
+            Pane::Overview => "Overview".into(),
             Pane::Controls => "Controls".into(),
             Pane::Inspector => "Inspector".into(),
             Pane::Diagram => match self.diagram.draft_problem() {
@@ -541,6 +554,7 @@ impl SimApp {
                     });
             }
             Pane::Diagram => self.diagram_tab(ui),
+            Pane::Overview => self.overview_tab(ui),
             Pane::View(t) => self.view_tiles(ui, &[*t], false, actions),
             Pane::Views { tiles, .. } => self.view_tiles(ui, tiles, true, actions),
         }
@@ -639,6 +653,7 @@ enum DockAction {
 /// A tab in its own window, by what it shows (tiles are renumbered when
 /// the model is rebuilt).
 enum Popped {
+    Overview,
     Controls,
     Inspector,
     Diagram,
@@ -654,6 +669,7 @@ fn popped_viewport(p: &Pane) -> egui::ViewportId {
 /// A tab's stable key, for ids.
 fn pane_key(p: &Pane) -> String {
     match p {
+        Pane::Overview => "overview".into(),
         Pane::Controls => "controls".into(),
         Pane::Inspector => "inspector".into(),
         Pane::Diagram => "diagram".into(),

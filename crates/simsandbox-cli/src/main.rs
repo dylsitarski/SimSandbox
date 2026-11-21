@@ -733,7 +733,8 @@ fn explain(args: &[String]) -> Result<()> {
         .to_string();
     let session = simsandbox_session::Session::load(&title, &text, &registry())
         .map_err(|e| Failure::model(format!("{path} cannot load: {e}"), path))?;
-    let card = simsandbox_session::card::card(&session, &registry());
+    let r = registry();
+    let card = simsandbox_session::card::card(&session, &|t| r.info(t).map(|i| i.summary.clone()));
     if json {
         print_json(&card)
     } else {
