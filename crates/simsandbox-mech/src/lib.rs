@@ -35,8 +35,6 @@ pub fn register(registry: &mut Registry) -> Result<()> {
         .method("dopri5", &["rtol", "atol"])
         .method("trbdf2", &["substeps"])
         .method("backward_euler", &["substeps"])
-        .setting("actuated", &[])
-        .setting("loaded", &[])
         .definition(&[
             r#"{"name": "cart", "parent": "ground", "joint": "slider", "kind": "prismatic", "mass": 1.0}"#,
             r#"{"name": "pole", "parent": "cart", "joint": "hinge", "kind": "revolute", "mass": 0.1, "centre": [0, 0.5], "inertia": 0.0083, "start": [0.1, 0]}"#,

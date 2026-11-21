@@ -19,6 +19,8 @@
   - **The Inspector's table for `bodies`** (`simsandbox-app/src/app/mechanism.rs`). Each change is a new diagram edit, `Edit::SetMechanism`. It renames the ports and parameters a renamed body or joint makes, in wires, parameter values, settings and everything in the file outside the blocks (views, sliders, schedules), and drops wires to ports that go. Tested in the session and the app: renames, numbers, add and remove, a refused change kept as a draft, an input unlisted.
   - **Per-platform hashes** (`simsandbox-cli/tests/platform_hashes.rs`, `tests/platform-hashes.json`): four mechanism cases through the binary, pinned for Linux x86_64. The test build and the release build give the same bits, and a changed parameter was caught.
 
+- 2026-11-21: ADR 0106 built (forces as parameters): block, file conversion with an old-form fixture, the Inspector's table, the reference, tests; the cart-pole compared column by column (only `control.n` gone); Linux's pinned hashes re-pinned.
+
 ## Decided
 
 - Owner (2026-11-20): [ADR 0108](../decisions/0108-interface-synchronized-projections.md), the interface's direction (Q64 answered); views are made on the Stage. The environment's setup script replaced: its first line was `#!/bin/install` (so the system ran the `install` utility on it) and it ran `npm install`; it now installs the headless app's libraries (run here first; unproven until a fresh container).

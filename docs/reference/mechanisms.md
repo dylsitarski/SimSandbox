@@ -37,8 +37,12 @@ Every number of a row is a parameter of the block, the row's value its default: 
 | `<joint>_at_x`, `<joint>_at_y`, `<joint>_turn` | the joint's place |
 | `<joint>_damping`, `<joint>_stiffness`, `<joint>_rest` | moving joints |
 | `<joint>_angle0`, `<joint>_rate0` (revolute), `<joint>_position0`, `<joint>_speed0` (prismatic) | `start`; they act when the run starts again |
+| `<joint>_torque` (revolute, N·m), `<joint>_force` (prismatic, N) | each moving joint: what drives it, default 0 |
+| `<body>_fx`, `<body>_fy` (N), `<body>_torque` (N·m) | each body: a force at its centre of mass in world axes and a torque, default 0 |
 
 A number changed while the model runs acts from the next evaluation; the joints keep their coordinates.
+
+Forces and loads are parameters, not inputs ([ADR 0106](../decisions/0106-mechanism-forces-are-parameters.md)): a controller's output wired to `cartpole.slider_force` drives it, read at every evaluation, and inside a fused group at every stage; what nothing drives stays at its value. No output depends on a force at the same instant, so a controller wired from the joints back to a force makes no algebraic loop. Wired to typed equations, the block is solved with them as one ODE (fusion), so a controller acts within the step.
 
 ## Ports
 
@@ -48,12 +52,8 @@ A number changed while the model runs acts from the next evaluation; the joints 
 | `<joint>_position`, `<joint>_speed` | output | m, m/s | each prismatic joint |
 | `energy` | output | J | always: kinetic, plus the potential of gravity (0 at the world's origin) and of the joints' springs |
 | `x`, `y`, `angle`, `vx`, `vy`, `omega` | output over the rows `bodies` | m, m, rad, m/s, m/s, rad/s | always: each body's frame (its joint's point and angle) in the world and its origin's velocity; ids 0, 1, … in row order |
-| `<joint>_torque` (revolute), `<joint>_force` (prismatic) | input | N·m, N | each joint named in the setting `actuated` |
-| `<body>_fx`, `<body>_fy`, `<body>_torque` | input | N, N, N·m | each body named in the setting `loaded`: a force at its centre of mass in world axes, and a torque |
 
-`actuated` and `loaded` list names separated by commas or spaces (`"actuated": "slider"`). Only listed joints and bodies have inputs, since every input must be wired.
-
-No output depends on an input at the same instant, so a controller wired from the joints back to `actuated` makes no algebraic loop. Wired to typed equations, the block is solved with them as one ODE (fusion), so a controller acts within the step.
+A mechanism has no inputs; its forces are parameters (above).
 
 A scene draws the bodies with one frame over the rows and a layer per shape in it:
 
@@ -63,9 +63,9 @@ A scene draws the bodies with one frame over the rows and a layer per shape in i
 
 ## In the app
 
-With the block's node selected, the Inspector shows its bodies as a table: one row per body with its name, its joint's name, the joint's kind, its parent (`ground` or a body above it) and its mass, and buttons to move a row up or down or remove it (its children then hang from its parent). `…` opens a row's other columns and two boxes for its inputs: the joint driven (`actuated`) and the body loaded (`loaded`). `+ body` adds a body on a turning joint hanging from the last one.
+With the block's node selected, the Inspector shows its bodies as a table: one row per body with its name, its joint's name, the joint's kind, its parent (`ground` or a body above it) and its mass, and buttons to move a row up or down or remove it (its children then hang from its parent). `…` opens a row's other columns. `+ body` adds a body on a turning joint hanging from the last one.
 
-Each change is one edit of the model (`Edit::SetMechanism`), undone like any other. Renaming a body or a joint renames the ports and parameters it makes, and the wires, sliders, scheduled inputs and views that name them. An input that goes takes its wire with it. A change that `check` refuses (a body moved above its parent, a welded joint that still has damping) waits as a draft with the error at its row and column; the running model stays. The numbers are also parameters, so a slider on `pole_mass` changes the value while the model runs, without editing the row.
+Each change is one edit of the model (`Edit::SetMechanism`), undone like any other. Renaming a body or a joint renames the ports and parameters it makes, and the wires, sliders, scheduled inputs and views that name them. A port or parameter that goes (a body removed) takes its wires with it. A change that `check` refuses (a body moved above its parent, a welded joint that still has damping) waits as a draft with the error at its row and column; the running model stays. The numbers are also parameters, so a slider on `pole_mass` changes the value while the model runs, without editing the row.
 
 ## Methods
 
@@ -73,7 +73,7 @@ Each change is one edit of the model (`Edit::SetMechanism`), undone like any oth
 
 ## What `check` refuses
 
-At the row and column (`bodies[1].parent`): a name that is not a name, used twice, or `ground`; a parent not listed before the body; an unknown kind or column; a negative mass, inertia, damping or stiffness; numbers that are not finite; a fixed joint with a start or spring. A joint whose bodies beyond it give it no mass or inertia to move. A setting other than `actuated` and `loaded`, or one naming what the mechanism does not have. Two ports or parameters that the rows' names would make the same.
+At the row and column (`bodies[1].parent`): a name that is not a name, used twice, or `ground`; a parent not listed before the body; an unknown kind or column; a negative mass, inertia, damping or stiffness; numbers that are not finite; a fixed joint with a start or spring. A joint whose bodies beyond it give it no mass or inertia to move. Any setting: a mechanism has none (files with the older `actuated` and `loaded` are read with them removed, ADR 0106). Two ports or parameters that the rows' names would make the same.
 
 ## Example: the cart-pole
 
@@ -81,7 +81,6 @@ At the row and column (`bodies[1].parent`): a name that is not a name, used twic
 {
   "name": "cartpole",
   "type": "mech.planar",
-  "settings": {"actuated": "slider"},
   "bodies": [
     {"name": "cart", "parent": "ground", "joint": "slider", "kind": "prismatic", "mass": 1.0},
     {"name": "pole", "parent": "cart", "joint": "hinge", "kind": "revolute",
@@ -90,4 +89,4 @@ At the row and column (`bodies[1].parent`): a name that is not a name, used twic
 }
 ```
 
-Outputs `cartpole.slider_position`, `cartpole.slider_speed`, `cartpole.hinge_angle`, `cartpole.hinge_rate`, `cartpole.energy` and the rows; input `cartpole.slider_force`.
+Outputs `cartpole.slider_position`, `cartpole.slider_speed`, `cartpole.hinge_angle`, `cartpole.hinge_rate`, `cartpole.energy` and the rows; parameters `cartpole.slider_force` (wired from a controller), `cartpole.pole_fx` and the rest.

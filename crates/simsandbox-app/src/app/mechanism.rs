@@ -25,12 +25,6 @@ pub(super) enum RowsEdit {
     Remove(usize),
     /// Move a row up (or down) one place.
     Move { row: usize, up: bool },
-    /// List or unlist a joint in `actuated` or a body in `loaded`.
-    Toggle {
-        setting: String,
-        name: String,
-        on: bool,
-    },
 }
 
 /// The columns opened below the table for a row: each with its label and
@@ -56,19 +50,6 @@ fn text(row: &Map<String, Value>, key: &str) -> String {
         .to_string()
 }
 
-fn list(entry: &simsandbox_file::BlockEntry, setting: &str) -> Vec<String> {
-    entry
-        .settings
-        .get(setting)
-        .map(|s| {
-            s.split([',', ' '])
-                .filter(|w| !w.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// A name not yet used by a body or joint: `base1`, `base2`, ….
 fn free(rows: &[Map<String, Value>], base: &str) -> String {
     let used = |n: &str| {
@@ -84,7 +65,7 @@ fn free(rows: &[Map<String, Value>], base: &str) -> String {
 /// The [`Edit::SetMechanism`] a table change makes of `entry`.
 pub(super) fn mechanism_edit(entry: &simsandbox_file::BlockEntry, e: &RowsEdit) -> Option<Edit> {
     let mut rows = entry.bodies.clone();
-    let mut settings = entry.settings.clone();
+    let settings = entry.settings.clone();
     let mut renames = Vec::new();
     match e {
         RowsEdit::Set { row, key, value } => {
@@ -140,15 +121,6 @@ pub(super) fn mechanism_edit(entry: &simsandbox_file::BlockEntry, e: &RowsEdit) 
                     r.insert("parent".into(), parent.clone().into());
                 }
             }
-            for (setting, who) in [("actuated", text(&gone, "joint")), ("loaded", name)] {
-                if let Some(s) = settings.get_mut(setting) {
-                    *s = s
-                        .split([',', ' '])
-                        .filter(|w| !w.is_empty() && *w != who)
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                }
-            }
         }
         RowsEdit::Move { row, up } => {
             let other = if *up { row.checked_sub(1)? } else { row + 1 };
@@ -157,16 +129,7 @@ pub(super) fn mechanism_edit(entry: &simsandbox_file::BlockEntry, e: &RowsEdit) 
             }
             rows.swap(*row, other);
         }
-        RowsEdit::Toggle { setting, name, on } => {
-            let mut now = list(entry, setting);
-            now.retain(|w| w != name);
-            if *on {
-                now.push(name.clone());
-            }
-            settings.insert(setting.clone(), now.join(", "));
-        }
     }
-    settings.retain(|_, v| !v.is_empty());
     Some(Edit::SetMechanism {
         block: entry.name.clone(),
         bodies: rows,
@@ -367,43 +330,6 @@ impl SimApp {
                         ui.end_row();
                     }
                 });
-            if moving {
-                let on = list(entry, "actuated").contains(&joint);
-                let mut now = on;
-                ui.checkbox(
-                    &mut now,
-                    format!(
-                        "driven: an input {joint}_{}",
-                        if text(r, "kind") == "revolute" {
-                            "torque"
-                        } else {
-                            "force"
-                        }
-                    ),
-                )
-                .on_hover_text("A force or torque on the joint from a wire (actuated)");
-                if now != on {
-                    out.push(RowsEdit::Toggle {
-                        setting: "actuated".into(),
-                        name: joint.clone(),
-                        on: now,
-                    });
-                }
-            }
-            let on = list(entry, "loaded").contains(&name);
-            let mut now = on;
-            ui.checkbox(
-                &mut now,
-                format!("loaded: inputs {name}_fx, {name}_fy, {name}_torque"),
-            )
-            .on_hover_text("A force at the centre of mass and a torque from wires (loaded)");
-            if now != on {
-                out.push(RowsEdit::Toggle {
-                    setting: "loaded".into(),
-                    name,
-                    on: now,
-                });
-            }
         });
         out
     }
@@ -550,29 +476,22 @@ mod tests {
         let problem = app.diagram.draft_problem().unwrap();
         assert!(problem.contains("bodies[0].damping"), "{problem}");
         assert_eq!(text(&entry(&app).bodies[0], "kind"), "prismatic");
-        // The pole no longer loaded: its inputs and their wires go.
-        let mut app = cartpole();
-        edit(
-            &mut app,
-            RowsEdit::Toggle {
-                setting: "loaded".into(),
-                name: "pole".into(),
-                on: false,
-            },
-        );
-        assert!(
-            app.diagram.draft_problem().is_none(),
-            "{:?}",
-            app.diagram.draft_problem()
-        );
-        let e = entry(&app);
-        assert!(!e.settings.contains_key("loaded"));
+        // The pole's loads are parameters a wire drives (ADR 0106): the
+        // grab's spring drives two; nothing feeds its torque.
+        let app = cartpole();
+        assert!(params(&app).contains(&"cartpole.pole_torque".to_string()));
         let m = app.session.as_ref().unwrap().model();
+        assert!(m
+            .file
+            .connections
+            .iter()
+            .any(|c| c.to == "cartpole.pole_fx"));
         assert!(!m
             .file
             .connections
             .iter()
-            .any(|c| c.to.starts_with("cartpole.pole_")));
+            .any(|c| c.to == "cartpole.pole_torque"));
+        let mut app = cartpole();
         // Moving a body above its parent is refused at the row.
         edit(&mut app, RowsEdit::Move { row: 1, up: true });
         let problem = app.diagram.draft_problem().unwrap();

@@ -187,29 +187,3 @@ pub fn tree(rows: &[Row]) -> Tree {
         .collect();
     Tree::new(&parents).expect("checked: parents come first")
 }
-
-/// The names a setting lists (`"slider, hinge"`), each checked against
-/// `known`; an error names the setting.
-pub fn listed(
-    setting: &str,
-    text: Option<&String>,
-    known: &[&str],
-    what: &str,
-) -> Result<Vec<String>, String> {
-    let Some(text) = text else {
-        return Ok(Vec::new());
-    };
-    let mut out: Vec<String> = Vec::new();
-    for n in text.split([',', ' ']).filter(|n| !n.is_empty()) {
-        if !known.contains(&n) {
-            return Err(format!(
-                "settings.{setting}: '{n}' is not {what} of this mechanism"
-            ));
-        }
-        if out.iter().any(|o| o == n) {
-            return Err(format!("settings.{setting}: '{n}' is listed twice"));
-        }
-        out.push(n.to_string());
-    }
-    Ok(out)
-}

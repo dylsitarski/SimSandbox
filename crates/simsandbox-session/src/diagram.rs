@@ -3632,8 +3632,9 @@ mod tests {
     #[test]
     fn a_mechanism_s_rows_change_and_its_names_follow() {
         // ADR 0105: renaming a joint and a body renames the ports and
-        // parameters they make, and every wire, setting, slider and scene
-        // binding with them; an input that goes takes its wire.
+        // parameters they make, and every wire, slider and scene binding
+        // with them; a part that goes takes its wires (ADR 0106: forces
+        // are parameters, driven by wires).
         use simsandbox_file::SceneValue;
         let r = registry();
         let mut f = file("Cart-pole");
@@ -3667,9 +3668,6 @@ mod tests {
         assert!(wired(&f, "control.F", "cartpole.rail_force"));
         assert!(wired(&f, "cartpole.rail_position", "control.x"));
         assert!(wired(&f, "control.fx", "cartpole.arm_fx"));
-        let m = f.blocks.iter().find(|b| b.name == "cartpole").unwrap();
-        assert_eq!(m.settings["actuated"], "rail");
-        assert_eq!(m.settings["loaded"], "arm");
         assert!(f.controls.params.contains_key("cartpole.arm_mass"));
         let scene = &f.controls.views[0].scene;
         assert_eq!(
@@ -3684,31 +3682,32 @@ mod tests {
         crate::Session::load("t", &f.to_json(), &r).unwrap();
         let text = f.to_json();
         assert!(
-            !text.contains("slider_") && !text.contains("pole_"),
+            !text.contains("cartpole.slider_") && !text.contains("cartpole.pole_"),
             "{text}"
         );
-        // The rail no longer driven: its input and the wire into it go.
+        // A body that goes takes the wires of what it made with it.
         let entry = f
             .blocks
             .iter()
             .find(|b| b.name == "cartpole")
             .unwrap()
             .clone();
-        let mut settings = entry.settings.clone();
-        settings.remove("actuated");
         apply(
             &mut f,
             &r,
             &Edit::SetMechanism {
                 block: "cartpole".into(),
-                bodies: entry.bodies,
-                settings,
+                bodies: entry.bodies[..1].to_vec(),
+                settings: entry.settings,
                 renames: Vec::new(),
             },
         )
         .unwrap();
-        assert!(!f.connections.iter().any(|c| c.to == "cartpole.rail_force"));
-        crate::Session::load("t", &f.to_json(), &r).unwrap();
+        assert!(!f
+            .connections
+            .iter()
+            .any(|c| c.to.starts_with("cartpole.arm_") || c.from.starts_with("cartpole.hinge_")));
+        assert!(f.connections.iter().any(|c| c.to == "cartpole.rail_force"));
     }
 
     #[test]

@@ -31,3 +31,11 @@ ADR 0105 gave a mechanism inputs for its joint forces and body loads, but only f
 - To build: next in STATUS.
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none; two settings removed.
+
+## Built (2026-11-21)
+
+- `simsandbox-mech/src/block.rs`: the forces are parameters after each row's numbers (a moving joint's after its start, then the body's three); the energy and pose outputs declare every parameter but the forces as what they depend on, so a wire driving a force from them is no loop. A setting is refused, naming this ADR.
+- The file reader drops `actuated` and `loaded` from `mech.*` blocks with a conversion note (`tests/old/adr-0106-mechanism-settings.json` and its current form).
+- The Inspector's table lost its two input boxes and the toggle edit; `rows::listed` is gone.
+- The cart-pole's results are the same bits in every column but the removed `control.n` (compared over 6 s, 3001 rows); its picture renders the same. Its pinned hashes changed only by that column and were pinned again for Linux; Windows and macOS are pinned again from CI.
+

@@ -2505,6 +2505,24 @@ impl ModelFile {
             return Err(invalid("run.t_end", format!("must be positive, got {t}")));
         }
         compose::check_uses(&raw.blocks, &raw.subsystems)?;
+        // A mechanism's forces and loads became parameters (ADR 0106): the
+        // lists of what had inputs go; wires to them now drive parameters
+        // of the same names.
+        for b in raw
+            .blocks
+            .iter_mut()
+            .filter(|b| b.type_name.starts_with("mech."))
+        {
+            for key in ["actuated", "loaded"] {
+                if b.settings.remove(key).is_some() {
+                    converted.push(format!(
+                        "{}: settings.{key} removed: a mechanism's forces and loads are \
+                         parameters, driven by wires of the same names (ADR 0106)",
+                        b.name
+                    ));
+                }
+            }
+        }
         compose::check_outputs(&raw.outputs, &raw.blocks)?;
         compose::check_inputs(&raw.inputs, &raw.outputs, &raw.blocks)?;
         compose::check_driven(&raw.params, &raw.inputs, &raw.outputs)?;

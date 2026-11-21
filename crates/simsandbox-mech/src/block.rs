@@ -21,9 +21,6 @@ pub const PLANAR: &str = "mech.planar";
 /// The default of gravity's parameter `g` (m/s²), acting along −y.
 pub const STANDARD_GRAVITY: f64 = 9.81;
 
-/// The settings a mechanism takes.
-pub const SETTINGS: [&str; 2] = ["actuated", "loaded"];
-
 /// The rows outputs, in port order: each body's frame in the world.
 pub const POSES: [(&str, &str); 6] = [
     ("x", "m"),
@@ -46,17 +43,13 @@ struct Place {
     centre: usize,
     at: usize,
     turn: usize,
-    /// Damping, stiffness, rest; `None` for a fixed joint.
+    /// Damping, stiffness, rest, then the start's coordinate and rate;
+    /// `None` for a fixed joint.
     spring: Option<usize>,
-}
-
-/// What an input drives.
-#[derive(Clone, Copy, Debug)]
-enum Drive {
-    /// A joint's coordinate's force or torque.
-    Joint(usize),
-    /// A body's load: force x, force y, torque.
-    Load(usize, usize),
+    /// The joint's force or torque (ADR 0106); `None` for a fixed joint.
+    force: Option<usize>,
+    /// The body's load: force x, force y, torque (ADR 0106).
+    load: usize,
 }
 
 /// What [`Equations`] work in, kept between evaluations.
@@ -74,66 +67,25 @@ pub struct Mechanism {
     spec: BlockSpec,
     tree: Tree,
     places: Vec<Place>,
-    drives: Vec<Drive>,
-    /// Bodies with loads, in input order.
-    loaded: Vec<usize>,
     work: RefCell<Work>,
 }
 
 impl Mechanism {
-    /// Built from its rows and settings (ADR 0105 points 2–4); the
-    /// dynamics are checked at the start state (point 6).
+    /// Built from its rows (ADR 0105 points 2–4, ADR 0106: no inputs, no
+    /// settings); the dynamics are checked at the start state (point 6).
     pub fn new(
         name: &str,
         rows: &[Row],
         settings: &std::collections::BTreeMap<String, String>,
     ) -> std::result::Result<Self, String> {
-        if let Some(k) = settings.keys().find(|k| !SETTINGS.contains(&k.as_str())) {
+        if let Some(k) = settings.keys().next() {
             return Err(format!(
-                "settings.{k}: a mechanism's settings are {}",
-                SETTINGS.join(" and ")
+                "settings.{k}: a mechanism has no settings; its forces and loads are \
+                 parameters, driven by wires (ADR 0106)"
             ));
         }
         let tree = rows::tree(rows);
-        let joints: Vec<&str> = rows
-            .iter()
-            .filter(|r| r.kind != rows::KindName::Fixed)
-            .map(|r| r.joint.as_str())
-            .collect();
-        let bodies: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-        let actuated = rows::listed(
-            "actuated",
-            settings.get("actuated"),
-            &joints,
-            "a moving joint",
-        )?;
-        let loaded = rows::listed("loaded", settings.get("loaded"), &bodies, "a body")?;
-
         let mut spec = BlockSpec::new(name, Domain::Equations);
-        let mut drives = Vec::new();
-        let mut loaded_bodies = Vec::new();
-        // Inputs, row by row: a joint's actuation, then the body's loads.
-        for (i, r) in rows.iter().enumerate() {
-            let kind = Kind::from(r.kind);
-            if let (Some((_, _, act)), Some(k)) = (rows::words(kind), tree.links()[i].coord) {
-                if actuated.contains(&r.joint) {
-                    let u = if kind == Kind::Revolute { "N*m" } else { "N" };
-                    spec = spec.input(&format!("{}_{act}", r.joint), unit(u), Shape::Scalar);
-                    drives.push(Drive::Joint(k));
-                }
-            }
-            if loaded.contains(&r.name) {
-                let l = loaded_bodies.len();
-                loaded_bodies.push(i);
-                for (c, (port, u)) in [("fx", "N"), ("fy", "N"), ("torque", "N*m")]
-                    .iter()
-                    .enumerate()
-                {
-                    spec = spec.input(&format!("{}_{port}", r.name), unit(u), Shape::Scalar);
-                    drives.push(Drive::Load(l, c));
-                }
-            }
-        }
         // States: every coordinate, then every rate.
         let dof = tree.dof();
         let moving: Vec<(&Row, Kind)> = rows
@@ -192,7 +144,9 @@ impl Mechanism {
                 centre: take(2),
                 at: take(2),
                 turn: take(1),
-                spring: link.coord.map(|_| take(3)),
+                spring: link.coord.map(|_| take(5)),
+                force: link.coord.map(|_| take(1)),
+                load: take(3),
             };
             let (b, j) = (&r.name, &r.joint);
             let [cx, cy] = r.centre.unwrap_or_default();
@@ -240,7 +194,7 @@ impl Mechanism {
                     PI,
                     "The joint frame's rotation from the parent's",
                 ));
-            if let Some((q, v, _)) = rows::words(kind) {
+            if let Some((q, v, act)) = rows::words(kind) {
                 let rev = kind == Kind::Revolute;
                 let (ud, us, uq, uv) = if rev {
                     ("N*m*s", "N*m", "rad", "rad/s")
@@ -282,17 +236,61 @@ impl Mechanism {
                     .param(
                         signed(&format!("{j}_{v}0"), uv, v0, 10.0, "The rate at the start")
                             .sets_initial_state(),
-                    );
+                    )
+                    .param(signed(
+                        &format!("{j}_{act}"),
+                        if rev { "N*m" } else { "N" },
+                        0.0,
+                        10.0,
+                        "Drives the joint; a wire may drive it (ADR 0106)",
+                    ));
             }
+            spec = spec
+                .param(signed(
+                    &format!("{b}_fx"),
+                    "N",
+                    0.0,
+                    10.0,
+                    "A force at the centre of mass, x in world axes",
+                ))
+                .param(signed(
+                    &format!("{b}_fy"),
+                    "N",
+                    0.0,
+                    10.0,
+                    "A force at the centre of mass, y in world axes",
+                ))
+                .param(signed(
+                    &format!("{b}_torque"),
+                    "N*m",
+                    0.0,
+                    10.0,
+                    "A torque on the body",
+                ));
             places.push(place);
+        }
+        // The energy and the poses read every number but the forces, so a
+        // wire driving a force from them makes no loop (ADR 0106 point 3).
+        let numbers: Vec<String> = spec
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| {
+                !places
+                    .iter()
+                    .any(|p| p.force == Some(*k) || (p.load..p.load + 3).contains(k))
+            })
+            .map(|(_, q)| q.name.clone())
+            .collect();
+        let numbers: Vec<&str> = numbers.iter().map(String::as_str).collect();
+        for port in spec.ports.iter_mut().filter(|p| p.state.is_none()) {
+            *port = port.clone().depends_on_params(&numbers);
         }
         unique_names(&spec)?;
         let mech = Self {
             spec,
             tree,
             places,
-            drives,
-            loaded: loaded_bodies,
             work: RefCell::new(Work::default()),
         };
         mech.check_start(rows)?;
@@ -328,31 +326,31 @@ impl Mechanism {
         }));
     }
 
-    /// The numbers, joint forces and loads for an evaluation, into `w`.
-    fn prepare(&self, u: &[f64], p: &[f64], w: &mut Work) {
+    /// The numbers, joint forces and loads for an evaluation, into `w`:
+    /// all from the parameters (ADR 0106).
+    fn prepare(&self, p: &[f64], w: &mut Work) {
         self.numbers(p, &mut w.nums);
         w.tau.clear();
         w.tau.resize(self.tree.dof(), 0.0);
         w.loads.clear();
-        w.loads.extend(self.loaded.iter().map(|&body| Load {
-            body,
-            ..Load::default()
-        }));
-        for (d, &v) in self.drives.iter().zip(u) {
-            match *d {
-                Drive::Joint(k) => w.tau[k] = v,
-                Drive::Load(l, 0) => w.loads[l].force[0] = v,
-                Drive::Load(l, 1) => w.loads[l].force[1] = v,
-                Drive::Load(l, _) => w.loads[l].torque = v,
+        for (body, (pl, l)) in self.places.iter().zip(self.tree.links()).enumerate() {
+            if let (Some(k), Some(f)) = (l.coord, pl.force) {
+                w.tau[k] = p[f];
             }
+            w.loads.push(Load {
+                body,
+                force: [p[pl.load], p[pl.load + 1]],
+                torque: p[pl.load + 2],
+            });
         }
     }
 
     /// `q̈` at the state `x`, into `qdd`.
     pub fn accelerations(&self, x: &[f64], u: &[f64], p: &[f64], qdd: &mut [f64]) {
         let n = self.tree.dof();
+        let _ = u;
         let w = &mut *self.work.borrow_mut();
-        self.prepare(u, p, w);
+        self.prepare(p, w);
         let at = At {
             nums: &w.nums,
             gravity: [0.0, -p[0]],
@@ -394,9 +392,8 @@ impl Mechanism {
         let p = self.defaults();
         let mut x = vec![0.0; 2 * self.tree.dof()];
         self.initial_state(&p, &mut x);
-        let u = vec![0.0; self.drives.len()];
         let mut qdd = vec![0.0; self.tree.dof()];
-        self.accelerations(&x, &u, &p, &mut qdd);
+        self.accelerations(&x, &[], &p, &mut qdd);
         for (r, l) in rows.iter().zip(self.tree.links()) {
             if l.coord.is_some_and(|k| !qdd[k].is_finite()) {
                 return Err(format!(

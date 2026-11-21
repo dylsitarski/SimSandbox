@@ -238,14 +238,14 @@ fn cartpole() -> Mechanism {
             r#"{"name": "cart", "parent": "ground", "joint": "slider", "kind": "prismatic", "mass": 1.0}"#,
             r#"{"name": "pole", "parent": "cart", "joint": "hinge", "kind": "revolute", "mass": 0.1, "centre": [0, 0.5], "inertia": 0.0083}"#,
         ],
-        &[("actuated", "slider, hinge"), ("loaded", "pole")],
+        &[],
     )
 }
 
 #[test]
 fn the_cartpole_matches_its_exact_equations() {
     let m = cartpole();
-    let p = m.defaults();
+    let mut p = m.defaults();
     let (mc, mp, l, i, g) = (1.0, 0.1, 0.5, 0.0083, 9.81);
     let mut r = Lcg(11);
     for _ in 0..500 {
@@ -263,8 +263,21 @@ fn the_cartpole_matches_its_exact_equations() {
             r.range(-2.0, 2.0),
             r.range(-0.5, 0.5),
         ];
+        // As parameters (ADR 0106).
+        for (name, v) in [
+            "slider_force",
+            "hinge_torque",
+            "pole_fx",
+            "pole_fy",
+            "pole_torque",
+        ]
+        .iter()
+        .zip(u)
+        {
+            p[param(&m, name)] = v;
+        }
         let mut qdd = [0.0; 2];
-        m.accelerations(&x, &u, &p, &mut qdd);
+        m.accelerations(&x, &[], &p, &mut qdd);
         // Lagrange's equations with θ counter-clockwise from upright: the
         // pole's centre at (x − l sin θ, l cos θ). The load's generalized
         // forces are its work along each coordinate.
@@ -505,9 +518,23 @@ fn block(lines: &[&str], settings: &[(&str, &str)], method: &str) -> Box<dyn Blo
     build("cp", &c).unwrap()
 }
 
-/// Steps the block `steps` times from `state`, its inputs `u`.
-fn run(b: &mut dyn Block, state: &mut [f64], t0: usize, steps: usize, u: &[f64]) -> Vec<Vec<f64>> {
-    let p: Vec<f64> = b.spec().params.iter().map(|q| q.default).collect();
+/// A parameter's place by name.
+fn param(m: &Mechanism, name: &str) -> usize {
+    use simsandbox_eq::OdeSystem;
+    m.spec().params.iter().position(|q| q.name == name).unwrap()
+}
+
+/// Steps the block `steps` times from `state`, its cart pushed by `force`
+/// (the parameter `slider_force`, ADR 0106).
+fn run(b: &mut dyn Block, state: &mut [f64], t0: usize, steps: usize, force: f64) -> Vec<Vec<f64>> {
+    let mut p: Vec<f64> = b.spec().params.iter().map(|q| q.default).collect();
+    let k = b
+        .spec()
+        .params
+        .iter()
+        .position(|q| q.name == "slider_force")
+        .unwrap();
+    p[k] = force;
     let mut y = vec![0.0; b.spec().output_len()];
     let mut rows = vec![Vec::new(); 6];
     let dt = 1e-3;
@@ -521,7 +548,7 @@ fn run(b: &mut dyn Block, state: &mut [f64], t0: usize, steps: usize, u: &[f64])
             },
             StepIo {
                 params: &p,
-                inputs: u,
+                inputs: &[],
                 state,
                 outputs: &mut y,
                 tables: &mut [],
@@ -541,17 +568,17 @@ fn a_run_restored_into_a_fresh_block_gives_the_same_bits() {
         r#"{"name": "pole", "parent": "cart", "joint": "hinge", "kind": "revolute", "mass": 0.1, "centre": [0, 0.5], "inertia": 0.0083, "damping": 0.01, "start": [0.1, 0]}"#,
     ];
     for method in ["rk4", "dopri5", "trbdf2", "backward_euler"] {
-        let settings = [("actuated", "slider")];
+        let settings = [];
         let mut b = block(&lines, &settings, method);
         let p: Vec<f64> = b.spec().params.iter().map(|q| q.default).collect();
         let mut x = vec![0.0; 4];
         b.init(&p, &mut x).unwrap();
-        run(b.as_mut(), &mut x, 0, 500, &[0.5]);
+        run(b.as_mut(), &mut x, 0, 500, 0.5);
         let snapshot = x.clone();
-        let rows = run(b.as_mut(), &mut x, 500, 500, &[0.5]);
+        let rows = run(b.as_mut(), &mut x, 500, 500, 0.5);
         let mut y = snapshot;
         let mut fresh = block(&lines, &settings, method);
-        let again = run(fresh.as_mut(), &mut y, 500, 500, &[0.5]);
+        let again = run(fresh.as_mut(), &mut y, 500, 500, 0.5);
         let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
         assert_eq!(bits(&x), bits(&y), "{method}");
         assert_eq!(rows, again, "{method}");

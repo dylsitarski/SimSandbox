@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "description": "The Phase 2 gate's cart-pole (ADR 0103, ADR 0105): a cart on a rail and a pole hinged on it, one mech.planar block, balanced upright by an LQR controller written as typed equations. The controller reads the joints and drives the cart's force; wired to the mechanism it is solved with it as one ODE. Press on the pole in the scene and drag: while it is held, a damped spring pulls the pole's centre toward the pointer (the 'loaded' force); let go and the controller catches it, unless the cart's force limit (umax) cannot. Rewind and run on: the grab is recorded input and replays exactly; Runs ▸ Save run… keeps it, and simsandbox run --inputs replays it headless. The dots are the bodies' frames, drawn from the mechanism's rows.",
+  "description": "The Phase 2 gate's cart-pole (ADR 0103, ADR 0105): a cart on a rail and a pole hinged on it, one mech.planar block, balanced upright by an LQR controller written as typed equations. The controller reads the joints and drives the cart's force; wired to the mechanism it is solved with it as one ODE. Press on the pole in the scene and drag: while it is held, a damped spring pulls the pole's centre toward the pointer (it drives the pole's load parameters, pole_fx and pole_fy); let go and the controller catches it, unless the cart's force limit (umax) cannot. Rewind and run on: the grab is recorded input and replays exactly; Runs ▸ Save run… keeps it, and simsandbox run --inputs replays it headless. The dots are the bodies' frames, drawn from the mechanism's rows.",
   "run": {
     "dt": 0.002
   },
@@ -17,10 +17,6 @@
     {
       "name": "cartpole",
       "type": "mech.planar",
-      "settings": {
-        "actuated": "slider",
-        "loaded": "pole"
-      },
       "bodies": [
         {
           "damping": 0.1,
@@ -75,8 +71,7 @@
         "cx = x - lh*sin(th) [m]",
         "cy = lh*cos(th) [m]",
         "fx = held*(ks*(hx - cx) - cs*(v - lh*cos(th)*w)) [N]",
-        "fy = held*(ks*(hy - cy) + cs*lh*sin(th)*w) [N]",
-        "n = 0 [N*m]"
+        "fy = held*(ks*(hy - cy) + cs*lh*sin(th)*w) [N]"
       ]
     }
   ],
@@ -124,10 +119,6 @@
     {
       "from": "control.fy",
       "to": "cartpole.pole_fy"
-    },
-    {
-      "from": "control.n",
-      "to": "cartpole.pole_torque"
     }
   ],
   "controls": {

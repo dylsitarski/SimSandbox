@@ -844,7 +844,6 @@ def test_a_mechanism_is_built_from_rows_checked_at_the_call():
     m.add_block(
         "cartpole",
         "mech.planar",
-        settings={"actuated": "slider"},
         bodies=[
             {"name": "cart", "parent": "ground", "joint": "slider", "kind": "prismatic", "mass": 1.0},
             {"name": "pole", "parent": "cart", "joint": "hinge", "kind": "revolute",

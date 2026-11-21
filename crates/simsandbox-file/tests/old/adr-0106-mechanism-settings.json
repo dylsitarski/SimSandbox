@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "blocks": [
+    {"name": "push", "type": "eq.equations", "equations": ["param F [N] = 0.5", "f = F [N]"]},
+    {"name": "cartpole", "type": "mech.planar",
+     "settings": {"actuated": "slider", "loaded": "pole"},
+     "bodies": [
+       {"name": "cart", "parent": "ground", "joint": "slider", "kind": "prismatic", "mass": 1.0},
+       {"name": "pole", "parent": "cart", "joint": "hinge", "kind": "revolute", "mass": 0.1, "centre": [0, 0.5], "inertia": 0.0083}
+     ]}
+  ],
+  "connections": [{"from": "push.f", "to": "cartpole.slider_force"}]
+}
