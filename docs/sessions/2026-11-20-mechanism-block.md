@@ -23,6 +23,8 @@
 
 - 2026-11-21: ADR 0109 accepted and built: roles, keys, groups, descriptions and summaries in the core; typed equations' notes; built-in types and the cart-pole annotated; `describe` and `check` report them; examples' results unchanged (only `check` output gained fields).
 
+- 2026-11-21: the model card, headless: `card.rs` (JSON) and its Markdown, `simsandbox explain`, Python's `explain`; roles of parts inferred from the graph; tested in the CLI and Python; every example explains.
+
 ## Decided
 
 - Owner (2026-11-20): [ADR 0108](../decisions/0108-interface-synchronized-projections.md), the interface's direction (Q64 answered); views are made on the Stage. The environment's setup script replaced: its first line was `#!/bin/install` (so the system ran the `install` utility on it) and it ran `npm install`; it now installs the headless app's libraries (run here first; unproven until a fresh container).

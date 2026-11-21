@@ -660,3 +660,39 @@ fn a_mechanism_is_described_and_its_rows_are_checked_at_their_path() {
         json(&out)
     );
 }
+
+#[test]
+fn explain_prints_the_models_card() {
+    // ADR 0107: generated from the file; Markdown by default, JSON on ask.
+    let model = example("cartpole.ssbx.json");
+    let out = simsandbox(&["explain", &model]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    for wanted in [
+        "# cartpole",
+        "## Key parameters (pinned by the model)",
+        "### control — controller (`eq.equations`)",
+        "| `k1` | -10.0 N/m | tuning | gain on the cart's position |",
+        "- control → cartpole: F → slider_force, fx → pole_fx, fy → pole_fy",
+    ] {
+        assert!(text.contains(wanted), "lacks {wanted:?}:\n{text}");
+    }
+    let card = json(&simsandbox(&["explain", &model, "--format", "json"]));
+    assert_eq!(card["parts"][1]["role"], "system");
+    // A model that cannot load fails as check does; a bad format is usage.
+    let bad = scratch(
+        "explain-bad.json",
+        r#"{"format": 1, "blocks": [{"name": "a", "type": "eq.nope"}]}"#,
+    );
+    assert_eq!(simsandbox(&["explain", &bad]).status.code(), Some(1));
+    assert_eq!(
+        simsandbox(&["explain", &model, "--format", "html"])
+            .status
+            .code(),
+        Some(2)
+    );
+}

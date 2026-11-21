@@ -21,7 +21,7 @@ import copy
 import functools
 import json
 import os
-from typing import TYPE_CHECKING, Any, Iterable, Iterator, cast
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, Literal, cast, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -45,6 +45,7 @@ __all__ = [
     "describe",
     "schema",
     "check",
+    "explain",
     "examples",
     "upgrade",
 ]
@@ -71,6 +72,26 @@ def check(model: "Model | dict[str, Any] | str | os.PathLike[str]") -> dict[str,
     bad model: read ``ok``."""
     with _in_folder(_folder(model)):
         return cast("dict[str, Any]", json.loads(_native.check(_text(model))))
+
+
+@overload
+def explain(model: "Model | dict[str, Any] | str | os.PathLike[str]", format: Literal["markdown"] = "markdown") -> str: ...
+@overload
+def explain(model: "Model | dict[str, Any] | str | os.PathLike[str]", format: Literal["json"]) -> dict[str, Any]: ...
+def explain(
+    model: "Model | dict[str, Any] | str | os.PathLike[str]", format: str = "markdown"
+) -> "str | dict[str, Any]":
+    """The model's card (ADR 0107): what it is, its parts by role, each
+    part's summary, equations or bodies, method and labels, parameters by
+    role, inputs and outputs; how the parts connect; its key parameters
+    (pinned, else suggested by the types); what its views show; how far
+    to trust it. Markdown (default) or, with ``format="json"``, a dict.
+    Raises :class:`ModelError` if the model cannot load."""
+    if format not in ("markdown", "json"):
+        raise ValueError(f"format is 'markdown' or 'json', not {format!r}")
+    with _in_folder(_folder(model)):
+        text = _native.explain(_text(model), format == "json")
+    return cast("dict[str, Any]", json.loads(text)) if format == "json" else text
 
 
 def upgrade(model: "Model | dict[str, Any] | str | os.PathLike[str]") -> tuple["Model", list[str]]:
@@ -371,6 +392,14 @@ class Model:
     def check(self) -> dict[str, Any]:
         """See :func:`check`."""
         return check(self)
+
+    @overload
+    def explain(self, format: Literal["markdown"] = "markdown") -> str: ...
+    @overload
+    def explain(self, format: Literal["json"]) -> dict[str, Any]: ...
+    def explain(self, format: str = "markdown") -> "str | dict[str, Any]":
+        """See :func:`explain`."""
+        return explain(self, format)  # type: ignore[call-overload]
 
     def run(
         self,

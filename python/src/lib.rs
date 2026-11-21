@@ -107,6 +107,21 @@ fn run_file(text: &str) -> PyResult<String> {
         .map_err(|e| ModelError::new_err(e.to_string()))
 }
 
+/// A model's card (ADR 0107): Markdown, or with `json` the card as JSON
+/// text. Raises `ModelError` if the model cannot load.
+#[pyfunction]
+#[pyo3(signature = (text, json = false))]
+fn explain(text: &str, json: bool) -> PyResult<String> {
+    let r = registry();
+    let s = simsandbox_session::Session::load("model", text, &r).map_err(ModelError::new_err)?;
+    let card = simsandbox_session::card::card(&s, &r);
+    Ok(if json {
+        card.to_string()
+    } else {
+        simsandbox_session::card::markdown(&card)
+    })
+}
+
 /// The run file's JSON Schema.
 #[pyfunction]
 fn run_schema() -> &'static str {
@@ -825,6 +840,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
     m.add_function(wrap_pyfunction!(connection_problem, m)?)?;
     m.add_function(wrap_pyfunction!(block_problem, m)?)?;
+    m.add_function(wrap_pyfunction!(explain, m)?)?;
     m.add_function(wrap_pyfunction!(scene_problem, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

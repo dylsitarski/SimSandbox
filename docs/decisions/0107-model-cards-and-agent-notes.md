@@ -32,3 +32,13 @@ Models made by AI agents must be easy for a person to understand: what the model
 - The card is the "Overview" of the [interface report](../research/2026-11-20-interface-report.md).
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none; the card is a view of a model, notes and the mark are data on it.
+
+## Built so far (2026-11-21)
+
+- Point 1, headless:
+  - `simsandbox explain FILE [--format markdown|json]`, `ss.explain` and `Model.explain` (Markdown or a dict), from `simsandbox-session/src/card.rs`;
+  - parts' roles are inferred (an input block is interaction; a block with states a system; a stateless block that reads a system and drives one a controller; other stateless blocks formulas; a study block a study);
+  - a part without a summary of its own shows its type's;
+  - key parameters are the pinned controls, else the types' suggestions ([ADR 0109](0109-parameter-roles-key-parameters-port-groups.md)).
+- Not yet: the card in the app (the Overview tab, [ADR 0108](0108-interface-synchronized-projections.md)), and points 2–5 (notes, `check --agent`, the agent mark, the guidance for agents).
+

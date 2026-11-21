@@ -866,3 +866,18 @@ def test_a_mechanism_is_built_from_rows_checked_at_the_call():
         )
     with pytest.raises(ss.ModelError, match="only mechanisms"):
         ss.Model().add_block("l", "eq.lorenz", bodies=[])
+
+
+def test_a_model_explains_itself():
+    # ADR 0107: the card, generated from the file, as Markdown and as a dict.
+    m = ss.Model.example("Cart-pole")
+    text = m.explain()
+    assert "## Parts" in text and "control — controller" in text and "| `k1` |" in text
+    card = m.explain(format="json")
+    roles = {p["name"]: p["role"] for p in card["parts"]}
+    assert roles == {"hand": "interaction", "cartpole": "system", "control": "controller"}
+    assert [k["key"] for k in card["key_parameters"]["params"]] == ["cartpole.pole_mass", "control.umax"]
+    tuning = [p["name"] for p in next(p for p in card["parts"] if p["name"] == "control")["params"]["tuning"]]
+    assert tuning == ["k1", "k2", "k3", "k4", "umax", "ks", "cs"]
+    with pytest.raises(ValueError):
+        m.explain(format="html")  # type: ignore[call-overload]

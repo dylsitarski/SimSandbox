@@ -19,6 +19,7 @@
 //! - [`examples`]: the built-in example models and the registries of every
 //!   block type and view this build knows.
 
+pub mod card;
 pub mod compose;
 pub mod describe;
 pub mod diagram;

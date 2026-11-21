@@ -27,6 +27,7 @@ Commands:
   run FILE          run a model, or replay a run file, and print its outputs (CSV or JSON)
   check FILE        check a model or run file and print a JSON report
   describe [TYPE]   every block, view and filter type and the units as JSON, or one type
+  explain FILE      the model's card: its parts, equations, methods, parameters and views
   schema [run]      the model file's, or a run file's, JSON Schema
   render FILE       draw the model's views, or its block diagram, to a PNG
   start-from FILE   the model file that starts from the state reached at a time
@@ -83,6 +84,18 @@ parameters, labels and what views can take. Exit status 1 if the model cannot ru
 
 Print, as JSON, every block, view and filter type and the units; or one block or view
 type (its ports, parameters, methods and labels); or with `units` every unit symbol.",
+    ),
+    (
+        "explain",
+        "usage: simsandbox explain FILE [--format markdown|json]
+
+Print the model's card (ADR 0107): what it is, its parts by role (interaction, system,
+controller, formulas, study), each part's summary, equations or bodies, method with its
+labels and what it is solved with, its parameters grouped by role and its inputs and
+outputs; how the parts connect, wires between two parts as one bundle; the key
+parameters (those the model pins, else those its types suggest); what each view shows;
+and how far to trust it. Markdown (default) or JSON. Exit status 1 if the model cannot
+load.",
     ),
     (
         "schema",
@@ -689,6 +702,38 @@ fn check(args: &[String]) -> Result<()> {
     }
 }
 
+/// Print a model's card (ADR 0107), as Markdown or JSON.
+fn explain(args: &[String]) -> Result<()> {
+    let (path, rest) = file_arg("explain", args)?;
+    let flags = Flags::parse(rest, &["--format"])?;
+    let json = match flags.get("--format") {
+        None | Some("markdown") => false,
+        Some("json") => true,
+        Some(other) => {
+            return Err(Failure::usage(format!(
+                "--format is markdown or json, not '{other}'"
+            )))
+        }
+    };
+    let text = read(path)?;
+    let title = std::path::Path::new(path)
+        .file_name()
+        .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
+    let title = title
+        .strip_suffix(".ssbx.json")
+        .unwrap_or(&title)
+        .to_string();
+    let session = simsandbox_session::Session::load(&title, &text, &registry())
+        .map_err(|e| Failure::model(format!("{path} cannot load: {e}"), path))?;
+    let card = simsandbox_session::card::card(&session, &registry());
+    if json {
+        print_json(&card)
+    } else {
+        print!("{}", simsandbox_session::card::markdown(&card));
+        Ok(())
+    }
+}
+
 /// Print the catalogue, or one block or view type.
 fn describe_types(args: &[String]) -> Result<()> {
     let r = registry();
@@ -1036,6 +1081,7 @@ fn command(args: &[String], rest: &[String]) -> Result<()> {
         "run" => run_file(rest),
         "check" => check(rest),
         "describe" => describe_types(rest),
+        "explain" => explain(rest),
         "schema" => schema(rest),
         "render" => render_file(rest),
         "start-from" => start_from_file(rest),
