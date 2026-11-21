@@ -42,6 +42,8 @@ Every number of a row is a parameter of the block, the row's value its default: 
 
 A number changed while the model runs acts from the next evaluation; the joints keep their coordinates.
 
+Roles ([ADR 0109](../decisions/0109-parameter-roles-key-parameters-port-groups.md)): centres, joint points, turns and rests are `geometry`; masses, inertias, damping, stiffness and `g` are `property`; starts are `start`; forces and loads are `drive`. The outputs of the joints form the group `joints`, the rows `bodies`.
+
 Forces and loads are parameters, not inputs ([ADR 0106](../decisions/0106-mechanism-forces-are-parameters.md)): a controller's output wired to `cartpole.slider_force` drives it, read at every evaluation, and inside a fused group at every stage; what nothing drives stays at its value. No output depends on a force at the same instant, so a controller wired from the joints back to a force makes no algebraic loop. Wired to typed equations, the block is solved with them as one ODE (fusion), so a controller acts within the step.
 
 ## Ports

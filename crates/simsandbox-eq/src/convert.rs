@@ -48,6 +48,7 @@ impl Convert {
                 time: TimeSemantics::Stateless,
                 reads_time: Some(false),
                 instants: None,
+                summary: String::new(),
             },
             method: MethodSpec {
                 name: EXACT.into(),

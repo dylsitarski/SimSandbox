@@ -133,7 +133,7 @@ pub(crate) fn initial_params_by_name(
         let k = spec
             .params
             .iter()
-            .position(|q| q.initial_condition && q.name == name)?;
+            .position(|q| q.initial_condition() && q.name == name)?;
         p[k] = v;
     }
     let mut check = vec![0.0; state.len()];

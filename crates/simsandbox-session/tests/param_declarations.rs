@@ -144,7 +144,7 @@ fn outputs_change_only_with_the_parameters_they_declare() {
             let base = outputs(block.as_ref(), &p, &state, &tables, &u);
             for (i, q) in spec.params.iter().enumerate() {
                 // Starting values are read when the block starts only.
-                if q.initial_condition {
+                if q.initial_condition() {
                     continue;
                 }
                 let mut moved = p.clone();

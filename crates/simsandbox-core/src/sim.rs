@@ -1846,7 +1846,7 @@ fn starting_order(
     let starts = |b: usize| {
         driven[b]
             .iter()
-            .any(|&i| spec(b).params[i].initial_condition)
+            .any(|&i| spec(b).params[i].initial_condition())
     };
     if !(0..model.blocks.len()).any(starts) {
         return Ok(Vec::new());
@@ -1861,7 +1861,7 @@ fn starting_order(
         let s = spec(dst);
         let reaches = if r.to_offset >= n_in[dst] {
             let q = &s.params[driven[dst][r.to_offset - n_in[dst]]];
-            if q.initial_condition {
+            if q.initial_condition() {
                 start_edges.push((src, dst, q.name.clone()));
                 true
             } else {

@@ -237,6 +237,7 @@ impl FileInput {
                 // Its samples' times: a model with no states is evaluated
                 // there (ADR 0067 step 4).
                 instants: Some(times),
+                summary: String::new(),
             },
             method: MethodSpec {
                 name: READ.into(),

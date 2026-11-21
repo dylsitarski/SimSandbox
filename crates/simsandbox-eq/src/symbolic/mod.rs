@@ -47,6 +47,7 @@ mod functions;
 mod interface;
 mod layout;
 mod lower;
+mod notes;
 mod parse;
 mod program;
 mod rules;

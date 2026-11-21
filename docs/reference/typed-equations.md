@@ -25,7 +25,11 @@ This block has states `x` and `v`, parameters `k`, `c`, `x0`, `v0` (each 1 unles
 
 ## Lines
 
-- One statement a line. Blank lines and lines starting with `#` are skipped. A comment cannot follow a statement on its line.
+- One statement a line. Blank lines are skipped.
+- **Comments** ([ADR 0109](../decisions/0109-parameter-roles-key-parameters-port-groups.md)): `#` starts a comment, to the end of the line (not inside `"…"`).
+  - Comment lines before the first statement are the block's **summary**.
+  - A comment after a statement **describes** what the line declares: a parameter, input or state, or the quantity an equation defines (`dx/dt = v  # position` describes `x`). `describe`, `check` and the Inspector show it.
+  - Other comment lines are skipped.
 - A statement begins with its word and one space (`state x`). The words are not reserved: `param = 4` is a formula defining `param`.
 - **Names** start with a letter or `_` and continue with letters, digits or `_`; any alphabet (`dθ/dt = ω`). Not allowed as names: `t` (time), `pi`, the names of the [functions](#functions), and `n` in a map.
 - **Numbers**: `3`, `0.5`, `.5`, `1e-3`.
@@ -85,13 +89,14 @@ dv/dt = (F - drag)/m
 ### `param`
 
 ```text
-param NAME [unit] [= number]              one value; 1 if not given
+param NAME [unit] [= number] [as ROLE]    one value; 1 if not given
 param NAME[axes] [unit] [= number]        a value per cell: parameters NAME[0], NAME[1], …
 param NAME[axes] [unit] = file "m.csv"    a value per cell from a file's column
 param NAME[table] [unit] [= expression]   a value per row, which does not change
 ```
 
 - A default is a plain number, not an expression.
+- `as ROLE` says what kind of value it is ([ADR 0109](../decisions/0109-parameter-roles-key-parameters-port-groups.md)): `property` (the default), `geometry`, `start` (acts when the run starts again), `drive` (pushes the model from outside), `tuning` (gains, limits, set points) or `numerics`. A state's initial value (`x0`) is `start`. Another word is an error at its line. Interfaces group parameters by role: `param k1 [N/m] = -10 as tuning  # gain on position`.
 - Every other name used in an equation, a grid's ends, an array's initial value, an edge value or a [rule](#rules-between-steps) is a parameter too, with default 1, in order of first use (those used only in rules after the others).
 - A value per row is kept with the rows and filled from the table's `start` file; it is an output of the block and has no entry among the parameters. It needs a block with states (`dx/dt = …`, `x' = …` or `x[n+1] = …`).
 

@@ -147,7 +147,7 @@ impl OutputPlan {
                     .enumerate()
                     .filter(|&(_, &i)| {
                         let q = &spec.params[i];
-                        !q.initial_condition && p.reads_param(&q.name)
+                        !q.initial_condition() && p.reads_param(&q.name)
                     })
                     .map(|(j, _)| (spec.input_len() + j, 1))
                     .collect();

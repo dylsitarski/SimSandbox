@@ -26,9 +26,12 @@ impl EquationSet {
         lines: &[String],
         rows: &std::collections::BTreeMap<String, usize>,
     ) -> Result<Self> {
+        // What the definition says about itself (ADR 0109), off the lines.
+        let original = lines;
+        let (lines, notes) = super::notes::read(lines)?;
         let written = lines.len();
-        let (lines, from) = row_params(lines);
-        Self::parse_lines(name, &lines, rows).map_err(|e| {
+        let (lines, from) = row_params(&lines);
+        let mut set = Self::parse_lines(name, &lines, rows).map_err(|e| {
             // A mistake on a line holding a parameter over rows is one of
             // its `param` line: the line written.
             let SimError::InvalidDefinition(m) = &e else {
@@ -42,7 +45,12 @@ impl EquationSet {
                 Some((l, what)) if l > written => definition_error(from[l - written - 1], 1, what),
                 _ => e,
             }
-        })
+        })?;
+        super::notes::apply(&notes, &mut set.spec);
+        // Built again from what was written, notes and all, when its
+        // tables' rows change.
+        set.source.1 = original.to_vec();
+        Ok(set)
     }
 
     /// The lines as [`row_params`] gives them, compiled.

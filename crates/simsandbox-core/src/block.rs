@@ -285,6 +285,11 @@ pub struct PortSpec {
     /// For an output of a mesh's cells (ADR 0085, ADR 0086): how to draw
     /// it. Its rows are the cells, each its corners as ids of its points.
     pub mesh: Option<MeshOf>,
+    /// The group naming and ordering it among its Block's ports, such as a
+    /// mechanism's `joints` (ADR 0109); `None` if ungrouped.
+    pub group: Option<String>,
+    /// What it carries, in a sentence; empty if not said (ADR 0109).
+    pub description: String,
 }
 
 /// How a mesh's cells are drawn (ADR 0086): structure only, no geometry
@@ -324,7 +329,21 @@ impl PortSpec {
             param_feedthrough: None,
             state: None,
             mesh: None,
+            group: None,
+            description: String::new(),
         }
+    }
+
+    /// Put it in a group (ADR 0109).
+    pub fn grouped(mut self, group: &str) -> Self {
+        self.group = Some(group.into());
+        self
+    }
+
+    /// Say what it carries (ADR 0109).
+    pub fn described(mut self, description: &str) -> Self {
+        self.description = description.into();
+        self
     }
 
     /// Name its axes, in [`Shape::axes`] order (ADR 0081).
@@ -390,6 +409,8 @@ impl PortSpec {
             param_feedthrough: None,
             state: None,
             mesh: None,
+            group: None,
+            description: String::new(),
         }
     }
 }
@@ -407,9 +428,61 @@ pub struct ParamSpec {
     pub suggested_min: f64,
     pub suggested_max: f64,
     pub description: String,
-    /// The parameter sets initial state, so a change takes effect when the
-    /// run restarts (`Simulator::restart`), not while it runs.
-    pub initial_condition: bool,
+    /// What kind of value it is (ADR 0109). [`ParamRole::Start`] sets
+    /// initial state, so a change takes effect when the run restarts
+    /// (`Simulator::restart`), not while it runs.
+    pub role: ParamRole,
+    /// Suggested by its Block type as one that matters, shown first where
+    /// its model pins nothing of the Block (ADR 0109).
+    pub key: bool,
+}
+
+/// What kind of value a parameter is (ADR 0109), for grouping and
+/// explaining; only [`ParamRole::Start`] changes how it acts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ParamRole {
+    /// A physical or model property: masses, damping, rates.
+    #[default]
+    Property,
+    /// Where things are and how big: lengths, points, turns.
+    Geometry,
+    /// The state it starts from; acts on restart.
+    Start,
+    /// Pushes the model from outside, usually driven by a wire.
+    Drive,
+    /// A design choice: gains, limits, set points.
+    Tuning,
+    /// How it is computed rather than what is modelled.
+    Numerics,
+}
+
+impl ParamRole {
+    /// Every role, in the order interfaces group them.
+    pub const ALL: [ParamRole; 6] = [
+        ParamRole::Property,
+        ParamRole::Geometry,
+        ParamRole::Start,
+        ParamRole::Drive,
+        ParamRole::Tuning,
+        ParamRole::Numerics,
+    ];
+
+    /// Its name as written (`as tuning`) and listed by `describe`.
+    pub fn name(self) -> &'static str {
+        match self {
+            ParamRole::Property => "property",
+            ParamRole::Geometry => "geometry",
+            ParamRole::Start => "start",
+            ParamRole::Drive => "drive",
+            ParamRole::Tuning => "tuning",
+            ParamRole::Numerics => "numerics",
+        }
+    }
+
+    /// The role of a name, if it is one.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.name() == name)
+    }
 }
 
 impl ParamSpec {
@@ -423,7 +496,8 @@ impl ParamSpec {
             suggested_min: suggested[0],
             suggested_max: suggested[1],
             description: String::new(),
-            initial_condition: false,
+            role: ParamRole::Property,
+            key: false,
         }
     }
 
@@ -434,8 +508,26 @@ impl ParamSpec {
 
     /// Declare that it sets initial state (applied on restart).
     pub fn sets_initial_state(mut self) -> Self {
-        self.initial_condition = true;
+        self.role = ParamRole::Start;
         self
+    }
+
+    /// Give it a role (ADR 0109).
+    pub fn role(mut self, role: ParamRole) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// Suggest it as one that matters (ADR 0109).
+    pub fn key(mut self) -> Self {
+        self.key = true;
+        self
+    }
+
+    /// Whether it sets initial state, acting on restart: its role is
+    /// [`ParamRole::Start`].
+    pub fn initial_condition(&self) -> bool {
+        self.role == ParamRole::Start
     }
 }
 
@@ -456,6 +548,9 @@ pub enum TimeSemantics {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockSpec {
     pub name: String,
+    /// What the Block is, in a sentence or two: a typed-equations block's
+    /// leading comment lines (ADR 0109); empty if not said.
+    pub summary: String,
     pub domain: Domain,
     pub ports: Vec<PortSpec>,
     pub params: Vec<ParamSpec>,
@@ -493,6 +588,7 @@ impl BlockSpec {
             time: TimeSemantics::default(),
             reads_time: None,
             instants: None,
+            summary: String::new(),
         }
     }
 

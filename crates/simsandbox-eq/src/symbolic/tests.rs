@@ -34,7 +34,7 @@ fn states_parameters_initial_values_and_outputs_are_found() {
     assert_eq!(spec.states, ["x", "v"]);
     let params: Vec<_> = spec.params.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(params, ["k", "c", "x0", "v0"]);
-    assert!(spec.params[2].initial_condition && !spec.params[0].initial_condition);
+    assert!(spec.params[2].initial_condition() && !spec.params[0].initial_condition());
     let outs: Vec<_> = spec.outputs().map(|p| p.name.as_str()).collect();
     assert_eq!(outs, ["x", "v", "E"]);
 
@@ -167,7 +167,7 @@ fn units_are_declared_where_names_appear() {
         (param("m").default, param("m").unit),
         (1000.0, Unit::KILOGRAM)
     );
-    assert!(param("x0").unit.same_as(&Unit::METER) && param("x0").initial_condition);
+    assert!(param("x0").unit.same_as(&Unit::METER) && param("x0").initial_condition());
     // The state's declaration gives x0 its default; v0 stays 1.
     assert_eq!((param("x0").default, param("v0").default), (2.0, 1.0));
     assert!(param("v0").unit.same_as(&unit("m/s")));
@@ -321,7 +321,7 @@ fn arrays_on_a_grid_have_a_value_per_cell() {
     // No T0: the parameters in the initial value apply on restart.
     let params: Vec<&str> = spec.params.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(params, ["length", "alpha", "peak", "left"]);
-    assert!(spec.params[2].initial_condition && !spec.params[0].initial_condition);
+    assert!(spec.params[2].initial_condition() && !spec.params[0].initial_condition());
 
     // Cells of 0.5 m centred at 0.25 .. 1.75; T = x initially.
     let p = [2.0, 0.5, 1.0, 10.0];

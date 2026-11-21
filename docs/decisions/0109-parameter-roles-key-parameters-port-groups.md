@@ -1,6 +1,6 @@
 # 0109 — Block metadata: parameter roles, key parameters, port groups, descriptions
 
-- **Status:** Proposed (draft for the owner, 2026-11-21)
+- **Status:** Accepted (owner, 2026-11-21)
 - **Date:** 2026-11-21
 - **Builds on:** [ADR 0108](0108-interface-synchronized-projections.md) (the interface, legibility first: this is its second step), [ADR 0107](0107-model-cards-and-agent-notes.md) (model cards), [ADR 0053](0053-docked-panes-inspector-and-node-values.md) and [ADR 0054](0054-controls-pane-pins-and-node-toggles.md) (pinned controls), [ADR 0074](0074-model-interfaces.md) (exposed parameters), [ADR 0039](0039-ai-agent-access.md)
 
@@ -45,7 +45,7 @@ The Overview, the Inspector by intent and the Structure lens (ADR 0108) all need
 | Roles by section headings (`## tuning`) | No change to `param` | Position-dependent; easy to break by reordering |
 | Metadata only in the file beside the equations | Language unchanged | Two places for one parameter; agents must keep them in step |
 
-## Decision (proposed)
+## Decision
 
 1. **Parameter roles.** Every parameter has one role, from this list:
 
@@ -98,3 +98,25 @@ The Overview, the Inspector by intent and the Structure lens (ADR 0108) all need
 - The interface's next steps (the Overview, the Inspector by intent, the Structure lens) read these; plugins' manifests will carry the same fields (ADR 0108's later step).
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none; roles, key parameters and groups are properties of parameters and ports.
+
+## Built (2026-11-21)
+
+- `simsandbox-core`:
+  - `ParamRole`, with `ParamSpec::role` and `key`; `initial_condition()` is now a method reading the role, and `sets_initial_state()` sets `start`;
+  - `PortSpec::group` and `description`;
+  - `BlockSpec::summary`.
+- **Typed equations** (`symbolic/notes.rs`): comments, summaries and `as ROLE` are read before the phases and taken off the lines, keeping columns. A `#` inside `"…"` is not a comment. The set keeps the lines as written, so a rebuild after its tables change reads the notes again.
+- **Built-in types:**
+  - `mech.planar` as point 6;
+  - the pendulum's `L` and the heat rod's `length` are `geometry`;
+  - input blocks' values are `drive`;
+  - suggested keys: the Lorenz system's `rho`, the pendulum's `L` and `c`.
+- **Headless:** `describe` gives each parameter's `role` and `key`, each port's `group` and `description`, and the block's `summary`. `check` gives each parameter's `role` and `suggested_key`.
+- **Example:** the cart-pole's controller has a summary, `as tuning` on its gains, limit and spring, and a description on every line.
+- **Results:** every example's run, render and diagram are the same bytes. Only `check`'s output changed, by its new fields.
+- **Not yet:**
+  - the Inspector's grouping by role and key parameters first (ADR 0108's fourth step);
+  - the Overview's use of all this (its third step);
+  - a model's own blocks' summaries and port descriptions headless (they come with the Overview's card);
+  - drawing wires as bundles (the Structure lens).
+

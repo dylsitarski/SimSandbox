@@ -41,7 +41,9 @@ fn value_param(name: &str, unit: Unit, range: [f64; 2], description: &str) -> Pa
         suggested_min: range[0],
         suggested_max: range[1],
         description: description.into(),
-        initial_condition: false,
+        // Set from outside: by a view, a run file or a schedule (ADR 0109).
+        role: simsandbox_core::block::ParamRole::Drive,
+        key: false,
     }
 }
 
@@ -66,6 +68,7 @@ impl Input {
                 time: TimeSemantics::Stateless,
                 reads_time,
                 instants: None,
+                summary: String::new(),
             },
             method: MethodSpec {
                 name: HELD.into(),

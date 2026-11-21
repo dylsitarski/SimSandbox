@@ -320,7 +320,8 @@ impl StudyBlock {
                     } else {
                         d.description.clone()
                     },
-                    initial_condition: false,
+                    role: simsandbox_core::block::ParamRole::Property,
+                    key: false,
                 }
             })
             .collect();
@@ -588,6 +589,7 @@ impl StudyBlock {
                 // inputs and parameters only (ADR 0083).
                 reads_time: Some(false),
                 instants: None,
+                summary: String::new(),
             },
             activate,
             method: MethodSpec {

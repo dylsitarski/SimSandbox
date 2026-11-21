@@ -39,13 +39,14 @@ fn param_specs(d: &Declared, s: &Shaped, units: &Units) -> Vec<ParamSpec> {
             suggested_min: 0.0,
             suggested_max: 10.0,
             description: "Parameter of the equations".into(),
-            initial_condition: false,
+            role: simsandbox_core::block::ParamRole::Property,
+            key: false,
         })
         .collect();
     for (state, i) in d.states.iter().zip(&s.initial) {
         if let Some(i) = *i {
             let p = &mut specs[i];
-            p.initial_condition = true;
+            p.role = simsandbox_core::block::ParamRole::Start;
             p.suggested_min = -10.0;
             p.description = format!("Initial value of {state}");
         }
@@ -55,13 +56,13 @@ fn param_specs(d: &Declared, s: &Shaped, units: &Units) -> Vec<ParamSpec> {
     for init in &s.inits {
         for (p, _) in init.ast.names() {
             if let Some(spec) = specs.iter_mut().find(|q| q.name == p) {
-                if !spec.initial_condition && !d.states.iter().any(|x| x == &p) {
+                if !spec.initial_condition() && !d.states.iter().any(|x| x == &p) {
                     let used_elsewhere = d
                         .equations
                         .iter()
                         .any(|l| l.ast.names().iter().any(|(m, _)| *m == p));
                     if !used_elsewhere {
-                        spec.initial_condition = true;
+                        spec.role = simsandbox_core::block::ParamRole::Start;
                         spec.description = format!("Sets the initial value of {}", init.name);
                     }
                 }
@@ -388,6 +389,7 @@ pub(super) fn interface(
             },
             reads_time: Some(reads_time(d, s)),
             instants: None,
+            summary: String::new(),
         },
         initial,
         inputs_in,

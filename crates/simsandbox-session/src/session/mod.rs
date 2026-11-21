@@ -77,6 +77,12 @@ pub struct ParamRow {
     pub description: String,
     pub suggested: [f64; 2],
     pub initial_condition: bool,
+    /// What kind of value it is (ADR 0109); a declared parameter's is
+    /// [`ParamRole::Property`](simsandbox_core::block::ParamRole).
+    pub role: simsandbox_core::block::ParamRole,
+    /// Suggested by its Block type as one that matters (ADR 0109); a
+    /// model's own key parameters are its pinned controls.
+    pub suggested_key: bool,
     pub value: f64,
     /// The signal driving it (ADR 0075), `block.port`: then its value is
     /// that signal's, not set by hand.
@@ -399,6 +405,8 @@ impl Session {
                 description: d.description.clone(),
                 suggested: d.range.unwrap_or_else(|| suggested_range(d.value)),
                 initial_condition: false,
+                role: simsandbox_core::block::ParamRole::Property,
+                suggested_key: false,
                 value: d.value,
                 driven: None,
             });
@@ -425,7 +433,9 @@ impl Session {
                     },
                     description: p.description.clone(),
                     suggested: [p.suggested_min, p.suggested_max],
-                    initial_condition: p.initial_condition,
+                    initial_condition: p.initial_condition(),
+                    role: p.role,
+                    suggested_key: p.key,
                     value,
                     driven: None,
                 });

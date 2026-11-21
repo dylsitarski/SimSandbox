@@ -22,7 +22,8 @@ pub(crate) fn param(
         suggested_min: min,
         suggested_max: max,
         description: description.into(),
-        initial_condition: false,
+        role: simsandbox_core::block::ParamRole::Property,
+        key: false,
     }
 }
 
@@ -36,7 +37,8 @@ pub(crate) fn initial(
     description: &str,
 ) -> ParamSpec {
     ParamSpec {
-        initial_condition: true,
+        role: simsandbox_core::block::ParamRole::Start,
+        key: false,
         ..param(name, unit, default, min, max, description)
     }
 }
@@ -56,7 +58,7 @@ impl Lorenz {
                 ports: vec![PortSpec::output("xyz", one, Shape::Vector(3)).from_state(0)],
                 params: vec![
                     param("sigma", one, 10.0, 0.0, 50.0, "Prandtl number"),
-                    param("rho", one, 28.0, 0.0, 100.0, "Rayleigh number"),
+                    param("rho", one, 28.0, 0.0, 100.0, "Rayleigh number").key(),
                     param("beta", one, 8.0 / 3.0, 0.0, 10.0, "Geometric factor"),
                     initial("x0", one, 1.0, -30.0, 30.0, "Initial x"),
                     initial("y0", one, 1.0, -30.0, 30.0, "Initial y"),
@@ -67,6 +69,7 @@ impl Lorenz {
                 time: TimeSemantics::Continuous,
                 reads_time: None,
                 instants: None,
+                summary: String::new(),
             },
         }
     }
@@ -150,6 +153,7 @@ impl CoupledOscillator {
                 time: TimeSemantics::Continuous,
                 reads_time: None,
                 instants: None,
+                summary: String::new(),
             },
         }
     }
@@ -212,8 +216,10 @@ impl Pendulum {
                         30.0,
                         "Gravitational acceleration",
                     ),
-                    param("L", Unit::METER, 1.0, 0.1, 5.0, "Rod length"),
-                    param("c", per_s, 0.0, 0.0, 2.0, "Damping rate"),
+                    param("L", Unit::METER, 1.0, 0.1, 5.0, "Rod length")
+                        .role(simsandbox_core::block::ParamRole::Geometry)
+                        .key(),
+                    param("c", per_s, 0.0, 0.0, 2.0, "Damping rate").key(),
                     initial(
                         "theta0",
                         rad,
@@ -236,6 +242,7 @@ impl Pendulum {
                 time: TimeSemantics::Continuous,
                 reads_time: None,
                 instants: None,
+                summary: String::new(),
             },
         }
     }

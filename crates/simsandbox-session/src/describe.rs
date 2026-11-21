@@ -75,6 +75,13 @@ fn port(p: &PortSpec) -> Value {
             .collect();
         v["coordinate_of"] = json!(of);
     }
+    // Its group and description (ADR 0109), when said.
+    if let Some(g) = &p.group {
+        v["group"] = json!(g);
+    }
+    if !p.description.is_empty() {
+        v["description"] = json!(p.description);
+    }
     v
 }
 
@@ -88,13 +95,18 @@ pub fn block(b: &dyn Block) -> Value {
     let s = b.spec();
     json!({
         "domain": format!("{:?}", s.domain),
+        // What the block is (ADR 0109): a typed-equations block's leading
+        // comment lines.
+        "summary": s.summary,
         "ports": s.ports.iter().map(port).collect::<Vec<_>>(),
         "params": s.params.iter().map(|p| json!({
             "name": p.name,
             "unit": p.unit.to_string(),
             "default": p.default,
             "suggested": [p.suggested_min, p.suggested_max],
-            "initial_condition": p.initial_condition,
+            "initial_condition": p.initial_condition(),
+            "role": p.role.name(),
+            "key": p.key,
             "description": p.description,
         })).collect::<Vec<_>>(),
         "states": s.states.len(),
@@ -357,6 +369,8 @@ pub fn check(text: &str, r: &Registry) -> Value {
                     "unit": p.unit,
                     "suggested": p.suggested,
                     "initial_condition": p.initial_condition,
+                    "role": p.role.name(),
+                    "suggested_key": p.suggested_key,
                     "description": p.description,
                     "driven_by": p.driven,
                 })).collect::<Vec<_>>(),

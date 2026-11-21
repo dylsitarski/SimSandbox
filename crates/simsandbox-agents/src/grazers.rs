@@ -89,7 +89,8 @@ fn param(name: &str, unit: Unit, default: f64, range: [f64; 2], description: &st
         suggested_min: range[0],
         suggested_max: range[1],
         description: description.into(),
-        initial_condition: false,
+        role: simsandbox_core::block::ParamRole::Property,
+        key: false,
     }
 }
 
@@ -112,7 +113,8 @@ impl Grazers {
         let kg = Unit::KILOGRAM;
         let one = Unit::DIMENSIONLESS;
         let initial = |p: ParamSpec| ParamSpec {
-            initial_condition: true,
+            role: simsandbox_core::block::ParamRole::Start,
+            key: false,
             ..p
         };
         Self {
@@ -199,6 +201,7 @@ impl Grazers {
                 time: TimeSemantics::FixedStep { dt: 0.1 },
                 reads_time: None,
                 instants: None,
+                summary: String::new(),
             },
             method: crate::rules_method(),
             update,

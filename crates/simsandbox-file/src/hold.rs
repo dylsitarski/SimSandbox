@@ -54,6 +54,7 @@ impl SampleHold {
                 time: TimeSemantics::DiscreteEvent,
                 reads_time: None,
                 instants: None,
+                summary: String::new(),
             },
             method: MethodSpec {
                 name: "hold".into(),

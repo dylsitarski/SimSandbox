@@ -788,7 +788,7 @@ fn node(
                     value,
                     formula: None,
                     unit: unit_text(&p.unit),
-                    initial: p.initial_condition,
+                    initial: p.initial_condition(),
                     overridden: Vec::new(),
                     exposed,
                     driven: None,
@@ -1440,7 +1440,11 @@ pub fn study_parameters(
             } else {
                 around(value)
             };
-            out.push((format!("{}.{}", b.name, p.name), range, p.initial_condition));
+            out.push((
+                format!("{}.{}", b.name, p.name),
+                range,
+                p.initial_condition(),
+            ));
         }
     }
     out

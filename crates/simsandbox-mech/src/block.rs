@@ -5,8 +5,8 @@
 use crate::rows::{self, Row};
 use crate::tree::{self, At, Kind, Load, Numbers, Pose, Scratch, Tree};
 use simsandbox_core::block::{
-    Block, BlockSpec, Domain, Equations, MethodSpec, ParamSpec, PortSpec, Shape, StepContext,
-    StepIo,
+    Block, BlockSpec, Domain, Equations, MethodSpec, ParamRole, ParamSpec, PortSpec, Shape,
+    StepContext, StepIo,
 };
 use simsandbox_core::registry::BlockConfig;
 use simsandbox_core::units::Unit;
@@ -114,16 +114,30 @@ impl Mechanism {
             spec = spec
                 .port(
                     PortSpec::output(&format!("{}_{q}", r.joint), unit(uq), Shape::Scalar)
-                        .from_state(k),
+                        .from_state(k)
+                        .grouped("joints")
+                        .described(&format!("The {q} of joint {}", r.joint)),
                 )
                 .port(
                     PortSpec::output(&format!("{}_{v}", r.joint), unit(uv), Shape::Scalar)
-                        .from_state(dof + k),
+                        .from_state(dof + k)
+                        .grouped("joints")
+                        .described(&format!("The {v} of joint {}", r.joint)),
                 );
         }
-        spec = spec.output("energy", unit("J"), Shape::Scalar);
+        spec = spec.port(
+            PortSpec::output("energy", unit("J"), Shape::Scalar).described(
+                "Kinetic energy plus the potential of gravity and of the joints' springs",
+            ),
+        );
         for (port, u) in POSES {
-            spec = spec.output(port, unit(u), Shape::Rows { dim: 1 });
+            spec = spec.port(
+                PortSpec::output(port, unit(u), Shape::Rows { dim: 1 })
+                    .grouped("bodies")
+                    .described(&format!(
+                        "Each body's frame in the world: {port}, a row per body"
+                    )),
+            );
         }
         // Parameters: gravity, then each row's numbers.
         spec = spec.param(
@@ -159,41 +173,56 @@ impl Mechanism {
                     r.inertia.unwrap_or(0.0),
                     "Moment of inertia about the centre of mass",
                 ))
-                .param(signed(
-                    &format!("{b}_centre_x"),
-                    "m",
-                    cx,
-                    1.0,
-                    "Centre of mass, x in the body's frame",
-                ))
-                .param(signed(
-                    &format!("{b}_centre_y"),
-                    "m",
-                    cy,
-                    1.0,
-                    "Centre of mass, y in the body's frame",
-                ))
-                .param(signed(
-                    &format!("{j}_at_x"),
-                    "m",
-                    ax,
-                    1.0,
-                    "The joint's point, x in the parent's frame",
-                ))
-                .param(signed(
-                    &format!("{j}_at_y"),
-                    "m",
-                    ay,
-                    1.0,
-                    "The joint's point, y in the parent's frame",
-                ))
-                .param(signed(
-                    &format!("{j}_turn"),
-                    "rad",
-                    r.turn.unwrap_or(0.0),
-                    PI,
-                    "The joint frame's rotation from the parent's",
-                ));
+                .param(
+                    signed(
+                        &format!("{b}_centre_x"),
+                        "m",
+                        cx,
+                        1.0,
+                        "Centre of mass, x in the body's frame",
+                    )
+                    .role(ParamRole::Geometry),
+                )
+                .param(
+                    signed(
+                        &format!("{b}_centre_y"),
+                        "m",
+                        cy,
+                        1.0,
+                        "Centre of mass, y in the body's frame",
+                    )
+                    .role(ParamRole::Geometry),
+                )
+                .param(
+                    signed(
+                        &format!("{j}_at_x"),
+                        "m",
+                        ax,
+                        1.0,
+                        "The joint's point, x in the parent's frame",
+                    )
+                    .role(ParamRole::Geometry),
+                )
+                .param(
+                    signed(
+                        &format!("{j}_at_y"),
+                        "m",
+                        ay,
+                        1.0,
+                        "The joint's point, y in the parent's frame",
+                    )
+                    .role(ParamRole::Geometry),
+                )
+                .param(
+                    signed(
+                        &format!("{j}_turn"),
+                        "rad",
+                        r.turn.unwrap_or(0.0),
+                        PI,
+                        "The joint frame's rotation from the parent's",
+                    )
+                    .role(ParamRole::Geometry),
+                );
             if let Some((q, v, act)) = rows::words(kind) {
                 let rev = kind == Kind::Revolute;
                 let (ud, us, uq, uv) = if rev {
@@ -216,13 +245,16 @@ impl Mechanism {
                         r.stiffness.unwrap_or(0.0),
                         "A spring in the joint toward rest",
                     ))
-                    .param(signed(
-                        &format!("{j}_rest"),
-                        uq,
-                        r.rest.unwrap_or(0.0),
-                        span,
-                        "The spring's rest coordinate",
-                    ))
+                    .param(
+                        signed(
+                            &format!("{j}_rest"),
+                            uq,
+                            r.rest.unwrap_or(0.0),
+                            span,
+                            "The spring's rest coordinate",
+                        )
+                        .role(ParamRole::Geometry),
+                    )
                     .param(
                         signed(
                             &format!("{j}_{q}0"),
@@ -237,36 +269,48 @@ impl Mechanism {
                         signed(&format!("{j}_{v}0"), uv, v0, 10.0, "The rate at the start")
                             .sets_initial_state(),
                     )
-                    .param(signed(
-                        &format!("{j}_{act}"),
-                        if rev { "N*m" } else { "N" },
-                        0.0,
-                        10.0,
-                        "Drives the joint; a wire may drive it (ADR 0106)",
-                    ));
+                    .param(
+                        signed(
+                            &format!("{j}_{act}"),
+                            if rev { "N*m" } else { "N" },
+                            0.0,
+                            10.0,
+                            "Drives the joint; a wire may drive it (ADR 0106)",
+                        )
+                        .role(ParamRole::Drive),
+                    );
             }
             spec = spec
-                .param(signed(
-                    &format!("{b}_fx"),
-                    "N",
-                    0.0,
-                    10.0,
-                    "A force at the centre of mass, x in world axes",
-                ))
-                .param(signed(
-                    &format!("{b}_fy"),
-                    "N",
-                    0.0,
-                    10.0,
-                    "A force at the centre of mass, y in world axes",
-                ))
-                .param(signed(
-                    &format!("{b}_torque"),
-                    "N*m",
-                    0.0,
-                    10.0,
-                    "A torque on the body",
-                ));
+                .param(
+                    signed(
+                        &format!("{b}_fx"),
+                        "N",
+                        0.0,
+                        10.0,
+                        "A force at the centre of mass, x in world axes",
+                    )
+                    .role(ParamRole::Drive),
+                )
+                .param(
+                    signed(
+                        &format!("{b}_fy"),
+                        "N",
+                        0.0,
+                        10.0,
+                        "A force at the centre of mass, y in world axes",
+                    )
+                    .role(ParamRole::Drive),
+                )
+                .param(
+                    signed(
+                        &format!("{b}_torque"),
+                        "N*m",
+                        0.0,
+                        10.0,
+                        "A torque on the body",
+                    )
+                    .role(ParamRole::Drive),
+                );
             places.push(place);
         }
         // The energy and the poses read every number but the forces, so a

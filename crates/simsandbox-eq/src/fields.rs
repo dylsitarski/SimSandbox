@@ -47,7 +47,8 @@ impl HeatRod {
                         0.05,
                         "Thermal diffusivity",
                     ),
-                    param("length", Unit::METER, 1.0, 0.1, 10.0, "Length of the rod"),
+                    param("length", Unit::METER, 1.0, 0.1, 10.0, "Length of the rod")
+                        .role(simsandbox_core::block::ParamRole::Geometry),
                     param(
                         "left",
                         k,
@@ -86,6 +87,7 @@ impl HeatRod {
                 time: TimeSemantics::Continuous,
                 reads_time: None,
                 instants: None,
+                summary: String::new(),
             },
         }
     }
@@ -214,6 +216,7 @@ impl Grass {
                 time: TimeSemantics::Continuous,
                 reads_time: None,
                 instants: None,
+                summary: String::new(),
             },
         }
     }
@@ -319,6 +322,7 @@ impl Orbits {
                 time: TimeSemantics::Continuous,
                 reads_time: None,
                 instants: None,
+                summary: String::new(),
             },
         }
     }
