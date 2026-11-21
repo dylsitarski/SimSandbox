@@ -498,3 +498,49 @@ mod tests {
         assert!(problem.contains("bodies[0].parent"), "{problem}");
     }
 }
+
+#[cfg(test)]
+mod agent_marks {
+    use super::*;
+
+    #[test]
+    fn a_persons_edit_or_review_clears_an_agents_mark() {
+        // ADR 0107: editing a block the agent made clears its mark;
+        // reviewing the model clears the model's.
+        let k = EXAMPLES
+            .iter()
+            .position(|e| e.name.starts_with("Cart-pole"))
+            .unwrap();
+        let mut file = simsandbox_file::ModelFile::from_json(EXAMPLES[k].text)
+            .unwrap()
+            .0;
+        file.agent = true;
+        for b in &mut file.blocks {
+            b.agent = true;
+        }
+        let mut app = SimApp::new(None, None, None, None);
+        app.open_text("agent-made", &file.to_json());
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let marked = |app: &SimApp, name: &str| {
+            let m = app.session.as_ref().unwrap().model();
+            m.file.blocks.iter().find(|b| b.name == name).unwrap().agent
+        };
+        app.edit_at(
+            Scope::Model,
+            Edit::SetParam {
+                block: "control".into(),
+                param: "umax".into(),
+                value: 25.0,
+            },
+        );
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert!(!marked(&app, "control") && marked(&app, "cartpole"));
+        app.edit_at(
+            Scope::Model,
+            Edit::Review {
+                block: String::new(),
+            },
+        );
+        assert!(!app.session.as_ref().unwrap().model().file.agent);
+    }
+}

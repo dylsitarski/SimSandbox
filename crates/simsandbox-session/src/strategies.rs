@@ -462,12 +462,14 @@ fn write_into(
         file.connections.push(ConnectionEntry {
             from: format!("{name}.{out}"),
             to: format!("{study}.{input}"),
+            agent: false,
         });
     }
     for (out, input) in read {
         file.connections.push(ConnectionEntry {
             from: format!("{study}.{out}"),
             to: format!("{name}.{input}"),
+            agent: false,
         });
     }
     file.run.dt = 1.0;

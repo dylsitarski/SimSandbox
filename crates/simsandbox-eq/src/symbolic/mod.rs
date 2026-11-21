@@ -47,6 +47,10 @@ mod functions;
 mod interface;
 mod layout;
 mod lower;
+
+/// The description of a parameter its definition does not describe: a
+/// stand-in, which `check --agent` counts as none (ADR 0107).
+pub const IMPLICIT_PARAMETER: &str = "Parameter of the equations";
 mod notes;
 mod parse;
 mod program;

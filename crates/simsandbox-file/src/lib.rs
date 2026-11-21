@@ -81,12 +81,44 @@ fn places_written_at(v: &Value) -> bool {
             })
 }
 
+/// What a model or block says about itself beyond its definition, for
+/// the model card (ADR 0107): agents must write them for what they make
+/// (`check --agent`); people may.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Notes {
+    /// What it is for. A model's purpose is its `description`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    /// What it takes to be true.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumptions: Vec<String>,
+    /// Why a value was chosen, by parameter name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reasons: BTreeMap<String, String>,
+}
+
+impl Notes {
+    pub fn is_empty(&self) -> bool {
+        self.purpose.is_none() && self.assumptions.is_empty() && self.reasons.is_empty()
+    }
+}
+
 /// A model file as written on disk.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ModelFile {
     pub format: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The model's assumptions and reasons (ADR 0107); its purpose is its
+    /// description.
+    #[serde(skip_serializing_if = "Notes::is_empty")]
+    pub notes: Notes,
+    /// Made or last changed through an agent interface (ADR 0107): its
+    /// description, run settings, controls or declarations. A person's
+    /// edit or review clears it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
     #[serde(skip_serializing_if = "RunSettings::writes_nothing")]
     pub run: RunSettings,
     /// Parameters of the model itself, which block parameters can use in
@@ -1043,6 +1075,13 @@ pub struct BlockEntry {
     /// describe mech.planar`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bodies: Vec<serde_json::Map<String, serde_json::Value>>,
+    /// Its purpose, assumptions and reasons for its values (ADR 0107).
+    #[serde(default, skip_serializing_if = "Notes::is_empty")]
+    pub notes: Notes,
+    /// Made or last changed through an agent interface, values included
+    /// (ADR 0107). A person's edit or review clears it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
     /// Numbers, or formulas of the declared parameters in scope
     /// (ADR 0043). For a subsystem: its declared parameters, and inner
     /// values for this instance only as `"block.param"`.
@@ -1212,6 +1251,9 @@ impl From<MethodSettings> for MethodEntry {
 pub struct ConnectionEntry {
     pub from: String,
     pub to: String,
+    /// Made or last changed through an agent interface (ADR 0107).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
 }
 
 /// How the model is meant to be explored (ADR 0012). Never affects results.
@@ -2353,6 +2395,10 @@ struct RawFile {
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
+    notes: Notes,
+    #[serde(default)]
+    agent: bool,
+    #[serde(default)]
     run: RunSettings,
     /// Removed (ADR 0071): read only to refuse it with what to write.
     #[serde(default)]
@@ -2385,6 +2431,8 @@ impl ModelFile {
         Self {
             format: FORMAT_VERSION,
             description: None,
+            notes: Notes::default(),
+            agent: false,
             run: RunSettings::default(),
             params: BTreeMap::new(),
             subsystems: BTreeMap::new(),
@@ -2572,6 +2620,8 @@ impl ModelFile {
             Self {
                 format: raw.format,
                 description: raw.description,
+                notes: raw.notes,
+                agent: raw.agent,
                 run: raw.run,
                 params: raw.params,
                 subsystems: raw.subsystems,

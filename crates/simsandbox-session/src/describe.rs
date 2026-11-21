@@ -312,6 +312,8 @@ pub fn catalogue(r: &Registry, views: &ViewRegistry) -> Value {
         "filter_types": filter_types(),
         "units": units(),
         "file_schema": "simsandbox schema prints the model file's JSON Schema",
+        // What agents owe the people who read their models (ADR 0107).
+        "for_agents": "Mark what you make or change with \"agent\": true (the model, blocks, wires; Python's agent_mode does it), describe it (a model's description; a block's notes: purpose, assumptions, reasons for the values you set; `# …` after each typed-equations line, `as ROLE` on parameters), then run `simsandbox check FILE --agent` until it is ok and read `simsandbox explain FILE` as a person will.",
     })
 }
 
@@ -325,6 +327,25 @@ pub fn upgrade(text: &str, r: &Registry) -> Result<(String, Vec<String>, Vec<Str
 /// Check a model file: load it as the app does (building the model,
 /// evaluating its sweep) and report every problem found. `ok` is false
 /// when it cannot run.
+/// [`check`], and with `agent` also what agents must write for the parts
+/// they made (ADR 0107 point 3, [`crate::card::agent_problems`]): each is
+/// an error at its path, and the model is then not `ok`.
+pub fn check_with(text: &str, r: &Registry, agent: bool) -> Value {
+    let mut report = check(text, r);
+    if agent && report["ok"] == true {
+        let written = simsandbox_file::ModelFile::from_json(text).map(|(f, _)| f);
+        if let (Ok(s), Ok(written)) = (Session::load("check", text, r), written) {
+            let missing = crate::card::agent_problems(&s, &written);
+            report["agent"] = json!({"missing": missing.len()});
+            if !missing.is_empty() {
+                report["ok"] = json!(false);
+                report["errors"] = json!(missing);
+            }
+        }
+    }
+    report
+}
+
 pub fn check(text: &str, r: &Registry) -> Value {
     if simsandbox_file::compose::is_composition(text) {
         return crate::compose::check(text, r);

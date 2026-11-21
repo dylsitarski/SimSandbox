@@ -38,7 +38,7 @@ fn param_specs(d: &Declared, s: &Shaped, units: &Units) -> Vec<ParamSpec> {
             default: d.params.iter().find(|q| &q.0 == p).map_or(1.0, |q| q.1),
             suggested_min: 0.0,
             suggested_max: 10.0,
-            description: "Parameter of the equations".into(),
+            description: super::IMPLICIT_PARAMETER.into(),
             role: simsandbox_core::block::ParamRole::Property,
             key: false,
         })

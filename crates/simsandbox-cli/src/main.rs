@@ -72,11 +72,17 @@ row per run (ADR 0071). Notes, warnings and labels go to standard error.
     ),
     (
         "check",
-        "usage: simsandbox check FILE
+        "usage: simsandbox check FILE [--agent]
 
 Check a model file, or a run file with its model, and print a JSON report on standard
 output: `ok`, `errors` (each with its `path`, or `line` and `column`), `warnings`,
-parameters, labels and what views can take. Exit status 1 if the model cannot run.",
+parameters, labels and what views can take. Exit status 1 if the model cannot run.
+
+  --agent   also fail where a part an agent made (`\"agent\": true`) does not explain
+            itself (ADR 0107): a model's description, a block's notes.purpose, a reason
+            for each value set on it, a description for each parameter and input of
+            typed equations; each an error at its path. Agents run this before handing
+            a model over.",
     ),
     (
         "describe",
@@ -330,6 +336,7 @@ impl Flags {
                 }));
             }
             let value = if flag == "--light"
+                || flag == "--agent"
                 || flag == "--diagram"
                 || flag == "--no-data"
                 || flag == "--values"
@@ -675,12 +682,13 @@ fn run_file_probes(
     written.and_then(|()| out.flush()).map_err(stdout_failed)
 }
 
-/// The `check` report of a model or run file.
-fn check_report(path: &str) -> Result<Value> {
+/// The `check` report of a model or run file; with `agent`, also what
+/// agents must write for what they made (ADR 0107).
+fn check_report(path: &str, agent: bool) -> Result<Value> {
     Ok(if is_run_file(path) {
         runs::check_run(path, &registry())
     } else {
-        describe::check(&read(path)?, &registry())
+        describe::check_with(&read(path)?, &registry(), agent)
     })
 }
 
@@ -688,9 +696,9 @@ fn check_report(path: &str) -> Result<Value> {
 /// 1) if the model cannot run.
 fn check(args: &[String]) -> Result<()> {
     let (path, rest) = file_arg("check", args)?;
-    Flags::parse(rest, &[])?;
+    let flags = Flags::parse(rest, &["--agent"])?;
     readable(path)?;
-    let report = check_report(path)?;
+    let report = check_report(path, flags.has("--agent"))?;
     print_json(&report)?;
     if report["ok"] == true {
         Ok(())
@@ -1015,7 +1023,7 @@ fn with_check_errors(mut f: Failure, args: &[String]) -> Failure {
     else {
         return f;
     };
-    if let Ok(report) = check_report(&path) {
+    if let Ok(report) = check_report(&path, false) {
         if report["ok"] != true {
             f.kind = Kind::Model;
             f.fields.insert("errors".into(), report["errors"].clone());

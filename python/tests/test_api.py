@@ -881,3 +881,29 @@ def test_a_model_explains_itself():
     assert tuning == ["k1", "k2", "k3", "k4", "umax", "ks", "cs"]
     with pytest.raises(ValueError):
         m.explain(format="html")  # type: ignore[call-overload]
+
+
+def test_agent_mode_marks_what_it_makes_and_check_asks_for_notes():
+    # ADR 0107: what an agent makes is marked; check(agent=True) asks for
+    # what explains it, and passes once the notes are written.
+    ss.agent_mode(True)
+    try:
+        m = ss.Model()
+        m.add_block("decay", "eq.equations", equations=["dx/dt = -k*x"])
+        m.set("decay.k", 2.0)
+        m.set_run(dt=0.01)
+    finally:
+        ss.agent_mode(False)
+    assert m.data["agent"] and m.block("decay")["agent"]
+    assert m.check()["ok"]
+    report = m.check(agent=True)
+    assert not report["ok"]
+    paths = {e["path"] for e in report["errors"]}
+    assert paths == {"description", "blocks[0].notes.purpose", "blocks[0].notes.reasons.k", "blocks[0].equations"}
+    m.block("decay")["equations"] = ["param k [1/s] = 1  # the decay rate", "dx/dt = -k*x [1/s]"]
+    m.note(purpose="Exponential decay.")
+    m.note("decay", purpose="x decays at rate k", reasons={"k": "a half-life near 0.35 s"})
+    assert m.check(agent=True)["ok"], m.check(agent=True)["errors"]
+    card = m.explain(format="json")
+    assert card["agent"] and card["parts"][0]["notes"]["reasons"] == {"k": "a half-life near 0.35 s"}
+    assert not ss.is_agent_mode()

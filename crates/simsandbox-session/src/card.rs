@@ -137,6 +137,10 @@ pub fn card(s: &Session, registry: &simsandbox_core::registry::Registry) -> Valu
             },
             "fused": fused,
             "params": Value::Object(by_role),
+            // What it says about itself, and whether an agent made it
+            // (ADR 0107).
+            "notes": entry.notes,
+            "agent": entry.agent,
             "inputs": ports(Causality::Input),
             "outputs": ports(Causality::Output),
         });
@@ -162,16 +166,17 @@ pub fn card(s: &Session, registry: &simsandbox_core::registry::Registry) -> Valu
     });
 
     // Wires between the same two parts, in one direction, as one bundle.
-    let mut bundles: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    let mut bundles: BTreeMap<(String, String), (Vec<String>, bool)> = BTreeMap::new();
     for c in connections {
-        bundles
+        let b = bundles
             .entry((block_of(&c.from).to_string(), block_of(&c.to).to_string()))
-            .or_default()
-            .push(format!("{} → {}", port_of(&c.from), port_of(&c.to)));
+            .or_default();
+        b.0.push(format!("{} → {}", port_of(&c.from), port_of(&c.to)));
+        b.1 |= c.agent;
     }
     let bundles: Vec<Value> = bundles
         .into_iter()
-        .map(|((from, to), wires)| json!({"from": from, "to": to, "wires": wires}))
+        .map(|((from, to), (wires, agent))| json!({"from": from, "to": to, "wires": wires, "agent": agent}))
         .collect();
 
     // Key parameters: what the model pins, else what its parts' types suggest.
@@ -245,6 +250,8 @@ pub fn card(s: &Session, registry: &simsandbox_core::registry::Registry) -> Valu
     json!({
         "title": s.title,
         "description": s.file.description,
+        "notes": s.file.notes,
+        "agent": s.file.agent,
         "trust": {
             "speed": labels.map(|l| format!("{:?}", l.speed)),
             "accuracy": labels.map(|l| format!("{:?}", l.accuracy)),
@@ -277,6 +284,30 @@ fn value_text(p: &Value) -> String {
     }
 }
 
+/// Assumptions and reasons as Markdown lines.
+fn notes_md(notes: &Value, line: &mut impl FnMut(&str)) {
+    let assumptions: Vec<&str> = notes["assumptions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if !assumptions.is_empty() {
+        line("Assumptions:");
+        for a in assumptions {
+            line(&format!("- {a}"));
+        }
+        line("");
+    }
+    if let Some(reasons) = notes["reasons"].as_object().filter(|r| !r.is_empty()) {
+        line("Why these values:");
+        for (k, v) in reasons {
+            line(&format!("- `{k}`: {}", v.as_str().unwrap_or("")));
+        }
+        line("");
+    }
+}
+
 /// The card as Markdown, for people.
 pub fn markdown(card: &Value) -> String {
     let mut out = String::new();
@@ -290,6 +321,11 @@ pub fn markdown(card: &Value) -> String {
         line(d);
         line("");
     }
+    if card["agent"] == true {
+        line("_Made or last changed by an AI agent; not yet reviewed by a person._");
+        line("");
+    }
+    notes_md(&card["notes"], &mut line);
     let t = &card["trust"];
     line(&format!(
         "**Trust:** {} speed, {} accuracy (the least of its methods); no case verified yet.",
@@ -327,10 +363,19 @@ pub fn markdown(card: &Value) -> String {
             part["type"].as_str().unwrap_or(""),
         ));
         line("");
-        if let Some(s) = part["summary"].as_str().filter(|s| !s.is_empty()) {
+        if part["agent"] == true {
+            line("_Made or last changed by an AI agent; not yet reviewed by a person._");
+            line("");
+        }
+        if let Some(p) = part["notes"]["purpose"].as_str() {
+            line(&format!("Purpose: {p}"));
+            line("");
+        } else if let Some(s) = part["summary"].as_str().filter(|s| !s.is_empty()) {
             line(&s.replace('\n', " "));
             line("");
         }
+        let notes = json!({"assumptions": part["notes"]["assumptions"], "reasons": part["notes"]["reasons"]});
+        notes_md(&notes, &mut line);
         let m = &part["method"];
         let fused = part["fused"]["with"]
             .as_array()
@@ -459,10 +504,15 @@ pub fn markdown(card: &Value) -> String {
                 .filter_map(Value::as_str)
                 .collect();
             line(&format!(
-                "- {} → {}: {}",
+                "- {} → {}: {}{}",
                 b["from"].as_str().unwrap_or(""),
                 b["to"].as_str().unwrap_or(""),
                 wires.join(", "),
+                if b["agent"] == true {
+                    " _(wired by an agent)_"
+                } else {
+                    ""
+                },
             ));
         }
         line("");
@@ -496,6 +546,88 @@ pub fn markdown(card: &Value) -> String {
             ));
         }
         line("");
+    }
+    out
+}
+
+/// What `check --agent` (ADR 0107 point 3) finds missing in the parts an
+/// agent made (`"agent": true`): a marked model's description; a marked
+/// block's purpose (a typed-equations block's leading comment lines will
+/// do), a reason for each value set on it, and, for typed equations, a
+/// description for each parameter and input it declares. Each with the
+/// path to write it at.
+pub fn agent_problems(s: &Session, file: &simsandbox_file::ModelFile) -> Vec<Value> {
+    let mut out = Vec::new();
+    if file.agent
+        && file
+            .description
+            .as_deref()
+            .is_none_or(|d| d.trim().is_empty())
+    {
+        out.push(json!({
+            "path": "description",
+            "message": "the model was made by an agent: say what it is for in its description",
+        }));
+    }
+    let model = s.sim_model();
+    for (k, b) in file.blocks.iter().enumerate().filter(|(_, b)| b.agent) {
+        let at = format!("blocks[{k}]");
+        let spec = s
+            .ids
+            .get(&b.name)
+            .and_then(|&id| model.block(id).ok())
+            .map(|block| block.spec().clone());
+        let summary = spec.as_ref().is_some_and(|s| !s.summary.trim().is_empty());
+        if b.notes
+            .purpose
+            .as_deref()
+            .is_none_or(|p| p.trim().is_empty())
+            && !summary
+        {
+            out.push(json!({
+                "path": format!("{at}.notes.purpose"),
+                "message": format!(
+                    "'{}' was made by an agent: say what it is for (notes.purpose, or comment lines before a typed-equations block's first statement)",
+                    b.name
+                ),
+            }));
+        }
+        for name in b
+            .params
+            .keys()
+            .filter(|n| !b.notes.reasons.contains_key(*n))
+        {
+            out.push(json!({
+                "path": format!("{at}.notes.reasons.{name}"),
+                "message": format!("'{}.{name}' was set by an agent: say why this value", b.name),
+            }));
+        }
+        if b.type_name == simsandbox_eq::registry::EQUATIONS {
+            if let Some(spec) = &spec {
+                let params = spec
+                    .params
+                    .iter()
+                    .filter(|p| {
+                        !p.initial_condition()
+                            && (p.description.trim().is_empty()
+                                || p.description == simsandbox_eq::symbolic::IMPLICIT_PARAMETER)
+                    })
+                    .map(|p| ("parameter", &p.name));
+                let inputs = spec
+                    .inputs()
+                    .filter(|p| p.description.trim().is_empty())
+                    .map(|p| ("input", &p.name));
+                for (what, name) in params.chain(inputs) {
+                    out.push(json!({
+                        "path": format!("{at}.equations"),
+                        "message": format!(
+                            "{what} '{name}' of '{}' has no description: write `# …` after the line declaring it (declare it with `param` or `input` if no line does)",
+                            b.name
+                        ),
+                    }));
+                }
+            }
+        }
     }
     out
 }

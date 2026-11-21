@@ -445,6 +445,7 @@ pub fn expose_inputs(model: &mut ModelFile) -> Vec<String> {
             model.connections.push(crate::ConnectionEntry {
                 from: format!("{}.y", i.name),
                 to: t,
+                agent: false,
             });
         }
     }
@@ -1193,6 +1194,7 @@ pub fn convert_some_subsystems(file: &mut ModelFile, names: &[String]) -> bool {
                 def.connections.push(crate::ConnectionEntry {
                     from: format!("{}.y", port.name),
                     to: to.clone(),
+                    agent: false,
                 });
             }
         }
@@ -2210,6 +2212,7 @@ impl Loader<'_> {
                 up.push(crate::ConnectionEntry {
                     from: format!("probe:{renamed}.{}/{signal}", u.name),
                     to,
+                    agent: false,
                 });
             }
             file.connections.extend(up);

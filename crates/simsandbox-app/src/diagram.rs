@@ -356,6 +356,17 @@ impl DiagramTab {
         registry: &Registry,
         current: &dyn Fn() -> Result<String, String>,
     ) -> Vec<Outcome> {
+        // A person's change to a block's content is a review of what an
+        // agent made there (ADR 0107).
+        let mut edits = edits;
+        let reviews: Vec<Edit> = edits
+            .iter()
+            .filter_map(|e| e.edited_block())
+            .map(|b| Edit::Review {
+                block: b.to_string(),
+            })
+            .collect();
+        edits.extend(reviews);
         let mut out = Vec::new();
         match self.choices.get(&self.inside).cloned() {
             Some(target) => out.extend(self.edit_inside(None, &target, edits, registry, current)),
@@ -1216,6 +1227,17 @@ impl DiagramTab {
                 top
             }
         };
+        // A person's change to a block's content is a review of what an
+        // agent made there (ADR 0107).
+        let mut edits = edits;
+        let reviews: Vec<Edit> = edits
+            .iter()
+            .filter_map(|e| e.edited_block())
+            .map(|b| Edit::Review {
+                block: b.to_string(),
+            })
+            .collect();
+        edits.extend(reviews);
         let base = match self.base(current) {
             Ok(f) => f,
             Err(e) => {

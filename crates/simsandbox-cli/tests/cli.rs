@@ -696,3 +696,49 @@ fn explain_prints_the_models_card() {
         Some(2)
     );
 }
+
+#[test]
+fn check_for_an_agent_asks_for_notes_on_what_it_made() {
+    // ADR 0107: plain check passes; --agent fails at each missing note's
+    // path, and passes once they are written.
+    let bare = scratch(
+        "agent-bare.json",
+        r#"{"format": 1, "agent": true, "blocks": [{"name": "decay", "type": "eq.equations",
+            "agent": true, "params": {"k": 2}, "equations": ["dx/dt = -k*x"]}]}"#,
+    );
+    assert!(simsandbox(&["check", &bare]).status.success());
+    let out = simsandbox(&["check", &bare, "--agent"]);
+    assert_eq!(out.status.code(), Some(1));
+    let paths: Vec<String> = json(&out)["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["path"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "description",
+            "blocks[0].notes.purpose",
+            "blocks[0].notes.reasons.k",
+            "blocks[0].equations"
+        ]
+    );
+    let noted = scratch(
+        "agent-noted.json",
+        r#"{"format": 1, "agent": true, "description": "Exponential decay.",
+            "blocks": [{"name": "decay", "type": "eq.equations", "agent": true, "params": {"k": 2},
+            "notes": {"purpose": "x decays at rate k", "reasons": {"k": "a half-life near 0.35 s"}},
+            "equations": ["param k [1/s] = 1  # the decay rate", "dx/dt = -k*x [1/s]"]}]}"#,
+    );
+    let out = simsandbox(&["check", &noted, "--agent"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let card = String::from_utf8_lossy(&simsandbox(&["explain", &noted]).stdout).to_string();
+    assert!(
+        card.contains("Made or last changed by an AI agent") && card.contains("Why these values")
+    );
+}

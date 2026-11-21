@@ -464,6 +464,7 @@ fn schema_is_valid_json_and_lists_the_file_fields() {
     assert_eq!(
         props,
         [
+            "agent",
             "blocks",
             "connections",
             "controls",
@@ -473,6 +474,7 @@ fn schema_is_valid_json_and_lists_the_file_fields() {
             "groups",
             "inputs",
             "models",
+            "notes",
             "outputs",
             "params",
             "run"

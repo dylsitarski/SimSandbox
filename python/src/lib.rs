@@ -65,9 +65,12 @@ fn schema() -> &'static str {
 /// Check a model file: a JSON report with `ok`, `errors` (each with a
 /// `path` or `line` and `column`), `warnings`, parameters and what it
 /// records.
+/// With `agent`, also what agents must write for the parts they made
+/// (ADR 0107), each an error at its path.
 #[pyfunction]
-fn check(py: Python<'_>, text: &str) -> String {
-    py.detach(|| json(&catalogue::check(text, &registry())))
+#[pyo3(signature = (text, agent = false))]
+fn check(py: Python<'_>, text: &str, agent: bool) -> String {
+    py.detach(|| json(&catalogue::check_with(text, &registry(), agent)))
 }
 
 /// The hash a run file records of its model (ADR 0059): SHA-256 of the

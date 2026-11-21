@@ -9,7 +9,14 @@ How people and AI agents describe, check, run and render models without the wind
 3. `simsandbox check FILE`: fix each error at its `path` (`blocks[0].method`) or `line`/`column`, until `"ok": true`.
 4. `simsandbox run FILE --format json` (or `Model.run()`): the numbers, with speed and accuracy labels and notes on algebraic loops and on loops of equation blocks stepped apart ([ADR 0095](../decisions/0095-one-block-with-states-fuses-with-its-formulas.md): each then reads the others a step late, which the labels do not show).
 5. `simsandbox render FILE --out view.png`: the views the app would show.
-6. `simsandbox explain FILE` (or `Model.explain()`): the model's card, as a person will read it ([ADR 0107](../decisions/0107-model-cards-and-agent-notes.md)). Describe what you declare in typed equations (`# …` after a line) and give parameters roles (`as tuning`, [ADR 0109](../decisions/0109-parameter-roles-key-parameters-port-groups.md)), so the card says what each part is for.
+6. Explain it to the person who will read it ([ADR 0107](../decisions/0107-model-cards-and-agent-notes.md)):
+   - Mark what you make or change with `"agent": true`: the model (its description, run, views, declarations), blocks (with their values) and wires. Python's `ss.agent_mode()`, or `SIMSANDBOX_AGENT=1`, marks what a `Model` adds or changes.
+   - Write what cannot be derived:
+     - the model's `description`;
+     - each block's `notes` (`purpose`, `assumptions`, `reasons` for the values you set; `Model.note()` in Python);
+     - `# …` after each typed-equations line, and `as ROLE` on parameters ([ADR 0109](../decisions/0109-parameter-roles-key-parameters-port-groups.md)).
+   - Run `simsandbox check FILE --agent` (`Model.check(agent=True)`) until it is ok: it names each missing note at its path.
+   - Read `simsandbox explain FILE` (`Model.explain()`), the model's card, as the person will. A person who edits a part, or marks it reviewed in the app, clears its mark.
 7. To act on a run (push, steer, drag), write the changes as events: a schedule in the model (`run.inputs`) or a run file beside it, and replay it with `simsandbox run RUN.run.json` (see [Inputs and run files](#inputs-and-run-files)).
 
 ## CLI
@@ -20,7 +27,7 @@ Build with `cargo build --release -p simsandbox-cli`; the binary is `target/rele
 | --- | --- |
 | `simsandbox describe [TYPE]` | JSON: `block_types`, `view_types`, `filter_types`, `units`; or one block or view type; `describe units` lists every unit symbol, its SI form and factor, and the prefixes ([ADR 0047](../decisions/0047-unit-vocabulary.md)) |
 | `simsandbox schema [run]` | The model file's JSON Schema, or the [run file's](../../crates/simsandbox-file/run.schema.json) |
-| `simsandbox check FILE` | JSON report; exit status 1 if the model cannot run, 3 if the file cannot be read. For a run file: its model is found and checked with the run's settings and events, and a model changed since the run was made is a warning, as is a run made by another SimSandbox version (its `made_with`) |
+| `simsandbox check FILE [--agent]` | JSON report; with `--agent`, also an error at each path where a part an agent made (`"agent": true`) lacks its note (a model's description, a block's `notes.purpose`, a reason for each value set on it, a description for each typed-equations parameter and input; [ADR 0107](../decisions/0107-model-cards-and-agent-notes.md)), and `agent.missing` counts them; exit status 1 if the model cannot run, 3 if the file cannot be read. For a run file: its model is found and checked with the run's settings and events, and a model changed since the run was made is a warning, as is a run made by another SimSandbox version (its `made_with`) |
 | `simsandbox run FILE [--t-end S] [--dt S] [--format csv\|json] [--inputs RUN]` | Every output at every step (or, for a model whose only runs are its studies, every run); JSON output names the SimSandbox that made it (`"made_with": "simsandbox 0.0.1"`). `FILE` may be a run file, which is replayed; `--inputs RUN` applies a run's events to a model file. `render` takes `--inputs` too |
 | `simsandbox run FILE --signals NAMES --every N [...]` | Only the outputs named (comma-separated: `block.port`, `block` for all its ports; in a model using models also a model's name, `.` the top level, or a path in it, `plant/car.v`) and only every `N`-th step and the last: the same values, less memory and time ([ADR 0076](../decisions/0076-headless-runs-keep-what-is-asked.md)). A name that keeps nothing is an error listing the outputs |
 | `simsandbox run FILE --probe NAME [--save-probes DIR] [...]` | What probe `NAME` recorded ([Probes](#probes)) instead of every output: CSV of `t` and its signals, or with `--format json` also its fields. `--save-probes DIR` (with or without `--probe`) writes the files of the probes that have one (`to`) into `DIR` |

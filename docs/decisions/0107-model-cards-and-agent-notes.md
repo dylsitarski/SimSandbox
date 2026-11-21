@@ -33,12 +33,27 @@ Models made by AI agents must be easy for a person to understand: what the model
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none; the card is a view of a model, notes and the mark are data on it.
 
-## Built so far (2026-11-21)
+## Built (2026-11-21)
 
 - Point 1, headless:
   - `simsandbox explain FILE [--format markdown|json]`, `ss.explain` and `Model.explain` (Markdown or a dict), from `simsandbox-session/src/card.rs`;
   - parts' roles are inferred (an input block is interaction; a block with states a system; a stateless block that reads a system and drives one a controller; other stateless blocks formulas; a study block a study);
   - a part without a summary of its own shows its type's;
   - key parameters are the pinned controls, else the types' suggestions ([ADR 0109](0109-parameter-roles-key-parameters-port-groups.md)).
-- Not yet: the card in the app (the Overview tab, [ADR 0108](0108-interface-synchronized-projections.md)), and points 2–5 (notes, `check --agent`, the agent mark, the guidance for agents).
+- Points 2–5 (2026-11-21), with the names left open settled:
+  - **Notes:** an optional `notes` object on blocks (`purpose`, `assumptions`, `reasons` by parameter) and on the model (`assumptions`, `reasons`; its purpose is its `description`).
+  - **The mark:** `"agent": true` on the model (its description, run, views, declarations), on blocks (their values included) and on wires.
+  - **Python:** `ss.agent_mode()` (or `SIMSANDBOX_AGENT=1`) marks what a `Model` adds or changes; `Model.note()` writes notes.
+  - **`check --agent`** (`check(model, agent=True)`, `describe::check_with`; `card::agent_problems`) reads the file as written. It fails at each path where a marked part lacks:
+    - a model's description;
+    - a block's purpose (a typed-equations block's summary will do);
+    - a reason for each value set on it;
+    - a description for each typed-equations parameter (the stand-in "Parameter of the equations" counts as none) and input.
+  - **The card** shows the marks and the notes.
+  - **Clearing:** `Edit::Review` clears a block's mark and those of the wires into it (an empty name clears the model's). The app adds it after a person's edit of a block's content (`Edit::edited_block`), and the Inspector shows a "Made by an AI agent" note with "Mark as reviewed".
+  - **Guidance:** in `describe`'s catalogue (`for_agents`), the headless guide and AGENTS.md.
+- Limits:
+  - A review is an edit of the model, so marking a block reviewed in the app rebuilds and restarts the run, as other edits do.
+  - Values changed live with a slider do not clear a mark.
+- Not yet: the card in the app (the Overview tab, [ADR 0108](0108-interface-synchronized-projections.md)).
 

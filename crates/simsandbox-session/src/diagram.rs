@@ -1154,6 +1154,10 @@ pub enum Edit {
         settings: BTreeMap<String, String>,
         renames: Vec<(String, String)>,
     },
+    /// A person reviewed what an agent made (ADR 0107): the block's mark
+    /// and those of the wires into it are cleared; an empty `block` is
+    /// the model's own mark.
+    Review { block: String },
     /// A block's text setting, such as a conversion's `from` or `to` unit
     /// (ADR 0045).
     SetSetting {
@@ -1164,6 +1168,22 @@ pub enum Edit {
 }
 
 impl Edit {
+    /// The block whose content a person changes with this edit, whose
+    /// agent mark it then clears (ADR 0107); `None` for edits that only
+    /// place, wire or remove.
+    pub fn edited_block(&self) -> Option<&str> {
+        match self {
+            Edit::SetParam { block, .. }
+            | Edit::SetEquations { block, .. }
+            | Edit::SetMechanism { block, .. }
+            | Edit::SetSetting { block, .. }
+            | Edit::SetActivate { block, .. }
+            | Edit::SetRestart { block, .. } => Some(block),
+            Edit::Rename { to, .. } => Some(to),
+            _ => None,
+        }
+    }
+
     /// Whether the edit changes the model (and so rebuilds and restarts).
     pub fn changes_model(&self) -> bool {
         !matches!(self, Edit::Move { .. }) && !self.data_only()
@@ -1394,6 +1414,7 @@ fn apply_level(
                         rename_keys_in_file(file, names)?;
                     }
                 }
+                Edit::Review { block } if block.is_empty() => file.agent = false,
                 _ => {}
             }
             Ok(note)
@@ -1557,6 +1578,25 @@ fn edit_level(
             } else {
                 format!("{block} has no restart input")
             })
+        }
+        Edit::Review { block } => {
+            if block.is_empty() {
+                return Ok("Reviewed the model".into());
+            }
+            // Not at this level (a block inside a use): nothing to clear.
+            let Some(entry) = l.blocks.iter_mut().find(|b| b.name == *block) else {
+                return Ok(String::new());
+            };
+            entry.agent = false;
+            let prefix = format!("{block}.");
+            for c in l
+                .connections
+                .iter_mut()
+                .filter(|c| c.to.starts_with(&prefix))
+            {
+                c.agent = false;
+            }
+            Ok(format!("Reviewed {block}"))
         }
         Edit::SetMechanism {
             block,
@@ -1724,6 +1764,7 @@ fn edit_level(
                         ConnectionEntry {
                             from: c.from.clone(),
                             to: format!("{name}.{input}"),
+                            agent: false,
                         }
                     })
                 })
@@ -1778,6 +1819,7 @@ fn edit_level(
                     Some(ConnectionEntry {
                         to: end(&c.to)?,
                         from: end(&c.from).unwrap_or_else(|| c.from.clone()),
+                        agent: false,
                     })
                 })
                 .collect();
@@ -1960,6 +2002,7 @@ fn edit_level(
                     l.connections.push(ConnectionEntry {
                         from: from.clone(),
                         to: to.clone(),
+                        agent: false,
                     });
                     Ok(format!("Connected {from} -> {to}"))
                 }
@@ -2100,6 +2143,7 @@ fn connect_uses(
         file.connections.push(ConnectionEntry {
             from: src.clone(),
             to: dst.clone(),
+            agent: false,
         });
         let _ = (scope, registry);
         return Ok(format!("Connected {src} -> {dst}"));
@@ -2158,6 +2202,7 @@ fn connect_uses(
     file.connections.push(ConnectionEntry {
         from: format!("probe:{probe}.{src}"),
         to: dst.clone(),
+        agent: false,
     });
     Ok(format!(
         "Linked {src} -> {dst} through the probe {probe}: they run on different clocks, so {dst} \
@@ -2850,6 +2895,7 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                             outer.push(ConnectionEntry {
                                 from: c.from.clone(),
                                 to: format!("{instance}.{name}"),
+                                agent: false,
                             });
                         }
                     }
@@ -2873,6 +2919,7 @@ fn group(file: &mut ModelFile, scope: &Scope, names: &[String]) -> Result<String
                     outer.push(ConnectionEntry {
                         from: format!("{instance}.{name}"),
                         to: c.to.clone(),
+                        agent: false,
                     });
                 }
             }
@@ -3631,6 +3678,67 @@ mod tests {
         .unwrap();
         let copy = f.blocks.iter().find(|b| b.name == "car1").unwrap();
         assert_eq!(copy.equations, f.blocks[0].equations);
+    }
+
+    #[test]
+    fn a_review_clears_what_an_agent_marked() {
+        // ADR 0107: a block's mark and those of the wires into it; the
+        // model's with an empty name.
+        let r = registry();
+        let mut f = file("Cart-pole");
+        f.agent = true;
+        for b in &mut f.blocks {
+            b.agent = true;
+        }
+        for c in &mut f.connections {
+            c.agent = true;
+        }
+        let review = |f: &mut ModelFile, block: &str| {
+            apply(
+                f,
+                &r,
+                &Edit::Review {
+                    block: block.into(),
+                },
+            )
+            .unwrap();
+        };
+        review(&mut f, "control");
+        let marked =
+            |f: &ModelFile, name: &str| f.blocks.iter().find(|b| b.name == name).unwrap().agent;
+        assert!(!marked(&f, "control") && marked(&f, "cartpole"));
+        assert!(f
+            .connections
+            .iter()
+            .filter(|c| c.to.starts_with("control."))
+            .all(|c| !c.agent));
+        assert!(f
+            .connections
+            .iter()
+            .filter(|c| c.to.starts_with("cartpole."))
+            .all(|c| c.agent));
+        assert!(f.agent);
+        review(&mut f, "");
+        assert!(!f.agent);
+        // A block not at this level: nothing to clear, and no error.
+        review(&mut f, "nowhere");
+        assert_eq!(
+            Edit::SetParam {
+                block: "b".into(),
+                param: "p".into(),
+                value: 1.0
+            }
+            .edited_block(),
+            Some("b")
+        );
+        assert_eq!(
+            Edit::Move {
+                block: "b".into(),
+                at: [0.0, 0.0]
+            }
+            .edited_block(),
+            None
+        );
     }
 
     #[test]

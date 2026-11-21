@@ -847,6 +847,7 @@ impl Ctx<'_> {
                 self.connections.push(ConnectionEntry {
                     from: from[0].clone(),
                     to: t,
+                    agent: false,
                 });
                 self.connection_origins.push(cpath.clone());
             }

@@ -46,6 +46,8 @@ __all__ = [
     "schema",
     "check",
     "explain",
+    "agent_mode",
+    "is_agent_mode",
     "examples",
     "upgrade",
 ]
@@ -64,14 +66,40 @@ def schema() -> dict[str, Any]:
     return cast("dict[str, Any]", json.loads(_native.schema()))
 
 
-def check(model: "Model | dict[str, Any] | str | os.PathLike[str]") -> dict[str, Any]:
+def check(model: "Model | dict[str, Any] | str | os.PathLike[str]", agent: bool = False) -> dict[str, Any]:
     """Check a model (a :class:`Model`, a dict, JSON text or a path).
     Returns the report: ``ok``, ``errors`` (each with a ``path`` such as
     ``blocks[0].method``, or ``line`` and ``column``), ``warnings``,
     ``params``, what the model records and its views. Never raises for a
-    bad model: read ``ok``."""
+    bad model: read ``ok``.
+
+    With ``agent=True`` (ADR 0107), also not ``ok`` where a part an agent
+    made (``"agent": true``) does not explain itself: a model's
+    description, a block's purpose (:meth:`Model.note`), a reason for
+    each value set on it, a description for each parameter and input of
+    typed equations (``# …`` after its line). Agents run this before
+    handing a model over."""
     with _in_folder(_folder(model)):
-        return cast("dict[str, Any]", json.loads(_native.check(_text(model))))
+        return cast("dict[str, Any]", json.loads(_native.check(_text(model), agent)))
+
+
+_AGENT = os.environ.get("SIMSANDBOX_AGENT", "").strip().lower() in ("1", "true", "yes")
+
+
+def agent_mode(on: bool = True) -> None:
+    """Whether this program acts for an AI agent (ADR 0107). While on,
+    what a :class:`Model` adds or changes is marked ``"agent": true``
+    (blocks, wires, values, and the model for its settings, views and
+    declarations), so a person sees what an agent made and
+    ``check(model, agent=True)`` asks for its notes. Starts on if the
+    environment variable ``SIMSANDBOX_AGENT`` is ``1``."""
+    global _AGENT
+    _AGENT = bool(on)
+
+
+def is_agent_mode() -> bool:
+    """Whether :func:`agent_mode` is on."""
+    return _AGENT
 
 
 @overload
@@ -264,6 +292,8 @@ class Model:
             block["canvas"] = [float(canvas[0]), float(canvas[1])]
         if settings:
             block["settings"] = {k: str(v) for k, v in settings.items()}
+        if _AGENT:
+            block["agent"] = True
         if bodies is not None:
             if not type.startswith("mech."):
                 raise ModelError(f"a {type} block has no bodies: only mechanisms (mech.*) do")
@@ -295,7 +325,10 @@ class Model:
             problem = _native.connection_problem(self.to_json(), source, target)
         if problem is not None:
             raise ModelError(problem)
-        self.data.setdefault("connections", []).append({"from": source, "to": target})
+        wire: dict[str, Any] = {"from": source, "to": target}
+        if _AGENT:
+            wire["agent"] = True
+        self.data.setdefault("connections", []).append(wire)
         return self
 
     def add_scene(
@@ -342,6 +375,7 @@ class Model:
         if problem is not None:
             raise ModelError(problem)
         self.data.setdefault("controls", {}).setdefault("views", []).append(view)
+        self._marked()
         return self
 
     def block(self, name: str) -> dict[str, Any]:
@@ -358,11 +392,47 @@ class Model:
         may be a formula of declared parameters (``"2*size"``)."""
         if key in self.data.get("params", {}):
             self.data["params"][key]["value"] = float(value)
+            self._marked()
             return self
         block, param = _split(key)
         v = value if isinstance(value, str) else float(value)
         self.block(block).setdefault("params", {})[param] = v
+        self._marked(block)
         return self
+
+    def note(
+        self,
+        part: str | None = None,
+        purpose: str | None = None,
+        assumptions: Iterable[str] | None = None,
+        reasons: dict[str, str] | None = None,
+    ) -> "Model":
+        """Say what a block (``part``) or, without one, the model is for,
+        what it assumes and why its values were chosen (ADR 0107): shown
+        on its card (:func:`explain`). A model's purpose is its
+        ``description``. Agents must write these for what they make;
+        ``check(model, agent=True)`` says what is missing."""
+        if part is None:
+            if purpose is not None:
+                self.data["description"] = purpose
+            notes = self.data.setdefault("notes", {})
+        else:
+            notes = self.block(part).setdefault("notes", {})
+            if purpose is not None:
+                notes["purpose"] = purpose
+        if assumptions is not None:
+            notes["assumptions"] = list(assumptions)
+        if reasons:
+            notes.setdefault("reasons", {}).update({k: str(v) for k, v in reasons.items()})
+        if not notes:
+            (self.data if part is None else self.block(part)).pop("notes")
+        return self
+
+    def _marked(self, block: str | None = None) -> None:
+        """In :func:`agent_mode`, mark the block (or the model) as made or
+        changed by an agent."""
+        if _AGENT:
+            (self.data if block is None else self.block(block))["agent"] = True
 
     def get(self, key: str) -> float:
         """A parameter's value: as set in the file, else the type's
@@ -385,13 +455,14 @@ class Model:
         for key, value in (("dt", dt), ("t_end", t_end), ("seed", seed)):
             if value is not None:
                 run[key] = value
+        self._marked()
         return self
 
     # Using it
 
-    def check(self) -> dict[str, Any]:
+    def check(self, agent: bool = False) -> dict[str, Any]:
         """See :func:`check`."""
-        return check(self)
+        return check(self, agent)
 
     @overload
     def explain(self, format: Literal["markdown"] = "markdown") -> str: ...
@@ -536,6 +607,7 @@ class Model:
         self.data.setdefault("connections", []).append(
             {"from": f"probe:{name}.{signal}", "to": to}
         )
+        self._marked()
         return self
 
     def add_probe(
@@ -561,6 +633,7 @@ class Model:
         if to is not None:
             probe["to"] = to
         self.data.setdefault("controls", {}).setdefault("probes", []).append(probe)
+        self._marked()
         return self
 
     def run_probes(
@@ -601,6 +674,7 @@ class Model:
         self.data.setdefault("run", {}).setdefault("inputs", []).append(
             {"t": float(t), "set": key, "to": float(value)}
         )
+        self._marked()
         return self
 
     def declare(
@@ -622,6 +696,7 @@ class Model:
         if range is not None:
             d["range"] = [float(range[0]), float(range[1])]
         self.data.setdefault("params", {})[name] = d
+        self._marked()
         return self
 
     def duplicate(self, blocks: Iterable[str]) -> str:

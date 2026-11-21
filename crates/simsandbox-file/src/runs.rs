@@ -287,6 +287,7 @@ mod tests {
                 f.connections.push(crate::ConnectionEntry {
                     from: "probe:p.push.y".into(),
                     to: "q.u".into(),
+                    agent: false,
                 });
             }
             model_hash(&f)

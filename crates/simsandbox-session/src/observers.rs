@@ -828,6 +828,7 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
                 file.connections.push(ConnectionEntry {
                     from: from.clone(),
                     to: to.clone(),
+                    agent: false,
                 });
                 return Ok(format!(
                     "{to} reads {signal} as probe {probe} samples it, held between samples"
@@ -1568,6 +1569,7 @@ fn promote(
         file.connections.push(ConnectionEntry {
             from: source.clone(),
             to: format!("{block}.{input}"),
+            agent: false,
         });
     }
     file.controls.filters.remove(k);

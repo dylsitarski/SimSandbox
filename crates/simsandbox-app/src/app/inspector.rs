@@ -373,6 +373,12 @@ impl SimApp {
                         .as_ref()
                         .and_then(|f| block_entry(f, scope.as_deref(), name));
                     let mut shown = false;
+                    // What an agent made, until a person reviews it (ADR 0107).
+                    if let (None, Some(b)) = (scope, running.filter(|b| b.agent)) {
+                        if let Some(e) = agent_mark(ui, "this block", &b.name) {
+                            c.canvas.push((at.clone(), e));
+                        }
+                    }
                     // A mechanism's bodies, as a table (ADR 0105): as the
                     // draft has them while one waits, since edits build on it.
                     if let (None, Some(b)) =
@@ -464,6 +470,13 @@ impl SimApp {
             .id_salt("model-params")
             .default_open(true)
             .show(ui, |ui| {
+                if m.file.agent {
+                    if let Some(e) =
+                        agent_mark(ui, "the model's settings, views or declarations", "")
+                    {
+                        c.canvas.push((Scope::Model, e));
+                    }
+                }
                 egui::Grid::new("model")
                     .num_columns(4)
                     .spacing([6.0, 4.0])
@@ -843,3 +856,27 @@ pub(super) struct Studied {
 /// A parameter a study can vary: its key, a range for it and whether it
 /// is an initial condition.
 pub(super) type StudyKey = (String, [f64; 2], bool);
+
+/// A note that an agent made or last changed `what`, with a button to
+/// mark it reviewed (ADR 0107): the edit to apply, if pressed. `block`
+/// is empty for the model's own mark.
+fn agent_mark(ui: &mut egui::Ui, what: &str, block: &str) -> Option<Edit> {
+    let mut review = None;
+    ui.horizontal(|ui| {
+        ui.colored_label(ui.visuals().warn_fg_color, "Made by an AI agent")
+            .on_hover_text(format!(
+                "An agent made or last changed {what}; its notes are on the model's card. \
+                 Editing it, or marking it reviewed, clears this."
+            ));
+        if ui
+            .small_button("Mark as reviewed")
+            .on_hover_text("You have read it and take it as yours")
+            .clicked()
+        {
+            review = Some(Edit::Review {
+                block: block.to_string(),
+            });
+        }
+    });
+    review
+}

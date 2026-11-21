@@ -15,6 +15,35 @@
     "description": {
       "type": "string"
     },
+    "notes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "purpose": {
+          "type": "string",
+          "description": "What it is for. A model's purpose is its description."
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "What it takes to be true."
+        },
+        "reasons": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Why a value was chosen, by parameter name."
+        }
+      },
+      "description": "What it says about itself for the model card (ADR 0107); agents must write them for what they make (simsandbox check --agent)."
+    },
+    "agent": {
+      "type": "boolean",
+      "description": "Made or last changed through an agent interface (ADR 0107); a person's edit or review clears it. Agents writing files set it on what they make."
+    },
     "run": {
       "$ref": "#/$defs/run"
     },
@@ -539,6 +568,35 @@
         "restart": {
           "type": "boolean",
           "description": "A use of a model: true gives it a 'restart' input; it starts again when the input rises (ADR 0088)."
+        },
+        "agent": {
+          "type": "boolean",
+          "description": "Made or last changed through an agent interface (ADR 0107); a person's edit or review clears it. Agents writing files set it on what they make."
+        },
+        "notes": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "purpose": {
+              "type": "string",
+              "description": "What it is for. A model's purpose is its description."
+            },
+            "assumptions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "What it takes to be true."
+            },
+            "reasons": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Why a value was chosen, by parameter name."
+            }
+          },
+          "description": "What it says about itself for the model card (ADR 0107); agents must write them for what they make (simsandbox check --agent)."
         }
       },
       "description": "A block of a registered type (e.g. 'eq.equations', see simsandbox describe), or a use of a model: a 'file', or a 'model' defined in this file (ADR 0066, ADR 0068)."
@@ -557,6 +615,10 @@
         "to": {
           "$ref": "#/$defs/ref",
           "description": "An input, `block.port`, or a parameter, `block.param`, which the wire then drives in place of its value (ADR 0075); a used model's input or declared parameter is `use/name`, a study's parameter `study.name`. A wired parameter keeps its own value, unused while the wire is there."
+        },
+        "agent": {
+          "type": "boolean",
+          "description": "Made or last changed through an agent interface (ADR 0107); a person's edit or review clears it. Agents writing files set it on what they make."
         }
       }
     },
