@@ -1,4 +1,4 @@
-# 0110 — Encapsulated models: a use changes its model only through its interface, and surfaces show one level
+# 0110 — Encapsulated models: what changes or feeds on a model goes through its interface; observing stays open; surfaces show one level
 
 - **Status:** Proposed
 - **Date:** 2026-11-25
@@ -14,7 +14,9 @@
 
 On 2026-11-25 the owner asked whether models are encapsulated, and whether nesting and encapsulation should keep the interface organized and scalable in place of labels such as port groups. The [research note](../research/2026-11-25-encapsulation-and-composition.md) found:
 
-- **Wires already go through the interface.** At load, a wire to a use resolves only to its exposed inputs, outputs and declared parameters (`resolve` in `simsandbox-file/src/subsystems.rs`), and the canvas refuses a wire to an inner port that is not exposed (ADR 0074).
+- **Wires into a use go through its interface; wires and links out of it do not.**
+  - Into a use: a wire reaches only its exposed inputs, input blocks and declared parameters (`resolve` in `simsandbox-file/src/subsystems.rs`; "a wire into a model on a shared clock goes to one of its input blocks or parameters"). The canvas refuses a wire to an inner port that is not exposed (ADR 0074).
+  - Out of a use: a wire may start at any inner output by path. A file wiring `a/c.x` to an outer block, with nothing offered, passes `check` (tried 2026-11-25). Probe links reach any depth (`probe:speed.plant/car.v`, ADR 0066 point 4).
 - **Values do not.** A use's `params` may set any inner block's value for that use alone, as `"block.param"`, or a parameter declared by a use nested inside, as `"inner_use/k"`. The load error for an unknown parameter even suggests it.
   - The Inspector writes these from its table of a subsystem's uses, a column per use (ADR 0053).
   - None of the examples uses them.
@@ -30,17 +32,25 @@ When a use can change what is inside its model, its model's interface does not s
 | --- | --- | --- |
 | A. As is: interfaces declared, inner values and surfaces open | No work | A model's interface is not its contract; surfaces repeat themselves as models grow |
 | B. Strict: nothing inside is read or changed from outside | Simplest rule | Views, probes and debugging lose sight of the inside; trust needs it |
-| **C. Changes through the interface; reading stays open and is marked; surfaces by level** | Interfaces become contracts; legibility comes from the structure; inspection keeps full depth | A format conversion; the Inspector's per-use table changes |
+| **C. What changes or feeds a result goes through the interface; observing stays open and is marked; surfaces by level** | Interfaces become contracts; legibility comes from the structure; inspection keeps full depth | A format conversion; the Inspector's per-use table changes |
 | D. Inner values allowed but warned | Least change | Warnings are ignored; nothing is a contract |
+| E. C, and observing also only through outputs | One rule for everything | Every signal plotted, recorded or inspected must be offered at each level: interfaces bloat with debugging outputs and building slows; no gain in safety, as observers do not change results |
 
 ## Decision
 
-1. **A use changes its model only through its interface:**
+1. **What depends on a model goes through its interface.** A use is changed only through:
    - its declared parameters;
-   - its exposed inputs;
-   - its outputs.
+   - its exposed inputs and input blocks.
 
-   Wires already work this way, and this extends the rule to values. A use's `params` names only its model's declared parameters. `"block.param"` and `"inner_use/k"` are no longer written.
+   Anything whose value enters a computation reads only the model's outputs:
+   - wires;
+   - probe links;
+   - formulas;
+   - events.
+
+   - A use's `params` names only its model's declared parameters: `"block.param"` and `"inner_use/k"` are no longer written.
+   - A wire or link from an inner output that is not offered is refused, naming the fix: offer it.
+   - Study formulas and search objectives are reviewed when this is built, and placed by the same test (does the value enter a result?).
 2. **Older files convert as they are read.**
    - **In-file definitions:** each inner value set by a use of a model defined in the file becomes a declared parameter of that model:
      - it is named after the inner parameter, made unique (`car.c` becomes `c`, or `car_c` if taken);
@@ -48,15 +58,23 @@ When a use can change what is inside its model, its model's interface does not s
      - the inner block reads it by formula;
      - the use sets it by name.
 
-     Other uses keep the default, so every result is unchanged. The conversion is recorded as a sentence in `conversions` and covered by an older-form fixture ([changing the file format](../guides/changing-the-file-format.md)).
+     Other uses keep the default, so every result is unchanged.
+
+     Likewise, each wire or link from an inner output that is not offered becomes an offered output of that model, named after the port, made unique, through every level between, and the wire or link reads it. The conversion is recorded as a sentence in `conversions` and covered by an older-form fixture ([changing the file format](../guides/changing-the-file-format.md)).
    - **Uses of separate model files:** a file is not rewritten because another file uses it.
-     - Such a value still loads.
-     - `check` reports it as reaching inside, at its path, with the fix: expose it in that file.
+     - Such a value, wire or link still loads.
+     - `check` reports it as reaching inside, at its path, with the fix: expose or offer it in that file.
      - The app and the Python package no longer write new ones.
      - Saving keeps it until it is exposed.
 3. **Start states stay settable by inner block.** A start state is a state reached before (a steady state, a run's end), not configuration: it restores, as a run file does. `starts` stays, and the card shows it as reaching inside.
-4. **Reading stays open and is marked.**
-   - Views, probes, `run --signals`, links and scene bindings may still name an inner signal by path.
+4. **Observing stays open and is marked.** Observing means reading inside without entering a result, as a debugger reads private fields:
+   - views;
+   - probes that only record;
+   - `run --signals`;
+   - scene bindings;
+   - the card and the Inspector.
+
+   - These may still name an inner signal by path. Closing them too was considered and rejected (Options, E): every plotted signal would have to be offered, level by level, which is the housekeeping this work avoids. It would buy no safety: an observer cannot change a result, and a path that breaks is an error at the reference.
    - Where they are shown (the card, the Overview, the Inspector, `check`), such a path is marked as reaching inside, with a one-step **Offer as output**. Offering adds the signal to the model's outputs and rewrites the reference to the output (`car1.v`).
    - A path whose inner block is gone after the model changes is an error at the reference, as today.
 5. **Surfaces show one level.**
@@ -82,13 +100,13 @@ When a use can change what is inside its model, its model's interface does not s
 
 **Order of work:**
 
-1. Conversion of in-file definitions, the loader's refusal of new path-set values for them, the reports for separate files, and the fixture (points 1–2). Then the Python package's refusal and `expose` (point 7).
+1. Conversion of in-file definitions (values and outputs), the loader's refusal of new path-set values and of wires and links from inner outputs not offered, the reports for separate files, and the fixture (points 1–2). Then the Python package's refusal and `expose` (point 7).
 2. The card and the Overview by level, `explain --part`/`--depth`, and the reaching-inside marks and **Offer as output** (points 4–5).
 3. The Inspector's table and its actions (point 6). The Inspector by intent (ADR 0108 point 5) is built on it.
 
 ## Consequences
 
-- A model's interface is its contract: a model may change inside without breaking a use, unless the change removes something the use reads by path, which `check` names.
+- A model's interface is its contract: a model may change inside without changing any result that uses it. Only an observer reading by path can break, and `check` names it.
 - A model whose uses differed by inner values gains declared parameters. That is the honest form of what those uses already depended on.
 - **The other projections of ADR 0108 are built per level.** The card's flat list of parts goes.
 - The [research note](../research/2026-11-25-encapsulation-and-composition.md) proposes further follow-ups, each needing its own ADR:

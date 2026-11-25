@@ -29,7 +29,7 @@ So the work does not burden people with housekeeping. Its weakness is elsewhere:
 | --- | --- | --- |
 | Models nest as blocks | Yes | [ADR 0066](../decisions/0066-models-nest-as-blocks.md), [ADR 0068](../decisions/0068-one-kind-of-nested-model.md): uses of model files and of definitions in the file |
 | An interface is declared | Yes | [ADR 0074](../decisions/0074-model-interfaces.md): parameters, inputs, outputs, exposed by a toggle |
-| Wiring goes through the interface | Mostly | The platoon wires `car1/lead`, `car1/v`; wiring to an inner port of a model expanded in place exposes it (ADR 0074 point 3) |
+| Wiring goes through the interface | Into a use, yes; out of it, no | Wires in reach only exposed inputs, input blocks and parameters. A wire may start at any inner output by path (`a/c.x` to an outer block passes `check`, tried 2026-11-25), and probe links reach any depth (ADR 0066) |
 | Setting values goes through the interface | No | A use may set any inner block's value for itself as `"block.param"` (`simsandbox-file/src/subsystems.rs`) |
 | Reading goes through the interface | No, by design | Views, probes, `run --signals` and links read inner signals by path (`car1/car.v` in the platoon's views) |
 | Presentation respects levels | Partly | The canvas shows a use as one node (expandable); the card and parts of the Inspector list the flattened blocks |

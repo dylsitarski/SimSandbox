@@ -19,5 +19,6 @@
 
 ## Notes for the next session
 
-- Wires already go only through a use's interface at load (`resolve` in `simsandbox-file/src/subsystems.rs`); the leaks are `params` keys with `.` or `/` (`declare`, the loop after `level`) and `starts`.
+- Wires into a use go only through its interface (`resolve` in `simsandbox-file/src/subsystems.rs`). The leaks are `params` keys with `.` or `/` (`declare`, the loop after `level`), `starts`, wires from inner outputs by path (`a/c.x` passes `check`) and probe links at any depth.
+- Owner asked (2026-11-25) whether reading should be closed too; the draft keeps observing open (option E rejected) but closes reading that feeds a result (wires, links, formulas, events).
 - No example sets inner values by path; the Inspector's per-use table (`simsandbox-app/src/inspector.rs`, `app/param_rows.rs`) is what writes them.
