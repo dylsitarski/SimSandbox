@@ -1078,6 +1078,10 @@ pub enum Edit {
     HideInput { input: String },
     /// Stop offering the declared output `name`.
     RemoveOutput { name: String },
+    /// What reads `signal` inside a used model by path (`car1/car.v`)
+    /// reads an output that model offers instead (`car1/v`), offered now
+    /// if it was not (ADR 0110 point 4). For a model defined in the file.
+    OfferAsOutput { signal: String },
     /// Rename a model defined in the file (ADR 0068): its uses follow.
     RenameModel { from: String, to: String },
     /// A typed-equation block's equations, one per line (ADR 0017): the
@@ -1267,6 +1271,7 @@ fn apply_in_level(
     match edit {
         Edit::DeclareOutput { name, from } => return declare_output(file, name, from),
         Edit::ExposeParam { block, param } => return expose_param(file, registry, block, param),
+        Edit::OfferAsOutput { signal } => return offer_as_output(file, signal),
         Edit::HideParam { block, param } => return hide_param(file, block, param),
         Edit::ExposeInput { input } => return expose_input(file, registry, input),
         Edit::HideInput { input } => {
@@ -2031,6 +2036,7 @@ fn edit_level(
         | Edit::RemoveOutput { .. }
         | Edit::HideOutput { .. }
         | Edit::ExposeParam { .. }
+        | Edit::OfferAsOutput { .. }
         | Edit::HideParam { .. }
         | Edit::ExposeInput { .. }
         | Edit::HideInput { .. }
@@ -2569,6 +2575,62 @@ fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
         free_name(base, taken)
     } else {
         base.to_string()
+    }
+}
+
+/// What reads `signal` inside a use of a model defined in the file reads
+/// an output it offers instead (ADR 0110 point 4): views, filters and
+/// probes at this level, every reference to that exact signal.
+fn offer_as_output(file: &mut ModelFile, signal: &str) -> Result<String, String> {
+    let (u, rest) = signal
+        .split_once('/')
+        .filter(|(_, r)| r.contains('.') || r.contains('/'))
+        .ok_or_else(|| format!("'{signal}' does not read inside a used model"))?;
+    let entry = file
+        .blocks
+        .iter()
+        .find(|b| b.name == u && b.is_use())
+        .ok_or_else(|| format!("no used model '{u}'"))?;
+    let Some(model) = entry.model.clone() else {
+        return Err(format!(
+            "'{u}' uses the model file {}: open it and offer {rest} as an output there",
+            entry.file.as_deref().unwrap_or("")
+        ));
+    };
+    let folder = file.folder.clone();
+    let (text, name) =
+        simsandbox_file::encapsulate::offer_output(&file.to_json(), Some(&model), rest, None)?;
+    let (mut changed, _) = ModelFile::from_json(&text).map_err(|e| e.to_string())?;
+    changed.folder = folder;
+    let new = format!("{u}/{name}");
+    let mut controls = serde_json::to_value(&changed.controls).map_err(|e| e.to_string())?;
+    replace_signal(&mut controls, signal, &new);
+    changed.controls = serde_json::from_value(controls).map_err(|e| e.to_string())?;
+    *file = changed;
+    Ok(format!(
+        "{model} offers {rest} as '{name}'; what read {signal} reads {new}"
+    ))
+}
+
+/// Replace every string equal to `old` under `v`, and `old` after a
+/// probe's name (`probe:P.old`), by `new`.
+fn replace_signal(v: &mut serde_json::Value, old: &str, new: &str) {
+    match v {
+        serde_json::Value::String(s) => {
+            if s == old {
+                *s = new.to_string();
+            } else if let Some((p, sig)) = s
+                .strip_prefix("probe:")
+                .and_then(|r| r.split_once('.'))
+                .filter(|(_, sig)| *sig == old)
+            {
+                let _ = sig;
+                *s = format!("probe:{p}.{new}");
+            }
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(|x| replace_signal(x, old, new)),
+        serde_json::Value::Object(o) => o.values_mut().for_each(|x| replace_signal(x, old, new)),
+        _ => {}
     }
 }
 

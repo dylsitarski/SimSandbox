@@ -36,14 +36,17 @@ fn role(type_name: &str, stateful: bool, reads_system: bool, drives_system: bool
 }
 
 /// The order parts are told in.
-const ROLES: [&str; 5] = ["interaction", "system", "controller", "formulas", "study"];
+const ROLES: [&str; 6] = [
+    "interaction",
+    "model",
+    "system",
+    "controller",
+    "formulas",
+    "study",
+];
 
 fn block_of(key: &str) -> &str {
     key.split_once('.').map_or(key, |(b, _)| b)
-}
-
-fn port_of(key: &str) -> &str {
-    key.split_once('.').map_or("", |(_, p)| p)
 }
 
 fn param_json(r: &ParamRow) -> Value {
@@ -52,16 +55,113 @@ fn param_json(r: &ParamRow) -> Value {
         "value": r.value,
         "unit": r.unit,
         "role": r.role.name(),
-        "description": r.description,
+        // The stand-in for an undescribed parameter counts as none (ADR 0109).
+        "description": if r.description == simsandbox_eq::symbolic::IMPLICIT_PARAMETER { "" } else { r.description.as_str() },
         "driven_by": r.driven,
         "formula": r.formula,
     })
 }
 
-/// The card of a loaded model; a part without a summary of its own has
-/// its type's (`summary_of`, from a registry's descriptions: see
-/// [`type_summaries`]).
+/// The card of a loaded model, its top level; a part without a summary
+/// of its own has its type's (`summary_of`, from a registry's
+/// descriptions: see [`type_summaries`]).
 pub fn card(s: &Session, summary_of: &dyn Fn(&str) -> Option<String>) -> Value {
+    card_at(s, summary_of, "", 1).unwrap_or_else(|e| json!({"title": s.title, "error": e}))
+}
+
+/// The model at `part`, a path of uses (`""` for the model itself,
+/// `car1`, `vehicle/plant`), as written, with the folder its own uses are
+/// found from.
+fn level_of(
+    s: &Session,
+    part: &str,
+) -> Result<(simsandbox_file::ModelFile, Option<std::path::PathBuf>), String> {
+    let mut file = s.file.clone();
+    let mut folder = s.file.folder.clone();
+    if part.is_empty() {
+        return Ok((file, folder));
+    }
+    let mut walked = String::new();
+    for seg in part.split('/') {
+        let entry = file
+            .blocks
+            .iter()
+            .find(|b| b.name == seg && b.is_use())
+            .ok_or_else(|| {
+                let at = if walked.is_empty() {
+                    "the model".to_string()
+                } else {
+                    format!("'{walked}'")
+                };
+                let uses: Vec<&str> = file
+                    .blocks
+                    .iter()
+                    .filter(|b| b.is_use())
+                    .map(|b| b.name.as_str())
+                    .collect();
+                format!(
+                    "{at} uses no model named '{seg}' (it uses: {})",
+                    if uses.is_empty() {
+                        "none".to_string()
+                    } else {
+                        uses.join(", ")
+                    }
+                )
+            })?;
+        let (m, _, inner) = simsandbox_file::compose::used_model(entry, folder.as_deref())?;
+        file = m;
+        folder = inner;
+        if !walked.is_empty() {
+            walked.push('/');
+        }
+        walked.push_str(seg);
+    }
+    Ok((file, folder))
+}
+
+/// The written name of what a wire end names: `leader` of `leader.v`,
+/// `car1` of `car1/lead`.
+fn part_of(end: &str) -> &str {
+    let end = end
+        .strip_prefix("probe:")
+        .map_or(end, |r| r.split_once('.').map_or(r, |(_, signal)| signal));
+    end.split(['.', '/']).next().unwrap_or(end)
+}
+
+/// The rest of a wire end after its part: `v` of `leader.v`, `lead` of
+/// `car1/lead`.
+fn end_port(end: &str) -> &str {
+    let end = end
+        .strip_prefix("probe:")
+        .map_or(end, |r| r.split_once('.').map_or(r, |(_, signal)| signal));
+    end.find(['.', '/']).map_or("", |k| &end[k + 1..])
+}
+
+/// A signal path reaching inside a use here: the use and the rest
+/// (`car1`, `car.v` of `car1/car.v`). A use's own port (`car1/v`) does
+/// not.
+fn reaching<'a>(signal: &'a str, uses: &[&str]) -> Option<(&'a str, &'a str)> {
+    let (u, rest) = signal.split_once('/')?;
+    (uses.contains(&u) && (rest.contains('.') || rest.contains('/'))).then_some((u, rest))
+}
+
+/// The card of the model at `part` (ADR 0110 point 5): its own blocks,
+/// and each model it uses as one part with its interface, `depth` levels
+/// deep (1: this level only; each use's own card nested as `card` for
+/// more).
+pub fn card_at(
+    s: &Session,
+    summary_of: &dyn Fn(&str) -> Option<String>,
+    part: &str,
+    depth: usize,
+) -> Result<Value, String> {
+    let (level, folder) = level_of(s, part)?;
+    let prefix = if part.is_empty() {
+        String::new()
+    } else {
+        format!("{part}/")
+    };
+    let local = |n: &str| n.strip_prefix(prefix.as_str()).unwrap_or(n).to_string();
     let model = s.sim_model();
     let rows = s.params();
     let connections = &s.flat.connections;
@@ -71,8 +171,21 @@ pub fn card(s: &Session, summary_of: &dyn Fn(&str) -> Option<String>) -> Value {
             .and_then(|&id| model.block(id).ok())
             .is_some_and(|b| !b.spec().states.is_empty() || !b.spec().tables.is_empty())
     };
+    let uses: Vec<&str> = level
+        .blocks
+        .iter()
+        .filter(|b| b.is_use())
+        .map(|b| b.name.as_str())
+        .collect();
     let mut parts = Vec::new();
     for entry in &s.flat.blocks {
+        // This level's own blocks: inside it, not inside a use of it.
+        let Some(name) = entry.name.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        if name.contains('/') || uses.contains(&name) {
+            continue;
+        }
         let Some(block) = s.ids.get(&entry.name).and_then(|&id| model.block(id).ok()) else {
             continue;
         };
@@ -92,7 +205,7 @@ pub fn card(s: &Session, summary_of: &dyn Fn(&str) -> Option<String>) -> Value {
             .groups
             .iter()
             .find(|g| g.blocks.contains(&entry.name))
-            .map(|g| json!({"with": g.blocks.iter().filter(|b| **b != entry.name).collect::<Vec<_>>(), "method": g.method}));
+            .map(|g| json!({"with": g.blocks.iter().filter(|b| **b != entry.name).map(|b| local(b)).collect::<Vec<_>>(), "method": g.method}));
         let mine: Vec<&ParamRow> = rows.iter().filter(|r| r.owner == entry.name).collect();
         let mut by_role = serde_json::Map::new();
         for role in ParamRole::ALL {
@@ -110,19 +223,40 @@ pub fn card(s: &Session, summary_of: &dyn Fn(&str) -> Option<String>) -> Value {
                 .iter()
                 .filter(|p| p.causality == c)
                 .map(|p| {
-                    let key = format!("{}.{}", entry.name, p.name);
-                    let wired: Vec<&str> = match c {
-                        Causality::Input => connections
+                    // As written at this level (`car1/lead`, not the
+                    // inner port it feeds).
+                    let key = format!("{name}.{}", p.name);
+                    // The model's own ports, which carry it across its edge.
+                    let mut wired: Vec<String> = match c {
+                        Causality::Input => level
+                            .connections
                             .iter()
                             .filter(|w| w.to == key)
-                            .map(|w| w.from.as_str())
+                            .map(|w| w.from.clone())
+                            .chain(
+                                level
+                                    .inputs
+                                    .iter()
+                                    .filter(|i| i.to.contains(&key))
+                                    .map(|i| format!("the model's input {}", i.name)),
+                            )
                             .collect(),
-                        _ => connections
+                        _ => level
+                            .connections
                             .iter()
                             .filter(|w| w.from == key)
-                            .map(|w| w.to.as_str())
+                            .map(|w| w.to.clone())
                             .collect(),
                     };
+                    if c == Causality::Output {
+                        wired.extend(
+                            level
+                                .outputs
+                                .iter()
+                                .filter(|o| o.from == key)
+                                .map(|o| format!("the model's output {}", o.name)),
+                        );
+                    }
                     json!({
                         "name": p.name,
                         "unit": if p.unit == simsandbox_core::units::Unit::DIMENSIONLESS { String::new() } else { p.unit.to_string() },
@@ -134,7 +268,10 @@ pub fn card(s: &Session, summary_of: &dyn Fn(&str) -> Option<String>) -> Value {
                 .collect()
         };
         let mut part = json!({
-            "name": entry.name,
+            "name": name,
+            // Its full name, for keys (`car1/car`).
+            "path": entry.name,
+            "kind": "block",
             "type": entry.type_name,
             "role": role(&entry.type_name, stateful(&entry.name), reads_system, drives_system),
             "summary": if spec.summary.is_empty() {
@@ -172,6 +309,18 @@ pub fn card(s: &Session, summary_of: &dyn Fn(&str) -> Option<String>) -> Value {
         }
         parts.push(part);
     }
+    // Each model used here, as one part: its interface (ADR 0110).
+    for entry in level.blocks.iter().filter(|b| b.is_use()) {
+        parts.push(use_part(
+            s,
+            summary_of,
+            &level,
+            entry,
+            &prefix,
+            folder.as_deref(),
+            depth,
+        )?);
+    }
     parts.sort_by_key(|p| {
         ROLES
             .iter()
@@ -179,13 +328,14 @@ pub fn card(s: &Session, summary_of: &dyn Fn(&str) -> Option<String>) -> Value {
             .unwrap_or(ROLES.len())
     });
 
-    // Wires between the same two parts, in one direction, as one bundle.
+    // Wires between the same two parts, in one direction, as one bundle,
+    // as written at this level.
     let mut bundles: BTreeMap<(String, String), (Vec<String>, bool)> = BTreeMap::new();
-    for c in connections {
+    for c in &level.connections {
         let b = bundles
-            .entry((block_of(&c.from).to_string(), block_of(&c.to).to_string()))
+            .entry((part_of(&c.from).to_string(), part_of(&c.to).to_string()))
             .or_default();
-        b.0.push(format!("{} → {}", port_of(&c.from), port_of(&c.to)));
+        b.0.push(format!("{} → {}", end_port(&c.from), end_port(&c.to)));
         b.1 |= c.agent;
     }
     let bundles: Vec<Value> = bundles
@@ -193,24 +343,49 @@ pub fn card(s: &Session, summary_of: &dyn Fn(&str) -> Option<String>) -> Value {
         .map(|((from, to), (wires, agent))| json!({"from": from, "to": to, "wires": wires, "agent": agent}))
         .collect();
 
-    // Key parameters: what the model pins, else what its parts' types suggest.
-    let pinned: Vec<&ParamRow> = rows
-        .iter()
-        .filter(|r| {
-            s.file
-                .controls
-                .params
-                .get(&r.key)
-                .is_some_and(|c| c.pinned())
-        })
+    // Key parameters: what the model declares (its interface), then what
+    // it pins; with neither, what its blocks' types suggest.
+    let declared_key = |n: &str| {
+        if part.is_empty() {
+            n.to_string()
+        } else {
+            format!("{part}.{n}")
+        }
+    };
+    let here = |r: &&ParamRow| {
+        r.owner
+            .strip_prefix(prefix.as_str())
+            .is_some_and(|o| !o.contains('/'))
+    };
+    let mut keys: Vec<&ParamRow> = level
+        .params
+        .keys()
+        .filter_map(|n| rows.iter().find(|r| r.key == declared_key(n)))
         .collect();
-    let (keys, keys_from) = if pinned.is_empty() {
-        (
-            rows.iter().filter(|r| r.suggested_key).collect::<Vec<_>>(),
-            "suggested by the block types",
-        )
-    } else {
-        (pinned, "pinned by the model")
+    let declared = keys.len();
+    for r in rows.iter().filter(here) {
+        let pinned = s
+            .file
+            .controls
+            .params
+            .get(&r.key)
+            .is_some_and(|c| c.pinned());
+        if pinned && !keys.iter().any(|k| k.key == r.key) {
+            keys.push(r);
+        }
+    }
+    let keys_from = match (declared, keys.len() - declared) {
+        (0, 0) => {
+            keys = rows
+                .iter()
+                .filter(here)
+                .filter(|r| r.suggested_key)
+                .collect();
+            "suggested by the block types"
+        }
+        (0, _) => "pinned by the model",
+        (_, 0) => "declared by the model",
+        _ => "declared and pinned by the model",
     };
     let keys: Vec<Value> = keys
         .iter()
@@ -221,51 +396,108 @@ pub fn card(s: &Session, summary_of: &dyn Fn(&str) -> Option<String>) -> Value {
         })
         .collect();
 
-    let views: Vec<Value> = s
-        .file
-        .controls
-        .views
-        .iter()
-        .map(|v| {
-            let mut shows: Vec<String> = v.bind.values().flat_map(|b| b.signals()).collect();
-            for f in v.scene.frames.values() {
-                for x in [&f.x, &f.y, &f.angle].into_iter().flatten() {
-                    if let simsandbox_file::SceneValue::Name(n) = x {
-                        shows.push(n.clone());
+    // Views and probes are the whole model's, at its top level.
+    let mut reaching_inside = Vec::new();
+    let views: Vec<Value> = if !part.is_empty() {
+        Vec::new()
+    } else {
+        s.file
+            .controls
+            .views
+            .iter()
+            .enumerate()
+            .map(|(k, v)| {
+                let mut shows: Vec<String> = v.bind.values().flat_map(|b| b.signals()).collect();
+                for f in v.scene.frames.values() {
+                    for x in [&f.x, &f.y, &f.angle].into_iter().flatten() {
+                        if let simsandbox_file::SceneValue::Name(n) = x {
+                            shows.push(n.clone());
+                        }
                     }
                 }
-            }
-            for l in &v.scene.layers {
-                for x in l.bind.values() {
-                    if let simsandbox_file::SceneValue::Name(n) = x {
-                        shows.push(n.clone());
+                for l in &v.scene.layers {
+                    for x in l.bind.values() {
+                        if let simsandbox_file::SceneValue::Name(n) = x {
+                            shows.push(n.clone());
+                        }
                     }
                 }
+                // Signals only: a scene's colours are names too.
+                shows.retain(|n| n == "t" || n.contains('.') || n.contains('/'));
+                shows.sort();
+                shows.dedup();
+                for sig in &shows {
+                    if let Some((u, rest)) = reaching(sig, &uses) {
+                        reaching_inside.push(reach_json(
+                            &format!("controls.views[{k}]"),
+                            sig,
+                            u,
+                            rest,
+                            &level,
+                        ));
+                    }
+                }
+                let mut out = json!({"type": v.type_name, "shows": shows});
+                if v.type_name == simsandbox_views::scene::SCENE {
+                    let grabs: Vec<&String> = v
+                        .scene
+                        .layers
+                        .iter()
+                        .filter_map(|l| l.grab.as_ref())
+                        .collect();
+                    out["grabbed_with"] = json!(grabs);
+                }
+                out
+            })
+            .collect()
+    };
+    if part.is_empty() {
+        for (k, p) in s.file.controls.probes.iter().enumerate() {
+            for sig in &p.record {
+                if let Some((u, rest)) = reaching(sig, &uses) {
+                    reaching_inside.push(reach_json(
+                        &format!("controls.probes[{k}]"),
+                        sig,
+                        u,
+                        rest,
+                        &level,
+                    ));
+                }
             }
-            // Signals only: a scene's colours are names too.
-            shows.retain(|n| n == "t" || n.contains('.'));
-            shows.sort();
-            shows.dedup();
-            let mut out = json!({"type": v.type_name, "shows": shows});
-            if v.type_name == simsandbox_views::scene::SCENE {
-                let grabs: Vec<&String> = v
-                    .scene
-                    .layers
-                    .iter()
-                    .filter_map(|l| l.grab.as_ref())
-                    .collect();
-                out["grabbed_with"] = json!(grabs);
-            }
-            out
-        })
-        .collect();
+        }
+    }
+    // A use's start states, by inner block: a state restored, shown as
+    // reaching inside (ADR 0110 point 3).
+    for (k, b) in level.blocks.iter().enumerate().filter(|(_, b)| b.is_use()) {
+        for inner in b.starts.keys() {
+            reaching_inside.push(json!({
+                "where": format!("blocks[{k}].starts.{inner}"),
+                "signal": format!("{}/{inner}", b.name),
+                "use": b.name,
+                "inside": inner,
+                "start": true,
+                "can_offer": false,
+            }));
+        }
+    }
 
-    let labels = s.labels();
-    json!({
-        "title": s.title,
-        "description": s.file.description,
-        "notes": s.file.notes,
-        "agent": s.file.agent,
+    let labels = if part.is_empty() {
+        s.labels()
+    } else {
+        labels_under(s, &prefix)
+    };
+    let title = if part.is_empty() {
+        s.title.clone()
+    } else {
+        format!("{} > {}", s.title, part.replace('/', " > "))
+    };
+    Ok(json!({
+        "title": title,
+        // The path of uses this card is of; empty for the model itself.
+        "part": part,
+        "description": level.description,
+        "notes": level.notes,
+        "agent": level.agent,
         "trust": {
             "speed": labels.map(|l| format!("{:?}", l.speed)),
             "accuracy": labels.map(|l| format!("{:?}", l.accuracy)),
@@ -277,7 +509,167 @@ pub fn card(s: &Session, summary_of: &dyn Fn(&str) -> Option<String>) -> Value {
         "parts": parts,
         "connections": bundles,
         "views": views,
+        "reaching_inside": reaching_inside,
+    }))
+}
+
+/// One reference reaching inside a use, and whether its model can offer
+/// it here (a model defined in this file).
+fn reach_json(
+    at: &str,
+    signal: &str,
+    u: &str,
+    rest: &str,
+    level: &simsandbox_file::ModelFile,
+) -> Value {
+    let entry = level.blocks.iter().find(|b| b.name == u);
+    // Offered already: the name to read it by.
+    let offered = entry
+        .and_then(|e| e.resolved.as_ref())
+        .and_then(|m| m.outputs.iter().find(|o| o.from == rest))
+        .map(|o| o.name.clone());
+    json!({
+        "offered_as": offered,
+        "where": at,
+        "signal": signal,
+        "use": u,
+        "inside": rest,
+        "model": entry.and_then(|e| e.model.clone()),
+        "file": entry.and_then(|e| e.file.clone()),
+        "can_offer": entry.is_some_and(|e| e.model.is_some()),
     })
+}
+
+/// The least labels of the blocks under `prefix`.
+fn labels_under(s: &Session, prefix: &str) -> Option<simsandbox_core::block::MethodLabels> {
+    let model = s.sim_model();
+    simsandbox_core::block::MethodLabels::combine(
+        s.ids
+            .iter()
+            .filter(|(n, _)| n.starts_with(prefix))
+            .filter_map(|(_, &id)| model.block(id).ok())
+            .map(|b| b.method().labels),
+    )
+}
+
+/// A model used here, as one part: what it is and its interface for
+/// this use, `depth` - 1 levels of its own card inside.
+fn use_part(
+    s: &Session,
+    summary_of: &dyn Fn(&str) -> Option<String>,
+    level: &simsandbox_file::ModelFile,
+    entry: &simsandbox_file::BlockEntry,
+    prefix: &str,
+    folder: Option<&std::path::Path>,
+    depth: usize,
+) -> Result<Value, String> {
+    let path = format!("{prefix}{}", entry.name);
+    let (used, _, _) = simsandbox_file::compose::used_model(entry, folder)?;
+    let rows = s.params();
+    let params: Vec<Value> = used
+        .params
+        .iter()
+        .map(|(n, d)| {
+            let row = rows.iter().find(|r| r.key == format!("{path}.{n}"));
+            json!({
+                "name": n,
+                "value": row.map_or(d.value, |r| r.value),
+                "unit": d.unit,
+                "role": "property",
+                "description": d.description,
+                "driven_by": row.and_then(|r| r.driven.clone()),
+                "formula": row.and_then(|r| r.formula.clone()),
+            })
+        })
+        .collect();
+    let wired_to = |port: &str| -> Vec<&str> {
+        let end = format!("{}/{port}", entry.name);
+        level
+            .connections
+            .iter()
+            .filter(|c| c.to == end)
+            .map(|c| c.from.as_str())
+            .collect()
+    };
+    let wired_from = |port: &str| -> Vec<&str> {
+        let end = format!("{}/{port}", entry.name);
+        level
+            .connections
+            .iter()
+            .filter(|c| {
+                c.from == end
+                    || c.from
+                        .strip_prefix("probe:")
+                        .and_then(|r| r.split_once('.'))
+                        .is_some_and(|(_, sig)| sig == end)
+            })
+            .map(|c| c.to.as_str())
+            .collect()
+    };
+    let mut inputs: Vec<Value> = used
+        .inputs
+        .iter()
+        .map(|i| json!({"name": i.name, "unit": i.unit, "description": "", "from": wired_to(&i.name)}))
+        .collect();
+    for b in used
+        .blocks
+        .iter()
+        .filter(|b| b.type_name == simsandbox_eq::input::VALUE)
+    {
+        inputs.push(json!({
+            "name": b.name,
+            "unit": b.settings.get("unit").cloned().unwrap_or_default(),
+            "description": "an input block: its own value until something drives it",
+            "from": wired_to(&b.name),
+        }));
+    }
+    let outputs: Vec<Value> = used
+        .outputs
+        .iter()
+        .map(|o| json!({"name": o.name, "unit": "", "description": format!("from {}", o.from), "to": wired_from(&o.name)}))
+        .collect();
+    let clock = match &entry.clock {
+        Some(simsandbox_file::UseClock::Shared) => json!("shared"),
+        Some(simsandbox_file::UseClock::Step(dt)) => json!({"dt": dt}),
+        Some(simsandbox_file::UseClock::Times(t)) => json!({"times": t}),
+        None => Value::Null,
+    };
+    let labels = labels_under(s, &format!("{path}/"));
+    let summary = entry
+        .notes
+        .purpose
+        .clone()
+        .or_else(|| used.notes.purpose.clone())
+        .or_else(|| used.description.clone())
+        .unwrap_or_default();
+    let mut out = json!({
+        "name": entry.name,
+        "path": path,
+        "kind": "use",
+        "role": "model",
+        "type": entry.model.clone().or_else(|| entry.file.clone()).unwrap_or_default(),
+        "model": entry.model,
+        "file": entry.file,
+        "summary": summary,
+        "summary_of_type": false,
+        "notes": entry.notes,
+        "agent": entry.agent || used.agent,
+        "clock": clock,
+        "trust": {
+            "speed": labels.map(|l| format!("{:?}", l.speed)),
+            "accuracy": labels.map(|l| format!("{:?}", l.accuracy)),
+        },
+        // Its interface for this use (ADR 0074, ADR 0110).
+        "params": {"property": params},
+        "inputs": inputs,
+        "outputs": outputs,
+        // What it holds, opened one level down.
+        "inside": used.blocks.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(),
+    });
+    if depth > 1 {
+        out["card"] = card_at(s, summary_of, &path, depth - 1)?;
+    }
+    Ok(out)
 }
 
 fn md_escape(s: &str) -> String {
@@ -370,6 +762,10 @@ pub fn markdown(card: &Value) -> String {
     line("## Parts");
     line("");
     for part in card["parts"].as_array().into_iter().flatten() {
+        if part["kind"] == "use" {
+            use_md(part, &mut line);
+            continue;
+        }
         line(&format!(
             "### {} — {} (`{}`)",
             part["name"].as_str().unwrap_or(""),
@@ -491,12 +887,23 @@ pub fn markdown(card: &Value) -> String {
                         .flatten()
                         .filter_map(Value::as_str)
                         .collect();
+                    // Names in code; the model's own ports in words.
+                    let wired: Vec<String> = wired
+                        .iter()
+                        .map(|w| {
+                            if w.starts_with("the model's ") {
+                                (*w).to_string()
+                            } else {
+                                format!("`{w}`")
+                            }
+                        })
+                        .collect();
                     let wired = if wired.is_empty() {
                         String::new()
                     } else if dir == "from" {
-                        format!(" ← `{}`", wired.join("`, `"))
+                        format!(" ← {}", wired.join(", "))
                     } else {
-                        format!(" → `{}`", wired.join("`, `"))
+                        format!(" → {}", wired.join(", "))
                     };
                     format!("`{}`{unit}{desc}{wired}", p["name"].as_str().unwrap_or(""))
                 })
@@ -531,6 +938,43 @@ pub fn markdown(card: &Value) -> String {
         }
         line("");
     }
+    if let Some(list) = card["reaching_inside"].as_array().filter(|l| !l.is_empty()) {
+        line("## Reaching inside");
+        line("");
+        line("What reads inside a used model by path, not through its interface (ADR 0110): it breaks if that model changes inside.");
+        line("");
+        for r in list {
+            let what = if r["start"] == true {
+                format!(
+                    "`{}` starts `{}` from a state of its own",
+                    r["use"].as_str().unwrap_or(""),
+                    r["inside"].as_str().unwrap_or("")
+                )
+            } else {
+                format!(
+                    "`{}` reads `{}` inside `{}`{}",
+                    r["where"].as_str().unwrap_or(""),
+                    r["inside"].as_str().unwrap_or(""),
+                    r["use"].as_str().unwrap_or(""),
+                    if let Some(o) = r["offered_as"].as_str() {
+                        format!(
+                            ": its model offers it as `{o}`, read `{}/{o}`",
+                            r["use"].as_str().unwrap_or("")
+                        )
+                    } else if r["can_offer"] == true {
+                        format!(
+                            ": its model `{}` can offer it as an output",
+                            r["model"].as_str().unwrap_or("")
+                        )
+                    } else {
+                        String::new()
+                    }
+                )
+            };
+            line(&format!("- {what}"));
+        }
+        line("");
+    }
     if let Some(views) = card["views"].as_array().filter(|v| !v.is_empty()) {
         line("## Views");
         line("");
@@ -562,6 +1006,118 @@ pub fn markdown(card: &Value) -> String {
         line("");
     }
     out
+}
+
+/// A used model as one part, in Markdown: what it is, its interface for
+/// this use, and its own card if the card goes deeper.
+fn use_md(part: &Value, line: &mut impl FnMut(&str)) {
+    let name = part["name"].as_str().unwrap_or("");
+    let what = match (part["model"].as_str(), part["file"].as_str()) {
+        (Some(m), _) => format!("model `{m}`"),
+        (_, Some(f)) => format!("model file `{f}`"),
+        _ => "model".to_string(),
+    };
+    line(&format!("### {name} — {what}"));
+    line("");
+    if part["agent"] == true {
+        line("_Made or last changed by an AI agent; not yet reviewed by a person._");
+        line("");
+    }
+    if let Some(s) = part["summary"].as_str().filter(|s| !s.is_empty()) {
+        line(&s.replace('\n', " "));
+        line("");
+    }
+    notes_md(&part["notes"], line);
+    let t = &part["trust"];
+    let clock = match &part["clock"] {
+        Value::String(c) if c == "shared" => "; on this model's clock".to_string(),
+        Value::Object(o) if o.contains_key("dt") => {
+            format!("; on its own clock, every {} s", o["dt"])
+        }
+        Value::Object(_) => "; on its own clock, at listed times".to_string(),
+        _ => String::new(),
+    };
+    line(&format!(
+        "Trust: {} speed, {} accuracy (the least of its methods){clock}.",
+        t["speed"].as_str().unwrap_or("unknown"),
+        t["accuracy"].as_str().unwrap_or("unknown"),
+    ));
+    line("");
+    let params: Vec<&Value> = part["params"]["property"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .collect();
+    if !params.is_empty() {
+        line("| Parameter | Value for this use | What it is |");
+        line("| --- | --- | --- |");
+        for p in params {
+            line(&format!(
+                "| `{}` | {} | {} |",
+                p["name"].as_str().unwrap_or(""),
+                md_escape(&value_text(p)),
+                md_escape(p["description"].as_str().unwrap_or("")),
+            ));
+        }
+        line("");
+    }
+    for (what, key, dir, arrow) in [
+        ("Inputs", "inputs", "from", "←"),
+        ("Outputs", "outputs", "to", "→"),
+    ] {
+        let list: Vec<String> = part[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|p| {
+                let wired: Vec<&str> = p[dir]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                let wired = if wired.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {arrow} `{}`", wired.join("`, `"))
+                };
+                format!("`{}`{wired}", p["name"].as_str().unwrap_or(""))
+            })
+            .collect();
+        if !list.is_empty() {
+            line(&format!("{what}: {}.", list.join("; ")));
+            line("");
+        }
+    }
+    let inside: Vec<&str> = part["inside"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    match part["card"].as_object() {
+        Some(_) => {
+            // Its own card from its key parameters on (what it is was
+            // said above), its headings two levels down.
+            let text = markdown(&part["card"]);
+            for l in text.lines().skip_while(|l| !l.starts_with("## ")) {
+                if l.starts_with('#') {
+                    line(&format!("##{l}"));
+                } else {
+                    line(l);
+                }
+            }
+        }
+        None if !inside.is_empty() => {
+            line(&format!(
+                "Inside: {} (its own card: `--part {}`).",
+                inside.join(", "),
+                part["path"].as_str().unwrap_or(name)
+            ));
+            line("");
+        }
+        None => {}
+    }
 }
 
 /// What `check --agent` (ADR 0107 point 3) finds missing in the parts an
@@ -644,4 +1200,113 @@ pub fn agent_problems(s: &Session, file: &simsandbox_file::ModelFile) -> Vec<Val
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::examples::{registry, EXAMPLES};
+
+    fn platoon() -> String {
+        EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Platoon"))
+            .unwrap()
+            .text
+            .to_string()
+    }
+
+    fn card_of(text: &str, part: &str, depth: usize) -> Result<Value, String> {
+        let r = registry();
+        let s = Session::load("platoon", text, &r).unwrap();
+        card_at(&s, &|t| r.info(t).map(|i| i.summary.clone()), part, depth)
+    }
+
+    #[test]
+    fn a_used_model_is_one_part_with_its_interface() {
+        // ADR 0110 point 5: the platoon is told once, its followers as uses.
+        let card = card_of(&platoon(), "", 1).unwrap();
+        let names: Vec<&str> = card["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["car1", "car2", "car3", "leader"]);
+        let car3 = &card["parts"][2];
+        assert_eq!(car3["kind"], "use");
+        assert_eq!(car3["params"]["property"][2]["value"], 2500.0);
+        assert_eq!(car3["inputs"][0]["from"], json!(["car2/v"]));
+        assert!(car3.get("card").is_none());
+        // Its interface is its key parameters' source, before its pins.
+        assert_eq!(
+            card["key_parameters"]["from"],
+            "declared and pinned by the model"
+        );
+        let leader = &card["parts"][3];
+        assert_eq!(leader["outputs"][0]["to"], json!(["car1/lead"]));
+        // One level further, and nested.
+        let inner = card_of(&platoon(), "car3", 1).unwrap();
+        assert_eq!(inner["title"], "platoon > car3");
+        assert_eq!(inner["parts"][1]["path"], "car3/control");
+        let inputs = &inner["parts"][1]["inputs"][0];
+        assert_eq!(inputs["from"], json!(["the model's input lead"]));
+        let deep = card_of(&platoon(), "", 2).unwrap();
+        assert_eq!(deep["parts"][0]["card"]["part"], "car1");
+        let missing = card_of(&platoon(), "car4", 1).unwrap_err();
+        assert!(missing.contains("car1, car2, car3"), "{missing}");
+        // Its Markdown.
+        let md = markdown(&deep);
+        assert!(md.contains("### car1 — model `follower`"), "{md}");
+        assert!(md.contains("#### Parts"), "{md}");
+    }
+
+    #[test]
+    fn what_reads_inside_is_listed_and_offered_as_an_output() {
+        // ADR 0110 point 4: a view reading inside a use, then offered.
+        let mut v: Value = serde_json::from_str(&platoon()).unwrap();
+        let ys = &mut v["controls"]["views"][0]["bind"]["y"];
+        ys[1] = json!("car1/car.v");
+        ys[2] = json!("car2/control.e");
+        let text = v.to_string();
+        let card = card_of(&text, "", 1).unwrap();
+        let reach = card["reaching_inside"].as_array().unwrap();
+        assert_eq!(reach.len(), 2, "{reach:?}");
+        // car.v is offered already as v; control.e is not.
+        assert_eq!(reach[0]["offered_as"], "v");
+        assert_eq!(reach[1]["signal"], "car2/control.e");
+        assert!(reach[1]["offered_as"].is_null() && reach[1]["can_offer"] == true);
+        let (mut file, _) = simsandbox_file::ModelFile::from_json(&text).unwrap();
+        let r = registry();
+        let scope = crate::diagram::Scope::Model;
+        let note = crate::diagram::apply_in(
+            &mut file,
+            &scope,
+            &r,
+            &crate::diagram::Edit::OfferAsOutput {
+                signal: "car2/control.e".into(),
+            },
+        )
+        .unwrap();
+        assert!(note.contains("'e'"), "{note}");
+        let def = file.blocks[1].resolved.as_ref().unwrap();
+        assert!(def
+            .outputs
+            .iter()
+            .any(|o| o.name == "e" && o.from == "control.e"));
+        let after = file.to_json();
+        assert!(after.contains("\"car2/e\"") && !after.contains("car2/control.e"));
+        // It loads and reads the same signal by its new name.
+        let card = card_of(&after, "", 1).unwrap();
+        assert_eq!(card["reaching_inside"].as_array().unwrap().len(), 1);
+        assert!(crate::diagram::apply_in(
+            &mut file,
+            &scope,
+            &r,
+            &crate::diagram::Edit::OfferAsOutput {
+                signal: "leader.v".into()
+            },
+        )
+        .is_err());
+    }
 }

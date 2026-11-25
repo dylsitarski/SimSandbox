@@ -831,6 +831,23 @@ pub fn load_merged_with(
             *r = flat(r);
         }
     }
+    // Views and filters may read what a used model offers by its name
+    // (`car1/v`, ADR 0110): checked against the output it stands for. The
+    // file keeps the name, which the session records too.
+    for list in ["views", "filters"] {
+        let Some(found) = serde_json::to_value(&merged.controls)
+            .ok()
+            .and_then(|mut c| c.get_mut(list).map(serde_json::Value::take))
+        else {
+            continue;
+        };
+        let mut found = found;
+        map_strings(&mut found, &|s| aliases.contains_key(s).then(|| flat(s)));
+        let mut controls =
+            serde_json::to_value(&merged.controls).map_err(|e| invalid("controls", e))?;
+        controls[list] = found;
+        merged.controls = serde_json::from_value(controls).map_err(|e| invalid("controls", e))?;
+    }
     let shortest = c
         .domains
         .iter()
@@ -926,6 +943,20 @@ pub fn load_merged_with(
         }
     }
     Ok((loaded, c))
+}
+
+/// Replace each string under `v` that `f` maps.
+fn map_strings(v: &mut serde_json::Value, f: &dyn Fn(&str) -> Option<String>) {
+    match v {
+        serde_json::Value::String(s) => {
+            if let Some(n) = f(s) {
+                *s = n;
+            }
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(|x| map_strings(x, f)),
+        serde_json::Value::Object(o) => o.values_mut().for_each(|x| map_strings(x, f)),
+        _ => {}
+    }
 }
 
 fn digest(bytes: &[u8]) -> String {

@@ -51,9 +51,9 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--view" => {
                 let v = it.next().ok_or("missing value for --view")?;
-                if !["time", "phase", "3d", "diagram"].contains(&v.as_str()) {
+                if !["overview", "time", "phase", "3d", "diagram"].contains(&v.as_str()) {
                     return Err(format!(
-                        "unknown view '{v}' (expected time, phase, 3d or diagram)"
+                        "unknown view '{v}' (expected overview, time, phase, 3d or diagram)"
                     ));
                 }
                 view = Some(v.clone());

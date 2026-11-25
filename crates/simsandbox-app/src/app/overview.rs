@@ -1,7 +1,10 @@
 //! The Overview tab (ADR 0108): the model's card (ADR 0107), opened first
 //! for every model. Built on the worker from the session when the file
 //! changes; values are read live from the published parameters, so they
-//! follow sliders and wires. Each part can be inspected from here.
+//! follow sliders and wires. Each part can be inspected from here. It
+//! shows one level (ADR 0110): each model used is one part with its
+//! interface, opened in place; what reads inside a used model is listed,
+//! with Offer as output.
 
 use super::*;
 use serde_json::Value;
@@ -43,16 +46,29 @@ impl SimApp {
     pub(super) fn overview_card(&mut self) -> Option<Value> {
         let live = self.session.as_ref()?;
         let m = live.model();
-        if let Some((file, card)) = &self.overview {
-            if *file == m.file {
+        if let Some((file, part, card)) = &self.overview {
+            if *file == m.file && *part == self.overview_part {
                 return Some(card.clone());
             }
         }
         let summaries = simsandbox_session::card::type_summaries(&self.registry);
-        let card = live
-            .call(move |s, _| simsandbox_session::card::card(s, &|t| summaries.get(t).cloned()))
+        let part = self.overview_part.clone();
+        let asked = part.clone();
+        let built = live
+            .call(move |s, _| {
+                simsandbox_session::card::card_at(s, &|t| summaries.get(t).cloned(), &asked, 1)
+            })
             .ok()?;
-        self.overview = Some((m.file.clone(), card.clone()));
+        let card = match built {
+            Ok(card) => card,
+            // The part is gone (renamed, removed): the model itself.
+            Err(_) if !part.is_empty() => {
+                self.overview_part.clear();
+                return self.overview_card();
+            }
+            Err(_) => return None,
+        };
+        self.overview = Some((m.file.clone(), part, card.clone()));
         Some(card)
     }
 
@@ -85,7 +101,33 @@ impl SimApp {
         };
         let mut edits: Vec<Edit> = Vec::new();
         let mut inspect: Option<String> = None;
+        let mut open: Option<String> = None;
+        let level = text(&card["part"]).to_string();
+        // Inspected from the model's own level, where the diagram is.
+        let top = level.is_empty();
         egui::ScrollArea::vertical().id_salt("overview").show(ui, |ui| {
+            if !top {
+                // Where this level is: each step back a link.
+                ui.horizontal_wrapped(|ui| {
+                    if ui.link("Model").clicked() {
+                        open = Some(String::new());
+                    }
+                    let mut path = String::new();
+                    let steps: Vec<&str> = level.split('/').collect();
+                    for (k, seg) in steps.iter().enumerate() {
+                        ui.weak(">");
+                        if !path.is_empty() {
+                            path.push('/');
+                        }
+                        path.push_str(seg);
+                        if k + 1 == steps.len() {
+                            ui.strong(*seg);
+                        } else if ui.link(*seg).clicked() {
+                            open = Some(path.clone());
+                        }
+                    }
+                });
+            }
             ui.heading(text(&card["title"]));
             if let Some(d) = card["description"].as_str() {
                 ui.label(d);
@@ -111,8 +153,12 @@ impl SimApp {
                 egui::Grid::new("overview keys").striped(true).show(ui, |ui| {
                     for p in list {
                         let key = text(&p["key"]);
-                        if ui.link(key).on_hover_text("Inspect its block").clicked() {
-                            inspect = key.split_once('.').map(|(b, _)| b.to_string());
+                        if top && key.contains('.') {
+                            if ui.link(key).on_hover_text("Inspect its block").clicked() {
+                                inspect = key.split_once('.').map(|(b, _)| b.to_string());
+                            }
+                        } else {
+                            ui.label(key);
                         }
                         ui.label(value(key, text(&p["unit"])));
                         ui.weak(text(&p["role"]));
@@ -125,7 +171,12 @@ impl SimApp {
 
             ui.label(egui::RichText::new("Parts").strong());
             for part in card["parts"].as_array().into_iter().flatten() {
+                if part["kind"] == "use" {
+                    use_part(ui, part, top, &value, &mut open, &mut inspect, &mut edits);
+                    continue;
+                }
                 let name = text(&part["name"]);
+                let path = text(&part["path"]);
                 let header = format!("{name} — {}", text(&part["role"]));
                 egui::CollapsingHeader::new(egui::RichText::new(header).strong())
                     .id_salt(("overview part", name))
@@ -133,7 +184,7 @@ impl SimApp {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.weak(text(&part["type"]));
-                            if ui.small_button("Inspect").on_hover_text("Select it: the Inspector and the diagram follow").clicked() {
+                            if top && ui.small_button("Inspect").on_hover_text("Select it: the Inspector and the diagram follow").clicked() {
                                 inspect = Some(name.to_string());
                             }
                         });
@@ -218,7 +269,7 @@ impl SimApp {
                                         egui::Grid::new(("overview params", name, role)).striped(true).show(ui, |ui| {
                                             for p in &shown {
                                                 ui.label(text(&p["name"]));
-                                                ui.label(value(&format!("{name}.{}", text(&p["name"])), text(&p["unit"])));
+                                                ui.label(value(&format!("{path}.{}", text(&p["name"])), text(&p["unit"])));
                                                 ui.label(text(&p["description"]));
                                                 ui.end_row();
                                             }
@@ -243,9 +294,9 @@ impl SimApp {
                                         let arrow = if wired.is_empty() {
                                             String::new()
                                         } else if dir == "from" {
-                                            format!("  ← {}", wired.join(", "))
+                                            format!(", from {}", wired.join(", "))
                                         } else {
-                                            format!("  → {}", wired.join(", "))
+                                            format!(", to {}", wired.join(", "))
                                         };
                                         let unit = if unit.is_empty() { String::new() } else { format!(" [{unit}]") };
                                         let desc = p["description"].as_str().filter(|d| !d.is_empty()).map(|d| format!(": {d}")).unwrap_or_default();
@@ -262,11 +313,47 @@ impl SimApp {
                 for b in bundles {
                     let by_agent = if b["agent"] == true { "  (wired by an agent)" } else { "" };
                     ui.label(format!(
-                        "{} → {}: {}{by_agent}",
+                        "{} to {}: {}{by_agent}",
                         text(&b["from"]),
                         text(&b["to"]),
                         strings(&b["wires"]).join(", "),
                     ));
+                }
+            }
+            if let Some(list) = card["reaching_inside"].as_array().filter(|l| !l.is_empty()) {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Reaching inside").strong()).on_hover_text(
+                    "These read inside a used model by path, not through its interface (ADR 0110): they break if that model changes inside",
+                );
+                for r in list {
+                    ui.horizontal_wrapped(|ui| {
+                        if r["start"] == true {
+                            ui.label(format!("{} starts {} from a state of its own", text(&r["use"]), text(&r["inside"])));
+                            return;
+                        }
+                        ui.label(format!("{} reads {}", text(&r["where"]), text(&r["signal"])));
+                        let signal = text(&r["signal"]).to_string();
+                        match r["offered_as"].as_str() {
+                            Some(o) => {
+                                let name = format!("{}/{o}", text(&r["use"]));
+                                if ui.small_button(format!("Read {name}")).on_hover_text("Its model offers it already: read it by that name").clicked() {
+                                    edits.push(Edit::OfferAsOutput { signal });
+                                }
+                            }
+                            None if r["can_offer"] == true => {
+                                if ui
+                                    .small_button("Offer as output")
+                                    .on_hover_text(format!("{} offers it as an output, read by that name", text(&r["model"])))
+                                    .clicked()
+                                {
+                                    edits.push(Edit::OfferAsOutput { signal });
+                                }
+                            }
+                            None => {
+                                ui.weak(format!("offer it in {}", text(&r["file"])));
+                            }
+                        }
+                    });
                 }
             }
             if let Some(views) = card["views"].as_array().filter(|v| !v.is_empty()) {
@@ -290,7 +377,104 @@ impl SimApp {
         if let Some(name) = inspect {
             self.select(&name);
         }
+        if let Some(part) = open {
+            self.overview_part = part;
+        }
     }
+}
+
+/// A model used at this level, as one part (ADR 0110): what it is, its
+/// interface for this use with values live, Open to show its own level.
+fn use_part(
+    ui: &mut egui::Ui,
+    part: &Value,
+    top: bool,
+    value: &dyn Fn(&str, &str) -> String,
+    open: &mut Option<String>,
+    inspect: &mut Option<String>,
+    edits: &mut Vec<Edit>,
+) {
+    let name = text(&part["name"]);
+    let path = text(&part["path"]);
+    let model = part["model"].as_str().map_or_else(
+        || format!("file {}", text(&part["file"])),
+        |m| format!("model {m}"),
+    );
+    egui::CollapsingHeader::new(egui::RichText::new(format!("{name} — {model}")).strong())
+        .id_salt(("overview use", path))
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .small_button("Open")
+                    .on_hover_text("Show what it holds: its own parts, one level down")
+                    .clicked()
+                {
+                    *open = Some(path.to_string());
+                }
+                if top
+                    && ui
+                        .small_button("Inspect")
+                        .on_hover_text("Select it: the Inspector and the diagram follow")
+                        .clicked()
+                {
+                    *inspect = Some(name.to_string());
+                }
+                let inside = strings(&part["inside"]);
+                if !inside.is_empty() {
+                    ui.weak(format!("holds {}", inside.join(", ")));
+                }
+            });
+            if part["agent"] == true {
+                if let Some(e) = inspector::agent_mark(ui, "this use or its model", name) {
+                    edits.push(e);
+                }
+            }
+            if let Some(s) = part["summary"].as_str().filter(|s| !s.is_empty()) {
+                ui.label(s);
+            }
+            notes(ui, &part["notes"]);
+            let t = &part["trust"];
+            ui.weak(format!(
+                "{} speed, {} accuracy (the least of its methods)",
+                text(&t["speed"]),
+                text(&t["accuracy"]),
+            ));
+            let params: Vec<&Value> = part["params"]["property"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .collect();
+            if !params.is_empty() {
+                egui::Grid::new(("overview use params", path))
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for p in params {
+                            let n = text(&p["name"]);
+                            ui.label(n);
+                            let shown = value(&format!("{path}.{n}"), text(&p["unit"]));
+                            match p["formula"].as_str() {
+                                Some(f) => ui.label(format!("{shown}  (= {f})")),
+                                None => ui.label(shown),
+                            };
+                            ui.label(text(&p["description"]));
+                            ui.end_row();
+                        }
+                    });
+            }
+            // In words: the app's font has no arrows.
+            for (what, key, dir) in [("in", "inputs", "from"), ("out", "outputs", "to")] {
+                for p in part[key].as_array().into_iter().flatten() {
+                    let wired = strings(&p[dir]);
+                    let wired = if wired.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {dir} {}", wired.join(", "))
+                    };
+                    ui.label(format!("{what}: {}{wired}", text(&p["name"])));
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -353,5 +537,44 @@ mod tests {
         assert!(serde_json::to_string(&standard)
             .unwrap()
             .contains("\"overview\""));
+    }
+
+    #[test]
+    fn the_overview_opens_a_used_model_in_place() {
+        // ADR 0110: one level at a time; Open shows a use's own parts, and
+        // a level that is gone falls back to the model.
+        let mut app = SimApp::new(None, None, None, None);
+        let k = EXAMPLES
+            .iter()
+            .position(|e| e.name.starts_with("Platoon"))
+            .unwrap();
+        app.open_example(k);
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let card = app.overview_card().unwrap();
+        let kinds: Vec<&str> = card["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["use", "use", "use", "block"]);
+        app.overview_part = "car2".into();
+        let card = app.overview_card().unwrap();
+        assert_eq!(card["part"], "car2");
+        assert_eq!(card["parts"][0]["path"], "car2/car");
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.overview_tab(ui));
+        out.textures_delta.clear();
+        app.overview_part = "car9".into();
+        let card = app.overview_card().unwrap();
+        assert_eq!(card["part"], "");
+        assert!(app.overview_part.is_empty());
     }
 }

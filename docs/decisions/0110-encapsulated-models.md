@@ -136,8 +136,29 @@ When a use can change what is inside its model, its model's interface does not s
   - `expose(text, registry, folder, model, key, name)` and `offer_output(text, model, signal, name)` make the interface by hand. Python's `Model.expose` and `Model.offer` call them. `Model.set`, `add_model(params=)`, `connect` and `link` refuse inner paths, naming the fix.
   - `simsandbox upgrade` now loads a model that uses models (before, it refused one).
   - Tests: `tests/encapsulation.rs` (shared parameters, results bit for bit, formulas kept, separate files reported, `expose` and `offer_output`); the older-form fixture `tests/old/adr-0110-reaching-inside.json` with values one and two levels deep, a wire and a link (its runs are the same bytes from the build before, from this build, and from its current form); Python's composition test rewritten through interfaces. Every example's run gives the same bytes.
+- **Step 2 (2026-11-25), surfaces by level:**
+  - `simsandbox-session/src/card.rs`: `card_at(session, summary_of, part, depth)` gives the card of the model at a path of uses. Its own blocks are parts, as before (each with `path`, its full name); each model it uses is one part (`kind: "use"`, role `model`).
+    - A use part carries its model or file, summary (the use's purpose, else its model's purpose or description), notes and mark, clock and the least labels of its blocks.
+    - It also carries its interface for this use (declared parameters with this use's values and formulas, exposed inputs and input blocks, offered outputs, each with what is wired to it as written), and the names of what it holds. With `depth` above 1, its own card is nested as `card`.
+    - `card(session, …)` is the top level.
+  - Wires are told as written at the level (`car1/lead`, not the inner port they feed). A block's port that the model exposes says so ("the model's input lead").
+  - Key parameters are the level's declared parameters, then its pins, else what the types suggest.
+  - `reaching_inside` lists views and probes reading inside a use by path, with whether its model offers that output already (`offered_as`) or can (`can_offer`, a model defined in the file), and uses' start states by inner block.
+  - Markdown: a use as a heading with its interface table, `Inside: …` or its nested card with headings two levels down, and a "Reaching inside" section.
+  - `Edit::OfferAsOutput { signal }` (`diagram.rs`): the used model defined in the file offers the output (through `encapsulate::offer_output`), and every reference to that signal at the level reads `use/name`. For a separate file it says to offer it there.
+  - Views and filters may read a used model's offered output by name (`car1/v`): the merged load checks them against what it stands for (`load_merged_with`), and the session already recorded it under that name.
+  - The platoon's and the forced spring's views read `car1/v` and `held/x`, which their models offered already. Their run outputs are the same bytes; recording keeps what views read (ADR 0063), so the session records `car1/v` in place of `car1/car.v`.
+  - `simsandbox explain FILE --part PATH --depth N`; Python's `explain(…, part=, depth=)` and `Model.explain`.
+  - The app's Overview (`app/overview.rs`) shows one level:
+    - a breadcrumb back up;
+    - each use with **Open** (its own level, in place), **Inspect** at the top level, its interface with live values, and what is wired to it;
+    - "Reaching inside" with **Offer as output** (or **Read car1/v** when it is offered already), applied as `Edit::OfferAsOutput`.
+    - A level that is gone falls back to the model.
+  - Its arrows and `▸` are words and `>`, which the app's font has; `--view overview` is accepted by the app's argument check (it was listed but refused).
+  - Tests: the card by level and the edit (`card.rs`), `explain --part/--depth` (CLI), Python's levels, the app opening a level. A screenshot of the platoon's Overview under Xvfb.
 - **Left:**
   - A study's points still set inner values by path (`plant/car.m`, ADR 0070), as does `run.inputs`' schedule ([Q66](../open-questions.md)).
   - Point 1's events, and study formulas, have nothing that reads inside yet.
-  - Steps 2 and 3.
+  - The Inspector's table of uses (step 3) still lists inner values per use.
+  - Step 3.
 

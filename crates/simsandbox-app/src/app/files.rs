@@ -312,6 +312,7 @@ impl SimApp {
                 // The model's card opens first, for every model (ADR 0108).
                 self.dock.focus(|p| *p == Pane::Overview);
                 self.overview = None;
+                self.overview_part.clear();
                 self.dock_settled = None;
                 self.probe_dir = None;
                 for p in popped {

@@ -196,9 +196,9 @@
           "x": "t",
           "y": [
             "leader.v",
-            "car1/car.v",
-            "car2/car.v",
-            "car3/car.v"
+            "car1/v",
+            "car2/v",
+            "car3/v"
           ]
         }
       }

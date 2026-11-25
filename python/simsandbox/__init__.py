@@ -103,22 +103,46 @@ def is_agent_mode() -> bool:
 
 
 @overload
-def explain(model: "Model | dict[str, Any] | str | os.PathLike[str]", format: Literal["markdown"] = "markdown") -> str: ...
-@overload
-def explain(model: "Model | dict[str, Any] | str | os.PathLike[str]", format: Literal["json"]) -> dict[str, Any]: ...
 def explain(
-    model: "Model | dict[str, Any] | str | os.PathLike[str]", format: str = "markdown"
+    model: "Model | dict[str, Any] | str | os.PathLike[str]",
+    format: Literal["markdown"] = "markdown",
+    part: str = "",
+    depth: int = 1,
+) -> str: ...
+@overload
+def explain(
+    model: "Model | dict[str, Any] | str | os.PathLike[str]",
+    format: Literal["json"],
+    part: str = "",
+    depth: int = 1,
+) -> dict[str, Any]: ...
+def explain(
+    model: "Model | dict[str, Any] | str | os.PathLike[str]",
+    format: str = "markdown",
+    part: str = "",
+    depth: int = 1,
 ) -> "str | dict[str, Any]":
     """The model's card (ADR 0107): what it is, its parts by role, each
     part's summary, equations or bodies, method and labels, parameters by
     role, inputs and outputs; how the parts connect; its key parameters
     (pinned, else suggested by the types); what its views show; how far
     to trust it. Markdown (default) or, with ``format="json"``, a dict.
-    Raises :class:`ModelError` if the model cannot load."""
+
+    One level at a time (ADR 0110): each model used inside is one part,
+    with its interface for that use. ``part`` gives the card of a model
+    used inside, by its path of uses (``"car1"``, ``"vehicle/plant"``);
+    ``depth`` includes the cards of used models that many levels down
+    (1: this level only). What reads inside a used model by path is listed
+    under ``reaching_inside``.
+
+    Raises :class:`ModelError` if the model cannot load or has no such
+    part."""
     if format not in ("markdown", "json"):
         raise ValueError(f"format is 'markdown' or 'json', not {format!r}")
     with _in_folder(_folder(model)):
-        text = _native.explain(_text(model), format == "json")
+        if depth < 1:
+            raise ValueError(f"depth is a whole number from 1, not {depth!r}")
+        text = _native.explain(_text(model), format == "json", part, depth)
     return cast("dict[str, Any]", json.loads(text)) if format == "json" else text
 
 
@@ -519,12 +543,12 @@ class Model:
         return check(self, agent)
 
     @overload
-    def explain(self, format: Literal["markdown"] = "markdown") -> str: ...
+    def explain(self, format: Literal["markdown"] = "markdown", part: str = "", depth: int = 1) -> str: ...
     @overload
-    def explain(self, format: Literal["json"]) -> dict[str, Any]: ...
-    def explain(self, format: str = "markdown") -> "str | dict[str, Any]":
+    def explain(self, format: Literal["json"], part: str = "", depth: int = 1) -> dict[str, Any]: ...
+    def explain(self, format: str = "markdown", part: str = "", depth: int = 1) -> "str | dict[str, Any]":
         """See :func:`explain`."""
-        return cast("str | dict[str, Any]", explain(self, format))  # type: ignore[call-overload]
+        return cast("str | dict[str, Any]", explain(self, format, part, depth))  # type: ignore[call-overload]
 
     def run(
         self,

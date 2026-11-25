@@ -698,6 +698,40 @@ fn explain_prints_the_models_card() {
 }
 
 #[test]
+fn explain_shows_one_level_and_opens_a_part() {
+    // ADR 0110: each used model is one part; --part and --depth go in.
+    let model = example("platoon.ssbx.json");
+    let out = simsandbox(&["explain", &model]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    for wanted in [
+        "### car2 — model `follower`",
+        "| `mass` | 1500.0 kg | Mass of the car |",
+        "Inputs: `lead` ← `car1/v`.",
+        "Inside: car, control (its own card: `--part car2`).",
+    ] {
+        assert!(text.contains(wanted), "lacks {wanted:?}:\n{text}");
+    }
+    assert!(!text.contains("car2/car —"), "{text}");
+    let inner = json(&simsandbox(&[
+        "explain", &model, "--part", "car2", "--format", "json",
+    ]));
+    assert_eq!(inner["title"], "platoon > car2");
+    let deep = json(&simsandbox(&[
+        "explain", &model, "--depth", "2", "--format", "json",
+    ]));
+    assert_eq!(deep["parts"][1]["card"]["parts"][0]["path"], "car2/car");
+    let missing = simsandbox(&["explain", &model, "--part", "car9"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("car1, car2, car3"));
+    assert_eq!(
+        simsandbox(&["explain", &model, "--depth", "0"])
+            .status
+            .code(),
+        Some(2)
+    );
+}
+
+#[test]
 fn check_for_an_agent_asks_for_notes_on_what_it_made() {
     // ADR 0107: plain check passes; --agent fails at each missing note's
     // path, and passes once they are written.

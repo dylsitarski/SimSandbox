@@ -93,15 +93,21 @@ type (its ports, parameters, methods and labels); or with `units` every unit sym
     ),
     (
         "explain",
-        "usage: simsandbox explain FILE [--format markdown|json]
+        "usage: simsandbox explain FILE [--format markdown|json] [--part PATH] [--depth N]
 
-Print the model's card (ADR 0107): what it is, its parts by role (interaction, system,
-controller, formulas, study), each part's summary, equations or bodies, method with its
-labels and what it is solved with, its parameters grouped by role and its inputs and
-outputs; how the parts connect, wires between two parts as one bundle; the key
-parameters (those the model pins, else those its types suggest); what each view shows;
-and how far to trust it. Markdown (default) or JSON. Exit status 1 if the model cannot
-load.",
+Print the model's card (ADR 0107), one level at a time (ADR 0110): what it is, its parts
+by role (interaction, model, system, controller, formulas, study), each block's summary,
+equations or bodies, method with its labels and what it is solved with, its parameters
+grouped by role and its inputs and outputs; each model it uses as one part with its
+interface for that use (parameters, inputs, outputs) and what it holds; how the parts
+connect, wires between two parts as one bundle; the key parameters (those the model
+declares, then those it pins, else those its types suggest); what each view shows; what
+reads inside a used model by path; and how far to trust it. Markdown (default) or JSON.
+
+  --part PATH   the card of a model used inside, by its path of uses (car1, vehicle/plant)
+  --depth N     include the cards of used models N - 1 levels down (default 1)
+
+Exit status 1 if the model cannot load or has no such part.",
     ),
     (
         "schema",
@@ -713,7 +719,14 @@ fn check(args: &[String]) -> Result<()> {
 /// Print a model's card (ADR 0107), as Markdown or JSON.
 fn explain(args: &[String]) -> Result<()> {
     let (path, rest) = file_arg("explain", args)?;
-    let flags = Flags::parse(rest, &["--format"])?;
+    let flags = Flags::parse(rest, &["--format", "--part", "--depth"])?;
+    let part = flags.get("--part").unwrap_or("").trim_matches('/');
+    let depth = match flags.get("--depth") {
+        None => 1,
+        Some(d) => d.parse::<usize>().ok().filter(|&d| d >= 1).ok_or_else(|| {
+            Failure::usage(format!("--depth is a whole number from 1, not '{d}'"))
+        })?,
+    };
     let json = match flags.get("--format") {
         None | Some("markdown") => false,
         Some("json") => true,
@@ -731,10 +744,21 @@ fn explain(args: &[String]) -> Result<()> {
         .strip_suffix(".ssbx.json")
         .unwrap_or(&title)
         .to_string();
-    let session = simsandbox_session::Session::load(&title, &text, &registry())
-        .map_err(|e| Failure::model(format!("{path} cannot load: {e}"), path))?;
+    let session = simsandbox_session::Session::load_in(
+        &title,
+        &text,
+        &registry(),
+        model_folder(path).as_deref(),
+    )
+    .map_err(|e| Failure::model(format!("{path} cannot load: {e}"), path))?;
     let r = registry();
-    let card = simsandbox_session::card::card(&session, &|t| r.info(t).map(|i| i.summary.clone()));
+    let card = simsandbox_session::card::card_at(
+        &session,
+        &|t| r.info(t).map(|i| i.summary.clone()),
+        part,
+        depth,
+    )
+    .map_err(|e| Failure::model(format!("{path}: --part {part}: {e}"), path))?;
     if json {
         print_json(&card)
     } else {

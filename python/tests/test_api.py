@@ -898,6 +898,31 @@ def test_a_model_explains_itself():
         m.explain(format="html")  # type: ignore[call-overload]
 
 
+def test_the_card_shows_one_level_and_opens_its_parts():
+    # ADR 0110: each used model is one part with its interface; its own
+    # card is a part path away, or nested with depth.
+    m = ss.Model.example("Platoon")
+    card = m.explain(format="json")
+    uses = [p for p in card["parts"] if p["kind"] == "use"]
+    assert [p["name"] for p in uses] == ["car1", "car2", "car3"]
+    car2 = uses[1]
+    assert car2["model"] == "follower" and car2["inside"] == ["car", "control"]
+    assert {p["name"]: p["value"] for p in car2["params"]["property"]}["mass"] == 1500.0
+    assert car2["inputs"][0]["from"] == ["car1/v"] and car2["outputs"][0]["to"] == ["car3/lead"]
+    assert [k["key"] for k in card["key_parameters"]["params"]][:2] == ["ki", "kp"]
+    assert card["reaching_inside"] == []
+    inner = m.explain(format="json", part="car2")
+    assert inner["part"] == "car2" and [p["name"] for p in inner["parts"]] == ["car", "control"]
+    assert "car2.mass" in [k["key"] for k in inner["key_parameters"]["params"]]
+    deep = m.explain(format="json", depth=2)
+    assert next(p for p in deep["parts"] if p["name"] == "car1")["card"]["part"] == "car1"
+    assert "### car1 — model `follower`" in m.explain()
+    with pytest.raises(ss.ModelError, match="no model named 'car9'"):
+        m.explain(part="car9")
+    with pytest.raises(ValueError):
+        m.explain(depth=0)
+
+
 def test_agent_mode_marks_what_it_makes_and_check_asks_for_notes():
     # ADR 0107: what an agent makes is marked; check(agent=True) asks for
     # what explains it, and passes once the notes are written.

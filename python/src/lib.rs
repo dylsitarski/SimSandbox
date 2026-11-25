@@ -113,11 +113,19 @@ fn run_file(text: &str) -> PyResult<String> {
 /// A model's card (ADR 0107): Markdown, or with `json` the card as JSON
 /// text. Raises `ModelError` if the model cannot load.
 #[pyfunction]
-#[pyo3(signature = (text, json = false))]
-fn explain(text: &str, json: bool) -> PyResult<String> {
+#[pyo3(signature = (text, json = false, part = "", depth = 1))]
+fn explain(text: &str, json: bool, part: &str, depth: usize) -> PyResult<String> {
     let r = registry();
-    let s = simsandbox_session::Session::load("model", text, &r).map_err(ModelError::new_err)?;
-    let card = simsandbox_session::card::card(&s, &|t| r.info(t).map(|i| i.summary.clone()));
+    let folder = simsandbox_core::registry::current_folder();
+    let s = simsandbox_session::Session::load_in("model", text, &r, folder.as_deref())
+        .map_err(ModelError::new_err)?;
+    let card = simsandbox_session::card::card_at(
+        &s,
+        &|t| r.info(t).map(|i| i.summary.clone()),
+        part.trim_matches('/'),
+        depth.max(1),
+    )
+    .map_err(ModelError::new_err)?;
     Ok(if json {
         card.to_string()
     } else {

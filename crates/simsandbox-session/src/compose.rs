@@ -790,7 +790,8 @@ mod tests {
         );
         // The session runs it as the app would.
         let s = crate::Session::load_in("p", written, &registry(), None).unwrap();
-        assert!(s.signals().resolve("car3/car.v").is_some());
+        // Its view reads what the follower offers (ADR 0110).
+        assert!(s.signals().resolve("car3/v").is_some());
     }
 
     #[test]

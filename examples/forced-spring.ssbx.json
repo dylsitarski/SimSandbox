@@ -55,7 +55,7 @@
       "held.F": {"slider": true, "pin": true, "range": [-2.0, 2.0]}
     },
     "views": [
-      {"type": "plot.xy", "bind": {"x": "t", "y": ["held/mass.x", "shaken/mass.x", "push.F"]}}
+      {"type": "plot.xy", "bind": {"x": "t", "y": ["held/x", "shaken/x", "push.F"]}}
     ]
   }
 }

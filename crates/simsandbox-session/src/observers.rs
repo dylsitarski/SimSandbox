@@ -1785,7 +1785,7 @@ mod tests {
             .iter()
             .any(|w| w.signal == "lorenz.xyz[0]" && d.nodes[w.from.0].name == "lorenz"));
         let d = observed(&file("Platoon"));
-        let w = d.wires.iter().find(|w| w.signal == "car1/car.v").unwrap();
+        let w = d.wires.iter().find(|w| w.signal == "car1/v").unwrap();
         assert_eq!(w.from_name, "car1.v");
     }
 

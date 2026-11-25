@@ -11,6 +11,8 @@
 
 - ADR 0110 step 1 built (owner: "start building step 1"): `simsandbox-file/src/encapsulate.rs` converts values set by path, wires and probe links from inner outputs, level by level, before the composition loader reads a file; separate files reported; `expose` and `offer_output`, and Python's `Model.expose` and `Model.offer`, with refusals of inner paths; `upgrade` loads models that use models; a fixture, `tests/encapsulation.rs`, the Python composition test through interfaces. Every example's run gives the same bytes as before.
 
+- ADR 0110 step 2 built (owner: "start step 2"): `card_at` by level with uses as parts, `reaching_inside`, `Edit::OfferAsOutput`; views read offered outputs by name; `explain --part/--depth`, Python's `part=`/`depth=`; the Overview opens uses in place; the platoon and forced-spring views read offered outputs. Screenshot of the platoon's Overview checked under Xvfb, not yet by the owner in the window.
+
 ## Decided
 
 - Owner (2026-11-25): [ADR 0110](../decisions/0110-encapsulated-models.md) accepted (Q65 answered: structure first). Asked whether to close reading too: observing stays open, reading that feeds a result goes through outputs.
@@ -18,7 +20,7 @@
 
 ## Left open
 
-- ADR 0110 steps 2 and 3; [Q66](../open-questions.md) (studies and schedules set inner values by path). The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
+- ADR 0110 step 3; [Q66](../open-questions.md) (studies and schedules set inner values by path). The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session
 

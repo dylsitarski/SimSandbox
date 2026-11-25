@@ -151,8 +151,12 @@ pub struct SimApp {
     /// The mechanism row opened in the Inspector's table: its block and
     /// row (ADR 0105).
     mech_open: Option<(String, usize)>,
-    /// The model's card (ADR 0107) and the file it was built from.
-    overview: Option<(simsandbox_file::ModelFile, serde_json::Value)>,
+    /// The model's card (ADR 0107), the file it was built from and the
+    /// level it shows.
+    overview: Option<(simsandbox_file::ModelFile, String, serde_json::Value)>,
+    /// The level the Overview shows (ADR 0110): a path of uses, empty for
+    /// the model itself.
+    overview_part: String,
     /// Values of sliders being dragged that apply on release (ADR 0037).
     pending: HashMap<String, f64>,
     /// The equation editor window, when open.
@@ -253,6 +257,7 @@ impl SimApp {
             param_edits: HashMap::new(),
             mech_open: None,
             overview: None,
+            overview_part: String::new(),
             pending: HashMap::new(),
             editor: None,
             signals_editor: None,
