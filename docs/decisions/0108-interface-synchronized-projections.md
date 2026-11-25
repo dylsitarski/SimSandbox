@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (owner, 2026-11-20)
 - **Date:** 2026-11-20
+- **Amended by:** [ADR 0110](0110-encapsulated-models.md) (the projections show one level of encapsulated models)
 - **Evidence:** [the interface report](../research/2026-11-20-interface-report.md)
 - **Builds on:** [ADR 0107](0107-model-cards-and-agent-notes.md) (model cards), [ADR 0039](0039-ai-agent-access.md) (AI agents), [ADR 0042](0042-node-canvas.md) (the node canvas)
 

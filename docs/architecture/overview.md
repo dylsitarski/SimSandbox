@@ -1,6 +1,6 @@
 # Architecture overview
 
-_Last updated: 2026-11-14_
+_Last updated: 2026-11-25_
 
 SimSandbox has five layers. Only the kernel and the model graph are new code; interfaces and backends are replaceable around them. The kernel never contains physics: it schedules Blocks, checks units, stores state and records provenance, which is what lets a CFD solver, an ODE and a neural network sit in one graph.
 
@@ -32,14 +32,29 @@ The user-visible concepts, kept few on purpose ([ADR 0070](../decisions/0070-stu
 | Concept | What it is |
 | --- | --- |
 | Block | A machine: typed input and output ports with units and shapes, parameters, kernel-owned state and tables, one labelled method. Every kind of physics, math and ML is a block type registered by a domain; so are input blocks, conversions and studies |
-| Model | A graph of blocks in a file or a definition (`models`); used in another model it is a block of that model (a use), on its own clock or its user's |
+| Model | A graph of blocks in a file or a definition (`models`); used in another model it is a block of that model (a use), on its own clock or its user's, changed and fed on only through its interface ([ADR 0110](../decisions/0110-encapsulated-models.md)) |
 | Connection | A wire from an output to an input, checked for direction, shape and unit |
 | Parameter | A named, unit-aware value of a block, or declared by a model with formulas; a default that a wire may drive ([ADR 0075](../decisions/0075-parameters-are-inputs-with-defaults.md), in the kernel so far) |
 | Study | A block whose definition is a model and a `sample`: it runs the model at each point and outputs arrays by run |
 | Activation | When a part acts, from a signal on its `activate` input: once on a rise, fall or change, or while it is high, holding its results otherwise ([ADR 0088](../decisions/0088-activation.md); studies and used models, which also have `restart` to start again) |
 | Members | A model over a set of members (array cells, agents, study points): rows with ids, collapsed by array functions; how they interact and how time passes are choices of the family |
-| Observer | Reads results without changing them, outside the model hash: probes (record), filters (derive) and views (show) |
+| Observer | Reads results without changing them, outside the model hash: probes (record), filters (derive) and views (show). It may read inside a used model by path, marked as reaching inside; what feeds a result reads only a model's outputs ([ADR 0110](../decisions/0110-encapsulated-models.md)) |
 | Run settings | `run`: step, end, seed, scheduled inputs |
+
+## The model language
+
+The model file is a declarative language, and every interface is a front end to it ([ADR 0111](../decisions/0111-a-declarative-modelling-language.md), [vision](../vision.md#a-modelling-language-not-a-library)):
+- the app reads and writes it;
+- the CLI checks, runs and explains it;
+- the Python package builds it.
+
+Its rules:
+
+- **A model is data.** Loading a file evaluates no code from it. Procedures live inside blocks (typed equations, block types from domains and plugins, wrapped codes), never in how blocks are composed.
+- **Composition is declarative.** Nesting, interfaces and encapsulation ([ADR 0110](../decisions/0110-encapsulated-models.md)), and later extension, replaceable parts and replication, are constructs of the file, so every front end sees them and `check` holds them.
+- **Its meaning is one.** The same file gives the same results through every front end, bit for bit on one platform.
+
+Its semantics are spread over the ADRs; a single language reference is in [Next up](../STATUS.md#next-up).
 
 ## Crate map
 

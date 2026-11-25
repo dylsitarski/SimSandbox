@@ -11,11 +11,12 @@
 
 ## Decided
 
-- Owner (2026-11-25): draft the encapsulation ADR. Not yet accepted.
+- Owner (2026-11-25): [ADR 0110](../decisions/0110-encapsulated-models.md) accepted (Q65 answered: structure first). Asked whether to close reading too: observing stays open, reading that feeds a result goes through outputs.
+- Owner (2026-11-25): [ADR 0111](../decisions/0111-a-declarative-modelling-language.md), SimSandbox is a declarative modelling language, not a library; written into the vision and the architecture overview; the language reference in Next up.
 
 ## Left open
 
-- ADR 0110's acceptance (answers Q65). The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
+- Building ADR 0110, step 1 first. The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session
 

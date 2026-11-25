@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-02
+- **Amended by:** [ADR 0110](0110-encapsulated-models.md) (values and wires reach inside only through the interface; observing stays open)
 - **Supersedes:** [ADR 0065](0065-several-models-with-own-clocks.md) (its file format, its recorder rule and its order of work; its clock, link and evaluation rules carry over as stated below)
 
 ## Context

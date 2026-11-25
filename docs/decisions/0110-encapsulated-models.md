@@ -1,9 +1,9 @@
 # 0110 — Encapsulated models: what changes or feeds on a model goes through its interface; observing stays open; surfaces show one level
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-25)
 - **Date:** 2026-11-25
 - **Evidence:** [encapsulation and composition](../research/2026-11-25-encapsulation-and-composition.md)
-- **Answers:** [Q65](../open-questions.md) (structure first), when accepted
+- **Answers:** [Q65](../open-questions.md) (structure first)
 - **Amends:**
   - [ADR 0043](0043-subsystems.md) and [ADR 0066](0066-models-nest-as-blocks.md): inner values set for one use;
   - [ADR 0053](0053-docked-panes-inspector-and-node-values.md): the Inspector's column per use;

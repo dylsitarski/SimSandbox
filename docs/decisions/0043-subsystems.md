@@ -2,6 +2,7 @@
 
 - **Status:** Superseded by [0068](0068-one-kind-of-nested-model.md) for subsystems (2026-11-02); declared parameters with formulas stand, written in the app since [0056](0056-formulas-and-parameters-in-the-app.md)
 - **Date:** 2026-10-23
+- **Amended by:** [ADR 0110](0110-encapsulated-models.md) (a use sets only its model's declared parameters)
 
 ## Context
 

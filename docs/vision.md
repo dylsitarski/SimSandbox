@@ -1,6 +1,6 @@
 # Vision
 
-_Last updated: 2026-11-14_
+_Last updated: 2026-11-25_
 
 SimSandbox is a desktop environment for building, connecting and exploring simulations of all kinds — from typed equations and physical networks to rigid bodies, agent populations, CFD and ML models — for fun, for learning and for research.
 
@@ -32,6 +32,32 @@ The pillars pull in different directions: real-time favours speed, research favo
 ## Open to AI agents
 
 Everything a person can do in SimSandbox, an AI agent can do without the window, and check ([ADR 0039](decisions/0039-ai-agent-access.md)): models are plain files, every type is discoverable, files are validated with errors that say what to fix, and runs, sweeps and views work headless and reproducibly. A user can ask an AI to build a complete working model; an AI doing research can clone SimSandbox and set up and validate research models quickly.
+
+## A modelling language, not a library
+
+A model is close to a function: it has an interface (parameters, inputs, outputs) and a body. SimSandbox could have been a library in a programming language, with models written as code and the app built on top. It is not, by choice ([ADR 0111](decisions/0111-a-declarative-modelling-language.md)).
+
+**A model is a description the system reads, not a procedure it calls.** SimSandbox checks units and shapes, orders evaluation, merges equations across models, chooses and labels methods, rewinds and replays bit for bit, and writes the card, the diagram and the Inspector, all from the model itself. Arbitrary code would hide what a model holds, what it depends on and whether it is deterministic.
+
+**The app, the files and agents share one form.** The app must read a model, change it and write it back without loss. That works for data, not for loops, conditions and helper functions. A file does nothing when opened, so a model can be shared safely, and a person can review what an agent made from its generated card.
+
+So SimSandbox is a **declarative modelling language** with three front ends: the app, the file with the CLI, and the Python package. It takes programming languages' *meaning* and keeps its *form* declarative:
+
+| From programming languages | In SimSandbox |
+| --- | --- |
+| Functions and their signatures | Models and their interfaces |
+| Encapsulation | A use changes or feeds on a model only through its interface ([ADR 0110](decisions/0110-encapsulated-models.md)) |
+| Types | Units and shapes |
+| Modules and packages | Model files, libraries, plugin packages |
+| Inheritance | Extension (planned) |
+| Interfaces and generics | Replaceable parts (planned) |
+| Loops | Replication (planned) |
+| Pinned dependencies | Pinned versions of used models (planned) |
+| Tests | Contracts and tests attached to models (planned) |
+
+Each of these is a construct in the file, not code that writes the file, so the app, agents and checks all see it. Code belongs inside blocks: typed equations, plugins and wrapped external codes. A Python script may use loops to *write* a model; the model is still data.
+
+What no single language or library offers is the combination: different kinds of simulation in one deterministic model with units; methods chosen and labelled; runs played with, rewound and replayed; and one checked file shared by people and agents. In any one domain a specialized tool is deeper. SimSandbox's case is composition, honest labels and the shared file.
 
 ## Non-goals
 
