@@ -123,3 +123,21 @@ When a use can change what is inside its model, its model's interface does not s
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)):
 - **Added:** "reaching inside", a mark on a reference by path. No existing concept says that a reference depends on a model's inside.
 - **Removed:** an inner value set for one use (replaced by a declared parameter).
+
+## Built so far
+
+- **Step 1 (2026-11-25), conversion and enforcement:**
+  - `simsandbox-file/src/encapsulate.rs`: `encapsulate(text, registry, folder)` converts a file before the composition loader reads it (`load_composition`, `load_merged_with`). The app, `run`, `check`, `upgrade` and Python therefore all see, run and save the converted form, and `check` and `upgrade` list the `conversions`.
+    - It works on the file's JSON, one change a level down at a time, until nothing reaches inside. Every use setting the same path shares one parameter.
+    - A default comes from the value written inside, a declared parameter that value names, or the block type's default (the block is built to read it, with its unit and description; a suggested range the value lies outside of is dropped). For a separate model file used inside, it is read from that file.
+  - Uses of separate model files are reported at their path, with the fix, and left as written. So is a value set inside by a formula other than a declared parameter's name.
+  - "Refused" (point 1) is built as this conversion on every load: a path written by an older tool, or by hand, becomes the interface the next time the file is read.
+  - Probe links are converted with their probe's record and every reference to the probe's signal.
+  - `expose(text, registry, folder, model, key, name)` and `offer_output(text, model, signal, name)` make the interface by hand. Python's `Model.expose` and `Model.offer` call them. `Model.set`, `add_model(params=)`, `connect` and `link` refuse inner paths, naming the fix.
+  - `simsandbox upgrade` now loads a model that uses models (before, it refused one).
+  - Tests: `tests/encapsulation.rs` (shared parameters, results bit for bit, formulas kept, separate files reported, `expose` and `offer_output`); the older-form fixture `tests/old/adr-0110-reaching-inside.json` with values one and two levels deep, a wire and a link (its runs are the same bytes from the build before, from this build, and from its current form); Python's composition test rewritten through interfaces. Every example's run gives the same bytes.
+- **Left:**
+  - A study's points still set inner values by path (`plant/car.m`, ADR 0070), as does `run.inputs`' schedule ([Q66](../open-questions.md)).
+  - Point 1's events, and study formulas, have nothing that reads inside yet.
+  - Steps 2 and 3.
+

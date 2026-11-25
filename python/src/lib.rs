@@ -477,6 +477,38 @@ fn group(text: &str, blocks: Vec<String>) -> PyResult<(String, String)> {
     Ok((file.to_json(), note))
 }
 
+/// Expose a value inside a model as a parameter of that model (ADR 0110
+/// point 7): `model` is a model defined in the file, or `None` for the
+/// file itself; `key` is `block.param` or a path into a used model.
+/// Returns the changed model file and the parameter's name.
+#[pyfunction]
+#[pyo3(signature = (text, model, key, name=None))]
+fn expose(
+    text: &str,
+    model: Option<&str>,
+    key: &str,
+    name: Option<&str>,
+) -> PyResult<(String, String)> {
+    let folder = simsandbox_core::registry::current_folder();
+    simsandbox_file::encapsulate::expose(text, &registry(), folder.as_deref(), model, key, name)
+        .map_err(ModelError::new_err)
+}
+
+/// Offer an output inside a model as an output of that model (ADR 0110
+/// point 4): `signal` is `block.port` or a path into a used model.
+/// Returns the changed model file and the output's name.
+#[pyfunction]
+#[pyo3(signature = (text, model, signal, name=None))]
+fn offer_output(
+    text: &str,
+    model: Option<&str>,
+    signal: &str,
+    name: Option<&str>,
+) -> PyResult<(String, String)> {
+    simsandbox_file::encapsulate::offer_output(text, model, signal, name)
+        .map_err(ModelError::new_err)
+}
+
 /// Copy blocks or uses beside themselves, with their values and the wires
 /// among them, as "Duplicate" on the canvas does (ADR 0069). Returns the
 /// changed model file and a note.
@@ -845,6 +877,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(block_problem, m)?)?;
     m.add_function(wrap_pyfunction!(explain, m)?)?;
     m.add_function(wrap_pyfunction!(scene_problem, m)?)?;
+    m.add_function(wrap_pyfunction!(expose, m)?)?;
+    m.add_function(wrap_pyfunction!(offer_output, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

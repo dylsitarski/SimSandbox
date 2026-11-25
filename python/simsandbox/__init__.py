@@ -316,6 +316,7 @@ class Model:
         for what, key in (("source", source), ("target", target)):
             if not isinstance(key, str):
                 raise TypeError(f"the {what} is a name such as 'block.port', not {type(key).__name__}")
+        self._not_inside(source)
         for c in self.data.get("connections", []):
             if c.get("to") == target:
                 raise ModelError(
@@ -378,6 +379,53 @@ class Model:
         self._marked()
         return self
 
+    def expose(self, model: str | None, key: str, name: str | None = None) -> str:
+        """Make a value inside ``model`` (a model defined in this file, or
+        ``None`` for this model) a parameter of that model (ADR 0110):
+        ``key`` is ``"block.param"`` or a path into a model it uses
+        (``"plant/k"``, ``"plant/car.m"``). It is named ``name``, or after
+        the parameter, with the value the model gives it as its default;
+        returns the name, which each use then sets
+        (``add_model(..., params={name: value})``). A use sets only what
+        its model exposes."""
+        with _in_folder(self.folder):
+            text, made = _native.expose(self.to_json(), model, key, name)
+        self.data = json.loads(text)
+        self._marked()
+        return made
+
+    def offer(self, model: str | None, signal: str, name: str | None = None) -> str:
+        """Make an output inside ``model`` (a model defined in this file, or
+        ``None`` for this model) an output of that model (ADR 0110):
+        ``signal`` is ``"block.port"`` or a path into a model it uses
+        (``"plant/car.v"``). It is named ``name``, or after the port;
+        returns the name, which a use's wires and links read as
+        ``"use/name"``. Views and probes that only record may still read
+        inside by path."""
+        text, made = _native.offer_output(self.to_json(), model, signal, name)
+        self.data = json.loads(text)
+        self._marked()
+        return made
+
+    def _model_of(self, use: str) -> str | None:
+        for b in self.data.get("blocks", []):
+            if b.get("name") == use and _is_use(b):
+                return cast("str | None", b.get("model"))
+        return None
+
+    def _not_inside(self, signal: str) -> None:
+        """Refuse a signal read from inside a used model (ADR 0110)."""
+        use, slash, rest = signal.partition("/")
+        if not slash or ("." not in rest and "/" not in rest):
+            return
+        if any(b.get("name") == use and _is_use(b) for b in self.data.get("blocks", [])):
+            model = self._model_of(use)
+            fix = f"m.offer({model!r}, {rest!r})" if model else "offer it as an output in that model file"
+            raise ModelError(
+                f"{signal!r} reads inside {use!r}: what feeds a result reads a model's outputs "
+                f"(ADR 0110); {fix}, then read {use}/<name>"
+            )
+
     def block(self, name: str) -> dict[str, Any]:
         for b in self.data.get("blocks", []):
             if b["name"] == name:
@@ -395,8 +443,14 @@ class Model:
             self._marked()
             return self
         block, param = _split(key)
+        if "/" in block:
+            use = block.split("/")[0]
+            raise ModelError(_reaching(use, key.split("/", 1)[1], self._model_of(use)))
+        entry = self.block(block)
+        if _is_use(entry) and ("." in param or "/" in param):
+            raise ModelError(_reaching(block, param, entry.get("model")))
         v = value if isinstance(value, str) else float(value)
-        self.block(block).setdefault("params", {})[param] = v
+        entry.setdefault("params", {})[param] = v
         self._marked(block)
         return self
 
@@ -470,7 +524,7 @@ class Model:
     def explain(self, format: Literal["json"]) -> dict[str, Any]: ...
     def explain(self, format: str = "markdown") -> "str | dict[str, Any]":
         """See :func:`explain`."""
-        return explain(self, format)  # type: ignore[call-overload]
+        return cast("str | dict[str, Any]", explain(self, format))  # type: ignore[call-overload]
 
     def run(
         self,
@@ -551,14 +605,16 @@ class Model:
         """Use a model file in this model (ADR 0066), under ``name``, which
         prefixes everything in it (``"plant/car.v"``). ``file`` is found
         from this model's folder (or is a full path) and may itself use
-        model files. ``params`` set its parameter values for this use only,
-        by path at any depth (``"car.m"``, ``"plant/car.m"``), each a number
-        or a formula of this model's declared parameters (``"2*mass"``);
+        model files. ``params`` set its declared parameters for this use
+        only, each a number or a formula of this model's declared parameters
+        (``"2*mass"``); a value inside it is set by exposing it first
+        (:meth:`expose`, ADR 0110);
         it runs on its own clock, every ``dt`` (the file's ``run.dt`` if not
         given); link it to other models with :meth:`link`. With ``shared``,
         it runs on this model's clock instead, flattened into it like a
         subsystem: :meth:`connect` wires straight into its input blocks
-        (``"plant/force"``) and from its blocks' outputs (``"plant/car.v"``).
+        (``"plant/force"``) and from the outputs its model offers
+        (``"plant/v"``; :meth:`offer` offers one, ADR 0110).
         ``files`` replaces the files of models used inside it, by path
         (``{"plant": "car-2.ssbx.json"}``), found from this model's folder;
         only this use sees them, and the used file is left alone.
@@ -576,6 +632,9 @@ class Model:
         else:
             use["model"] = model
         if params:
+            for k in params:
+                if "." in k or "/" in k:
+                    raise ModelError(_reaching(name, k, model))
             use["params"] = {k: v if isinstance(v, str) else float(v) for k, v in params.items()}
         if files:
             use["files"] = {k: os.fspath(v) for k, v in files.items()}
@@ -602,6 +661,7 @@ class Model:
         it (every step if not given), and drives the input block ``to``
         (``"controller/speed"``, an ``input.value``) with its samples, held
         between them."""
+        self._not_inside(signal)
         name = probe or "link_" + signal.replace("/", "_").replace(".", "_")
         self.add_probe(name, [signal], every=every)
         self.data.setdefault("connections", []).append(
@@ -1111,6 +1171,23 @@ class Run:
         rel = os.path.relpath(self.model_path, os.path.dirname(os.path.abspath(path)))
         with open(path, "w", encoding="utf-8") as f:
             f.write(self.to_json(rel) + "\n")
+
+
+def _is_use(entry: dict[str, Any]) -> bool:
+    return "type" not in entry and ("model" in entry or "file" in entry)
+
+
+def _reaching(use: str, key: str, model: str | None) -> str:
+    """Why a use cannot set a value inside its model, and the fix."""
+    fix = (
+        f"m.expose({model!r}, {key!r}) declares it, then set {use}.<name>"
+        if model
+        else "expose it as a parameter in that model file, then set that"
+    )
+    return (
+        f"{use} sets {key!r} inside its model: a use sets only what its model exposes "
+        f"(ADR 0110); {fix}"
+    )
 
 
 def _split(key: str) -> tuple[str, str]:

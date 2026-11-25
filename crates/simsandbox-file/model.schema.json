@@ -466,7 +466,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/paramValue"
           },
-          "description": "Values in each parameter's declared unit; omitted parameters take their defaults. A value may be a formula of the declared parameters of the model it is written in, e.g. \"2*capacity\". For a use of a model: its declared parameters, and values inside it for this use only by path ('block.param', 'plant/car.m'), numbers or formulas."
+          "description": "Values in each parameter's declared unit; omitted parameters take their defaults. A value may be a formula of the declared parameters of the model it is written in, e.g. \"2*capacity\". For a use of a model: its declared parameters, for this use only (ADR 0110). Values set inside it by path ('block.param', 'plant/car.m') are an older form: for a model defined in the file they become its declared parameters as the file is read; into a separate model file they still load, with a warning to expose them there."
         },
         "starts": {
           "type": "object",

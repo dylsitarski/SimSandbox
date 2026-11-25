@@ -320,7 +320,14 @@ pub fn catalogue(r: &Registry, views: &ViewRegistry) -> Value {
 /// A model file rewritten in the current form (ADR 0044): the text, the
 /// older forms it converted and what it dropped as unusable.
 pub fn upgrade(text: &str, r: &Registry) -> Result<(String, Vec<String>, Vec<String>), String> {
-    let loaded = simsandbox_file::load(text, r).map_err(|e| e.to_string())?;
+    // A model that uses models loads as one (ADR 0090), and keeps the file
+    // as written, converted (ADR 0110).
+    let loaded = if simsandbox_file::compose::is_composition(text) {
+        simsandbox_file::compose::load_merged(text, r, None)
+    } else {
+        simsandbox_file::load(text, r)
+    }
+    .map_err(|e| e.to_string())?;
     Ok((loaded.file.to_json(), loaded.conversions, loaded.warnings))
 }
 

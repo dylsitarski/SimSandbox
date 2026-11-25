@@ -1,0 +1,124 @@
+{
+  "format": 1,
+  "description": "An older form (before ADR 0110): uses reach inside the models they use, by values set by path, a wire from an inner output and a probe link recording one.",
+  "run": {
+    "dt": 0.1,
+    "t_end": 0.3
+  },
+  "models": {
+    "inner": {
+      "blocks": [
+        {
+          "equations": [
+            "param r = 1",
+            "state x",
+            "dx/dt = r"
+          ],
+          "method": {
+            "name": "euler"
+          },
+          "name": "c",
+          "params": {
+            "r": "r",
+            "x0": 0
+          },
+          "type": "eq.equations"
+        }
+      ],
+      "outputs": [
+        {
+          "from": "c.x",
+          "name": "x"
+        }
+      ],
+      "params": {
+        "r": {
+          "range": [
+            0.0,
+            10.0
+          ],
+          "value": 1.0
+        }
+      }
+    },
+    "outer": {
+      "blocks": [
+        {
+          "model": "inner",
+          "name": "p",
+          "params": {
+            "r": "r"
+          }
+        }
+      ],
+      "params": {
+        "r": {
+          "range": [
+            0.0,
+            10.0
+          ],
+          "value": 1.0
+        }
+      }
+    }
+  },
+  "blocks": [
+    {
+      "name": "a",
+      "model": "inner",
+      "params": {
+        "r": 2.0
+      }
+    },
+    {
+      "name": "b",
+      "model": "inner"
+    },
+    {
+      "name": "o",
+      "model": "outer",
+      "params": {
+        "r": 5.0
+      }
+    },
+    {
+      "name": "k",
+      "type": "eq.equations",
+      "method": {
+        "name": "euler"
+      },
+      "equations": [
+        "input w",
+        "state q",
+        "dq/dt = w"
+      ],
+      "params": {
+        "q0": 0.0
+      }
+    },
+    {
+      "name": "u",
+      "type": "input.value"
+    }
+  ],
+  "connections": [
+    {
+      "from": "a/x",
+      "to": "k.w"
+    },
+    {
+      "from": "probe:P.b/x",
+      "to": "u"
+    }
+  ],
+  "controls": {
+    "probes": [
+      {
+        "name": "P",
+        "record": [
+          "b/x"
+        ]
+      }
+    ]
+  }
+}

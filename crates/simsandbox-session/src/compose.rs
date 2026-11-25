@@ -128,6 +128,8 @@ pub fn check(text: &str, registry: &Registry) -> Value {
         "ok": true,
         "errors": [],
         "warnings": c.warnings,
+        // Older forms converted as it was read (ADR 0044, ADR 0110).
+        "conversions": c.conversions,
         "composition": true,
         "declared_outputs": c.file.outputs.iter().map(|o| json!({"name": o.name, "from": o.from})).collect::<Vec<_>>(),
         // Files of uses replaced by this file, by full path (ADR 0066

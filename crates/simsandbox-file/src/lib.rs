@@ -40,6 +40,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub mod compose;
+pub mod encapsulate;
 pub mod hold;
 pub mod layout;
 pub mod runs;
@@ -1083,8 +1084,10 @@ pub struct BlockEntry {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub agent: bool,
     /// Numbers, or formulas of the declared parameters in scope
-    /// (ADR 0043). For a subsystem: its declared parameters, and inner
-    /// values for this instance only as `"block.param"`.
+    /// (ADR 0043). For a use: its model's declared parameters (ADR 0110);
+    /// inner values by path (`"block.param"`) are an older form, converted
+    /// as the file is read ([`crate::encapsulate`]), or reported for a
+    /// separate model file. The loader's own subsystems still use them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, ParamValue>,
     /// Where the block sits on the node canvas, `[x, y]` in canvas units,

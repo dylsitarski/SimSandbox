@@ -4,7 +4,16 @@
 //! A change that alters how a form converts shows up here.
 
 use simsandbox_core::registry::Registry;
-use simsandbox_file::{load, FileError, FORMAT_VERSION};
+use simsandbox_file::{FileError, Loaded, FORMAT_VERSION};
+
+/// Load as the app does: a model that uses models loads as one (ADR 0090).
+fn load(text: &str, r: &Registry) -> Result<Loaded, FileError> {
+    if simsandbox_file::compose::is_composition(text) {
+        simsandbox_file::compose::load_merged(text, r, None)
+    } else {
+        simsandbox_file::load(text, r)
+    }
+}
 use std::path::PathBuf;
 
 fn registry() -> Registry {

@@ -630,14 +630,28 @@ def test_a_composition_runs_models_on_their_own_clocks(tmp_path):
     car, pi = cruise.data["blocks"]
     plant = ss.Model({"format": 1, "run": {"dt": 0.05}, "blocks": [car], "connections": []})
     plant.add_block("force", "input.value", settings={"unit": "N"}).connect("force.y", "car.F")
+    # What uses it reads and sets goes through its interface (ADR 0110).
+    assert plant.offer(None, "car.v") == "v"
+    assert plant.expose(None, "car.m") == "m"
     plant.save(tmp_path / "car.ssbx.json")
     controller = ss.Model({"format": 1, "run": {"dt": 0.05}, "blocks": [pi], "connections": []})
     controller.add_block("speed", "input.value", settings={"unit": "m/s"}).connect("speed.y", "cruise.v")
+    assert controller.offer(None, "cruise.F") == "F"
+    assert controller.expose(None, "cruise.kp") == "kp"
     controller.save(tmp_path / "cruise.ssbx.json")
     c = ss.Model({"format": 1, "run": {"t_end": 10}, "blocks": []})
     c.add_model("plant", "car.ssbx.json")
-    c.add_model("controller", "cruise.ssbx.json", params={"cruise.kp": 600}, dt=0.5)
-    c.link("plant/car.v", "controller/speed").link("controller/cruise.F", "plant/force")
+    # A use sets only what its model exposes, and reads only its outputs.
+    with pytest.raises(ss.ModelError, match="expose"):
+        c.add_model("controller", "cruise.ssbx.json", params={"cruise.kp": 600}, dt=0.5)
+    c.add_model("controller", "cruise.ssbx.json", params={"kp": 600}, dt=0.5)
+    with pytest.raises(ss.ModelError, match="offer"):
+        c.link("plant/car.v", "controller/speed")
+    c.link("plant/v", "controller/speed").link("controller/F", "plant/force")
+    c.save(tmp_path / "both.ssbx.json")
+    # Exposed through it in turn, for what uses it.
+    assert c.expose(None, "controller/kp") == "kp"
+    assert c.expose(None, "plant/m") == "m"
     c.save(tmp_path / "both.ssbx.json")
     report = c.check()
     assert report["ok"], report
@@ -663,11 +677,12 @@ def test_a_composition_runs_models_on_their_own_clocks(tmp_path):
     # parameters.
     deep = ss.Model({"format": 1, "run": {"t_end": 10}, "blocks": [],
                      "params": {"half": {"value": 300, "unit": "N*s/m"}}})
-    deep.add_model("vehicle", "both.ssbx.json", params={"controller/cruise.kp": "2*half"})
+    deep.add_model("vehicle", "both.ssbx.json", params={"kp": "2*half"})
     deep.save(tmp_path / "deep.ssbx.json")
     assert np.array_equal(deep.run()["vehicle/plant/car.v"], r["plant/car.v"])
     # A copy of the car replaces the one inside, for this use only.
     heavy = ss.Model.load(tmp_path / "car.ssbx.json")
+    # Its block's own value, not its declared m, which both.ssbx.json sets.
     heavy.set("car.m", 2000.0)
     heavy.save(tmp_path / "car-2.ssbx.json")
     swapped = ss.Model({"format": 1, "run": {"t_end": 10}, "blocks": []})
@@ -675,14 +690,14 @@ def test_a_composition_runs_models_on_their_own_clocks(tmp_path):
     swapped.save(tmp_path / "swapped.ssbx.json")
     assert swapped.check()["replaced_files"] == {"vehicle/plant": "car-2.ssbx.json"}
     by_params = ss.Model({"format": 1, "run": {"t_end": 10}, "blocks": []})
-    by_params.add_model("vehicle", "both.ssbx.json", params={"plant/car.m": 2000})
+    by_params.add_model("vehicle", "both.ssbx.json", params={"m": 2000})
     by_params.save(tmp_path / "by_params.ssbx.json")
     assert np.array_equal(swapped.run()["vehicle/plant/car.v"], by_params.run()["vehicle/plant/car.v"])
     # On one clock: the files flattened into this model, wired directly.
     one = ss.Model({"format": 1, "run": {"dt": 0.05, "t_end": 10}, "blocks": []})
     one.add_model("plant", "car.ssbx.json", shared=True)
     one.add_model("controller", "cruise.ssbx.json", shared=True)
-    one.connect("plant/car.v", "controller/speed").connect("controller/cruise.F", "plant/force")
+    one.connect("plant/v", "controller/speed").connect("controller/F", "plant/force")
     one.save(tmp_path / "one.ssbx.json")
     flat = one.run()
     assert list(flat.models) == ["."]

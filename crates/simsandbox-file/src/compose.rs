@@ -106,6 +106,9 @@ pub struct Composition {
     /// Digests of the used files and the data they read.
     pub data: BTreeMap<String, String>,
     pub warnings: Vec<String>,
+    /// Older forms converted as the file was read: reaching inside a used
+    /// model became its interface (ADR 0110).
+    pub conversions: Vec<String>,
 }
 
 impl Composition {
@@ -670,7 +673,12 @@ pub fn load_composition(
     registry: &Registry,
     folder: Option<&Path>,
 ) -> Result<Composition, FileError> {
-    let (file, warnings) = ModelFile::from_json(text)?;
+    // What reaches inside a used model goes through its interface
+    // (ADR 0110): older forms convert first.
+    let enc = crate::encapsulate::encapsulate(text, registry, folder)?;
+    let text = enc.text.as_str();
+    let (file, mut warnings) = ModelFile::from_json(text)?;
+    warnings.extend(enc.warnings);
     runs_alone(&file)?;
     if !file.blocks.iter().any(BlockEntry::is_use) {
         return Err(invalid("blocks", "this model uses no model files"));
@@ -738,6 +746,7 @@ pub fn load_composition(
         loops,
         data: l.data,
         warnings: l.warnings,
+        conversions: enc.conversions,
     })
 }
 
@@ -765,6 +774,10 @@ pub fn load_merged_with(
     folder: Option<&Path>,
 ) -> Result<(Loaded, Composition), FileError> {
     let c = load_composition(text, registry, folder)?;
+    // The file in its encapsulated form (ADR 0110), converted as
+    // `load_composition` converted it.
+    let enc = crate::encapsulate::encapsulate(text, registry, folder)?;
+    let text = enc.text.as_str();
     let (file, _) = ModelFile::from_json(text)?;
     runs_alone(&file)?;
     let folder = folder
@@ -900,6 +913,11 @@ pub fn load_merged_with(
     let mut written = file;
     written.folder = folder;
     loaded.file = written;
+    for conv in &c.conversions {
+        if !loaded.conversions.contains(conv) {
+            loaded.conversions.push(conv.clone());
+        }
+    }
     // What the uses' own loading noticed, such as a used model's sample
     // not run (ADR 0070).
     for w in &c.warnings {

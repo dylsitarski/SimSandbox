@@ -1,0 +1,96 @@
+{
+  "format": 1,
+  "description": "An older form (before ADR 0110): uses reach inside the models they use, by values set by path, a wire from an inner output and a probe link recording one.",
+  "run": {
+    "dt": 0.1,
+    "t_end": 0.3
+  },
+  "models": {
+    "inner": {
+      "blocks": [
+        {
+          "name": "c",
+          "type": "eq.equations",
+          "method": {
+            "name": "euler"
+          },
+          "equations": [
+            "param r = 1",
+            "state x",
+            "dx/dt = r"
+          ],
+          "params": {
+            "x0": 0
+          }
+        }
+      ]
+    },
+    "outer": {
+      "blocks": [
+        {
+          "name": "p",
+          "model": "inner"
+        }
+      ]
+    }
+  },
+  "blocks": [
+    {
+      "name": "a",
+      "model": "inner",
+      "params": {
+        "c.r": 2
+      }
+    },
+    {
+      "name": "b",
+      "model": "inner"
+    },
+    {
+      "name": "o",
+      "model": "outer",
+      "params": {
+        "p/c.r": 5
+      }
+    },
+    {
+      "name": "k",
+      "type": "eq.equations",
+      "equations": [
+        "input w",
+        "state q",
+        "dq/dt = w"
+      ],
+      "params": {
+        "q0": 0
+      },
+      "method": {
+        "name": "euler"
+      }
+    },
+    {
+      "name": "u",
+      "type": "input.value"
+    }
+  ],
+  "connections": [
+    {
+      "from": "a/c.x",
+      "to": "k.w"
+    },
+    {
+      "from": "probe:P.b/c.x",
+      "to": "u"
+    }
+  ],
+  "controls": {
+    "probes": [
+      {
+        "name": "P",
+        "record": [
+          "b/c.x"
+        ]
+      }
+    ]
+  }
+}
