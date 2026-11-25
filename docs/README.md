@@ -167,6 +167,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0107-model-cards-and-agent-notes.md](decisions/0107-model-cards-and-agent-notes.md) | Decision record | Accepted: generated model cards; notes required only of agents; agents' parts marked |
 | [decisions/0108-interface-synchronized-projections.md](decisions/0108-interface-synchronized-projections.md) | Decision record | Accepted: the interface's direction and order of work |
 | [decisions/0109-parameter-roles-key-parameters-port-groups.md](decisions/0109-parameter-roles-key-parameters-port-groups.md) | Decision record | Accepted: parameter roles, key parameters, port groups, descriptions in typed equations |
+| [decisions/0110-encapsulated-models.md](decisions/0110-encapsulated-models.md) | ADR (proposed) | Encapsulated models: changes through the interface only; reading inside marked; surfaces by level |
 | [decisions/0088-activation.md](decisions/0088-activation.md) | Decision record | Activation of used models and studies: `activate` modes and `restart` |
 | [decisions/0089-native-code-for-typed-equations.md](decisions/0089-native-code-for-typed-equations.md) | Decision record | Native code for typed equations: generated Rust compiled where a toolchain exists |
 | [decisions/0090-one-engine-for-nested-models.md](decisions/0090-one-engine-for-nested-models.md) | Decision record | One engine for nested models: the merged simulator |
@@ -211,6 +212,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [sessions/README.md](sessions/README.md) | Session note | Index of session notes and how to write one |
 | [sessions/_template.md](sessions/_template.md) | Session note | Template |
 | [sessions/2026-11-20-mechanism-block.md](sessions/2026-11-20-mechanism-block.md) | Session note | The mechanism block built (ADR 0103, ADR 0105): `simsandbox-mech`, the `bodies` field, the cart-pole example |
+| [sessions/2026-11-25-encapsulation.md](sessions/2026-11-25-encapsulation.md) | Session note | The interface direction revisited; ADR 0110 (encapsulated models) proposed |
 | [sessions/2026-11-19-vector-registers-after-faer.md](sessions/2026-11-19-vector-registers-after-faer.md) | Session note | Why typed models slowed after implicit methods ran: faer's AVX kernels and `vzeroupper` |
 | [sessions/2026-11-19-implicit-structure-replay.md](sessions/2026-11-19-implicit-structure-replay.md) | Session note | Implicit methods' undeclared Jacobian structure made independent of the state (ADR 0104) |
 | [sessions/2026-11-15-equation-front-end.md](sessions/2026-11-15-equation-front-end.md) | Session note | Review W6: typed-equation faults fixed, front end restructured |

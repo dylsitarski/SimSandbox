@@ -12,6 +12,7 @@ One note per non-trivial working session (human or agent): what was done, what w
 
 | Date | Note | Summary |
 | --- | --- | --- |
+| 2026-11-25 | [Encapsulation and composition](2026-11-25-encapsulation.md) | The interface direction revisited: research note, Q65, ADR 0110 (encapsulated models) proposed |
 | 2026-11-20 | [The mechanism block](2026-11-20-mechanism-block.md) | ADR 0103 and 0105 built: `simsandbox-mech` (`mech.planar`), the `bodies` field, verification tests, the cart-pole example, Python's `bodies` |
 | 2026-11-19 | [The vector registers after faer](2026-11-19-vector-registers-after-faer.md) | A 25× slowdown after implicit methods traced to faer's AVX kernels leaving the vector registers in use; cleared after factorising |
 | 2026-11-19 | [Implicit structure and replay](2026-11-19-implicit-structure-replay.md) | Undeclared Jacobian structures dense when small, probed at three states when large (ADR 0104); restored implicit runs replay bit for bit |
