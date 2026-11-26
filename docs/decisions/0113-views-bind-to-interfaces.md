@@ -197,4 +197,12 @@ Here `rig1/cartpole` binds `x` and `theta` to `rig1/x` and `rig1/theta`, the out
     - `grab_in` in a turned frame and in a moved frame, and its refusals (`scene/tests.rs`);
     - binding the pointer by name and `grab_in` set by expansion (`templates.rs`);
     - the app grabbing `left/hand` in `left_track`, with only the left use's pointer changing (`scene_tests.rs`).
+- **Step 3 (2026-11-26), offered frames in use and replication over rows:**
+  - **Offered frames.** The cart-pole's picture offers `tip`, at the pole's tip. "Two balancing poles" marks each tip with a red disc drawn `in` `left_rig/tip` and `right_rig/tip`. A frame not offered is refused, as built in step 1.
+  - **Frames over rows as parents** (ADR 0093's after-the-gate item; `scene/spec.rs`, `scene/eval.rs`):
+    - A frame in a frame over a table's rows is over those rows too, one pose a row. Along a chain, rows are of one table, paired by id; two tables are refused at the frame.
+    - A layer in such a frame is drawn once a row, its pose composed for that row up the chain.
+    - `view_from` and `grab_in` still take only a frame of one pose.
+  - **Replication.** A template whose frame binds a quantity over rows is drawn once a row. The cart-pole has the template `body_axes` (inputs `x`, `y`, `angle` of kind `rows`, parameter `length`), which its scene draws over the mechanism's pose rows, one pair of axes a body. The cart-pole's picture changes by those axes, and its run results do not.
+  - Tests: a frame in a frame over rows placed once a row (`scene/tests.rs`); the refusal of two tables along a chain; the card listing both templates of each use.
 

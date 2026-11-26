@@ -161,7 +161,7 @@ fn check_reports_each_problem_at_its_path() {
         (json!({"frames": {"a": {"in": "nowhere"}}}), "frames.a.in: no frame 'nowhere'"),
         (json!({"frames": {"a": {"x": "car.v"}}}), "frames.a.x: 'car.v' is in m/s"),
         (json!({"frames": {"a": {"z": 1}}}), "frames.a.z: a frame takes in, x, y and angle"),
-        (json!({"frames": {"body": {"x": "rb.x"}, "wheel": {"in": "body"}}}), "frames.wheel.in: 'body' is over a table's rows, so it cannot hold another frame yet"),
+        (json!({"frames": {"body": {"x": "rb.x"}, "wheel": {"in": "body", "x": "w.x"}}}), "frames.wheel: over the rows of 'w.wheels' (by wheel), but its frame 'body' is over the rows of 'rb.bodies'"),
         (json!({"frames": {"body": {"x": "rb.x"}}, "view_from": "body"}), "view_from: 'body' is over a table's rows"),
         (json!({"view_from": "cart"}), "view_from: no frame 'cart'"),
         (json!({"frames": {"wheel": {"x": "w.x"}}, "layers": [{"draw": "points", "in": "wheel", "bind": {"x": "rb.x", "y": 0}}]}), "layers[0].bind.x: over the rows of 'rb.bodies', but layers[0].in is over the rows of 'w.wheels'"),
@@ -289,6 +289,42 @@ fn rows_pair_by_id_and_a_frame_over_rows_places_each_row() {
     let placed = s.place(&Recorded::single(&h));
     let ids: Vec<_> = placed.iter().map(|p| (p.layer, p.id)).collect();
     assert_eq!(ids, [(0, Some(7)), (1, Some(7))]);
+}
+
+#[test]
+fn a_frame_in_a_frame_over_rows_is_placed_once_a_row() {
+    // ADR 0093 after the gate, for ADR 0113 step 3: `tip` in `body` is
+    // over `body`'s rows; a layer in it is drawn once a row, each at its
+    // row's body. Body 7 is at (1, 10) unturned, body 3 at (2, 20) turned
+    // a quarter: the tip's (1, 0) is (2, 10) and (2, 21).
+    let mut h = history();
+    let o = offer();
+    push(&mut h, 0.0, 0.25, 7.0);
+    let s = Scene::check(
+        &settings(json!({
+            "frames": {
+                "body": {"x": "rb.x", "y": "rb.y", "angle": "rb.angle"},
+                "tip": {"in": "body", "x": 1}
+            },
+            "layers": [{"draw": "points", "in": "tip", "bind": {"x": 0, "y": 0}}]
+        })),
+        &available(&o, &h),
+    )
+    .unwrap();
+    assert_eq!(s.frames[1].table.as_deref(), Some("rb.bodies"));
+    let placed = s.place(&Recorded::single(&h));
+    let at: Vec<(Option<u64>, [f64; 2])> = placed
+        .iter()
+        .map(|p| match p.shape {
+            Instance::Point { at, .. } => (p.id, at),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(at.len(), 2, "{at:?}");
+    assert_eq!(at[0].0, Some(7));
+    assert!(close(at[0].1, [2.0, 10.0]), "{at:?}");
+    assert_eq!(at[1].0, Some(3));
+    assert!(close(at[1].1, [2.0, 21.0]), "{at:?}");
 }
 
 #[test]

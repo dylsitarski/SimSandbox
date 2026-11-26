@@ -1409,7 +1409,10 @@ mod tests {
             .collect();
         assert_eq!(
             pictures,
-            [&json!(["left/cartpole"]), &json!(["right/cartpole"])]
+            [
+                &json!(["left/body_axes", "left/cartpole"]),
+                &json!(["right/body_axes", "right/cartpole"])
+            ]
         );
         let shows = &card["views"][0]["shows"];
         assert_eq!(

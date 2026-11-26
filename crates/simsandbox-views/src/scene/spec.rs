@@ -495,17 +495,9 @@ impl Scene {
                 table: table.map(|(t, _)| t),
             });
         }
-        // Parents: no cycles, and none over rows yet (ADR 0093 point 4).
+        // Parents: no cycles (ADR 0093 point 4).
         for (k, f) in frames.iter().enumerate() {
             let path = format!("frames.{}.in", f.name);
-            if let Some(p) = f.parent {
-                if frames[p].table.is_some() {
-                    return Err(format!(
-                        "{path}: '{}' is over a table's rows, so it cannot hold another frame yet",
-                        frames[p].name
-                    ));
-                }
-            }
             let mut chain = vec![k];
             let mut at = f.parent;
             while let Some(p) = at {
@@ -520,6 +512,30 @@ impl Scene {
                 chain.push(p);
                 at = frames[p].parent;
             }
+        }
+        // A frame in a frame over rows is over its rows too, one pose a
+        // row (ADR 0093, "frames over rows as parents"); along a chain,
+        // rows are of one table, paired by id.
+        let own: Vec<Option<String>> = frames.iter().map(|f| f.table.clone()).collect();
+        for k in 0..frames.len() {
+            let mut table: Option<(String, String)> = None;
+            let mut at = Some(k);
+            while let Some(f) = at {
+                if let Some(t) = &own[f] {
+                    match &table {
+                        Some((first, by)) if first != t => {
+                            return Err(format!(
+                                "frames.{}: over the rows of '{first}' (by {by}), but its frame '{}' is over the rows of '{t}': rows pair by id within one table",
+                                frames[k].name, frames[f].name
+                            ));
+                        }
+                        Some(_) => {}
+                        None => table = Some((t.clone(), frames[f].name.clone())),
+                    }
+                }
+                at = frames[f].parent;
+            }
+            frames[k].table = table.map(|(t, _)| t);
         }
         let given_layers: &[Value] = match settings.get("layers") {
             Some(v) => v
@@ -791,7 +807,7 @@ pub fn describe() -> Value {
         "settings": {
             "unit": format!("the length unit of every position and size ('{DEFAULT_UNIT}' if absent); a binding in another length unit is refused"),
             "extent": "{\"x\": [low, high], \"y\": [low, high]}: the region shown; absent, it follows what is drawn. Drawn with equal scales",
-            "frames": "name to {\"in\": parent, \"x\", \"y\", \"angle\"}: a point p drawn in the frame lies at (x, y) + R(angle)·p in its parent (the scene's if 'in' is absent). Frames chain; a frame over a table's rows cannot hold another yet",
+            "frames": "name to {\"in\": parent, \"x\", \"y\", \"angle\"}: a point p drawn in the frame lies at (x, y) + R(angle)·p in its parent (the scene's if 'in' is absent). Frames chain; a frame in a frame over a table's rows is over its rows too, one pose a row, so a template drawn in it is drawn once a row",
             "layers": "a list of {\"draw\": primitive, \"in\": frame, \"bind\": attribute to binding, \"grab\": input.pointer block}, drawn first to last. Pressing on an instance of a layer with 'grab' sends that block x and y in the scene's own frame (whatever the layer's frame or view_from), or in the frame 'grab_in' names (a template's layers grab in the frame the template is drawn in, ADR 0113), down and picked (the row id, 0 for a layer of one instance; -1 once let go) until released; the topmost such layer wins, and pan and zoom pause while it is held",
             "view_from": "a frame: the picture is drawn in its coordinates",
         },

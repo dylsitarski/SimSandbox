@@ -27,10 +27,11 @@
 - 2026-11-26: ADR 0113 step 1 built: `templates.rs` (expansion), the views' written and shown forms, `check`'s templates, Python's `define_template` and `add_view`, the cart-pole's picture as a template (same pixels).
 - 2026-11-26: ADR 0113 step 2 built: `compose::templates_in`, defaults by name through outputs, the cart-pole's outputs, the example "Two balancing poles", templates and pictures on the card and Overview.
 - 2026-11-26: the two balancing poles' grab fixed (owner): a template's pointer binds by name to the use's pointer block; `grab_in` sends the pointer in the frame the template is drawn in.
+- 2026-11-26: ADR 0113 step 3 built: frames over rows as parents, `body_axes` drawn once a body, the cart-pole's offered `tip` marked in "Two balancing poles".
 
 ## Left open
 
-- ADR 0113 step 3 (offered frames in use, replication over rows).
+- ADR 0113 step 4 (view files, "Replace with…").
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session

@@ -129,8 +129,11 @@ impl Scene {
             angle: angle.at(id),
         };
         match self.frames[f].parent {
-            // Parents are never over rows (checked).
-            Some(p) => self.pose(reads, p, None).of(local),
+            // A parent over rows is placed for the same row.
+            Some(p) => {
+                let row = self.frames[p].table.as_ref().and(id);
+                self.pose(reads, p, row).of(local)
+            }
             None => local,
         }
     }
@@ -169,9 +172,15 @@ impl Scene {
                 .flatten()
                 .find_map(Read::ids)
                 .or_else(|| {
-                    layer
-                        .frame
-                        .and_then(|f| frames[f].iter().find_map(Read::ids))
+                    // Its frame's, or the rows of a frame its frame is in.
+                    let mut at = layer.frame;
+                    while let Some(f) = at {
+                        if let Some(ids) = frames[f].iter().find_map(Read::ids) {
+                            return Some(ids);
+                        }
+                        at = self.frames[f].parent;
+                    }
+                    None
                 })
                 .map(<[u64]>::to_vec);
             let rows: Vec<Option<u64>> = match ids {

@@ -78,7 +78,7 @@ Points 1–8 as written: 2D, the four primitives, constants, scalars and rows, f
 
 - More primitives: polylines along rows, polygons, text, arrows, a `field` layer (a grid as an image, which is the heat map), a `mesh` layer (ADR 0086's triangles).
 - Existing views as presets of layers where that loses nothing (`plot.scatter`, `plot.3d`, the heat map's points), reducing the number of view types; `eq.pendulum`'s view retired.
-- Frames over rows as parents (a wheel table whose rows name their car), by the edges tables already have.
+- Frames over rows as parents (a wheel table whose rows name their car), by the edges tables already have. **Built in part (2026-11-26, [ADR 0113](0113-views-bind-to-interfaces.md) step 3):** a frame in a frame over rows is over the same rows, one pose a row, paired by id; rows of another table along a chain (a wheel table naming its car by an edge) are not yet.
 - 3D: `z` and poses in 3D (point 4's open choices), a camera as a frame to view from, depth, drawn by wgpu; then lights as a layer (rows of lights with position, colour and strength from signals) and a camera bound to signals.
 - New primitives from plugins (Phase 2 item 4).
 - Pictures a model computes whole (a ray tracer written as a model gives a grid; a `field` layer shows it). Interactive rates for that need typed equations on the GPU, which nothing here decides.

@@ -1,12 +1,70 @@
 {
   "format": 1,
-  "description": "The Phase 2 gate's cart-pole (ADR 0103, ADR 0105): a cart on a rail and a pole hinged on it, one mech.planar block, balanced upright by an LQR controller written as typed equations. The controller reads the joints and drives the cart's force; wired to the mechanism it is solved with it as one ODE. Press on the pole in the scene and drag: while it is held, a damped spring pulls the pole's centre toward the pointer (it drives the pole's load parameters, pole_fx and pole_fy); let go and the controller catches it, unless the cart's force limit (umax) cannot. Rewind and run on: the grab is recorded input and replays exactly; Runs ▸ Save run… keeps it, and simsandbox run --inputs replays it headless. The dots are the bodies' frames, drawn from the mechanism's rows.",
+  "description": "The Phase 2 gate's cart-pole (ADR 0103, ADR 0105): a cart on a rail and a pole hinged on it, one mech.planar block, balanced upright by an LQR controller written as typed equations. The controller reads the joints and drives the cart's force; wired to the mechanism it is solved with it as one ODE. Press on the pole in the scene and drag: while it is held, a damped spring pulls the pole's centre toward the pointer (it drives the pole's load parameters, pole_fx and pole_fy); let go and the controller catches it, unless the cart's force limit (umax) cannot. Rewind and run on: the grab is recorded input and replays exactly; Runs ▸ Save run… keeps it, and simsandbox run --inputs replays it headless. The dots and short axes are the bodies' frames, drawn from the mechanism's rows: the axes are the template body_axes, drawn once a body (ADR 0113).",
   "run": {
     "dt": 0.002
   },
   "templates": {
+    "body_axes": {
+      "description": "A body's frame drawn as two short axes (x red, y green); bound over a mechanism's rows, it is drawn once a body.",
+      "frames": {
+        "body": {
+          "angle": "$angle",
+          "x": "$x",
+          "y": "$y"
+        }
+      },
+      "inputs": {
+        "angle": {
+          "kind": "rows",
+          "unit": "rad"
+        },
+        "x": {
+          "kind": "rows",
+          "unit": "m"
+        },
+        "y": {
+          "kind": "rows",
+          "unit": "m"
+        }
+      },
+      "layers": [
+        {
+          "bind": {
+            "colour": "red",
+            "width": 1.5,
+            "x1": 0,
+            "x2": "$length",
+            "y1": 0,
+            "y2": 0
+          },
+          "draw": "segments",
+          "in": "body"
+        },
+        {
+          "bind": {
+            "colour": "green",
+            "width": 1.5,
+            "x1": 0,
+            "x2": 0,
+            "y1": 0,
+            "y2": "$length"
+          },
+          "draw": "segments",
+          "in": "body"
+        }
+      ],
+      "params": {
+        "length": {
+          "unit": "m",
+          "value": 0.15
+        }
+      },
+      "type": "plot.scene",
+      "unit": "m"
+    },
     "cartpole": {
-      "description": "A cart on a track and a pole on a hinge on it; the pole can be grabbed.",
+      "description": "A cart on a track and a pole on a hinge on it; the pole can be grabbed. It offers the frame tip, at the pole's tip.",
       "frames": {
         "cart": {
           "x": "$x",
@@ -15,6 +73,10 @@
         "pole": {
           "angle": "$theta",
           "in": "cart"
+        },
+        "tip": {
+          "in": "pole",
+          "y": 1.0
         }
       },
       "inputs": {
@@ -55,6 +117,9 @@
           "grab": "$hand",
           "in": "pole"
         }
+      ],
+      "offers": [
+        "tip"
       ],
       "params": {
         "cart_colour": {
@@ -269,6 +334,16 @@
               "x": "cartpole.x",
               "y": "cartpole.y"
             }
+          },
+          {
+            "draw": "template",
+            "bind": {
+              "angle": "cartpole.angle",
+              "x": "cartpole.x",
+              "y": "cartpole.y"
+            },
+            "name": "axes",
+            "template": "body_axes"
           }
         ]
       },
