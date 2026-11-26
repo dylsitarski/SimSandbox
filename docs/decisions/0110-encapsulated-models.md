@@ -1,6 +1,7 @@
 # 0110 — Encapsulated models: what changes or feeds on a model goes through its interface; observing stays open; surfaces show one level
 
 - **Status:** Accepted (owner, 2026-11-25)
+- **Amended by:** [ADR 0112](0112-experiments-may-reach-inside.md) (experiments may set values inside, marked)
 - **Date:** 2026-11-25
 - **Evidence:** [encapsulation and composition](../research/2026-11-25-encapsulation-and-composition.md)
 - **Answers:** [Q65](../open-questions.md) (structure first)
@@ -157,7 +158,7 @@ When a use can change what is inside its model, its model's interface does not s
   - Its arrows and `▸` are words and `>`, which the app's font has; `--view overview` is accepted by the app's argument check (it was listed but refused).
   - Tests: the card by level and the edit (`card.rs`), `explain --part/--depth` (CLI), Python's levels, the app opening a level. A screenshot of the platoon's Overview under Xvfb.
 - **Left:**
-  - A study's points still set inner values by path (`plant/car.m`, ADR 0070), as does `run.inputs`' schedule ([Q66](../open-questions.md)).
+  - A study's points, `run.inputs`' schedule and pinned controls still set inner values by path, now by decision ([ADR 0112](0112-experiments-may-reach-inside.md)), marked on the card.
   - Point 1's events, and study formulas, have nothing that reads inside yet.
   - The Inspector's table of uses (step 3) still lists inner values per use.
   - Step 3.

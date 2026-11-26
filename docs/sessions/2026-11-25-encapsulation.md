@@ -18,9 +18,11 @@
 - Owner (2026-11-25): [ADR 0110](../decisions/0110-encapsulated-models.md) accepted (Q65 answered: structure first). Asked whether to close reading too: observing stays open, reading that feeds a result goes through outputs.
 - Owner (2026-11-25): [ADR 0111](../decisions/0111-a-declarative-modelling-language.md), SimSandbox is a declarative modelling language, not a library; written into the vision and the architecture overview; the language reference in Next up.
 
+- 2026-11-26: Q66 answered ([ADR 0112](../decisions/0112-experiments-may-reach-inside.md)); the card marks experiments that set values inside.
+
 ## Left open
 
-- ADR 0110 step 3; [Q66](../open-questions.md) (studies and schedules set inner values by path). The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
+- ADR 0110 step 3; The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session
 

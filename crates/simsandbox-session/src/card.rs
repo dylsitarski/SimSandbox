@@ -466,6 +466,40 @@ pub fn card_at(
             }
         }
     }
+    // Experiments may set values inside a used model by path (ADR 0112):
+    // the run's schedule, pinned controls and studies' points, marked.
+    if part.is_empty() {
+        let mut sets = |at: String, key: &str, studied: bool| {
+            let Some((u, rest)) = key.split_once('/').filter(|(u, r)| {
+                (studied || uses.contains(u)) && (r.contains('.') || r.contains('/'))
+            }) else {
+                return;
+            };
+            let entry = level.blocks.iter().find(|b| b.name == u && b.is_use());
+            reaching_inside.push(json!({
+                "where": at,
+                "signal": key,
+                "use": u,
+                "inside": rest,
+                "sets": true,
+                "model": entry.and_then(|e| e.model.clone()),
+                "file": entry.and_then(|e| e.file.clone()),
+                "can_expose": entry.is_some_and(|e| e.model.is_some()),
+            }));
+        };
+        for (k, c) in s.file.run.inputs.iter().enumerate() {
+            sets(format!("run.inputs[{k}].set"), &c.set, false);
+        }
+        for key in s.file.controls.params.keys() {
+            sets(format!("controls.params.{key}"), key, false);
+        }
+        for (k, b) in level.blocks.iter().enumerate() {
+            for (j, p) in b.sample.iter().flat_map(|x| x.params.iter()).enumerate() {
+                // A path into a model the studied model uses.
+                sets(format!("blocks[{k}].sample.params[{j}]"), &p.param, true);
+            }
+        }
+    }
     // A use's start states, by inner block: a state restored, shown as
     // reaching inside (ADR 0110 point 3).
     for (k, b) in level.blocks.iter().enumerate().filter(|(_, b)| b.is_use()) {
@@ -944,7 +978,14 @@ pub fn markdown(card: &Value) -> String {
         line("What reads inside a used model by path, not through its interface (ADR 0110): it breaks if that model changes inside.");
         line("");
         for r in list {
-            let what = if r["start"] == true {
+            let what = if r["sets"] == true {
+                format!(
+                    "`{}` sets `{}` inside `{}` (an experiment may; ADR 0112)",
+                    r["where"].as_str().unwrap_or(""),
+                    r["inside"].as_str().unwrap_or(""),
+                    r["use"].as_str().unwrap_or(""),
+                )
+            } else if r["start"] == true {
                 format!(
                     "`{}` starts `{}` from a state of its own",
                     r["use"].as_str().unwrap_or(""),
@@ -1259,6 +1300,33 @@ mod tests {
         let md = markdown(&deep);
         assert!(md.contains("### car1 — model `follower`"), "{md}");
         assert!(md.contains("#### Parts"), "{md}");
+    }
+
+    #[test]
+    fn experiments_setting_values_inside_are_marked() {
+        // ADR 0112: a schedule and a pinned control may set inside a use by
+        // path; the card says so. A use's own parameter does not.
+        let mut v: Value = serde_json::from_str(&platoon()).unwrap();
+        v["run"]["inputs"] = json!([
+            {"t": 5.0, "set": "car2/car.c", "to": 80.0},
+            {"t": 6.0, "set": "car2.mass", "to": 1600.0}
+        ]);
+        v["controls"]["params"]["car1/car.c"] = json!({"slider": true});
+        let card = card_of(&v.to_string(), "", 1).unwrap();
+        let sets: Vec<&Value> = card["reaching_inside"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["sets"] == true)
+            .collect();
+        let at: Vec<&str> = sets.iter().map(|r| r["where"].as_str().unwrap()).collect();
+        assert_eq!(
+            at,
+            ["run.inputs[0].set", "controls.params.car1/car.c"],
+            "{sets:?}"
+        );
+        assert_eq!(sets[0]["model"], "follower");
+        assert!(markdown(&card).contains("`run.inputs[0].set` sets `car.c` inside `car2`"));
     }
 
     #[test]

@@ -327,6 +327,11 @@ impl SimApp {
                 );
                 for r in list {
                     ui.horizontal_wrapped(|ui| {
+                        if r["sets"] == true {
+                            ui.label(format!("{} sets {}", text(&r["where"]), text(&r["signal"])))
+                                .on_hover_text("An experiment may set a value inside a used model (ADR 0112); exposing it makes it part of the model's interface");
+                            return;
+                        }
                         if r["start"] == true {
                             ui.label(format!("{} starts {} from a state of its own", text(&r["use"]), text(&r["inside"])));
                             return;
