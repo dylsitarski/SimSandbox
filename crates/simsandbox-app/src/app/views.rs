@@ -40,6 +40,15 @@ impl SimApp {
             probes: &probes,
             derived: &derived,
         };
+        // One selection (ADR 0108): the block picked anywhere, at the
+        // model's own level, is shown where views draw it.
+        let selected_block = match (
+            &self.diagram.canvas.selected,
+            self.diagram.inside.is_empty(),
+        ) {
+            (Some(crate::canvas::Selection::Block(b)), true) => Some(b.clone()),
+            _ => None,
+        };
         let views = &mut self.views;
         let (text, error) = (&mut self.param_edits, &mut self.error);
         let area = ui.available_rect_before_wrap();
@@ -155,6 +164,7 @@ impl SimApp {
                         slot_editors(ui, t, &mut tile.state, &available, &history);
                         let sender = senders.get(&tile.id);
                         tile.state.sends_pointer = sender.is_some();
+                        tile.state.selected.clone_from(&selected_block);
                         tile.state.show(ui, t, recorded);
                         if let Some(signal) = tile.state.picked() {
                             actions.push(DockAction::Inspect(signal));
@@ -205,10 +215,16 @@ impl SimApp {
             return;
         };
         let m = live.model();
-        let Some((node, _)) = signal.split_once('.') else {
-            self.log
-                .info(format!("{signal} is computed by a filter: see Data…"));
-            return;
+        // A block's port, or what a used model offers by name (`left/x`,
+        // ADR 0110), which selects that use.
+        let node = match signal.split_once('.') {
+            Some((node, _)) => node,
+            None if signal.contains('/') => signal,
+            None => {
+                self.log
+                    .info(format!("{signal} is computed by a filter: see Data…"));
+                return;
+            }
         };
         let top = node.split('/').next().unwrap_or(node);
         if !m.file.blocks.iter().any(|b| b.name == top) {

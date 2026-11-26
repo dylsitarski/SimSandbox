@@ -821,6 +821,33 @@ fn grab_in_names_a_frame_of_one_pose_on_a_grabbing_layer() {
 }
 
 #[test]
+fn a_press_selects_what_its_layer_shows() {
+    // ADR 0108, one selection: the topmost instance pressed, grabbing or
+    // not, reports the first signal its layer reads (its frame's if its
+    // own are constants); constants alone select nothing.
+    let mut d = Driven::new(json!({"extent": extent(),
+    "frames": {"cart": {"x": "cart.x"}},
+    "layers": [
+        {"draw": "boxes", "bind": {"x": -1.5, "y": -1.5, "width": 0.4, "height": 0.4}},
+        {"draw": "boxes", "in": "cart", "bind": {"x": 0, "y": 1, "width": 0.4, "height": 0.4}},
+        {"draw": "discs", "bind": {"x": 1, "y": 0, "radius": 0.3, "colour": "pole.theta"}, "grab": "hand"}
+    ]}));
+    // `cart.x` is 0.5: the box in the cart's frame is at (0.5, 1).
+    d.press(d.screen([0.5, 1.0]));
+    assert_eq!(d.view.picked().as_deref(), Some("cart.x"));
+    assert_eq!(d.view.picked(), None, "taken once");
+    d.release(d.screen([0.5, 1.0]));
+    // Grabbed and selected at once.
+    let sent = d.press(d.screen([1.0, 0.0]));
+    assert!(near(&sent[0], "hand", [1.0, 0.0, 1.0, 0.0]), "{sent:?}");
+    assert_eq!(d.view.picked().as_deref(), Some("pole.theta"));
+    d.release(d.screen([1.0, 0.0]));
+    // Constants only: nothing.
+    d.press(d.screen([-1.5, -1.5]));
+    assert_eq!(d.view.picked(), None);
+}
+
+#[test]
 fn new_settings_let_go_of_what_is_held() {
     let mut d = Driven::new(json!({"extent": extent(), "layers": [
         {"draw": "discs", "bind": {"x": 0, "y": 0, "radius": 0.5}, "grab": "hand"}

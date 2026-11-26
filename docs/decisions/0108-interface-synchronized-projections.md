@@ -55,5 +55,11 @@ As in the report, section 5: keep and fix the canvas (A), text first (B), stage 
   - then the rest by role, each a section (property, drive and tuning open, the others open when short), starting values last; drive parameters at 0 that nothing drives are counted, not listed.
 
   Used models keep their table of uses: the interface first, the values inside read-only ([ADR 0110](0110-encapsulated-models.md) step 3).
-- Not yet: the Inspector's own headless form beyond `explain` (the card carries the same facts) (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
+- **Default pictures** became [ADR 0113](0113-views-bind-to-interfaces.md) (templates, component pictures, view files), built 2026-11-26.
+- **One selection (2026-11-26):** the block picked anywhere is selected everywhere, at the model's own level.
+  - **In the picture:** a press on any instance of a scene selects the block its layer shows (`Scene::selects`: the first signal or parameter its attributes read, else its frames', up the chain; constants alone select nothing). A press on a grabbing instance grabs and selects. The scene reports it through `View::picked`, as a plot's clicked curve does, and the app selects the block it comes from (`inspect_signal`). A use is selected through what it offers (`left/x` selects `left`).
+  - **Shown:** the diagram and the Inspector follow, as before. The Overview marks the selected part ("(selected)", in the selection's colour). A scene outlines every instance that shows the selected block (`ViewInput::selected`, set by the app from the diagram's selection at the model's level).
+  - Tests: a press selecting what its layer shows, grabbed or not, and constants selecting nothing (`scene/tests.rs`); the app selecting a use through its output and a block through its signal, with the picture outlining it (`scene_tests.rs`).
+  - Not yet: a plot does not mark the selected block's curves; a selection inside a use (the diagram opened in it) is not shown in views or the Overview.
+- Not yet: the Stage, the Structure lens, Definitions; the Inspector's own headless form beyond `explain` (the card carries the same facts). (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
 

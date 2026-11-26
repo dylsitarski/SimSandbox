@@ -441,3 +441,53 @@ fn views_come_from_a_view_file_and_a_template_layer_is_replaced() {
         .chunks(4)
         .any(|p| p[0] > 120 && p[2] > 120 && p[1] < 110));
 }
+
+#[test]
+fn a_part_picked_in_the_picture_is_selected_everywhere() {
+    // ADR 0108, one selection: what a scene's press picks selects the
+    // block it comes from, a use through what it offers (`left/x`), and
+    // the Overview marks that part.
+    let mut app = SimApp::new(None, None, None, None);
+    let k = EXAMPLES
+        .iter()
+        .position(|e| e.name.starts_with("Two balancing poles"))
+        .unwrap();
+    app.open_example(k);
+    app.inspect_signal("left/x");
+    assert_eq!(
+        app.diagram.canvas.selected,
+        Some(crate::canvas::Selection::Block("left".into()))
+    );
+    assert_eq!(app.picked, vec![(None, "left".to_string())]);
+    let ctx = egui::Context::default();
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.overview_tab(ui));
+    out.textures_delta.clear();
+    // In the cart-pole, a signal of the mechanism selects it.
+    let k = EXAMPLES
+        .iter()
+        .position(|e| e.name.starts_with("Cart-pole"))
+        .unwrap();
+    app.open_example(k);
+    app.inspect_signal("cartpole.slider_position");
+    assert_eq!(
+        app.diagram.canvas.selected,
+        Some(crate::canvas::Selection::Block("cartpole".into()))
+    );
+    // The picture outlines what is selected; a selection it does not draw
+    // leaves it as it was.
+    // (The model runs on between pictures: pixels in the selection's
+    // colour are counted, not pictures compared.)
+    let c = egui::Visuals::dark().selection.stroke.color;
+    let outlined = |rgba: &[u8]| {
+        rgba.chunks(4)
+            .filter(|p| (0..3).all(|k| (i32::from(p[k]) - i32::from(c[k])).abs() < 12))
+            .count()
+    };
+    let tile = app.views.tiles[0].id;
+    let plain = outlined(&picture(&mut app, tile).rgba);
+    app.views.tiles[0].state.selected = Some("cartpole".into());
+    let marked = outlined(&picture(&mut app, tile).rgba);
+    assert!(marked > plain + 50, "{plain} then {marked}");
+    app.views.tiles[0].state.selected = Some("nothing".into());
+    assert!(outlined(&picture(&mut app, tile).rgba) < plain + 10);
+}

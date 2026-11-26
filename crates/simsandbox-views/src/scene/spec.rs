@@ -671,6 +671,28 @@ impl Scene {
     }
 
     /// The signals it reads, as written, once each.
+    /// What layer `k` shows, for selecting it (ADR 0108): the first
+    /// signal or parameter its own attributes read, else its frame's, up
+    /// the chain. `None` for a layer of constants alone.
+    pub fn selects(&self, k: usize) -> Option<String> {
+        let named = |s: &Source| match s {
+            Source::Scalar(n) | Source::Rows(n) | Source::Param(n) => Some(n.clone()),
+            _ => None,
+        };
+        let layer = self.layers.get(k)?;
+        if let Some(n) = layer.attributes.iter().flatten().find_map(named) {
+            return Some(n);
+        }
+        let mut at = layer.frame;
+        while let Some(f) = at {
+            if let Some(n) = self.frames[f].pose.iter().find_map(named) {
+                return Some(n);
+            }
+            at = self.frames[f].parent;
+        }
+        None
+    }
+
     pub fn reads(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .frames

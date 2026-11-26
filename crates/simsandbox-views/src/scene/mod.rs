@@ -105,6 +105,9 @@ struct SceneView {
     held: Option<Held>,
     /// What grabbing sent, not yet taken.
     sent: Vec<(String, [f64; 4])>,
+    /// What a press selected (the signal its layer shows), not yet taken
+    /// (ADR 0108, one selection).
+    selected: Option<String>,
     /// Why `given` does not check, held to be saved back unchanged: then
     /// nothing is drawn but this.
     problem: Option<String>,
@@ -170,6 +173,12 @@ impl SceneView {
             return;
         };
         let scale = t.dpos_dvalue_x().abs();
+        // Whatever is pressed is selected, grabbed or not.
+        if let Some(i) = eval::touched(&self.kept.placed, at, scale) {
+            if let Some(n) = scene.selects(i.layer) {
+                self.selected = Some(n);
+            }
+        }
         let Some(hit) = eval::picked(scene, &self.kept.placed, at, scale) else {
             return;
         };
@@ -249,6 +258,7 @@ impl View for SceneView {
         }
         let follow = scene.extent.is_none();
         let kept = &mut self.kept;
+        let colour = ui.visuals().selection.stroke.color;
         let response = plot.show(ui, |plot| {
             if free {
                 scroll_to_zoom(plot);
@@ -287,8 +297,38 @@ impl View for SceneView {
                 follow,
                 base: PlotItemBase::new(SCENE.into()),
             });
+            // What is selected elsewhere, outlined where it is drawn
+            // (ADR 0108, one selection).
+            if let (Some(selected), Some(view)) = (input.selected, kept.view) {
+                let mut marks = Drawn::default();
+                for i in kept.placed.iter().filter(|i| {
+                    scene
+                        .selects(i.layer)
+                        .is_some_and(|n| node_of(&n) == selected)
+                }) {
+                    let [lo, hi] = i.shape.moved(view).bounds();
+                    let pad = 3.0 / scale.max(f64::MIN_POSITIVE);
+                    let (lo, hi) = ([lo[0] - pad, lo[1] - pad], [hi[0] + pad, hi[1] + pad]);
+                    marks.items.push(Item::Line {
+                        points: vec![lo, [hi[0], lo[1]], hi, [lo[0], hi[1]], lo],
+                        width: 1.5,
+                        colour,
+                    });
+                }
+                if !marks.items.is_empty() {
+                    plot.add(SceneItem {
+                        drawn: Arc::new(marks),
+                        follow: false,
+                        base: PlotItemBase::new(format!("{SCENE} selection")),
+                    });
+                }
+            }
         });
         self.shown = Some(response.transform);
+    }
+
+    fn picked(&mut self) -> Option<String> {
+        self.selected.take()
     }
 
     fn grabs(&mut self) -> Vec<(String, [f64; 4])> {
@@ -333,6 +373,13 @@ impl View for SceneView {
 
 /// The drawn list as an item of the plot, painted in the plot's
 /// coordinates.
+/// The block a signal comes from, as the app selects it: `cart` of
+/// `cart.x`, the use `left` of `left/x` or `left/cartpole.x`.
+fn node_of(signal: &str) -> &str {
+    let node = signal.split_once('.').map_or(signal, |(n, _)| n);
+    node.split('/').next().unwrap_or(node)
+}
+
 struct SceneItem {
     drawn: Arc<Drawn>,
     /// The plot's bounds follow what is drawn (no extent given).

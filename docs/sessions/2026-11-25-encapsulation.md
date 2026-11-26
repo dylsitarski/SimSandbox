@@ -29,10 +29,11 @@
 - 2026-11-26: the two balancing poles' grab fixed (owner): a template's pointer binds by name to the use's pointer block; `grab_in` sends the pointer in the frame the template is drawn in.
 - 2026-11-26: ADR 0113 step 3 built: frames over rows as parents, `body_axes` drawn once a body, the cart-pole's offered `tip` marked in "Two balancing poles".
 - 2026-11-26: ADR 0113 step 4 built: view files (`render --views`, `check`, "Add views from…", Python), templates outside the model hash, "Replace with…" for template layers; the scene form of a templated scene now edits it as written (it edited the expanded view, unsaved).
+- 2026-11-26: one selection (ADR 0108): a scene's press selects the block its layer shows (`Scene::selects`, `View::picked`); uses through their outputs; the Overview marks and scenes outline the selection.
 
 ## Left open
 
-- Next by ADR 0108: one selection across the Stage, Inspector and canvas.
+- Next by ADR 0108: the Stage, the Structure lens, Definitions.
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session

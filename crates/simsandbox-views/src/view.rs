@@ -107,6 +107,9 @@ pub struct ViewInput<'a> {
     /// Every recording, for views that bind signals outside their slots
     /// (a scene's layers, ADR 0093).
     pub recorded: Recorded<'a>,
+    /// The block selected in the app (ADR 0108, one selection), for a
+    /// view to show where it is drawn.
+    pub selected: Option<&'a str>,
     /// Bindings in `history`.
     slots: BTreeMap<&'a str, Vec<SignalRef>>,
     /// Every binding, in its own recording.
@@ -597,6 +600,7 @@ pub(crate) fn view_input<'a>(
         history,
         bind,
         sends_pointer: false,
+        selected: None,
         recorded,
         slots,
         any,
@@ -644,6 +648,8 @@ pub struct ViewState {
     pub style: BTreeMap<String, f64>,
     /// The view feeds an `input.pointer` (ADR 0058), set by the app.
     pub sends_pointer: bool,
+    /// The block selected in the app (ADR 0108), set by the app.
+    pub selected: Option<String>,
     view: Box<dyn View>,
 }
 
@@ -659,6 +665,7 @@ impl ViewState {
             bind,
             style: BTreeMap::new(),
             sends_pointer: false,
+            selected: None,
             view: (t.create)(),
         })
     }
@@ -681,6 +688,7 @@ impl ViewState {
             bind,
             style,
             sends_pointer: false,
+            selected: None,
             view,
         })
     }
@@ -736,6 +744,7 @@ impl ViewState {
     pub fn show<'a>(&mut self, ui: &mut egui::Ui, t: &ViewType, recorded: impl Into<Recorded<'a>>) {
         let mut input = view_input(&self.bind, &self.style, t, recorded.into());
         input.sends_pointer = self.sends_pointer;
+        input.selected = self.selected.as_deref();
         self.view.show(ui, &input);
     }
 
@@ -987,6 +996,7 @@ mod tests {
                 history: h,
                 bind: &bind,
                 sends_pointer: false,
+                selected: None,
                 recorded: Recorded::single(h),
                 slots: BTreeMap::new(),
                 any: BTreeMap::new(),

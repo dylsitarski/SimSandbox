@@ -264,6 +264,12 @@ pub fn picked<'p>(scene: &Scene, placed: &'p [Placed], p: P, scale: f64) -> Opti
         .find(|i| scene.layers[i.layer].grab.is_some() && i.shape.contains(p, scale))
 }
 
+/// The topmost instance of any layer that contains `p`: what a press
+/// selects (ADR 0108, one selection).
+pub fn touched(placed: &[Placed], p: P, scale: f64) -> Option<&Placed> {
+    placed.iter().rev().find(|i| i.shape.contains(p, scale))
+}
+
 /// What a scene draws, in the coordinates it is drawn in, and the box
 /// holding it.
 #[derive(Debug, Default, Clone, PartialEq)]

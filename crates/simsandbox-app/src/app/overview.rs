@@ -105,6 +105,11 @@ impl SimApp {
         let level = text(&card["part"]).to_string();
         // Inspected from the model's own level, where the diagram is.
         let top = level.is_empty();
+        // One selection (ADR 0108): the part picked anywhere is marked.
+        let selected: Option<String> = match &self.diagram.canvas.selected {
+            Some(crate::canvas::Selection::Block(b)) if top => Some(b.clone()),
+            _ => None,
+        };
         egui::ScrollArea::vertical().id_salt("overview").show(ui, |ui| {
             if !top {
                 // Where this level is: each step back a link.
@@ -171,14 +176,15 @@ impl SimApp {
 
             ui.label(egui::RichText::new("Parts").strong());
             for part in card["parts"].as_array().into_iter().flatten() {
+                let is_selected = selected.as_deref() == part["name"].as_str();
                 if part["kind"] == "use" {
-                    use_part(ui, part, top, &value, &mut open, &mut inspect, &mut edits);
+                    use_part(ui, part, top, is_selected, &value, &mut open, &mut inspect, &mut edits);
                     continue;
                 }
                 let name = text(&part["name"]);
                 let path = text(&part["path"]);
                 let header = format!("{name} — {}", text(&part["role"]));
-                egui::CollapsingHeader::new(egui::RichText::new(header).strong())
+                egui::CollapsingHeader::new(marked(header, is_selected, ui))
                     .id_salt(("overview part", name))
                     .default_open(true)
                     .show(ui, |ui| {
@@ -418,12 +424,30 @@ impl SimApp {
     }
 }
 
+/// A part's heading, in the selection's colour while it is selected
+/// (ADR 0108, one selection).
+fn marked(header: String, selected: bool, ui: &egui::Ui) -> egui::RichText {
+    let text = egui::RichText::new(if selected {
+        format!("{header}  (selected)")
+    } else {
+        header
+    })
+    .strong();
+    if selected {
+        text.color(ui.visuals().selection.stroke.color)
+    } else {
+        text
+    }
+}
+
 /// A model used at this level, as one part (ADR 0110): what it is, its
 /// interface for this use with values live, Open to show its own level.
+#[allow(clippy::too_many_arguments)]
 fn use_part(
     ui: &mut egui::Ui,
     part: &Value,
     top: bool,
+    is_selected: bool,
     value: &dyn Fn(&str, &str) -> String,
     open: &mut Option<String>,
     inspect: &mut Option<String>,
@@ -435,7 +459,7 @@ fn use_part(
         || format!("file {}", text(&part["file"])),
         |m| format!("model {m}"),
     );
-    egui::CollapsingHeader::new(egui::RichText::new(format!("{name} — {model}")).strong())
+    egui::CollapsingHeader::new(marked(format!("{name} — {model}"), is_selected, ui))
         .id_salt(("overview use", path))
         .default_open(true)
         .show(ui, |ui| {
