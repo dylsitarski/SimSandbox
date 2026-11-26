@@ -377,6 +377,20 @@ impl SimApp {
                     });
                 }
             }
+            if let Some(templates) = card["templates"].as_object().filter(|t| !t.is_empty()) {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Templates").strong())
+                    .on_hover_text("Pictures it offers to models that use it, each drawn by binding its inputs (ADR 0113)");
+                for (name, t) in templates {
+                    let inputs: Vec<&String> = t["inputs"].as_object().into_iter().flat_map(|i| i.keys()).collect();
+                    ui.label(format!(
+                        "{name} ({}): inputs {}",
+                        text(&t["type"]),
+                        inputs.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                    ))
+                    .on_hover_text(text(&t["description"]));
+                }
+            }
             if let Some(views) = card["views"].as_array().filter(|v| !v.is_empty()) {
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new("Views").strong());
@@ -440,6 +454,11 @@ fn use_part(
                         .clicked()
                 {
                     *inspect = Some(name.to_string());
+                }
+                let pictures = strings(&part["pictures"]);
+                if !pictures.is_empty() {
+                    ui.weak(format!("pictures: {}", pictures.join(", ")))
+                        .on_hover_text("Templates its model offers: a scene draws one as a template layer (ADR 0113)");
                 }
                 let inside = strings(&part["inside"]);
                 if !inside.is_empty() {

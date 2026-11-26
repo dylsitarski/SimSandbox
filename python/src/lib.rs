@@ -795,10 +795,15 @@ fn scene_problem(text: &str, scene: &str) -> Option<String> {
         view.clone(),
     )) {
         Ok(entry) if simsandbox_file::templates::uses_templates(&entry) => {
-            let templates: std::collections::BTreeMap<String, serde_json::Value> = data
-                .get("templates")
-                .and_then(|t| serde_json::from_value(t.clone()).ok())
-                .unwrap_or_default();
+            // Its own and those the models it uses offer (ADR 0113).
+            let folder = simsandbox_core::registry::current_folder();
+            let templates = match simsandbox_file::ModelFile::from_json(text) {
+                Ok((file, _)) => simsandbox_file::compose::templates_in(&file, folder.as_deref()),
+                Err(_) => data
+                    .get("templates")
+                    .and_then(|t| serde_json::from_value(t.clone()).ok())
+                    .unwrap_or_default(),
+            };
             match simsandbox_file::templates::expand(&entry, &templates)
                 .and_then(|e| serde_json::to_value(e).map_err(|e| e.to_string()))
             {

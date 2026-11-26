@@ -398,6 +398,7 @@ pub fn card_at(
 
     // Views and probes are the whole model's, at its top level.
     let mut reaching_inside = Vec::new();
+    let templates = simsandbox_file::compose::templates_in(&s.file, s.file.folder.as_deref());
     let views: Vec<Value> = if !part.is_empty() {
         Vec::new()
     } else {
@@ -408,8 +409,8 @@ pub fn card_at(
             .enumerate()
             .map(|(k, v)| {
                 // As it draws, its templates put in place (ADR 0113).
-                let shown = simsandbox_file::templates::expand(v, &s.file.templates)
-                    .unwrap_or_else(|_| v.clone());
+                let shown =
+                    simsandbox_file::templates::expand(v, &templates).unwrap_or_else(|_| v.clone());
                 let v = &shown;
                 let mut shows: Vec<String> = v.bind.values().flat_map(|b| b.signals()).collect();
                 for f in v.scene.frames.values() {
@@ -548,6 +549,8 @@ pub fn card_at(
         "connections": bundles,
         "views": views,
         "reaching_inside": reaching_inside,
+        // The pictures it offers to models using it (ADR 0113).
+        "templates": crate::describe::templates(&level).0,
     }))
 }
 
@@ -703,6 +706,8 @@ fn use_part(
         "outputs": outputs,
         // What it holds, opened one level down.
         "inside": used.blocks.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(),
+        // The pictures its model offers, drawn as `USE/NAME` (ADR 0113).
+        "pictures": used.templates.keys().map(|n| format!("{path}/{n}")).collect::<Vec<_>>(),
     });
     if depth > 1 {
         out["card"] = card_at(s, summary_of, &path, depth - 1)?;
@@ -1020,6 +1025,57 @@ pub fn markdown(card: &Value) -> String {
         }
         line("");
     }
+    if let Some(templates) = card["templates"].as_object().filter(|t| !t.is_empty()) {
+        line("## Templates");
+        line("");
+        line("Pictures it offers to models that use it, each drawn by binding its inputs (ADR 0113).");
+        line("");
+        for (name, t) in templates {
+            let inputs: Vec<String> = t["inputs"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(
+                    |(n, i)| match i["unit"].as_str().filter(|u| !u.is_empty()) {
+                        Some(u) => format!("`{n}` [{u}]"),
+                        None => format!("`{n}`"),
+                    },
+                )
+                .collect();
+            let params: Vec<&String> = t["params"]
+                .as_object()
+                .into_iter()
+                .flat_map(|p| p.keys())
+                .collect();
+            line(&format!(
+                "- `{name}` ({}): inputs {}{}{}",
+                t["type"].as_str().unwrap_or(""),
+                if inputs.is_empty() {
+                    "none".to_string()
+                } else {
+                    inputs.join(", ")
+                },
+                if params.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; parameters `{}`",
+                        params
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join("`, `")
+                    )
+                },
+                t["description"]
+                    .as_str()
+                    .filter(|d| !d.is_empty())
+                    .map(|d| format!(". {d}"))
+                    .unwrap_or_default(),
+            ));
+        }
+        line("");
+    }
     if let Some(views) = card["views"].as_array().filter(|v| !v.is_empty()) {
         line("## Views");
         line("");
@@ -1069,7 +1125,9 @@ fn use_md(part: &Value, line: &mut impl FnMut(&str)) {
         line("");
     }
     if let Some(s) = part["summary"].as_str().filter(|s| !s.is_empty()) {
-        line(&s.replace('\n', " "));
+        // Its first sentence: the rest is on its own card.
+        let s = s.replace('\n', " ");
+        line(s.split_inclusive(". ").next().unwrap_or(&s).trim());
         line("");
     }
     notes_md(&part["notes"], line);
@@ -1133,6 +1191,19 @@ fn use_md(part: &Value, line: &mut impl FnMut(&str)) {
             line(&format!("{what}: {}.", list.join("; ")));
             line("");
         }
+    }
+    let pictures: Vec<&str> = part["pictures"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if !pictures.is_empty() {
+        line(&format!(
+            "Pictures it offers: `{}` (a scene draws one as a template layer).",
+            pictures.join("`, `")
+        ));
+        line("");
     }
     let inside: Vec<&str> = part["inside"]
         .as_array()
@@ -1304,6 +1375,45 @@ mod tests {
         let md = markdown(&deep);
         assert!(md.contains("### car1 — model `follower`"), "{md}");
         assert!(md.contains("#### Parts"), "{md}");
+    }
+
+    #[test]
+    fn a_components_pictures_are_listed_with_it() {
+        // ADR 0113 step 2: the cart-pole offers its template; the model
+        // using it twice lists it for each use.
+        let e = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Two balancing poles"))
+            .unwrap();
+        let r = registry();
+        let s = Session::load_in("two", e.text, &r, e.folder().as_deref()).unwrap();
+        let card = card(&s, &|_| None);
+        let pictures: Vec<&Value> = card["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| &p["pictures"])
+            .collect();
+        assert_eq!(
+            pictures,
+            [&json!(["left/cartpole"]), &json!(["right/cartpole"])]
+        );
+        let shows = &card["views"][0]["shows"];
+        assert_eq!(
+            shows,
+            &json!(["left/theta", "left/x", "right/theta", "right/x"])
+        );
+        let own = card_of(
+            EXAMPLES
+                .iter()
+                .find(|e| e.name.starts_with("Cart-pole"))
+                .unwrap()
+                .text,
+            "",
+            1,
+        )
+        .unwrap();
+        assert!(own["templates"]["cartpole"]["inputs"]["theta"]["unit"] == "rad");
     }
 
     #[test]

@@ -25,10 +25,11 @@
 - 2026-11-26: the Inspector by intent (ADR 0108's fourth step): `app/inspector/intent.rs`, in the model tree and the selection; an app test on the cart-pole; screenshots of the mechanism and the controller under Xvfb.
 - 2026-11-26: views revisited (owner): view types are independent, configured views tied to one model by names, used models' views dropped. [ADR 0113](../decisions/0113-views-bind-to-interfaces.md) drafted (proposed): views declare interfaces (templates) with the same properties as models; no model has to supply a view.
 - 2026-11-26: ADR 0113 step 1 built: `templates.rs` (expansion), the views' written and shown forms, `check`'s templates, Python's `define_template` and `add_view`, the cart-pole's picture as a template (same pixels).
+- 2026-11-26: ADR 0113 step 2 built: `compose::templates_in`, defaults by name through outputs, the cart-pole's outputs, the example "Two balancing poles", templates and pictures on the card and Overview.
 
 ## Left open
 
-- ADR 0113 step 2 (component pictures).
+- ADR 0113 step 3 (offered frames in use, replication over rows).
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session

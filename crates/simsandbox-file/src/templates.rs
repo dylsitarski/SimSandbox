@@ -198,8 +198,9 @@ fn expand_at(
                 };
             }
             bind_params(&t, &v.params, &mut env, "params")?;
+            by_name(&t, name, &mut env);
             unbound(&t, &env, "bind")?;
-            let mut view = substitute(&t.view, &env)?;
+            let mut view = within(substitute(&t, &env)?, name);
             view.canvas = v.canvas;
             view.camera = v.camera.or(view.camera);
             view.selection = v.selection.clone().or(view.selection);
@@ -281,6 +282,7 @@ fn expand_layers(
             env.insert(input.clone(), value.clone());
         }
         bind_params(&t, &params, &mut env, &format!("layers[{k}].params"))?;
+        by_name(&t, &template, &mut env);
         unbound(&t, &env, &format!("layers[{k}].bind"))?;
         if let Some(g) = &layer.grab {
             return Err(at(format!(
@@ -288,8 +290,12 @@ fn expand_layers(
             )));
         }
         // The template's own scene, its templates put in place first.
-        let inner = expand_layers(&substitute(&t.view, &env)?.scene, templates, depth + 1)
-            .map_err(|e| at(format!(" ({template}): {e}")))?;
+        let inner = expand_layers(
+            &within(substitute(&t, &env)?, &template).scene,
+            templates,
+            depth + 1,
+        )
+        .map_err(|e| at(format!(" ({template}): {e}")))?;
         let placed = |f: &Option<String>| match f {
             Some(f) => Some(format!("{name}/{f}")),
             None => layer.frame.clone(),
@@ -387,9 +393,48 @@ fn bind_params(
     Ok(())
 }
 
-/// Every input bound.
+/// A template a used model offers (`rig1/cartpole`) binds each input not
+/// bound otherwise to the use's output of the same name (`rig1/x`,
+/// ADR 0113 point 5): through its interface. A pointer has no default.
+fn by_name(t: &Template, name: &str, env: &mut BTreeMap<String, SceneValue>) {
+    let Some((path, _)) = name.rsplit_once('/') else {
+        return;
+    };
+    for (k, i) in &t.inputs {
+        if i.kind != "pointer" && !env.contains_key(k) {
+            env.insert(k.clone(), SceneValue::Name(format!("{path}/{k}")));
+        }
+    }
+}
+
+/// The templates a template offered by a used model draws are that
+/// model's: their names gain its path.
+fn within(mut view: ViewEntry, name: &str) -> ViewEntry {
+    let Some((path, _)) = name.rsplit_once('/') else {
+        return view;
+    };
+    for l in view
+        .scene
+        .layers
+        .iter_mut()
+        .filter(|l| l.draw == TEMPLATE_LAYER)
+    {
+        if let Some(Value::String(t)) = l.other.get_mut("template") {
+            *t = format!("{path}/{t}");
+        }
+    }
+    view
+}
+
+/// Every input bound, but a pointer: a template whose pointer is not
+/// bound draws without grabbing.
 fn unbound(t: &Template, env: &BTreeMap<String, SceneValue>, at: &str) -> Result<(), String> {
-    match t.inputs.keys().find(|k| !env.contains_key(*k)) {
+    match t
+        .inputs
+        .iter()
+        .find(|(k, i)| i.kind != "pointer" && !env.contains_key(*k))
+        .map(|(k, _)| k)
+    {
         Some(k) => Err(format!(
             "{at}.{k}: the template's input '{k}' is not bound{}",
             match t.inputs[k].unit.as_str() {
@@ -401,8 +446,10 @@ fn unbound(t: &Template, env: &BTreeMap<String, SceneValue>, at: &str) -> Result
     }
 }
 
-/// The view with each `$name` replaced by what `env` binds it to.
-fn substitute(view: &ViewEntry, env: &BTreeMap<String, SceneValue>) -> Result<ViewEntry, String> {
+/// The template's view with each `$name` replaced by what `env` binds it
+/// to; a layer grabbing with a pointer input left unbound does not grab.
+fn substitute(t: &Template, env: &BTreeMap<String, SceneValue>) -> Result<ViewEntry, String> {
+    let view = &t.view;
     let value = |v: &SceneValue, at: &str| -> Result<SceneValue, String> {
         match v {
             SceneValue::Name(n) => match n.strip_prefix('$') {
@@ -451,7 +498,16 @@ fn substitute(view: &ViewEntry, env: &BTreeMap<String, SceneValue>) -> Result<Vi
         for (a, v) in &mut l.bind {
             *v = value(v, &format!("layers[{k}].bind.{a}"))?;
         }
-        if let Some(g) = &mut l.grab {
+        let free = l
+            .grab
+            .as_deref()
+            .and_then(|g| g.strip_prefix('$'))
+            .is_some_and(|k| {
+                !env.contains_key(k) && t.inputs.get(k).is_some_and(|i| i.kind == "pointer")
+            });
+        if free {
+            l.grab = None;
+        } else if let Some(g) = &mut l.grab {
             *g = name(g, &format!("layers[{k}].grab"))?;
         }
     }
@@ -544,6 +600,50 @@ mod tests {
         assert_eq!(e.type_name, "plot.xy");
         assert_eq!(e.bind["x"], Binding::One("m.x".into()));
         assert_eq!(e.bind["y"], Binding::Many(vec!["m.v".into()]));
+    }
+
+    #[test]
+    fn a_used_models_template_binds_its_outputs_by_name() {
+        // ADR 0113 point 5: `rig1/rig` binds `x` and `theta` to `rig1/x`
+        // and `rig1/theta`; its pointer, unbound, grabs nothing.
+        let mut t = BTreeMap::new();
+        t.insert("rig1/rig".to_string(), templates()["rig"].clone());
+        let v = scene(json!([{"draw": "template", "name": "a", "template": "rig1/rig"}]));
+        let e = expand(&v, &t).unwrap();
+        assert_eq!(
+            e.scene.frames["a/cart"].x,
+            Some(SceneValue::Name("rig1/x".into()))
+        );
+        assert_eq!(
+            e.scene.frames["a/pole"].angle,
+            Some(SceneValue::Name("rig1/theta".into()))
+        );
+        assert!(e.scene.layers.iter().all(|l| l.grab.is_none()));
+        // Bound explicitly, a binding wins.
+        let v = scene(
+            json!([{"draw": "template", "name": "a", "template": "rig1/rig",
+                              "bind": {"x": 0.5, "grab": "hand"}}]),
+        );
+        let e = expand(&v, &t).unwrap();
+        assert_eq!(e.scene.frames["a/cart"].x, Some(SceneValue::Number(0.5)));
+        assert_eq!(e.scene.layers[1].grab.as_deref(), Some("hand"));
+        // A template it draws is its model's: found under its path.
+        t.insert(
+            "rig1/both".to_string(),
+            json!({"type": "plot.scene", "layers": [
+                {"draw": "template", "name": "inner", "template": "rig"}]}),
+        );
+        let v = scene(json!([{"draw": "template", "name": "b", "template": "rig1/both"}]));
+        let e = expand(&v, &t).unwrap();
+        assert!(
+            e.scene.frames.contains_key("b/inner/cart"),
+            "{:?}",
+            e.scene.frames.keys()
+        );
+        assert_eq!(
+            e.scene.frames["b/inner/cart"].x,
+            Some(SceneValue::Name("rig1/x".into()))
+        );
     }
 
     #[test]

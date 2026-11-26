@@ -477,7 +477,7 @@ mod tests {
         for e in EXAMPLES {
             let s = Session::load_in(e.name, e.text, &registry(), e.folder().as_deref()).unwrap();
             let mut v = Views::new(view_registry());
-            v.templates.clone_from(&s.file.templates);
+            v.templates = simsandbox_file::compose::templates_in(&s.file, s.file.folder.as_deref());
             let w = v.open(&s.available(&s.signals()), &s.file.controls.views);
             assert!(w.is_empty(), "{}: {w:?}", e.name);
             assert_eq!(v.entries(), s.file.controls.views, "{}", e.name);

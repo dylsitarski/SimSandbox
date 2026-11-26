@@ -178,4 +178,10 @@ Here `rig1/cartpole` binds `x` and `theta` to `rig1/x` and `rig1/theta`, the out
     - an input's declared unit is not compared with its signal directly, only through the attributes it reaches, which are checked as before;
     - `rows` inputs are accepted but not yet drawn per row (step 3);
     - a scene's Inspector form edits the view as written, but has no editor for a template layer yet.
+- **Step 2 (2026-11-26), component pictures:**
+  - `compose::templates_in(file, folder)` gives every template a model can draw: its own by name, and each used model's (defined in the file or a separate file) by path (`left/cartpole`, deeper uses `a/b/name`). Every place that expands views uses it: tiles, what the history records (`Recording::new` and the reads), `check`, `render`, the card and Python's scene check.
+  - A template found through a use binds each input not bound otherwise to the use's output of that name (`left/x`). A pointer input left unbound draws without grabbing. Templates a used model's template draws are found under its path.
+  - The cart-pole offers `x` and `theta` as outputs. The new example "Two balancing poles" (`examples/two-cartpoles.ssbx.json`) uses it twice from its file, each started with its pole tipped (start states by inner block, ADR 0112), and draws both from `left/cartpole` and `right/cartpole` in frames of its own, the right one's pole recoloured by a parameter.
+  - The card lists a model's `templates`, and each use's `pictures` (`left/cartpole`). Markdown has a "Templates" section and "Pictures it offers". The Overview has both.
+  - Tests: default binding, explicit binding, a pointer left out and templates within a used model's (`templates.rs`); the card of the example.
 

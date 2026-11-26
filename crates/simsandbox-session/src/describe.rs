@@ -373,7 +373,8 @@ pub fn check(text: &str, r: &Registry) -> Value {
             {
                 let h = s.signals();
                 let mut views = crate::views::Views::new(crate::examples::view_registry());
-                views.templates.clone_from(&s.file.templates);
+                views.templates =
+                    simsandbox_file::compose::templates_in(&s.file, s.file.folder.as_deref());
                 warnings.extend(views.open(&s.available(&h), &s.file.controls.views));
             }
             // Templates that do not read, used or not (ADR 0113).

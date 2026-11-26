@@ -230,7 +230,12 @@ impl Session {
             ids: loaded.ids,
             groups: loaded.groups,
             warnings,
-            recording: Recording::new(&start_file.controls.views),
+            // What the views read, as they draw: templates put in place
+            // (ADR 0113).
+            recording: Recording::new(&simsandbox_file::templates::expand_all(
+                &start_file.controls.views,
+                &simsandbox_file::compose::templates_in(&start_file, start_file.folder.as_deref()),
+            )),
             probes: Probes::default(),
             catalogue,
             rewind: Rewind::new(start_file.controls.recorder.clone(), sim.snapshot()),
@@ -266,7 +271,7 @@ impl Session {
         // The parameters the file's scenes bind are recorded (ADR 0102).
         let reads = recording::view_reads(&simsandbox_file::templates::expand_all(
             &session.file.controls.views,
-            &session.file.templates,
+            &simsandbox_file::compose::templates_in(&session.file, session.file.folder.as_deref()),
         ));
         session.catalogue.set_param_reads(&reads);
         // No probes yet: they are loaded next, and the filters that read

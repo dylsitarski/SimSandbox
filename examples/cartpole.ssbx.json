@@ -139,6 +139,16 @@
       ]
     }
   ],
+  "outputs": [
+    {
+      "name": "x",
+      "from": "cartpole.slider_position"
+    },
+    {
+      "name": "theta",
+      "from": "cartpole.hinge_angle"
+    }
+  ],
   "connections": [
     {
       "from": "cartpole.slider_position",

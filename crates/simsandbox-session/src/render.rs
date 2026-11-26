@@ -63,7 +63,7 @@ pub fn render(
     let h = s.signals();
     let available = s.available(&h);
     let mut views = Views::new(registry);
-    views.templates.clone_from(&s.file.templates);
+    views.templates = simsandbox_file::compose::templates_in(&s.file, s.file.folder.as_deref());
     let warnings = views.open(&available, &s.file.controls.views);
     if let Some(k) = o.view {
         let n = views.tiles.len();
@@ -207,6 +207,7 @@ fn scene_problems(file: &simsandbox_file::ModelFile, registry: &Registry) -> Vec
     };
     let h = s.signals();
     let available = s.available(&h);
+    let templates = simsandbox_file::compose::templates_in(file, file.folder.as_deref());
     file.controls
         .views
         .iter()
@@ -214,7 +215,7 @@ fn scene_problems(file: &simsandbox_file::ModelFile, registry: &Registry) -> Vec
         .filter(|(_, v)| v.type_name == scene)
         .filter_map(|(k, v)| {
             // As it draws, its templates put in place (ADR 0113).
-            let shown = match simsandbox_file::templates::expand(v, &file.templates) {
+            let shown = match simsandbox_file::templates::expand(v, &templates) {
                 Ok(shown) => shown,
                 Err(e) => return Some((k, e)),
             };

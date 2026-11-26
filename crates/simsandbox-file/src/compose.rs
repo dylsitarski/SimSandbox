@@ -1078,6 +1078,44 @@ pub fn used_model(
     Ok((model, at, inner))
 }
 
+/// Every template a model can draw (ADR 0113): its own by name, and
+/// those each model it uses offers, by path (`rig1/cartpole`,
+/// `vehicle/plant/car`), to any depth. A use whose model cannot be read
+/// offers none (loading reports why).
+pub fn templates_in(
+    file: &ModelFile,
+    folder: Option<&Path>,
+) -> BTreeMap<String, serde_json::Value> {
+    fn walk(
+        file: &ModelFile,
+        folder: Option<&Path>,
+        prefix: &str,
+        depth: usize,
+        out: &mut BTreeMap<String, serde_json::Value>,
+    ) {
+        for (n, t) in &file.templates {
+            out.insert(format!("{prefix}{n}"), t.clone());
+        }
+        if depth >= 16 {
+            return;
+        }
+        for u in file.blocks.iter().filter(|b| b.is_use()) {
+            if let Ok((model, _, inner)) = used_model(u, folder) {
+                walk(
+                    &model,
+                    inner.as_deref(),
+                    &format!("{prefix}{}/", u.name),
+                    depth + 1,
+                    out,
+                );
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(file, folder, "", 0, &mut out);
+    out
+}
+
 /// Whether the use `u` (in a file saved in `folder`) runs on its user's
 /// clock: `"shared"`, or no clock, a model that writes no `run.dt`, and a
 /// wire reaching it (`wired`), since wires never cross clocks (ADR 0068).

@@ -199,6 +199,14 @@ pub const EXAMPLES: &[Example] = &[
             ),
         ],
     },
+    Example {
+        name: "Two balancing poles (a component's picture, used twice)",
+        text: include_str!("../../../examples/two-cartpoles.ssbx.json"),
+        files: &[(
+            "cartpole.ssbx.json",
+            include_str!("../../../examples/cartpole.ssbx.json"),
+        )],
+    },
 ];
 
 /// For tests: the driven, damped spring of the resonance examples as a

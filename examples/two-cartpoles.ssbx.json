@@ -1,0 +1,103 @@
+{
+  "format": 1,
+  "description": "Two cart-poles side by side: the cart-pole example used twice as a component, each started with its pole tipped (left 0.15 rad, right -0.3 rad) and caught by its own controller. The scene draws each with the picture the cart-pole model offers, its template cartpole (ADR 0113), bound by name to the outputs it offers (x, theta) and placed in a frame of its own; the right one's pole is green by the template's parameter. Nothing of the picture is rebuilt here.",
+  "run": {
+    "t_end": 8.0
+  },
+  "blocks": [
+    {
+      "name": "left",
+      "file": "cartpole.ssbx.json",
+      "starts": {
+        "cartpole": {
+          "state": [
+            0.0,
+            0.15,
+            0.0,
+            0.0
+          ]
+        }
+      }
+    },
+    {
+      "name": "right",
+      "file": "cartpole.ssbx.json",
+      "starts": {
+        "cartpole": {
+          "state": [
+            0.0,
+            -0.3,
+            0.0,
+            0.0
+          ]
+        }
+      }
+    }
+  ],
+  "controls": {
+    "views": [
+      {
+        "type": "plot.scene",
+        "unit": "m",
+        "extent": {
+          "x": [
+            -5,
+            5
+          ],
+          "y": [
+            -0.8,
+            1.6
+          ]
+        },
+        "frames": {
+          "left_track": {
+            "x": -2.5,
+            "y": 0.0
+          },
+          "right_track": {
+            "x": 2.5,
+            "y": 0.0
+          }
+        },
+        "layers": [
+          {
+            "draw": "segments",
+            "bind": {
+              "colour": "grey",
+              "width": 2.0,
+              "x1": -5.0,
+              "x2": 5.0,
+              "y1": -0.1,
+              "y2": -0.1
+            }
+          },
+          {
+            "draw": "template",
+            "in": "left_track",
+            "name": "left_rig",
+            "template": "left/cartpole"
+          },
+          {
+            "draw": "template",
+            "in": "right_track",
+            "name": "right_rig",
+            "params": {
+              "pole_colour": "green"
+            },
+            "template": "right/cartpole"
+          }
+        ]
+      },
+      {
+        "type": "plot.xy",
+        "bind": {
+          "x": "t",
+          "y": [
+            "left/theta",
+            "right/theta"
+          ]
+        }
+      }
+    ]
+  }
+}
