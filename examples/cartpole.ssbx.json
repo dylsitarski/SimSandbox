@@ -18,8 +18,8 @@
         }
       },
       "inputs": {
-        "grab": {
-          "description": "the pointer that grabs the pole",
+        "hand": {
+          "description": "the pointer that grabs the pole: the model's input.pointer block",
           "kind": "pointer"
         },
         "theta": {
@@ -52,7 +52,7 @@
             "y": 0.5
           },
           "draw": "boxes",
-          "grab": "$grab",
+          "grab": "$hand",
           "in": "pole"
         }
       ],
@@ -243,7 +243,7 @@
           {
             "draw": "template",
             "bind": {
-              "grab": "hand",
+              "hand": "hand",
               "theta": "cartpole.hinge_angle",
               "x": "cartpole.slider_position"
             },

@@ -664,6 +664,19 @@ fn use_part(
             "from": wired_to(&b.name),
         }));
     }
+    // A pointer the model is grabbed with (ADR 0074, ADR 0113): live input.
+    for b in used
+        .blocks
+        .iter()
+        .filter(|b| b.type_name == simsandbox_eq::input::POINTER)
+    {
+        inputs.push(json!({
+            "name": b.name,
+            "unit": "",
+            "description": "a pointer: a scene that draws its picture grabs with it",
+            "from": [],
+        }));
+    }
     let outputs: Vec<Value> = used
         .outputs
         .iter()

@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "description": "Two cart-poles side by side: the cart-pole example used twice as a component, each started with its pole tipped (left 0.15 rad, right -0.3 rad) and caught by its own controller. The scene draws each with the picture the cart-pole model offers, its template cartpole (ADR 0113), bound by name to the outputs it offers (x, theta) and placed in a frame of its own; the right one's pole is green by the template's parameter. Nothing of the picture is rebuilt here.",
+  "description": "Two cart-poles side by side: the cart-pole example used twice as a component, each started with its pole tipped (left 0.15 rad, right -0.3 rad) and caught by its own controller. The scene draws each with the picture the cart-pole model offers, its template cartpole (ADR 0113), bound by name to what the model offers (its outputs x and theta, and its pointer block hand) and placed in a frame of its own; the right one's pole is green by the template's parameter. Press on either pole and drag: the pointer goes to that cart-pole's own pointer, in its own frame, so it is pulled as in the cart-pole example while the other is untouched.",
   "run": {
     "t_end": 8.0
   },

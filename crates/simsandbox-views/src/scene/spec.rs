@@ -260,6 +260,11 @@ pub struct Layer {
     /// The `input.pointer` block pressing on one of its instances sends
     /// the pointer to (ADR 0093 point 6).
     pub grab: Option<String>,
+    /// The frame the pointer is sent in (`grab_in`): the scene's own if
+    /// `None`. A template's layers grab in the frame the template is drawn
+    /// in, so its model's pointer means what it means in its own scene
+    /// (ADR 0113).
+    pub grab_in: Option<usize>,
 }
 
 /// The region shown: x and y ranges in the scene's unit.
@@ -528,10 +533,10 @@ impl Scene {
             let l = object(v, &path)?;
             if let Some(key) = l
                 .keys()
-                .find(|key| !["draw", "in", "bind", "grab"].contains(&key.as_str()))
+                .find(|key| !["draw", "in", "bind", "grab", "grab_in"].contains(&key.as_str()))
             {
                 return Err(format!(
-                    "{path}.{key}: a layer takes draw, in, bind and grab"
+                    "{path}.{key}: a layer takes draw, in, bind, grab and grab_in"
                 ));
             }
             let draw = string(
@@ -601,12 +606,30 @@ impl Scene {
                     Some(g.to_string())
                 }
             };
+            let grab_in = match l.get("grab_in") {
+                None => None,
+                Some(f) => {
+                    let at = format!("{path}.grab_in");
+                    let f = string(f, &at)?;
+                    let k = index(f).ok_or_else(|| format!("{at}: no frame '{f}'"))?;
+                    if frames[k].table.is_some() {
+                        return Err(format!(
+                            "{at}: '{f}' is over a table's rows: the pointer is sent in a frame of one pose"
+                        ));
+                    }
+                    if grab.is_none() {
+                        return Err(format!("{at}: the layer does not grab"));
+                    }
+                    Some(k)
+                }
+            };
             layers.push(Layer {
                 primitive,
                 frame,
                 attributes,
                 table: table.map(|(t, _)| t),
                 grab,
+                grab_in,
             });
         }
         let view_from = match settings.get("view_from") {
@@ -769,7 +792,7 @@ pub fn describe() -> Value {
             "unit": format!("the length unit of every position and size ('{DEFAULT_UNIT}' if absent); a binding in another length unit is refused"),
             "extent": "{\"x\": [low, high], \"y\": [low, high]}: the region shown; absent, it follows what is drawn. Drawn with equal scales",
             "frames": "name to {\"in\": parent, \"x\", \"y\", \"angle\"}: a point p drawn in the frame lies at (x, y) + R(angle)·p in its parent (the scene's if 'in' is absent). Frames chain; a frame over a table's rows cannot hold another yet",
-            "layers": "a list of {\"draw\": primitive, \"in\": frame, \"bind\": attribute to binding, \"grab\": input.pointer block}, drawn first to last. Pressing on an instance of a layer with 'grab' sends that block x and y in the scene's own frame (whatever the layer's frame or view_from), down and picked (the row id, 0 for a layer of one instance; -1 once let go) until released; the topmost such layer wins, and pan and zoom pause while it is held",
+            "layers": "a list of {\"draw\": primitive, \"in\": frame, \"bind\": attribute to binding, \"grab\": input.pointer block}, drawn first to last. Pressing on an instance of a layer with 'grab' sends that block x and y in the scene's own frame (whatever the layer's frame or view_from), or in the frame 'grab_in' names (a template's layers grab in the frame the template is drawn in, ADR 0113), down and picked (the row id, 0 for a layer of one instance; -1 once let go) until released; the topmost such layer wins, and pan and zoom pause while it is held",
             "view_from": "a frame: the picture is drawn in its coordinates",
         },
         "bindings": bindings,

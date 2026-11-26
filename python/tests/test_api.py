@@ -955,19 +955,19 @@ def test_a_template_draws_as_the_view_it_stands_for():
     report = m.check()
     assert report["ok"] and report["warnings"] == [], report["warnings"]
     rig = report["templates"]["cartpole"]
-    assert rig["type"] == "plot.scene" and set(rig["inputs"]) == {"x", "theta", "grab"}
+    assert rig["type"] == "plot.scene" and set(rig["inputs"]) == {"x", "theta", "hand"}
     # A second rig in the same scene, beside the first, set by its parameters.
     m.add_scene(
         [
             {"draw": "template", "name": "rig", "template": "cartpole",
-             "bind": {"x": "cartpole.slider_position", "theta": "cartpole.hinge_angle", "grab": "hand"},
+             "bind": {"x": "cartpole.slider_position", "theta": "cartpole.hinge_angle", "hand": "hand"},
              "params": {"pole_colour": "green"}},
         ]
     )
     assert m.check()["warnings"] == []
     with pytest.raises(ss.ModelError, match="theta"):
         m.add_scene([{"draw": "template", "name": "r", "template": "cartpole",
-                      "bind": {"x": "cartpole.slider_position", "grab": "hand"}}])
+                      "bind": {"x": "cartpole.slider_position", "hand": "hand"}}])
     # A plot as a template, used as a whole view.
     m.define_template("phase", {"type": "plot.xy", "bind": {"x": "$a", "y": ["$b"]}},
                       inputs={"a": {"unit": "rad"}, "b": {}})

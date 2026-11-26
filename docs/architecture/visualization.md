@@ -103,7 +103,7 @@ Rendering technology follows the data size: egui_plot and the egui painter for l
   - **`check`.** It lists the file's templates (`templates`: each one's type, inputs, parameters, offered frames) and warns about one that does not read.
   - **Python.** `Model.define_template`, `Model.add_view(template=, bind=, params=)`, and template layers in `Model.add_scene`, checked by `_native.scene_problem` after expanding.
   - **The cart-pole.** Its picture of cart and pole is the template `cartpole`, drawn by its scene: the same pixels as before, at every time tried.
-  - **Component pictures** (step 2): `compose::templates_in` adds the templates each used model offers, as `USE/NAME`, to those a view may draw. Such a template's inputs bind by default to the use's outputs of the same names (`left/x`), and a pointer left unbound grabs nothing. "Two balancing poles" draws the cart-pole twice this way.
+  - **Component pictures** (step 2): `compose::templates_in` adds the templates each used model offers, as `USE/NAME`, to those a view may draw. Such a template's inputs bind by default to the use's outputs of the same names (`left/x`), and a pointer left unbound grabs nothing. "Two balancing poles" draws the cart-pole twice this way. A template's pointer input binds by name to the use's `input.pointer` block (`left/hand`), and its grabbing layers carry `grab_in`, the frame the template is drawn in, so the pointer is sent in that frame and the component reads it as in its own scene.
 
 ## Style
 

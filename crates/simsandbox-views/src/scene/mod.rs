@@ -72,6 +72,9 @@ struct Kept {
     /// is tested against.
     placed: Vec<Placed>,
     view: Option<Pose>,
+    /// Each layer's `grab_in` frame's pose at the newest sample, where it
+    /// has one: the pointer is sent in that frame.
+    grab_frames: Vec<Option<Pose>>,
     /// Times the list was built.
     #[cfg(test)]
     builds: usize,
@@ -84,6 +87,8 @@ struct Held {
     block: String,
     /// Its row id, 0 for a layer of one instance.
     picked: f64,
+    /// The layer held.
+    layer: usize,
     /// The pointer, last seen, in the scene's own frame.
     at: P,
 }
@@ -139,7 +144,7 @@ impl SceneView {
             if let Some(p) = latest.and_then(|p| self.in_scene(p)) {
                 held.at = p;
             }
-            let [x, y] = held.at;
+            let [x, y] = self.sent_in(held.layer, held.at);
             if down {
                 self.sent
                     .push((held.block.clone(), [x, y, 1.0, held.picked]));
@@ -174,19 +179,33 @@ impl SceneView {
             .expect("only grabbing layers are picked");
         // Ids are integers, exact in an f64 up to 2^53.
         let picked = hit.id.map_or(0.0, |id| id as f64);
-        let held = Held { block, picked, at };
+        let held = Held {
+            block,
+            picked,
+            at,
+            layer: hit.layer,
+        };
         // Pressed and let go within one frame: held for this frame, let
         // go in the next.
-        self.sent
-            .push((held.block.clone(), [at[0], at[1], 1.0, picked]));
+        let [x, y] = self.sent_in(hit.layer, at);
+        self.sent.push((held.block.clone(), [x, y, 1.0, picked]));
         self.held = Some(held);
     }
 
     /// Let go of what is held, as a release would.
     fn let_go(&mut self) {
         if let Some(h) = self.held.take() {
-            self.sent
-                .push((h.block, [h.at[0], h.at[1], 0.0, NOTHING_PICKED]));
+            let [x, y] = self.sent_in(h.layer, h.at);
+            self.sent.push((h.block, [x, y, 0.0, NOTHING_PICKED]));
+        }
+    }
+
+    /// A point in the scene's own frame, in the frame the layer sends its
+    /// pointer in (`grab_in`; the scene's own if none).
+    fn sent_in(&self, layer: usize, at: P) -> P {
+        match self.kept.grab_frames.get(layer).copied().flatten() {
+            Some(pose) => pose.inverse().apply(at),
+            None => at,
         }
     }
 }
@@ -245,6 +264,14 @@ impl View for SceneView {
             if kept.key.as_ref() != Some(&key) {
                 kept.placed = scene.place(&input.recorded);
                 kept.view = scene.view(&input.recorded);
+                kept.grab_frames = scene
+                    .layers
+                    .iter()
+                    .map(|l| {
+                        let pose = scene.frame_pose(&input.recorded, l.grab_in?, None);
+                        pose.is_finite().then_some(pose)
+                    })
+                    .collect();
                 kept.drawn = Arc::new(match kept.view {
                     Some(view) => eval::draw(&kept.placed, view, scale),
                     None => Drawn::default(),

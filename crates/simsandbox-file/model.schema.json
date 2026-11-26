@@ -1027,6 +1027,10 @@
                         ]
                       },
                       "description": "A template layer's parameters, by name."
+                    },
+                    "grab_in": {
+                      "type": "string",
+                      "description": "The frame the pointer is sent in when the layer is grabbed: the scene's own if absent. A template's layers grab in the frame the template is drawn in (ADR 0113), so its model's pointer means what it means in its own scene."
                     }
                   }
                 }

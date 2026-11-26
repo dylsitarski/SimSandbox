@@ -184,4 +184,17 @@ Here `rig1/cartpole` binds `x` and `theta` to `rig1/x` and `rig1/theta`, the out
   - The cart-pole offers `x` and `theta` as outputs. The new example "Two balancing poles" (`examples/two-cartpoles.ssbx.json`) uses it twice from its file, each started with its pole tipped (start states by inner block, ADR 0112), and draws both from `left/cartpole` and `right/cartpole` in frames of its own, the right one's pole recoloured by a parameter.
   - The card lists a model's `templates`, and each use's `pictures` (`left/cartpole`). Markdown has a "Templates" section and "Pictures it offers". The Overview has both.
   - Tests: default binding, explicit binding, a pointer left out and templates within a used model's (`templates.rs`); the card of the example.
+- **Grabbing a component's picture (2026-11-26, owner: "fix the two balancing poles grab"):**
+  - A model's `input.pointer` blocks are part of its interface, as input blocks are ([ADR 0074](0074-model-interfaces.md)). A template's `pointer` input binds by name like the others, to the use's pointer block (`left/hand`). The card lists a use's pointers among its inputs.
+  - A grab is live input to that block by path, as from the model's own scene; its recorded track replays it.
+  - The pointer is sent in the frame the template is drawn in, so its model reads the pointer as in its own scene. This refines [ADR 0093](0093-scenes-from-primitive-layers.md) point 4 ("always the scene's own frame") for templates.
+    - A scene layer takes `grab_in`: the frame the pointer is sent in, the scene's own if absent. It must be a frame of one pose, on a layer that grabs.
+    - Expansion sets it on a template's grabbing layers to the frame the template layer is placed `in`, or to a frame of its own it named, under its path.
+    - The scene sends `grab_in`'s inverse pose at the newest sample applied to the pointer (`SceneView::sent_in`).
+  - The cart-pole's picture names its pointer input `hand`, as its block is named, and draws the same pixels.
+  - In "Two balancing poles", each pole grabs its own cart-pole: a grab driven on `left/hand` moved the left pole by up to 0.39 rad and left the right one equal to the bit.
+  - Tests:
+    - `grab_in` in a turned frame and in a moved frame, and its refusals (`scene/tests.rs`);
+    - binding the pointer by name and `grab_in` set by expansion (`templates.rs`);
+    - the app grabbing `left/hand` in `left_track`, with only the left use's pointer changing (`scene_tests.rs`).
 

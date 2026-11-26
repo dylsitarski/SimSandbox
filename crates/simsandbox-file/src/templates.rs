@@ -306,8 +306,23 @@ fn expand_layers(
             out.frames.insert(format!("{name}/{f}"), frame);
         }
         for l in inner.layers {
+            let mut other = l.other.clone();
+            // It grabs in the frame the template is drawn in (or one of its
+            // own it named), so its model's pointer means what it means in
+            // its own scene (ADR 0113).
+            if l.grab.is_some() {
+                let given = match other.get("grab_in") {
+                    Some(Value::String(f)) => Some(f.clone()),
+                    _ => None,
+                };
+                match placed(&given) {
+                    Some(f) => other.insert("grab_in".into(), Value::String(f)),
+                    None => other.remove("grab_in"),
+                };
+            }
             out.layers.push(SceneLayer {
                 frame: placed(&l.frame),
+                other,
                 ..l
             });
         }
@@ -395,13 +410,15 @@ fn bind_params(
 
 /// A template a used model offers (`rig1/cartpole`) binds each input not
 /// bound otherwise to the use's output of the same name (`rig1/x`,
-/// ADR 0113 point 5): through its interface. A pointer has no default.
+/// ADR 0113 point 5), and a pointer to its `input.pointer` block of that
+/// name (`rig1/hand`): through its interface, its outputs and its input
+/// blocks (ADR 0074).
 fn by_name(t: &Template, name: &str, env: &mut BTreeMap<String, SceneValue>) {
     let Some((path, _)) = name.rsplit_once('/') else {
         return;
     };
-    for (k, i) in &t.inputs {
-        if i.kind != "pointer" && !env.contains_key(k) {
+    for k in t.inputs.keys() {
+        if !env.contains_key(k) {
             env.insert(k.clone(), SceneValue::Name(format!("{path}/{k}")));
         }
     }
@@ -605,7 +622,7 @@ mod tests {
     #[test]
     fn a_used_models_template_binds_its_outputs_by_name() {
         // ADR 0113 point 5: `rig1/rig` binds `x` and `theta` to `rig1/x`
-        // and `rig1/theta`; its pointer, unbound, grabs nothing.
+        // and `rig1/theta`, its pointer `grab` to `rig1/grab`.
         let mut t = BTreeMap::new();
         t.insert("rig1/rig".to_string(), templates()["rig"].clone());
         let v = scene(json!([{"draw": "template", "name": "a", "template": "rig1/rig"}]));
@@ -618,6 +635,23 @@ mod tests {
             e.scene.frames["a/pole"].angle,
             Some(SceneValue::Name("rig1/theta".into()))
         );
+        assert_eq!(e.scene.layers[1].grab.as_deref(), Some("rig1/grab"));
+        // Drawn in the scene's own frame, it grabs there.
+        assert!(!e.scene.layers[1].other.contains_key("grab_in"));
+        // Drawn in a frame, it grabs in that frame.
+        let mut placed = scene(
+            json!([{"draw": "template", "name": "a", "template": "rig1/rig", "in": "track"}]),
+        );
+        placed.scene.frames.insert(
+            "track".into(),
+            serde_json::from_value(json!({"x": 2.0, "y": 0})).unwrap(),
+        );
+        let e = expand(&placed, &t).unwrap();
+        assert_eq!(e.scene.layers[1].other["grab_in"], json!("track"));
+        // A pointer of a template drawn by name only grabs nothing.
+        let own = scene(json!([{"draw": "template", "name": "a", "template": "rig",
+                                "bind": {"x": 0, "theta": 0}}]));
+        let e = expand(&own, &templates()).unwrap();
         assert!(e.scene.layers.iter().all(|l| l.grab.is_none()));
         // Bound explicitly, a binding wins.
         let v = scene(

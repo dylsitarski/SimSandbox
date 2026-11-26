@@ -342,3 +342,54 @@ fn the_cart_pole_opens_its_picture_drawn_from_a_template() {
         .chunks(4)
         .any(|p| p[0] > 200 && p[1] > 100 && p[1] < 200 && p[2] < 100));
 }
+
+#[test]
+fn a_components_picture_grabs_its_own_pointer_in_its_own_frame() {
+    // ADR 0113: "Two balancing poles" draws the cart-pole's picture twice;
+    // each grabs its own use's pointer (`left/hand`), in the frame it is
+    // drawn in, so the controller sees the pointer as in its own scene.
+    let mut app = SimApp::new(None, None, None, None);
+    let k = EXAMPLES
+        .iter()
+        .position(|e| e.name.starts_with("Two balancing poles"))
+        .unwrap();
+    app.open_example(k);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let scene = &app.views.tiles[0];
+    assert!(
+        scene.state.problem().is_none(),
+        "{:?}",
+        scene.state.problem()
+    );
+    let shown = &app.views.shown_entries()[0];
+    let grabbing: Vec<(&str, &serde_json::Value)> = shown
+        .scene
+        .layers
+        .iter()
+        .filter_map(|l| Some((l.grab.as_deref()?, &l.other["grab_in"])))
+        .collect();
+    assert_eq!(
+        grabbing,
+        [
+            ("left/hand", &serde_json::json!("left_track")),
+            ("right/hand", &serde_json::json!("right_track"))
+        ]
+    );
+    // The pointer reaches the left cart-pole's own input block.
+    app.send_pointer("left/hand", &[0.6, 1.0, 1.0, 0.0]);
+    let live = app.session.as_ref().unwrap();
+    live.sync();
+    let m = live.model();
+    let down = m
+        .params
+        .iter()
+        .find(|r| r.key == "left/hand.down")
+        .map(|r| r.value);
+    assert_eq!(down, Some(1.0));
+    let right = m
+        .params
+        .iter()
+        .find(|r| r.key == "right/hand.down")
+        .map(|r| r.value);
+    assert_eq!(right, Some(0.0));
+}

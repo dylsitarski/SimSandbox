@@ -154,7 +154,7 @@ fn check_reports_each_problem_at_its_path() {
         (layer(json!({"draw": "points", "bind": {"x": 0, "y": 0, "size": "cart.x"}})), "layers[1].bind.size: 'cart.x' is in m; it is in screen points"),
         (layer(json!({"draw": "points", "bind": {"x": 0, "y": 0}, "in": "cart"})), "layers[1].in: no frame 'cart'"),
         (layer(json!({"draw": "points", "bind": {"x": "rb.x", "y": "w.x"}})), "layers[1].bind.y: over the rows of 'w.wheels', but layers[1].bind.x is over the rows of 'rb.bodies'"),
-        (layer(json!({"draw": "points", "bind": {"x": 0, "y": 0}, "fill": 1})), "layers[1].fill: a layer takes draw, in, bind and grab"),
+        (layer(json!({"draw": "points", "bind": {"x": 0, "y": 0}, "fill": 1})), "layers[1].fill: a layer takes draw, in, bind, grab and grab_in"),
         (json!({"unit": "mm", "layers": [{"draw": "points", "bind": {"x": "cart.x", "y": 0}}]}), "layers[0].bind.x: 'cart.x' is in m; the scene's lengths are in mm"),
         (json!({"frames": {"a": {"in": "b"}, "b": {"in": "a"}}}), "frames.a.in: the frames a in b in a form a cycle"),
         (json!({"frames": {"a": {"in": "a"}}}), "frames.a.in: the frames a in a form a cycle"),
@@ -735,6 +735,53 @@ fn grabbing_sends_the_scene_frame_under_view_from_and_in_a_turned_frame() {
     // A box in the scene's own frame, seen from the cart.
     let sent = d.press(d.screen([-1.1, -0.9]));
     assert!(near(&sent[0], "hand", [-1.1, -0.9, 1.0, 0.0]), "{sent:?}");
+}
+
+#[test]
+fn a_layer_grabbing_in_a_frame_sends_the_pointer_in_that_frame() {
+    // ADR 0113: a template drawn in a frame grabs in it (`grab_in`), so its
+    // model's pointer means what it does in its own scene. `pole` stands at
+    // (0.5, 0) turned a quarter: the scene's (0.5, 1) is its (1, 0).
+    let mut d = Driven::new(json!({"extent": extent(),
+    "frames": {
+        "cart": {"x": "cart.x"},
+        "pole": {"in": "cart", "angle": "pole.theta"}
+    },
+    "layers": [
+        {"draw": "discs", "in": "pole", "bind": {"x": 1, "y": 0, "radius": 0.2},
+         "grab": "hand", "grab_in": "pole"},
+        {"draw": "boxes", "bind": {"x": -1, "y": -1, "width": 0.4, "height": 0.4},
+         "grab": "hand", "grab_in": "cart"}
+    ]}));
+    let sent = d.press(d.screen([0.5, 1.0]));
+    assert!(near(&sent[0], "hand", [1.0, 0.0, 1.0, 0.0]), "{sent:?}");
+    let sent = d.frame(vec![egui::Event::PointerMoved(d.screen([0.5, 1.2]))]);
+    assert!(near(&sent[0], "hand", [1.2, 0.0, 1.0, 0.0]), "{sent:?}");
+    let sent = d.release(d.screen([0.5, 1.2]));
+    assert!(near(&sent[0], "hand", [1.2, 0.0, 0.0, -1.0]), "{sent:?}");
+    // In the cart's frame, moved by 0.5 only.
+    let sent = d.press(d.screen([-1.1, -0.9]));
+    assert!(near(&sent[0], "hand", [-1.6, -0.9, 1.0, 0.0]), "{sent:?}");
+}
+
+#[test]
+fn grab_in_names_a_frame_of_one_pose_on_a_grabbing_layer() {
+    let (h, o) = (history(), offer());
+    let a = available(&o, &h);
+    for (layer, says) in [
+        (
+            json!({"draw": "discs", "bind": {"x": 0, "y": 0, "radius": 1}, "grab": "hand", "grab_in": "nope"}),
+            "layers[0].grab_in: no frame 'nope'",
+        ),
+        (
+            json!({"draw": "discs", "bind": {"x": 0, "y": 0, "radius": 1}, "grab_in": "cart"}),
+            "layers[0].grab_in: the layer does not grab",
+        ),
+    ] {
+        let s = settings(json!({"frames": {"cart": {"x": "cart.x"}}, "layers": [layer]}));
+        let e = Scene::check(&s, &a).unwrap_err();
+        assert!(e.contains(says), "{e}");
+    }
 }
 
 #[test]

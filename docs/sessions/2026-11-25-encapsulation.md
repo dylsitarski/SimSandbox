@@ -26,6 +26,7 @@
 - 2026-11-26: views revisited (owner): view types are independent, configured views tied to one model by names, used models' views dropped. [ADR 0113](../decisions/0113-views-bind-to-interfaces.md) drafted (proposed): views declare interfaces (templates) with the same properties as models; no model has to supply a view.
 - 2026-11-26: ADR 0113 step 1 built: `templates.rs` (expansion), the views' written and shown forms, `check`'s templates, Python's `define_template` and `add_view`, the cart-pole's picture as a template (same pixels).
 - 2026-11-26: ADR 0113 step 2 built: `compose::templates_in`, defaults by name through outputs, the cart-pole's outputs, the example "Two balancing poles", templates and pictures on the card and Overview.
+- 2026-11-26: the two balancing poles' grab fixed (owner): a template's pointer binds by name to the use's pointer block; `grab_in` sends the pointer in the frame the template is drawn in.
 
 ## Left open
 
