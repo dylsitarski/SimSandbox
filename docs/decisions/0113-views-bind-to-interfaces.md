@@ -205,4 +205,22 @@ Here `rig1/cartpole` binds `x` and `theta` to `rig1/x` and `rig1/theta`, the out
     - `view_from` and `grab_in` still take only a frame of one pose.
   - **Replication.** A template whose frame binds a quantity over rows is drawn once a row. The cart-pole has the template `body_axes` (inputs `x`, `y`, `angle` of kind `rows`, parameter `length`), which its scene draws over the mechanism's pose rows, one pair of axes a body. The cart-pole's picture changes by those axes, and its run results do not.
   - Tests: a frame in a frame over rows placed once a row (`scene/tests.rs`); the refusal of two tables along a chain; the card listing both templates of each use.
+- **Step 4 (2026-11-26), view files and "Replace with…":**
+  - **View files** (`*.ssbv.json`): `templates::read_view_file` reads one (`format`, `description`, `templates`, `controls.views`, nothing else; each template must read). `templates::apply_views` puts its views in place of a model's or after them, and adds its templates; a template of the same name that differs is refused, and the layout goes when the views are replaced.
+  - **Applied:**
+    - `simsandbox render MODEL_OR_RUN --views FILE` draws the file's views in place of the model's;
+    - `simsandbox check FILE.ssbv.json` lists its templates and views;
+    - the app's More views ▸ "Add views from…" adds them as an edit (`Edit::AddViews`, undone as others);
+    - Python has `Model.add_views(file)` and `Model.render(views=file)`.
+  - **Model hash.** Templates are left out of the model hash with `controls` (`runs::model_hash`), so a run keeps its identity whatever views it is drawn with. A model's hash changes once if it has templates (the cart-pole and the two balancing poles). No run file in the repository recorded one.
+  - **The example view file** `examples/cartpole-sketch.ssbv.json` draws the cart-pole as a stick figure, with the pole's phase portrait.
+  - **"Replace with…".** In the Inspector's scene form, a template layer shows its template and bindings with a picker of the templates its bindings feed (`templates::fitting`: of a scene, every input bound, or bound by name for one a used model offers). Picking one replaces the layer (`templates::replace_layer`, keeping the bindings and parameters the new one takes) as `SceneEdit::Layer`.
+  - **Fixed: the scene form of a scene drawing templates.** It showed and edited the expanded view, which the tile did not save, since it saves the written one. It now edits the view as written (`Tile::written`) and draws each edit expanded. An edit that does not expand or check is kept as a draft, as for other scenes.
+  - Tests: reading, refusing and applying view files and the hash left unchanged (`tests/view_files.rs`); `check` and `render --views` (CLI); `add_views` and `render(views=)` (Python); the app adding the sketch's views and replacing the cart-pole's rig with `stick`, saved as written and drawn.
+- **The order of work is done** (2026-11-26). Left, each by its own decision:
+  - extension of a template;
+  - reference renders;
+  - 3D;
+  - an editor for a template layer's bindings in the scene form (they are shown, and edited in the file or Python);
+  - "Replace with…" for a whole view that is a template.
 

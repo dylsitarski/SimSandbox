@@ -68,7 +68,7 @@ impl SimApp {
     /// tile is still what the draft was made from, else the tile's own.
     pub(super) fn scene_form(&mut self, tile: u64) -> Option<SceneSettings> {
         let t = self.views.tiles.iter().find(|t| t.id == tile)?;
-        let saved = SceneSettings::from_map(&t.state.settings()).unwrap_or_default();
+        let saved = shown_form(t);
         match self.scene_drafts.get(&tile) {
             Some(d) if d.base == saved => Some(d.now.clone()),
             Some(_) => {
@@ -94,12 +94,30 @@ impl SimApp {
         };
         let (m, history) = (live.model(), live.history());
         let available = m.available(&history);
+        let templates = self.views.templates.clone();
         let Some(t) = self.views.tiles.iter_mut().find(|t| t.id == tile) else {
             return;
         };
-        let base = SceneSettings::from_map(&t.state.settings()).unwrap_or_default();
-        match t.state.set_settings(&form.to_map(), &available) {
+        let base = shown_form(t);
+        // A scene drawing templates is edited as written, and drawn
+        // expanded (ADR 0113).
+        let (written, drawn) = match &t.written {
+            Some(w) => {
+                let w = simsandbox_file::ViewEntry {
+                    scene: form.clone(),
+                    ..w.clone()
+                };
+                let drawn = simsandbox_file::templates::expand(&w, &templates).map(|e| e.scene);
+                (Some(w), drawn)
+            }
+            None => (None, Ok(form.clone())),
+        };
+        let checked = drawn.and_then(|d| t.state.set_settings(&d.to_map(), &available));
+        match checked {
             Ok(()) => {
+                if written.is_some() {
+                    t.written = written;
+                }
                 self.scene_drafts.remove(&tile);
             }
             Err(error) => {
@@ -170,8 +188,10 @@ impl SimApp {
             .and_then(|t| t.state.problem())
             .map(str::to_string);
         let mut edits: Vec<SceneEdit> = Vec::new();
+        let templates = self.views.templates.clone();
         let mut form_ui = FormUi {
             tile,
+            templates: &templates,
             error: draft
                 .as_deref()
                 .or(held.as_deref())
@@ -228,6 +248,8 @@ impl SimApp {
 /// draft's error, shown once beside its field.
 struct FormUi<'a, 'e> {
     tile: u64,
+    /// The templates the model can draw (ADR 0113), for "Replace with…".
+    templates: &'a std::collections::BTreeMap<String, serde_json::Value>,
     error: Option<(Option<&'e str>, &'e str)>,
     /// Whether the error was shown beside a field.
     placed: bool,
@@ -237,6 +259,52 @@ struct FormUi<'a, 'e> {
 }
 
 impl FormUi<'_, '_> {
+    /// A template layer (ADR 0113): what it draws and with what, and
+    /// "Replace with…" among the templates its bindings can feed.
+    fn template_layer(&mut self, ui: &mut egui::Ui, k: usize, l: &simsandbox_file::SceneLayer) {
+        let text =
+            |v: Option<&serde_json::Value>| v.and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let name = text(l.other.get("name"));
+        let current = text(l.other.get("template"));
+        ui.indent(("scene-template", self.tile, k), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("{name}: template"));
+                let bound: Vec<String> = l.bind.keys().cloned().collect();
+                let fits =
+                    simsandbox_file::templates::fitting(self.templates, &current, &bound, true);
+                egui::ComboBox::from_id_salt(("scene-template-pick", self.tile, k))
+                    .selected_text(&current)
+                    .show_ui(ui, |ui| {
+                        if fits.is_empty() {
+                            ui.weak("no other template fits these bindings");
+                        }
+                        for f in &fits {
+                            if ui.selectable_label(false, f).clicked() {
+                                match simsandbox_file::templates::replace_layer(
+                                    l,
+                                    f,
+                                    self.templates,
+                                ) {
+                                    Ok(new) => self.edits.push(SceneEdit::Layer(k, Box::new(new))),
+                                    Err(e) => *self.typed = Some(e),
+                                }
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Replace with another template its bindings can feed");
+            });
+            for (input, v) in &l.bind {
+                let shown = match v {
+                    simsandbox_file::SceneValue::Number(n) => n.to_string(),
+                    simsandbox_file::SceneValue::Name(n) => n.clone(),
+                    simsandbox_file::SceneValue::Other(o) => o.to_string(),
+                };
+                ui.weak(format!("{input} = {shown}"));
+            }
+        });
+    }
+
     /// The error beside the field at `path`, in a grid row of its own.
     fn error_at(&mut self, ui: &mut egui::Ui, paths: &[&str]) {
         if let Some((Some(at), e)) = self.error {
@@ -461,6 +529,10 @@ impl FormUi<'_, '_> {
                     self.edits.push(SceneEdit::RemoveLayer(k));
                 }
             });
+            if l.draw == simsandbox_file::templates::TEMPLATE_LAYER {
+                self.template_layer(ui, k, l);
+                continue;
+            }
             let Some(p) = PRIMITIVES.iter().find(|p| p.name == l.draw) else {
                 continue;
             };
@@ -648,4 +720,13 @@ fn frame_picker(
             }
         });
     out
+}
+
+/// A scene tile's form as written: the view the file keeps when it draws
+/// templates (ADR 0113), else the settings it draws.
+fn shown_form(t: &simsandbox_session::views::Tile) -> SceneSettings {
+    match &t.written {
+        Some(w) => w.scene.clone(),
+        None => SceneSettings::from_map(&t.state.settings()).unwrap_or_default(),
+    }
 }

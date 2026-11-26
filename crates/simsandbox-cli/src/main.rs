@@ -118,7 +118,7 @@ Print the model file's JSON Schema, or with `run` the run file's.",
     (
         "render",
         "usage: simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--inputs RUN]
-                         [--width POINTS] [--height POINTS] [--scale S] [--light]
+                         [--views VIEWS.ssbv.json] [--width POINTS] [--height POINTS] [--scale S] [--light]
        simsandbox render FILE --out IMAGE.png --diagram [--inside PATH] [--expand PATHS]
                          [--no-data] [--values] [--width POINTS] [--height POINTS] [--scale S] [--light]
 
@@ -129,6 +129,8 @@ arranges them; or with --diagram draw its block diagram (also for a file that ca
   --t-end SECONDS   run to this time before drawing
   --view N          only the view at this index
   --inputs RUN      replay a run file's recorded events on this model file
+  --views FILE      draw this view file's views (and templates) in place of the model's
+                    (ADR 0113); a run file keeps its identity, as views change no result
   --width, --height the size in points; --scale pixels per point
   --light           the light theme
   --diagram         the block diagram instead of the views
@@ -693,6 +695,27 @@ fn run_file_probes(
 fn check_report(path: &str, agent: bool) -> Result<Value> {
     Ok(if is_run_file(path) {
         runs::check_run(path, &registry())
+    } else if path.ends_with(simsandbox_file::templates::VIEW_FILE_EXTENSION) {
+        // A view file (ADR 0113): its templates and views read; what they
+        // bind is checked where it is applied.
+        match simsandbox_file::templates::read_view_file(&read(path)?) {
+            Ok(v) => {
+                let as_model = simsandbox_file::ModelFile {
+                    templates: v.templates.clone(),
+                    ..Default::default()
+                };
+                serde_json::json!({
+                    "ok": true,
+                    "errors": [],
+                    "warnings": [],
+                    "view_file": true,
+                    "description": v.description,
+                    "templates": describe::templates(&as_model).0,
+                    "views": v.views.len(),
+                })
+            }
+            Err(e) => serde_json::json!({"ok": false, "errors": [{"message": e}], "warnings": []}),
+        }
     } else {
         describe::check_with(&read(path)?, &registry(), agent)
     })
@@ -824,6 +847,7 @@ fn render_file(args: &[String]) -> Result<()> {
             "--no-data",
             "--values",
             "--inputs",
+            "--views",
         ],
     )?;
     let out = flags
@@ -851,6 +875,16 @@ fn render_file(args: &[String]) -> Result<()> {
         ));
     }
     let (text, track) = model_and_track(path, flags.get("--inputs"))?;
+    // Another set of views on the same model or run (ADR 0113 point 8).
+    let text = match flags.get("--views") {
+        None => text,
+        Some(views) => {
+            let read = simsandbox_file::templates::read_view_file(&read(views)?)
+                .map_err(|e| Failure::model(format!("{views}: {e}"), views))?;
+            simsandbox_file::templates::apply_views(&text, &read, true)
+                .map_err(|e| Failure::model(format!("{views}: {e}"), views))?
+        }
+    };
     if flags.has("--diagram") {
         // The diagram is drawn even if the model cannot run.
         let (file, _) = simsandbox_file::ModelFile::from_json(&text)

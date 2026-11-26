@@ -698,6 +698,32 @@ fn explain_prints_the_models_card() {
 }
 
 #[test]
+fn a_view_file_is_checked_and_drawn_in_place_of_the_models_views() {
+    // ADR 0113 step 4.
+    let views = example("cartpole-sketch.ssbv.json");
+    let report = json(&simsandbox(&["check", &views]));
+    assert_eq!(report["ok"], true, "{report}");
+    assert_eq!(report["view_file"], true);
+    assert_eq!(report["views"], 2);
+    assert!(report["templates"]["stick"]["inputs"]["theta"].is_object());
+    let model = example("cartpole.ssbx.json");
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("sketch.png")
+        .to_string_lossy()
+        .into_owned();
+    let r = simsandbox(&[
+        "render", &model, "--views", &views, "--out", &out, "--t-end", "0.1",
+    ]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    assert!(std::fs::metadata(&out).unwrap().len() > 0);
+    // A view file that does not read fails as a model does.
+    let bad = scratch("bad.ssbv.json", r#"{"format": 1, "blocks": []}"#);
+    let r = simsandbox(&["render", &model, "--views", &bad, "--out", &out]);
+    assert_eq!(r.status.code(), Some(1));
+    assert_eq!(simsandbox(&["check", &bad]).status.code(), Some(1));
+}
+
+#[test]
 fn explain_shows_one_level_and_opens_a_part() {
     // ADR 0110: each used model is one part; --part and --depth go in.
     let model = example("platoon.ssbx.json");

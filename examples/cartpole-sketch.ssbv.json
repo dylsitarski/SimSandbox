@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "description": "Another look at the cart-pole (a view file, ADR 0113): a stick figure of cart and pole, and the pole's phase portrait. Apply it to the cart-pole or to a run of it: simsandbox render cartpole.ssbx.json --views cartpole-sketch.ssbv.json --out sketch.png",
+  "templates": {
+    "stick": {
+      "type": "plot.scene",
+      "unit": "m",
+      "description": "A cart as a disc on a line and its pole as a stick.",
+      "inputs": {
+        "x": {"unit": "m", "description": "the cart's position"},
+        "theta": {"unit": "rad", "description": "the pole's angle from upright"}
+      },
+      "params": {"length": {"value": 1.0, "unit": "m"}, "colour": {"value": "purple"}},
+      "frames": {"cart": {"x": "$x", "y": 0.0}, "pole": {"in": "cart", "angle": "$theta"}},
+      "layers": [
+        {"draw": "segments", "in": "pole", "bind": {"x1": 0, "y1": 0, "x2": 0, "y2": "$length", "width": 3.0, "colour": "$colour"}},
+        {"draw": "discs", "in": "cart", "bind": {"x": 0, "y": 0, "radius": 0.08, "colour": "grey"}}
+      ]
+    }
+  },
+  "controls": {
+    "views": [
+      {"type": "plot.scene", "unit": "m", "extent": {"x": [-2.5, 2.5], "y": [-0.5, 1.5]},
+       "layers": [
+         {"draw": "segments", "bind": {"x1": -2.5, "y1": 0, "x2": 2.5, "y2": 0, "colour": "grey", "width": 1.0}},
+         {"draw": "template", "name": "sketch", "template": "stick",
+          "bind": {"x": "cartpole.slider_position", "theta": "cartpole.hinge_angle"}}
+       ]},
+      {"type": "plot.xy", "bind": {"x": "cartpole.hinge_angle", "y": ["cartpole.hinge_rate"]}}
+    ]
+  }
+}

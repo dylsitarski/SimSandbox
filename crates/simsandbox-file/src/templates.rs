@@ -147,6 +147,178 @@ impl Template {
     }
 }
 
+/// A view file's extension (ADR 0113 point 8).
+pub const VIEW_FILE_EXTENSION: &str = ".ssbv.json";
+
+/// A view file (ADR 0113 point 8): templates and views, no model. Its
+/// form is a model file's `templates` and `controls.views` alone.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ViewFile {
+    pub description: Option<String>,
+    pub templates: BTreeMap<String, Value>,
+    pub views: Vec<Value>,
+}
+
+/// Read a view file: `format`, `description`, `templates` and
+/// `controls.views`, nothing else; each template must read.
+pub fn read_view_file(text: &str) -> Result<ViewFile, String> {
+    let v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let o = v.as_object().ok_or("a view file is an object")?;
+    if let Some(k) = o
+        .keys()
+        .find(|k| !["format", "description", "templates", "controls"].contains(&k.as_str()))
+    {
+        return Err(format!(
+            "{k}: a view file holds templates and views only (format, description, templates, controls.views)"
+        ));
+    }
+    if let Some(n) = o.get("format").and_then(Value::as_u64) {
+        if n > u64::from(crate::FORMAT_VERSION) {
+            return Err(format!("format {n}: update SimSandbox to read it"));
+        }
+    }
+    let description = match o.get("description") {
+        None => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => return Err("description: text".into()),
+    };
+    let templates: BTreeMap<String, Value> = match o.get("templates") {
+        None => BTreeMap::new(),
+        Some(t) => serde_json::from_value(t.clone()).map_err(|e| format!("templates: {e}"))?,
+    };
+    for (n, t) in &templates {
+        Template::read(n, t)?;
+    }
+    let views = match o.get("controls") {
+        None => Vec::new(),
+        Some(Value::Object(c)) => {
+            if let Some(k) = c.keys().find(|k| *k != "views") {
+                return Err(format!(
+                    "controls.{k}: a view file's controls hold views only"
+                ));
+            }
+            match c.get("views") {
+                None => Vec::new(),
+                Some(Value::Array(v)) => v.clone(),
+                Some(_) => return Err("controls.views: a list of views".into()),
+            }
+        }
+        Some(_) => return Err("controls: an object".into()),
+    };
+    for (k, view) in views.iter().enumerate() {
+        serde_json::from_value::<ViewEntry>(view.clone())
+            .map_err(|e| format!("controls.views[{k}]: {e}"))?;
+    }
+    Ok(ViewFile {
+        description,
+        templates,
+        views,
+    })
+}
+
+/// A model file's text with a view file applied (ADR 0113 point 8): its
+/// templates added, and its views in place of the model's (`replace`) or
+/// after them. A template of the same name in both must be the same; the
+/// layout, which names views by place, goes when they are replaced.
+pub fn apply_views(model: &str, views: &ViewFile, replace: bool) -> Result<String, String> {
+    let mut m: Value = serde_json::from_str(model).map_err(|e| e.to_string())?;
+    let o = m.as_object_mut().ok_or("a model file is an object")?;
+    let templates = o
+        .entry("templates")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or("templates: an object")?;
+    for (n, t) in &views.templates {
+        match templates.get(n) {
+            Some(mine) if mine != t => {
+                return Err(format!(
+                    "template '{n}' is in the model and in the view file, not the same: rename one"
+                ))
+            }
+            _ => {
+                templates.insert(n.clone(), t.clone());
+            }
+        }
+    }
+    if templates.is_empty() {
+        o.remove("templates");
+    }
+    let controls = o
+        .entry("controls")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or("controls: an object")?;
+    if replace {
+        controls.insert("views".into(), Value::Array(views.views.clone()));
+        controls.remove("layout");
+    } else {
+        let list = controls
+            .entry("views")
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .ok_or("controls.views: a list")?;
+        list.extend(views.views.iter().cloned());
+    }
+    serde_json::to_string_pretty(&m).map_err(|e| e.to_string())
+}
+
+/// The templates (of `templates`, by name) that could stand where
+/// `current` stands, fed by the same bindings (`bound`, its input names):
+/// of a scene for a layer, every input bound or, for one a used model
+/// offers, bound by name; `current` itself left out (ADR 0113 point 7,
+/// "Replace with…").
+pub fn fitting(
+    templates: &BTreeMap<String, Value>,
+    current: &str,
+    bound: &[String],
+    layer: bool,
+) -> Vec<String> {
+    templates
+        .iter()
+        .filter(|(n, _)| n.as_str() != current)
+        .filter_map(|(n, v)| {
+            let t = Template::read(n, v).ok()?;
+            if layer && t.view.type_name != SCENE {
+                return None;
+            }
+            let by_name = n.contains('/');
+            let fed = t
+                .inputs
+                .iter()
+                .all(|(k, i)| bound.contains(k) || by_name || i.kind == "pointer");
+            fed.then(|| n.clone())
+        })
+        .collect()
+}
+
+/// A scene's template layer drawing `template` in place of the one it
+/// draws: its bindings and parameters the new one takes are kept, the
+/// rest dropped.
+pub fn replace_layer(
+    layer: &SceneLayer,
+    template: &str,
+    templates: &BTreeMap<String, Value>,
+) -> Result<SceneLayer, String> {
+    let t = find(templates, template)?;
+    if t.view.type_name != SCENE {
+        return Err(format!(
+            "'{template}' is a {}, not a scene",
+            t.view.type_name
+        ));
+    }
+    let mut out = layer.clone();
+    out.bind.retain(|k, _| t.inputs.contains_key(k));
+    out.other
+        .insert("template".into(), Value::String(template.to_string()));
+    if let Some(Value::Object(p)) = out.other.get_mut("params") {
+        p.retain(|k, _| t.params.contains_key(k));
+        if p.is_empty() {
+            out.other.remove("params");
+        }
+    }
+    Ok(out)
+}
+
 /// Whether a view draws templates: is one, or a scene with a template
 /// layer.
 pub fn uses_templates(v: &ViewEntry) -> bool {

@@ -38,6 +38,9 @@ pub enum SceneEdit {
     /// The `input.pointer` block pressing on the layer sends the pointer
     /// to.
     Grab(usize, Option<String>),
+    /// A whole layer in place of one (a template layer replaced by another
+    /// template, ADR 0113).
+    Layer(usize, Box<simsandbox_file::SceneLayer>),
 }
 
 /// What a required attribute is bound to in a new layer: a small shape at
@@ -201,6 +204,7 @@ pub fn apply(s: &mut SceneSettings, edit: &SceneEdit) -> Result<(), String> {
             }
         }
         SceneEdit::Grab(k, g) => layer(s, *k)?.grab = g.clone(),
+        SceneEdit::Layer(k, new) => *layer(s, *k)? = (**new).clone(),
     }
     Ok(())
 }

@@ -393,3 +393,51 @@ fn a_components_picture_grabs_its_own_pointer_in_its_own_frame() {
         .map(|r| r.value);
     assert_eq!(right, Some(0.0));
 }
+
+#[test]
+fn views_come_from_a_view_file_and_a_template_layer_is_replaced() {
+    // ADR 0113 step 4: "Add views from…" adds a view file's templates and
+    // views; "Replace with…" draws another template its bindings feed, and
+    // the scene is saved as written.
+    let mut app = SimApp::new(None, None, None, None);
+    let k = EXAMPLES
+        .iter()
+        .position(|e| e.name.starts_with("Cart-pole"))
+        .unwrap();
+    app.open_example(k);
+    let sketch = include_str!("../../../../examples/cartpole-sketch.ssbv.json");
+    app.edit_at(
+        Scope::Model,
+        Edit::AddViews {
+            text: sketch.to_string(),
+        },
+    );
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert_eq!(app.views.tiles.len(), 4);
+    assert!(app.views.tiles.iter().all(|t| t.state.problem().is_none()));
+    assert!(saved(&app).templates.contains_key("stick"));
+    // The cart-pole's rig drawn as the sketch's stick instead.
+    let tile = app.views.tiles[0].id;
+    let form = app.scene_form(tile).unwrap();
+    let rig = form.layers[1].clone();
+    assert_eq!(rig.draw, "template");
+    let new =
+        simsandbox_file::templates::replace_layer(&rig, "stick", &app.views.templates).unwrap();
+    app.edit_scene(tile, &SceneEdit::Layer(1, Box::new(new)));
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let t = app.views.tiles.iter().find(|t| t.id == tile).unwrap();
+    assert!(t.state.problem().is_none(), "{:?}", t.state.problem());
+    let written = t.written.as_ref().unwrap();
+    assert_eq!(written.scene.layers[1].other["template"], "stick");
+    let file = saved(&app);
+    assert_eq!(
+        file.controls.views[0].scene.layers[1].other["template"],
+        "stick"
+    );
+    // Drawn: the stick is purple.
+    let image = picture(&mut app, tile);
+    assert!(image
+        .rgba
+        .chunks(4)
+        .any(|p| p[0] > 120 && p[2] > 120 && p[1] < 110));
+}

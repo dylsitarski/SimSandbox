@@ -1090,6 +1090,9 @@ pub enum Edit {
     /// A value inside a use of a model defined in the file, changed in
     /// that model: for every use (ADR 0110 point 6).
     SetInside { key: String, value: f64 },
+    /// A view file's templates and views added to the model's (ADR 0113
+    /// point 8): `text` is the view file.
+    AddViews { text: String },
     /// Rename a model defined in the file (ADR 0068): its uses follow.
     RenameModel { from: String, to: String },
     /// A typed-equation block's equations, one per line (ADR 0017): the
@@ -1282,6 +1285,7 @@ fn apply_in_level(
         Edit::OfferAsOutput { signal } => return offer_as_output(file, signal),
         Edit::ExposeInside { key } => return expose_inside(file, registry, key),
         Edit::SetInside { key, value } => return set_inside(file, key, *value),
+        Edit::AddViews { text } => return add_views(file, text),
         Edit::HideParam { block, param } => return hide_param(file, block, param),
         Edit::ExposeInput { input } => return expose_input(file, registry, input),
         Edit::HideInput { input } => {
@@ -2049,6 +2053,7 @@ fn edit_level(
         | Edit::OfferAsOutput { .. }
         | Edit::ExposeInside { .. }
         | Edit::SetInside { .. }
+        | Edit::AddViews { .. }
         | Edit::HideParam { .. }
         | Edit::ExposeInput { .. }
         | Edit::HideInput { .. }
@@ -2680,6 +2685,21 @@ fn expose_inside(file: &mut ModelFile, registry: &Registry, key: &str) -> Result
     *file = changed;
     Ok(format!(
         "{model} declares {rest} as its parameter '{name}': {u} sets it as {u}.{name}, as each use does"
+    ))
+}
+
+/// [`Edit::AddViews`].
+fn add_views(file: &mut ModelFile, text: &str) -> Result<String, String> {
+    let views = simsandbox_file::templates::read_view_file(text)?;
+    let folder = file.folder.clone();
+    let merged = simsandbox_file::templates::apply_views(&file.to_json(), &views, false)?;
+    let (mut changed, _) = ModelFile::from_json(&merged).map_err(|e| e.to_string())?;
+    changed.folder = folder;
+    *file = changed;
+    Ok(format!(
+        "Added {} views and {} templates",
+        views.views.len(),
+        views.templates.len()
     ))
 }
 

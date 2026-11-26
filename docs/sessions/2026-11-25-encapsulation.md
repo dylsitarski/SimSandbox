@@ -28,10 +28,11 @@
 - 2026-11-26: ADR 0113 step 2 built: `compose::templates_in`, defaults by name through outputs, the cart-pole's outputs, the example "Two balancing poles", templates and pictures on the card and Overview.
 - 2026-11-26: the two balancing poles' grab fixed (owner): a template's pointer binds by name to the use's pointer block; `grab_in` sends the pointer in the frame the template is drawn in.
 - 2026-11-26: ADR 0113 step 3 built: frames over rows as parents, `body_axes` drawn once a body, the cart-pole's offered `tip` marked in "Two balancing poles".
+- 2026-11-26: ADR 0113 step 4 built: view files (`render --views`, `check`, "Add views from…", Python), templates outside the model hash, "Replace with…" for template layers; the scene form of a templated scene now edits it as written (it edited the expanded view, unsaved).
 
 ## Left open
 
-- ADR 0113 step 4 (view files, "Replace with…").
+- Next by ADR 0108: one selection across the Stage, Inspector and canvas.
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session

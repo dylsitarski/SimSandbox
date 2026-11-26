@@ -502,6 +502,17 @@ class Model:
         self._marked()
         return self
 
+    def add_views(self, file: "str | os.PathLike[str]") -> "Model":
+        """Add a view file's templates and views (``*.ssbv.json``, ADR
+        0113) to the model's, after its own views. :meth:`render` with
+        ``views=`` draws a view file in place of the model's views without
+        changing the model."""
+        with open(file, encoding="utf-8") as f:
+            text = _native.apply_views(self.to_json(), f.read(), False)
+        self.data = json.loads(text)
+        self._marked()
+        return self
+
     def block(self, name: str) -> dict[str, Any]:
         for b in self.data.get("blocks", []):
             if b["name"] == name:
@@ -1051,6 +1062,7 @@ class Model:
         values: bool = False,
         expand: "list[str] | None" = None,
         inputs: "Iterable[tuple[float, str, float]] | Run | None" = None,
+        views: "str | os.PathLike[str] | None" = None,
     ) -> bytes:
         """Run to ``t_end`` and draw the model's views (``controls.views``,
         or ``view`` alone) as a PNG, as the app shows them; with
@@ -1063,7 +1075,10 @@ class Model:
         A diagram shows the values of the nodes the file opens
         (``controls.open``), or of every node with ``values``. ``inputs`` are
         changes made during the run, as for :meth:`run`: ``(t, key, value)``
-        tuples or a :class:`Run` (the CLI's ``--inputs``). Writes it to ``path`` if given; returns the PNG bytes."""
+        tuples or a :class:`Run` (the CLI's ``--inputs``). ``views`` names a
+        view file (``*.ssbv.json``, ADR 0113) whose views are drawn in place
+        of the model's (the CLI's ``--views``); the model is left as it is.
+        Writes it to ``path`` if given; returns the PNG bytes."""
         if inside is not None and not diagram:
             raise ValueError("inside draws a used model's diagram: add diagram=True")
         if expand and not diagram:
@@ -1090,6 +1105,11 @@ class Model:
             warnings: list[str] = []
         else:
             model, track = self._with_inputs(inputs)
+            if views is not None:
+                with open(views, encoding="utf-8") as f:
+                    shown = _native.apply_views(model.to_json(), f.read(), True)
+                model = Model.from_json(shown)
+                model.folder = self.folder
             with _in_folder(self.folder):
                 image, warnings = _native.render(
                     model.to_json(), t_end, view, float(width), float(height), float(scale), light, track

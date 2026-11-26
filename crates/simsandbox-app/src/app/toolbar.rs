@@ -422,6 +422,7 @@ impl SimApp {
         let history = live.history();
         let available = m.available(&history);
         let views = &mut self.views;
+        let mut from_file = false;
         ui.menu_button("More views…", |ui| {
             let presets: Vec<_> = views
                 .registry
@@ -447,9 +448,28 @@ impl SimApp {
                     ui.close();
                 }
             }
+            ui.separator();
+            if ui
+                .button("Add views from…")
+                .on_hover_text("A view file's templates and views (*.ssbv.json, ADR 0113), added to this model's")
+                .clicked()
+            {
+                from_file = true;
+                ui.close();
+            }
         })
         .response
         .on_hover_text("Add another view of this model");
+        drop(history);
+        if from_file {
+            self.add_views_dialog();
+            return;
+        }
+        let Some(live) = &self.session else {
+            return;
+        };
+        let m = live.model();
+        let history = live.history();
         if ui
             .button("Data…")
             .on_hover_text(
@@ -462,6 +482,24 @@ impl SimApp {
         drop(history);
         self.memory_menu(ui);
         native_status(ui);
+    }
+
+    /// "Add views from…": a view file chosen in the system file dialog,
+    /// added as an edit (undone as any other).
+    fn add_views_dialog(&mut self) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Add views from a view file")
+            .add_filter("SimSandbox views", &["json"]);
+        if let Some(dir) = self.path.as_deref().and_then(Path::parent) {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_file() else {
+            return;
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => self.edit_at(Scope::Model, Edit::AddViews { text }),
+            Err(e) => self.error = Some(format!("{}: {e}", path.display())),
+        }
     }
 
     /// "Memory…" (ADR 0062 step 5): what the recordings hold, part by

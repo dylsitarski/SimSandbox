@@ -164,8 +164,8 @@ pub fn version_note(made_with: &str) -> Option<String> {
     ))
 }
 
-/// A SHA-256 of a model as saved, leaving out `controls` (they never
-/// change results, ADR 0012) and the run settings a run file records
+/// A SHA-256 of a model as saved, leaving out `controls` and `templates`
+/// (they never change results, ADR 0012, ADR 0113) and the run settings a run file records
 /// itself (seed, `dt`, `t_end`, the schedule), so replaying a run under its
 /// own settings does not make it look stale.
 pub fn model_hash(model: &ModelFile) -> String {
@@ -201,6 +201,8 @@ pub fn model_hash_with(model: &ModelFile, data: &BTreeMap<String, String>) -> St
         .collect();
     m.controls = Default::default();
     m.controls.probes = probes;
+    // Templates are pictures (ADR 0113): they change no result.
+    m.templates.clear();
     m.run.seed = None;
     m.run.dt = crate::RunSettings::default().dt;
     m.run.t_end = None;

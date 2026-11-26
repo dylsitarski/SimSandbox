@@ -977,3 +977,18 @@ def test_a_template_draws_as_the_view_it_stands_for():
     with pytest.raises(ValueError):
         m.add_view()
 
+
+def test_a_view_file_adds_views_or_draws_in_place_of_the_models(tmp_path):
+    # ADR 0113 step 4: a view file's templates and views, added to a model
+    # or drawn in place of its views; the model is left as it is.
+    import pathlib
+
+    sketch = pathlib.Path(__file__).resolve().parents[2] / "examples" / "cartpole-sketch.ssbv.json"
+    m = ss.Model.example("Cart-pole")
+    before = m.to_json()
+    png = m.render(t_end=0.1, views=sketch)
+    assert png[:4] == b"\x89PNG" and m.to_json() == before
+    m.add_views(sketch)
+    assert "stick" in m.data["templates"] and len(m.data["controls"]["views"]) == 4
+    assert m.check()["warnings"] == []
+

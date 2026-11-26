@@ -517,6 +517,16 @@ fn offer_output(
         .map_err(ModelError::new_err)
 }
 
+/// A model file with a view file applied (ADR 0113 point 8): its
+/// templates added, its views after the model's or, with `replace`, in
+/// their place.
+#[pyfunction]
+#[pyo3(signature = (text, views, replace = false))]
+fn apply_views(text: &str, views: &str, replace: bool) -> PyResult<String> {
+    let v = simsandbox_file::templates::read_view_file(views).map_err(ModelError::new_err)?;
+    simsandbox_file::templates::apply_views(text, &v, replace).map_err(ModelError::new_err)
+}
+
 /// Copy blocks or uses beside themselves, with their values and the wires
 /// among them, as "Duplicate" on the canvas does (ADR 0069). Returns the
 /// changed model file and a note.
@@ -915,6 +925,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(scene_problem, m)?)?;
     m.add_function(wrap_pyfunction!(expose, m)?)?;
     m.add_function(wrap_pyfunction!(offer_output, m)?)?;
+    m.add_function(wrap_pyfunction!(apply_views, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
