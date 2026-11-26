@@ -15,6 +15,8 @@
 
 ## Decided
 
+- Owner (2026-11-26): [ADR 0113](../decisions/0113-views-bind-to-interfaces.md) accepted, with `$` names, the word "template" and `.ssbv.json` for view files.
+
 - Owner (2026-11-25): [ADR 0110](../decisions/0110-encapsulated-models.md) accepted (Q65 answered: structure first). Asked whether to close reading too: observing stays open, reading that feeds a result goes through outputs.
 - Owner (2026-11-25): [ADR 0111](../decisions/0111-a-declarative-modelling-language.md), SimSandbox is a declarative modelling language, not a library; written into the vision and the architecture overview; the language reference in Next up.
 
@@ -25,7 +27,7 @@
 
 ## Left open
 
-- ADR 0113's acceptance and its open choices (`$`, the word "template", the view file's extension); then its step 1.
+- ADR 0113 step 1 (templates in the model file; the cart-pole's picture as one).
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session

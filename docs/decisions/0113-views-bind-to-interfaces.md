@@ -1,6 +1,6 @@
 # 0113 — Views bind to interfaces: templates, component pictures and view files
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-26)
 - **Date:** 2026-11-26
 - **Replaces:** the "default pictures" step of [ADR 0108](0108-interface-synchronized-projections.md) point 5
 - **Builds on:**
@@ -93,10 +93,10 @@ ADR 0110 made a model's interface its contract. Views can follow the same rule: 
     - **reference renders**: a headless image a template ships, compared within a tolerance, like a verification case;
     - **3D**: templates carry over unchanged in form, with 3D poses and a camera as a frame (ADR 0093's after-the-gate list).
 
-**Not decided here** (for the owner, before step 1 is built):
-- the `$` prefix for a template's own names;
-- the word "template";
-- the view file's extension (`.ssbv.json` is suggested).
+**Names** (owner, 2026-11-26):
+- a template's own names are written with a `$` (`"$x"`);
+- the word is "template";
+- a view file's extension is `.ssbv.json`.
 
 **Example.** The cart-pole's picture as a template of its model, and a model using two cart-poles that adds an arrow at each pole's tip:
 
