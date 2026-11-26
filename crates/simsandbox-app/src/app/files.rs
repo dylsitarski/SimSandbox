@@ -294,11 +294,13 @@ impl SimApp {
                 };
                 let w = {
                     let h = s.signals();
+                    self.views.templates.clone_from(&s.file.templates);
                     self.views.open(&s.available(&h), &s.file.controls.views)
                 };
                 s.warnings.extend(w);
                 // The history records what the views read (ADR 0063).
-                self.view_reads = simsandbox_session::session::view_reads(&self.views.entries());
+                self.view_reads =
+                    simsandbox_session::session::view_reads(&self.views.shown_entries());
                 s.set_view_reads(self.view_reads.clone());
                 let tiles = self.tile_ids();
                 let opened = self.views.opened.clone();

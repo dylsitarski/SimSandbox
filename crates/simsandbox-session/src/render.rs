@@ -63,6 +63,7 @@ pub fn render(
     let h = s.signals();
     let available = s.available(&h);
     let mut views = Views::new(registry);
+    views.templates.clone_from(&s.file.templates);
     let warnings = views.open(&available, &s.file.controls.views);
     if let Some(k) = o.view {
         let n = views.tiles.len();
@@ -212,7 +213,13 @@ fn scene_problems(file: &simsandbox_file::ModelFile, registry: &Registry) -> Vec
         .enumerate()
         .filter(|(_, v)| v.type_name == scene)
         .filter_map(|(k, v)| {
-            let e = simsandbox_views::scene::Scene::check(&v.scene.to_map(), &available).err()?;
+            // As it draws, its templates put in place (ADR 0113).
+            let shown = match simsandbox_file::templates::expand(v, &file.templates) {
+                Ok(shown) => shown,
+                Err(e) => return Some((k, e)),
+            };
+            let e =
+                simsandbox_views::scene::Scene::check(&shown.scene.to_map(), &available).err()?;
             Some((k, e))
         })
         .collect()

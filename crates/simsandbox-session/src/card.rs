@@ -407,6 +407,10 @@ pub fn card_at(
             .iter()
             .enumerate()
             .map(|(k, v)| {
+                // As it draws, its templates put in place (ADR 0113).
+                let shown = simsandbox_file::templates::expand(v, &s.file.templates)
+                    .unwrap_or_else(|_| v.clone());
+                let v = &shown;
                 let mut shows: Vec<String> = v.bind.values().flat_map(|b| b.signals()).collect();
                 for f in v.scene.frames.values() {
                     for x in [&f.x, &f.y, &f.angle].into_iter().flatten() {

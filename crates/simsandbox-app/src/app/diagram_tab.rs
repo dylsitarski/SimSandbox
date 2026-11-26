@@ -236,6 +236,7 @@ impl SimApp {
         let history = live.history();
         let now = live.model();
         let available = now.available(&history);
+        self.views.templates.clone_from(&now.file.templates);
         for w in self.views.set_entries(&views, &available) {
             self.log.warn(w);
         }

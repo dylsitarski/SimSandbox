@@ -47,6 +47,7 @@ pub mod runs;
 pub mod sampling;
 pub mod schedule;
 pub mod subsystems;
+pub mod templates;
 pub use subsystems::{
     Declared, Derived, InputPort, OutputPort, ParamDecl, ParamPlan, ParamValue, Subsystem,
 };
@@ -133,6 +134,11 @@ pub struct ModelFile {
     /// each written like a model file, `format` optional.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub models: BTreeMap<String, Value>,
+    /// Views with an interface (ADR 0113), by name: each a view that
+    /// declares `inputs`, `params` and, for a scene, frames it `offers`.
+    /// Read by [`templates`].
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub templates: BTreeMap<String, Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<BlockEntry>,
     /// The outputs it offers to models that use it (ADR 0066 step 4b), by
@@ -1475,11 +1481,19 @@ fn cut_filter_from_selection(name: &str, grid: &str, selection: &Value) -> Optio
 /// One view: a registered view type, slot bindings and style values
 /// (ADR 0015). The file checks that bindings name real signals; the app
 /// checks types, slots and style names against its view registry.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewEntry {
-    /// E.g. `plot.xy`, `plot.3d`.
-    #[serde(rename = "type")]
+    /// E.g. `plot.xy`, `plot.3d`; empty for a view that is a template's
+    /// (`template`).
+    #[serde(rename = "type", default, skip_serializing_if = "String::is_empty")]
     pub type_name: String,
+    /// A template this view is (ADR 0113): its `bind` then binds the
+    /// template's inputs, and `params` sets its parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    /// A template's parameters set for this view, by name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, Value>,
     /// Slot name to signal: `"t"`, `"block.port"` (scalar) or
     /// `"block.port[i]"`; a list for slots that take several.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1791,12 +1805,8 @@ impl ViewControl {
         ViewEntry {
             type_name: type_name.into(),
             bind,
-            style: BTreeMap::new(),
             camera: self.camera,
-            selection: None,
-            canvas: None,
-            probe: None,
-            scene: SceneSettings::default(),
+            ..Default::default()
         }
     }
 
@@ -2413,6 +2423,8 @@ struct RawFile {
     #[serde(default)]
     models: BTreeMap<String, Value>,
     #[serde(default)]
+    templates: BTreeMap<String, Value>,
+    #[serde(default)]
     blocks: Vec<BlockEntry>,
     #[serde(default)]
     inputs: Vec<InputPort>,
@@ -2440,6 +2452,7 @@ impl ModelFile {
             params: BTreeMap::new(),
             subsystems: BTreeMap::new(),
             models: BTreeMap::new(),
+            templates: BTreeMap::new(),
             blocks: Vec::new(),
             inputs: Vec::new(),
             outputs: Vec::new(),
@@ -2629,6 +2642,7 @@ impl ModelFile {
                 params: raw.params,
                 subsystems: raw.subsystems,
                 models: raw.models,
+                templates: raw.templates,
                 blocks: raw.blocks,
                 inputs: raw.inputs,
                 outputs: raw.outputs,

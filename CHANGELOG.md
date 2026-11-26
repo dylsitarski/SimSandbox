@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- Templates (ADR 0113): a model file may define `templates`, views with an interface (`inputs`, `params`, frames a scene `offers`) that name these with a `$` and bind no signal of their own. A view may be a template (`{"template": …, "bind": …}`), and a scene may draw one as a layer in a frame (`{"draw": "template", "name": …, "template": …, "bind": …}`). `check` lists them and warns about a use that does not fit. Python: `Model.define_template`, `Model.add_view`. The cart-pole example's picture is now a template its scene draws, with the same pixels.
 - The Inspector tells a block by intent: what it does (its purpose or summary, its method and labels, what it is solved with), then its key parameters (pinned, else those its type suggests), then the rest grouped by role (property, geometry, drive, tuning, numerics), starting values last. Forces and loads at 0 that nothing drives are counted, not listed.
 - In the Inspector, values inside a used model (`car.c` of each follower) are read-only (ADR 0110): right-click one to expose it as a parameter of its model, which each use then sets, or to change it in the model for every use. Pins and scheduled changes that set it by path follow it to its new name. The Overview's "Reaching inside" list has **Expose** for those too.
 - The model card marks a study's points, the run's schedule and pinned controls that set a value inside a used model by path (ADR 0112): allowed, listed under "Reaching inside".

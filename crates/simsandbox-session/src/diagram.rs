@@ -3928,14 +3928,16 @@ mod tests {
         assert!(wired(&f, "cartpole.rail_position", "control.x"));
         assert!(wired(&f, "control.fx", "cartpole.arm_fx"));
         assert!(f.controls.params.contains_key("cartpole.arm_mass"));
+        // The scene's template layer binds the cart-pole's picture
+        // (ADR 0113) to the renamed joint.
         let scene = &f.controls.views[0].scene;
         assert_eq!(
-            scene.frames["cart"].x,
-            Some(SceneValue::Name("cartpole.rail_position".into()))
+            scene.layers[1].bind["x"],
+            SceneValue::Name("cartpole.rail_position".into())
         );
         // The pose rows keep their names: they belong to no body.
         assert_eq!(
-            scene.layers[4].bind["x"],
+            scene.layers[3].bind["x"],
             SceneValue::Name("cartpole.x".into())
         );
         crate::Session::load("t", &f.to_json(), &r).unwrap();

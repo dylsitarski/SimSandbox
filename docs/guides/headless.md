@@ -274,6 +274,19 @@ m.check()["warnings"]                    # a layer that does not fit, at its pat
 m.render("scene.png", t_end=1.0, view=0)
 ```
 
+**Templates** ([ADR 0113](../decisions/0113-views-bind-to-interfaces.md)): a picture written once with an interface, and drawn wherever it is bound. A template is a view (here a scene) under the file's `templates`. It declares `inputs` and `params`, which it names with a `$`, and binds no signal of its own. A scene draws it as a layer, in a frame, binding its inputs. The cart-pole example draws its cart and pole this way:
+
+```json
+"templates": {"cartpole": {"type": "plot.scene", "unit": "m",
+  "inputs": {"x": {"unit": "m"}, "theta": {"unit": "rad"}, "grab": {"kind": "pointer"}},
+  "params": {"cart_colour": {"value": "blue"}, "pole_colour": {"value": "orange"}},
+  "frames": {"cart": {"x": "$x", "y": 0.0}, "pole": {"in": "cart", "angle": "$theta"}},
+  "layers": [{"draw": "boxes", "in": "cart", "bind": {"x": 0, "y": 0, "width": 0.4, "height": 0.2, "colour": "$cart_colour"}},
+             {"draw": "boxes", "in": "pole", "grab": "$grab", "bind": {"x": 0, "y": 0.5, "width": 0.05, "height": 1.0, "colour": "$pole_colour"}}]}}
+```
+
+and in its scene's `layers`: `{"draw": "template", "name": "rig", "template": "cartpole", "bind": {"x": "cartpole.slider_position", "theta": "cartpole.hinge_angle", "grab": "hand"}}`. Its frames are named `rig/cart` and `rig/pole`; a parent may draw only in frames a template `offers`. A whole view can be a template too: `{"template": "phase", "bind": {"a": "osc.x", "b": "osc.v"}}`. `check` lists the file's `templates` and warns, at its path, about a use that does not fit (an input not bound, a unit, a frame not offered). Python: `m.define_template(name, view, inputs=, params=, offers=)`, `m.add_view(template=, bind=, params=)`, and template layers in `m.add_scene`.
+
 On the diagram's data layer a scene is a view node with an input per bound signal and per grab, named by the path `check` uses (`frames.cart.x`, `layers[1].grab`), so `render --diagram` shows what it reads and which pointer it sends to; a parameter binding has no wire and is named beside its input (`layers[1].bind.x2 · bob.L`). Renaming a block renames it in the scene's bindings (parameters too), poses and grabs.
 
 ## Recorder

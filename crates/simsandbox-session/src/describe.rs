@@ -373,8 +373,12 @@ pub fn check(text: &str, r: &Registry) -> Value {
             {
                 let h = s.signals();
                 let mut views = crate::views::Views::new(crate::examples::view_registry());
+                views.templates.clone_from(&s.file.templates);
                 warnings.extend(views.open(&s.available(&h), &s.file.controls.views));
             }
+            // Templates that do not read, used or not (ADR 0113).
+            let (templates, problems) = templates(&s.file);
+            warnings.extend(problems);
             json!({
                 "ok": true,
                 "errors": [],
@@ -409,10 +413,38 @@ pub fn check(text: &str, r: &Registry) -> Value {
                 // How each block made from equations runs (ADR 0084, 0089).
                 "code": code(s.sim_model(), &s.ids, |n| n.to_string()),
                 "filters": s.filters().iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
-                "views": s.file.controls.views.iter().map(|v| v.type_name.clone()).collect::<Vec<_>>(),
+                "views": s.file.controls.views.iter().map(|v| v.template.as_ref().map_or_else(|| v.type_name.clone(), |t| format!("template {t}"))).collect::<Vec<_>>(),
+                // Views with an interface (ADR 0113): what each takes.
+                "templates": templates,
             })
         }
     }
+}
+
+/// A file's templates (ADR 0113), as `check` lists them: each one's view
+/// type, inputs, parameters and offered frames; and the problems of those
+/// that do not read.
+pub fn templates(file: &simsandbox_file::ModelFile) -> (Value, Vec<String>) {
+    let mut out = serde_json::Map::new();
+    let mut problems = Vec::new();
+    for (name, written) in &file.templates {
+        match simsandbox_file::templates::Template::read(name, written) {
+            Ok(t) => {
+                out.insert(
+                    name.clone(),
+                    json!({
+                        "type": t.view.type_name,
+                        "description": t.description,
+                        "inputs": t.inputs.iter().map(|(n, i)| (n.clone(), json!({"unit": i.unit, "kind": i.kind, "description": i.description}))).collect::<serde_json::Map<_, _>>(),
+                        "params": t.params.iter().map(|(n, p)| (n.clone(), json!({"value": p.value, "unit": p.unit, "description": p.description}))).collect::<serde_json::Map<_, _>>(),
+                        "offers": t.offers,
+                    }),
+                );
+            }
+            Err(e) => problems.push(e),
+        }
+    }
+    (Value::Object(out), problems)
 }
 
 /// How each block whose code SimSandbox makes from equations runs, by

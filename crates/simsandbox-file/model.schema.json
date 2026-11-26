@@ -62,6 +62,82 @@
       },
       "description": "Models defined in this file, used from 'blocks' by name with 'model' (ADR 0068), any number of times. A use finds a definition in the model it is written in, then in the models holding it."
     },
+    "templates": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "The view type, e.g. 'plot.scene', 'plot.xy'."
+          },
+          "description": {
+            "type": "string"
+          },
+          "inputs": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unit": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "scalar",
+                    "rows",
+                    "pointer"
+                  ],
+                  "description": "A signal or a number; a quantity over a table's rows; an input.pointer block, for a layer's grab."
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Signals it needs, named inside with a $ ('$x'); each use binds every one."
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": [
+                "value"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                "unit": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Constants with a default (a colour, a size), named inside with a $; a use may set them."
+          },
+          "offers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A scene's frames a parent scene may draw in, as LAYER/FRAME."
+          }
+        },
+        "description": "A view with an interface: written as a view, its own names with a $."
+      },
+      "description": "Views with an interface (ADR 0113), by name: used as a whole view ('template' in controls.views) or as a scene's layer ({'draw': 'template', 'name', 'template', 'in', 'bind', 'params'}). A template computes nothing; it binds no signal of its own."
+    },
     "blocks": {
       "type": "array",
       "items": {
@@ -784,9 +860,6 @@
           "description": "Views the model opens with; the app shows the first (ADR 0015).",
           "items": {
             "type": "object",
-            "required": [
-              "type"
-            ],
             "properties": {
               "type": {
                 "type": "string",
@@ -917,9 +990,10 @@
                         "points",
                         "segments",
                         "boxes",
-                        "discs"
+                        "discs",
+                        "template"
                       ],
-                      "description": "The primitive."
+                      "description": "The primitive, or 'template': a template of the file drawn in this layer's frame (ADR 0113)."
                     },
                     "in": {
                       "type": "string",
@@ -935,6 +1009,24 @@
                     "grab": {
                       "type": "string",
                       "description": "The input.pointer block that pressing on one of the layer's instances sends the pointer to (ADR 0093 point 6): x and y in the scene's own frame, down, and picked (the instance's row id, 0 for a layer of one instance; -1 once let go), until released. The topmost grabbing layer wins. The app records what is sent as input; a run file replays it."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "A template layer's name: its frames are named under it (NAME/frame), and a parent draws in those it offers."
+                    },
+                    "template": {
+                      "type": "string",
+                      "description": "The template a 'template' layer draws (ADR 0113); its 'bind' binds the template's inputs."
+                    },
+                    "params": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": [
+                          "number",
+                          "string"
+                        ]
+                      },
+                      "description": "A template layer's parameters, by name."
                     }
                   }
                 }
@@ -942,8 +1034,35 @@
               "view_from": {
                 "type": "string",
                 "description": "plot.scene: draw the picture in this frame's coordinates (it stands still)."
+              },
+              "template": {
+                "type": "string",
+                "description": "A template of this file (`templates`) this view is (ADR 0113): its 'bind' then binds the template's inputs, one signal each."
+              },
+              "params": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": [
+                    "number",
+                    "string"
+                  ]
+                },
+                "description": "A template's parameters set for this view, by name (ADR 0113)."
               }
-            }
+            },
+            "description": "A view: a registered view 'type', or a 'template' of the file (ADR 0113) whose inputs 'bind' binds and whose parameters 'params' sets.",
+            "anyOf": [
+              {
+                "required": [
+                  "type"
+                ]
+              },
+              {
+                "required": [
+                  "template"
+                ]
+              }
+            ]
           }
         },
         "view": {

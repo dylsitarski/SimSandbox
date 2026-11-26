@@ -947,3 +947,33 @@ def test_agent_mode_marks_what_it_makes_and_check_asks_for_notes():
     card = m.explain(format="json")
     assert card["agent"] and card["parts"][0]["notes"]["reasons"] == {"k": "a half-life near 0.35 s"}
     assert not ss.is_agent_mode()
+
+
+def test_a_template_draws_as_the_view_it_stands_for():
+    # ADR 0113: the cart-pole's picture is a template its scene draws.
+    m = ss.Model.example("Cart-pole")
+    report = m.check()
+    assert report["ok"] and report["warnings"] == [], report["warnings"]
+    rig = report["templates"]["cartpole"]
+    assert rig["type"] == "plot.scene" and set(rig["inputs"]) == {"x", "theta", "grab"}
+    # A second rig in the same scene, beside the first, set by its parameters.
+    m.add_scene(
+        [
+            {"draw": "template", "name": "rig", "template": "cartpole",
+             "bind": {"x": "cartpole.slider_position", "theta": "cartpole.hinge_angle", "grab": "hand"},
+             "params": {"pole_colour": "green"}},
+        ]
+    )
+    assert m.check()["warnings"] == []
+    with pytest.raises(ss.ModelError, match="theta"):
+        m.add_scene([{"draw": "template", "name": "r", "template": "cartpole",
+                      "bind": {"x": "cartpole.slider_position", "grab": "hand"}}])
+    # A plot as a template, used as a whole view.
+    m.define_template("phase", {"type": "plot.xy", "bind": {"x": "$a", "y": ["$b"]}},
+                      inputs={"a": {"unit": "rad"}, "b": {}})
+    m.add_view(template="phase", bind={"a": "cartpole.hinge_angle", "b": "control.F"})
+    report = m.check()
+    assert report["warnings"] == [] and report["views"][-1] == "template phase"
+    with pytest.raises(ValueError):
+        m.add_view()
+

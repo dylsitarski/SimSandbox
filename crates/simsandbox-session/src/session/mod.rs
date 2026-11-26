@@ -264,7 +264,10 @@ impl Session {
                 .push(format!("controls.filters.{p}; ignored"));
         }
         // The parameters the file's scenes bind are recorded (ADR 0102).
-        let reads = recording::view_reads(&session.file.controls.views);
+        let reads = recording::view_reads(&simsandbox_file::templates::expand_all(
+            &session.file.controls.views,
+            &session.file.templates,
+        ));
         session.catalogue.set_param_reads(&reads);
         // No probes yet: they are loaded next, and the filters that read
         // them with them.

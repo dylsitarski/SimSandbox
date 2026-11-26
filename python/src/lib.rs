@@ -789,6 +789,29 @@ fn scene_problem(text: &str, scene: &str) -> Option<String> {
     if view.get("type").and_then(|t| t.as_str()) != Some(SCENE) {
         return Some(format!("a scene's type is '{SCENE}'"));
     }
+    // Its template layers put in place, as it draws (ADR 0113).
+    let expanded;
+    let view = match serde_json::from_value::<simsandbox_file::ViewEntry>(serde_json::Value::Object(
+        view.clone(),
+    )) {
+        Ok(entry) if simsandbox_file::templates::uses_templates(&entry) => {
+            let templates: std::collections::BTreeMap<String, serde_json::Value> = data
+                .get("templates")
+                .and_then(|t| serde_json::from_value(t.clone()).ok())
+                .unwrap_or_default();
+            match simsandbox_file::templates::expand(&entry, &templates)
+                .and_then(|e| serde_json::to_value(e).map_err(|e| e.to_string()))
+            {
+                Ok(serde_json::Value::Object(o)) => {
+                    expanded = o;
+                    &expanded
+                }
+                Ok(_) => return Some("a scene is an object of its settings".into()),
+                Err(e) => return Some(e),
+            }
+        }
+        _ => view,
+    };
     // Its settings: all but what every view has.
     let settings: simsandbox_views::view::Settings = view
         .iter()

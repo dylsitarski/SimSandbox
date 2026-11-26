@@ -450,6 +450,58 @@ class Model:
                 f"(ADR 0110); {fix}, then read {use}/<name>"
             )
 
+    def define_template(
+        self,
+        name: str,
+        view: dict[str, Any],
+        inputs: dict[str, dict[str, Any]] | None = None,
+        params: dict[str, dict[str, Any]] | None = None,
+        offers: Iterable[str] | None = None,
+        description: str | None = None,
+    ) -> "Model":
+        """Define a template (ADR 0113): ``view`` is a view (a scene, a
+        plot) that names its ``inputs`` (``{"x": {"unit": "m"}}``; ``kind``
+        ``"rows"`` or ``"pointer"`` for a grab) and ``params`` (``{"colour":
+        {"value": "blue"}}``) with a ``$`` (``"$x"``) and binds no signal of
+        its own; a scene may ``offer`` frames a parent draws in. Use it with
+        :meth:`add_view` (``template=``) or as a scene's layer
+        (``{"draw": "template", "name": ..., "template": name, "bind":
+        {...}}``). Problems are reported by :meth:`check`."""
+        t: dict[str, Any] = dict(copy.deepcopy(view))
+        if inputs:
+            t["inputs"] = copy.deepcopy(dict(inputs))
+        if params:
+            t["params"] = copy.deepcopy(dict(params))
+        if offers:
+            t["offers"] = list(offers)
+        if description:
+            t["description"] = description
+        self.data.setdefault("templates", {})[name] = t
+        self._marked()
+        return self
+
+    def add_view(
+        self,
+        type: str | None = None,
+        bind: dict[str, "str | list[str]"] | None = None,
+        template: str | None = None,
+        params: dict[str, "float | str"] | None = None,
+    ) -> "Model":
+        """Add a view after the model's others: of a registered ``type``
+        with ``bind`` binding its slots, or a ``template`` of the model
+        (:meth:`define_template`) with ``bind`` binding its inputs and
+        ``params`` setting its parameters (ADR 0113)."""
+        if (type is None) == (template is None):
+            raise ValueError("a view has a type or a template, one of the two")
+        view: dict[str, Any] = {"type": type} if type is not None else {"template": template}
+        if bind:
+            view["bind"] = copy.deepcopy(dict(bind))
+        if params:
+            view["params"] = dict(params)
+        self.data.setdefault("controls", {}).setdefault("views", []).append(view)
+        self._marked()
+        return self
+
     def block(self, name: str) -> dict[str, Any]:
         for b in self.data.get("blocks", []):
             if b["name"] == name:

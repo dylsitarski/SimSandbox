@@ -1116,13 +1116,8 @@ fn apply_model(file: &mut ModelFile, registry: &Registry, edit: &Edit) -> Result
         Edit::AddView { type_name, at } => {
             file.controls.views.push(ViewEntry {
                 type_name: type_name.clone(),
-                bind: BTreeMap::new(),
-                style: BTreeMap::new(),
-                camera: None,
-                selection: None,
                 canvas: Some(at.map(tidy)),
-                probe: None,
-                scene: Default::default(),
+                ..Default::default()
             });
             Ok(format!("Added a {type_name} view"))
         }

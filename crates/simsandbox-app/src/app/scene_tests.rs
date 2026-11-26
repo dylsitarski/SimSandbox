@@ -307,3 +307,38 @@ fn a_saved_scene_that_does_not_check_is_kept_and_says_why() {
     assert_ne!(picture(&mut app, tile), held);
     assert_eq!(scene_node(&app).error, None);
 }
+
+#[test]
+fn the_cart_pole_opens_its_picture_drawn_from_a_template() {
+    // ADR 0113 step 1: the scene's template layer is put in place to draw,
+    // and saved back as written.
+    let mut app = SimApp::new(None, None, None, None);
+    let k = EXAMPLES
+        .iter()
+        .position(|e| e.name.starts_with("Cart-pole"))
+        .unwrap();
+    app.open_example(k);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert_eq!(app.views.tiles.len(), 2);
+    let scene = &app.views.tiles[0];
+    assert!(
+        scene.state.problem().is_none(),
+        "{:?}",
+        scene.state.problem()
+    );
+    assert!(scene.written.is_some());
+    let shown = &app.views.shown_entries()[0];
+    assert!(shown.scene.frames.contains_key("rig/pole"));
+    assert!(app.view_reads.iter().any(|r| r == "cartpole.hinge_angle"));
+    // Saved as written: the template layer, not what it draws.
+    let file = saved(&app);
+    assert_eq!(file.controls.views[0].scene.layers[1].draw, "template");
+    assert!(file.templates.contains_key("cartpole"));
+    let id = app.views.tiles[0].id;
+    let image = picture(&mut app, id);
+    // The pole is drawn (orange, its template's default).
+    assert!(image
+        .rgba
+        .chunks(4)
+        .any(|p| p[0] > 200 && p[1] > 100 && p[1] < 200 && p[2] < 100));
+}

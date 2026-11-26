@@ -5,6 +5,7 @@
 
 use simsandbox_file::{Binding, CameraControl, SceneSettings, ViewEntry};
 use simsandbox_views::{Available, Bindings, ViewRegistry, ViewState, ViewType};
+use std::collections::BTreeMap;
 
 /// One view on screen. The id stays fixed while other tiles come and go, so
 /// each tile keeps its own plot zoom and widget state.
@@ -13,6 +14,9 @@ pub struct Tile {
     pub state: ViewState,
     /// Where its node sits on the canvas's data layer (ADR 0050).
     pub canvas: Option<[f64; 2]>,
+    /// The view as written when it draws templates (ADR 0113): saved back
+    /// as it is; its state is the view expanded.
+    pub written: Option<ViewEntry>,
 }
 
 pub struct Views {
@@ -24,6 +28,8 @@ pub struct Views {
     /// (`None` if it could not be shown), so a saved arrangement can find
     /// its views (ADR 0053).
     pub opened: Vec<Option<u64>>,
+    /// The model's templates (ADR 0113), which views may draw.
+    pub templates: BTreeMap<String, serde_json::Value>,
     next_id: u64,
 }
 
@@ -34,6 +40,7 @@ impl Views {
             tiles: Vec::new(),
             selected: None,
             opened: Vec::new(),
+            templates: BTreeMap::new(),
             next_id: 0,
         }
     }
@@ -58,6 +65,7 @@ impl Views {
                     }
                     let id = self.push(state);
                     self.tile_mut(id).canvas = entry.canvas;
+                    self.tile_mut(id).written = written(entry);
                     self.opened.push(Some(id));
                 }
                 Err(e) => {
@@ -101,6 +109,14 @@ impl Views {
         e: &ViewEntry,
         available: &Available<'_>,
     ) -> Result<(ViewState, Option<String>), String> {
+        // The view it draws, its templates put in place (ADR 0113).
+        let expanded;
+        let e = if simsandbox_file::templates::uses_templates(e) {
+            expanded = simsandbox_file::templates::expand(e, &self.templates)?;
+            &expanded
+        } else {
+            e
+        };
         let t = self
             .registry
             .get(&e.type_name)
@@ -138,6 +154,7 @@ impl Views {
             id,
             state,
             canvas: None,
+            written: None,
         });
         id
     }
@@ -198,6 +215,7 @@ impl Views {
                 Ok(state) => {
                     let id = self.push(state);
                     self.tile_mut(id).canvas = e.canvas;
+                    self.tile_mut(id).written = written(e);
                 }
                 Err(err) => warnings.push(format!("view {}: {err}; not shown", i + 1)),
             }
@@ -276,14 +294,32 @@ impl Views {
         Some((t, &mut tile.state))
     }
 
-    /// The tiles as saved in `controls.views`, in order.
+    /// The tiles as saved in `controls.views`, in order: a view drawing
+    /// templates as written (ADR 0113).
     pub fn entries(&self) -> Vec<ViewEntry> {
+        self.tiles
+            .iter()
+            .zip(self.shown_entries())
+            .map(|(tile, shown)| match &tile.written {
+                Some(w) => ViewEntry {
+                    canvas: tile.canvas,
+                    ..w.clone()
+                },
+                None => shown,
+            })
+            .collect()
+    }
+
+    /// The tiles as they draw: templates put in place. What they read.
+    pub fn shown_entries(&self) -> Vec<ViewEntry> {
         self.tiles
             .iter()
             .map(|tile| {
                 let s = &tile.state;
                 ViewEntry {
                     type_name: s.type_name.clone(),
+                    template: None,
+                    params: BTreeMap::new(),
                     bind: s
                         .bind
                         .iter()
@@ -303,6 +339,11 @@ impl Views {
             })
             .collect()
     }
+}
+
+/// A view drawing templates, as written, to save back.
+fn written(e: &ViewEntry) -> Option<ViewEntry> {
+    simsandbox_file::templates::uses_templates(e).then(|| e.clone())
 }
 
 /// The camera turns in single precision; save its shortest decimal form
@@ -367,10 +408,7 @@ mod tests {
                 pitch: 0.5,
                 zoom: 2.0,
             }),
-            selection: None,
-            canvas: None,
-            probe: None,
-            scene: Default::default(),
+            ..Default::default()
         }
     }
 
@@ -439,6 +477,7 @@ mod tests {
         for e in EXAMPLES {
             let s = Session::load_in(e.name, e.text, &registry(), e.folder().as_deref()).unwrap();
             let mut v = Views::new(view_registry());
+            v.templates.clone_from(&s.file.templates);
             let w = v.open(&s.available(&s.signals()), &s.file.controls.views);
             assert!(w.is_empty(), "{}: {w:?}", e.name);
             assert_eq!(v.entries(), s.file.controls.views, "{}", e.name);

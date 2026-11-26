@@ -365,7 +365,7 @@ impl SimApp {
             live.send(Some("probe-dir"), move |s, _| s.set_probe_dir(dir));
         }
         // Views bound, rebound or closed: the history follows (ADR 0063).
-        let reads = simsandbox_session::session::view_reads(&self.views.entries());
+        let reads = simsandbox_session::session::view_reads(&self.views.shown_entries());
         if reads != self.view_reads {
             self.view_reads = reads.clone();
             live.send(Some("view-reads"), move |s, _| s.set_view_reads(reads));

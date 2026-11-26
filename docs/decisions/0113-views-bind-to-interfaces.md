@@ -164,3 +164,18 @@ Here `rig1/cartpole` binds `x` and `theta` to `rig1/x` and `rig1/theta`, the out
   - It mirrors a model's interface, and is the same concept applied to an observer. Without it, a picture can only name one model's insides.
   - A view file is not a new concept: it holds templates and views on their own.
 - **Removed:** none. Domain view types may later become templates.
+
+## Built so far
+
+- **Step 1 (2026-11-26), templates in the model file:**
+  - `ModelFile::templates` (written like `models`, read by `templates::Template::read`), `ViewEntry::template` and `ViewEntry::params`, and template layers in scenes.
+  - `templates::expand` makes the view a template stands for. Every part that draws, records or checks views reads the expanded view, and the file keeps the written one (see the [visualization architecture](../architecture/visualization.md#scenes)).
+  - Offered frames are enforced already: a parent reaching a frame that is not offered is refused.
+  - `check` lists templates, as `describe` does for types. Python has `define_template`, `add_view(template=…)` and template layers.
+  - The cart-pole's picture is the template `cartpole`, rendered to the same pixels as before at 0.5, 2 and 3 s.
+  - Tests: expansion and its refusals (`templates.rs`); the views and the history (session); the app opening, drawing and saving the cart-pole; Python.
+  - Kept for later steps:
+    - an input's declared unit is not compared with its signal directly, only through the attributes it reaches, which are checked as before;
+    - `rows` inputs are accepted but not yet drawn per row (step 3);
+    - a scene's Inspector form edits the view as written, but has no editor for a template layer yet.
+

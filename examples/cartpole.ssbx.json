@@ -4,6 +4,70 @@
   "run": {
     "dt": 0.002
   },
+  "templates": {
+    "cartpole": {
+      "description": "A cart on a track and a pole on a hinge on it; the pole can be grabbed.",
+      "frames": {
+        "cart": {
+          "x": "$x",
+          "y": 0.0
+        },
+        "pole": {
+          "angle": "$theta",
+          "in": "cart"
+        }
+      },
+      "inputs": {
+        "grab": {
+          "description": "the pointer that grabs the pole",
+          "kind": "pointer"
+        },
+        "theta": {
+          "description": "the pole's angle from upright",
+          "unit": "rad"
+        },
+        "x": {
+          "description": "the cart's position along the track",
+          "unit": "m"
+        }
+      },
+      "layers": [
+        {
+          "bind": {
+            "colour": "$cart_colour",
+            "height": 0.2,
+            "width": 0.4,
+            "x": 0.0,
+            "y": 0.0
+          },
+          "draw": "boxes",
+          "in": "cart"
+        },
+        {
+          "bind": {
+            "colour": "$pole_colour",
+            "height": 1.0,
+            "width": 0.05,
+            "x": 0.0,
+            "y": 0.5
+          },
+          "draw": "boxes",
+          "grab": "$grab",
+          "in": "pole"
+        }
+      ],
+      "params": {
+        "cart_colour": {
+          "value": "blue"
+        },
+        "pole_colour": {
+          "value": "orange"
+        }
+      },
+      "type": "plot.scene",
+      "unit": "m"
+    }
+  },
   "blocks": [
     {
       "name": "hand",
@@ -154,16 +218,6 @@
             1.6
           ]
         },
-        "frames": {
-          "cart": {
-            "x": "cartpole.slider_position",
-            "y": 0.0
-          },
-          "pole": {
-            "in": "cart",
-            "angle": "cartpole.hinge_angle"
-          }
-        },
         "layers": [
           {
             "draw": "segments",
@@ -177,27 +231,14 @@
             }
           },
           {
-            "draw": "boxes",
-            "in": "cart",
+            "draw": "template",
             "bind": {
-              "colour": "blue",
-              "height": 0.2,
-              "width": 0.4,
-              "x": 0.0,
-              "y": 0.0
-            }
-          },
-          {
-            "draw": "boxes",
-            "in": "pole",
-            "bind": {
-              "colour": "orange",
-              "height": 1.0,
-              "width": 0.05,
-              "x": 0.0,
-              "y": 0.5
+              "grab": "hand",
+              "theta": "cartpole.hinge_angle",
+              "x": "cartpole.slider_position"
             },
-            "grab": "hand"
+            "name": "rig",
+            "template": "cartpole"
           },
           {
             "draw": "segments",

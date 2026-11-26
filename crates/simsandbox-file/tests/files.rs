@@ -477,7 +477,8 @@ fn schema_is_valid_json_and_lists_the_file_fields() {
             "notes",
             "outputs",
             "params",
-            "run"
+            "run",
+            "templates"
         ]
     );
     assert_eq!(schema["properties"]["format"]["const"], 1);
