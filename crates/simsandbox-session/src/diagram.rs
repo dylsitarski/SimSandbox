@@ -1082,6 +1082,14 @@ pub enum Edit {
     /// reads an output that model offers instead (`car1/v`), offered now
     /// if it was not (ADR 0110 point 4). For a model defined in the file.
     OfferAsOutput { signal: String },
+    /// A value inside a use of a model defined in the file (`car1/car.c`)
+    /// becomes a parameter that model declares, settable per use; what set
+    /// it by path at this level (the schedule, pinned controls) sets that
+    /// (ADR 0110 point 6, ADR 0112 point 4).
+    ExposeInside { key: String },
+    /// A value inside a use of a model defined in the file, changed in
+    /// that model: for every use (ADR 0110 point 6).
+    SetInside { key: String, value: f64 },
     /// Rename a model defined in the file (ADR 0068): its uses follow.
     RenameModel { from: String, to: String },
     /// A typed-equation block's equations, one per line (ADR 0017): the
@@ -1272,6 +1280,8 @@ fn apply_in_level(
         Edit::DeclareOutput { name, from } => return declare_output(file, name, from),
         Edit::ExposeParam { block, param } => return expose_param(file, registry, block, param),
         Edit::OfferAsOutput { signal } => return offer_as_output(file, signal),
+        Edit::ExposeInside { key } => return expose_inside(file, registry, key),
+        Edit::SetInside { key, value } => return set_inside(file, key, *value),
         Edit::HideParam { block, param } => return hide_param(file, block, param),
         Edit::ExposeInput { input } => return expose_input(file, registry, input),
         Edit::HideInput { input } => {
@@ -2037,6 +2047,8 @@ fn edit_level(
         | Edit::HideOutput { .. }
         | Edit::ExposeParam { .. }
         | Edit::OfferAsOutput { .. }
+        | Edit::ExposeInside { .. }
+        | Edit::SetInside { .. }
         | Edit::HideParam { .. }
         | Edit::ExposeInput { .. }
         | Edit::HideInput { .. }
@@ -2609,6 +2621,79 @@ fn offer_as_output(file: &mut ModelFile, signal: &str) -> Result<String, String>
     *file = changed;
     Ok(format!(
         "{model} offers {rest} as '{name}'; what read {signal} reads {new}"
+    ))
+}
+
+/// The use and the model defined in the file that a key inside a use
+/// (`car1/car.c`) reaches into, with the rest (`car.c`).
+fn inside_of<'a>(file: &ModelFile, key: &'a str) -> Result<(&'a str, String, &'a str), String> {
+    let (u, rest) = key
+        .split_once('/')
+        .filter(|(_, r)| r.contains('.') || r.contains('/'))
+        .ok_or_else(|| format!("'{key}' is not a value inside a used model"))?;
+    let entry = file
+        .blocks
+        .iter()
+        .find(|b| b.name == u && b.is_use())
+        .ok_or_else(|| format!("no used model '{u}'"))?;
+    match &entry.model {
+        Some(m) => Ok((u, m.clone(), rest)),
+        None => Err(format!(
+            "'{u}' uses the model file {}: open it to change what is inside",
+            entry.file.as_deref().unwrap_or("")
+        )),
+    }
+}
+
+/// [`Edit::ExposeInside`].
+fn expose_inside(file: &mut ModelFile, registry: &Registry, key: &str) -> Result<String, String> {
+    let (u, model, rest) = inside_of(file, key)?;
+    let folder = file.folder.clone();
+    let (text, name) = simsandbox_file::encapsulate::expose(
+        &file.to_json(),
+        registry,
+        folder.as_deref(),
+        Some(&model),
+        rest,
+        None,
+    )?;
+    let (mut changed, _) = ModelFile::from_json(&text).map_err(|e| e.to_string())?;
+    changed.folder = folder;
+    // What set it by path in any use of that model sets it by name.
+    let uses: Vec<String> = changed
+        .blocks
+        .iter()
+        .filter(|b| b.model.as_deref() == Some(model.as_str()))
+        .map(|b| b.name.clone())
+        .collect();
+    for v in &uses {
+        let (old, new) = (format!("{v}/{rest}"), format!("{v}.{name}"));
+        for c in &mut changed.run.inputs {
+            if c.set == old {
+                c.set.clone_from(&new);
+            }
+        }
+        if let Some(c) = changed.controls.params.remove(&old) {
+            changed.controls.params.insert(new, c);
+        }
+    }
+    *file = changed;
+    Ok(format!(
+        "{model} declares {rest} as its parameter '{name}': {u} sets it as {u}.{name}, as each use does"
+    ))
+}
+
+/// [`Edit::SetInside`].
+fn set_inside(file: &mut ModelFile, key: &str, value: f64) -> Result<String, String> {
+    let (_, model, rest) = inside_of(file, key)?;
+    let folder = file.folder.clone();
+    let text = simsandbox_file::encapsulate::set_inside(&file.to_json(), &model, rest, value)?;
+    let (mut changed, _) = ModelFile::from_json(&text).map_err(|e| e.to_string())?;
+    changed.folder = folder;
+    *file = changed;
+    Ok(format!(
+        "{rest} is {} in {model}, for every use",
+        crate::diagram_paint::format_number(value)
     ))
 }
 
@@ -4118,5 +4203,91 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+/// ADR 0110 step 3: a value inside a use, exposed or changed in its model.
+#[cfg(test)]
+mod inside_tests {
+    use super::*;
+    use crate::compose::run_composition;
+    use crate::examples::{registry, EXAMPLES};
+    use serde_json::json;
+
+    fn platoon() -> serde_json::Value {
+        let text = EXAMPLES
+            .iter()
+            .find(|e| e.name.starts_with("Platoon"))
+            .unwrap()
+            .text;
+        serde_json::from_str(text).unwrap()
+    }
+
+    fn v_of(text: &str, signal: &str) -> Vec<u64> {
+        run_composition(text, &registry(), Some(10.0))
+            .unwrap()
+            .values(signal)
+            .unwrap()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect()
+    }
+
+    #[test]
+    fn exposing_a_value_inside_keeps_what_set_it_by_path() {
+        let mut v = platoon();
+        v["run"]["inputs"] = json!([{"t": 5.0, "set": "car2/car.c", "to": 80.0}]);
+        v["controls"]["params"]["car1/car.c"] = json!({"slider": true});
+        let text = v.to_string();
+        let (mut file, _) = ModelFile::from_json(&text).unwrap();
+        let r = registry();
+        let edit = Edit::ExposeInside {
+            key: "car2/car.c".into(),
+        };
+        let note = apply_in(&mut file, &Scope::Model, &r, &edit).unwrap();
+        assert!(note.contains("'c'"), "{note}");
+        let def = file.blocks[1].resolved.as_ref().unwrap();
+        assert_eq!(def.params["c"].value, 50.0);
+        assert_eq!(file.run.inputs[0].set, "car2.c");
+        assert!(file.controls.params.contains_key("car1.c"));
+        assert!(!file.controls.params.contains_key("car1/car.c"));
+        // The same run: the schedule sets car2's c at 5 s, by name now.
+        let after = file.to_json();
+        for s in ["car2/car.v", "car3/car.v"] {
+            assert_eq!(v_of(&text, s), v_of(&after, s), "{s}");
+        }
+        // A block of the model itself is not inside a use.
+        let bad = Edit::ExposeInside {
+            key: "leader.T".into(),
+        };
+        assert!(apply_in(&mut file, &Scope::Model, &r, &bad).is_err());
+    }
+
+    #[test]
+    fn changing_a_value_in_the_model_changes_every_use() {
+        let text = platoon().to_string();
+        let (mut file, _) = ModelFile::from_json(&text).unwrap();
+        let r = registry();
+        let edit = Edit::SetInside {
+            key: "car1/car.c".into(),
+            value: 80.0,
+        };
+        apply_in(&mut file, &Scope::Model, &r, &edit).unwrap();
+        let after = file.to_json();
+        let mut by_hand = platoon();
+        let car = &mut by_hand["models"]["follower"]["blocks"][0];
+        assert_eq!(car["name"], "car");
+        car["params"]["c"] = json!(80.0);
+        for s in ["car1/car.v", "car3/car.v"] {
+            assert_eq!(v_of(&after, s), v_of(&by_hand.to_string(), s), "{s}");
+            assert_ne!(v_of(&after, s), v_of(&text, s), "{s}");
+        }
+        // Set by a formula in the model: change that instead.
+        let formula = Edit::SetInside {
+            key: "car1/car.m".into(),
+            value: 2.0,
+        };
+        let e = apply_in(&mut file, &Scope::Model, &r, &formula).unwrap_err();
+        assert!(e.contains("set by 'mass'"), "{e}");
     }
 }

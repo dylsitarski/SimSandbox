@@ -157,9 +157,15 @@ When a use can change what is inside its model, its model's interface does not s
     - A level that is gone falls back to the model.
   - Its arrows and `▸` are words and `>`, which the app's font has; `--view overview` is accepted by the app's argument check (it was listed but refused).
   - Tests: the card by level and the edit (`card.rs`), `explain --part/--depth` (CLI), Python's levels, the app opening a level. A screenshot of the platoon's Overview under Xvfb.
+- **Step 3 (2026-11-26), the Inspector's table of uses:**
+  - A row is inside a used model when its owner is a path (`car1/car`). Such rows are read-only, after a divider "inside", both in the table of a model's uses (a column per use) and in a single use's nested rows.
+  - Right-click offers two actions:
+    - **Expose as a parameter of its model**: `Edit::ExposeInside { key }` declares it in the model defined in the file, through `encapsulate::expose`; pins and schedule entries that set it by path in any use of that model then set it by name (`car1/car.c` becomes `car1.c`).
+    - **In the model, for every use**: a value field, `Edit::SetInside { key, value }`, through `encapsulate::set_inside`; refused where a formula sets it.
+  - Uses of separate files are told to open the file.
+  - The model's declared parameters (`mass`) stay editable per use. Pinning stays (ADR 0112).
+  - The Overview's experiment marks have **Expose** too, except a study's points (a path in the studied model).
+  - Tests: both edits in the session (the run with a schedule unchanged to the bit after exposing; every use changed in the model), and exposing from the app with the Inspector drawn.
 - **Left:**
-  - A study's points, `run.inputs`' schedule and pinned controls still set inner values by path, now by decision ([ADR 0112](0112-experiments-may-reach-inside.md)), marked on the card.
   - Point 1's events, and study formulas, have nothing that reads inside yet.
-  - The Inspector's table of uses (step 3) still lists inner values per use.
-  - Step 3.
-
+  - Exposing inside a separate model file from the model using it goes through opening that file (the edit question of ADR 0068), not these edits.

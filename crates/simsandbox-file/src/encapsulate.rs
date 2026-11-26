@@ -830,6 +830,61 @@ pub fn expose(
     Ok((text, name))
 }
 
+/// Set `key` inside `model` (a model defined in the file) to `value` in
+/// the model itself, for every use (ADR 0110 point 6): `block.param`, or
+/// a path through models it uses that are defined in the file
+/// (`plant/car.m`). Refused where a formula sets it, or the path goes
+/// into a separate model file.
+pub fn set_inside(text: &str, model: &str, key: &str, value: f64) -> Result<String, String> {
+    let mut root: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let mut path = model_path(&root, Some(model))?;
+    let mut rest = key;
+    while let Some((u, more)) = rest.split_once('/') {
+        let def = at(&root, &path).ok_or("its model is not found")?;
+        let entry = array(def, "blocks")
+            .iter()
+            .find(|b| field(b, "name") == Some(u) && is_use(b))
+            .ok_or_else(|| format!("the model uses no model named '{u}'"))?;
+        let Some(name) = field(entry, "model") else {
+            return Err(format!(
+                "'{u}' uses the model file {}: open it to change {more}",
+                field(entry, "file").unwrap_or_default()
+            ));
+        };
+        let scope = levels(&root)
+            .into_iter()
+            .find(|(p, _)| *p == path)
+            .map(|(_, s)| s)
+            .unwrap_or_default();
+        path = scope
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("no model named '{name}'"))?;
+        rest = more;
+    }
+    let (block, param) = rest
+        .split_once('.')
+        .ok_or_else(|| format!("'{key}' is not block.param or a path to one"))?;
+    let params = at_mut(&mut root, &path)
+        .and_then(|d| d.get_mut("blocks"))
+        .and_then(Value::as_array_mut)
+        .and_then(|bs| {
+            bs.iter_mut()
+                .find(|b| field(b, "name") == Some(block) && !is_use(b))
+        })
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| format!("the model has no block '{block}'"))?
+        .entry("params")
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or("the block's params are not an object")?;
+    if let Some(Value::String(f)) = params.get(param) {
+        return Err(format!("{key} is set by '{f}' in the model: change that"));
+    }
+    params.insert(param.to_string(), Value::from(value));
+    serde_json::to_string_pretty(&root).map_err(|e| e.to_string())
+}
+
 /// Offer the output `signal` inside `model` (the file itself, or a model
 /// defined in it) as an output of that model (ADR 0110 point 4):
 /// `block.port`, or a path into a model it uses (`plant/car.v`). It is

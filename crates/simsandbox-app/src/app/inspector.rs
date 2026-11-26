@@ -601,6 +601,10 @@ impl SimApp {
                 nested_rows(ui, &nested, &g.name, &mut |ui, name, row| {
                     let mut r = row.clone();
                     r.name = name.to_string();
+                    if param_rows::is_inside(row) {
+                        param_rows::inside_row(ui, &r, edits!(self, c));
+                        return;
+                    }
                     let used = o.used_by.get(&row.key);
                     param_row(ui, m, &r, Place::Tree, used, edits!(self, c));
                 });

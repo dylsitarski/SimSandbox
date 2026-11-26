@@ -41,3 +41,4 @@
 - 2026-11-26:
   - `card_at` marks the schedule's and pinned controls' paths into a use at the top level, and studies' points into a use inside the studied model, as `sets`. Markdown and the Overview say so.
   - Tested in `card.rs`.
+- 2026-11-26: **Expose** from the Overview's mark and from the Inspector (`Edit::ExposeInside`, [ADR 0110](0110-encapsulated-models.md) step 3) rewrites the schedule's and pins' paths to the parameter's name.

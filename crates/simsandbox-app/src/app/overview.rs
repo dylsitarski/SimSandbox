@@ -330,6 +330,22 @@ impl SimApp {
                         if r["sets"] == true {
                             ui.label(format!("{} sets {}", text(&r["where"]), text(&r["signal"])))
                                 .on_hover_text("An experiment may set a value inside a used model (ADR 0112); exposing it makes it part of the model's interface");
+                            // A study's point is a path in its own model.
+                            let study = text(&r["where"]).contains(".sample.");
+                            if r["can_expose"] == true
+                                && !study
+                                && ui
+                                    .small_button("Expose")
+                                    .on_hover_text(format!(
+                                        "{} declares it as a parameter, which this sets by name",
+                                        text(&r["model"])
+                                    ))
+                                    .clicked()
+                            {
+                                edits.push(Edit::ExposeInside {
+                                    key: text(&r["signal"]).to_string(),
+                                });
+                            }
                             return;
                         }
                         if r["start"] == true {
@@ -576,6 +592,19 @@ mod tests {
             ..Default::default()
         };
         let mut out = ctx.run_ui(input, |ui| app.overview_tab(ui));
+        out.textures_delta.clear();
+        // A value inside, exposed from the app (ADR 0110 step 3): each use
+        // then sets its own; the Inspector draws its table.
+        app.edit_at(
+            Scope::Model,
+            Edit::ExposeInside {
+                key: "car1/car.c".into(),
+            },
+        );
+        assert!(app.error.is_none(), "{:?}", app.error);
+        let m = app.session.as_ref().unwrap().model();
+        assert!(m.params.iter().any(|r| r.key == "car3.c"), "car3.c");
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.docked(ui));
         out.textures_delta.clear();
         app.overview_part = "car9".into();
         let card = app.overview_card().unwrap();

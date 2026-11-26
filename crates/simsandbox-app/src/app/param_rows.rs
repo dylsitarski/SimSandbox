@@ -50,8 +50,37 @@ pub(super) fn uses_table(
                 }
                 ui.end_row();
             }
+            let mut divided = false;
             for (name, cells) in &t.rows {
                 let first = cells.iter().flatten().next();
+                // A value inside a used model: read here, changed through
+                // its model (ADR 0110 point 6).
+                if let Some(f) = first.filter(|r| is_inside(r)) {
+                    if !divided {
+                        divided = true;
+                        ui.weak("inside")
+                            .on_hover_text("Values inside the model used: right-click one to expose it as a parameter of the model, or to change it in the model for every use");
+                        ui.end_row();
+                    }
+                    let response = ui.label(name).on_hover_text(inside_hover(f));
+                    response.context_menu(|ui| {
+                        inside_menu(ui, f, text, file, error);
+                        pin_items(ui, cells, pins, controls);
+                    });
+                    ui.weak(f.unit.as_str());
+                    for cell in cells {
+                        match cell {
+                            Some(r) => {
+                                ui.weak(shown_value(r)).on_hover_text(inside_hover(r));
+                            }
+                            None => {
+                                ui.weak("—");
+                            }
+                        }
+                    }
+                    ui.end_row();
+                    continue;
+                }
                 let starting = first.is_some_and(|r| r.initial_condition);
                 let label = if starting {
                     format!("{name} ↻")
@@ -89,19 +118,7 @@ pub(super) fn uses_table(
                             ui.close();
                         }
                     }
-                    for r in cells.iter().flatten() {
-                        let mut c = pins.get(&r.key).cloned().unwrap_or_default();
-                        let pinned = c.pinned();
-                        let label = match pinned {
-                            true => format!("Unpin {} from the Controls", r.key),
-                            false => format!("Pin {} to the Controls", r.key),
-                        };
-                        if ui.button(label).clicked() {
-                            c.set_pinned(!pinned);
-                            controls.push((r.key.clone(), c));
-                            ui.close();
-                        }
-                    }
+                    pin_items(ui, cells, pins, controls);
                 });
                 ui.weak(first.map_or("", |r| r.unit.as_str()));
                 for cell in cells {
@@ -126,6 +143,120 @@ pub(super) fn uses_table(
                 ui.end_row();
             }
         });
+}
+
+/// Pin or unpin each use's row.
+fn pin_items(
+    ui: &mut egui::Ui,
+    cells: &[Option<ParamRow>],
+    pins: &BTreeMap<String, simsandbox_file::ParamControl>,
+    controls: &mut Vec<(String, simsandbox_file::ParamControl)>,
+) {
+    for r in cells.iter().flatten() {
+        let mut c = pins.get(&r.key).cloned().unwrap_or_default();
+        let pinned = c.pinned();
+        let label = match pinned {
+            true => format!("Unpin {} from the Controls", r.key),
+            false => format!("Pin {} to the Controls", r.key),
+        };
+        if ui.button(label).clicked() {
+            c.set_pinned(!pinned);
+            controls.push((r.key.clone(), c));
+            ui.close();
+        }
+    }
+}
+
+/// Whether a row is a value inside a used model (`car1/car.c`), not a
+/// parameter the model declares (`car1.mass`).
+pub(super) fn is_inside(r: &ParamRow) -> bool {
+    r.owner.contains('/')
+}
+
+fn shown_value(r: &ParamRow) -> String {
+    let v = format_value(r.value);
+    match (&r.driven, &r.formula) {
+        (Some(d), _) => format!("from {d}"),
+        (None, Some(f)) => format!("{v} (= {f})"),
+        _ => v,
+    }
+}
+
+fn inside_hover(r: &ParamRow) -> String {
+    let use_name = r.owner.split('/').next().unwrap_or("");
+    format!(
+        "{}\nInside {use_name}'s model: a use changes it only through its model's parameters (ADR 0110). Right-click to expose it as one, or to change it in the model for every use. Pinned, it is an experiment's slider (ADR 0112).",
+        r.description
+    )
+}
+
+/// Expose a value inside a used model, or change it there for every use.
+fn inside_menu(
+    ui: &mut egui::Ui,
+    r: &ParamRow,
+    text: &mut HashMap<String, String>,
+    file: &mut Vec<(Scope, Edit)>,
+    error: &mut Option<String>,
+) {
+    if ui
+        .button("Expose as a parameter of its model")
+        .on_hover_text("Each use then sets its own value")
+        .clicked()
+    {
+        file.push((Scope::Model, Edit::ExposeInside { key: r.key.clone() }));
+        ui.close();
+    }
+    ui.horizontal(|ui| {
+        ui.label("In the model, for every use:");
+        let key = format!("inside:{}", r.key);
+        let entry = text
+            .entry(key.clone())
+            .or_insert_with(|| format_value(r.value));
+        let response = ui.add(egui::TextEdit::singleline(entry).desired_width(70.0));
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            match entry.trim().parse::<f64>() {
+                Ok(value) => {
+                    file.push((
+                        Scope::Model,
+                        Edit::SetInside {
+                            key: r.key.clone(),
+                            value,
+                        },
+                    ));
+                    text.remove(&key);
+                    ui.close();
+                }
+                Err(_) => *error = Some(format!("'{}' is not a number", entry.trim())),
+            }
+        }
+    });
+}
+
+/// A value inside a used model in the Inspector's tree: read-only, with
+/// [`inside_menu`] (ADR 0110 point 6).
+pub(super) fn inside_row(ui: &mut egui::Ui, r: &ParamRow, edits: Edits<'_>) {
+    let Edits {
+        controls,
+        text,
+        error,
+        file,
+        ..
+    } = edits;
+    ui.horizontal(|ui| {
+        ui.label(&r.name)
+            .on_hover_text(inside_hover(r))
+            .context_menu(|ui| {
+                inside_menu(ui, r, text, file, error);
+                let mut c = simsandbox_file::ParamControl::default();
+                if ui.button("Pin to the Controls").clicked() {
+                    c.set_pinned(true);
+                    controls.push((r.key.clone(), c));
+                    ui.close();
+                }
+            });
+        ui.weak(shown_value(r));
+        ui.weak(&r.unit);
+    });
 }
 
 /// Where a parameter row is drawn.
