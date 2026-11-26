@@ -313,6 +313,7 @@ impl SimApp {
                 self.dock.focus(|p| *p == Pane::Overview);
                 self.overview = None;
                 self.overview_part.clear();
+                self.top_card = None;
                 self.dock_settled = None;
                 self.probe_dir = None;
                 for p in popped {

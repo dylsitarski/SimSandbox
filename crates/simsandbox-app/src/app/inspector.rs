@@ -36,6 +36,9 @@ macro_rules! edits {
     };
 }
 
+/// The Inspector by intent (ADR 0108).
+mod intent;
+
 impl SimApp {
     /// Apply typed or dragged parameter values to the running model.
     pub(super) fn apply_changes(&self, changes: Vec<(ParamRow, f64)>) {
@@ -379,6 +382,14 @@ impl SimApp {
                             c.canvas.push((at.clone(), e));
                         }
                     }
+                    // A block of the model itself, by intent (ADR 0108):
+                    // what it does first.
+                    let plain = running.filter(|b| {
+                        scope.is_none() && !b.is_use() && b.type_name != simsandbox_file::STUDY
+                    });
+                    if let Some(b) = plain {
+                        self.what_it_does(ui, &b.name);
+                    }
                     // A mechanism's bodies, as a table (ADR 0105): as the
                     // draft has them while one waits, since edits build on it.
                     if let (None, Some(b)) =
@@ -389,9 +400,23 @@ impl SimApp {
                             c.canvas.push((at.clone(), e));
                         }
                     }
+                    // Then its parameters by intent.
+                    if plain.is_some() {
+                        let rows: Vec<(String, ParamRow)> = m
+                            .params
+                            .iter()
+                            .filter(|r| {
+                                r.owner == *name && (self.show_computed || r.formula.is_none())
+                            })
+                            .map(|r| (r.name.clone(), r.clone()))
+                            .collect();
+                        self.intent_rows(ui, m, &format!("selected {name}"), &rows, None, c);
+                        shown = !rows.is_empty();
+                    }
                     if let Some(b) = running {
                         if let Some(t) =
                             crate::inspector::selected(&m.params, &m.file, scope.as_deref(), name)
+                                .filter(|_| plain.is_none())
                         {
                             uses_table(ui, &t, &m.file.controls.params, edits!(self, c));
                             shown = true;
@@ -596,6 +621,13 @@ impl SimApp {
                 // written (ADR 0070).
                 if let Some(st) = studied {
                     studied_tree(ui, &g.name, st);
+                }
+                // A block of the model: what it does, then its
+                // parameters by intent (ADR 0108).
+                if !g.instance && studied.is_none() {
+                    self.what_it_does(ui, &g.name);
+                    self.intent_rows(ui, m, &g.name, &g.rows, Some(&o.used_by), c);
+                    return;
                 }
                 let nested = crate::inspector::nest(&g.rows);
                 nested_rows(ui, &nested, &g.name, &mut |ui, name, row| {

@@ -77,7 +77,7 @@ The Overview, the Inspector by intent and the Structure lens (ADR 0108) all need
    - A `#` line anywhere else stays a comment, so every existing file reads as before.
 5. **Where it shows.**
    - `describe` and Python's `describe` give each parameter's role, suggested key and description, each port's group, and the block's summary.
-   - The Inspector groups by role and shows key parameters first.
+   - The Inspector groups by role and shows key parameters first (built 2026-11-26, ADR 0108's Inspector by intent).
    - The Overview lists key parameters as live controls and quotes descriptions.
    - `check --agent` ([ADR 0107](0107-model-cards-and-agent-notes.md)) will require descriptions only on what agents made.
 6. **Built-in types declare theirs.**

@@ -20,10 +20,11 @@
 
 - 2026-11-26: Q66 answered ([ADR 0112](../decisions/0112-experiments-may-reach-inside.md)); the card marks experiments that set values inside.
 - 2026-11-26: ADR 0110 step 3 built: the Inspector's values inside a use read-only, with Expose (`Edit::ExposeInside`) and Change in the model (`Edit::SetInside`); Expose from the Overview's experiment marks. Screenshot of the platoon's Inspector under Xvfb.
+- 2026-11-26: the Inspector by intent (ADR 0108's fourth step): `app/inspector/intent.rs`, in the model tree and the selection; an app test on the cart-pole; screenshots of the mechanism and the controller under Xvfb.
 
 ## Left open
 
-- The Inspector by intent comes next (ADR 0108).
+- Next by ADR 0108: default pictures, then one selection.
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session

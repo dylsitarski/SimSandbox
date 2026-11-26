@@ -49,5 +49,11 @@ As in the report, section 5: keep and fix the canvas (A), text first (B), stage 
   - `Pane::Overview` in the dock (`simsandbox-app/src/app/overview.rs`), saved in layouts as `"overview"` (an older SimSandbox ignores it). It is in front of the right-hand stack in the standard arrangement, and arrangements saved before it gain it in front of the diagram. It is focused whenever a model opens; `--view overview` too, and `--view time|phase|3d` focuses the views instead.
   - It shows the card ([ADR 0107](0107-model-cards-and-agent-notes.md)): built on the worker from the session when the file changes; values read live from the published parameters; parameters grouped by role (property, drive and tuning open, the rest open when short; drive parameters at 0 that nothing drives counted); a type's summary shortened to its first sentence with the rest on hover; agents' marks with **Mark as reviewed**; **Inspect** on each part selects it for the Inspector and the diagram.
 - **The Overview by level (2026-11-25, [ADR 0110](0110-encapsulated-models.md) step 2):** each used model is one part with its interface and **Open**; a breadcrumb back up; what reads inside a use, with **Offer as output**.
-- Not yet: the Inspector by intent (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
+- **The Inspector by intent (2026-11-26):** for a block of the model, in the model tree and when selected (`simsandbox-app/src/app/inspector/intent.rs`):
+  - what it does first: its purpose or summary (the first sentence, at most about two lines, the rest on hover), its method with labels and what it is solved with (from the model's card, [ADR 0107](0107-model-cards-and-agent-notes.md));
+  - then its key parameters: those pinned, else those its type suggests ([ADR 0109](0109-parameter-roles-key-parameters-port-groups.md) point 2);
+  - then the rest by role, each a section (property, drive and tuning open, the others open when short), starting values last; drive parameters at 0 that nothing drives are counted, not listed.
+
+  Used models keep their table of uses: the interface first, the values inside read-only ([ADR 0110](0110-encapsulated-models.md) step 3).
+- Not yet: the Inspector's own headless form beyond `explain` (the card carries the same facts) (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
 

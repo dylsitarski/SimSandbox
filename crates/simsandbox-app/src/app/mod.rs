@@ -157,6 +157,9 @@ pub struct SimApp {
     /// The level the Overview shows (ADR 0110): a path of uses, empty for
     /// the model itself.
     overview_part: String,
+    /// The model's own card, for the Inspector's "what it does"
+    /// (ADR 0108), and the file it was built from.
+    top_card: Option<(simsandbox_file::ModelFile, serde_json::Value)>,
     /// Values of sliders being dragged that apply on release (ADR 0037).
     pending: HashMap<String, f64>,
     /// The equation editor window, when open.
@@ -258,6 +261,7 @@ impl SimApp {
             mech_open: None,
             overview: None,
             overview_part: String::new(),
+            top_card: None,
             pending: HashMap::new(),
             editor: None,
             signals_editor: None,
