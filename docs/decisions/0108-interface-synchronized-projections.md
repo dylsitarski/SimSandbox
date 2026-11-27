@@ -61,5 +61,21 @@ As in the report, section 5: keep and fix the canvas (A), text first (B), stage 
   - **Shown:** the diagram and the Inspector follow, as before. The Overview marks the selected part ("(selected)", in the selection's colour). A scene outlines every instance that shows the selected block (`ViewInput::selected`, set by the app from the diagram's selection at the model's level).
   - Tests: a press selecting what its layer shows, grabbed or not, and constants selecting nothing (`scene/tests.rs`); the app selecting a use through its output and a block through its signal, with the picture outlining it (`scene_tests.rs`).
   - Not yet: a plot does not mark the selected block's curves; a selection inside a use (the diagram opened in it) is not shown in views or the Overview.
-- Not yet: the Stage, the Structure lens, Definitions; the Inspector's own headless form beyond `explain` (the card carries the same facts). (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
+- **The Stage, first increment (2026-11-27):**
+  - The tabs of tiled views are the Stage ("Stage", "Stage (n)"; saved layouts unchanged, still `views`).
+  - It has a bar of its own, "+ view", offering every view that fits and "Add views from…" a view file (`SimApp::add_view_items`, shared with More views…).
+  - Views are made from where a part is shown (point 4):
+    - the Overview's blocks have **Plot** (their outputs against time);
+    - its uses have **Plot** (the outputs they offer) and **Draw NAME** for each picture their model offers (a scene with that template as a layer, ADR 0113);
+    - the Inspector's "what it does" has **Plot**.
+
+    Each adds a view to the Stage and brings it to the front (`stage_plot`, `stage_draw`; `Views::add_entry` keeps a template's view as written).
+  - `simsandbox-app --view stage` opens on it.
+  - Headless, the Stage is `render`, and views are added with Python's `add_view` and `add_scene` (template layers included).
+  - Tested in the app: a use's picture drawn and outputs plotted, saved as written, in a tab titled Stage. A screenshot of "Two balancing poles" on the Stage under Xvfb.
+  - Not yet:
+    - "Show definition" from what is picked;
+    - a block type bringing a default picture with no view written (a contract change, for its own ADR);
+    - binding a view by dragging a signal onto it.
+- Not yet: the rest of the Stage (above), the Structure lens, Definitions; the Inspector's own headless form beyond `explain` (the card carries the same facts). (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
 

@@ -415,55 +415,15 @@ impl SimApp {
 
     /// "More views…" and "Data…": add a view, edit the filters.
     pub(super) fn view_menus(&mut self, ui: &mut egui::Ui) {
-        let Some(live) = &self.session else {
+        if self.session.is_none() {
             return;
-        };
-        let m = live.model();
-        let history = live.history();
-        let available = m.available(&history);
-        let views = &mut self.views;
-        let mut from_file = false;
-        ui.menu_button("More views…", |ui| {
-            let presets: Vec<_> = views
-                .registry
-                .types()
-                .iter()
-                // Views for other kinds of blocks are not offered at all.
-                .filter(|t| t.applies(&available))
-                .flat_map(|t| {
-                    t.presets
-                        .iter()
-                        .enumerate()
-                        .map(move |(k, p)| (t.name, k, p.label, p.description))
-                })
-                .collect();
-            for (name, k, label, description) in presets {
-                let fits = views.fits(name, k, &available);
-                let r = ui
-                    .add_enabled(fits, egui::Button::new(label))
-                    .on_hover_text(description)
-                    .on_disabled_hover_text("This model records nothing this view can show");
-                if r.clicked() {
-                    views.add(name, k, &available);
-                    ui.close();
-                }
-            }
-            ui.separator();
-            if ui
-                .button("Add views from…")
-                .on_hover_text("A view file's templates and views (*.ssbv.json, ADR 0113), added to this model's")
-                .clicked()
-            {
-                from_file = true;
-                ui.close();
-            }
-        })
-        .response
-        .on_hover_text("Add another view of this model");
-        drop(history);
-        if from_file {
+        }
+        ui.menu_button("More views…", |ui| self.add_view_items(ui))
+            .response
+            .on_hover_text("Add another view of this model, on the Stage");
+        if self.add_views_asked {
+            self.add_views_asked = false;
             self.add_views_dialog();
-            return;
         }
         let Some(live) = &self.session else {
             return;
@@ -484,9 +444,56 @@ impl SimApp {
         native_status(ui);
     }
 
+    /// The views that can be added: each preset that fits the model, and
+    /// "Add views from…" a view file. In "More views…" and the Stage's bar.
+    pub(super) fn add_view_items(&mut self, ui: &mut egui::Ui) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let m = live.model();
+        let history = live.history();
+        let available = m.available(&history);
+        let views = &mut self.views;
+        let presets: Vec<_> = views
+            .registry
+            .types()
+            .iter()
+            // Views for other kinds of blocks are not offered at all.
+            .filter(|t| t.applies(&available))
+            .flat_map(|t| {
+                t.presets
+                    .iter()
+                    .enumerate()
+                    .map(move |(k, p)| (t.name, k, p.label, p.description))
+            })
+            .collect();
+        for (name, k, label, description) in presets {
+            let fits = views.fits(name, k, &available);
+            let r = ui
+                .add_enabled(fits, egui::Button::new(label))
+                .on_hover_text(description)
+                .on_disabled_hover_text("This model records nothing this view can show");
+            if r.clicked() {
+                views.add(name, k, &available);
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui
+            .button("Add views from…")
+            .on_hover_text(
+                "A view file's templates and views (*.ssbv.json, ADR 0113), added to this model's",
+            )
+            .clicked()
+        {
+            self.add_views_asked = true;
+            ui.close();
+        }
+    }
+
     /// "Add views from…": a view file chosen in the system file dialog,
     /// added as an edit (undone as any other).
-    fn add_views_dialog(&mut self) {
+    pub(super) fn add_views_dialog(&mut self) {
         let mut dialog = rfd::FileDialog::new()
             .set_title("Add views from a view file")
             .add_filter("SimSandbox views", &["json"]);

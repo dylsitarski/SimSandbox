@@ -157,6 +157,8 @@ pub struct SimApp {
     /// The level the Overview shows (ADR 0110): a path of uses, empty for
     /// the model itself.
     overview_part: String,
+    /// "Add views from…" was chosen: the file dialog opens after the menu.
+    add_views_asked: bool,
     /// The model's own card, for the Inspector's "what it does"
     /// (ADR 0108), and the file it was built from.
     top_card: Option<(simsandbox_file::ModelFile, serde_json::Value)>,
@@ -262,6 +264,7 @@ impl SimApp {
             overview: None,
             overview_part: String::new(),
             top_card: None,
+            add_views_asked: false,
             pending: HashMap::new(),
             editor: None,
             signals_editor: None,
@@ -296,6 +299,11 @@ impl SimApp {
             app.dock.focus(|p| *p == Pane::Diagram);
         } else if view == Some("overview") {
             app.dock.focus(|p| *p == Pane::Overview);
+        } else if view == Some("stage") {
+            // The Stage with the model's own views (ADR 0108).
+            let tiles = app.tile_ids();
+            app.dock.sync(&tiles);
+            app.dock.focus(|p| matches!(p, Pane::Views { .. }));
         } else if let (Some(v), Some(live)) = (view, &app.session) {
             let (name, preset) = match v {
                 "phase" => ("plot.xy", 1),
@@ -542,8 +550,9 @@ impl SimApp {
                 .find(|x| x.id == *t)
                 .and_then(|x| self.views.registry.get(&x.state.type_name))
                 .map_or("View".into(), |vt| vt.label.to_string()),
-            Pane::Views { tiles, .. } if tiles.len() == 1 => "Views".into(),
-            Pane::Views { tiles, .. } => format!("Views ({})", tiles.len()),
+            // Where the model runs and views are made (ADR 0108).
+            Pane::Views { tiles, .. } if tiles.len() == 1 => "Stage".into(),
+            Pane::Views { tiles, .. } => format!("Stage ({})", tiles.len()),
         }
     }
 

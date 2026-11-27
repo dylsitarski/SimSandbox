@@ -271,6 +271,19 @@ impl Views {
         true
     }
 
+    /// A tile for an entry as written (a scene drawing a template, ADR
+    /// 0113), selected; its id, or why it cannot be shown.
+    pub fn add_entry(&mut self, e: &ViewEntry, available: &Available<'_>) -> Result<u64, String> {
+        let (state, problem) = self.restore(e, available)?;
+        if let Some(p) = problem {
+            return Err(p);
+        }
+        let id = self.push(state);
+        self.tile_mut(id).written = written(e);
+        self.selected = Some(id);
+        Ok(id)
+    }
+
     /// Show only one view, from a preset (the `--view` flag).
     pub fn show_only(&mut self, type_name: &str, preset: usize, available: &Available<'_>) {
         let before = std::mem::take(&mut self.tiles);

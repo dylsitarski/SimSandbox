@@ -114,6 +114,19 @@ impl SimApp {
             };
             ui.label(short).on_hover_text(&said);
         }
+        // Its outputs plotted on the Stage (ADR 0108 point 4).
+        let outputs: Vec<String> = part["outputs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|o| o["name"].as_str())
+            .map(|o| format!("{block}.{o}"))
+            .collect();
+        let plot = !outputs.is_empty()
+            && ui
+                .small_button("Plot")
+                .on_hover_text("Its outputs against time, on the Stage")
+                .clicked();
         let m = &part["method"];
         let fused: Vec<&str> = part["fused"]["with"]
             .as_array()
@@ -142,6 +155,9 @@ impl SimApp {
                 format!("; solved as one system with {}", fused.join(", "))
             }
         ));
+        if plot {
+            self.stage_plot(outputs);
+        }
     }
 
     /// A block's parameters by intent (see the module): `rows` by name.

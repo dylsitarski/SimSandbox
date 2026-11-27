@@ -102,6 +102,9 @@ impl SimApp {
         let mut edits: Vec<Edit> = Vec::new();
         let mut inspect: Option<String> = None;
         let mut open: Option<String> = None;
+        // Views made from here go to the Stage (ADR 0108 point 4).
+        let mut plot: Option<Vec<String>> = None;
+        let mut draw: Option<String> = None;
         let level = text(&card["part"]).to_string();
         // Inspected from the model's own level, where the diagram is.
         let top = level.is_empty();
@@ -178,7 +181,17 @@ impl SimApp {
             for part in card["parts"].as_array().into_iter().flatten() {
                 let is_selected = selected.as_deref() == part["name"].as_str();
                 if part["kind"] == "use" {
-                    use_part(ui, part, top, is_selected, &value, &mut open, &mut inspect, &mut edits);
+                    use_part(
+                        ui,
+                        part,
+                        top,
+                        is_selected,
+                        &value,
+                        &mut open,
+                        &mut inspect,
+                        &mut edits,
+                        (&mut plot, &mut draw),
+                    );
                     continue;
                 }
                 let name = text(&part["name"]);
@@ -192,6 +205,18 @@ impl SimApp {
                             ui.weak(text(&part["type"]));
                             if top && ui.small_button("Inspect").on_hover_text("Select it: the Inspector and the diagram follow").clicked() {
                                 inspect = Some(name.to_string());
+                            }
+                            let outputs: Vec<String> = part["outputs"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|o| o["name"].as_str())
+                                .map(|o| format!("{path}.{o}"))
+                                .collect();
+                            if !outputs.is_empty()
+                                && ui.small_button("Plot").on_hover_text("Its outputs against time, on the Stage").clicked()
+                            {
+                                plot = Some(outputs);
                             }
                         });
                         if part["agent"] == true {
@@ -421,6 +446,12 @@ impl SimApp {
         if let Some(part) = open {
             self.overview_part = part;
         }
+        if let Some(signals) = plot {
+            self.stage_plot(signals);
+        }
+        if let Some(template) = draw {
+            self.stage_draw(&template);
+        }
     }
 }
 
@@ -452,6 +483,7 @@ fn use_part(
     open: &mut Option<String>,
     inspect: &mut Option<String>,
     edits: &mut Vec<Edit>,
+    (plot, draw): (&mut Option<Vec<String>>, &mut Option<String>),
 ) {
     let name = text(&part["name"]);
     let path = text(&part["path"]);
@@ -479,10 +511,34 @@ fn use_part(
                 {
                     *inspect = Some(name.to_string());
                 }
-                let pictures = strings(&part["pictures"]);
-                if !pictures.is_empty() {
-                    ui.weak(format!("pictures: {}", pictures.join(", ")))
-                        .on_hover_text("Templates its model offers: a scene draws one as a template layer (ADR 0113)");
+                // What it offers, on the Stage: its outputs plotted, its
+                // pictures drawn (ADR 0108, ADR 0113).
+                let outputs: Vec<String> = part["outputs"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|o| o["name"].as_str())
+                    .map(|o| format!("{path}/{o}"))
+                    .collect();
+                if !outputs.is_empty()
+                    && ui
+                        .small_button("Plot")
+                        .on_hover_text("The outputs it offers against time, on the Stage")
+                        .clicked()
+                {
+                    *plot = Some(outputs);
+                }
+                for p in strings(&part["pictures"]) {
+                    let short = p.rsplit('/').next().unwrap_or(p);
+                    if ui
+                        .small_button(format!("Draw {short}"))
+                        .on_hover_text(format!(
+                            "Its picture {p} (a template its model offers, ADR 0113), on the Stage"
+                        ))
+                        .clicked()
+                    {
+                        *draw = Some(p.to_string());
+                    }
                 }
                 let inside = strings(&part["inside"]);
                 if !inside.is_empty() {

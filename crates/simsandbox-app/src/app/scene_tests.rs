@@ -491,3 +491,44 @@ fn a_part_picked_in_the_picture_is_selected_everywhere() {
     app.views.tiles[0].state.selected = Some("nothing".into());
     assert!(outlined(&picture(&mut app, tile).rgba) < plain + 10);
 }
+
+#[test]
+fn views_are_made_on_the_stage_from_where_a_part_is_shown() {
+    // ADR 0108 point 4: a use's picture drawn and its outputs plotted, from
+    // the Overview, each a view on the Stage, saved as written.
+    let mut app = SimApp::new(None, None, None, None);
+    let k = EXAMPLES
+        .iter()
+        .position(|e| e.name.starts_with("Two balancing poles"))
+        .unwrap();
+    app.open_example(k);
+    let before = app.views.tiles.len();
+    app.stage_draw("right/cartpole");
+    assert!(app.error.is_none(), "{:?}", app.error);
+    app.stage_plot(vec!["left/theta".into(), "right/theta".into()]);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert_eq!(app.views.tiles.len(), before + 2);
+    let drawn = &app.views.tiles[before];
+    assert!(
+        drawn.state.problem().is_none(),
+        "{:?}",
+        drawn.state.problem()
+    );
+    let file = saved(&app);
+    let scene = &file.controls.views[before];
+    assert_eq!(scene.scene.layers[0].other["template"], "right/cartpole");
+    assert_eq!(file.controls.views[before + 1].type_name, "plot.xy");
+    // Drawn in a tab of the Stage, which is brought to the front.
+    let ctx = egui::Context::default();
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.docked(ui));
+    out.textures_delta.clear();
+    let titles: Vec<String> = app
+        .dock
+        .state
+        .iter_all_tabs()
+        .map(|(_, p)| p.clone())
+        .filter(|p| matches!(p, Pane::Views { .. }))
+        .map(|p| app.pane_title(&p))
+        .collect();
+    assert!(titles.iter().all(|t| t.starts_with("Stage")), "{titles:?}");
+}

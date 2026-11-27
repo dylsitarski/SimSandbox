@@ -49,6 +49,21 @@ impl SimApp {
             (Some(crate::canvas::Selection::Block(b)), true) => Some(b.clone()),
             _ => None,
         };
+        // The Stage's own bar (ADR 0108): views are made here.
+        if grouped {
+            drop(history);
+            ui.horizontal(|ui| {
+                ui.menu_button("+ view", |ui| self.add_view_items(ui))
+                    .response
+                    .on_hover_text("Add a view to the Stage: a plot or picture of what the model records, or a view file's");
+                ui.weak("Press on a picture to select what it shows; grab what can be grabbed");
+            });
+            if self.add_views_asked {
+                self.add_views_asked = false;
+                self.add_views_dialog();
+            }
+            return self.view_tiles(ui, ids, false, actions);
+        }
         let views = &mut self.views;
         let (text, error) = (&mut self.param_edits, &mut self.error);
         let area = ui.available_rect_before_wrap();
@@ -181,6 +196,62 @@ impl SimApp {
             });
         }
         ui.allocate_rect(area, egui::Sense::hover());
+    }
+
+    /// A plot of these signals against time on the Stage (ADR 0108: a view
+    /// is made from where a thing is shown), brought to the front.
+    pub(super) fn stage_plot(&mut self, signals: Vec<String>) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let (m, history) = (live.model(), live.history());
+        let available = m.available(&history);
+        let bind: simsandbox_views::Bindings = [
+            ("x".to_string(), vec!["t".to_string()]),
+            ("y".to_string(), signals),
+        ]
+        .into();
+        if self.views.add_bound("plot.xy", bind, &available) {
+            if let Some(id) = self.views.selected {
+                self.focus = Some(Focus::Tile(id));
+            }
+        } else {
+            self.error = Some("nothing here can be plotted against time".into());
+        }
+    }
+
+    /// A scene on the Stage drawing a template (a component's picture,
+    /// `left/cartpole`, ADR 0113), brought to the front.
+    pub(super) fn stage_draw(&mut self, template: &str) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let (m, history) = (live.model(), live.history());
+        let available = m.available(&history);
+        let unit = self
+            .views
+            .templates
+            .get(template)
+            .and_then(|t| t.get("unit"))
+            .and_then(|u| u.as_str())
+            .unwrap_or("m")
+            .to_string();
+        let name: String = template
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let entry: Result<simsandbox_file::ViewEntry, _> =
+            serde_json::from_value(serde_json::json!({
+                "type": "plot.scene", "unit": unit,
+                "layers": [{"draw": "template", "name": name, "template": template}]
+            }));
+        match entry
+            .map_err(|e| e.to_string())
+            .and_then(|e| self.views.add_entry(&e, &available))
+        {
+            Ok(id) => self.focus = Some(Focus::Tile(id)),
+            Err(e) => self.error = Some(format!("{template}: {e}")),
+        }
     }
 
     /// Live input from keys or a view (ADR 0058): recorded when it changes

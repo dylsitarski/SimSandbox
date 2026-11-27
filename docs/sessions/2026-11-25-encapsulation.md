@@ -30,10 +30,11 @@
 - 2026-11-26: ADR 0113 step 3 built: frames over rows as parents, `body_axes` drawn once a body, the cart-pole's offered `tip` marked in "Two balancing poles".
 - 2026-11-26: ADR 0113 step 4 built: view files (`render --views`, `check`, "Add views from…", Python), templates outside the model hash, "Replace with…" for template layers; the scene form of a templated scene now edits it as written (it edited the expanded view, unsaved).
 - 2026-11-26: one selection (ADR 0108): a scene's press selects the block its layer shows (`Scene::selects`, `View::picked`); uses through their outputs; the Overview marks and scenes outline the selection.
+- 2026-11-27: the Stage's first increment: Stage tabs and bar, Plot and Draw from the Overview and Inspector, `--view stage`; screenshot under Xvfb.
 
 ## Left open
 
-- Next by ADR 0108: the Stage, the Structure lens, Definitions.
+- The rest of the Stage: "Show definition"; default pictures by block type (an ADR first); then the Structure lens and Definitions.
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session
