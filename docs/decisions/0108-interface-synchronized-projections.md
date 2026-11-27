@@ -75,7 +75,7 @@ As in the report, section 5: keep and fix the canvas (A), text first (B), stage 
   - Tested in the app: a use's picture drawn and outputs plotted, saved as written, in a tab titled Stage. A screenshot of "Two balancing poles" on the Stage under Xvfb.
   - Not yet:
     - "Show definition" from what is picked;
-    - a block type bringing a default picture with no view written (a contract change, for its own ADR);
+    - ~~a block type bringing a default picture with no view written~~: [ADR 0114](0114-block-types-bring-default-pictures.md), built 2026-11-27, with **Draw** for blocks' pictures and into an existing scene;
     - binding a view by dragging a signal onto it.
 - Not yet: the rest of the Stage (above), the Structure lens, Definitions; the Inspector's own headless form beyond `explain` (the card carries the same facts). (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
 

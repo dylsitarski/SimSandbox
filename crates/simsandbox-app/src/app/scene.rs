@@ -101,7 +101,15 @@ impl SimApp {
         let base = shown_form(t);
         // A scene drawing templates is edited as written, and drawn
         // expanded (ADR 0113).
-        let (written, drawn) = match &t.written {
+        // A scene gaining a template layer (a picture drawn into it, ADR
+        // 0114) is written from then on.
+        let as_written = t.written.clone().or_else(|| {
+            form.layers
+                .iter()
+                .any(|l| l.draw == simsandbox_file::templates::TEMPLATE_LAYER)
+                .then(|| simsandbox_session::views::shown_entry(t))
+        });
+        let (written, drawn) = match &as_written {
             Some(w) => {
                 let w = simsandbox_file::ViewEntry {
                     scene: form.clone(),

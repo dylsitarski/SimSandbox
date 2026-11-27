@@ -503,7 +503,7 @@ fn views_are_made_on_the_stage_from_where_a_part_is_shown() {
         .unwrap();
     app.open_example(k);
     let before = app.views.tiles.len();
-    app.stage_draw("right/cartpole");
+    app.stage_draw("right/cartpole", None);
     assert!(app.error.is_none(), "{:?}", app.error);
     app.stage_plot(vec!["left/theta".into(), "right/theta".into()]);
     assert!(app.error.is_none(), "{:?}", app.error);
@@ -531,4 +531,66 @@ fn views_are_made_on_the_stage_from_where_a_part_is_shown() {
         .map(|p| app.pane_title(&p))
         .collect();
     assert!(titles.iter().all(|t| t.starts_with("Stage")), "{titles:?}");
+}
+
+#[test]
+fn a_picture_is_drawn_into_a_new_view_or_an_existing_scene() {
+    // ADR 0114 point 4: a block's picture offered where parts are shown,
+    // into a scene of its unit as a layer on top, saved as written.
+    let mut app = SimApp::new(None, None, None, None);
+    let k = EXAMPLES
+        .iter()
+        .position(|e| e.name.starts_with("Cart-pole"))
+        .unwrap();
+    app.open_example(k);
+    assert!(app.views.pictures().contains(&"cartpole/bodies"));
+    let scene = app.views.tiles[0].id;
+    assert_eq!(app.views.scenes_in("m"), vec![(scene, 0)]);
+    assert!(app.views.scenes_in("mm").is_empty());
+
+    // Into the example's own scene, which draws a template already.
+    let layers = saved(&app).controls.views[0].scene.layers.len();
+    app.stage_draw("cartpole/bodies", Some(scene));
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(app.views.tiles[0].state.problem().is_none());
+    let written = &saved(&app).controls.views[0].scene.layers;
+    assert_eq!(written.len(), layers + 1);
+    assert_eq!(written[layers].other["template"], "cartpole/bodies");
+    assert_eq!(written[layers].other["name"], "cartpole_bodies");
+    assert_eq!(written[layers].frame, None);
+    // Again: named apart.
+    app.stage_draw("cartpole/bodies", Some(scene));
+    assert_eq!(
+        saved(&app).controls.views[0].scene.layers[layers + 1].other["name"],
+        "cartpole_bodies_2"
+    );
+
+    // Into a scene that drew no template: it is written from then on.
+    let live = app.session.as_ref().unwrap();
+    let (m, history) = (live.model(), live.history());
+    let plain: simsandbox_file::ViewEntry = serde_json::from_value(serde_json::json!({
+        "type": "plot.scene", "unit": "m",
+        "layers": [{"draw": "points", "bind": {"x": 0, "y": 0}}]
+    }))
+    .unwrap();
+    let id = app.views.add_entry(&plain, &m.available(&history)).unwrap();
+    drop(history);
+    assert!(app.views.tiles.last().unwrap().written.is_none());
+    app.stage_draw("cartpole/bodies", Some(id));
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let tile = app.views.tiles.last().unwrap();
+    assert!(tile.state.problem().is_none());
+    assert!(tile.written.is_some());
+    let last = saved(&app).controls.views.last().unwrap().clone();
+    assert_eq!(last.scene.layers[0].draw, "points");
+    assert_eq!(last.scene.layers[1].other["template"], "cartpole/bodies");
+
+    // A new view holding it alone.
+    let n = app.views.tiles.len();
+    app.stage_draw("cartpole/bodies", None);
+    assert_eq!(app.views.tiles.len(), n + 1);
+    assert_eq!(
+        saved(&app).controls.views[n].scene.layers[0].other["template"],
+        "cartpole/bodies"
+    );
 }

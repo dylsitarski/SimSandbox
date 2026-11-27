@@ -41,6 +41,9 @@ pub enum SceneEdit {
     /// A whole layer in place of one (a template layer replaced by another
     /// template, ADR 0113).
     Layer(usize, Box<simsandbox_file::SceneLayer>),
+    /// A picture (a template a part offers, ADR 0114 point 4) as a new
+    /// layer on top, in the scene's own frame, named after it.
+    AddPicture(String),
 }
 
 /// What a required attribute is bound to in a new layer: a small shape at
@@ -87,9 +90,45 @@ fn frame<'s>(s: &'s mut SceneSettings, name: &str) -> Result<&'s mut SceneFrame,
         .ok_or_else(|| format!("no frame '{name}'"))
 }
 
+/// A layer drawing `template`, named after it (`cartpole/bodies` as
+/// `cartpole_bodies`), with a number after the name if one is taken.
+pub fn picture_layer(s: &SceneSettings, template: &str) -> SceneLayer {
+    let base: String = template
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let taken = |n: &str| {
+        s.layers
+            .iter()
+            .any(|l| l.other.get("name").and_then(|v| v.as_str()) == Some(n))
+    };
+    let name = (1..)
+        .map(|k| {
+            if k == 1 {
+                base.clone()
+            } else {
+                format!("{base}_{k}")
+            }
+        })
+        .find(|n| !taken(n))
+        .expect("a free name");
+    SceneLayer {
+        draw: simsandbox_file::templates::TEMPLATE_LAYER.to_string(),
+        frame: None,
+        bind: BTreeMap::new(),
+        grab: None,
+        other: [
+            ("name".to_string(), serde_json::json!(name)),
+            ("template".to_string(), serde_json::json!(template)),
+        ]
+        .into(),
+    }
+}
+
 /// Apply `edit` to `s`. Refused, `s` is unchanged.
 pub fn apply(s: &mut SceneSettings, edit: &SceneEdit) -> Result<(), String> {
     match edit {
+        SceneEdit::AddPicture(template) => s.layers.push(picture_layer(s, template)),
         SceneEdit::Unit(u) => {
             let u = u.trim();
             s.unit = (!u.is_empty()).then(|| u.to_string());

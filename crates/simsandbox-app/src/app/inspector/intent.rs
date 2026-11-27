@@ -122,11 +122,27 @@ impl SimApp {
             .filter_map(|o| o["name"].as_str())
             .map(|o| format!("{block}.{o}"))
             .collect();
-        let plot = !outputs.is_empty()
-            && ui
-                .small_button("Plot")
-                .on_hover_text("Its outputs against time, on the Stage")
-                .clicked();
+        let mut draw = None;
+        let plot = ui
+            .horizontal(|ui| {
+                let plot = !outputs.is_empty()
+                    && ui
+                        .small_button("Plot")
+                        .on_hover_text("Its outputs against time, on the Stage")
+                        .clicked();
+                // The pictures it offers (ADR 0114), into a new view or a
+                // scene of their unit.
+                let targets = super::super::views::PictureTargets::of(&self.views);
+                for p in part["pictures"].as_array().into_iter().flatten() {
+                    let Some(p) = p.as_str() else { continue };
+                    let short = p.rsplit('/').next().unwrap_or(p);
+                    if let Some(d) = targets.menu(ui, p, &format!("Draw {short}")) {
+                        draw = Some(d);
+                    }
+                }
+                plot
+            })
+            .inner;
         let m = &part["method"];
         let fused: Vec<&str> = part["fused"]["with"]
             .as_array()
@@ -157,6 +173,9 @@ impl SimApp {
         ));
         if plot {
             self.stage_plot(outputs);
+        }
+        if let Some((template, into)) = draw {
+            self.stage_draw(&template, into);
         }
     }
 

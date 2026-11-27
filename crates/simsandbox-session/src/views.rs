@@ -341,32 +341,73 @@ impl Views {
 
     /// The tiles as they draw: templates put in place. What they read.
     pub fn shown_entries(&self) -> Vec<ViewEntry> {
+        self.tiles.iter().map(shown_entry).collect()
+    }
+
+    /// The length unit a template draws in (`m` if it does not say).
+    pub fn template_unit(&self, template: &str) -> String {
+        self.templates
+            .get(template)
+            .and_then(|t| t.get("unit"))
+            .and_then(|u| u.as_str())
+            .unwrap_or("m")
+            .to_string()
+    }
+
+    /// The pictures parts offer (ADR 0113, ADR 0114): templates named by a
+    /// block's or a use's path, `cartpole/bodies`, `left/cartpole`.
+    pub fn pictures(&self) -> Vec<&str> {
+        self.templates
+            .keys()
+            .filter(|k| k.contains('/'))
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// The scene tiles a picture in `unit` can be drawn into: their ids
+    /// and places among the tiles (ADR 0114 point 4).
+    pub fn scenes_in(&self, unit: &str) -> Vec<(u64, usize)> {
         self.tiles
             .iter()
-            .map(|tile| {
-                let s = &tile.state;
-                ViewEntry {
-                    type_name: s.type_name.clone(),
-                    template: None,
-                    params: BTreeMap::new(),
-                    bind: s
-                        .bind
-                        .iter()
-                        .filter(|(_, v)| !v.is_empty())
-                        .map(|(k, v)| (k.clone(), Binding::from(v.clone())))
-                        .collect(),
-                    style: s.style.clone(),
-                    camera: s.camera().map(|c| {
-                        let [yaw, pitch, zoom] = c.map(tidy);
-                        CameraControl { yaw, pitch, zoom }
-                    }),
-                    selection: s.selection(),
-                    canvas: tile.canvas,
-                    probe: None,
-                    scene: SceneSettings::from_map(&s.settings()).unwrap_or_default(),
-                }
+            .enumerate()
+            .filter(|(_, t)| t.state.type_name == simsandbox_views::scene::SCENE)
+            .filter(|(_, t)| {
+                let written = t.written.as_ref().map(|w| w.scene.unit.clone());
+                let drawn = t
+                    .state
+                    .settings()
+                    .get("unit")
+                    .and_then(|u| u.as_str())
+                    .map(str::to_string);
+                written.unwrap_or(drawn).as_deref().unwrap_or("m") == unit
             })
+            .map(|(k, t)| (t.id, k))
             .collect()
+    }
+}
+
+/// A tile as it draws: its template put in place.
+pub fn shown_entry(tile: &Tile) -> ViewEntry {
+    let s = &tile.state;
+    ViewEntry {
+        type_name: s.type_name.clone(),
+        template: None,
+        params: BTreeMap::new(),
+        bind: s
+            .bind
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(k, v)| (k.clone(), Binding::from(v.clone())))
+            .collect(),
+        style: s.style.clone(),
+        camera: s.camera().map(|c| {
+            let [yaw, pitch, zoom] = c.map(tidy);
+            CameraControl { yaw, pitch, zoom }
+        }),
+        selection: s.selection(),
+        canvas: tile.canvas,
+        probe: None,
+        scene: SceneSettings::from_map(&s.settings()).unwrap_or_default(),
     }
 }
 

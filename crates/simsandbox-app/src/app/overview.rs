@@ -6,6 +6,7 @@
 //! interface, opened in place; what reads inside a used model is listed,
 //! with Offer as output.
 
+use super::views::PictureTargets;
 use super::*;
 use serde_json::Value;
 
@@ -104,7 +105,8 @@ impl SimApp {
         let mut open: Option<String> = None;
         // Views made from here go to the Stage (ADR 0108 point 4).
         let mut plot: Option<Vec<String>> = None;
-        let mut draw: Option<String> = None;
+        let mut draw: Option<Drawn> = None;
+        let targets = PictureTargets::of(&self.views);
         let level = text(&card["part"]).to_string();
         // Inspected from the model's own level, where the diagram is.
         let top = level.is_empty();
@@ -190,7 +192,7 @@ impl SimApp {
                         &mut open,
                         &mut inspect,
                         &mut edits,
-                        (&mut plot, &mut draw),
+                        (&mut plot, &mut draw, &targets),
                     );
                     continue;
                 }
@@ -217,6 +219,13 @@ impl SimApp {
                                 && ui.small_button("Plot").on_hover_text("Its outputs against time, on the Stage").clicked()
                             {
                                 plot = Some(outputs);
+                            }
+                            // The pictures it offers (ADR 0114).
+                            for p in strings(&part["pictures"]) {
+                                let short = p.rsplit('/').next().unwrap_or(p);
+                                if let Some(d) = targets.menu(ui, p, &format!("Draw {short}")) {
+                                    draw = Some(d);
+                                }
                             }
                         });
                         if part["agent"] == true {
@@ -449,8 +458,8 @@ impl SimApp {
         if let Some(signals) = plot {
             self.stage_plot(signals);
         }
-        if let Some(template) = draw {
-            self.stage_draw(&template);
+        if let Some((template, into)) = draw {
+            self.stage_draw(&template, into);
         }
     }
 }
@@ -471,6 +480,10 @@ fn marked(header: String, selected: bool, ui: &egui::Ui) -> egui::RichText {
     }
 }
 
+/// A picture chosen to draw, and the scene it goes into (`None` a new
+/// view).
+type Drawn = (String, Option<u64>);
+
 /// A model used at this level, as one part (ADR 0110): what it is, its
 /// interface for this use with values live, Open to show its own level.
 #[allow(clippy::too_many_arguments)]
@@ -483,7 +496,11 @@ fn use_part(
     open: &mut Option<String>,
     inspect: &mut Option<String>,
     edits: &mut Vec<Edit>,
-    (plot, draw): (&mut Option<Vec<String>>, &mut Option<String>),
+    (plot, draw, targets): (
+        &mut Option<Vec<String>>,
+        &mut Option<Drawn>,
+        &PictureTargets,
+    ),
 ) {
     let name = text(&part["name"]);
     let path = text(&part["path"]);
@@ -530,14 +547,8 @@ fn use_part(
                 }
                 for p in strings(&part["pictures"]) {
                     let short = p.rsplit('/').next().unwrap_or(p);
-                    if ui
-                        .small_button(format!("Draw {short}"))
-                        .on_hover_text(format!(
-                            "Its picture {p} (a template its model offers, ADR 0113), on the Stage"
-                        ))
-                        .clicked()
-                    {
-                        *draw = Some(p.to_string());
+                    if let Some(d) = targets.menu(ui, p, &format!("Draw {short}")) {
+                        *draw = Some(d);
                     }
                 }
                 let inside = strings(&part["inside"]);

@@ -478,6 +478,25 @@ impl SimApp {
                 ui.close();
             }
         }
+        // The pictures parts offer (ADR 0114 point 4): blocks' and used
+        // models', each into a new view or a scene of its unit.
+        let pictures: Vec<String> = views.pictures().into_iter().map(String::from).collect();
+        let mut draw = None;
+        if !pictures.is_empty() {
+            ui.separator();
+            ui.weak("Pictures");
+            let targets = super::views::PictureTargets::of(views);
+            for p in &pictures {
+                if let Some(d) = targets.menu(ui, p, p) {
+                    draw = Some(d);
+                }
+            }
+        }
+        drop(history);
+        if let Some((template, into)) = draw {
+            self.stage_draw(&template, into);
+            ui.close();
+        }
         ui.separator();
         if ui
             .button("Add views from…")

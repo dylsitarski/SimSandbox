@@ -220,35 +220,40 @@ impl SimApp {
         }
     }
 
-    /// A scene on the Stage drawing a template (a component's picture,
-    /// `left/cartpole`, ADR 0113), brought to the front.
-    pub(super) fn stage_draw(&mut self, template: &str) {
+    /// A picture (a template a part offers: a used model's `left/cartpole`,
+    /// ADR 0113, or a block's `cartpole/bodies`, ADR 0114) on the Stage:
+    /// into a new scene of its unit, or into scene tile `into` as a new
+    /// layer on top. The view is brought to the front.
+    pub(super) fn stage_draw(&mut self, template: &str, into: Option<u64>) {
+        if let Some(tile) = into {
+            self.edit_scene(
+                tile,
+                &crate::scene_edit::SceneEdit::AddPicture(template.into()),
+            );
+            match self.scene_drafts.get(&tile) {
+                Some(d) => self.error = Some(format!("{template}: {}", d.error)),
+                None => self.focus = Some(Focus::Tile(tile)),
+            }
+            return;
+        }
         let Some(live) = &self.session else {
             return;
         };
         let (m, history) = (live.model(), live.history());
         let available = m.available(&history);
-        let unit = self
-            .views
-            .templates
-            .get(template)
-            .and_then(|t| t.get("unit"))
-            .and_then(|u| u.as_str())
-            .unwrap_or("m")
-            .to_string();
-        let name: String = template
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect();
-        let entry: Result<simsandbox_file::ViewEntry, _> =
-            serde_json::from_value(serde_json::json!({
-                "type": "plot.scene", "unit": unit,
-                "layers": [{"draw": "template", "name": name, "template": template}]
-            }));
-        match entry
-            .map_err(|e| e.to_string())
-            .and_then(|e| self.views.add_entry(&e, &available))
-        {
+        let mut scene = simsandbox_file::SceneSettings {
+            unit: Some(self.views.template_unit(template)),
+            ..Default::default()
+        };
+        scene
+            .layers
+            .push(crate::scene_edit::picture_layer(&scene, template));
+        let entry = simsandbox_file::ViewEntry {
+            scene,
+            type_name: simsandbox_views::scene::SCENE.to_string(),
+            ..Default::default()
+        };
+        match self.views.add_entry(&entry, &available) {
             Ok(id) => self.focus = Some(Focus::Tile(id)),
             Err(e) => self.error = Some(format!("{template}: {e}")),
         }
@@ -462,5 +467,76 @@ pub(super) fn slot_editor(
             })
             .response
             .on_hover_text(slot.description);
+    }
+}
+
+/// Where a picture can be drawn on the Stage (ADR 0114 point 4): a new
+/// view, or a scene of its unit. Read before the parts are shown.
+pub(super) struct PictureTargets {
+    /// Each picture's unit, and the scenes in each unit as (tile id, place).
+    units: std::collections::BTreeMap<String, String>,
+    scenes: std::collections::BTreeMap<String, Vec<(u64, usize)>>,
+}
+
+impl PictureTargets {
+    pub(super) fn of(views: &simsandbox_session::views::Views) -> Self {
+        let units: std::collections::BTreeMap<String, String> = views
+            .templates
+            .keys()
+            .map(|t| (t.clone(), views.template_unit(t)))
+            .collect();
+        let scenes = units
+            .values()
+            .map(|u| (u.clone(), views.scenes_in(u)))
+            .collect();
+        Self { units, scenes }
+    }
+
+    /// "Draw NAME": a button for a new view if no scene can take it, else
+    /// a menu, "New view" or "Into view N". The picture and where it goes
+    /// (`None` a new view), when chosen.
+    pub(super) fn menu(
+        &self,
+        ui: &mut egui::Ui,
+        template: &str,
+        label: &str,
+    ) -> Option<(String, Option<u64>)> {
+        let hover = format!("Its picture {template}, on the Stage");
+        let scenes = self
+            .units
+            .get(template)
+            .and_then(|u| self.scenes.get(u))
+            .filter(|s| !s.is_empty());
+        let Some(scenes) = scenes else {
+            return ui
+                .small_button(label)
+                .on_hover_text(format!("{hover}, in a view of its own"))
+                .clicked()
+                .then(|| (template.to_string(), None));
+        };
+        let mut chosen = None;
+        ui.menu_button(label, |ui| {
+            if ui
+                .button("New view")
+                .on_hover_text("A scene holding it alone")
+                .clicked()
+            {
+                chosen = Some((template.to_string(), None));
+                ui.close();
+            }
+            for &(id, k) in scenes {
+                if ui
+                    .button(format!("Into view {}", k + 1))
+                    .on_hover_text("On top of what that scene draws, in its own frame")
+                    .clicked()
+                {
+                    chosen = Some((template.to_string(), Some(id)));
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text(hover);
+        chosen
     }
 }
