@@ -771,6 +771,9 @@ pub trait Block: Send {
     fn as_generated_code(&self) -> Option<&dyn GeneratedCode> {
         None
     }
+    fn as_pictures(&self) -> Option<&dyn Pictures> {
+        None
+    }
 }
 
 /// Capability: the Block can expose its equations, so the equation domain can
@@ -804,6 +807,23 @@ pub trait Derivatives {
 /// real-time models.
 pub trait Realtime {
     fn worst_case_step(&self) -> Duration;
+}
+
+/// A picture a block offers (ADR 0114): a template in the form of ADR 0113
+/// (a view, usually a scene, with inputs, parameters and offered frames,
+/// its own names written with `$`), as JSON text the file crate reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Picture {
+    pub name: String,
+    pub description: String,
+    pub template: String,
+}
+
+/// Capability: the Block offers pictures of itself, built from its
+/// configuration (ADR 0114). Each is offered as `BLOCK/NAME`, its inputs
+/// bound by name to the block's ports and parameters.
+pub trait Pictures {
+    fn pictures(&self) -> Vec<Picture>;
 }
 
 /// Capability: SimSandbox makes the Block's code from its equations (typed

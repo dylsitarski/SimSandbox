@@ -46,7 +46,7 @@ fn main() {
 
     let mut views =
         simsandbox_session::views::Views::new(simsandbox_session::examples::view_registry());
-    views.templates = simsandbox_file::compose::templates_in(&s.file, s.file.folder.as_deref());
+    views.templates = s.templates();
     {
         let h = s.signals();
         let available = s.available(&h);

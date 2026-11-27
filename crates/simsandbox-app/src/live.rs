@@ -68,6 +68,9 @@ pub struct Model {
     pointers: Vec<String>,
     /// The block parameters a scene may bind (ADR 0102).
     param_keys: Vec<String>,
+    /// Every template the model can draw: the file's, its used models'
+    /// and its blocks' (ADR 0113, ADR 0114).
+    pub templates: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl Model {
@@ -106,6 +109,7 @@ impl Model {
             block_types,
             pointers: s.pointers().to_vec(),
             param_keys: s.bindable_params().to_vec(),
+            templates: s.templates(),
         }
     }
 

@@ -70,6 +70,22 @@ pub struct Template {
     pub offers: Vec<String>,
     /// The view itself, `$` names unbound.
     pub view: ViewEntry,
+    /// Offered by a block (ADR 0114): its inputs bind by name to the
+    /// block's ports and parameters (`cartpole.x`), not to a use's outputs.
+    pub by_block: bool,
+}
+
+/// The key [`block_template`] marks a block's picture with.
+const OFFERED_BY: &str = "offered_by";
+
+/// A block's picture (ADR 0114) as a template: the JSON text its block
+/// gives, marked as offered by a block.
+pub fn block_template(text: &str) -> Result<Value, String> {
+    let mut v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    v.as_object_mut()
+        .ok_or("a picture is a template: an object")?
+        .insert(OFFERED_BY.into(), Value::String("block".into()));
+    Ok(v)
 }
 
 const KINDS: [&str; 3] = ["scalar", "rows", "pointer"];
@@ -85,6 +101,7 @@ impl Template {
         let take = |rest: &mut serde_json::Map<String, Value>, key: &str| {
             rest.remove(key).unwrap_or(Value::Null)
         };
+        let by_block = take(&mut rest, OFFERED_BY) == Value::String("block".into());
         let description = match take(&mut rest, "description") {
             Value::Null => String::new(),
             Value::String(s) => s,
@@ -143,6 +160,7 @@ impl Template {
             params,
             offers,
             view,
+            by_block,
         })
     }
 }
@@ -591,7 +609,14 @@ fn by_name(t: &Template, name: &str, env: &mut BTreeMap<String, SceneValue>) {
     };
     for k in t.inputs.keys() {
         if !env.contains_key(k) {
-            env.insert(k.clone(), SceneValue::Name(format!("{path}/{k}")));
+            // A block's port or parameter (`cartpole.x`); a use's output
+            // or pointer block (`left/x`).
+            let name = if t.by_block {
+                format!("{path}.{k}")
+            } else {
+                format!("{path}/{k}")
+            };
+            env.insert(k.clone(), SceneValue::Name(name));
         }
     }
 }

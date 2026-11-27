@@ -822,6 +822,9 @@ fn scene_problem(text: &str, scene: &str) -> Option<String> {
                     &expanded
                 }
                 Ok(_) => return Some("a scene is an object of its settings".into()),
+                // A block's picture (ADR 0114) is known once the model is
+                // built: `check` reads it.
+                Err(e) if e.contains("no template '") => return None,
                 Err(e) => return Some(e),
             }
         }

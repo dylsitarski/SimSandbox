@@ -307,6 +307,15 @@ pub fn card_at(
         if !entry.bodies.is_empty() {
             part["bodies"] = json!(entry.bodies);
         }
+        // The pictures it offers (ADR 0114), by the name a view draws.
+        part["pictures"] = json!(block
+            .as_pictures()
+            .map(|p| p
+                .pictures()
+                .iter()
+                .map(|p| format!("{}/{}", entry.name, p.name))
+                .collect::<Vec<_>>())
+            .unwrap_or_default());
         parts.push(part);
     }
     // Each model used here, as one part: its interface (ADR 0110).
@@ -398,7 +407,7 @@ pub fn card_at(
 
     // Views and probes are the whole model's, at its top level.
     let mut reaching_inside = Vec::new();
-    let templates = simsandbox_file::compose::templates_in(&s.file, s.file.folder.as_deref());
+    let templates = s.templates();
     let views: Vec<Value> = if !part.is_empty() {
         Vec::new()
     } else {
@@ -868,6 +877,19 @@ pub fn markdown(card: &Value) -> String {
                 line(e.as_str().unwrap_or(""));
             }
             line("```");
+            line("");
+        }
+        let pictures: Vec<&str> = part["pictures"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        if !pictures.is_empty() {
+            line(&format!(
+                "Pictures it offers: `{}` (a scene draws one as a template layer).",
+                pictures.join("`, `")
+            ));
             line("");
         }
         if let Some(bodies) = part["bodies"].as_array() {

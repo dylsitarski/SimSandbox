@@ -294,8 +294,7 @@ impl SimApp {
                 };
                 let w = {
                     let h = s.signals();
-                    self.views.templates =
-                        simsandbox_file::compose::templates_in(&s.file, s.file.folder.as_deref());
+                    self.views.templates = s.templates();
                     self.views.open(&s.available(&h), &s.file.controls.views)
                 };
                 s.warnings.extend(w);

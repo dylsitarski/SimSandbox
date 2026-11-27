@@ -63,7 +63,7 @@ pub fn render(
     let h = s.signals();
     let available = s.available(&h);
     let mut views = Views::new(registry);
-    views.templates = simsandbox_file::compose::templates_in(&s.file, s.file.folder.as_deref());
+    views.templates = s.templates();
     let warnings = views.open(&available, &s.file.controls.views);
     if let Some(k) = o.view {
         let n = views.tiles.len();
@@ -207,7 +207,7 @@ fn scene_problems(file: &simsandbox_file::ModelFile, registry: &Registry) -> Vec
     };
     let h = s.signals();
     let available = s.available(&h);
-    let templates = simsandbox_file::compose::templates_in(file, file.folder.as_deref());
+    let templates = s.templates();
     file.controls
         .views
         .iter()

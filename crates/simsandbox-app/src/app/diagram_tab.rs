@@ -236,8 +236,7 @@ impl SimApp {
         let history = live.history();
         let now = live.model();
         let available = now.available(&history);
-        self.views.templates =
-            simsandbox_file::compose::templates_in(&now.file, now.file.folder.as_deref());
+        self.views.templates.clone_from(&now.templates);
         for w in self.views.set_entries(&views, &available) {
             self.log.warn(w);
         }

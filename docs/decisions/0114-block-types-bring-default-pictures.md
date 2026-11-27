@@ -1,6 +1,6 @@
 # 0114 — Block types bring default pictures
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-27)
 - **Date:** 2026-11-27
 - **Builds on:**
   - [ADR 0113](0113-views-bind-to-interfaces.md) (templates; models offer pictures to their users);
@@ -89,3 +89,18 @@ A block's picture depends on how the block is configured. A mechanism's bodies, 
   - the headless guide.
 
 **Concepts added or removed** ([concept list](../architecture/overview.md#concepts)): none. A block's pictures are templates (ADR 0113), offered by a part as a used model's are; the trait is a capability of the existing Block concept.
+
+## Built so far
+
+- **Step 1 (2026-11-27), the trait, its reading and its listing:**
+  - `simsandbox_core::block::{Picture, Pictures}` and `Block::as_pictures` (default `None`), as every capability is reached; the `Block` trait's required methods are unchanged.
+  - `templates::block_template` marks a picture's template as offered by a block (`offered_by`), so its inputs bind by name to `BLOCK.input` (a port, or a parameter, ADR 0102), where a used model's bind to `USE/input`.
+  - `session::block_pictures(model, ids)` reads them from the loaded model by flat name, so a block in a used model offers `u/d/dot`. `Session::templates()` is every template the model can draw: the file's, its used models' and its blocks'. Every place that expands views uses it: the session's recording, the views' tiles, `check`, `render`, the card; the app's published model carries it.
+  - `check` lists `pictures` beside `templates`, the card lists a block's `pictures` (and in Markdown "Pictures it offers"), and `describe TYPE` names its example's.
+  - Python's quick scene check defers a block's picture to `check`, since it is known only once the model is built.
+  - Tests (`simsandbox-session/tests/pictures.rs`), with a test block offering a picture:
+    - bound to its port;
+    - drawn;
+    - listed by `check`, the card and `describe`;
+    - offered under a use's path.
+

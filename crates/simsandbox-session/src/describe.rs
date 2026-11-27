@@ -179,6 +179,15 @@ pub fn block_type(r: &Registry, name: &str) -> Value {
     }
     if let Ok(b) = r.example(name) {
         v["interface"] = block(b.as_ref());
+        // The pictures it offers (ADR 0114), as its example offers them;
+        // each block builds its own from its configuration.
+        if let Some(p) = b.as_pictures() {
+            v["pictures"] = json!(p
+                .pictures()
+                .iter()
+                .map(|p| json!({"name": p.name, "description": p.description}))
+                .collect::<Vec<_>>());
+        }
     }
     v
 }
@@ -373,12 +382,15 @@ pub fn check(text: &str, r: &Registry) -> Value {
             {
                 let h = s.signals();
                 let mut views = crate::views::Views::new(crate::examples::view_registry());
-                views.templates =
-                    simsandbox_file::compose::templates_in(&s.file, s.file.folder.as_deref());
+                views.templates = s.templates();
                 warnings.extend(views.open(&s.available(&h), &s.file.controls.views));
             }
-            // Templates that do not read, used or not (ADR 0113).
+            // Templates that do not read, used or not (ADR 0113), and the
+            // pictures the blocks offer (ADR 0114).
             let (templates, problems) = templates(&s.file);
+            warnings.extend(problems);
+            let (pictures, problems) =
+                templates_listed(&crate::session::block_pictures(s.sim_model(), &s.ids));
             warnings.extend(problems);
             json!({
                 "ok": true,
@@ -417,6 +429,8 @@ pub fn check(text: &str, r: &Registry) -> Value {
                 "views": s.file.controls.views.iter().map(|v| v.template.as_ref().map_or_else(|| v.type_name.clone(), |t| format!("template {t}"))).collect::<Vec<_>>(),
                 // Views with an interface (ADR 0113): what each takes.
                 "templates": templates,
+                // What the blocks offer to draw, by `block/name` (ADR 0114).
+                "pictures": pictures,
             })
         }
     }
@@ -426,9 +440,17 @@ pub fn check(text: &str, r: &Registry) -> Value {
 /// type, inputs, parameters and offered frames; and the problems of those
 /// that do not read.
 pub fn templates(file: &simsandbox_file::ModelFile) -> (Value, Vec<String>) {
+    templates_listed(&file.templates)
+}
+
+/// Templates by name, as `check` lists them, and the problems of those
+/// that do not read.
+pub fn templates_listed(
+    templates: &std::collections::BTreeMap<String, Value>,
+) -> (Value, Vec<String>) {
     let mut out = serde_json::Map::new();
     let mut problems = Vec::new();
-    for (name, written) in &file.templates {
+    for (name, written) in templates {
         match simsandbox_file::templates::Template::read(name, written) {
             Ok(t) => {
                 out.insert(

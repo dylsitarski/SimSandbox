@@ -15,6 +15,8 @@
 
 ## Decided
 
+- Owner (2026-11-27): [ADR 0114](../decisions/0114-block-types-bring-default-pictures.md) accepted: a block's pictures named as a use's; pictures layer into one view.
+
 - Owner (2026-11-26): [ADR 0113](../decisions/0113-views-bind-to-interfaces.md) accepted, with `$` names, the word "template" and `.ssbv.json` for view files.
 
 - Owner (2026-11-25): [ADR 0110](../decisions/0110-encapsulated-models.md) accepted (Q65 answered: structure first). Asked whether to close reading too: observing stays open, reading that feeds a result goes through outputs.
@@ -32,10 +34,11 @@
 - 2026-11-26: one selection (ADR 0108): a scene's press selects the block its layer shows (`Scene::selects`, `View::picked`); uses through their outputs; the Overview marks and scenes outline the selection.
 - 2026-11-27: the Stage's first increment: Stage tabs and bar, Plot and Draw from the Overview and Inspector, `--view stage`; screenshot under Xvfb.
 - 2026-11-27: [ADR 0114](../decisions/0114-block-types-bring-default-pictures.md) drafted (proposed): block types bring default pictures.
+- 2026-11-27: ADR 0114 step 1 built: the `Pictures` capability, `block_pictures` and `Session::templates()`, listings in `check`, the card and `describe`; tested with a test block.
 
 ## Left open
 
-- The rest of the Stage: "Show definition"; default pictures by block type (ADR 0114, proposed); then the Structure lens and Definitions.
+- The rest of the Stage: "Show definition"; default pictures by block type (ADR 0114: step 2, the mechanism's `bodies`, next); then the Structure lens and Definitions.
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session

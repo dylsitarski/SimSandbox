@@ -202,6 +202,8 @@ impl Session {
         // Where a run only data drives ends (ADR 0067 step 4).
         let data_end = crate::run::data_end(&loaded.model);
         let sim = Simulator::new(loaded.model, 0.0).map_err(|e| e.to_string())?;
+        // What the blocks offer to draw (ADR 0114).
+        let block_templates = block_pictures(sim.model(), &loaded.ids);
         let schedule: Vec<InputEvent> = loaded
             .file
             .run
@@ -234,7 +236,7 @@ impl Session {
             // (ADR 0113).
             recording: Recording::new(&simsandbox_file::templates::expand_all(
                 &start_file.controls.views,
-                &simsandbox_file::compose::templates_in(&start_file, start_file.folder.as_deref()),
+                &templates_with(&start_file, &block_templates),
             )),
             probes: Probes::default(),
             catalogue,
@@ -378,6 +380,13 @@ impl Session {
     /// The kernel model being run.
     pub fn sim_model(&self) -> &simsandbox_core::graph::Model {
         self.sim.model()
+    }
+
+    /// Every template this model can draw (ADR 0113, ADR 0114): the
+    /// file's, those its used models offer (`left/cartpole`), and those
+    /// its blocks offer (`cartpole/bodies`, `left/cartpole/bodies`).
+    pub fn templates(&self) -> BTreeMap<String, serde_json::Value> {
+        templates_with(&self.file, &block_pictures(self.sim_model(), &self.ids))
     }
 
     /// Each activated use (ADR 0088), by path: whether it is held now
@@ -957,3 +966,36 @@ pub(crate) fn short(v: f64) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// The pictures the loaded blocks offer (ADR 0114), as templates by
+/// `BLOCK/NAME` (a block in a used model under its path). A picture whose
+/// text is not JSON is left out (`check` reports it).
+pub fn block_pictures(
+    model: &simsandbox_core::graph::Model,
+    ids: &BTreeMap<String, simsandbox_core::graph::BlockId>,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut out = BTreeMap::new();
+    for (name, &id) in ids {
+        let Some(p) = model.block(id).ok().and_then(|b| b.as_pictures()) else {
+            continue;
+        };
+        for picture in p.pictures() {
+            if let Ok(t) = simsandbox_file::templates::block_template(&picture.template) {
+                out.insert(format!("{name}/{}", picture.name), t);
+            }
+        }
+    }
+    out
+}
+
+/// The file's templates and its used models', with its blocks' pictures.
+fn templates_with(
+    file: &simsandbox_file::ModelFile,
+    blocks: &BTreeMap<String, serde_json::Value>,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut all = simsandbox_file::compose::templates_in(file, file.folder.as_deref());
+    for (k, v) in blocks {
+        all.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    all
+}
