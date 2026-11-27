@@ -61,3 +61,90 @@ fn a_bundle_without_a_shared_group_says_its_wire_or_its_count() {
         }
     }
 }
+
+fn at(d: &Diagram, moves: &[simsandbox_session::diagram::Edit], name: &str) -> [f64; 2] {
+    moves
+        .iter()
+        .find_map(|e| match e {
+            simsandbox_session::diagram::Edit::Move { block, at } if block == name => Some(*at),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{name} not placed; nodes {:?}",
+                d.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+            )
+        })
+}
+
+fn arranged(name: &str) -> (Diagram, Vec<simsandbox_session::diagram::Edit>) {
+    let e = EXAMPLES.iter().find(|e| e.name.starts_with(name)).unwrap();
+    let (file, _) = simsandbox_file::ModelFile::from_json(e.text).unwrap();
+    let r = registry();
+    let d = Diagram::new(&file, &r);
+    let roles = simsandbox_session::diagram::roles(&file, &r);
+    let moves = simsandbox_session::diagram::arrange(&d, &roles);
+    assert_eq!(moves.len(), d.nodes.len(), "every node placed once");
+    (d, moves)
+}
+
+#[test]
+fn arranged_by_role_interaction_is_left_the_controller_below_the_plant() {
+    // ADR 0108 point 3: a suggestion a person applies.
+    let (d, m) = arranged("Cart-pole");
+    let (hand, control, cartpole) = (
+        at(&d, &m, "hand"),
+        at(&d, &m, "control"),
+        at(&d, &m, "cartpole"),
+    );
+    assert!(
+        hand[0] < control[0] && control[0] < cartpole[0],
+        "{hand:?} {control:?} {cartpole:?}"
+    );
+    assert!(
+        control[1] > cartpole[1],
+        "the controller is below the plant"
+    );
+    // The card's roles, from the file alone.
+    let e = EXAMPLES
+        .iter()
+        .find(|e| e.name.starts_with("Cart-pole"))
+        .unwrap();
+    let (file, _) = simsandbox_file::ModelFile::from_json(e.text).unwrap();
+    let roles = simsandbox_session::diagram::roles(&file, &registry());
+    assert_eq!(roles["hand"], "interaction");
+    assert_eq!(roles["control"], "controller");
+    assert_eq!(roles["cartpole"], "system");
+}
+
+#[test]
+fn a_plant_in_a_chain_is_arranged_left_to_right() {
+    let (d, m) = arranged("Platoon");
+    let xs: Vec<f64> = ["leader", "car1", "car2", "car3"]
+        .iter()
+        .map(|n| at(&d, &m, n)[0])
+        .collect();
+    assert!(xs.windows(2).all(|w| w[0] < w[1]), "{xs:?}");
+}
+
+#[test]
+fn without_a_plant_nodes_are_arranged_by_signal_flow() {
+    let (d, m) = arranged("Tuning");
+    assert!(at(&d, &m, "tuning")[0] < at(&d, &m, "best")[0]);
+}
+
+#[test]
+fn arranging_a_file_writes_places_and_a_second_time_moves_nothing() {
+    let e = EXAMPLES
+        .iter()
+        .find(|e| e.name.starts_with("Cart-pole"))
+        .unwrap();
+    let (mut file, _) = simsandbox_file::ModelFile::from_json(e.text).unwrap();
+    let r = registry();
+    assert!(simsandbox_session::diagram::arrange_file(&mut file, &r).unwrap() > 0);
+    assert!(file.blocks.iter().all(|b| b.canvas.is_some()));
+    assert_eq!(
+        simsandbox_session::diagram::arrange_file(&mut file, &r).unwrap(),
+        0
+    );
+}

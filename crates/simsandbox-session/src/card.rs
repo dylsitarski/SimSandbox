@@ -21,19 +21,7 @@ pub fn type_summaries(
 }
 
 /// A part's role in its model, inferred from the graph.
-fn role(type_name: &str, stateful: bool, reads_system: bool, drives_system: bool) -> &'static str {
-    if type_name.starts_with("input.") {
-        "interaction"
-    } else if type_name == simsandbox_file::STUDY {
-        "study"
-    } else if stateful {
-        "system"
-    } else if reads_system && drives_system {
-        "controller"
-    } else {
-        "formulas"
-    }
-}
+use crate::diagram::role;
 
 /// The order parts are told in.
 const ROLES: [&str; 6] = [

@@ -88,8 +88,15 @@ As in the report, section 5: keep and fix the canvas (A), text first (B), stage 
   - **Headless:** `render --diagram --components`, Python `render(diagram=True, components=True)`.
   - Tests: bundles of the cart-pole (`pointer`, `3 drives`, `joints`, every wire in one bundle) and a single wire into a use; the canvas by zoom and by choice (no ports wired, header-only nodes, a bundle found on its path); the CLI and Python flags.
   - **Order of work for the rest:**
-    2. **Arrange by role**, a suggestion a person applies (point 3): interaction left, the plant in the centre, controllers below it with their loop drawn as a loop, observers off to the side; one undoable edit setting every node's `at`, from the card's roles.
+    2. ~~Arrange by role~~: built 2026-11-27 (below).
     3. **Compact nodes when zoomed in too:** ports shown only when wired (the rest on demand), parameters as values, a role tag on each node.
     4. Then dragging from a body to a controller to wire it (connect by intent).
-- Not yet: the Structure lens's steps 2–4 (above), Definitions; the Inspector's own headless form beyond `explain` (the card carries the same facts). (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
+- **The Structure lens, step 2 (2026-11-27): Arrange by role** (point 3: a suggestion a person applies, positions stay free):
+  - **Roles** are the card's (`diagram::role`, now shared by the card), found from the file alone (`diagram::roles`, each block built by itself), so a model that cannot run is arranged too. A used model counts as a system for what reads and drives it.
+  - **Places** (`diagram::arrange`): interaction on the left; formulas that feed the plant next; the plant (systems and used models) in the middle, laid out by its own signal flow so a chain reads left to right (the platoon) and a loop's back wire runs underneath (cruise control); controllers in the column left of the plant, starting below its header, so the loop out of the plant and back into the controller is drawn as a loop in both levels of detail; what only reads the plant (formulas, studies) on the right; the data layer last. Within a column nodes keep their order from top to bottom. A level without a plant is laid out by signal flow, as a new model is.
+  - **In the app:** **Arrange** on the Diagram tab moves every node in one edit; one Undo puts them back.
+  - **Headless:** `render --diagram --arrange` draws it without changing the file; Python's `Model.arrange()` writes the places (`canvas`) and returns how many moved (0 the second time).
+  - Tests: the cart-pole (interaction left, the controller below and left of the plant), the platoon's chain, a study without a plant, the card's roles from the file, arranging a file twice, one Undo in the app, the CLI and Python.
+  - Not yet: a PI controller with its own state is a `system` by the card's definition, so it is arranged with the plant (as cruise control's `cruise`); roles a person sets would change that.
+- Not yet: the Structure lens's steps 3–4 (above), Definitions; the Inspector's own headless form beyond `explain` (the card carries the same facts). (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
 

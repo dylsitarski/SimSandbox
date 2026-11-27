@@ -241,6 +241,255 @@ pub struct Diagram {
     pub exposed: BTreeMap<String, String>,
 }
 
+/// What a block of a model does, as the card and the Structure lens name
+/// it (ADR 0107, ADR 0108): `interaction` (set from outside), `study`,
+/// `system` (has states), `controller` (reads a system and drives one),
+/// else `formulas`. A used model is a `model`.
+pub fn role(
+    type_name: &str,
+    stateful: bool,
+    reads_system: bool,
+    drives_system: bool,
+) -> &'static str {
+    if type_name.starts_with("input.") {
+        "interaction"
+    } else if type_name == simsandbox_file::STUDY {
+        "study"
+    } else if stateful {
+        "system"
+    } else if reads_system && drives_system {
+        "controller"
+    } else {
+        "formulas"
+    }
+}
+
+/// The role of each block and use of the model's own level, by name, from
+/// the file alone (each block built by itself, so a model that cannot run
+/// still has them). A used model counts as a system for what reads and
+/// drives it.
+pub fn roles(file: &ModelFile, registry: &Registry) -> BTreeMap<String, &'static str> {
+    let node_of = |key: &str| -> String {
+        let n = key.split_once('.').map_or(key, |(n, _)| n);
+        n.split('/').next().unwrap_or(n).to_string()
+    };
+    let stateful: BTreeMap<&str, bool> = file
+        .blocks
+        .iter()
+        .map(|b| {
+            let has = b.is_use()
+                || build(b, registry, file.folder.as_deref()).is_ok_and(|block| {
+                    !block.spec().states.is_empty() || !block.spec().tables.is_empty()
+                });
+            (b.name.as_str(), has)
+        })
+        .collect();
+    let system = |n: &str| stateful.get(n).copied().unwrap_or(false);
+    file.blocks
+        .iter()
+        .map(|b| {
+            if b.is_use() {
+                return (b.name.clone(), "model");
+            }
+            let wires = file
+                .connections
+                .iter()
+                .filter(|c| !c.from.starts_with("probe:"));
+            let reads = wires
+                .clone()
+                .any(|c| node_of(&c.to) == b.name && system(&node_of(&c.from)));
+            let drives = wires
+                .clone()
+                .any(|c| node_of(&c.from) == b.name && system(&node_of(&c.to)));
+            (
+                b.name.clone(),
+                role(&b.type_name, system(&b.name), reads, drives),
+            )
+        })
+        .collect()
+}
+
+/// "Arrange by role" (the Structure lens, ADR 0108 point 3): a place for
+/// each node of this level, as moves a person applies and can undo.
+/// Interaction on the left; formulas feeding the plant next; the plant
+/// (systems and used models) in the middle; controllers below the plant
+/// and left of it, so their loop is drawn as a loop (out of the plant,
+/// round underneath, back in), the plant itself by its signal flow; what
+/// only reads the plant (formulas,
+/// studies) to its right; the data layer last. Controllers start below the
+/// plant's header. Within a column nodes keep
+/// their order from top to bottom. Without a plant, laid out by signal
+/// flow instead. Nodes of expanded uses stay where they are.
+pub fn arrange(d: &Diagram, roles: &BTreeMap<String, &'static str>) -> Vec<Edit> {
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Column {
+        Interaction,
+        Feed,
+        Plant,
+        After,
+        Data,
+    }
+    let ours: Vec<usize> = (0..d.nodes.len())
+        .filter(|&i| !d.nodes[i].name.contains('/'))
+        .collect();
+    let role = |i: usize| roles.get(&d.nodes[i].name).copied().unwrap_or("formulas");
+    let plant =
+        |i: usize| d.nodes[i].kind == NodeKind::Use || matches!(role(i), "system" | "model");
+    let moves = |nodes: &[Node]| -> Vec<Edit> {
+        ours.iter()
+            .map(|&i| Edit::Move {
+                block: nodes[i].name.clone(),
+                at: nodes[i].at,
+            })
+            .collect()
+    };
+    if !ours.iter().any(|&i| plant(i)) {
+        let mut nodes = d.nodes.clone();
+        for &i in &ours {
+            nodes[i].placed = false;
+        }
+        layout(&mut nodes, &d.wires);
+        return moves(&nodes);
+    }
+    let feeds_plant = |i: usize| d.wires.iter().any(|w| w.from.0 == i && plant(w.to.0));
+    let mut columns: BTreeMap<Column, (Vec<usize>, Vec<usize>)> = BTreeMap::new();
+    for &i in &ours {
+        let n = &d.nodes[i];
+        let (column, below) = if n.is_observer() && !n.settings.contains_key("feeds") {
+            (Column::Data, false)
+        } else if n.is_observer() || role(i) == "interaction" {
+            (Column::Interaction, false)
+        } else if plant(i) {
+            (Column::Plant, false)
+        } else if role(i) == "controller" {
+            (Column::Feed, true)
+        } else if role(i) == "formulas" && feeds_plant(i) {
+            (Column::Feed, false)
+        } else {
+            (Column::After, false)
+        };
+        let entry = columns.entry(column).or_default();
+        if below {
+            entry.1.push(i);
+        } else {
+            entry.0.push(i);
+        }
+    }
+    let mut nodes = d.nodes.clone();
+    let by_height = |v: &mut Vec<usize>, nodes: &[Node]| {
+        v.sort_by(|&a, &b| nodes[a].at[1].total_cmp(&nodes[b].at[1]).then(a.cmp(&b)));
+    };
+    let stack = |v: &[usize], x: f64, mut y: f64, nodes: &mut [Node]| -> f64 {
+        for &i in v {
+            nodes[i].at = [x, y];
+            y += nodes[i].height() + GAP_Y;
+        }
+        y
+    };
+    // Controllers start below the plant's first header, so they are below
+    // it whether nodes are drawn whole or as components.
+    let plant_bottom = HEADER + GAP_Y;
+    let mut x = 0.0;
+    for (column, (top, below)) in columns.iter_mut() {
+        by_height(top, &nodes);
+        by_height(below, &nodes);
+        if *column == Column::Plant {
+            // The plant by its own signal flow: a chain left to right, a
+            // loop's back wire underneath.
+            let ranks = flow_ranks(top, &d.wires);
+            let width = ranks.iter().max().map_or(0, |r| r + 1);
+            for r in 0..width {
+                let here: Vec<usize> = top
+                    .iter()
+                    .zip(&ranks)
+                    .filter(|(_, &k)| k == r)
+                    .map(|(&i, _)| i)
+                    .collect();
+                stack(&here, x, 0.0, &mut nodes);
+                x += NODE_WIDTH + GAP_X;
+            }
+            continue;
+        }
+        let end = stack(top, x, 0.0, &mut nodes);
+        stack(below, x, end.max(plant_bottom), &mut nodes);
+        x += NODE_WIDTH + GAP_X;
+    }
+    moves(&nodes)
+}
+
+/// For nodes `v` (in this order), each one's column by signal flow among
+/// them: the longest chain of wires leading to it, wires that close a loop
+/// left out (found depth first in this order).
+fn flow_ranks(v: &[usize], wires: &[Wire]) -> Vec<usize> {
+    let at = |i: usize| v.iter().position(|&n| n == i);
+    let n = v.len();
+    let mut succ: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
+    for w in wires {
+        if let (Some(a), Some(b)) = (at(w.from.0), at(w.to.0)) {
+            if a != b {
+                succ[a].insert(b);
+            }
+        }
+    }
+    // Depth first: an edge to a node on the stack closes a loop.
+    fn visit(a: usize, succ: &[BTreeSet<usize>], state: &mut [u8], keep: &mut Vec<(usize, usize)>) {
+        state[a] = 1;
+        for &b in &succ[a] {
+            match state[b] {
+                0 => {
+                    keep.push((a, b));
+                    visit(b, succ, state, keep);
+                }
+                2 => keep.push((a, b)),
+                _ => {}
+            }
+        }
+        state[a] = 2;
+    }
+    let (mut state, mut keep) = (vec![0u8; n], Vec::new());
+    for a in 0..n {
+        if state[a] == 0 {
+            visit(a, &succ, &mut state, &mut keep);
+        }
+    }
+    let mut rank = vec![0usize; n];
+    for _ in 0..n {
+        for &(a, b) in &keep {
+            rank[b] = rank[b].max(rank[a] + 1);
+        }
+    }
+    rank
+}
+
+/// "Arrange by role" applied to the model's own level of a file: every
+/// block and use placed (`at`) as [`arrange`] places it. How many moved.
+pub fn arrange_file(file: &mut ModelFile, registry: &Registry) -> Result<usize, String> {
+    let d = Diagram::new(file, registry);
+    let mut moved = 0;
+    for e in arrange(&d, &roles(file, registry)) {
+        if let Edit::Move { block, at } = &e {
+            if d.node(block).map(|i| d.nodes[i].at) != Some(*at) {
+                moved += 1;
+            }
+            apply(file, registry, &e)?;
+        }
+    }
+    Ok(moved)
+}
+
+/// Each node placed as [`arrange`] places it, in place: what a drawing
+/// shows before the moves are applied.
+pub fn place_arranged(d: &mut Diagram, roles: &BTreeMap<String, &'static str>) {
+    for e in arrange(d, roles) {
+        if let Edit::Move { block, at } = e {
+            if let Some(i) = d.node(&block) {
+                d.nodes[i].at = at;
+                d.nodes[i].placed = true;
+            }
+        }
+    }
+}
+
 /// The wires from one node to another, drawn as one on the Structure
 /// lens's components (ADR 0109 point 3, ADR 0108).
 #[derive(Clone, Debug, PartialEq)]

@@ -120,7 +120,7 @@ Print the model file's JSON Schema, or with `run` the run file's.",
         "usage: simsandbox render FILE --out IMAGE.png [--t-end SECONDS] [--view N] [--inputs RUN]
                          [--views VIEWS.ssbv.json] [--width POINTS] [--height POINTS] [--scale S] [--light]
        simsandbox render FILE --out IMAGE.png --diagram [--inside PATH] [--expand PATHS]
-                         [--no-data] [--values] [--components] [--width POINTS] [--height POINTS] [--scale S] [--light]
+                         [--no-data] [--values] [--components] [--arrange] [--width POINTS] [--height POINTS] [--scale S] [--light]
 
 Run a model file to a time and draw its views to a PNG, placed as the file's layout
 arranges them; or with --diagram draw its block diagram (also for a file that cannot run).
@@ -139,6 +139,8 @@ arranges them; or with --diagram draw its block diagram (also for a file that ca
   --no-data         with --diagram, without the data layer (filters, views, probes)
   --components      with --diagram, components: each node its header, the wires between
                     two nodes one bundle named by its ports' group or count
+  --arrange         with --diagram, the nodes placed by role (interaction left, the plant in
+                    the middle, controllers below it, readers right); the file is unchanged
   --values          with --diagram, every node's values",
     ),
     (
@@ -351,6 +353,7 @@ impl Flags {
                 || flag == "--no-data"
                 || flag == "--values"
                 || flag == "--components"
+                || flag == "--arrange"
             {
                 String::new()
             } else {
@@ -850,6 +853,7 @@ fn render_file(args: &[String]) -> Result<()> {
             "--no-data",
             "--values",
             "--components",
+            "--arrange",
             "--inputs",
             "--views",
         ],
@@ -871,6 +875,11 @@ fn render_file(args: &[String]) -> Result<()> {
     if flags.has("--components") && !flags.has("--diagram") {
         return Err(Failure::usage(
             "--components draws the diagram's components: add --diagram",
+        ));
+    }
+    if flags.has("--arrange") && !flags.has("--diagram") {
+        return Err(Failure::usage(
+            "--arrange places the diagram's nodes by role: add --diagram",
         ));
     }
     if flags.has("--values") && !flags.has("--diagram") {
@@ -917,6 +926,7 @@ fn render_file(args: &[String]) -> Result<()> {
             data: !flags.has("--no-data"),
             values: flags.has("--values"),
             components: flags.has("--components"),
+            arrange: flags.has("--arrange"),
         };
         let image = render_diagram(&file, &registry(), &o).map_err(|e| Failure::run(e, path))?;
         return write_file(out, png(&image).map_err(|e| Failure::run(e, path))?);
@@ -939,6 +949,7 @@ fn render_file(args: &[String]) -> Result<()> {
         data: false,
         values: false,
         components: false,
+        arrange: false,
     };
     // Warnings reach standard error even if the run or the drawing fails.
     let mut warnings = Vec::new();

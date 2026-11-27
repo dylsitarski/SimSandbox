@@ -824,6 +824,25 @@ fn render_draws_a_diagrams_components() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(std::fs::read(&out_path).unwrap().starts_with(b"\x89PNG"));
+    // Arranged by role, the file unchanged.
+    let before = std::fs::read(&cartpole).unwrap();
+    let out = simsandbox(&[
+        "render",
+        &cartpole,
+        "--diagram",
+        "--arrange",
+        "--components",
+        "--out",
+        &out_s,
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read(&cartpole).unwrap(), before);
+    let out = simsandbox(&["render", &cartpole, "--arrange", "--out", &out_s]);
+    assert_eq!(out.status.code(), Some(2));
     // Without --diagram it is a usage error.
     let out = simsandbox(&["render", &cartpole, "--components", "--out", &out_s]);
     assert_eq!(out.status.code(), Some(2));

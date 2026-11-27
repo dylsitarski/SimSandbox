@@ -410,6 +410,7 @@ fn render<'py>(
                 data: false,
                 values: false,
                 components: false,
+                arrange: false,
             };
             let mut warnings = Vec::new();
             let image = render_run("model", text, &registry(), t_end, track, &o, &mut warnings)?;
@@ -452,6 +453,7 @@ fn render_diagram<'py>(
                 data,
                 values,
                 components,
+                arrange: false,
             };
             png(&simsandbox_session::render::render_diagram(
                 &file,
@@ -546,6 +548,18 @@ fn duplicate(text: &str, blocks: Vec<String>) -> PyResult<(String, String)> {
     )
     .map_err(ModelError::new_err)?;
     Ok((file.to_json(), note))
+}
+
+/// Every block and use placed by role, as "Arrange by role" does on the
+/// canvas (the Structure lens, ADR 0108). Returns the changed model file
+/// and how many moved.
+#[pyfunction]
+fn arrange(text: &str) -> PyResult<(String, usize)> {
+    let (mut file, _) = simsandbox_session::ModelFile::from_json(text)
+        .map_err(|e| ModelError::new_err(e.to_string()))?;
+    let moved = simsandbox_session::diagram::arrange_file(&mut file, &registry())
+        .map_err(ModelError::new_err)?;
+    Ok((file.to_json(), moved))
 }
 
 /// A study of a used model beside it (ADR 0070), as "Study this model"
@@ -921,6 +935,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(start_from, m)?)?;
     m.add_function(wrap_pyfunction!(group, m)?)?;
     m.add_function(wrap_pyfunction!(duplicate, m)?)?;
+    m.add_function(wrap_pyfunction!(arrange, m)?)?;
     m.add_function(wrap_pyfunction!(study, m)?)?;
     m.add_function(wrap_pyfunction!(study_model, m)?)?;
     m.add_function(wrap_pyfunction!(strategy, m)?)?;

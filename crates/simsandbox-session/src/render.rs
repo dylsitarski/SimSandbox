@@ -38,6 +38,9 @@ pub struct RenderOptions {
     /// between two nodes one labelled bundle (the Structure lens, ADR
     /// 0108), not ports.
     pub components: bool,
+    /// For the model's diagram: its nodes placed by role (the Structure
+    /// lens's "Arrange by role", ADR 0108), the file unchanged.
+    pub arrange: bool,
 }
 
 impl Default for RenderOptions {
@@ -53,6 +56,7 @@ impl Default for RenderOptions {
             data: true,
             values: false,
             components: false,
+            arrange: false,
         }
     }
 }
@@ -192,6 +196,9 @@ pub fn render_diagram(
     crate::diagram_paint::open_nodes(&mut d, |key| {
         o.values || file.controls.open.iter().any(|open| open == key)
     });
+    if o.arrange && o.inside.is_none() {
+        crate::diagram::place_arranged(&mut d, &crate::diagram::roles(file, registry));
+    }
     let detail = if o.components {
         crate::diagram_paint::Detail::Components
     } else {
@@ -502,6 +509,7 @@ mod tests {
             data: false,
             values: false,
             components: false,
+            arrange: false,
         };
         let (img, _) = render(&s, view_registry(), &o).unwrap();
         assert_eq!((img.width, img.height), (400, 200));

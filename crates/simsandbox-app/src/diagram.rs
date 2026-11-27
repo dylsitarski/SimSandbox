@@ -810,6 +810,7 @@ impl DiagramTab {
         // What the toolbar needs, so it can borrow the tab.
         let (subsystems, bounds) = (built.subsystems.clone(), built.bounds());
         let mut step = None;
+        let mut arrange = false;
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo"))
@@ -836,6 +837,14 @@ impl DiagramTab {
             if ui.button("Fit").on_hover_text("Show every block").clicked() {
                 self.canvas.refit();
             }
+            arrange = ui
+                .button("Arrange")
+                .on_hover_text(
+                    "Place the blocks by role: interaction on the left, the plant in the middle \
+                     by its signal flow, controllers below it so their loop shows, what only \
+                     reads it on the right, the data layer last. One edit: Undo puts them back.",
+                )
+                .clicked();
             if ui
                 .checkbox(&mut self.show_data, "Data")
                 .on_hover_text(
@@ -891,6 +900,16 @@ impl DiagramTab {
                     step = Some(true);
                 }
             });
+        }
+        // "Arrange by role" (the Structure lens, ADR 0108 point 3): every
+        // node moved at once, one edit.
+        if arrange {
+            let roles = simsandbox_session::diagram::roles(source, registry);
+            let d = self.cache.as_mut().expect("built above");
+            let moves = simsandbox_session::diagram::arrange(d, &roles);
+            simsandbox_session::diagram::place_arranged(d, &roles);
+            edits.extend(moves);
+            self.canvas.refit();
         }
         let d = self.cache.as_mut().expect("built above");
         let (made, requests) = self.canvas.show(ui, d, registry);

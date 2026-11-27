@@ -290,6 +290,15 @@ def test_a_scene_is_added_checked_saved_and_drawn(tmp_path):
     assert m.render(diagram=True, components=True, width=600, height=300)[1:4] == b"PNG"
     with pytest.raises(ValueError, match="diagram=True"):
         m.render(components=True)
+    # Arranged by role (ADR 0108): positions only, and settled once done.
+    def rest(data: dict[str, object]) -> dict[str, object]:
+        return {k: v for k, v in data.items() if k != "blocks" and v not in ([], {})}
+
+    before = rest(m.data)
+    assert m.arrange() > 0
+    assert all("canvas" in b for b in m.data["blocks"])
+    assert rest(m.data) == before
+    assert m.arrange() == 0
 
 
 def test_a_scenes_form_and_names_are_refused_at_once():

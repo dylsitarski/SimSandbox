@@ -2097,3 +2097,44 @@ fn a_screenshot_exits_even_with_unsaved_changes() {
         app.modal
     );
 }
+
+#[test]
+fn arranging_by_role_is_one_edit_undone_at_once() {
+    // The Structure lens (ADR 0108 point 3): "Arrange" moves every node in
+    // one edit; Undo puts them all back.
+    let mut app = SimApp::new(None, None, None, None);
+    let k = simsandbox_session::examples::EXAMPLES
+        .iter()
+        .position(|e| e.name.starts_with("Cart-pole"))
+        .unwrap();
+    app.open_example(k);
+    let live = app.session.as_ref().unwrap();
+    let m = live.model();
+    let before: Vec<Option<[f64; 2]>> = m.file.blocks.iter().map(|b| b.canvas).collect();
+    let d = simsandbox_session::diagram::Diagram::new(&m.file, &app.registry);
+    let roles = simsandbox_session::diagram::roles(&m.file, &app.registry);
+    let moves = simsandbox_session::diagram::arrange(&d, &roles);
+    app.diagram.set_drawn(d);
+    let text = app.saved_text().unwrap();
+    let current = move || Ok(text.clone());
+    let outcomes = app.diagram.handle(moves, &app.registry, &current);
+    app.diagram_outcomes(&m, outcomes);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let placed = |app: &SimApp| -> Vec<Option<[f64; 2]>> {
+        // Positions reach the worker as messages.
+        app.session.as_ref().unwrap().sync();
+        simsandbox_file::ModelFile::from_json(&app.saved_text().unwrap())
+            .unwrap()
+            .0
+            .blocks
+            .iter()
+            .map(|b| b.canvas)
+            .collect()
+    };
+    assert_ne!(placed(&app), before);
+    let text = app.saved_text().unwrap();
+    let current = move || Ok(text.clone());
+    let outcomes = app.diagram.step(true, &app.registry, &current);
+    app.diagram_outcomes(&m, outcomes);
+    assert_eq!(placed(&app), before, "one Undo puts every node back");
+}

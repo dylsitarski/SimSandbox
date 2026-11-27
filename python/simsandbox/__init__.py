@@ -855,6 +855,17 @@ class Model:
         self.data = json.loads(text)
         return note
 
+    def arrange(self) -> int:
+        """Place every block and use on the canvas by role, as "Arrange by
+        role" does (the Structure lens, ADR 0108): interaction on the left,
+        the plant (systems and used models) in the middle, controllers below
+        it so their loop is drawn as a loop, what only reads it to the
+        right. Changes only positions (``canvas``). Returns how many moved; see
+        it with ``render(diagram=True)``."""
+        text, moved = _native.arrange(self.to_json())
+        self.data = json.loads(text)
+        return int(moved)
+
     def study(self, use: str) -> str:
         """Add a study block beside the used model ``use`` (ADR 0070), as
         "Study this model" does on the canvas: it runs the same model at 20
