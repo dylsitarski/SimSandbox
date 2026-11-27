@@ -186,6 +186,9 @@ pub fn register(r: &mut ViewRegistry) -> Result<(), String> {
     crate::scene::register(r)
 }
 
+/// The width of the selected block's curves, in points (others 1.5).
+const SELECTED_WIDTH: f32 = 3.5;
+
 /// A bound signal's label with its unit, as an axis shows it.
 fn with_unit(b: Bound<'_>) -> String {
     match b.history.unit(b.history.name(b.signal)) {
@@ -659,6 +662,13 @@ impl View for Xy {
         let shown: Vec<String> = ys.iter().map(|y| y.name.to_string()).collect();
         let labels: Vec<String> = ys.iter().map(|y| label(y.name)).collect();
         let one_coloured = ys.len() == 1 && colour.is_some();
+        // The selected block's curves, drawn wider (ADR 0108, one
+        // selection). Not cached with the curves.
+        let marked: Vec<bool> = shown
+            .iter()
+            .map(|n| input.selected == Some(crate::node_of(split_source(n).1)))
+            .collect();
+        let marked = &marked;
         let (names, labels) = (&shown, &labels);
         let response = plot.show(ui, move |plot| {
             scroll_to_zoom(plot);
@@ -714,14 +724,20 @@ impl View for Xy {
                     let points = PlotPoints::Borrowed(run);
                     match colour {
                         Some(c) => {
-                            plot.line(Line::new("trail", points).color(*c).allow_hover(false));
+                            plot.line(
+                                Line::new("trail", points)
+                                    .color(*c)
+                                    .width(if marked[k] { SELECTED_WIDTH } else { 1.5 })
+                                    .allow_hover(false),
+                            );
                         }
                         // Pieces of one curve (split where it is not
                         // finite) share its name and colour.
                         None => plot.line(
                             Line::new(labels[k].clone(), points)
                                 .id(curve_id(&names[k]))
-                                .color(series_colour(k)),
+                                .color(series_colour(k))
+                                .width(if marked[k] { SELECTED_WIDTH } else { 1.5 }),
                         ),
                     }
                 }

@@ -103,6 +103,7 @@ impl SimApp {
         let mut edits: Vec<Edit> = Vec::new();
         let mut inspect: Option<String> = None;
         let mut open: Option<String> = None;
+        let mut define: Option<String> = None;
         // Views made from here go to the Stage (ADR 0108 point 4).
         let mut plot: Option<Vec<String>> = None;
         let mut draw: Option<Drawn> = None;
@@ -207,6 +208,14 @@ impl SimApp {
                             ui.weak(text(&part["type"]));
                             if top && ui.small_button("Inspect").on_hover_text("Select it: the Inspector and the diagram follow").clicked() {
                                 inspect = Some(name.to_string());
+                            }
+                            if top
+                                && ui
+                                    .small_button("Definition")
+                                    .on_hover_text("Where it is defined: its equations, its bodies, or its place on the diagram")
+                                    .clicked()
+                            {
+                                define = Some(name.to_string());
                             }
                             let outputs: Vec<String> = part["outputs"]
                                 .as_array()
@@ -340,7 +349,21 @@ impl SimApp {
                                         };
                                         let unit = if unit.is_empty() { String::new() } else { format!(" [{unit}]") };
                                         let desc = p["description"].as_str().filter(|d| !d.is_empty()).map(|d| format!(": {d}")).unwrap_or_default();
-                                        ui.label(format!("{}{unit}{desc}{arrow}", text(&p["name"])));
+                                        let shown = format!("{}{unit}{desc}{arrow}", text(&p["name"]));
+                                        if key == "outputs" {
+                                            // Dragged onto a view on the Stage, it is shown
+                                            // there (ADR 0108 point 4).
+                                            let signal = format!("{path}.{}", text(&p["name"]));
+                                            ui.dnd_drag_source(
+                                                egui::Id::new(("drag signal", &signal)),
+                                                super::DraggedSignal(signal.clone()),
+                                                |ui| ui.label(shown),
+                                            )
+                                            .response
+                                            .on_hover_text(format!("Drag {signal} onto a view to show it there"));
+                                        } else {
+                                            ui.label(shown);
+                                        }
                                     }
                                 });
                         }
@@ -454,6 +477,9 @@ impl SimApp {
         }
         if let Some(part) = open {
             self.overview_part = part;
+        }
+        if let Some(block) = define {
+            self.show_definition(&block);
         }
         if let Some(signals) = plot {
             self.stage_plot(signals);
@@ -602,7 +628,19 @@ fn use_part(
                     } else {
                         format!(", {dir} {}", wired.join(", "))
                     };
-                    ui.label(format!("{what}: {}{wired}", text(&p["name"])));
+                    let shown = format!("{what}: {}{wired}", text(&p["name"]));
+                    if key == "outputs" {
+                        let signal = format!("{path}/{}", text(&p["name"]));
+                        ui.dnd_drag_source(
+                            egui::Id::new(("drag signal", &signal)),
+                            super::DraggedSignal(signal.clone()),
+                            |ui| ui.label(shown),
+                        )
+                        .response
+                        .on_hover_text(format!("Drag {signal} onto a view to show it there"));
+                    } else {
+                        ui.label(shown);
+                    }
                 }
             }
         });

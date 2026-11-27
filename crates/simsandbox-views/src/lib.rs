@@ -43,3 +43,11 @@ pub use view::{
     Available, Bindings, Context, Preset, Settings, SlotKind, Swap, ViewRegistry, ViewState,
     ViewType,
 };
+
+/// The block of the model's own level a signal or parameter comes from
+/// (`cartpole.x` from `cartpole`, `left/x` from the use `left`), as one
+/// selection names it (ADR 0108).
+pub fn node_of(signal: &str) -> &str {
+    let node = signal.split_once('.').map_or(signal, |(n, _)| n);
+    node.split('/').next().unwrap_or(node)
+}

@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod data;
+mod definition;
 mod diagram_tab;
 mod editors;
 mod files;
@@ -59,9 +60,11 @@ pub struct ScreenshotRequest {
 }
 
 /// A tab to bring to the front once the dock is drawn again.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Focus {
     Tile(u64),
+    /// A pane of the dock ("Show definition", ADR 0108).
+    Pane(Pane),
 }
 
 /// Something that replaces the open model, asked about first if it has
@@ -423,8 +426,10 @@ impl SimApp {
         }
         let tiles = self.tile_ids();
         self.dock.sync(&tiles);
-        if let Some(Focus::Tile(t)) = self.focus.take() {
-            self.dock.focus(|p| p.tiles().contains(&t));
+        match self.focus.take() {
+            Some(Focus::Tile(t)) => self.dock.focus(|p| p.tiles().contains(&t)),
+            Some(Focus::Pane(pane)) => self.dock.focus(|p| *p == pane),
+            None => {}
         }
         let saved_before = self.layout();
         let arranged = |app: &Self, dock: &Dock| {
@@ -497,6 +502,10 @@ impl SimApp {
                 }
                 DockAction::Inspect(signal) => self.inspect_signal(&signal),
                 DockAction::Pointer(block, p) => self.send_pointer(&block, &p),
+                DockAction::Bind(tile, signal) => self.bind_dropped(tile, &signal),
+                DockAction::ShowDefinition(block) => {
+                    self.show_definition(&block);
+                }
             }
         }
     }
@@ -666,7 +675,16 @@ enum DockAction {
     /// A view's pointer for an `input.pointer` block: `[x, y, down]`, or
     /// from a scene's grab `[x, y, down, picked]` (ADR 0093).
     Pointer(String, Vec<f64>),
+    /// Show where this block is defined (ADR 0108, the Stage).
+    ShowDefinition(String),
+    /// A signal dragged onto a view (ADR 0108 point 4).
+    Bind(u64, String),
 }
+
+/// A signal being dragged from where it is shown onto a view on the
+/// Stage (ADR 0108 point 4).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct DraggedSignal(pub(super) String);
 
 /// A tab in its own window, by what it shows (tiles are renumbered when
 /// the model is rebuilt).

@@ -56,7 +56,7 @@ impl SimApp {
                 ui.menu_button("+ view", |ui| self.add_view_items(ui))
                     .response
                     .on_hover_text("Add a view to the Stage: a plot or picture of what the model records, or a view file's");
-                ui.weak("Press on a picture to select what it shows; grab what can be grabbed");
+                ui.weak("Press on a picture to select what it shows; grab what can be grabbed; drag an output from the Overview onto a view to show it");
             });
             if self.add_views_asked {
                 self.add_views_asked = false;
@@ -107,11 +107,26 @@ impl SimApp {
             )
             .shrink(3.0);
             let selected = views.selected == Some(tile.id);
+            // The selected block, if this view draws it: its definition
+            // is one step away (ADR 0108).
+            let defined = selected_block
+                .clone()
+                .filter(|b| super::definition::draws(tile, b));
+            // A signal dragged here binds to it (ADR 0108 point 4).
+            let dropping = egui::DragAndDrop::payload::<super::DraggedSignal>(ui.ctx())
+                .filter(|_| ui.rect_contains_pointer(cell));
+            if let Some(p) = &dropping {
+                if ui.input(|i| i.pointer.any_released()) {
+                    actions.push(DockAction::Bind(tile.id, p.0.clone()));
+                }
+            }
             let builder = egui::UiBuilder::new()
                 .id_salt(("tile", tile.id))
                 .max_rect(cell);
             ui.scope_builder(builder, |ui| {
-                let stroke = if selected {
+                let stroke = if dropping.is_some() {
+                    egui::Stroke::new(2.0, ui.visuals().selection.stroke.color)
+                } else if selected {
                     ui.visuals().selection.stroke
                 } else {
                     ui.visuals().widgets.noninteractive.bg_stroke
@@ -153,6 +168,17 @@ impl SimApp {
                                     };
                                     if ui.small_button(label).on_hover_text(hint).clicked() {
                                         actions.push(action);
+                                    }
+                                    if let Some(b) = &defined {
+                                        if ui
+                                            .small_button("definition")
+                                            .on_hover_text(format!(
+                                                "Show where {b}, selected, is defined: its equations, its bodies, its model or its place on the diagram"
+                                            ))
+                                            .clicked()
+                                        {
+                                            actions.push(DockAction::ShowDefinition(b.clone()));
+                                        }
                                     }
                                     let id = tile.id;
                                     ui.menu_button("style", |ui| {
@@ -217,6 +243,19 @@ impl SimApp {
             }
         } else {
             self.error = Some("nothing here can be plotted against time".into());
+        }
+    }
+
+    /// A signal dropped on a view: bound where it fits, or why not.
+    pub(super) fn bind_dropped(&mut self, tile: u64, signal: &str) {
+        let Some(live) = &self.session else {
+            return;
+        };
+        let (m, history) = (live.model(), live.history());
+        let available = m.available(&history);
+        match self.views.bind_dropped(tile, signal, &available) {
+            Ok(slot) => self.log.info(format!("{signal} shown as {slot}")),
+            Err(e) => self.error = Some(e),
         }
     }
 
@@ -305,6 +344,19 @@ impl SimApp {
         let top = node.split('/').next().unwrap_or(node);
         if !m.file.blocks.iter().any(|b| b.name == top) {
             return;
+        }
+        // A body picked: its row of the mechanism's table opens (the
+        // interface report, section 6: "a body selects its mechanism row").
+        if let (Some(entry), Some((_, key))) = (
+            m.file
+                .blocks
+                .iter()
+                .find(|b| b.name == top && !b.bodies.is_empty()),
+            signal.split_once('.'),
+        ) {
+            if let Some(k) = super::definition::body_row(&entry.bodies, key) {
+                self.mech_open = Some((top.to_string(), k));
+            }
         }
         self.picked = vec![(None, top.to_string())];
         self.inspected_view = None;

@@ -344,6 +344,51 @@ impl Views {
         self.tiles.iter().map(shown_entry).collect()
     }
 
+    /// A signal dropped on tile `tile` (ADR 0108 point 4: a view is bound
+    /// by dragging a signal onto it): added to the first slot that takes
+    /// several and can show it (a plot's `y`), else put in the first slot
+    /// of one that can. The slot it went into, or why it cannot.
+    pub fn bind_dropped(
+        &mut self,
+        tile: u64,
+        signal: &str,
+        available: &Available<'_>,
+    ) -> Result<&'static str, String> {
+        let tile = self
+            .tiles
+            .iter_mut()
+            .find(|t| t.id == tile)
+            .ok_or("no such view")?;
+        let t = self
+            .registry
+            .get(&tile.state.type_name)
+            .ok_or_else(|| format!("unknown view type '{}'", tile.state.type_name))?;
+        if tile.written.is_some() || t.slots.is_empty() {
+            return Err(format!(
+                "{} binds in its form: select it and bind there",
+                t.label
+            ));
+        }
+        let takes = |s: &&simsandbox_views::view::Slot| available.choices(s.kind).contains(&signal);
+        let slot = t
+            .slots
+            .iter()
+            .filter(|s| s.many)
+            .find(takes)
+            .or_else(|| t.slots.iter().filter(|s| !s.many).find(takes))
+            .ok_or_else(|| format!("{} cannot show {signal}", t.label))?;
+        let bound = tile.state.bind.entry(slot.name.to_string()).or_default();
+        if slot.many {
+            if !bound.iter().any(|b| b == signal) {
+                bound.push(signal.to_string());
+            }
+        } else {
+            *bound = vec![signal.to_string()];
+        }
+        self.selected = Some(tile.id);
+        Ok(slot.name)
+    }
+
     /// The length unit a template draws in (`m` if it does not say).
     pub fn template_unit(&self, template: &str) -> String {
         self.templates

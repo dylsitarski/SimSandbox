@@ -10,15 +10,15 @@ fn saved(app: &SimApp) -> ModelFile {
     ModelFile::from_json(&app.saved_text().unwrap()).unwrap().0
 }
 
-/// The scene tile drawn alone from the live recording.
+/// A tile (a scene, a plot) drawn alone from the live recording.
 fn picture(app: &mut SimApp, tile: u64) -> simsandbox_session::raster::Image {
     let live = app.session.as_ref().unwrap();
     live.sync();
     let h = live.history();
     let recorded = simsandbox_views::Recorded::single(&h);
     let views = &mut app.views;
-    let t = views.registry.get("plot.scene").unwrap();
     let tile = views.tiles.iter_mut().find(|t| t.id == tile).unwrap();
+    let t = views.registry.get(&tile.state.type_name).unwrap();
     let o = simsandbox_session::render::RenderOptions {
         width: 300.0,
         height: 300.0,
@@ -592,5 +592,99 @@ fn a_picture_is_drawn_into_a_new_view_or_an_existing_scene() {
     assert_eq!(
         saved(&app).controls.views[n].scene.layers[0].other["template"],
         "cartpole/bodies"
+    );
+}
+
+#[test]
+fn a_plot_draws_the_selected_blocks_curves_wider() {
+    // ADR 0108, one selection: a plot marks the selected block's curves.
+    let mut app = SimApp::new(None, None, None, None);
+    let k = EXAMPLES
+        .iter()
+        .position(|e| e.name.starts_with("Cart-pole"))
+        .unwrap();
+    app.open_example(k);
+    app.stage_plot(vec!["cartpole.hinge_angle".into()]);
+    let tile = app.views.selected.unwrap();
+    let live = app.session.as_ref().unwrap();
+    live.send(None, |s, _| {
+        s.run_until(2.0).unwrap();
+    });
+    live.sync();
+    // Pixels of the curve's colour (the first series'), counted: the run
+    // goes on between pictures.
+    let c = egui::epaint::Hsva::new(0.0, 0.85, 0.5, 1.0);
+    let c: egui::Color32 = c.into();
+    let curve = |rgba: &[u8]| {
+        rgba.chunks(4)
+            .filter(|p| (0..3).all(|k| (i32::from(p[k]) - i32::from(c[k])).abs() < 16))
+            .count()
+    };
+    let at = |app: &SimApp| app.views.tiles.iter().position(|t| t.id == tile).unwrap();
+    let plain = curve(&picture(&mut app, tile).rgba);
+    let k = at(&app);
+    app.views.tiles[k].state.selected = Some("cartpole".into());
+    let marked = curve(&picture(&mut app, tile).rgba);
+    assert!(
+        plain > 50 && marked > plain * 3 / 2,
+        "{plain} then {marked}"
+    );
+    app.views.tiles[k].state.selected = Some("hand".into());
+    let other = curve(&picture(&mut app, tile).rgba);
+    assert!(other < marked * 3 / 4, "{plain}, {marked}, {other}");
+}
+
+#[test]
+fn the_stage_offers_the_selected_blocks_definition_and_takes_dropped_signals() {
+    // ADR 0108, the Stage: a view drawing the selected block offers its
+    // definition; a signal dropped on a view binds where it fits.
+    let mut app = SimApp::new(None, None, None, None);
+    let k = EXAMPLES
+        .iter()
+        .position(|e| e.name.starts_with("Cart-pole"))
+        .unwrap();
+    app.open_example(k);
+    app.stage_plot(vec!["cartpole.slider_position".into()]);
+    let plot = app.views.selected.unwrap();
+    app.bind_dropped(plot, "cartpole.hinge_angle");
+    assert!(app.error.is_none(), "{:?}", app.error);
+    let scene = app.views.tiles[0].id;
+    app.bind_dropped(scene, "cartpole.hinge_angle");
+    assert!(app
+        .error
+        .take()
+        .is_some_and(|e| e.contains("binds in its form")));
+    app.inspect_signal("cartpole.hinge_angle");
+    let live = app.session.as_ref().unwrap();
+    live.send(None, |s, _| {
+        s.run_until(2.0).unwrap();
+    });
+    live.sync();
+    let o = simsandbox_session::render::RenderOptions {
+        width: 1000.0,
+        height: 640.0,
+        ..Default::default()
+    };
+    // Drawn twice: the dock settles on its first frame.
+    let _ = simsandbox_session::render::paint(&o, |ui| app.docked(ui));
+    let image = simsandbox_session::render::paint(&o, |ui| app.docked(ui));
+    if let Ok(dir) = std::env::var("SIMSANDBOX_SHOT_SCENE") {
+        let path = std::path::Path::new(&dir).join("stage.png");
+        std::fs::write(path, simsandbox_session::render::png(&image).unwrap()).unwrap();
+    }
+    let y = &app
+        .views
+        .tiles
+        .iter()
+        .find(|t| t.id == plot)
+        .unwrap()
+        .state
+        .bind["y"];
+    assert_eq!(
+        y,
+        &vec![
+            "cartpole.slider_position".to_string(),
+            "cartpole.hinge_angle".into()
+        ]
     );
 }

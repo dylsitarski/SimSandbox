@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- The Stage: a view drawing the selected block has **definition**, which shows where it is defined (its equation editor, its bodies table, its model on the Overview, or the diagram); the Overview's blocks have **Definition** too. Pressing on a mechanism's body opens its row of the bodies table. Plots draw the selected block's curves wider. An output on the Overview can be dragged onto a view to show it there.
 - Pictures are offered where parts are shown: **Draw** on the Overview's blocks and uses, in the Inspector, and under "Pictures" in the Stage's "+ view", each into a new view or on top of an existing scene of the same unit.
 - Mechanisms draw themselves: `mech.planar` offers the picture `bodies` (each body a stick from its joint to its centre of mass, a disc and a joint dot, following its coordinates and geometry). A model that writes no views opens, and renders, with a scene of its blocks' pictures beside the plot chosen by fit.
 - Block types may bring pictures of themselves (ADR 0114): a block offering them makes them templates named `block/name`, bound by name to its ports and parameters, which views draw like any template. `check` lists them as `pictures`, the card with each block, and `describe` with each type.

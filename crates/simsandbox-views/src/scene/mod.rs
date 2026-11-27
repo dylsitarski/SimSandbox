@@ -29,6 +29,7 @@ pub mod spec;
 
 use crate::builtin::scroll_to_zoom;
 use crate::history::Stamp;
+use crate::node_of;
 use crate::view::{Available, Settings, View, ViewInput, ViewRegistry, ViewType};
 use egui::{epaint::Mesh, Pos2, Shape, Stroke};
 use egui_plot::{Plot, PlotBounds, PlotGeometry, PlotItem, PlotItemBase, PlotPoint, PlotTransform};
@@ -373,13 +374,6 @@ impl View for SceneView {
 
 /// The drawn list as an item of the plot, painted in the plot's
 /// coordinates.
-/// The block a signal comes from, as the app selects it: `cart` of
-/// `cart.x`, the use `left` of `left/x` or `left/cartpole.x`.
-fn node_of(signal: &str) -> &str {
-    let node = signal.split_once('.').map_or(signal, |(n, _)| n);
-    node.split('/').next().unwrap_or(node)
-}
-
 struct SceneItem {
     drawn: Arc<Drawn>,
     /// The plot's bounds follow what is drawn (no extent given).

@@ -73,9 +73,13 @@ As in the report, section 5: keep and fix the canvas (A), text first (B), stage 
   - `simsandbox-app --view stage` opens on it.
   - Headless, the Stage is `render`, and views are added with Python's `add_view` and `add_scene` (template layers included).
   - Tested in the app: a use's picture drawn and outputs plotted, saved as written, in a tab titled Stage. A screenshot of "Two balancing poles" on the Stage under Xvfb.
-  - Not yet:
-    - "Show definition" from what is picked;
-    - ~~a block type bringing a default picture with no view written~~: [ADR 0114](0114-block-types-bring-default-pictures.md), built 2026-11-27, with **Draw** for blocks' pictures and into an existing scene;
-    - binding a view by dragging a signal onto it.
-- Not yet: the rest of the Stage (above), the Structure lens, Definitions; the Inspector's own headless form beyond `explain` (the card carries the same facts). (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
+  - Since done: a block type bringing a default picture with no view written ([ADR 0114](0114-block-types-bring-default-pictures.md), built 2026-11-27, with **Draw** for blocks' pictures and into an existing scene), and the rest below.
+- **The Stage, the rest (2026-11-27):**
+  - **Show definition** (the interface report, section 6: "one step to the Structure lens or the editor"; `simsandbox-app/src/app/definition.rs`). A view that draws the selected block has **definition** in its header, and the Overview's blocks have **Definition**. A used model opens on the Overview at its own level; typed equations open in their editor; a mechanism's bodies are its table in the Inspector; any other block is selected on the diagram, the stand-in for the Structure lens until it is built. Each brings its pane to the front. Headless, a part's definition is its section of the card (`explain --part`).
+  - **A body selects its row:** a pick that reads a mechanism's name (`pole_centre_x`, `hinge_angle`) opens that body's row in the Inspector's table (`definition::body_row`: the body or joint whose name it starts with, the longest).
+  - **Plots mark the selection:** `plot.xy` draws the selected block's curves 3.5 points wide instead of 1.5, colours kept (`simsandbox_views::node_of`, shared with the scene's outline).
+  - **Binding by dragging:** an output on the Overview (a block's, or one a use offers) drags onto a view on the Stage, which is outlined while it would take it. It is added to the first slot taking several that can show it (a plot's `y`), else put in the first single slot that can (`Views::bind_dropped`). A scene drawing templates, or a view without slots, says it binds in its form. Headless, binding is the view's `bind` in the file or Python's `add_view`.
+  - Tests: the body row for names with underscores; Show definition for a mechanism, a pointer block, a use and typed equations; wider curves counted in pixels; a drop bound once, refused by a scene and by a view that cannot show it. A picture of the Stage with the cart-pole selected, painted in a test.
+  - Not yet: dragging from a body to a controller to wire it (the report's "connect by intent", with the Structure lens); a selection inside a use (the diagram opened in it) is not shown in views or the Overview; the drag gesture itself is tested through its action, not by a pointer in a window.
+- Not yet: the Structure lens, Definitions; the Inspector's own headless form beyond `explain` (the card carries the same facts). (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
 
