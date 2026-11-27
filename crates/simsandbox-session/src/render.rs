@@ -34,6 +34,10 @@ pub struct RenderOptions {
     /// For the diagram: show every node's values, not only those the file
     /// opens (`controls.open`, ADR 0055).
     pub values: bool,
+    /// For the diagram: components, each node its header and the wires
+    /// between two nodes one labelled bundle (the Structure lens, ADR
+    /// 0108), not ports.
+    pub components: bool,
 }
 
 impl Default for RenderOptions {
@@ -48,6 +52,7 @@ impl Default for RenderOptions {
             expand: Vec::new(),
             data: true,
             values: false,
+            components: false,
         }
     }
 }
@@ -187,7 +192,12 @@ pub fn render_diagram(
     crate::diagram_paint::open_nodes(&mut d, |key| {
         o.values || file.controls.open.iter().any(|open| open == key)
     });
-    Ok(paint(o, |ui| crate::diagram_paint::show(ui, &d)))
+    let detail = if o.components {
+        crate::diagram_paint::Detail::Components
+    } else {
+        crate::diagram_paint::Detail::Ports
+    };
+    Ok(paint(o, |ui| crate::diagram_paint::show_at(ui, &d, detail)))
 }
 
 /// The model's scenes that do not check, by place in `controls.views`,
@@ -491,6 +501,7 @@ mod tests {
             expand: Vec::new(),
             data: false,
             values: false,
+            components: false,
         };
         let (img, _) = render(&s, view_registry(), &o).unwrap();
         assert_eq!((img.width, img.height), (400, 200));

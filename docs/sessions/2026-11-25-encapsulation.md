@@ -38,10 +38,11 @@
 - 2026-11-27: ADR 0114 step 2 built: the mechanism's `bodies` (`simsandbox_mech::picture`), checked against its rows; a model that writes no views opens with its blocks' pictures. Found by a headless render: the session recorded only what written views bind, so a default picture drew nothing outside the app; `shown_views` fixes it, with a test.
 - 2026-11-27: ADR 0114 step 3 built: **Draw** for blocks' and uses' pictures on the Overview, in the Inspector and in "+ view", into a new view or an existing scene (`PictureTargets`, `SceneEdit::AddPicture`); ADR 0114 is done.
 - 2026-11-27: the rest of the Stage (ADR 0108): Show definition (`app/definition.rs`), a picked body opening its row, plots marking the selection, binding by dragging an output onto a view (`Views::bind_dropped`).
+- 2026-11-27: the Structure lens, step 1: `diagram::bundles`, `diagram_paint::Detail`, the canvas by zoom (0.5) or by choice, the app's data layer off by default (`DiagramTab::show_data`), `render --diagram --components`. Headless defaults kept so scripts do not change.
 
 ## Left open
 
-- The Structure lens and Definitions (ADR 0108 point 5). Until the Structure lens exists, Show definition of a plain block goes to the diagram.
+- The Structure lens's steps 2–4 (ADR 0108: arrange by role, compact nodes when zoomed in, connect by dragging), then Definitions. Show definition of a plain block goes to the diagram.
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session

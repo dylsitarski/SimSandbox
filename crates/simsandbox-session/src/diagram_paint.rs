@@ -16,12 +16,29 @@ pub const SHOW_VALUES: f32 = 0.55;
 /// Port dot radius, in points at zoom 1.
 const DOT: f32 = 4.5;
 
+/// Below this zoom, the canvas shown by zoom draws components, not ports
+/// (the Structure lens, ADR 0108).
+pub const SHOW_PORTS: f32 = 0.5;
+
+/// How much of each node the diagram draws (the Structure lens, ADR 0108:
+/// "zoomed out it shows components and roles, zoomed in ports").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Detail {
+    /// Every port, wire and value.
+    #[default]
+    Ports,
+    /// Each node as its header, the wires between two nodes as one
+    /// labelled bundle (ADR 0109 point 3).
+    Components,
+}
+
 /// Where the diagram is on screen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View {
     /// Screen offset of the canvas origin from the panel's corner.
     pub pan: Vec2,
     pub zoom: f32,
+    pub detail: Detail,
 }
 
 impl Default for View {
@@ -29,6 +46,7 @@ impl Default for View {
         Self {
             pan: Vec2::ZERO,
             zoom: 1.0,
+            detail: Detail::Ports,
         }
     }
 }
@@ -65,8 +83,16 @@ pub fn open_nodes(d: &mut Diagram, open: impl Fn(&str) -> bool) {
 /// Draw the diagram filling `ui`'s space, fitted to it, without input: as
 /// headless rendering shows it.
 pub fn show(ui: &mut egui::Ui, d: &Diagram) {
+    show_at(ui, d, Detail::Ports);
+}
+
+/// [`show`] at a level of detail.
+pub fn show_at(ui: &mut egui::Ui, d: &Diagram, detail: Detail) {
     let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
-    let mut view = View::default();
+    let mut view = View {
+        detail,
+        ..View::default()
+    };
     if rect.width() > 1.0 {
         view.fit(d, rect);
     }
@@ -77,6 +103,11 @@ pub fn show(ui: &mut egui::Ui, d: &Diagram) {
 }
 
 impl View {
+    /// Whether nodes are drawn as components (headers, bundled wires).
+    pub fn compact(&self) -> bool {
+        self.detail == Detail::Components
+    }
+
     pub fn to_screen(&self, origin: Pos2, p: [f64; 2]) -> Pos2 {
         origin + self.pan + Vec2::new(p[0] as f32, p[1] as f32) * self.zoom
     }
@@ -88,7 +119,7 @@ impl View {
 
     /// Fit the diagram to `rect`, centred.
     pub fn fit(&mut self, d: &Diagram, rect: Rect) {
-        let Some([x0, y0, x1, y1]) = d.bounds() else {
+        let Some([x0, y0, x1, y1]) = d.bounds_at(self.compact()) else {
             self.pan = Vec2::splat(40.0);
             self.zoom = 1.0;
             return;
@@ -144,8 +175,11 @@ impl View {
             );
         }
 
-        // Wires under nodes.
-        for w in &d.wires {
+        // Wires under nodes: as bundles between components.
+        if self.compact() {
+            self.bundles(painter, visuals, origin, d, marks);
+        }
+        for w in d.wires.iter().filter(|_| !self.compact()) {
             let lifted = marks.lifted == Some(w.to_name.as_str());
             if lifted && !w.is_data() {
                 continue;
@@ -237,10 +271,79 @@ impl View {
 
     /// A node's rectangle on screen.
     pub fn node_rect(&self, origin: Pos2, n: &Node) -> Rect {
+        let height = if self.compact() { HEADER } else { n.height() };
         Rect::from_min_size(
             self.to_screen(origin, n.at),
-            Vec2::new(NODE_WIDTH as f32, n.height() as f32) * self.zoom,
+            Vec2::new(NODE_WIDTH as f32, height as f32) * self.zoom,
         )
+    }
+
+    /// A bundle's path on screen: from the middle of its first node's
+    /// right side to the middle of the other's left, around underneath
+    /// when it runs back.
+    pub fn bundle_path(&self, d: &Diagram, origin: Pos2, b: &crate::diagram::Bundle) -> Vec<Pos2> {
+        let (from, to) = (
+            self.node_rect(origin, &d.nodes[b.from]),
+            self.node_rect(origin, &d.nodes[b.to]),
+        );
+        let a = from.right_center();
+        let z = to.left_center();
+        route(a, z, from.max.y.max(to.max.y), self.zoom)
+    }
+
+    /// The wires between components, one bundle a pair and direction,
+    /// labelled (ADR 0109 point 3).
+    fn bundles(
+        &self,
+        painter: &egui::Painter,
+        visuals: &egui::Visuals,
+        origin: Pos2,
+        d: &Diagram,
+        marks: &Marks,
+    ) {
+        for b in crate::diagram::bundles(d) {
+            let selected = b
+                .wires
+                .iter()
+                .any(|&k| marks.wire == Some(d.wires[k].key().as_str()));
+            let colour = if selected {
+                visuals.selection.stroke.color
+            } else if b.data {
+                visuals.hyperlink_color.gamma_multiply(0.8)
+            } else {
+                visuals.widgets.inactive.fg_stroke.color
+            };
+            // Wider with more wires, to a limit.
+            let width = (2.0 + 0.6 * (b.wires.len().min(6) as f32 - 1.0)) * self.zoom.sqrt();
+            let path = self.bundle_path(d, origin, &b);
+            if b.data {
+                painter.extend(egui::Shape::dashed_line(
+                    &path,
+                    Stroke::new(width * 0.8, colour),
+                    6.0 * self.zoom,
+                    4.0 * self.zoom,
+                ));
+            } else {
+                painter.add(egui::Shape::line(path.clone(), Stroke::new(width, colour)));
+            }
+            // Its label, on a plate, at the path's middle.
+            let at = path[path.len() / 2];
+            let font = FontId::proportional(11.0 * self.zoom.max(0.6));
+            let galley = painter.layout_no_wrap(b.label.clone(), font, visuals.text_color());
+            let plate = Rect::from_center_size(at, galley.size() + Vec2::new(8.0, 4.0));
+            painter.rect_filled(plate, CornerRadius::same(4), visuals.extreme_bg_color);
+            painter.rect_stroke(
+                plate,
+                CornerRadius::same(4),
+                Stroke::new(1.0, colour),
+                StrokeKind::Inside,
+            );
+            painter.galley(
+                plate.min + Vec2::new(4.0, 2.0),
+                galley,
+                visuals.text_color(),
+            );
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -373,6 +476,10 @@ impl View {
             FontId::proportional(10.5 * z),
             weak,
         );
+        // A component: its header alone.
+        if self.compact() {
+            return;
+        }
         // A view's input its error is at (a scene's binding, ADR 0093).
         let wrong = crate::observers::view_problem_input(n);
         for (c, ports) in [
@@ -513,7 +620,7 @@ impl View {
     /// Where a node's values are opened and closed: the top-right corner
     /// of its header, on nodes with values, when they can be shown.
     pub fn expander(&self, origin: Pos2, n: &Node) -> Option<Rect> {
-        if n.values.is_empty() || self.zoom < SHOW_VALUES {
+        if n.values.is_empty() || self.zoom < SHOW_VALUES || self.compact() {
             return None;
         }
         let r = self.node_rect(origin, n);

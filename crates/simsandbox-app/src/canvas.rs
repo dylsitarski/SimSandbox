@@ -23,7 +23,8 @@ use simsandbox_core::block::{Causality, Shape};
 use simsandbox_core::registry::Registry;
 use simsandbox_session::diagram::{Diagram, Edit, Node, NodeKind, Scope, NODE_WIDTH, VALUE_ROW};
 use simsandbox_session::diagram_paint::{
-    format_number, open_key, open_nodes, title, unit_key, unit_setting, Marks, View, SHOW_VALUES,
+    format_number, open_key, open_nodes, title, unit_key, unit_setting, Detail, Marks, View,
+    SHOW_PORTS, SHOW_VALUES,
 };
 use std::collections::BTreeSet;
 
@@ -129,6 +130,9 @@ pub struct Canvas {
     /// The value being typed on a node: its key (`unit:block:from` for a
     /// conversion's unit) and the text so far.
     editing: Option<(String, String)>,
+    /// How much of each node is drawn; `None` by zoom (the Structure lens,
+    /// ADR 0108).
+    pub detail: Option<Detail>,
 }
 
 /// How close to a port counts as on it, in points at zoom 1.
@@ -160,6 +164,11 @@ impl Canvas {
             self.view.fit(d, rect);
             self.fitted = Some(rect.size());
         }
+        self.view.detail = self.detail.unwrap_or(if self.view.zoom < SHOW_PORTS {
+            Detail::Components
+        } else {
+            Detail::Ports
+        });
         let painter = ui.painter_at(rect);
         let visuals = ui.visuals().clone();
         self.view.background(&painter, rect, &visuals);
@@ -292,6 +301,25 @@ impl Canvas {
             }
         }
 
+        // A bundle between components: its wires, on hover (ADR 0109
+        // point 3, "it expands on demand").
+        if let Some(b) = pointer.and_then(|p| self.bundle_under(d, origin, p)) {
+            let wires: Vec<String> = b
+                .wires
+                .iter()
+                .map(|&k| format!("{} to {}", d.wires[k].from_name, d.wires[k].to_name))
+                .collect();
+            response.clone().on_hover_text_at_pointer(format!(
+                "{}: {}\n{}\nZoom in, or choose Ports, to change a wire",
+                b.label,
+                if wires.len() == 1 {
+                    "1 wire".to_string()
+                } else {
+                    format!("{} wires", wires.len())
+                },
+                wires.join("\n")
+            ));
+        }
         self.value_editor(ui, d, origin, &mut requests);
         self.context_menu(&response, d, registry, &mut edits, &mut requests);
         self.promote_offer(ui, &mut edits);
@@ -308,6 +336,9 @@ impl Canvas {
 
     /// The conversion unit label under `p`: node and which port.
     fn unit_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, Causality)> {
+        if self.view.compact() {
+            return None;
+        }
         d.nodes.iter().enumerate().rev().find_map(|(i, n)| {
             [Causality::Input, Causality::Output]
                 .into_iter()
@@ -342,7 +373,7 @@ impl Canvas {
 
     /// The value row under `p`: node and value.
     fn value_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, usize)> {
-        if self.view.zoom < SHOW_VALUES {
+        if self.view.zoom < SHOW_VALUES || self.view.compact() {
             return None;
         }
         d.nodes.iter().enumerate().rev().find_map(|(i, n)| {
@@ -460,6 +491,10 @@ impl Canvas {
 
     /// The port under `p`: (node, port, causality).
     fn port_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, usize, Causality)> {
+        // Components have no ports to wire: zoom in (ADR 0108).
+        if self.view.compact() {
+            return None;
+        }
         let reach = REACH * self.view.zoom.max(0.7);
         let mut best = None;
         let mut best_dist = reach;
@@ -497,7 +532,7 @@ impl Canvas {
 
     /// The value row whose port is under `p` (ADR 0075): node and value.
     fn value_port_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<(usize, usize)> {
-        if self.view.zoom < SHOW_VALUES {
+        if self.view.zoom < SHOW_VALUES || self.view.compact() {
             return None;
         }
         let reach = REACH * self.view.zoom.max(0.7);
@@ -513,7 +548,31 @@ impl Canvas {
         })
     }
 
+    /// The bundle under `p`, when components are drawn.
+    fn bundle_under(
+        &self,
+        d: &Diagram,
+        origin: Pos2,
+        p: Pos2,
+    ) -> Option<simsandbox_session::diagram::Bundle> {
+        if !self.view.compact() {
+            return None;
+        }
+        simsandbox_session::diagram::bundles(d)
+            .into_iter()
+            .find(|b| {
+                self.view
+                    .bundle_path(d, origin, b)
+                    .windows(2)
+                    .any(|s| segment_distance(p, s[0], s[1]) < 6.0)
+            })
+    }
+
     fn wire_under(&self, d: &Diagram, origin: Pos2, p: Pos2) -> Option<String> {
+        // A bundle is not one wire: its wires are listed on hover.
+        if self.view.compact() {
+            return None;
+        }
         d.wires
             .iter()
             .find(|w| {
@@ -1800,5 +1859,36 @@ mod tests {
             c.selected,
             Some(Selection::Many(vec!["car".into(), "cruise".into()]))
         );
+    }
+
+    #[test]
+    fn zoomed_out_the_canvas_draws_components_whose_ports_cannot_be_wired() {
+        // The Structure lens (ADR 0108): by zoom, components below
+        // SHOW_PORTS; a chosen detail wins over the zoom.
+        let (mut d, mut c, ctx) = cruise();
+        assert_eq!(c.view.detail, Detail::Ports);
+        let at = screen(&c, &d, "car", Causality::Output, "v");
+        assert!(c.port_under(&d, Pos2::ZERO, at).is_some());
+        c.view.zoom = SHOW_PORTS * 0.8;
+        c.user_moved = true;
+        frame(&ctx, &mut c, &mut d, vec![]);
+        assert_eq!(c.view.detail, Detail::Components);
+        let at = screen(&c, &d, "car", Causality::Output, "v");
+        assert!(c.port_under(&d, Pos2::ZERO, at).is_none());
+        assert!(c.wire_under(&d, Pos2::ZERO, at).is_none());
+        // A node is its header alone.
+        let n = &d.nodes[d.node("car").unwrap()];
+        let h = c.view.node_rect(Pos2::ZERO, n).height();
+        assert!((h - simsandbox_session::diagram::HEADER as f32 * c.view.zoom).abs() < 1e-3);
+        // A bundle's wires are found on its path.
+        let b = &simsandbox_session::diagram::bundles(&d)[0];
+        let path = c.view.bundle_path(&d, Pos2::ZERO, b);
+        let mid = path[path.len() / 2];
+        assert_eq!(c.bundle_under(&d, Pos2::ZERO, mid).as_ref(), Some(b));
+        // Ports chosen: drawn whatever the zoom.
+        c.detail = Some(Detail::Ports);
+        frame(&ctx, &mut c, &mut d, vec![]);
+        assert_eq!(c.view.detail, Detail::Ports);
+        assert!(c.bundle_under(&d, Pos2::ZERO, mid).is_none());
     }
 }

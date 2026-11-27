@@ -802,3 +802,30 @@ fn check_for_an_agent_asks_for_notes_on_what_it_made() {
         card.contains("Made or last changed by an AI agent") && card.contains("Why these values")
     );
 }
+
+#[test]
+fn render_draws_a_diagrams_components() {
+    // The Structure lens (ADR 0108): each node its header, the wires
+    // between two nodes one bundle.
+    let out_path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("components.png");
+    let out_s = out_path.to_string_lossy().into_owned();
+    let cartpole = example("cartpole.ssbx.json");
+    let out = simsandbox(&[
+        "render",
+        &cartpole,
+        "--diagram",
+        "--components",
+        "--out",
+        &out_s,
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(std::fs::read(&out_path).unwrap().starts_with(b"\x89PNG"));
+    // Without --diagram it is a usage error.
+    let out = simsandbox(&["render", &cartpole, "--components", "--out", &out_s]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("add --diagram"));
+}

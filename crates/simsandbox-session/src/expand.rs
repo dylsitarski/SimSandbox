@@ -284,6 +284,7 @@ fn find(
                         name: "in".into(),
                         unit,
                         shape: Shape::Scalar,
+                        group: None,
                     });
                 }
                 return Some((k, 0));

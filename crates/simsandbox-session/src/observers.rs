@@ -307,6 +307,7 @@ impl Diagram {
                                 name: r.clone(),
                                 unit,
                                 shape,
+                                group: None,
                             }
                         })
                         .collect();
@@ -326,6 +327,7 @@ impl Diagram {
                             name: RECORD.into(),
                             unit: String::new(),
                             shape: Shape::Scalar,
+                            group: None,
                         }],
                         outputs,
                         at: pr.canvas.unwrap_or_default(),
@@ -369,6 +371,7 @@ impl Diagram {
                         } else {
                             Shape::Scalar
                         },
+                        group: None,
                     })
                     .collect();
                 // Outputs are bound by name, wherever the filter runs.
@@ -438,6 +441,7 @@ impl Diagram {
                     name: s,
                     unit,
                     shape,
+                    group: None,
                 });
             }
             self.nodes[i].inputs = inputs;
@@ -478,6 +482,7 @@ impl Diagram {
                         name,
                         unit: String::new(),
                         shape: Shape::Scalar,
+                        group: None,
                     })
                     .collect(),
                 outputs: Vec::new(),

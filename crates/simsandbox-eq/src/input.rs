@@ -53,6 +53,15 @@ impl Input {
             .iter()
             // Each output is its own parameter (ADR 0075).
             .map(|p| PortSpec::output(&p.name, p.unit, Shape::Scalar).depends_on_params(&[&p.name]))
+            // A pointer's position, press and pick go together: one
+            // bundle on the Structure lens (ADR 0109 point 3).
+            .map(|p| {
+                if params.len() > 1 {
+                    p.grouped("pointer")
+                } else {
+                    p
+                }
+            })
             .collect();
         // A value set from outside does not read time (ADR 0083); a
         // pointer follows the hand, so it does not say.

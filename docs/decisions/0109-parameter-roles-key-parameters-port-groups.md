@@ -118,5 +118,5 @@ The Overview, the Inspector by intent and the Structure lens (ADR 0108) all need
   - the Inspector's grouping by role and key parameters first (ADR 0108's fourth step);
   - the Overview's use of all this (its third step);
   - a model's own blocks' summaries and port descriptions headless (they come with the Overview's card);
-  - drawing wires as bundles (the Structure lens).
+  - ~~drawing wires as bundles~~: built 2026-11-27 with the Structure lens's components (ADR 0108, `diagram::bundles`); `input.pointer`'s four outputs are grouped as `pointer`.
 

@@ -16,6 +16,7 @@ use eframe::egui;
 use simsandbox_core::registry::Registry;
 use simsandbox_file::{FilterEntry, ModelFile, ProbeEntry, ViewEntry};
 use simsandbox_session::diagram::{apply_in, Diagram, Edit, NodeKind, Scope};
+use simsandbox_session::diagram_paint::Detail;
 use simsandbox_session::edit_use::{self, Edited, How, Target};
 use simsandbox_session::undo::{canvas_state, change, Change};
 use simsandbox_session::Session;
@@ -98,8 +99,9 @@ pub struct DiagramTab {
     /// Edits that do not load yet, and why.
     draft: Option<(ModelFile, String)>,
     cache: Option<Diagram>,
-    /// Hide the data layer (filters and views).
-    pub hide_data: bool,
+    /// Show the data layer (filters and views); off by default (the
+    /// Structure lens, ADR 0108 point 4).
+    pub show_data: bool,
     /// The filters and views the cached diagram shows, to redraw when
     /// they change elsewhere (the Data window, the Views tab).
     data_key: String,
@@ -750,7 +752,7 @@ impl DiagramTab {
             self.cache = None;
         }
         // Filters and views change outside the canvas too.
-        let key = match self.hide_data {
+        let key = match !self.show_data {
             true => String::new(),
             false => serde_json::to_string(&(
                 views.0,
@@ -766,7 +768,7 @@ impl DiagramTab {
             self.cache = None;
         }
         let scope = self.scope.clone();
-        let hide_data = self.hide_data;
+        let hide_data = !self.show_data;
         let draft = self.draft.is_some();
         let expanded = self.expanded.clone();
         let folder = self.folder.clone();
@@ -835,16 +837,41 @@ impl DiagramTab {
                 self.canvas.refit();
             }
             if ui
-                .checkbox(&mut self.hide_data, "Hide data")
+                .checkbox(&mut self.show_data, "Data")
                 .on_hover_text(
-                    "Hide filters and views: they read recorded data and never feed the model \
-                     (dashed)",
+                    "Show filters, views and probes: they read recorded data and never feed the \
+                     model (dashed)",
                 )
                 .changed()
             {
                 // Redrawn from the next frame on.
                 self.data_key = "\u{0}".into();
             }
+            // How much of each node is drawn (the Structure lens, ADR 0108).
+            let now = self.canvas.detail;
+            let name = |d: Option<Detail>| match d {
+                None => "By zoom",
+                Some(Detail::Components) => "Components",
+                Some(Detail::Ports) => "Ports",
+            };
+            egui::ComboBox::from_id_salt("diagram detail")
+                .selected_text(name(now))
+                .show_ui(ui, |ui| {
+                    for (d, tip) in [
+                        (None, "Components when zoomed out, ports when zoomed in"),
+                        (
+                            Some(Detail::Components),
+                            "Each block as its name and type; the wires between two blocks as one bundle, named by their group",
+                        ),
+                        (Some(Detail::Ports), "Every port, wire and value"),
+                    ] {
+                        if ui.selectable_label(now == d, name(d)).on_hover_text(tip).clicked() {
+                            self.canvas.detail = d;
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("How much of each block the diagram draws");
             let hint = "Drag from an output to an input to connect · drag a wire off an \
                         input to remove it · Delete removes the selection · right-click for \
                         more · model edits restart the run, data edits do not";

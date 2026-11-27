@@ -286,6 +286,10 @@ def test_a_scene_is_added_checked_saved_and_drawn(tmp_path):
     assert png[1:4] == b"PNG"
     # Its node on the canvas, wired from what it binds and grabs with.
     assert m.render(diagram=True, width=600, height=300)[1:4] == b"PNG"
+    # As components (the Structure lens, ADR 0108): headers and bundles.
+    assert m.render(diagram=True, components=True, width=600, height=300)[1:4] == b"PNG"
+    with pytest.raises(ValueError, match="diagram=True"):
+        m.render(components=True)
 
 
 def test_a_scenes_form_and_names_are_refused_at_once():

@@ -409,6 +409,7 @@ fn render<'py>(
                 expand: Vec::new(),
                 data: false,
                 values: false,
+                components: false,
             };
             let mut warnings = Vec::new();
             let image = render_run("model", text, &registry(), t_end, track, &o, &mut warnings)?;
@@ -421,7 +422,7 @@ fn render<'py>(
 /// The block diagram of a model file as a PNG, as the node canvas shows
 /// it (ADR 0042); drawn even if the model cannot run.
 #[pyfunction]
-#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, inside=None, data=true, values=false, expand=Vec::new()))]
+#[pyo3(signature = (text, width=1200.0, height=800.0, scale=1.0, light=false, inside=None, data=true, values=false, expand=Vec::new(), components=false))]
 #[allow(clippy::too_many_arguments)]
 fn render_diagram<'py>(
     py: Python<'py>,
@@ -434,6 +435,7 @@ fn render_diagram<'py>(
     data: bool,
     values: bool,
     expand: Vec<String>,
+    components: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let image = py
         .detach(|| -> Result<_, String> {
@@ -449,6 +451,7 @@ fn render_diagram<'py>(
                 expand,
                 data,
                 values,
+                components,
             };
             png(&simsandbox_session::render::render_diagram(
                 &file,

@@ -37,6 +37,9 @@ pub struct Port {
     pub name: String,
     pub unit: String,
     pub shape: Shape,
+    /// The group its block type gives it (ADR 0109 point 3): what a bundle
+    /// of wires is named by.
+    pub group: Option<String>,
 }
 
 /// What a node stands for.
@@ -238,6 +241,95 @@ pub struct Diagram {
     pub exposed: BTreeMap<String, String>,
 }
 
+/// The wires from one node to another, drawn as one on the Structure
+/// lens's components (ADR 0109 point 3, ADR 0108).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bundle {
+    pub from: usize,
+    pub to: usize,
+    /// The wires it holds, by index in [`Diagram::wires`].
+    pub wires: Vec<usize>,
+    /// What it is named by: the group its outputs share, else the group
+    /// its inputs share, else its one wire's ports, else how many.
+    pub label: String,
+    /// On the data layer (dashed).
+    pub data: bool,
+}
+
+/// Every wire between the same two nodes, in one direction and on one
+/// layer, as one bundle, in the order of their first wires.
+pub fn bundles(d: &Diagram) -> Vec<Bundle> {
+    let mut out: Vec<Bundle> = Vec::new();
+    for (k, w) in d.wires.iter().enumerate() {
+        let (from, to, data) = (w.from.0, w.to.0, w.is_data());
+        match out
+            .iter_mut()
+            .find(|b| b.from == from && b.to == to && b.data == data)
+        {
+            Some(b) => b.wires.push(k),
+            None => out.push(Bundle {
+                from,
+                to,
+                wires: vec![k],
+                label: String::new(),
+                data,
+            }),
+        }
+    }
+    for b in &mut out {
+        let shared = |groups: Vec<Option<&String>>| -> Option<String> {
+            let first = groups.first().copied().flatten()?;
+            groups
+                .iter()
+                .all(|g| *g == Some(first))
+                .then(|| first.clone())
+        };
+        let outputs: Vec<Option<&String>> = b
+            .wires
+            .iter()
+            .map(|&k| {
+                let w = &d.wires[k];
+                d.nodes[w.from.0]
+                    .outputs
+                    .get(w.from.1)
+                    .and_then(|p| p.group.as_ref())
+            })
+            .collect();
+        let inputs: Vec<Option<&String>> = b
+            .wires
+            .iter()
+            .map(|&k| {
+                let w = &d.wires[k];
+                (!w.param)
+                    .then(|| d.nodes[w.to.0].inputs.get(w.to.1))
+                    .flatten()
+                    .and_then(|p| p.group.as_ref())
+            })
+            .collect();
+        b.label = shared(outputs)
+            .or_else(|| shared(inputs))
+            .unwrap_or_else(|| match b.wires.as_slice() {
+                [one] => {
+                    let w = &d.wires[*one];
+                    // `block.port`, or a use's `use/port`.
+                    let port =
+                        |name: &str| name.rsplit(['.', '/']).next().unwrap_or(name).to_string();
+                    let (a, z) = (port(&w.from_name), port(&w.to_name));
+                    if a == z {
+                        a
+                    } else {
+                        format!("{a} to {z}")
+                    }
+                }
+                many if many.iter().all(|&k| d.wires[k].param) => {
+                    format!("{} drives", many.len())
+                }
+                many => format!("{} wires", many.len()),
+            });
+    }
+    out
+}
+
 /// The blocks and wires of one level.
 struct Level<'a> {
     blocks: &'a [BlockEntry],
@@ -363,19 +455,26 @@ impl Diagram {
 
     /// The canvas area the nodes cover: `[min_x, min_y, max_x, max_y]`.
     pub fn bounds(&self) -> Option<[f64; 4]> {
+        self.bounds_at(false)
+    }
+
+    /// [`Diagram::bounds`], with nodes drawn as their headers if `compact`
+    /// (the Structure lens's components).
+    pub fn bounds_at(&self, compact: bool) -> Option<[f64; 4]> {
+        let height = |n: &Node| if compact { HEADER } else { n.height() };
         let mut it = self.nodes.iter();
         let first = it.next()?;
         let mut b = [
             first.at[0],
             first.at[1],
             first.at[0] + NODE_WIDTH,
-            first.at[1] + first.height(),
+            first.at[1] + height(first),
         ];
         for n in it {
             b[0] = b[0].min(n.at[0]);
             b[1] = b[1].min(n.at[1]);
             b[2] = b[2].max(n.at[0] + NODE_WIDTH);
-            b[3] = b[3].max(n.at[1] + n.height());
+            b[3] = b[3].max(n.at[1] + height(n));
         }
         Some(b)
     }
@@ -434,6 +533,7 @@ fn ports(spec: &simsandbox_core::block::BlockSpec, c: Causality) -> Vec<Port> {
             name: p.name.clone(),
             unit: p.unit.to_string(),
             shape: p.shape,
+            group: p.group.clone(),
         })
         .collect()
 }
@@ -614,6 +714,7 @@ fn use_node(
                 name: e.name.clone(),
                 unit,
                 shape: Shape::Scalar,
+                group: None,
             });
             continue;
         }
@@ -642,6 +743,7 @@ fn use_node(
                 name: o.name.clone(),
                 unit: source.map(|p| p.unit.clone()).unwrap_or_default(),
                 shape: source.map_or(Shape::Scalar, |p| p.shape),
+                group: None,
             }
         })
         .collect();

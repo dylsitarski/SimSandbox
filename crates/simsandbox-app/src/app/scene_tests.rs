@@ -221,6 +221,9 @@ fn scene_node(app: &SimApp) -> simsandbox_session::diagram::Node {
 #[test]
 fn a_draft_scene_marks_its_node_with_its_error() {
     let mut app = SimApp::new(None, None, None, None);
+    // The scene's node is on the data layer, off by default (ADR 0108).
+    assert!(!app.diagram.show_data);
+    app.diagram.show_data = true;
     let tile = pendulum(&mut app);
     assert!(app.view_problems().is_empty());
     let n = scene_node(&app);
