@@ -171,6 +171,7 @@ This page is the map of every document in the repository and the rules for keepi
 | [decisions/0111-a-declarative-modelling-language.md](decisions/0111-a-declarative-modelling-language.md) | ADR | SimSandbox is a declarative modelling language, not a library |
 | [decisions/0112-experiments-may-reach-inside.md](decisions/0112-experiments-may-reach-inside.md) | ADR | Experiments may set values inside a used model, marked |
 | [decisions/0113-views-bind-to-interfaces.md](decisions/0113-views-bind-to-interfaces.md) | ADR | Views bind to interfaces: templates, component pictures, view files |
+| [decisions/0114-block-types-bring-default-pictures.md](decisions/0114-block-types-bring-default-pictures.md) | ADR (proposed) | Block types bring default pictures |
 | [decisions/0088-activation.md](decisions/0088-activation.md) | Decision record | Activation of used models and studies: `activate` modes and `restart` |
 | [decisions/0089-native-code-for-typed-equations.md](decisions/0089-native-code-for-typed-equations.md) | Decision record | Native code for typed equations: generated Rust compiled where a toolchain exists |
 | [decisions/0090-one-engine-for-nested-models.md](decisions/0090-one-engine-for-nested-models.md) | Decision record | One engine for nested models: the merged simulator |
