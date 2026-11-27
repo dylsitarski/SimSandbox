@@ -1073,6 +1073,7 @@ class Model:
         values: bool = False,
         expand: "list[str] | None" = None,
         components: bool = False,
+        wired: bool = False,
         inputs: "Iterable[tuple[float, str, float]] | Run | None" = None,
         views: "str | os.PathLike[str] | None" = None,
     ) -> bytes:
@@ -1088,7 +1089,8 @@ class Model:
         (``controls.open``), or of every node with ``values``. With
         ``components`` a diagram draws each node as its header and the wires
         between two nodes as one bundle, named by its ports' group or count
-        (the Structure lens, ADR 0108). ``inputs`` are
+        (the Structure lens, ADR 0108); with ``wired``, each block's wired
+        ports only, with how many more it has. ``inputs`` are
         changes made during the run, as for :meth:`run`: ``(t, key, value)``
         tuples or a :class:`Run` (the CLI's ``--inputs``). ``views`` names a
         view file (``*.ssbv.json``, ADR 0113) whose views are drawn in place
@@ -1102,6 +1104,8 @@ class Model:
             raise ValueError("values shows values on a diagram: add diagram=True")
         if components and not diagram:
             raise ValueError("components draws a diagram's components: add diagram=True")
+        if wired and not diagram:
+            raise ValueError("wired draws a diagram's wired ports: add diagram=True")
         if diagram:
             if t_end is not None or view is not None:
                 raise ValueError("t_end and view do not apply to a diagram")
@@ -1119,6 +1123,7 @@ class Model:
                     values,
                     list(expand or []),
                     components,
+                    wired,
                 )
             warnings: list[str] = []
         else:

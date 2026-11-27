@@ -20,6 +20,10 @@ const DOT: f32 = 4.5;
 /// (the Structure lens, ADR 0108).
 pub const SHOW_PORTS: f32 = 0.5;
 
+/// From this zoom up, the canvas shown by zoom draws every port, for
+/// editing; below it, down to [`SHOW_PORTS`], each block's wired ports.
+pub const SHOW_ALL_PORTS: f32 = 0.9;
+
 /// How much of each node the diagram draws (the Structure lens, ADR 0108:
 /// "zoomed out it shows components and roles, zoomed in ports").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -455,6 +459,10 @@ impl View {
         } else {
             match n.kind {
                 NodeKind::Block if study => format!("study {}", n.method),
+                // What it does first (the Structure lens, ADR 0108).
+                NodeKind::Block if !n.role.is_empty() => {
+                    format!("{} · {} · {}", n.role, n.type_name, n.method)
+                }
                 NodeKind::Block => format!("{} · {}", n.type_name, n.method),
                 // A model file used here: its file and its clock.
                 NodeKind::Use => format!("{} · {}", n.method, n.type_name),
@@ -486,7 +494,7 @@ impl View {
             (Causality::Input, &n.inputs),
             (Causality::Output, &n.outputs),
         ] {
-            for (k, p) in ports.iter().enumerate() {
+            for (k, p) in ports.iter().enumerate().filter(|(k, _)| n.shows(c, *k)) {
                 let at = self.to_screen(origin, n.port_at(c, k));
                 let field = p.shape != Shape::Scalar;
                 let wrong = c == Causality::Input && wrong == Some(k);
@@ -585,6 +593,29 @@ impl View {
                 );
             }
         }
+        // Ports folded away (the Structure lens, ADR 0108): how many, at
+        // the foot of the port rows.
+        let hidden = n.hidden();
+        if n.folded && hidden > 0 {
+            // Its own row, the last.
+            let row = n.port_rows() as f64 - 0.5;
+            let foot = self.to_screen(
+                origin,
+                [n.at[0] + NODE_WIDTH / 2.0, n.at[1] + HEADER + ROW * row],
+            );
+            let words = if hidden == 1 {
+                "1 port more: select to show".to_string()
+            } else {
+                format!("{hidden} ports more: select to show")
+            };
+            painter.text(
+                foot,
+                egui::Align2::CENTER_CENTER,
+                words,
+                FontId::proportional(10.0 * z),
+                weak,
+            );
+        }
         if let Some(e) = self.expander(origin, n) {
             // A triangle: right while closed, down while open, after how
             // many values there are.
@@ -637,7 +668,7 @@ impl View {
             Causality::Input => n.inputs.len(),
             Causality::Output => n.outputs.len(),
         };
-        if count == 0 {
+        if count == 0 || !n.shows(c, 0) {
             return None;
         }
         let z = self.zoom;
@@ -924,7 +955,7 @@ fn rounded(p: &[Pos2], r: f32) -> Vec<Pos2> {
     out
 }
 
-/// Port rows of a node, for tests and layout.
+/// Port rows of a node as drawn, for tests and layout.
 pub fn rows(n: &Node) -> usize {
-    n.inputs.len().max(n.outputs.len()).max(1)
+    n.port_rows()
 }

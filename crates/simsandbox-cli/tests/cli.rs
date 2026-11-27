@@ -843,6 +843,15 @@ fn render_draws_a_diagrams_components() {
     assert_eq!(std::fs::read(&cartpole).unwrap(), before);
     let out = simsandbox(&["render", &cartpole, "--arrange", "--out", &out_s]);
     assert_eq!(out.status.code(), Some(2));
+    // Wired ports only.
+    let out = simsandbox(&["render", &cartpole, "--diagram", "--wired", "--out", &out_s]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = simsandbox(&["render", &cartpole, "--wired", "--out", &out_s]);
+    assert_eq!(out.status.code(), Some(2));
     // Without --diagram it is a usage error.
     let out = simsandbox(&["render", &cartpole, "--components", "--out", &out_s]);
     assert_eq!(out.status.code(), Some(2));

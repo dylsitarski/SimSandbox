@@ -89,7 +89,7 @@ As in the report, section 5: keep and fix the canvas (A), text first (B), stage 
   - Tests: bundles of the cart-pole (`pointer`, `3 drives`, `joints`, every wire in one bundle) and a single wire into a use; the canvas by zoom and by choice (no ports wired, header-only nodes, a bundle found on its path); the CLI and Python flags.
   - **Order of work for the rest:**
     2. ~~Arrange by role~~: built 2026-11-27 (below).
-    3. **Compact nodes when zoomed in too:** ports shown only when wired (the rest on demand), parameters as values, a role tag on each node.
+    3. ~~Compact nodes when zoomed in too~~: built 2026-11-27 (below).
     4. Then dragging from a body to a controller to wire it (connect by intent).
 - **The Structure lens, step 2 (2026-11-27): Arrange by role** (point 3: a suggestion a person applies, positions stay free):
   - **Roles** are the card's (`diagram::role`, now shared by the card), found from the file alone (`diagram::roles`, each block built by itself), so a model that cannot run is arranged too. A used model counts as a system for what reads and drives it.
@@ -98,5 +98,13 @@ As in the report, section 5: keep and fix the canvas (A), text first (B), stage 
   - **Headless:** `render --diagram --arrange` draws it without changing the file; Python's `Model.arrange()` writes the places (`canvas`) and returns how many moved (0 the second time).
   - Tests: the cart-pole (interaction left, the controller below and left of the plant), the platoon's chain, a study without a plant, the card's roles from the file, arranging a file twice, one Undo in the app, the CLI and Python.
   - Not yet: a PI controller with its own state is a `system` by the card's definition, so it is arranged with the plant (as cruise control's `cruise`); roles a person sets would change that.
-- Not yet: the Structure lens's steps 3–4 (above), Definitions; the Inspector's own headless form beyond `explain` (the card carries the same facts). (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
+- **The Structure lens, step 3 (2026-11-27): wired ports and roles on nodes:**
+  - **Folded nodes** (`Diagram::fold`): a block or use draws only its wired ports (an input fed by a wire, an output read by one), rows closed up, and a last row saying how many more it has. A port folded away attaches at the side of its header (`Node::port_at`). Data-layer nodes always draw theirs.
+  - **On demand:** a selected block draws all of its ports, and every block does while a wire is being drawn, so a wire can be dropped on any input.
+  - **By zoom** is now three steps: components below 0.5, wired ports from there to 0.9, every port from 0.9 up, where values are typed and wires drawn (`SHOW_ALL_PORTS`). **Detail** also offers **Wired ports** and **All ports** at any zoom.
+  - **Roles on nodes:** each block's subtitle starts with its role, the card's (`interaction · input.pointer · held`, `controller · eq.equations · …`), computed with the diagram (`Node::role`, from the blocks' states and wiring).
+  - **Parameters as values** were already there (ADR 0053, ADR 0055): driven values listed with what drives them, the rest when the node is opened.
+  - **Headless:** `render --diagram --wired`, Python `render(diagram=True, wired=True)`; the default draws every port, as before, now with the role in each block's subtitle.
+  - Tests: the cart-pole folded to its four wired outputs, every wire ending at a drawn port, a folded port at the header, unfolding by name, roles on nodes; the canvas's three steps by zoom, a selected block unfolded, the two choices; the CLI and Python.
+- Not yet: the Structure lens's step 4 (connect by dragging from a body to a controller), Definitions; the Inspector's own headless form beyond `explain` (the card carries the same facts). (point 5's fourth step), then default pictures, one selection, the Structure lens, Definitions.
 

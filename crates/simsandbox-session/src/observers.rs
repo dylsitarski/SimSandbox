@@ -349,6 +349,7 @@ impl Diagram {
                                     .then(|| ("feeds".to_string(), "model".to_string())),
                             )
                             .collect(),
+                        ..Default::default()
                     });
                 }
             }
@@ -413,6 +414,7 @@ impl Diagram {
                         })
                         .chain(on_probe.then(|| ("clock".to_string(), "own".to_string())))
                         .collect(),
+                    ..Default::default()
                 });
                 let keys = filter_reads(f)
                     .into_iter()
@@ -497,6 +499,7 @@ impl Diagram {
                 reachable: Vec::new(),
                 status: None,
                 settings: Default::default(),
+                ..Default::default()
             });
         }
         if let Some(r) = &file.controls.recorder {
@@ -516,6 +519,7 @@ impl Diagram {
                 reachable: Vec::new(),
                 status: None,
                 settings: Default::default(),
+                ..Default::default()
             });
         }
         // Probes feeding blocks (ADR 0063): model wires, a value held

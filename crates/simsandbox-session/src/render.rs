@@ -41,6 +41,9 @@ pub struct RenderOptions {
     /// For the model's diagram: its nodes placed by role (the Structure
     /// lens's "Arrange by role", ADR 0108), the file unchanged.
     pub arrange: bool,
+    /// For the diagram: each block's wired ports only (the Structure lens,
+    /// ADR 0108), the rest counted.
+    pub wired: bool,
 }
 
 impl Default for RenderOptions {
@@ -57,6 +60,7 @@ impl Default for RenderOptions {
             values: false,
             components: false,
             arrange: false,
+            wired: false,
         }
     }
 }
@@ -196,6 +200,7 @@ pub fn render_diagram(
     crate::diagram_paint::open_nodes(&mut d, |key| {
         o.values || file.controls.open.iter().any(|open| open == key)
     });
+    d.fold(|_| !o.wired);
     if o.arrange && o.inside.is_none() {
         crate::diagram::place_arranged(&mut d, &crate::diagram::roles(file, registry));
     }
@@ -510,6 +515,7 @@ mod tests {
             values: false,
             components: false,
             arrange: false,
+            wired: false,
         };
         let (img, _) = render(&s, view_registry(), &o).unwrap();
         assert_eq!((img.width, img.height), (400, 200));

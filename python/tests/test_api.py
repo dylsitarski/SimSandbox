@@ -290,6 +290,9 @@ def test_a_scene_is_added_checked_saved_and_drawn(tmp_path):
     assert m.render(diagram=True, components=True, width=600, height=300)[1:4] == b"PNG"
     with pytest.raises(ValueError, match="diagram=True"):
         m.render(components=True)
+    assert m.render(diagram=True, wired=True, width=600, height=300)[1:4] == b"PNG"
+    with pytest.raises(ValueError, match="diagram=True"):
+        m.render(wired=True)
     # Arranged by role (ADR 0108): positions only, and settled once done.
     def rest(data: dict[str, object]) -> dict[str, object]:
         return {k: v for k, v in data.items() if k != "blocks" and v not in ([], {})}

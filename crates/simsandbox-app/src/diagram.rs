@@ -857,25 +857,35 @@ impl DiagramTab {
                 self.data_key = "\u{0}".into();
             }
             // How much of each node is drawn (the Structure lens, ADR 0108).
-            let now = self.canvas.detail;
-            let name = |d: Option<Detail>| match d {
-                None => "By zoom",
-                Some(Detail::Components) => "Components",
-                Some(Detail::Ports) => "Ports",
-            };
+            let now = (self.canvas.detail, self.canvas.all_ports);
+            let choices = [
+                (
+                    (None, false),
+                    "By zoom",
+                    "Components when zoomed out, wired ports nearer (all of a selected block's), every port when zoomed in to edit",
+                ),
+                (
+                    (Some(Detail::Components), false),
+                    "Components",
+                    "Each block as its role, name and type; the wires between two blocks as one bundle, named by their group",
+                ),
+                (
+                    (Some(Detail::Ports), false),
+                    "Wired ports",
+                    "Each block's wired ports; all of a selected block's, and every port while a wire is drawn",
+                ),
+                ((Some(Detail::Ports), true), "All ports", "Every port, wire and value"),
+            ];
+            let shown = choices
+                .iter()
+                .find(|(c, _, _)| *c == now)
+                .map_or("By zoom", |(_, name, _)| name);
             egui::ComboBox::from_id_salt("diagram detail")
-                .selected_text(name(now))
+                .selected_text(shown)
                 .show_ui(ui, |ui| {
-                    for (d, tip) in [
-                        (None, "Components when zoomed out, ports when zoomed in"),
-                        (
-                            Some(Detail::Components),
-                            "Each block as its name and type; the wires between two blocks as one bundle, named by their group",
-                        ),
-                        (Some(Detail::Ports), "Every port, wire and value"),
-                    ] {
-                        if ui.selectable_label(now == d, name(d)).on_hover_text(tip).clicked() {
-                            self.canvas.detail = d;
+                    for (c, name, tip) in choices {
+                        if ui.selectable_label(now == c, name).on_hover_text(tip).clicked() {
+                            (self.canvas.detail, self.canvas.all_ports) = c;
                         }
                     }
                 })

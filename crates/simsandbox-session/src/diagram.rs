@@ -43,8 +43,9 @@ pub struct Port {
 }
 
 /// What a node stands for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NodeKind {
+    #[default]
     Block,
     /// A filter on the data layer (ADR 0050): reads recorded data.
     Filter,
@@ -61,7 +62,7 @@ pub enum NodeKind {
 }
 
 /// One node.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Node {
     pub name: String,
     pub kind: NodeKind,
@@ -93,6 +94,17 @@ pub struct Node {
     /// What the run says of it now: an activated use held, or how often
     /// it started again (ADR 0088).
     pub status: Option<String>,
+    /// It has states or tables (a used model counts as having them).
+    pub stateful: bool,
+    /// What it does, as the card names it ([`role`]); empty off the model's
+    /// blocks.
+    pub role: &'static str,
+    /// Only its wired ports are drawn (the Structure lens, ADR 0108); the
+    /// rest on demand. Set by [`Diagram::fold`].
+    pub folded: bool,
+    /// Which inputs and which outputs have a wire, as [`Diagram::fold`]
+    /// found them.
+    pub wired: [Vec<bool>; 2],
 }
 
 /// A parameter value shown on a node.
@@ -119,8 +131,58 @@ pub struct NodeValue {
 }
 
 impl Node {
+    /// Whether port `k` on this side is drawn: all are unless folded, then
+    /// only the wired ones.
+    pub fn shows(&self, causality: Causality, k: usize) -> bool {
+        let side = match causality {
+            Causality::Input => 0,
+            Causality::Output => 1,
+        };
+        !self.folded || self.wired[side].get(k).copied().unwrap_or(false)
+    }
+
+    /// The row port `k` is drawn in, among the ports drawn on its side.
+    pub fn row_of(&self, causality: Causality, k: usize) -> Option<usize> {
+        self.shows(causality, k)
+            .then(|| (0..k).filter(|&j| self.shows(causality, j)).count())
+    }
+
+    /// How many ports are drawn on a side.
+    pub fn rows_on(&self, causality: Causality) -> usize {
+        let n = match causality {
+            Causality::Input => self.inputs.len(),
+            Causality::Output => self.outputs.len(),
+        };
+        (0..n).filter(|&k| self.shows(causality, k)).count()
+    }
+
+    /// How many ports are not drawn (folded away).
+    pub fn hidden(&self) -> usize {
+        self.inputs.len() + self.outputs.len()
+            - self.rows_on(Causality::Input)
+            - self.rows_on(Causality::Output)
+    }
+
+    /// The rows of ports drawn, and below them, on a folded node with
+    /// ports folded away, one saying how many.
+    pub fn port_rows(&self) -> usize {
+        let rows = self
+            .rows_on(Causality::Input)
+            .max(self.rows_on(Causality::Output));
+        if self.folded && self.hidden() > 0 {
+            rows + 1
+        } else {
+            rows.max(1)
+        }
+    }
+
+    /// The height of the port rows under the header.
+    fn ports_height(&self) -> f64 {
+        HEADER + ROW * self.port_rows() as f64
+    }
+
     pub fn height(&self) -> f64 {
-        let ports = HEADER + ROW * self.inputs.len().max(self.outputs.len()).max(1) as f64;
+        let ports = self.ports_height();
         match self.value_rows() {
             0 => ports,
             n => ports + 4.0 + VALUE_ROW * n as f64,
@@ -148,13 +210,17 @@ impl Node {
 
     /// Where value row `k` starts (its top), in canvas units.
     pub fn value_at(&self, k: usize) -> [f64; 2] {
-        let ports = HEADER + ROW * self.inputs.len().max(self.outputs.len()).max(1) as f64;
+        let ports = self.ports_height();
         [self.at[0], self.at[1] + ports + 2.0 + VALUE_ROW * k as f64]
     }
 
-    /// Where a port's wire attaches, in canvas units.
+    /// Where a port's wire attaches, in canvas units: in its row, or for
+    /// a port folded away, at the side of the header.
     pub fn port_at(&self, causality: Causality, index: usize) -> [f64; 2] {
-        let y = self.at[1] + HEADER + ROW * (index as f64 + 0.5);
+        let y = match self.row_of(causality, index) {
+            Some(row) => self.at[1] + HEADER + ROW * (row as f64 + 0.5),
+            None => self.at[1] + HEADER / 2.0,
+        };
         match causality {
             Causality::Input => [self.at[0], y],
             Causality::Output => [self.at[0] + NODE_WIDTH, y],
@@ -269,10 +335,6 @@ pub fn role(
 /// still has them). A used model counts as a system for what reads and
 /// drives it.
 pub fn roles(file: &ModelFile, registry: &Registry) -> BTreeMap<String, &'static str> {
-    let node_of = |key: &str| -> String {
-        let n = key.split_once('.').map_or(key, |(n, _)| n);
-        n.split('/').next().unwrap_or(n).to_string()
-    };
     let stateful: BTreeMap<&str, bool> = file
         .blocks
         .iter()
@@ -284,17 +346,28 @@ pub fn roles(file: &ModelFile, registry: &Registry) -> BTreeMap<String, &'static
             (b.name.as_str(), has)
         })
         .collect();
-    let system = |n: &str| stateful.get(n).copied().unwrap_or(false);
-    file.blocks
+    roles_of(&file.blocks, &file.connections, &|n| {
+        stateful.get(n).copied().unwrap_or(false)
+    })
+}
+
+/// [`roles`], given which blocks have states.
+fn roles_of(
+    blocks: &[BlockEntry],
+    connections: &[ConnectionEntry],
+    system: &dyn Fn(&str) -> bool,
+) -> BTreeMap<String, &'static str> {
+    let node_of = |key: &str| -> String {
+        let n = key.split_once('.').map_or(key, |(n, _)| n);
+        n.split('/').next().unwrap_or(n).to_string()
+    };
+    blocks
         .iter()
         .map(|b| {
             if b.is_use() {
                 return (b.name.clone(), "model");
             }
-            let wires = file
-                .connections
-                .iter()
-                .filter(|c| !c.from.starts_with("probe:"));
+            let wires = connections.iter().filter(|c| !c.from.starts_with("probe:"));
             let reads = wires
                 .clone()
                 .any(|c| node_of(&c.to) == b.name && system(&node_of(&c.from)));
@@ -685,6 +758,15 @@ impl Diagram {
             }
         }
         drive_values(&mut nodes, &mut wires);
+        // What each block does (the card's roles, ADR 0108).
+        let stateful: BTreeMap<String, bool> =
+            nodes.iter().map(|n| (n.name.clone(), n.stateful)).collect();
+        let roles = roles_of(l.blocks, l.connections, &|n| {
+            stateful.get(n).copied().unwrap_or(false)
+        });
+        for n in &mut nodes {
+            n.role = roles.get(&n.name).copied().unwrap_or("");
+        }
         layout(&mut nodes, &wires);
         Self {
             scope: scope.clone(),
@@ -705,6 +787,28 @@ impl Diagram {
     /// The canvas area the nodes cover: `[min_x, min_y, max_x, max_y]`.
     pub fn bounds(&self) -> Option<[f64; 4]> {
         self.bounds_at(false)
+    }
+
+    /// Fold the model's blocks and uses to their wired ports (the
+    /// Structure lens, ADR 0108), except the nodes `unfold` names, which
+    /// show all of theirs. Data-layer nodes always show theirs.
+    pub fn fold(&mut self, unfold: impl Fn(&str) -> bool) {
+        for n in &mut self.nodes {
+            n.wired = [vec![false; n.inputs.len()], vec![false; n.outputs.len()]];
+        }
+        for w in &self.wires {
+            if let Some(o) = self.nodes[w.from.0].wired[1].get_mut(w.from.1) {
+                *o = true;
+            }
+            if !w.param {
+                if let Some(i) = self.nodes[w.to.0].wired[0].get_mut(w.to.1) {
+                    *i = true;
+                }
+            }
+        }
+        for n in &mut self.nodes {
+            n.folded = n.is_block() && !unfold(&n.name);
+        }
     }
 
     /// [`Diagram::bounds`], with nodes drawn as their headers if `compact`
@@ -894,6 +998,8 @@ fn use_node(
         reachable: Vec::new(),
         status: None,
         settings: Default::default(),
+        stateful: true,
+        ..Default::default()
     };
     let folder = folder
         .map(std::path::Path::to_path_buf)
@@ -1116,8 +1222,10 @@ fn node(
 ) -> Node {
     let mut method = b.method.name.clone();
     let mut values = Vec::new();
+    let mut stateful = false;
     let (mut inputs, outputs, error) = match build(b, registry, folder) {
         Ok(block) => {
+            stateful = !block.spec().states.is_empty() || !block.spec().tables.is_empty();
             if method.is_empty() {
                 method = block.method().name.clone();
             }
@@ -1191,6 +1299,8 @@ fn node(
         reachable: Vec::new(),
         status: None,
         settings,
+        stateful,
+        ..Default::default()
     }
 }
 

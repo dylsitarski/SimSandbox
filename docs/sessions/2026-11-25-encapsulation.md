@@ -40,10 +40,11 @@
 - 2026-11-27: the rest of the Stage (ADR 0108): Show definition (`app/definition.rs`), a picked body opening its row, plots marking the selection, binding by dragging an output onto a view (`Views::bind_dropped`).
 - 2026-11-27: the Structure lens, step 1: `diagram::bundles`, `diagram_paint::Detail`, the canvas by zoom (0.5) or by choice, the app's data layer off by default (`DiagramTab::show_data`), `render --diagram --components`. Headless defaults kept so scripts do not change.
 - 2026-11-27: the Structure lens, step 2: `diagram::{role, roles, arrange, arrange_file, place_arranged}`, **Arrange** in the app (one undo), `render --diagram --arrange`, Python `Model.arrange()`.
+- 2026-11-27: the Structure lens, step 3: `Diagram::fold`, `Node::{shows, row_of, rows_on, hidden, port_rows, role, stateful}`, the zoom ladder (0.5 components, 0.9 all ports), **Detail** with four choices, `render --diagram --wired`.
 
 ## Left open
 
-- The Structure lens's steps 3–4 (ADR 0108: compact nodes when zoomed in, connect by dragging), then Definitions. Show definition of a plain block goes to the diagram.
+- The Structure lens's step 4 (ADR 0108: connect by dragging from a body to a controller), then Definitions. Show definition of a plain block goes to the diagram.
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session

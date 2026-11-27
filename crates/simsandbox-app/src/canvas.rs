@@ -24,7 +24,7 @@ use simsandbox_core::registry::Registry;
 use simsandbox_session::diagram::{Diagram, Edit, Node, NodeKind, Scope, NODE_WIDTH, VALUE_ROW};
 use simsandbox_session::diagram_paint::{
     format_number, open_key, open_nodes, title, unit_key, unit_setting, Detail, Marks, View,
-    SHOW_PORTS, SHOW_VALUES,
+    SHOW_ALL_PORTS, SHOW_PORTS, SHOW_VALUES,
 };
 use std::collections::BTreeSet;
 
@@ -133,6 +133,8 @@ pub struct Canvas {
     /// How much of each node is drawn; `None` by zoom (the Structure lens,
     /// ADR 0108).
     pub detail: Option<Detail>,
+    /// Every port of every node, not only the wired ones.
+    pub all_ports: bool,
 }
 
 /// How close to a port counts as on it, in points at zoom 1.
@@ -157,6 +159,13 @@ impl Canvas {
         let mut edits = Vec::new();
         let mut requests = Vec::new();
         open_nodes(d, |key| self.open.contains(key));
+        // Wired ports only (the Structure lens, ADR 0108); all of a node's
+        // while it is selected, and everyone's while a wire is drawn.
+        let all = match self.detail {
+            None => self.view.zoom >= SHOW_ALL_PORTS,
+            Some(_) => self.all_ports,
+        } || self.wiring.is_some();
+        d.fold(|name| all || self.is_selected(name));
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         let origin = rect.min;
         let resized = self.fitted.is_some_and(|s| s != rect.size()) && !self.user_moved;
@@ -503,7 +512,7 @@ impl Canvas {
                 (Causality::Input, n.inputs.len()),
                 (Causality::Output, n.outputs.len()),
             ] {
-                for k in 0..count {
+                for k in (0..count).filter(|&k| n.shows(c, k)) {
                     let dist = self.view.to_screen(origin, n.port_at(c, k)).distance(p);
                     if dist < best_dist {
                         best_dist = dist;
@@ -1890,5 +1899,36 @@ mod tests {
         frame(&ctx, &mut c, &mut d, vec![]);
         assert_eq!(c.view.detail, Detail::Ports);
         assert!(c.bundle_under(&d, Pos2::ZERO, mid).is_none());
+    }
+
+    #[test]
+    fn by_zoom_the_canvas_folds_to_wired_ports_between_components_and_editing() {
+        // The Structure lens, step 3 (ADR 0108): components, then wired
+        // ports, then every port; a selected block shows all of its own.
+        let (mut d, mut c, ctx) = cruise();
+        c.user_moved = true;
+        let unwired = |d: &Diagram| {
+            let n = &d.nodes[d.node("cruise").unwrap()];
+            let k = n.outputs.iter().position(|p| p.name == "e").unwrap();
+            n.shows(Causality::Output, k)
+        };
+        c.view.zoom = (SHOW_PORTS + SHOW_ALL_PORTS) / 2.0;
+        frame(&ctx, &mut c, &mut d, vec![]);
+        assert_eq!(c.view.detail, Detail::Ports);
+        assert!(!unwired(&d), "folded between the two");
+        c.selected = Some(Selection::Block("cruise".into()));
+        frame(&ctx, &mut c, &mut d, vec![]);
+        assert!(unwired(&d), "a selected block shows all of its ports");
+        c.selected = None;
+        c.view.zoom = SHOW_ALL_PORTS;
+        frame(&ctx, &mut c, &mut d, vec![]);
+        assert!(unwired(&d), "zoomed in to edit: every port");
+        // Chosen: wired ports whatever the zoom, or all.
+        c.detail = Some(Detail::Ports);
+        frame(&ctx, &mut c, &mut d, vec![]);
+        assert!(!unwired(&d));
+        c.all_ports = true;
+        frame(&ctx, &mut c, &mut d, vec![]);
+        assert!(unwired(&d));
     }
 }

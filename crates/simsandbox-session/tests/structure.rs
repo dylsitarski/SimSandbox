@@ -148,3 +148,62 @@ fn arranging_a_file_writes_places_and_a_second_time_moves_nothing() {
         0
     );
 }
+
+#[test]
+fn a_folded_block_draws_its_wired_ports_and_counts_the_rest() {
+    // The Structure lens, step 3 (ADR 0108): ports only when wired, the
+    // rest on demand; each block says what it does.
+    use simsandbox_core::block::Causality;
+    let mut d = diagram("Cart-pole");
+    let i = d.node("cartpole").unwrap();
+    let whole = d.nodes[i].height();
+    d.fold(|_| false);
+    let n = &d.nodes[i];
+    assert!(n.folded);
+    let shown: Vec<&str> = (0..n.outputs.len())
+        .filter(|&k| n.shows(Causality::Output, k))
+        .map(|k| n.outputs[k].name.as_str())
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "slider_position",
+            "slider_speed",
+            "hinge_angle",
+            "hinge_rate"
+        ]
+    );
+    assert_eq!(
+        n.hidden(),
+        n.inputs.len() + n.outputs.len() - n.rows_on(Causality::Input) - shown.len()
+    );
+    assert!(n.height() < whole);
+    // Every wire still ends at a port that is drawn.
+    for w in &d.wires {
+        assert!(
+            d.nodes[w.from.0].shows(Causality::Output, w.from.1),
+            "{}",
+            w.from_name
+        );
+        if !w.param {
+            assert!(
+                d.nodes[w.to.0].shows(Causality::Input, w.to.1),
+                "{}",
+                w.to_name
+            );
+        }
+    }
+    // A port folded away attaches at the header's side; rows close up.
+    let energy = n.outputs.iter().position(|p| p.name == "energy").unwrap();
+    assert_eq!(n.row_of(Causality::Output, energy), None);
+    assert_eq!(n.row_of(Causality::Output, 3), Some(3));
+    // Unfolded on demand.
+    d.fold(|name| name == "cartpole");
+    assert!(!d.nodes[i].folded && d.nodes[d.node("control").unwrap()].folded);
+    // Roles on the nodes, as the card names them.
+    let role = |name: &str| d.nodes[d.node(name).unwrap()].role;
+    assert_eq!(
+        (role("hand"), role("control"), role("cartpole")),
+        ("interaction", "controller", "system")
+    );
+}

@@ -6,6 +6,7 @@ All notable user-visible changes are recorded here. The format follows [Keep a C
 
 ### Changed
 
+- The diagram folds blocks to their wired ports at middle zoom, saying how many more each has; a selected block shows all of its ports, and every block does while a wire is drawn. Zoomed in to edit, every port shows. **Detail** offers By zoom, Components, Wired ports and All ports. Each block's subtitle starts with its role (interaction, system, controller, formulas, study). Headless: `render --diagram --wired`, Python `wired=True`.
 - **Arrange** on the Diagram tab places the blocks by role: interaction on the left, the plant in the middle by its signal flow, controllers below it so their loop shows, what only reads it on the right. One edit, undone at once. Headless: `render --diagram --arrange` (the file unchanged), Python `Model.arrange()`.
 - The diagram draws components when zoomed out (the Structure lens): each block as its name and type, and the wires between two blocks as one bundle named by their group (`joints`, `pointer`), `3 drives`, or their count; hover a bundle for its wires. **Detail** on the Diagram tab chooses components, ports, or by zoom. Headless: `render --diagram --components`, Python `components=True`.
 - The app's diagram hides the data layer (filters, views, probes) by default; **Data** shows it. Headless rendering is unchanged.
