@@ -607,7 +607,12 @@ fn by_name(t: &Template, name: &str, env: &mut BTreeMap<String, SceneValue>) {
     let Some((path, _)) = name.rsplit_once('/') else {
         return;
     };
-    for k in t.inputs.keys() {
+    for (k, i) in &t.inputs {
+        // A block has no pointer of its own: its picture grabs only with a
+        // pointer the model binds (ADR 0114 point 5).
+        if t.by_block && i.kind == "pointer" {
+            continue;
+        }
         if !env.contains_key(k) {
             // A block's port or parameter (`cartpole.x`); a use's output
             // or pointer block (`left/x`).

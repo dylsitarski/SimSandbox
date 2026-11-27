@@ -103,4 +103,9 @@ A block's picture depends on how the block is configured. A mechanism's bodies, 
     - drawn;
     - listed by `check`, the card and `describe`;
     - offered under a use's path.
-
+- **Step 2 (2026-11-27), the mechanism's `bodies` and opening without views:**
+  - `simsandbox_mech::picture::bodies` builds the template from the rows. Each joint is a frame at its point (`{j}_at_x`, `{j}_at_y`) turned by `{j}_turn`, in its parent body's frame. Each body's frame is in its joint's, turned by a revolute joint's angle or moved along x by a prismatic joint's position; a weld adds nothing. These are the steps of the solver's own placement (`tree::placement`), so the frames agree with the `x`, `y`, `angle` rows to 10⁻⁹ while a grabbed pole swings (`the_mechanisms_bodies_are_drawn_where_its_rows_put_them`).
+  - Each body is drawn as a stick from its joint to its centre of mass, a disc at the centre (`size`, 0.05 m) and a grey dot at the joint. A template computes nothing (point 2), so the stick ends at the centre: "and on" (point 5) would need a length the rows do not give. The axes of point 5 are left to the cart-pole's own `body_axes`.
+  - Parameters `colour`, `width` and `size`. It offers each body's frame by the body's name.
+  - Its pointer input `hand` is not bound by name, since a block's ports are never a pointer: bind it to an `input.pointer` block to grab (`"bind": {"hand": "hand"}`).
+  - A model that writes no views opens with one scene per length unit holding its blocks' pictures, layered in the order of the blocks' names, before the plot chosen by fit (`views::default_pictures`). The session records what they bind from loading (`shown_views`), so `render`, `run` and Python draw them as the app does.

@@ -35,10 +35,11 @@
 - 2026-11-27: the Stage's first increment: Stage tabs and bar, Plot and Draw from the Overview and Inspector, `--view stage`; screenshot under Xvfb.
 - 2026-11-27: [ADR 0114](../decisions/0114-block-types-bring-default-pictures.md) drafted (proposed): block types bring default pictures.
 - 2026-11-27: ADR 0114 step 1 built: the `Pictures` capability, `block_pictures` and `Session::templates()`, listings in `check`, the card and `describe`; tested with a test block.
+- 2026-11-27: ADR 0114 step 2 built: the mechanism's `bodies` (`simsandbox_mech::picture`), checked against its rows; a model that writes no views opens with its blocks' pictures. Found by a headless render: the session recorded only what written views bind, so a default picture drew nothing outside the app; `shown_views` fixes it, with a test.
 
 ## Left open
 
-- The rest of the Stage: "Show definition"; default pictures by block type (ADR 0114: step 2, the mechanism's `bodies`, next); then the Structure lens and Definitions.
+- The rest of the Stage: "Show definition"; default pictures by block type (ADR 0114: step 3, pictures in "+ view", the Overview and the Inspector, into a new view or an existing scene, next); then the Structure lens and Definitions.
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session
@@ -48,4 +49,5 @@
 
 - Wires into a use go only through its interface (`resolve` in `simsandbox-file/src/subsystems.rs`). The leaks are `params` keys with `.` or `/` (`declare`, the loop after `level`), `starts`, wires from inner outputs by path (`a/c.x` passes `check`) and probe links at any depth.
 - Owner asked (2026-11-25) whether reading should be closed too; the draft keeps observing open (option E rejected) but closes reading that feeds a result (wires, links, formulas, events).
+- A block's picture's pointer input (`hand`) is never bound by name: ports are not pointers. A model that wants to grab its mechanism's bodies binds it in its scene.
 - No example sets inner values by path; the Inspector's per-use table (`simsandbox-app/src/inspector.rs`, `app/param_rows.rs`) is what writes them.

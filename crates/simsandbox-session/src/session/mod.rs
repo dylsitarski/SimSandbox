@@ -234,7 +234,7 @@ impl Session {
             warnings,
             // What the views read, as they draw: templates put in place
             // (ADR 0113).
-            recording: Recording::new(&simsandbox_file::templates::expand_all(
+            recording: Recording::new(&shown_views(
                 &start_file.controls.views,
                 &templates_with(&start_file, &block_templates),
             )),
@@ -271,9 +271,9 @@ impl Session {
                 .push(format!("controls.filters.{p}; ignored"));
         }
         // The parameters the file's scenes bind are recorded (ADR 0102).
-        let reads = recording::view_reads(&simsandbox_file::templates::expand_all(
+        let reads = recording::view_reads(&shown_views(
             &session.file.controls.views,
-            &simsandbox_file::compose::templates_in(&session.file, session.file.folder.as_deref()),
+            &session.templates(),
         ));
         session.catalogue.set_param_reads(&reads);
         // No probes yet: they are loaded next, and the filters that read
@@ -989,6 +989,21 @@ pub fn block_pictures(
 }
 
 /// The file's templates and its used models', with its blocks' pictures.
+/// The views a model opens with, templates put in place: those it
+/// writes, or if none its blocks' pictures (ADR 0114 point 4), so what
+/// they bind is recorded without a window.
+fn shown_views(
+    written: &[ViewEntry],
+    templates: &BTreeMap<String, serde_json::Value>,
+) -> Vec<ViewEntry> {
+    if written.is_empty() {
+        let pictures = crate::views::default_pictures(templates);
+        simsandbox_file::templates::expand_all(&pictures, templates)
+    } else {
+        simsandbox_file::templates::expand_all(written, templates)
+    }
+}
+
 fn templates_with(
     file: &simsandbox_file::ModelFile,
     blocks: &BTreeMap<String, serde_json::Value>,

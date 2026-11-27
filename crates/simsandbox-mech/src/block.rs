@@ -5,8 +5,8 @@
 use crate::rows::{self, Row};
 use crate::tree::{self, At, Kind, Load, Numbers, Pose, Scratch, Tree};
 use simsandbox_core::block::{
-    Block, BlockSpec, Domain, Equations, MethodSpec, ParamRole, ParamSpec, PortSpec, Shape,
-    StepContext, StepIo,
+    Block, BlockSpec, Domain, Equations, MethodSpec, ParamRole, ParamSpec, Picture, Pictures,
+    PortSpec, Shape, StepContext, StepIo,
 };
 use simsandbox_core::registry::BlockConfig;
 use simsandbox_core::units::Unit;
@@ -65,6 +65,8 @@ struct Work {
 /// then their rates.
 pub struct Mechanism {
     spec: BlockSpec,
+    /// The rows it was built from, for its picture (ADR 0114).
+    rows: Vec<Row>,
     tree: Tree,
     places: Vec<Place>,
     work: RefCell<Work>,
@@ -333,6 +335,7 @@ impl Mechanism {
         unique_names(&spec)?;
         let mech = Self {
             spec,
+            rows: rows.to_vec(),
             tree,
             places,
             work: RefCell::new(Work::default()),
@@ -641,6 +644,23 @@ impl Block for MechBlock {
 
     fn as_equations(&self) -> Option<&dyn Equations> {
         self.ode.as_equations()
+    }
+
+    fn as_pictures(&self) -> Option<&dyn Pictures> {
+        Some(self)
+    }
+}
+
+/// Its bodies (ADR 0114 point 5).
+impl Pictures for MechBlock {
+    fn pictures(&self) -> Vec<Picture> {
+        vec![Picture {
+            name: crate::picture::BODIES.into(),
+            description: "Each body as a stick from its joint to its centre of mass, a disc at \
+                          the centre and a dot at the joint; each body's frame offered by its name"
+                .into(),
+            template: crate::picture::bodies(&self.mech.rows).to_string(),
+        }]
     }
 }
 

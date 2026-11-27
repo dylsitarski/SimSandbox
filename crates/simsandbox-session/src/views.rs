@@ -74,7 +74,17 @@ impl Views {
                 }
             }
         }
-        if self.tiles.is_empty() {
+        let fallback = self.tiles.is_empty();
+        // A model that writes no views draws what its blocks offer
+        // (ADR 0114 point 4), layered, one scene per unit.
+        if saved.is_empty() {
+            for e in self.default_pictures() {
+                if let Err(err) = self.add_entry(&e, available) {
+                    warnings.push(format!("its blocks' pictures: {err}; not drawn"));
+                }
+            }
+        }
+        if fallback {
             // A study's results against what it varies (ADR 0070): over two
             // parameters (2D results, ADR 0071) best seen as a heat map.
             let studied = available
@@ -271,6 +281,12 @@ impl Views {
         true
     }
 
+    /// The scenes a model that writes no views opens with: see
+    /// [`default_pictures`].
+    pub fn default_pictures(&self) -> Vec<ViewEntry> {
+        default_pictures(&self.templates)
+    }
+
     /// A tile for an entry as written (a scene drawing a template, ADR
     /// 0113), selected; its id, or why it cannot be shown.
     pub fn add_entry(&mut self, e: &ViewEntry, available: &Available<'_>) -> Result<u64, String> {
@@ -372,6 +388,41 @@ pub fn grid(n: usize) -> (usize, usize) {
     }
     let cols = (n as f64).sqrt().ceil() as usize;
     (cols, n.div_ceil(cols))
+}
+
+/// The scenes a model that writes no views opens with (ADR 0114 point
+/// 4): every picture its own blocks offer (`block/name`), layered in
+/// the scene's own frame, one scene per length unit, by block name.
+pub fn default_pictures(templates: &BTreeMap<String, serde_json::Value>) -> Vec<ViewEntry> {
+    let mut by_unit: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    for (name, t) in templates {
+        let own_block = name.matches('/').count() == 1
+            && t.get("offered_by").and_then(|v| v.as_str()) == Some("block");
+        if !own_block {
+            continue;
+        }
+        let unit = t
+            .get("unit")
+            .and_then(|u| u.as_str())
+            .unwrap_or("m")
+            .to_string();
+        let layer: String = name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        by_unit.entry(unit).or_default().push(serde_json::json!({
+            "draw": "template", "name": layer, "template": name
+        }));
+    }
+    by_unit
+        .into_iter()
+        .filter_map(|(unit, layers)| {
+            serde_json::from_value(serde_json::json!({
+                "type": "plot.scene", "unit": unit, "layers": layers
+            }))
+            .ok()
+        })
+        .collect()
 }
 
 #[cfg(test)]

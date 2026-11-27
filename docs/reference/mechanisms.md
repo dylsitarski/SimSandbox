@@ -63,6 +63,18 @@ A scene draws the bodies with one frame over the rows and a layer per shape in i
 "frames": {"body": {"x": "cartpole.x", "y": "cartpole.y", "angle": "cartpole.angle"}}
 ```
 
+## Its picture, `bodies`
+
+The block offers a picture ([ADR 0114](../decisions/0114-block-types-bring-default-pictures.md)): the template `BLOCK/bodies` (`cartpole/bodies`), built from its rows. Each body is a stick from its joint to its centre of mass, a disc at the centre and a grey dot at the joint, drawn in the body's frame. The frames are composed from the joints, bound by name to the block's coordinates (`hinge_angle`) and geometry parameters (`hinge_at_x`, `pole_centre_y`), so the picture follows the run and a slider. It offers each body's frame by the body's name (`rig/pole` when drawn as `rig`), and takes the parameters `colour`, `width` and `size` (the disc's radius, 0.05 m).
+
+A model that writes no views opens with it. To draw it in a scene of your own and grab a body with an `input.pointer` block `hand`:
+
+```json
+{"draw": "template", "name": "rig", "template": "cartpole/bodies", "bind": {"hand": "hand"}}
+```
+
+`check` lists it under `pictures` with its inputs, parameters and frames.
+
 ## In the app
 
 With the block's node selected, the Inspector shows its bodies as a table: one row per body with its name, its joint's name, the joint's kind, its parent (`ground` or a body above it) and its mass, and buttons to move a row up or down or remove it (its children then hang from its parent). `…` opens a row's other columns. `+ body` adds a body on a turning joint hanging from the last one.

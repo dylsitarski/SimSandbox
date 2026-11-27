@@ -9,6 +9,7 @@
 //! - [`block`]: the ODE system, its ports and parameters, and the block.
 
 pub mod block;
+pub mod picture;
 pub mod rows;
 pub mod tree;
 
