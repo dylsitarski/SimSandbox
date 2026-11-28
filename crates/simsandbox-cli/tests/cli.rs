@@ -886,3 +886,31 @@ fn sources_lists_what_fits_a_target_and_what_goes_between_blocks() {
     let out = simsandbox(&["sources", &cartpole]);
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn explain_gives_a_blocks_definition_with_its_values() {
+    // The Definitions projection (ADR 0108), headless.
+    let cartpole = example("cartpole.ssbx.json");
+    let out = simsandbox(&["explain", &cartpole, "--definition", "control"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let d = json(&out);
+    assert_eq!(d["kind"], "equations");
+    let k1 = d["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["name"] == "k1")
+        .unwrap();
+    assert_eq!(
+        (k1["what"].as_str(), k1["unit"].as_str()),
+        (Some("param"), Some("N/m"))
+    );
+    let out = simsandbox(&["explain", &cartpole, "--definition", "cartpole"]);
+    assert_eq!(json(&out)["kind"], "bodies");
+    let out = simsandbox(&["explain", &cartpole, "--definition", "nothing"]);
+    assert_eq!(out.status.code(), Some(1));
+}

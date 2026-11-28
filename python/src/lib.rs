@@ -133,6 +133,19 @@ fn explain(text: &str, json: bool, part: &str, depth: usize) -> PyResult<String>
     })
 }
 
+/// A block of the model where it is defined, with its values at the start
+/// (ADR 0108), as JSON: as `explain --definition` prints it.
+#[pyfunction]
+fn definition(text: &str, block: &str) -> PyResult<String> {
+    let r = registry();
+    let folder = simsandbox_core::registry::current_folder();
+    let s = simsandbox_session::Session::load_in("model", text, &r, folder.as_deref())
+        .map_err(ModelError::new_err)?;
+    simsandbox_session::definition::definition(&s, block)
+        .map(|d| d.to_string())
+        .map_err(ModelError::new_err)
+}
+
 /// The run file's JSON Schema.
 #[pyfunction]
 fn run_schema() -> &'static str {
@@ -970,6 +983,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(duplicate, m)?)?;
     m.add_function(wrap_pyfunction!(arrange, m)?)?;
     m.add_function(wrap_pyfunction!(sources, m)?)?;
+    m.add_function(wrap_pyfunction!(definition, m)?)?;
     m.add_function(wrap_pyfunction!(study, m)?)?;
     m.add_function(wrap_pyfunction!(study_model, m)?)?;
     m.add_function(wrap_pyfunction!(strategy, m)?)?;

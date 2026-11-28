@@ -613,6 +613,20 @@ class Model:
         """See :func:`explain`."""
         return cast("str | dict[str, Any]", explain(self, format, part, depth))  # type: ignore[call-overload]
 
+    def definition(self, block: str) -> dict[str, Any]:
+        """Block ``block`` where it is defined, with its values at the start
+        (the Definitions projection, ADR 0108): for typed equations
+        ``{"kind": "equations", "lines": [...]}``, each line with ``what``
+        it declares (``param``, ``state``, ``input``, ``rate``, ``map``,
+        ``defined``, ``note``), its ``name``, ``unit`` and ``value``; for a
+        mechanism its ``bodies`` and ``pictures``; for a study its
+        ``sample``; for a used model its ``model``; else its ``params``.
+        Raises :class:`ModelError` if the model cannot load or has no such
+        block."""
+        with _in_folder(self.folder):
+            found: dict[str, Any] = json.loads(_native.definition(self.to_json(), block))
+        return found
+
     def run(
         self,
         t_end: float | None = None,

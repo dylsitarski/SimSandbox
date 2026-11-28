@@ -21,6 +21,7 @@
 
 pub mod card;
 pub mod compose;
+pub mod definition;
 pub mod describe;
 pub mod diagram;
 pub mod diagram_paint;

@@ -324,6 +324,7 @@ impl SimApp {
                         Popped::Controls => Some(Pane::Controls),
                         Popped::Inspector => Some(Pane::Inspector),
                         Popped::Diagram => Some(Pane::Diagram),
+                        Popped::Definitions => Some(Pane::Definitions),
                         Popped::View(k) => tile(k).map(Pane::View),
                     };
                     if let Some(pane) = pane {

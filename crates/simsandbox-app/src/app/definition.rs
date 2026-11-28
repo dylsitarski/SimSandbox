@@ -1,7 +1,7 @@
 //! "Show definition" (ADR 0108, the Stage): one step from what is picked
 //! to where it is defined. A used model opens on the Overview at its own
-//! level; typed equations open in their editor; a mechanism's bodies are
-//! its table in the Inspector, with the picked body's row open; any other
+//! level; typed equations, a mechanism's bodies (the picked body's row
+//! open) and a study's design are shown in the Definitions pane; any other
 //! block is shown on the diagram.
 
 use super::{Focus, SimApp};
@@ -13,10 +13,12 @@ use serde_json::{Map, Value};
 pub(super) enum Shown {
     /// The Overview, at this use's level.
     Model(String),
-    /// The equation editor.
+    /// The Definitions pane: typed equations as a sheet.
     Equations,
-    /// The Inspector's table of bodies.
+    /// The Definitions pane: a mechanism's table of bodies and picture.
     Bodies,
+    /// The Definitions pane: a study's design.
+    Study,
     /// The diagram, with the block selected.
     Diagram,
 }
@@ -59,14 +61,11 @@ impl SimApp {
             self.overview_part = block.to_string();
             Shown::Model(block.to_string())
         } else if entry.type_name == simsandbox_eq::registry::EQUATIONS {
-            self.editor = Some(super::editors::Editor {
-                block: Some(block.to_string()),
-                text: entry.equations.join("\n"),
-                error: None,
-            });
             Shown::Equations
         } else if !entry.bodies.is_empty() {
             Shown::Bodies
+        } else if entry.type_name == simsandbox_file::STUDY {
+            Shown::Study
         } else {
             Shown::Diagram
         };
@@ -75,12 +74,11 @@ impl SimApp {
             self.picked = vec![(None, block.to_string())];
             self.inspected_view = None;
         }
-        self.focus = match shown {
-            Shown::Model(_) => Some(Focus::Pane(Pane::Overview)),
-            Shown::Bodies => Some(Focus::Pane(Pane::Inspector)),
-            Shown::Diagram => Some(Focus::Pane(Pane::Diagram)),
-            Shown::Equations => None,
-        };
+        self.focus = Some(Focus::Pane(match shown {
+            Shown::Model(_) => Pane::Overview,
+            Shown::Equations | Shown::Bodies | Shown::Study => Pane::Definitions,
+            Shown::Diagram => Pane::Diagram,
+        }));
         Some(shown)
     }
 }
@@ -128,7 +126,7 @@ mod tests {
         assert!(draws(&app.views.tiles[0], "cartpole"));
         assert!(!draws(&app.views.tiles[0], "cart"));
         assert_eq!(app.show_definition("cartpole"), Some(Shown::Bodies));
-        assert_eq!(app.focus, Some(Focus::Pane(Pane::Inspector)));
+        assert_eq!(app.focus, Some(Focus::Pane(Pane::Definitions)));
         assert_eq!(
             app.diagram.canvas.selected,
             Some(crate::canvas::Selection::Block("cartpole".into()))
@@ -159,8 +157,8 @@ mod tests {
             .map(|b| b.name.clone())
             .expect("an equations block");
         assert_eq!(app.show_definition(&block), Some(Shown::Equations));
-        let editor = app.editor.as_ref().unwrap();
-        assert_eq!(editor.block.as_deref(), Some(block.as_str()));
-        assert!(!editor.text.is_empty());
+        assert_eq!(app.focus, Some(Focus::Pane(Pane::Definitions)));
+        // The sheet, not the text: that is one click further.
+        assert!(app.editor.is_none());
     }
 }

@@ -42,10 +42,11 @@
 - 2026-11-27: the Structure lens, step 2: `diagram::{role, roles, arrange, arrange_file, place_arranged}`, **Arrange** in the app (one undo), `render --diagram --arrange`, Python `Model.arrange()`.
 - 2026-11-27: the Structure lens, step 3: `Diagram::fold`, `Node::{shows, row_of, rows_on, hidden, port_rows, role, stateful}`, the zoom ladder (0.5 components, 0.9 all ports), **Detail** with four choices, `render --diagram --wired`.
 - 2026-11-28: the Structure lens, step 4: `wiring::{sources, pairs, fits}`, **Wire into it…**, the **wire** handle and its window (`app/wiring.rs`), drops on the Overview and the diagram (`Request::Wire`), `simsandbox sources`, `Model.sources()`. The Structure lens's order of work is done.
+- 2026-11-28: Definitions, first increment: `simsandbox_session::definition` (`declares`, `definition`), `Session::outputs_of`, `Views::state_for`, the Definitions pane (`Pane::Definitions`, `"definitions"` in layouts), Show definition going there, `explain --definition`, `Model.definition()`.
 
 ## Left open
 
-- Definitions (ADR 0108 point 5). Dragging straight off a scene body is not built: the view's **wire** handle stands in. Show definition of a plain block goes to the diagram.
+- After Definitions' first increment: typeset lines, editing values on the sheet, and definitions supplied by block types or plugins (with the plugin interface, Q28). Dragging straight off a scene body is not built: the view's **wire** handle stands in. Show definition of a plain block goes to the diagram.
 - The setup-script warning at this session's start was a stale file from 2026-11-14 (the old script); the stored script and installed packages are right.
 
 ## Notes for the next session

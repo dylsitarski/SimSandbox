@@ -57,6 +57,9 @@ impl Pane {
     pub const CONTROLS: &'static str = "controls";
     pub const INSPECTOR: &'static str = "inspector";
     pub const DIAGRAM: &'static str = "diagram";
+    /// Each block where it is defined (ADR 0108). A SimSandbox without it
+    /// ignores it.
+    pub const DEFINITIONS: &'static str = "definitions";
 
     pub fn view(k: usize) -> Self {
         Pane::Named(format!("view:{k}"))

@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 
 mod data;
 mod definition;
+mod definitions;
 mod diagram_tab;
 mod editors;
 mod files;
@@ -173,6 +174,19 @@ pub struct SimApp {
     editor: Option<Editor>,
     /// The derived-signals window, when open.
     signals_editor: Option<SignalsEditor>,
+    /// The definition the Definitions pane shows, with the file and block
+    /// it was read for (ADR 0108).
+    definition: Option<(simsandbox_file::ModelFile, String, serde_json::Value)>,
+    /// The picture the Definitions pane draws beside a mechanism's table:
+    /// its template and its view.
+    /// The picture the Definitions pane draws beside a mechanism's table:
+    /// its template, the view as drawn (what it reads is recorded) and its
+    /// state.
+    definition_picture: Option<(
+        String,
+        simsandbox_file::ViewEntry,
+        simsandbox_views::ViewState,
+    )>,
     /// A block dropped on another: the connections offered (ADR 0108).
     wire_offer: Option<(String, String)>,
     rewind_t: f64,
@@ -276,6 +290,8 @@ impl SimApp {
             editor: None,
             signals_editor: None,
             wire_offer: None,
+            definition: None,
+            definition_picture: None,
             rewind_t: 0.0,
             views: Views::new(simsandbox_session::examples::view_registry()),
             dock: Dock::standard(&[]),
@@ -381,7 +397,10 @@ impl SimApp {
             live.send(Some("probe-dir"), move |s, _| s.set_probe_dir(dir));
         }
         // Views bound, rebound or closed: the history follows (ADR 0063).
-        let reads = simsandbox_session::session::view_reads(&self.views.shown_entries());
+        // And the picture beside a definition (ADR 0108).
+        let mut shown = self.views.shown_entries();
+        shown.extend(self.definition_picture.as_ref().map(|(_, e, _)| e.clone()));
+        let reads = simsandbox_session::session::view_reads(&shown);
         if reads != self.view_reads {
             self.view_reads = reads.clone();
             live.send(Some("view-reads"), move |s, _| s.set_view_reads(reads));
@@ -404,6 +423,7 @@ impl SimApp {
                 Pane::Controls => Some(Popped::Controls),
                 Pane::Inspector => Some(Popped::Inspector),
                 Pane::Diagram => Some(Popped::Diagram),
+                Pane::Definitions => Some(Popped::Definitions),
                 p => p.tiles().first().and_then(|&t| index(t)).map(Popped::View),
             })
             .collect()
@@ -553,6 +573,7 @@ impl SimApp {
             Pane::Overview => "Overview".into(),
             Pane::Controls => "Controls".into(),
             Pane::Inspector => "Inspector".into(),
+            Pane::Definitions => "Definitions".into(),
             Pane::Diagram => match self.diagram.draft_problem() {
                 Some(_) => "Diagram ⚠".into(),
                 None => "Diagram".into(),
@@ -586,6 +607,7 @@ impl SimApp {
                     });
             }
             Pane::Diagram => self.diagram_tab(ui),
+            Pane::Definitions => self.definitions_tab(ui),
             Pane::Overview => self.overview_tab(ui),
             Pane::View(t) => self.view_tiles(ui, &[*t], false, actions),
             Pane::Views { tiles, .. } => self.view_tiles(ui, tiles, true, actions),
@@ -699,6 +721,7 @@ enum Popped {
     Controls,
     Inspector,
     Diagram,
+    Definitions,
     /// The tab showing this view (by place among the views).
     View(usize),
 }
@@ -715,6 +738,7 @@ fn pane_key(p: &Pane) -> String {
         Pane::Controls => "controls".into(),
         Pane::Inspector => "inspector".into(),
         Pane::Diagram => "diagram".into(),
+        Pane::Definitions => "definitions".into(),
         Pane::View(t) => format!("view:{t}"),
         Pane::Views { id, .. } => format!("views:{id}"),
     }

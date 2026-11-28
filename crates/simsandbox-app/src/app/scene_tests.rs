@@ -691,3 +691,59 @@ fn the_stage_offers_the_selected_blocks_definition_and_takes_dropped_signals() {
         ]
     );
 }
+
+#[test]
+fn the_definitions_pane_shows_the_selected_block_where_it_is_defined() {
+    // ADR 0108: typed equations as a sheet with values; a mechanism's
+    // table beside its picture.
+    let mut app = SimApp::new(None, None, None, None);
+    let k = EXAMPLES
+        .iter()
+        .position(|e| e.name.starts_with("Cart-pole"))
+        .unwrap();
+    app.open_example(k);
+    let o = simsandbox_session::render::RenderOptions {
+        width: 620.0,
+        height: 760.0,
+        ..Default::default()
+    };
+    let shot = |app: &mut SimApp, name: &str| {
+        let image = simsandbox_session::render::paint(&o, |ui| app.definitions_tab(ui));
+        if let Ok(dir) = std::env::var("SIMSANDBOX_SHOT_SCENE") {
+            let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+            std::fs::write(path, simsandbox_session::render::png(&image).unwrap()).unwrap();
+        }
+        image
+    };
+    // Nothing selected: what to do.
+    let empty = shot(&mut app, "definitions-none");
+    assert!(app.definition.is_none());
+    app.inspect_signal("control.F");
+    let sheet = shot(&mut app, "definitions-equations");
+    let d = &app.definition.as_ref().unwrap().2;
+    assert_eq!(d["kind"], "equations");
+    assert_ne!(sheet, empty);
+    app.inspect_signal("cartpole.hinge_angle");
+    shot(&mut app, "definitions-bodies");
+    // What the picture reads is recorded, as a tile's is; drawn again
+    // after the run moves on, it shows the bodies.
+    let ctx = egui::Context::default();
+    app.poll(&ctx);
+    let live = app.session.as_ref().unwrap();
+    live.send(None, |s, _| {
+        s.run_until(0.5).unwrap();
+    });
+    live.sync();
+    let drawn = shot(&mut app, "definitions-bodies");
+    let orange = drawn
+        .rgba
+        .chunks(4)
+        .filter(|p| p[0] > 200 && p[1] > 120 && p[1] < 190 && p[2] < 60)
+        .count();
+    assert!(orange > 100, "the bodies are drawn: {orange} orange pixels");
+    assert_eq!(app.definition.as_ref().unwrap().2["kind"], "bodies");
+    assert_eq!(
+        app.definition_picture.as_ref().map(|(t, _, _)| t.as_str()),
+        Some("cartpole/bodies")
+    );
+}

@@ -401,6 +401,33 @@ impl Session {
 
     /// Every parameter: the declared ones (the model's, then each
     /// instance's), then every block's in flat block order.
+    /// A block's scalar outputs now, by name, each with its unit (the
+    /// first value of one that is not scalar).
+    pub fn outputs_of(&self, block: &str) -> Vec<(String, f64, String)> {
+        let Some(&id) = self.ids.get(block) else {
+            return Vec::new();
+        };
+        let model = self.sim.model();
+        let (Ok(b), Some(values)) = (model.block(id), self.sim.outputs_of(id)) else {
+            return Vec::new();
+        };
+        let mut at = 0;
+        let mut out = Vec::new();
+        for p in b.spec().outputs() {
+            let n = p.shape.len();
+            if let Some(&v) = values.get(at) {
+                let unit = if p.unit == simsandbox_core::units::Unit::DIMENSIONLESS {
+                    String::new()
+                } else {
+                    p.unit.to_string()
+                };
+                out.push((p.name.clone(), v, unit));
+            }
+            at += n;
+        }
+        out
+    }
+
     pub fn params(&self) -> Vec<ParamRow> {
         let model = self.sim.model();
         let mut rows = Vec::new();

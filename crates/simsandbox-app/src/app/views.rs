@@ -173,7 +173,7 @@ impl SimApp {
                                         if ui
                                             .small_button("definition")
                                             .on_hover_text(format!(
-                                                "Show where {b}, selected, is defined: its equations, its bodies, its model or its place on the diagram"
+                                                "Show where {b}, selected, is defined: its equation sheet, its bodies, its design, its model or its place on the diagram"
                                             ))
                                             .clicked()
                                         {

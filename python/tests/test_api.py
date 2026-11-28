@@ -312,6 +312,14 @@ def test_a_scene_is_added_checked_saved_and_drawn(tmp_path):
         assert pairs and all(p["to"].startswith("control.") for p in pairs)
         with pytest.raises(ss.ModelError):
             cp.sources("cartpole.nothing")
+        # Where a block is defined, with its values (ADR 0108).
+        sheet = cp.definition("control")
+        assert sheet["kind"] == "equations"
+        k1 = next(line for line in sheet["lines"] if line.get("name") == "k1")
+        assert (k1["what"], k1["unit"]) == ("param", "N/m")
+        assert cp.definition("cartpole")["pictures"] == ["cartpole/bodies"]
+        with pytest.raises(ss.ModelError):
+            cp.definition("nothing")
 
 
 def test_a_scenes_form_and_names_are_refused_at_once():

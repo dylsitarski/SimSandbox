@@ -95,6 +95,7 @@ type (its ports, parameters, methods and labels); or with `units` every unit sym
     (
         "explain",
         "usage: simsandbox explain FILE [--format markdown|json] [--part PATH] [--depth N]
+                        [--definition BLOCK]
 
 Print the model's card (ADR 0107), one level at a time (ADR 0110): what it is, its parts
 by role (interaction, model, system, controller, formulas, study), each block's summary,
@@ -107,6 +108,10 @@ reads inside a used model by path; and how far to trust it. Markdown (default) o
 
   --part PATH   the card of a model used inside, by its path of uses (car1, vehicle/plant)
   --depth N     include the cards of used models N - 1 levels down (default 1)
+  --definition BLOCK  instead, as JSON, the block where it is defined (ADR 0108): typed
+                equations line by line with what each declares, its unit and value at the
+                start; a mechanism's bodies and pictures; a study's design; else its
+                parameters
 
 Exit status 1 if the model cannot load or has no such part.",
     ),
@@ -763,7 +768,7 @@ fn check(args: &[String]) -> Result<()> {
 /// Print a model's card (ADR 0107), as Markdown or JSON.
 fn explain(args: &[String]) -> Result<()> {
     let (path, rest) = file_arg("explain", args)?;
-    let flags = Flags::parse(rest, &["--format", "--part", "--depth"])?;
+    let flags = Flags::parse(rest, &["--format", "--part", "--depth", "--definition"])?;
     let part = flags.get("--part").unwrap_or("").trim_matches('/');
     let depth = match flags.get("--depth") {
         None => 1,
@@ -796,6 +801,12 @@ fn explain(args: &[String]) -> Result<()> {
     )
     .map_err(|e| Failure::model(format!("{path} cannot load: {e}"), path))?;
     let r = registry();
+    // One block where it is defined, with its values (ADR 0108).
+    if let Some(block) = flags.get("--definition") {
+        let d = simsandbox_session::definition::definition(&session, block)
+            .map_err(|e| Failure::model(format!("{path}: --definition {block}: {e}"), path))?;
+        return print_json(&d);
+    }
     let card = simsandbox_session::card::card_at(
         &session,
         &|t| r.info(t).map(|i| i.summary.clone()),

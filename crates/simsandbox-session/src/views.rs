@@ -287,6 +287,16 @@ impl Views {
         default_pictures(&self.templates)
     }
 
+    /// The view an entry draws, templates put in place, without adding a
+    /// tile (a picture shown beside a definition, ADR 0108).
+    pub fn state_for(&self, e: &ViewEntry, available: &Available<'_>) -> Result<ViewState, String> {
+        let (state, problem) = self.restore(e, available)?;
+        match problem {
+            Some(p) => Err(p),
+            None => Ok(state),
+        }
+    }
+
     /// A tile for an entry as written (a scene drawing a template, ADR
     /// 0113), selected; its id, or why it cannot be shown.
     pub fn add_entry(&mut self, e: &ViewEntry, available: &Available<'_>) -> Result<u64, String> {

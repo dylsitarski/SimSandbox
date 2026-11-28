@@ -17,6 +17,8 @@ pub enum Pane {
     Controls,
     Inspector,
     Diagram,
+    /// The selected block where it is defined (ADR 0108).
+    Definitions,
     /// One view, by its tile's id.
     View(u64),
     /// Views tiled together; `id` names the tab.
@@ -59,7 +61,7 @@ impl Dock {
         d.state.main_surface_mut().split_right(
             NodeIndex::root(),
             0.3,
-            vec![Pane::Overview, group, Pane::Diagram],
+            vec![Pane::Overview, group, Pane::Diagram, Pane::Definitions],
         );
         d.add_controls();
         d
@@ -110,6 +112,7 @@ impl Dock {
                 FilePane::Named(n) if n == FilePane::CONTROLS => Some(Pane::Controls),
                 FilePane::Named(n) if n == FilePane::INSPECTOR => Some(Pane::Inspector),
                 FilePane::Named(n) if n == FilePane::DIAGRAM => Some(Pane::Diagram),
+                FilePane::Named(n) if n == FilePane::DEFINITIONS => Some(Pane::Definitions),
                 p => {
                     let tiles: Vec<u64> = p.views().into_iter().filter_map(tile).collect();
                     match (p, tiles.len()) {
@@ -198,6 +201,11 @@ impl Dock {
         if d.find(|p| *p == Pane::Overview).is_none() {
             d.beside_diagram(Pane::Overview);
         }
+        // And those saved before Definitions (ADR 0108) gain it after the
+        // diagram, behind it.
+        if d.find(|p| *p == Pane::Definitions).is_none() {
+            d.after_diagram(Pane::Definitions);
+        }
         d.sync(all);
         d
     }
@@ -211,6 +219,7 @@ impl Dock {
                 Pane::Controls => Some(FilePane::Named(FilePane::CONTROLS.into())),
                 Pane::Inspector => Some(FilePane::Named(FilePane::INSPECTOR.into())),
                 Pane::Diagram => Some(FilePane::Named(FilePane::DIAGRAM.into())),
+                Pane::Definitions => Some(FilePane::Named(FilePane::DEFINITIONS.into())),
                 Pane::View(t) => index(*t).map(FilePane::view),
                 Pane::Views { tiles, .. } => {
                     let views: Vec<usize> = tiles.iter().filter_map(|t| index(*t)).collect();
@@ -343,6 +352,23 @@ impl Dock {
     }
 
     /// Add a tab in front of the diagram's stack (or to the first stack).
+    /// Put `pane` last in the diagram's stack, leaving its tab in front.
+    fn after_diagram(&mut self, pane: Pane) {
+        if let Some(path) = self.find(|p| *p == Pane::Diagram) {
+            if let Some(leaf) = self
+                .state
+                .main_surface_mut()
+                .iter_mut()
+                .nth(path.node_path().node.0)
+                .and_then(|n| n.get_leaf_mut())
+            {
+                leaf.tabs.push(pane);
+                return;
+            }
+        }
+        self.state.push_to_first_leaf(pane);
+    }
+
     fn beside_diagram(&mut self, pane: Pane) {
         if let Some(path) = self.find(|p| *p == Pane::Diagram) {
             if let Some(leaf) = self
@@ -470,7 +496,7 @@ mod tests {
             r#"{"split": "left_right", "fraction": 0.3,
                 "first": {"tabs": ["inspector", "controls"]},
                 "second": {"split": "top_bottom", "fraction": 0.6,
-                    "first": {"tabs": ["overview", {"views": [0, 2]}, "diagram"], "active": 2},
+                    "first": {"tabs": ["overview", {"views": [0, 2]}, "diagram", "definitions"], "active": 2},
                     "second": {"tabs": ["view:1"]}}}"#,
         );
         // Views 0, 1, 2 are tiles 10, 11, 12.
@@ -479,8 +505,9 @@ mod tests {
         let index = |t: u64| Some((t - 10) as usize);
         assert_eq!(d.to_layout(&index), Some(l));
         // An arrangement saved before the controls had a pane gets them
-        // above the inspector, and one saved before the overview (ADR
-        // 0108) gets it in front of the diagram.
+        // above the inspector, one saved before the overview (ADR 0108)
+        // gets it in front of the diagram, and one before Definitions gets
+        // it after the diagram, the diagram's tab still in front.
         let old = layout(
             r#"{"split": "left_right", "fraction": 0.3,
             "first": {"tabs": ["inspector"]}, "second": {"tabs": ["diagram"]}}"#,
@@ -490,7 +517,7 @@ mod tests {
             r#"{"split": "left_right", "fraction": 0.3,
                 "first": {"split": "top_bottom", "fraction": 0.3,
                     "first": {"tabs": ["controls"]}, "second": {"tabs": ["inspector"]}},
-                "second": {"tabs": ["overview", "diagram"]}}"#,
+                "second": {"tabs": ["overview", "diagram", "definitions"]}}"#,
         );
         assert_eq!(d.to_layout(&index), Some(expected));
     }

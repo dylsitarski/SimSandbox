@@ -216,7 +216,7 @@ impl SimApp {
                             if top
                                 && ui
                                     .small_button("Definition")
-                                    .on_hover_text("Where it is defined: its equations, its bodies, or its place on the diagram")
+                                    .on_hover_text("Where it is defined: its equation sheet, its bodies, its design, or its place on the diagram")
                                     .clicked()
                             {
                                 define = Some(name.to_string());
