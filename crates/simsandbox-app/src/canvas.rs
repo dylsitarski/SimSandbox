@@ -55,6 +55,9 @@ pub enum Request {
     /// Open the block's definition (equations), settings or, for a
     /// subsystem, its inside.
     Open(String),
+    /// A block dragged onto another: offer the connections that fit
+    /// (ADR 0108, connecting by intent).
+    Wire(String, String),
     /// Edit a filter in the Data window.
     EditData(String),
     /// Show a view's tile, by its place among the views.
@@ -183,6 +186,23 @@ impl Canvas {
         self.view.background(&painter, rect, &visuals);
 
         let pointer = response.hover_pos().or(response.interact_pointer_pos());
+        // A block dragged here from the Overview or the Stage, dropped on a
+        // node: wire it into that one (ADR 0108).
+        if let (Some(p), Some(at)) = (
+            egui::DragAndDrop::payload::<crate::app::DraggedBlock>(ui.ctx()),
+            ui.ctx().pointer_hover_pos().filter(|p| rect.contains(*p)),
+        ) {
+            if ui.input(|i| i.pointer.any_released()) {
+                if let Some(n) = d
+                    .nodes
+                    .iter()
+                    .rev()
+                    .find(|n| n.is_block() && self.view.node_rect(origin, n).contains(at))
+                {
+                    requests.push(Request::Wire(p.0.clone(), n.name.clone()));
+                }
+            }
+        }
         self.input(ui, &response, d, origin, pointer, &mut edits, &mut requests);
 
         let nodes: &[String] = match &self.selected {
@@ -1930,5 +1950,21 @@ mod tests {
         c.all_ports = true;
         frame(&ctx, &mut c, &mut d, vec![]);
         assert!(unwired(&d));
+    }
+
+    #[test]
+    fn a_block_dropped_on_a_node_asks_to_wire_them() {
+        // Connecting by intent (ADR 0108 step 4): a block dragged from the
+        // Overview or the Stage, let go on a node.
+        let (mut d, mut c, ctx) = cruise();
+        let n = &d.nodes[d.node("car").unwrap()];
+        let at = c.view.node_rect(Pos2::ZERO, n).center();
+        frame(&ctx, &mut c, &mut d, vec![egui::Event::PointerMoved(at)]);
+        egui::DragAndDrop::set_payload(&ctx, crate::app::DraggedBlock("cruise".into()));
+        let (_, requests) = frame(&ctx, &mut c, &mut d, vec![press(at, false)]);
+        assert!(
+            requests.contains(&Request::Wire("cruise".into(), "car".into())),
+            "{requests:?}"
+        );
     }
 }

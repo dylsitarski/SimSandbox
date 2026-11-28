@@ -31,6 +31,7 @@ Commands:
   schema [run]      the model file's, or a run file's, JSON Schema
   render FILE       draw the model's views, or its block diagram, to a PNG
   start-from FILE   the model file that starts from the state reached at a time
+  sources FILE TO   what can feed an input or drive a parameter, or go from a block to one
   upgrade FILE      the file in the current form of the format
   help [COMMAND]    this text, or a command's options (also: COMMAND --help)
 
@@ -150,6 +151,18 @@ arranges them; or with --diagram draw its block diagram (also for a file that ca
 
 Run a model file to time t and write the model file that starts from the state reached
 there (ADR 0042): to --out, or standard output.",
+    ),
+    (
+        "sources",
+        "usage: simsandbox sources FILE TARGET [--from BLOCK]
+
+Print, as JSON, the outputs of the model's blocks and used models that can feed TARGET,
+an input (`block.port`, `use/port`) or a parameter (`block.param`, which it then drives,
+ADR 0075): same unit and shape, those with TARGET's name first (connecting by intent, ADR
+0108). With --from BLOCK, TARGET is a block or use: every connection from BLOCK's outputs
+into its inputs and parameters that fits, each with whether it replaces what sets it now.
+Make one with Python's Model.connect or by adding it to the file's `connections`. Exit
+status 1 if the model cannot load or has no such target.",
     ),
     (
         "upgrade",
@@ -997,6 +1010,48 @@ fn start_from_file(args: &[String]) -> Result<()> {
 
 /// Write a model file in the current form (ADR 0044): to `--out`, or
 /// standard output. What was converted or dropped goes to standard error.
+/// What can feed a target, or go from one block into another (ADR 0108).
+fn sources(args: &[String]) -> Result<()> {
+    let (path, rest) = file_arg("sources", args)?;
+    let Some((target, rest)) = rest.split_first().filter(|(t, _)| !t.starts_with("--")) else {
+        return Err(Failure::usage(
+            "sources needs a TARGET: block.port, block.param or a block",
+        ));
+    };
+    let flags = Flags::parse(rest, &["--from"])?;
+    let (file, _) = simsandbox_file::ModelFile::from_json(&read(path)?)
+        .map_err(|e| Failure::model(format!("{path}: {e}"), path))?;
+    let d = simsandbox_session::diagram::Diagram::new(&file, &registry());
+    let out = match flags.get("--from") {
+        Some(from) => {
+            if d.node(from).is_none() || d.node(target).is_none() {
+                return Err(Failure::model(
+                    format!(
+                        "{path}: no block or use '{}'",
+                        if d.node(from).is_none() { from } else { target }
+                    ),
+                    path,
+                ));
+            }
+            let pairs = simsandbox_session::wiring::pairs(&d, from, target);
+            serde_json::json!(pairs
+                .iter()
+                .map(|p| serde_json::json!({"from": p.from, "to": p.to, "replaces": p.replaces, "drives": p.drives}))
+                .collect::<Vec<_>>())
+        }
+        None => {
+            let found = simsandbox_session::wiring::sources(&d, target)
+                .map_err(|e| Failure::model(format!("{path}: {e}"), path))?;
+            serde_json::json!(found
+                .iter()
+                .map(|s| serde_json::json!({"from": s.signal, "unit": s.unit, "same_name": s.same_name}))
+                .collect::<Vec<_>>())
+        }
+    };
+    println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    Ok(())
+}
+
 fn upgrade_file(args: &[String]) -> Result<()> {
     let (path, rest) = file_arg("upgrade", args)?;
     let flags = Flags::parse(rest, &["--out"])?;
@@ -1185,6 +1240,7 @@ fn command(args: &[String], rest: &[String]) -> Result<()> {
         "render" => render_file(rest),
         "start-from" => start_from_file(rest),
         "upgrade" => upgrade_file(rest),
+        "sources" => sources(rest),
         other => Err(Failure::usage(format!("unknown command '{other}'"))),
     }
 }

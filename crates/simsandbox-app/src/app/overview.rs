@@ -104,6 +104,7 @@ impl SimApp {
         let mut inspect: Option<String> = None;
         let mut open: Option<String> = None;
         let mut define: Option<String> = None;
+        let mut wire: Option<(String, String)> = None;
         // Views made from here go to the Stage (ADR 0108 point 4).
         let mut plot: Option<Vec<String>> = None;
         let mut draw: Option<Drawn> = None;
@@ -193,14 +194,14 @@ impl SimApp {
                         &mut open,
                         &mut inspect,
                         &mut edits,
-                        (&mut plot, &mut draw, &targets),
+                        (&mut plot, &mut draw, &targets, &mut wire),
                     );
                     continue;
                 }
                 let name = text(&part["name"]);
                 let path = text(&part["path"]);
                 let header = format!("{name} — {}", text(&part["role"]));
-                egui::CollapsingHeader::new(marked(header, is_selected, ui))
+                let shown = egui::CollapsingHeader::new(marked(header, is_selected, ui))
                     .id_salt(("overview part", name))
                     .default_open(true)
                     .show(ui, |ui| {
@@ -208,6 +209,9 @@ impl SimApp {
                             ui.weak(text(&part["type"]));
                             if top && ui.small_button("Inspect").on_hover_text("Select it: the Inspector and the diagram follow").clicked() {
                                 inspect = Some(name.to_string());
+                            }
+                            if top {
+                                super::wiring::handle(ui, name);
                             }
                             if top
                                 && ui
@@ -355,7 +359,7 @@ impl SimApp {
                                             // there (ADR 0108 point 4).
                                             let signal = format!("{path}.{}", text(&p["name"]));
                                             ui.dnd_drag_source(
-                                                egui::Id::new(("drag signal", &signal)),
+                                                ui.make_persistent_id(("drag signal", &signal)),
                                                 super::DraggedSignal(signal.clone()),
                                                 |ui| ui.label(shown),
                                             )
@@ -368,6 +372,12 @@ impl SimApp {
                                 });
                         }
                     });
+                // A block dragged here: wire it into this one (ADR 0108).
+                if top {
+                    if let Some(from) = super::wiring::dropped(&shown.header_response) {
+                        wire = Some((from, name.to_string()));
+                    }
+                }
             }
 
             if let Some(bundles) = card["connections"].as_array().filter(|b| !b.is_empty()) {
@@ -481,6 +491,9 @@ impl SimApp {
         if let Some(block) = define {
             self.show_definition(&block);
         }
+        if let Some((from, to)) = wire {
+            self.offer_wiring(&from, &to);
+        }
         if let Some(signals) = plot {
             self.stage_plot(signals);
         }
@@ -510,6 +523,9 @@ fn marked(header: String, selected: bool, ui: &egui::Ui) -> egui::RichText {
 /// view).
 type Drawn = (String, Option<u64>);
 
+/// A block dropped on another: from and into (ADR 0108).
+type Wiring = (String, String);
+
 /// A model used at this level, as one part (ADR 0110): what it is, its
 /// interface for this use with values live, Open to show its own level.
 #[allow(clippy::too_many_arguments)]
@@ -522,10 +538,11 @@ fn use_part(
     open: &mut Option<String>,
     inspect: &mut Option<String>,
     edits: &mut Vec<Edit>,
-    (plot, draw, targets): (
+    (plot, draw, targets, wire): (
         &mut Option<Vec<String>>,
         &mut Option<Drawn>,
         &PictureTargets,
+        &mut Option<Wiring>,
     ),
 ) {
     let name = text(&part["name"]);
@@ -534,7 +551,7 @@ fn use_part(
         || format!("file {}", text(&part["file"])),
         |m| format!("model {m}"),
     );
-    egui::CollapsingHeader::new(marked(format!("{name} — {model}"), is_selected, ui))
+    let shown = egui::CollapsingHeader::new(marked(format!("{name} — {model}"), is_selected, ui))
         .id_salt(("overview use", path))
         .default_open(true)
         .show(ui, |ui| {
@@ -553,6 +570,9 @@ fn use_part(
                         .clicked()
                 {
                     *inspect = Some(name.to_string());
+                }
+                if top {
+                    super::wiring::handle(ui, name);
                 }
                 // What it offers, on the Stage: its outputs plotted, its
                 // pictures drawn (ADR 0108, ADR 0113).
@@ -632,7 +652,7 @@ fn use_part(
                     if key == "outputs" {
                         let signal = format!("{path}/{}", text(&p["name"]));
                         ui.dnd_drag_source(
-                            egui::Id::new(("drag signal", &signal)),
+                            ui.make_persistent_id(("drag signal", &signal)),
                             super::DraggedSignal(signal.clone()),
                             |ui| ui.label(shown),
                         )
@@ -644,6 +664,12 @@ fn use_part(
                 }
             }
         });
+    // A block dragged here: wire it into this use (ADR 0108).
+    if top {
+        if let Some(from) = super::wiring::dropped(&shown.header_response) {
+            *wire = Some((from, name.to_string()));
+        }
+    }
 }
 
 #[cfg(test)]

@@ -40,6 +40,7 @@ pub mod strategies;
 pub mod study;
 pub mod undo;
 pub mod views;
+pub mod wiring;
 
 pub use session::Session;
 /// A model file, as interfaces read and write it.

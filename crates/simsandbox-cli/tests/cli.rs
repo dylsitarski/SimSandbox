@@ -857,3 +857,32 @@ fn render_draws_a_diagrams_components() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("add --diagram"));
 }
+
+#[test]
+fn sources_lists_what_fits_a_target_and_what_goes_between_blocks() {
+    let cartpole = example("cartpole.ssbx.json");
+    let out = simsandbox(&["sources", &cartpole, "cartpole.slider_force"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let from: Vec<String> = json(&out)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["from"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(from, ["control.F", "control.fx", "control.fy"]);
+    let out = simsandbox(&["sources", &cartpole, "control", "--from", "cartpole"]);
+    assert!(out.status.success());
+    assert!(json(&out)
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|p| p["to"].as_str().unwrap().starts_with("control.")));
+    let out = simsandbox(&["sources", &cartpole, "cartpole.nothing"]);
+    assert_eq!(out.status.code(), Some(1));
+    let out = simsandbox(&["sources", &cartpole]);
+    assert_eq!(out.status.code(), Some(2));
+}

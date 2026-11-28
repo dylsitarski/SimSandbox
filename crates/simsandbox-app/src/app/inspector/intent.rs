@@ -140,6 +140,9 @@ impl SimApp {
                         draw = Some(d);
                     }
                 }
+                // Connecting by intent (ADR 0108): what fits, or a drag.
+                self.wire_into_menu(ui, block);
+                super::super::wiring::handle(ui, block);
                 plot
             })
             .inner;

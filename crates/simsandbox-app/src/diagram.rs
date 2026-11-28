@@ -28,6 +28,8 @@ const UNDO_DEPTH: usize = 100;
 /// What the app should do after a frame of the canvas.
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
+    /// A block dropped on another: offer the connections that fit.
+    Wire(String, String),
     /// Open this model file (it loads), from t = 0, then log the notes.
     Apply {
         text: String,
@@ -933,6 +935,10 @@ impl DiagramTab {
                 Request::Open(name) => name,
                 Request::EditData(name) => {
                     out.push(Outcome::EditData(name));
+                    continue;
+                }
+                Request::Wire(from, to) => {
+                    out.push(Outcome::Wire(from, to));
                     continue;
                 }
                 Request::ShowView(k) => {

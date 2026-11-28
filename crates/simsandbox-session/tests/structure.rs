@@ -207,3 +207,39 @@ fn a_folded_block_draws_its_wired_ports_and_counts_the_rest() {
         ("interaction", "controller", "system")
     );
 }
+
+#[test]
+fn what_fits_an_input_or_parameter_is_offered_by_unit_and_name() {
+    // Connecting by intent (ADR 0108 step 4): same unit and shape.
+    use simsandbox_session::wiring::{fits, pairs, sources};
+    let d = diagram("Cart-pole");
+    let from: Vec<String> = sources(&d, "cartpole.slider_force")
+        .unwrap()
+        .into_iter()
+        .map(|s| s.signal)
+        .collect();
+    assert_eq!(from, ["control.F", "control.fx", "control.fy"]);
+    assert!(fits(&d, "control.F", "cartpole.slider_force"));
+    assert!(
+        !fits(&d, "cartpole.slider_position", "cartpole.slider_force"),
+        "not its own"
+    );
+    assert!(!fits(&d, "hand.x", "cartpole.slider_force"), "m is not N");
+    assert!(sources(&d, "cartpole.nothing").is_err());
+    // From the controller into the mechanism: not what is wired already;
+    // what nothing sets first.
+    let p = pairs(&d, "control", "cartpole");
+    assert!(!p
+        .iter()
+        .any(|p| p.from == "control.F" && p.to == "cartpole.slider_force"));
+    assert!(p
+        .iter()
+        .all(|p| p.from.starts_with("control.") && p.to.starts_with("cartpole.")));
+    let first_replacing = p.iter().position(|p| p.replaces).unwrap_or(p.len());
+    assert!(p[first_replacing..].iter().all(|p| p.replaces));
+    assert!(
+        p.iter().any(|p| p.drives && !p.replaces),
+        "an idle force can be driven"
+    );
+    assert!(pairs(&d, "control", "control").is_empty());
+}

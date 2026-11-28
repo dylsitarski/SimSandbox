@@ -179,6 +179,9 @@ impl SimApp {
                                         {
                                             actions.push(DockAction::ShowDefinition(b.clone()));
                                         }
+                                        // From what is drawn to a controller
+                                        // (ADR 0108, connecting by intent).
+                                        super::wiring::handle(ui, b);
                                     }
                                     let id = tile.id;
                                     ui.menu_button("style", |ui| {

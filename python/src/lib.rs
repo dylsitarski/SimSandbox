@@ -553,6 +553,36 @@ fn duplicate(text: &str, blocks: Vec<String>) -> PyResult<(String, String)> {
     Ok((file.to_json(), note))
 }
 
+/// What can feed `target` (an input or parameter), or with `from_block`
+/// every connection from that block into `target` (a block) that fits
+/// (connecting by intent, ADR 0108). JSON, as `simsandbox sources` prints.
+#[pyfunction]
+#[pyo3(signature = (text, target, from_block=None))]
+fn sources(text: &str, target: &str, from_block: Option<String>) -> PyResult<String> {
+    let (file, _) = simsandbox_session::ModelFile::from_json(text)
+        .map_err(|e| ModelError::new_err(e.to_string()))?;
+    let d = simsandbox_session::diagram::Diagram::new(&file, &registry());
+    let out = match from_block {
+        Some(from) => {
+            for b in [from.as_str(), target] {
+                if d.node(b).is_none() {
+                    return Err(ModelError::new_err(format!("no block or use '{b}'")));
+                }
+            }
+            serde_json::json!(simsandbox_session::wiring::pairs(&d, &from, target)
+                .iter()
+                .map(|p| serde_json::json!({"from": p.from, "to": p.to, "replaces": p.replaces, "drives": p.drives}))
+                .collect::<Vec<_>>())
+        }
+        None => serde_json::json!(simsandbox_session::wiring::sources(&d, target)
+            .map_err(ModelError::new_err)?
+            .iter()
+            .map(|s| serde_json::json!({"from": s.signal, "unit": s.unit, "same_name": s.same_name}))
+            .collect::<Vec<_>>()),
+    };
+    Ok(out.to_string())
+}
+
 /// Every block and use placed by role, as "Arrange by role" does on the
 /// canvas (the Structure lens, ADR 0108). Returns the changed model file
 /// and how many moved.
@@ -939,6 +969,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(group, m)?)?;
     m.add_function(wrap_pyfunction!(duplicate, m)?)?;
     m.add_function(wrap_pyfunction!(arrange, m)?)?;
+    m.add_function(wrap_pyfunction!(sources, m)?)?;
     m.add_function(wrap_pyfunction!(study, m)?)?;
     m.add_function(wrap_pyfunction!(study_model, m)?)?;
     m.add_function(wrap_pyfunction!(strategy, m)?)?;

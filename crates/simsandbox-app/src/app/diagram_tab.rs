@@ -82,6 +82,7 @@ impl SimApp {
                     }
                 }
                 Outcome::Open(name) => self.open_block(m, &name),
+                Outcome::Wire(from, to) => self.offer_wiring(&from, &to),
                 Outcome::Error(e) => self.error = Some(e),
                 Outcome::Placed {
                     filters,

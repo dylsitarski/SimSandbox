@@ -855,6 +855,18 @@ class Model:
         self.data = json.loads(text)
         return note
 
+    def sources(self, target: str, from_block: str | None = None) -> list[dict[str, Any]]:
+        """What can feed ``target`` (an input ``"block.port"``, a used model's
+        ``"use/port"``, or a parameter ``"block.param"``, which it then
+        drives): outputs of the model's blocks and uses with the same unit
+        and shape, those with its name first, each ``{"from", "unit",
+        "same_name"}``. With ``from_block``, ``target`` is a block or use:
+        every connection from ``from_block`` into it that fits, each
+        ``{"from", "to", "replaces", "drives"}`` (connecting by intent, ADR
+        0108). Make one with :meth:`connect`."""
+        found: list[dict[str, Any]] = json.loads(_native.sources(self.to_json(), target, from_block))
+        return found
+
     def arrange(self) -> int:
         """Place every block and use on the canvas by role, as "Arrange by
         role" does (the Structure lens, ADR 0108): interaction on the left,

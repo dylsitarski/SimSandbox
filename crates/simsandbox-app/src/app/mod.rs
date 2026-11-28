@@ -44,6 +44,8 @@ mod scene_tests;
 mod tests;
 mod toolbar;
 mod views;
+mod wiring;
+pub(crate) use wiring::DraggedBlock;
 
 // What the parts share; methods of `SimApp` need no import.
 use data::*;
@@ -171,6 +173,8 @@ pub struct SimApp {
     editor: Option<Editor>,
     /// The derived-signals window, when open.
     signals_editor: Option<SignalsEditor>,
+    /// A block dropped on another: the connections offered (ADR 0108).
+    wire_offer: Option<(String, String)>,
     rewind_t: f64,
     views: Views,
     /// The inspector, diagram and views as dockable tabs (ADR 0053).
@@ -271,6 +275,7 @@ impl SimApp {
             pending: HashMap::new(),
             editor: None,
             signals_editor: None,
+            wire_offer: None,
             rewind_t: 0.0,
             views: Views::new(simsandbox_session::examples::view_registry()),
             dock: Dock::standard(&[]),
@@ -634,6 +639,7 @@ impl eframe::App for SimApp {
         self.poll(&ctx);
         self.equation_editor(&ctx);
         self.signals_window(&ctx);
+        self.wiring_window(&ctx);
         self.guard_close(&ctx);
         self.unsaved_dialog(&ctx);
         self.run_dialog(&ctx);

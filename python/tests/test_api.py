@@ -3,6 +3,7 @@ run, study and render, with results checked against known answers."""
 
 import math
 import os
+import pathlib
 import re
 import struct
 
@@ -302,6 +303,15 @@ def test_a_scene_is_added_checked_saved_and_drawn(tmp_path):
     assert all("canvas" in b for b in m.data["blocks"])
     assert rest(m.data) == before
     assert m.arrange() == 0
+    # Connecting by intent (ADR 0108): what fits, by unit and shape.
+    path = pathlib.Path(__file__).resolve().parents[2] / "examples" / "cartpole.ssbx.json"
+    if path.exists():
+        cp = ss.Model.load(path)
+        assert [s["from"] for s in cp.sources("cartpole.slider_force")] == ["control.F", "control.fx", "control.fy"]
+        pairs = cp.sources("control", from_block="cartpole")
+        assert pairs and all(p["to"].startswith("control.") for p in pairs)
+        with pytest.raises(ss.ModelError):
+            cp.sources("cartpole.nothing")
 
 
 def test_a_scenes_form_and_names_are_refused_at_once():
